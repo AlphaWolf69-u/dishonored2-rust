@@ -32,6 +32,8 @@ struct PhysicsStats {
     bytes: usize,
     common_hits: usize,
     local_hits: usize,
+    cycle_reads: usize,
+    cycles: u64,
 }
 
 /// Temporary physics source ownership until the contact table takes the
@@ -61,6 +63,19 @@ impl PhysicsSeed {
     }
 
     pub(crate) fn read(&mut self, catalog: &Catalog, path: &str, role: PhysicsUse) -> Result<Option<String>, String> {
+        static CPU_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let trace = *CPU_TRACE.get_or_init(|| std::env::var("DH2_DEBUG_PHYSICS_CPU").as_deref() == Ok("1"));
+        let start = if trace { crate::loading::history_thread_cycles() } else { None };
+        let result = self.read_inner(catalog, path, role);
+        if let (Some(start), Some(end)) = (start, if trace { crate::loading::history_thread_cycles() } else { None }) {
+            let stats = &mut self.stats[role as usize];
+            stats.cycle_reads += 1;
+            stats.cycles = stats.cycles.saturating_add(end.saturating_sub(start));
+        }
+        result
+    }
+
+    fn read_inner(&mut self, catalog: &Catalog, path: &str, role: PhysicsUse) -> Result<Option<String>, String> {
         let stats = &mut self.stats[role as usize];
         stats.requests += 1;
         let key: Cow<'_, str> = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
@@ -106,6 +121,9 @@ impl PhysicsSeed {
         for (role, stats) in ["world", "model", "machinery", "runtime"].into_iter().zip(&self.stats) {
             eprintln!("MEMORY physics text source: map={map} role={role} enabled={} requests={} reads={} decoded_bytes={} common_hits={} local_hits={}",
                 self.enabled, stats.requests, stats.reads, stats.bytes, stats.common_hits, stats.local_hits);
+            if stats.cycle_reads != 0 {
+                eprintln!("MEMORY physics text CPU: map={map} role={role} calls={} cycles={}", stats.cycle_reads, stats.cycles);
+            }
         }
         eprintln!("MEMORY physics text handoff: map={map} transfers={} remaining={} remaining_capacity_bytes={} peak_capacity_bytes={}",
             self.transfers, self.local.len(), self.cached_bytes, self.peak_cached_bytes);

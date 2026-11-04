@@ -297,19 +297,25 @@ pub(super) fn prepare_level(
         environment_data
             .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
             .unwrap_or((None, None, 1.0));
-    let area_environments = match (entity_document.as_ref(), catalog.as_ref()) {
+    let (area_environments, environment_volumes) = match (entity_document.as_ref(), catalog.as_ref()) {
         (Some(document), Some(catalog)) => {
-            crate::rendering::environment::load_area_environments(document, catalog)
-                .map_err(std::io::Error::other)?
+            let separate = catalog.has_overlays()
+                || env::var("DH2_DEBUG_SEPARATE_ENVIRONMENT_PROFILES").as_deref() == Ok("1");
+            if separate {
+                let areas = crate::rendering::environment::load_area_environments(document, catalog)
+                    .map_err(std::io::Error::other)?;
+                let volumes = crate::rendering::environment::load_environment_volumes(document, catalog)
+                    .map_err(std::io::Error::other)?;
+                (areas, volumes)
+            } else {
+                let volumes = crate::rendering::environment::load_environment_volumes(document, catalog)
+                    .map_err(std::io::Error::other)?;
+                let areas = crate::rendering::environment::area_environments_from_volumes(&volumes, catalog)
+                    .map_err(std::io::Error::other)?;
+                (areas, volumes)
+            }
         }
-        _ => Vec::new(),
-    };
-    let environment_volumes = match (entity_document.as_ref(), catalog.as_ref()) {
-        (Some(document), Some(catalog)) => {
-            crate::rendering::environment::load_environment_volumes(document, catalog)
-                .map_err(std::io::Error::other)?
-        }
-        _ => Vec::new(),
+        _ => (Vec::new(), Vec::new()),
     };
     println!(
         "Loaded {} area environment trigger shapes",

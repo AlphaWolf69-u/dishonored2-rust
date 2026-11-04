@@ -15,14 +15,19 @@ pub(super) fn resolve(
     placement: entities::PlacedEnvironmentVolume,
     catalog: &archive::Catalog,
 ) -> Result<EnvironmentVolume, String> {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let trace = *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() == Ok("1"));
+    let mut reads = 0usize;
+    let mut decoded_bytes = 0usize;
     let parameters = entities::environment_render_parameters_with_inheritance(
         &placement.id,
         &placement.environment_decl,
         |parent| {
-            catalog
+            let bytes = catalog
                 .read(&format!("generated/decls/env/{parent}.decl"))
-                .map(|v| v.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            if trace { reads += 1; decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
+            Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
         },
     )?;
     // 342ce0's default argument is false in 88d060. Use the same parameter
@@ -39,6 +44,11 @@ pub(super) fn resolve(
     } else {
         None
     };
+    if trace {
+        let mut crc = flate2::Crc::new();
+        crc.update(format!("{parameters:?}{is_water_volume:?}{surface_material:?}").as_bytes());
+        eprintln!("MEMORY environment acquisition: id={} reads={reads} decoded_bytes={decoded_bytes} signature={:08x}", placement.id, crc.sum());
+    }
     Ok(EnvironmentVolume {
         surface_material,
         placement,

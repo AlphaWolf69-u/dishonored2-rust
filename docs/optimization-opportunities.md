@@ -511,6 +511,17 @@ mass-resolution work on real maps; preserve mutable-shape and body-creation
 behavior. No saving is claimed until those measurements and ownership checks
 are complete.
 
+Trigger source-retirement prediction: the prior installed-data audit found
+5,576 trigger shape assets across 36 worlds and no mutable ones. After scene
+initialization, capture each immutable root's mass-property result, including
+any deferred error, and release the source bytes and schema while keeping the
+query geometry, header and bounds. Mutable sources must remain live. Predict
+one released source/schema per immutable shape and unchanged collision/query
+and mass values; one additional mass-property lookup per immutable shape is
+startup work. Compare actual released capacities and affected acquisition CPU
+in same-build retained/released clients. Counts across all installed worlds do
+not represent simultaneous residency or a process-RSS saving.
+
 Area-environment acquisition prediction: `level_prepare` resolves every
 authored environment volume once for the area selection and again for the
 physics/environment list. The previous production route created 204 / 92 /
@@ -522,6 +533,19 @@ volumes may add to that count. Mutable overlays require the previous separate
 reads. Compare resolution/read counts and ordered profile/area signatures in
 the same production sequence; this is loading work, not a frame-time or RSS
 prediction.
+
+Area-environment acquisition result: the same-binary three-map clients matched
+all ordered geometry and profile signatures; resolutions fell 1,000 -> 500,
+inherited reads 2,636 -> 1,318 and cumulative decoded bytes 19,793,854 ->
+9,896,927. This is load I/O, not an RSS or frame-time measurement. A targeted
+release CPU comparison remains pending.
+
+Physics-material targeted CPU prediction: the shared path eliminates 687 of
+749 observed source reads over the three-map route, while adding source-map
+lookups and temporary string copies. CPU cycles inside the changed reader
+should fall overall; its archive I/O wait and the separate declaration parser
+are not whole-frame measurements. Measure the reader on both modes in the same
+client executable and investigate a result more than 30% away from that model.
 
 
 Archive / rig / read-history production result: the no-overlay route

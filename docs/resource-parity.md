@@ -86,7 +86,7 @@ trailing `*` covers a family of kinds.
 | `difficultyPreset` | `gameplay::options::gameplay` | partial: reads its resources; lifecycle not ported (see its class) |
 | `drop` | none | none: no owner yet |
 | `entityDef` | `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
-| `env` | `assets::entities`, `assets::environment` | partial: reads its resources; lifecycle not ported (see its class) |
+| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation, while retaining their own runtime data; editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318 with matching ordered area/profile fingerprints. Full declaration registry lifecycle remains partial |
 | `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
@@ -3185,3 +3185,22 @@ probe fingerprints, and loading progress snapshots matched. These counts
 are not process RSS or gameplay-frame timings; a targeted acquisition CPU
 comparison is still required. Evidence: local
 `artifacts/physics-sharing-comparison.json` and paired client logs.
+
+### Area-environment preparation result
+
+EotW / Dust / EotW separate and shared production clients exited 0. Resolved
+volume acquisitions fell from 1,000 to 500, inherited source reads from
+2,636 to 1,318, and cumulative decoded source bytes from 19,793,854 to
+9,896,927. That matches the predicted 500 removed resolutions. All ordered
+area geometry/profile signatures and all individual resolved-volume
+signatures matched, as did the recorded collision, contact, sound, animation,
+UI, material and probe signatures. Both consumers retain their previous
+independent runtime data; these cumulative input bytes are not an RSS saving.
+Live overlays retain the old separate acquisition behavior. Evidence: local
+`artifacts/environment-sharing-comparison.json`. Targeted release CPU
+measurement remains pending.
+
+For the physics-source change, the development comparison also instrumented
+only the changed reader: 749 calls used 23,570,179 -> 5,843,521 thread
+cycles. This is not an elapsed-time or release-performance measurement; the
+release comparison is still required.

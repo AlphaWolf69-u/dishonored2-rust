@@ -55,7 +55,7 @@ fn history_modes() -> (bool, bool) {
 
 /// Diagnostic only: CPU cycles consumed by this thread in the affected code.
 #[cfg(windows)]
-fn history_thread_cycles() -> Option<u64> {
+pub(crate) fn history_thread_cycles() -> Option<u64> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThread() -> isize;
@@ -66,7 +66,7 @@ fn history_thread_cycles() -> Option<u64> {
     (unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } != 0).then_some(cycles)
 }
 #[cfg(not(windows))]
-fn history_thread_cycles() -> Option<u64> { None }
+pub(crate) fn history_thread_cycles() -> Option<u64> { None }
 
 fn resource_key(kind: &str, path: &str) -> u64 {
     use std::hash::{Hash, Hasher};

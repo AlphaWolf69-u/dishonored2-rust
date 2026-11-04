@@ -135,29 +135,51 @@ pub fn load_area_environments(
     let mut result = Vec::new();
     for volume in entities::placed_environment_volumes(document) {
         let resolved = volumes::resolve(volume, catalog)?;
-        // 88d060 keeps water/IsWaterVolume volumes in a separate query result;
-        // they do not override the ordinary environment stack.
-        if resolved.is_water_volume {
-            continue;
-        }
-        let volume = resolved.placement;
-        let parameters = resolved.parameters;
-        let model = volume
-            .model
-            .as_deref()
-            .ok_or_else(|| format!("{}: area trigger has no model", volume.id))?;
-        let shape = TriggerVolume::load(catalog, &volume.id, model, volume.position, volume.rotation)?;
-        result.push(AreaEnvironment {
-            id: volume.id,
-            parameters,
-            blend_duration: entities::environment_blend_duration(&volume.environment_decl)?,
-            volume: shape,
-        });
+        if let Some(area) = area_from_volume(resolved.placement, resolved.parameters, resolved.is_water_volume, catalog)? { result.push(area); }
     }
     // 88d060 inserts larger physics AABB diagonals first. Later parameter
     // assignments win in 88e220, so smaller containing volumes take priority.
     result.sort_by(|a, b| b.volume.size_squared().total_cmp(&a.volume.size_squared()));
+    report_area_signatures(&result);
     Ok(result)
+}
+
+/// Reuse the same resolved resource inputs for area and physics consumers.
+pub(crate) fn area_environments_from_volumes(
+    volumes: &[EnvironmentVolume], catalog: &archive::Catalog,
+) -> Result<Vec<AreaEnvironment>, String> {
+    let mut result = Vec::new();
+    for volume in volumes {
+        if volume.is_water_volume { continue; }
+        if let Some(area) = area_from_volume(volume.placement.clone(), volume.parameters.clone(), volume.is_water_volume, catalog)? { result.push(area); }
+    }
+    result.sort_by(|a, b| b.volume.size_squared().total_cmp(&a.volume.size_squared()));
+    report_area_signatures(&result);
+    Ok(result)
+}
+
+fn report_area_signatures(areas: &[AreaEnvironment]) {
+    if std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() != Ok("1") { return; }
+    let mut crc = flate2::Crc::new();
+    for area in areas {
+        crc.update(area.id.as_bytes());
+        crc.update(format!("{:?}{:?}{:?}", area.parameters, area.blend_duration, area.volume).as_bytes());
+        crc.update(&[0]);
+    }
+    eprintln!("MEMORY area environment output: count={} signature={:08x}", areas.len(), crc.sum());
+}
+
+fn area_from_volume(volume: entities::PlacedEnvironmentVolume, parameters: entities::EnvironmentRenderParameters,
+    is_water_volume: bool, catalog: &archive::Catalog) -> Result<Option<AreaEnvironment>, String> {
+    // 88d060 keeps water volumes in a separate query result.
+    if is_water_volume { return Ok(None); }
+    let model = volume.model.as_deref().ok_or_else(|| format!("{}: area trigger has no model", volume.id))?;
+    let shape = TriggerVolume::load(catalog, &volume.id, model, volume.position, volume.rotation)?;
+    Ok(Some(AreaEnvironment {
+        id: volume.id, parameters,
+        blend_duration: entities::environment_blend_duration(&volume.environment_decl)?,
+        volume: shape,
+    }))
 }
 
 /// A typed float parameter track from 88e220: switching source restarts the

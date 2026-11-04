@@ -78,6 +78,12 @@ physical GPU heap reservation is not the same measurement. CPU payload sharing
 removes another 5.79 MiB of duplication. No whole-frame performance improvement
 or exact UI byte saving is inferred from these owner measurements.
 
+Area-environment acquisition now resolves one profile list for its area and
+physics consumers. The EotW / Dust / EotW production comparison reduced
+resolutions 1,000 -> 500 and inherited reads 2,636 -> 1,318 with matching
+ordered area geometry and profile signatures. Consumers still retain separate
+runtime data; the measured input-byte reduction is cumulative I/O, not RSS.
+
 Normal release transition runs EotW -> Dust -> EotW both exit 0. With cleanup
 disabled, each closed loading movie retains 3,722 / 3,723 / 3,722 objects. With
 cleanup enabled all three leave zero; teardown costs 2.697 / 2.930 / 2.849 ms
