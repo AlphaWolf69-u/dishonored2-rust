@@ -27,12 +27,12 @@ behavior and improve performance/memory rather than copying inefficiencies.
 | Original | Behavior | Status |
 |---|---|---|
 | `1402ea140` LoadResourceInternal | reads the `.bimage` and uploads its base mip chain through `1402e9ff0` at load | ported: setup initializes every scene image's base chain |
-| `1400607f0` / `14005feb0` acquired image lookup | returns the resident resource identity | host: `texture_streaming::SharedImages` captures committed init/common images on map teardown and transfers matching handles/states into destination setup without a base read/upload. Transfer removes the old session-held handle, preventing it from pinning a superseded active texture. Inactive common images remain charged and eligible for mailbox-acknowledged pressure reduction. UI and particle identities still have distinct backend owners; general registry identity remains partial |
+| `1400607f0` / `14005feb0` acquired image lookup | returns the resident resource identity | host: `texture_streaming::SharedImages` captures committed init/common images on map teardown and transfers matching handles/states into destination setup without a base read/upload. Transfer removes the old session-held handle, preventing it from pinning a superseded active texture. Inactive common images remain charged and eligible for mailbox-acknowledged pressure reduction. Scene and particle 2D identities share the streamer. UI, fog, lens, area-light and cloud/depth-default full-mip consumers share the session ResidentImages owner; original 14005feb0/140060180 lookup/purge boundaries are implemented with Bevy handles and explicit movie leases. Full-mip versus streamed scene identity remains a separate unresolved boundary |
 | `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original API-level upload remains untraced |
-| `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Cross-domain identities and particle finer mips remain incomplete |
+| `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Particle 2D demand uses this same streamer; full-mip resident consumers still need identity/pinning integration with streamed scene consumers |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
 | `listImages` | the original's image listing (sizes, classes) | capture pending |
-| `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Cross-family scene/UI/particle identity unification and particle finer-mip streaming remain partial |
+| `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Particle 2D identities/demand now use the scene owner (3dd8a11); remaining volumes retain complete single-mip authored data. Full-mip resident versus scene identity/pinning remains incomplete |
 
 ### Sound (Wwise)
 
@@ -1663,3 +1663,24 @@ residency must never be silently replaced by a reduced scene mip.
 Delivery: main source 63f5d1d completed its release build with exit 0. The
 subsequent full-mip registry change 3be3ac1 has passed library and game-bin
 compilation checks; its production acquisition/purge comparison remains pending.
+
+
+Full-mip registry acceptance (compiled source 3be3ac1, same dev executable):
+library/game-bin checks and build exited 0; separate/shared production clients
+both completed EotW -> Dust -> EotW with exit 0 and no fatal/error lines. Full-mip
+image asset publications/uploads fell 39 -> 23, logical payload bytes
+11,761,316 -> 9,716,732 (2,044,584 bytes removed), with the same 14 distinct
+requested paths. Removed repeated publications were _black (5), _default (3),
+_white (2), chroma_noise_128 (2), default_foglut (2) and lens_dirt_1920_1080 (2).
+These are image-owner asset/upload counts, not an independent archive IO timing,
+whole-process RAM delta or physical GPU heap measurement. Shared map purge
+released 7 then 6 registry entries, retained 3 then 4 common identities
+(1,017,172 then 1,191,932 logical image bytes), and retained no stale map-only
+registry entry. Movie bindings reported the authored 1920x1080 backgrounds;
+particle geometry/material lifetime counts are recorded in the same logs.
+No visual inspection, new test cases or CPU benchmarks. Existing diagnostic
+constructor calls were mechanically adjusted to pass the new owner argument.
+Local reports: artifacts/lifecycles-resident-images-{separate,shared}.* and
+lifecycles-resident-images-comparison.json. Scene-streamed/full-mip identity
+remains the next separate policy boundary: a full-resolution consumer must
+pin that image rather than receive a reduced scene chain.
