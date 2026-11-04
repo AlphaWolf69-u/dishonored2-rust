@@ -333,151 +333,22 @@ struct MaterialGpu {
     pipeline: RenderPipeline,
 }
 
-/// Allocations are bounded by the admitted declaration's capacity and sprite
-/// count. Construct a new owner when changing level or target formats.
-pub struct ParticlePass {
-    view: UniformBuffer<ViewParameters>,
-    fog_view: UniformBuffer<FogViewParameters>,
-    instances: Buffer,
-    objects: Buffer,
-    transparency_parameters: Buffer,
-    root_lighting: Buffer,
-    transparency: Option<transparency::TransparencyPass>,
-    distortion: Option<([u32; 2], bool, super::screen_effects::passes::DistortionPasses, super::water_hdr::WaterHdr)>,
-    reported_mesh_submission: bool,
-    max_instances: usize,
-    max_draws: usize,
-    grids: Vec<GeometryGpu>,
-    meshes: HashMap<String, (GeometryGpu, Option<(BufferId, BindGroup)>)>,
+/// Host device cache of immutable shader/layout/pipeline objects. The original
+/// global 1402c9f00/1402ca440 cache supplies serialized shader data; retaining
+/// compiled backend objects here is an explicit host reuse improvement.
+#[derive(Clone)]
+pub(super) struct ParticlePrograms {
+    formats: (TextureFormat, TextureFormat),
     view_layout: BindGroupLayout,
     material_layout: BindGroupLayout,
     fog_layout: BindGroupLayout,
     lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
-    wrap: Sampler,
-    clamp: Sampler,
-    mirror: Sampler,
-    bilinear: Sampler,
-    _unused_volume: Texture,
-    unused_volume_view: TextureView,
-    _unused_shadow: Texture,
-    unused_shadow_view: TextureView,
-    comparison: Sampler,
-    _unused_cube: Texture,
-    unused_cube_view: TextureView,
-    materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
-    // Host: pipeline specialization is independent of image/material binding
-    // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
     pipelines: HashMap<(crate::render_state::RenderState, bool, bool, i32), RenderPipeline>,
-    pipeline_requests: usize,
-    binding_refreshes: usize,
-    material_sampler: Option<SamplerId>,
-    view_bindings: Option<(BufferId, Vec<BindGroup>)>,
-    fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
-    lighting_binding: Option<(([BufferId; 9], [TextureViewId; 6], [SamplerId; 2]), BindGroup)>,
-    colour_format: TextureFormat,
-    depth_format: TextureFormat,
-    instance_bytes: Vec<u8>,
 }
-fn buffer_entry(binding: u32, uniform: bool) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility: ShaderStages::VERTEX_FRAGMENT,
-        ty: BindingType::Buffer {
-            ty: if uniform {
-                BufferBindingType::Uniform
-            } else {
-                BufferBindingType::Storage { read_only: true }
-            },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-fn texture_entry(
-    binding: u32,
-    dimension: TextureViewDimension,
-    depth: bool,
-) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility: ShaderStages::VERTEX_FRAGMENT,
-        ty: BindingType::Texture {
-            sample_type: if depth {
-                TextureSampleType::Depth
-            } else {
-                TextureSampleType::Float { filterable: true }
-            },
-            view_dimension: dimension,
-            multisampled: false,
-        },
-        count: None,
-    }
-}
-fn sampler_entry(binding: u32) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility: ShaderStages::VERTEX_FRAGMENT,
-        ty: BindingType::Sampler(SamplerBindingType::Filtering),
-        count: None,
-    }
-}
-impl ParticlePass {
-    /// Raise the instance/draw capacity in place. Only the capacity-sized
-    /// storage and the bind groups that reference it are rebuilt; the shader,
-    /// pipelines and level materials are kept.
-    pub fn grow(&mut self, device: &RenderDevice, max_instances: usize, max_draws: usize) {
-        if max_instances <= self.max_instances && max_draws <= self.max_draws {
-            return;
-        }
-        let max_instances = max_instances.max(self.max_instances);
-        let max_draws = max_draws.max(self.max_draws);
-        let storage = |label, size| {
-            device.create_buffer(&BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
-        self.instances = storage("particle instances", (max_instances * 96) as u64);
-        self.objects = storage("particle volume fog", (max_draws * FogObjectParameters::SIZE) as u64);
-        self.transparency_parameters = storage("particle transparency parameters", (max_draws * 48) as u64);
-        self.root_lighting = storage("particle root probe records", (max_draws * 9 * 16) as u64);
-        self.max_instances = max_instances;
-        self.max_draws = max_draws;
-        self.instance_bytes.reserve((max_instances * 96).saturating_sub(self.instance_bytes.len()));
-        self.view_bindings = None;
-        self.fog_binding = None;
-        self.lighting_binding = None;
-        for (_, binding) in self.meshes.values_mut() {
-            *binding = None;
-        }
-    }
-    fn geometry_binding(&self,device:&RenderDevice,vertices:&Buffer,adaptation:&Buffer)->BindGroup {
-        device.create_bind_group(Some("particle geometry view"),&self.view_layout,&[
-            BindGroupEntry{binding:0,resource:self.view.binding().unwrap()},
-            BindGroupEntry{binding:1,resource:self.instances.as_entire_binding()},
-            BindGroupEntry{binding:2,resource:vertices.as_entire_binding()},
-            BindGroupEntry{binding:3,resource:adaptation.as_entire_binding()},
-            BindGroupEntry{binding:4,resource:self.fog_view.binding().unwrap()},
-            BindGroupEntry{binding:5,resource:self.transparency_parameters.as_entire_binding()},
-            BindGroupEntry{binding:6,resource:self.root_lighting.as_entire_binding()},
-        ])
-    }
-    pub fn new(
-        device: &RenderDevice,
-        queue: &RenderQueue,
-        max_instances: usize,
-        max_draws: usize,
-        colour_format: TextureFormat,
-        depth_format: TextureFormat,
-    ) -> Result<Self, String> {
-        if max_instances == 0 || max_draws == 0 {
-            return Err("particle GPU capacity must be nonzero".into());
-        }
+impl ParticlePrograms {
+    fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
         let view_layout = device.create_bind_group_layout(
             Some("particle view"),
             &[
@@ -623,6 +494,164 @@ impl ParticlePass {
             label: Some("particle colour"),
             source: ShaderSource::Wgsl(source.into()),
         });
+        Self {formats, view_layout, material_layout, fog_layout, lighting_layout,
+            pipeline_layout, shader, pipelines: HashMap::new()}
+    }
+}
+
+/// Mutable level buffers and material bindings, separate from device programs.
+pub struct ParticlePass {
+    view: UniformBuffer<ViewParameters>,
+    fog_view: UniformBuffer<FogViewParameters>,
+    instances: Buffer,
+    objects: Buffer,
+    transparency_parameters: Buffer,
+    root_lighting: Buffer,
+    transparency: Option<transparency::TransparencyPass>,
+    distortion: Option<([u32; 2], bool, super::screen_effects::passes::DistortionPasses, super::water_hdr::WaterHdr)>,
+    reported_mesh_submission: bool,
+    max_instances: usize,
+    max_draws: usize,
+    grids: Vec<GeometryGpu>,
+    meshes: HashMap<String, (GeometryGpu, Option<(BufferId, BindGroup)>)>,
+    programs: Arc<ParticlePrograms>,
+    wrap: Sampler,
+    clamp: Sampler,
+    mirror: Sampler,
+    bilinear: Sampler,
+    _unused_volume: Texture,
+    unused_volume_view: TextureView,
+    _unused_shadow: Texture,
+    unused_shadow_view: TextureView,
+    comparison: Sampler,
+    _unused_cube: Texture,
+    unused_cube_view: TextureView,
+    materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
+    // Host: pipeline specialization is independent of image/material binding
+    // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
+    pipeline_requests: usize,
+    pipeline_creations: usize,
+    binding_refreshes: usize,
+    material_sampler: Option<SamplerId>,
+    view_bindings: Option<(BufferId, Vec<BindGroup>)>,
+    fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
+    lighting_binding: Option<(([BufferId; 9], [TextureViewId; 6], [SamplerId; 2]), BindGroup)>,
+    colour_format: TextureFormat,
+    depth_format: TextureFormat,
+    instance_bytes: Vec<u8>,
+}
+fn buffer_entry(binding: u32, uniform: bool) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::VERTEX_FRAGMENT,
+        ty: BindingType::Buffer {
+            ty: if uniform {
+                BufferBindingType::Uniform
+            } else {
+                BufferBindingType::Storage { read_only: true }
+            },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+fn texture_entry(
+    binding: u32,
+    dimension: TextureViewDimension,
+    depth: bool,
+) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::VERTEX_FRAGMENT,
+        ty: BindingType::Texture {
+            sample_type: if depth {
+                TextureSampleType::Depth
+            } else {
+                TextureSampleType::Float { filterable: true }
+            },
+            view_dimension: dimension,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+fn sampler_entry(binding: u32) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::VERTEX_FRAGMENT,
+        ty: BindingType::Sampler(SamplerBindingType::Filtering),
+        count: None,
+    }
+}
+impl ParticlePass {
+    /// Raise the instance/draw capacity in place. Only the capacity-sized
+    /// storage and the bind groups that reference it are rebuilt; the shader,
+    /// pipelines and level materials are kept.
+    pub fn grow(&mut self, device: &RenderDevice, max_instances: usize, max_draws: usize) {
+        if max_instances <= self.max_instances && max_draws <= self.max_draws {
+            return;
+        }
+        let max_instances = max_instances.max(self.max_instances);
+        let max_draws = max_draws.max(self.max_draws);
+        let storage = |label, size| {
+            device.create_buffer(&BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        self.instances = storage("particle instances", (max_instances * 96) as u64);
+        self.objects = storage("particle volume fog", (max_draws * FogObjectParameters::SIZE) as u64);
+        self.transparency_parameters = storage("particle transparency parameters", (max_draws * 48) as u64);
+        self.root_lighting = storage("particle root probe records", (max_draws * 9 * 16) as u64);
+        self.max_instances = max_instances;
+        self.max_draws = max_draws;
+        self.instance_bytes.reserve((max_instances * 96).saturating_sub(self.instance_bytes.len()));
+        self.view_bindings = None;
+        self.fog_binding = None;
+        self.lighting_binding = None;
+        for (_, binding) in self.meshes.values_mut() {
+            *binding = None;
+        }
+    }
+    fn geometry_binding(&self,device:&RenderDevice,vertices:&Buffer,adaptation:&Buffer)->BindGroup {
+        device.create_bind_group(Some("particle geometry view"),&self.programs.view_layout,&[
+            BindGroupEntry{binding:0,resource:self.view.binding().unwrap()},
+            BindGroupEntry{binding:1,resource:self.instances.as_entire_binding()},
+            BindGroupEntry{binding:2,resource:vertices.as_entire_binding()},
+            BindGroupEntry{binding:3,resource:adaptation.as_entire_binding()},
+            BindGroupEntry{binding:4,resource:self.fog_view.binding().unwrap()},
+            BindGroupEntry{binding:5,resource:self.transparency_parameters.as_entire_binding()},
+            BindGroupEntry{binding:6,resource:self.root_lighting.as_entire_binding()},
+        ])
+    }
+    pub fn new(
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        max_instances: usize,
+        max_draws: usize,
+        colour_format: TextureFormat,
+        depth_format: TextureFormat,
+    ) -> Result<Self, String> {
+        Self::new_with_programs(device, queue, max_instances, max_draws, colour_format, depth_format, None)
+    }
+    pub(super) fn reusable_programs(&self) -> Arc<ParticlePrograms> { self.programs.clone() }
+    pub(super) fn new_with_programs(
+        device: &RenderDevice, queue: &RenderQueue, max_instances: usize, max_draws: usize,
+        colour_format: TextureFormat, depth_format: TextureFormat, cached: Option<Arc<ParticlePrograms>>,
+    ) -> Result<Self, String> {
+        if max_instances == 0 || max_draws == 0 {
+            return Err("particle GPU capacity must be nonzero".into());
+        }
+        let reused = cached.as_ref().is_some_and(|programs| programs.formats == (colour_format, depth_format));
+        let programs = cached
+            .filter(|programs| programs.formats == (colour_format, depth_format))
+            .unwrap_or_else(|| Arc::new(ParticlePrograms::new(device, (colour_format, depth_format))));
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY particle program acquisition: reused={reused} cached_pipelines={} formats={colour_format:?}/{depth_format:?}", programs.pipelines.len());
+        }
         let storage = |label, size| {
             device.create_buffer(&BufferDescriptor {
                 label: Some(label),
@@ -785,12 +814,7 @@ impl ParticlePass {
             max_draws,
             grids,
             meshes: HashMap::new(),
-            view_layout,
-            material_layout,
-            fog_layout,
-            lighting_layout,
-            pipeline_layout,
-            shader,
+            programs,
             wrap: sampler(AddressMode::Repeat, MipmapFilterMode::Linear),
             clamp: sampler(AddressMode::ClampToEdge, MipmapFilterMode::Nearest),
             mirror: sampler(AddressMode::MirrorRepeat, MipmapFilterMode::Nearest),
@@ -803,8 +827,8 @@ impl ParticlePass {
             _unused_cube: unused_cube,
             unused_cube_view,
             materials: HashMap::new(),
-            pipelines: HashMap::new(),
             pipeline_requests: 0,
+            pipeline_creations: 0,
             binding_refreshes: 0,
             material_sampler: None,
             view_bindings: None,
@@ -915,7 +939,7 @@ impl ParticlePass {
         };
         let binding = device.create_bind_group(
             Some("particle material"),
-            &self.material_layout,
+            &self.programs.material_layout,
             &[
                 BindGroupEntry {
                     binding: 0,
@@ -1095,7 +1119,7 @@ impl ParticlePass {
         let lighting_mode = if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? };
         let pipeline_key = (state, accumulation, source.distortion, lighting_mode);
         self.pipeline_requests += 1;
-        let pipeline = if let Some(pipeline) = self.pipelines.get(&pipeline_key) {
+        let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
         } else {
             let blends = crate::render_state::blend_state(&state);
@@ -1131,15 +1155,15 @@ impl ParticlePass {
                 ("particle_distortion_mode", f64::from(u32::from(source.distortion)))];
             let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some("particle sprite colour"),
-                layout: Some(&self.pipeline_layout),
+                layout: Some(&self.programs.pipeline_layout),
                 vertex: RawVertexState {
-                    module: &self.shader,
+                    module: &self.programs.shader,
                     entry_point: Some("particle_vertex"),
                     compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                     buffers: &[],
                 },
                 fragment: Some(RawFragmentState {
-                    module: &self.shader,
+                    module: &self.programs.shader,
                     entry_point: Some(if source.distortion {
                         "particle_distortion_fragment"
                     } else if accumulation {
@@ -1163,7 +1187,8 @@ impl ParticlePass {
                 multiview_mask: None,
                 cache: None,
             });
-            self.pipelines.insert(pipeline_key, pipeline.clone());
+            self.pipeline_creations += 1;
+            Arc::make_mut(&mut self.programs).pipelines.insert(pipeline_key, pipeline.clone());
             pipeline
         };
         Ok(MaterialGpu {
@@ -1483,7 +1508,7 @@ impl ParticlePass {
                 lighting_key,
                 device.create_bind_group(
                     Some("particle shared scene lighting"),
-                    &self.lighting_layout,
+                    &self.programs.lighting_layout,
                     &[
                         BindGroupEntry {
                             binding: 100,
@@ -1597,7 +1622,7 @@ impl ParticlePass {
                 fog_key,
                 device.create_bind_group(
                     Some("particle shared fog"),
-                    &self.fog_layout,
+                    &self.programs.fog_layout,
                     &[
                         BindGroupEntry {
                             binding: 161,
@@ -1797,9 +1822,9 @@ impl Drop for ParticlePass {
     fn drop(&mut self) {
         if self.pipeline_requests != 0
             && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("MEMORY particle pipeline release: requests={} unique={} reused={} binding_refreshes={}",
-                self.pipeline_requests, self.pipelines.len(),
-                self.pipeline_requests.saturating_sub(self.pipelines.len()), self.binding_refreshes);
+            eprintln!("MEMORY particle pipeline release: requests={} unique={} reused={} binding_refreshes={} created={}",
+                self.pipeline_requests, self.programs.pipelines.len(),
+                self.pipeline_requests.saturating_sub(self.pipeline_creations), self.binding_refreshes, self.pipeline_creations);
         }
     }
 }

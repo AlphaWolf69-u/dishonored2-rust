@@ -45,6 +45,7 @@ pub(super) struct CameraGpu {
     pub(super) particle_publication: Option<ParticlePublicationFrame>,
     particles: Option<ParticleGpu>,
     particle_images: super::particle_images::ParticleImagesGpu,
+    particle_programs: std::collections::HashMap<(TextureFormat, TextureFormat), std::sync::Arc<super::particle_pass::ParticlePrograms>>,
     screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 pub(super) struct ParticlePublicationFrame {
@@ -145,7 +146,9 @@ pub(super) fn release_level(world: &mut World) {
     gpu.world_particles = Default::default();
     gpu.screen_draws = None;
     gpu.particle_publication = None;
-    gpu.particles = None;
+    if let Some(particles) = gpu.particles.take() {
+        gpu.particle_programs.insert((particles.colour_format, particles.depth_format), particles.pass.reusable_programs());
+    }
     gpu.particle_images = Default::default();
     gpu.screen_sources = None;
     if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() == Ok("1") {
@@ -385,8 +388,13 @@ fn render_particles(
                 || p.colour_format != colour_format
                 || p.depth_format != depth_format
         }) {
-            let pass = super::particle_pass::ParticlePass::new(
-                &device, &queue, instances, draw_capacity, colour_format, depth_format,
+            if let Some(particles) = gpu.particles.take() {
+                gpu.particle_programs.insert((particles.colour_format, particles.depth_format), particles.pass.reusable_programs());
+            }
+            let cached = gpu.particle_programs.remove(&(colour_format, depth_format));
+            let cached = if std::env::var("DH2_DEBUG_RECREATE_PARTICLE_PROGRAMS").as_deref() == Ok("1") {None} else {cached};
+            let pass = super::particle_pass::ParticlePass::new_with_programs(
+                &device, &queue, instances, draw_capacity, colour_format, depth_format, cached,
             )?;
             gpu.particles = Some(ParticleGpu {
                 pass,
