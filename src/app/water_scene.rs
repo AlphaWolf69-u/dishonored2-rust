@@ -115,8 +115,14 @@ impl WaterScene {
                     let chain = resident.layered(&key, false, || {
                         let bytes = catalog.read(&key).map_err(|e| e.to_string())?
                             .ok_or_else(|| format!("missing water caustics {key}"))?;
-                        let chain = crate::texture::compressed_inline_array(&bytes)
+                        let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");
+                        let input_bytes = bytes.len();
+                        let chain = if copy { crate::texture::compressed_inline_array(&bytes) }
+                            else { crate::texture::compressed_inline_array_owned(bytes) }
                             .map_err(|e| format!("{key}: {e}"))?;
+                        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                            eprintln!("MEMORY layered preparation: path={key} copy={copy} input_bytes={input_bytes} payload_bytes={} full_payload_allocations={}", chain.payload.len(), usize::from(copy));
+                        }
                         Ok(crate::rendering::bevy_backend::layered_images::LayeredImageSource::array(key.clone(), chain))
                     })?;
                     arrays.insert(key.clone(), chain.clone());

@@ -788,7 +788,13 @@ pub fn load_cube_image(catalog: &crate::archive::Catalog, name: &str) -> Result<
         return Err(format!("2D intrinsic {resource} requested as cube"));
     }
     if let Some(bytes) = catalog.read(&resource).map_err(|error|error.to_string())? {
-        let image = crate::texture::compressed_inline_cube(&bytes)?;
+        let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");
+        let input_bytes = bytes.len();
+        let image = if copy { crate::texture::compressed_inline_cube(&bytes)? }
+            else { crate::texture::compressed_inline_cube_owned(bytes)? };
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY layered preparation: path={resource} copy={copy} input_bytes={input_bytes} payload_bytes={} full_payload_allocations={}", image.payload.len(), usize::from(copy));
+        }
         return Ok(CubeImage {resource, image, defaulted: false});
     }
     let mut packed_format = 0x54a;

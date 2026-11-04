@@ -354,44 +354,77 @@ pub struct InlineArrayChain {
     pub payload: Vec<u8>,
 }
 
-pub fn compressed_inline_array(bytes: &[u8]) -> Result<InlineArrayChain, String> {
+// The installed 1402d2740 reader validates mip/layer records in order.
+// Ranges borrow the existing archive allocation; owned callers can compact it
+// in place instead of keeping another complete payload during preparation.
+fn layered_records(bytes: &[u8], cube: bool) -> Result<(BimageInfo, u32, Vec<std::ops::Range<usize>>), String> {
     let info = BimageInfo::parse(bytes)?;
     let layers = word(bytes, 52)?;
-    if word(bytes, 8)? != 0 || layers == 0 || info.width == 0 || info.height == 0
-        || info.mip_count == 0 || info.mip_count > 16
-    {
-        return Err("invalid BIM texture-array descriptor".into());
-    }
-    // Bound record traversal by the supplied resource before allocating or
-    // walking layer counts. Each record has a five-word serialized header.
-    if u64::from(layers) * u64::from(info.mip_count)
-        > bytes.len().saturating_sub(62) as u64 / 20
-    {
-        return Err("truncated texture-array records".into());
+    if cube {
+        if word(bytes, 8)? != 2 || layers != 6 || info.width == 0 || info.width != info.height
+            || info.mip_count == 0 || info.mip_count > 16 {
+            return Err("invalid BIM cubemap descriptor".into());
+        }
+    } else {
+        if word(bytes, 8)? != 0 || layers == 0 || info.width == 0 || info.height == 0
+            || info.mip_count == 0 || info.mip_count > 16 {
+            return Err("invalid BIM texture-array descriptor".into());
+        }
+        if u64::from(layers) * u64::from(info.mip_count) > bytes.len().saturating_sub(62) as u64 / 20 {
+            return Err("truncated texture-array records".into());
+        }
     }
     let mut at = 62usize;
-    let mut payload = Vec::new();
+    let mut ranges = Vec::new();
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
         let height = (info.height >> level).max(1);
         for layer in 0..layers {
-            let header = bytes.get(at..at + 20).ok_or("truncated texture-array header")?;
-            let size = word(header, 16)? as usize;
+            let size = if cube { info.format.mip_bytes(width, width) } else {
+                let header = bytes.get(at..at + 20).ok_or("truncated texture-array header")?;
+                word(header, 16)? as usize
+            };
             let end = at.checked_add(20).and_then(|n| n.checked_add(size))
-                .ok_or("texture-array record size overflow")?;
-            let record = bytes.get(at..end).ok_or("truncated texture-array payload")?;
+                .ok_or(if cube { "cube mip overflow" } else { "texture-array record size overflow" })?;
+            let record = bytes.get(at..end).ok_or(if cube { "truncated cube mip" } else { "truncated texture-array payload" })?;
             let mip = compressed_mip(record, level, info.format)?;
             if word(record, 4)? != layer || (mip.width, mip.height) != (width, height) {
-                return Err("texture-array layer/mip descriptor mismatch".into());
+                return Err(if cube { "cube face/mip descriptor mismatch" } else { "texture-array layer/mip descriptor mismatch" }.into());
             }
-            payload.extend_from_slice(mip.payload);
+            ranges.push(at + 20..end);
             at = end;
         }
     }
     if at != bytes.len() {
-        return Err("texture-array mip chain size mismatch".into());
+        return Err(if cube { "cube mip chain size mismatch" } else { "texture-array mip chain size mismatch" }.into());
     }
-    Ok(InlineArrayChain { info, layers, payload })
+    Ok((info, layers, ranges))
+}
+
+fn copy_layered(bytes: &[u8], ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(ranges.iter().map(|range| range.len()).sum());
+    for range in ranges { payload.extend_from_slice(&bytes[range.clone()]); }
+    payload
+}
+
+fn compact_layered(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
+    let mut written = 0;
+    for range in ranges {
+        bytes.copy_within(range.clone(), written);
+        written += range.len();
+    }
+    bytes.truncate(written);
+    bytes
+}
+
+pub fn compressed_inline_array(bytes: &[u8]) -> Result<InlineArrayChain, String> {
+    let (info, layers, ranges) = layered_records(bytes, false)?;
+    Ok(InlineArrayChain { info, layers, payload: copy_layered(bytes, &ranges) })
+}
+
+pub fn compressed_inline_array_owned(bytes: Vec<u8>) -> Result<InlineArrayChain, String> {
+    let (info, layers, ranges) = layered_records(&bytes, false)?;
+    Ok(InlineArrayChain { info, layers, payload: compact_layered(bytes, &ranges) })
 }
 
 #[test]
@@ -443,39 +476,13 @@ fn installed_water_caustics_array_keeps_all_authored_frames() {
 }
 
 pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
-    let info = BimageInfo::parse(bytes)?;
-    if word(bytes, 8)? != 2
-        || word(bytes, 52)? != 6
-        || info.width == 0
-        || info.width != info.height
-        || info.mip_count == 0
-        || info.mip_count > 16
-    {
-        return Err("invalid BIM cubemap descriptor".into());
-    }
-    let mut at = 62usize;
-    let mut payload = Vec::new();
-    for level in 0..info.mip_count {
-        let width = (info.width >> level).max(1);
-        for face in 0..6 {
-            let size = info.format.mip_bytes(width, width);
-            let end = at
-                .checked_add(20)
-                .and_then(|n| n.checked_add(size))
-                .ok_or("cube mip overflow")?;
-            let record = bytes.get(at..end).ok_or("truncated cube mip")?;
-            let mip = compressed_mip(record, level, info.format)?;
-            if word(record, 4)? != face || mip.width != width || mip.height != width {
-                return Err("cube face/mip descriptor mismatch".into());
-            }
-            payload.extend_from_slice(mip.payload);
-            at = end;
-        }
-    }
-    if at != bytes.len() {
-        return Err("cube mip chain size mismatch".into());
-    }
-    Ok(InlineCubeChain { info, payload })
+    let (info, _, ranges) = layered_records(bytes, true)?;
+    Ok(InlineCubeChain { info, payload: copy_layered(bytes, &ranges) })
+}
+
+pub fn compressed_inline_cube_owned(bytes: Vec<u8>) -> Result<InlineCubeChain, String> {
+    let (info, _, ranges) = layered_records(&bytes, true)?;
+    Ok(InlineCubeChain { info, payload: compact_layered(bytes, &ranges) })
 }
 
 #[test]

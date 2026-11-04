@@ -2477,3 +2477,15 @@ obsolete inline registry lease per changed image, without changing payload,
 frame work when no image changes, or rendering order. The release does not
 claim immediate physical heap reduction; renderer and in-flight users can hold
 the old view until they finish.
+
+Layered image staging prediction (before implementation): installed BIM cube
+and array readers validate records, then copy every payload into a second
+allocation while the full decoded archive member remains live. For owned
+archive reads, validate the exact same records and compact their payloads into
+the archive allocation in place; borrowed callers still receive an owned
+payload. Prediction: remove one payload allocation and a simultaneous full
+payload-sized backing per acquired cube/array, with unchanged bytes, dimensions,
+formats, layer and mip ordering. A small metadata range list replaces no large
+buffer. Verify actual production descriptors, payload fingerprints and
+allocation counts with the old copy path selected by a diagnostic control; do
+not infer RSS or CPU timing gains from payload sizes.
