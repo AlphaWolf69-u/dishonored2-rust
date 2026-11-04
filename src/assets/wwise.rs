@@ -14,6 +14,8 @@ mod declaration;
 mod playback;
 mod media_bytes;
 mod stream;
+pub(crate) mod stream_io;
+pub(crate) mod file_source;
 pub use stream::{read_stream_header, stream_format, StreamFormat};
 pub use media_bytes::MediaBytes;
 pub use playback::{Controls, PlaybackBanks, References};
@@ -768,7 +770,8 @@ pub struct MediaVariant {
     pub media: MediaBytes,
     /// The package media id of a streamed source (stream type 2), which the
     /// original reads through its stream manager while it plays instead of
-    /// keeping it resident. Prefetched sources (type 1) stay resident.
+    /// keeping it resident. A prefetched source keeps its bank prefix and
+    /// streams the continuation when using the extent-aware provider.
     pub streamed: Option<u32>,
     pub weight: u32,
     pub properties: MediaProperties,
@@ -925,16 +928,27 @@ fn media_from_sound(
     // Streamed and prefetched sources use the full package file. DIDX may
     // contain only a prefetch prefix, which must not replace the full media.
     if sound[8] != 0 {
-        if let Some(media) = package_media(media_id, sound[8])? {
+        if let Some(mut media) = package_media(media_id, sound[8])? {
             let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
                 .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
                 .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
             STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
-            // Type 2 streams with no prefix: the original starts it once its
-            // stream delivers. Type 1 (prefetch) starts at once from a bank
-            // prefix (~4 KB); at eotw that is 13 media, 1 MB in all, so they
-            // stay resident whole, which starts them at once as well.
-            return Ok(Some((media, (sound[8] == 2).then_some(media_id))));
+            let prefetched = sound[8] == 1 && media.is_stream_header();
+            if prefetched {
+                let entry = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
+                    .find(|record| read_u32_slice(record, 0).ok() == Some(media_id)));
+                let bank_prefix = entry.zip(chunks.get(b"DATA")).map(|(entry, data)| {
+                    let start = read_u32_slice(entry, 4)? as usize;
+                    let end = start.checked_add(read_u32_slice(entry, 8)? as usize).ok_or_else(|| invalid("prefetch range overflow"))?;
+                    let bytes = data.get(start..end).ok_or_else(|| invalid("prefetch outside bank DATA"))?;
+                    Ok::<_, io::Error>(hold_bank(bytes).stream_prefetch(media.source_size()))
+                }).transpose()?;
+                media = match bank_prefix.filter(|prefix| !prefix.is_empty()) {
+                    Some(prefix) => prefix,
+                    None => package_media(media_id, 2)?.ok_or_else(|| invalid("prefetch source has no package continuation"))?,
+                };
+            }
+            return Ok(Some((media, (sound[8] == 2 || prefetched).then_some(media_id))));
         }
     }
     if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {

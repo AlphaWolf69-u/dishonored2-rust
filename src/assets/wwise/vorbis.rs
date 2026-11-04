@@ -27,14 +27,14 @@ pub struct PacketIndex {
 /// Installed Wwise Vorbis layout, as ww2ogg's `parse_vorb_chunk` reads it,
 /// for the variants with block sizes in the header (vorb 0x2A/0x32/0x34).
 pub struct WwiseLayout {
-    data: std::ops::Range<usize>,
-    setup: usize,
-    first_audio: usize,
+    pub(super) data: std::ops::Range<usize>,
+    pub(super) setup: usize,
+    pub(super) first_audio: usize,
     channels: u8,
     sample_rate: u32,
     blocksizes: (u8, u8),
-    mod_packets: bool,
-    granule_headers: bool,
+    pub(super) mod_packets: bool,
+    pub(super) granule_headers: bool,
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> Option<u16> { Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?)) }
@@ -43,6 +43,12 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> { Some(u32::from_le_bytes(byte
 /// The layout of a Wwise Vorbis RIFF, or None for a variant decoded through
 /// the Ogg conversion (old packet headers, or no block sizes in `vorb`).
 pub fn wwise_layout(bytes: &[u8]) -> Option<WwiseLayout> {
+    wwise_layout_sized(bytes, bytes.len())
+}
+
+/// The same installed layout with only the RIFF metadata acquired. Audio
+/// bounds are checked against the package member, not an invented full buffer.
+pub(super) fn wwise_layout_sized(bytes: &[u8], source_size: usize) -> Option<WwiseLayout> {
     if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") { return None; }
     let (mut fmt, mut vorb, mut data) = (None, None, None);
     let mut cursor = 12usize;
@@ -58,7 +64,7 @@ pub fn wwise_layout(bytes: &[u8]) -> Option<WwiseLayout> {
         cursor = range.end + (size & 1);
     }
     let (fmt, data) = (fmt?, data?);
-    if u16_at(bytes, fmt.start)? != 0xffff || data.end > bytes.len() { return None; }
+    if u16_at(bytes, fmt.start)? != 0xffff || data.end > source_size { return None; }
     let channels = u8::try_from(u16_at(bytes, fmt.start + 2)?).ok()?;
     // Without a vorb chunk its fields follow the 0x18-byte fmt header.
     let vorb = vorb.or_else(|| (fmt.len() == 0x42).then(|| fmt.start + 0x18..fmt.end))?;
@@ -89,8 +95,8 @@ type HeaderKey = (SetupKey, u32);
 static WWISE_HEADERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<HeaderKey, (Arc<IdentHeader>, Arc<SetupHeader>)>>> =
     std::sync::LazyLock::new(Default::default);
 
-fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(Arc<IdentHeader>, Arc<SetupHeader>)> {
-    let data = &bytes[layout.data.clone()];
+pub(super) fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(Arc<IdentHeader>, Arc<SetupHeader>)> {
+    let data = bytes.get(layout.data.start..).ok_or_else(|| invalid("Wwise data header outside prefix"))?;
     let setup = data.get(layout.setup..layout.first_audio).ok_or_else(|| invalid("Wwise setup outside data"))?;
     // Codebooks can share across sample rates; the identification header
     // cannot. 1411606d0 reads each source's fmt sample rate independently.
@@ -193,6 +199,31 @@ impl PacketIndex {
             frame += decoded;
         }
         starts.push(frame);
+        if std::env::var("DH2_DEBUG_SOUND_SEEK_METADATA").as_deref() == Ok("1") {
+            // Observe actual production media preparation. 141160ba0's sparse
+            // seek entries are cumulative (u16 frames, u16 bytes), with offsets
+            // relative to the end of the table, not the first audio packet.
+            // A bounded reader must preserve the decoder's priming convention.
+            let mut deltas = std::collections::BTreeMap::<(i64, i64), usize>::new();
+            let (mut seek_frame, mut seek_bytes, mut missing) = (0u64, 0usize, 0usize);
+            let table = bytes.get(layout.data.start..layout.data.start + layout.setup)
+                .ok_or_else(|| invalid("Wwise seek table outside data"))?;
+            for entry in table.chunks_exact(4) {
+                seek_frame += u64::from(u16::from_le_bytes([entry[0], entry[1]]));
+                seek_bytes += usize::from(u16::from_le_bytes([entry[2], entry[3]]));
+                let offset = layout.data.start + layout.setup + seek_bytes;
+                match raw.binary_search_by_key(&offset, |((start, _, _), _)| *start as usize - header) {
+                    Ok(packet) => {
+                        let delta = (starts[packet] as i64 - seek_frame as i64,
+                            starts[packet + 1] as i64 - seek_frame as i64);
+                        *deltas.entry(delta).or_default() += 1;
+                    }
+                    Err(_) => missing += 1,
+                }
+            }
+            eprintln!("MEMORY sound seek metadata: source_bytes={} source_frames={sample_count} entries={} missing_packets={missing} frame_deltas={deltas:?}",
+                bytes.len(), table.len() / 4);
+        }
         let wwise_long = layout.mod_packets.then(|| raw.iter().map(|&(_, long)| long).collect());
         Ok(Self { ident, setup, packets: raw.into_iter().map(|(packet, _)| packet).collect(), joined: Vec::new(), starts, wwise_long })
     }

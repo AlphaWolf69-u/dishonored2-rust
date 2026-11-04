@@ -44,6 +44,7 @@ pub(super) struct CameraGpu {
     /// world-material meshes drawn as model surfaces.
     pub(super) particle_publication: Option<ParticlePublicationFrame>,
     particles: Option<ParticleGpu>,
+    particle_images: super::particle_images::ParticleImagesGpu,
     screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 pub(super) struct ParticlePublicationFrame {
@@ -143,6 +144,7 @@ pub(super) fn release_level(world: &mut World) {
     gpu.screen_draws = None;
     gpu.particle_publication = None;
     gpu.particles = None;
+    gpu.particle_images = Default::default();
     gpu.screen_sources = None;
     if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() == Ok("1") {
         gpu.screen_effects.clear_frame();
@@ -378,15 +380,11 @@ fn render_particles(
                 || p.colour_format != colour_format
                 || p.depth_format != depth_format
         }) {
+            let pass = super::particle_pass::ParticlePass::new(
+                &device, &queue, instances, draw_capacity, colour_format, depth_format,
+            )?;
             gpu.particles = Some(ParticleGpu {
-                pass: super::particle_pass::ParticlePass::new(
-                    &device,
-                    &queue,
-                    instances,
-                    draw_capacity,
-                    colour_format,
-                    depth_format,
-                )?,
+                pass,
                 instances,
                 draws: draw_capacity,
                 colour_format,
@@ -399,14 +397,15 @@ fn render_particles(
         // The level's particle materials are created before play, not at
         // their first draw; a sampler change rebuilds them all here.
         if let Some(sampler) = lighting_scene.sampler.as_ref().and_then(|sampler| images.get(&sampler.0)).map(|image| &image.sampler) {
-            let particles = gpu.particles.as_mut().unwrap();
+            let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            let particles = particles.as_mut().unwrap();
             if !particles.prepared || particles.pass.sampler_changed(sampler) {
                 let console = crate::platform::console::shared().read();
                 let materials = lighting_scene.world_sources.0.particle_materials().chain(sources.particle_materials());
                 let bounded = !particles.prepared && lighting_scene.upload_budget.max_bytes.is_some()
                     && !bevy::render::render_asset::unbounded_loading_acquisition();
                 let (created, complete) = particles.pass.prepare_materials_bounded(
-                    &device, &queue, materials, &console.cvars, sampler, bounded.then_some(1))?;
+                    particle_images, &device, &queue, materials, &console.cvars, sampler, bounded.then_some(1))?;
                 if !complete {
                     return Err("particle materials are preparing".into());
                 }
@@ -435,8 +434,9 @@ fn render_particles(
                 .ok_or("particle fog image awaits preparation")
         };
         let inverse = view.clip_from_view.inverse();
-        gpu.particles.as_mut().unwrap().pass.record(
-            &device,
+        let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+        particles.as_mut().unwrap().pass.record(
+            particle_images, &device,
             &queue,
             context.command_encoder(),
             super::particle_pass::ParticleViewInputs {

@@ -33,6 +33,7 @@ struct WwiseRegistry {
     /// Package location of every media read, for streamed sources.
     locators: std::sync::Mutex<HashMap<u32, graph::StreamLocator>>,
     stream_acquisition: std::sync::Mutex<(u64, u64, u64, std::time::Duration)>,
+    stream_io: Arc<crate::assets::wwise::stream_io::ReadPool>,
 }
 
 impl WwiseRegistry {
@@ -45,7 +46,13 @@ impl WwiseRegistry {
             self.locators.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, graph::StreamLocator {
                 path: bank.path.clone(), offset: media.offset,
                 size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
+                pool: self.stream_io.clone(),
             });
+            if stream_type == 1 && std::env::var("DH2_DEBUG_BOUNDED_SOUND_STREAMS").as_deref() == Ok("1") {
+                // The bank owns the prefetch bytes. Publish the package extent
+                // without reading the full file or duplicating that prefix.
+                return Ok(Some(crate::assets::wwise::MediaBytes::stream_header(Vec::new(), media.size as usize)));
+            }
             let file = match files.entry(owner) {
                 hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 hashbrown::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
@@ -213,6 +220,7 @@ pub(super) fn begin_level(world: &mut World) {
     registry.attenuations.retain(|id, _| shared_attenuations.contains(id));
     let packages: std::collections::HashSet<_> = registry.banks.iter().map(|bank| bank.path.clone()).collect();
     registry.packages.retain(|path, _| packages.contains(path));
+    registry.stream_io.retain_packages(&packages);
     registry.preloaded = false;
     registry.level_prepared = false;
     drop(registry);
@@ -329,6 +337,7 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
             } else {
                 let Ok(package) = crate::assets::wwise::Package::open(path) else { continue };
                 let package = Arc::new(package);
+                registry.stream_io.allow_package(path);
                 registry.packages.insert(path.clone(), package.clone());
                 package
             };
@@ -506,8 +515,8 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
             owners.values().sum::<usize>(), sources.iter().copied().collect::<HashMap<_, _>>().len(),
             sources.iter().filter(|(id, _)| banks.contains_key(id)).count());
         graph::capture_media_signatures();
-        for (codec, (n, installed, held)) in graph::CODECS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            eprintln!("LOAD sound codec {codec:#06x}: {n} unique media, {} MB installed, {} MB held", installed >> 20, held >> 20);
+        for (representation, (n, installed, views)) in graph::resident_media_stats() {
+            eprintln!("LOAD sound media representation {representation}: {n} current sources, {} MB installed, {} MB logical views", installed >> 20, views >> 20);
         }
         let streamed = crate::assets::wwise::STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner());
         let mut by_type = std::collections::BTreeMap::<u8, (usize, usize, usize, usize)>::new();
@@ -588,12 +597,14 @@ fn play_events(
         if let Some(actions) = registry.sources.get(&event).cloned() {
             let mut holds = Vec::new();
             let mut loading = false;
-            for action in &actions {
-                let SourceAction::Play { definition, .. } = action else { continue };
-                for source in definition.streamed() {
-                    match source.acquire() {
-                        Ok(hold) => { loading |= !hold.is_ready(); holds.push(hold); },
-                        Err(error) => warn!("Wwise event {event:#010x} streamed media unavailable: {error}"),
+            if graph::preload_event_streams() {
+                for action in &actions {
+                    let SourceAction::Play { definition, .. } = action else { continue };
+                    for source in definition.streamed() {
+                        match source.acquire() {
+                            Ok(hold) => { loading |= !hold.is_ready(); holds.push(hold); },
+                            Err(error) => warn!("Wwise event {event:#010x} streamed media unavailable: {error}"),
+                        }
                     }
                 }
             }

@@ -17,14 +17,17 @@ pub(super) type Selections = Arc<Mutex<HashMap<(u32, Option<Emitter>), Selection
 /// Vorbis and IMA ADPCM stay encoded and are decoded per voice while
 /// playing, as Wwise does; PCM media are decoded when the event is prepared.
 #[derive(Clone)]
-enum Samples { Pcm(PcmAudio), Vorbis(Arc<crate::assets::wwise::EncodedVorbis>), Adpcm(Arc<crate::assets::wwise::EncodedAdpcm>), Silence(crate::gameplay::sound::silence::Parameters), Streamed(Arc<StreamedSource>) }
+enum Samples { Pcm(PcmAudio), Vorbis(Arc<crate::assets::wwise::EncodedVorbis>), Adpcm(Arc<crate::assets::wwise::EncodedAdpcm>),
+    File(Arc<crate::assets::wwise::file_source::FileMedia>, Option<Arc<Samples>>),
+    Silence(crate::gameplay::sound::silence::Parameters), Streamed(Arc<StreamedSource>) }
 
 /// Package location of a streamed source's media.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct StreamLocator {
     pub(super) path: std::path::PathBuf,
     pub(super) offset: u64,
     pub(super) size: usize,
+    pub(super) pool: Arc<crate::assets::wwise::stream_io::ReadPool>,
 }
 
 /// A streamed or prefetched Wwise source (stream type != 0). The original
@@ -33,6 +36,9 @@ pub(super) struct StreamLocator {
 /// when an event plays it, held by that playback, and released when no
 /// playback holds it any more.
 pub(super) struct StreamedSource {
+    sound: u32,
+    prefix: Option<crate::assets::wwise::MediaBytes>,
+    prefetched: Option<Arc<Samples>>,
     locator: StreamLocator,
     resident: Mutex<std::sync::Weak<Samples>>,
     loading: Mutex<std::sync::Weak<StreamRead>>,
@@ -73,14 +79,16 @@ impl StreamedSource {
     /// Game thread: retain this hold even while its IO is not ready. A retry
     /// acquires the replacement hold before dropping its previous one.
     pub(super) fn acquire(&self) -> io::Result<StreamHold> {
+        if let Some(samples) = &self.prefetched { return Ok(StreamHold { resident: Some(samples.clone()), _read: None }); }
         if let Some(samples) = self.resident.lock().unwrap_or_else(|e| e.into_inner()).upgrade() {
             return Ok(StreamHold { resident: Some(samples), _read: None });
         }
         let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
         let read = if let Some(read) = loading.upgrade() { read } else {
             let locator = self.locator.clone();
+            let prefix = self.prefix.clone();
             let read = Arc::new(StreamRead { state: Mutex::new(StreamReadState {
-                task: Some(bevy::tasks::IoTaskPool::get().spawn(async move { read_streamed(&locator) })),
+                task: Some(bevy::tasks::IoTaskPool::get().spawn(async move { read_streamed(&locator, prefix) })),
                 samples: None,
             }) });
             *loading = Arc::downgrade(&read);
@@ -103,45 +111,166 @@ impl StreamedSource {
     }
 }
 
-fn read_streamed(locator: &StreamLocator) -> io::Result<Samples> {
+fn read_streamed(locator: &StreamLocator, prefix: Option<crate::assets::wwise::MediaBytes>) -> io::Result<Samples> {
     use std::io::{Read, Seek, SeekFrom};
+    let started = (std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")).then(std::time::Instant::now);
+    let bounded = if std::env::var("DH2_DEBUG_BOUNDED_SOUND_STREAMS").as_deref() == Ok("1") {
+        crate::assets::wwise::file_source::FileMedia::open(locator.pool.clone(), Arc::new(locator.path.clone()), locator.offset, locator.size, prefix)?
+    } else { None };
+    if let Some(media) = bounded.as_ref() {
+        if media.format.channels == 0 { return Err(invalid("invalid streamed source format")); }
+        if std::env::var("DH2_DEBUG_COMPARE_STREAM_PCM").as_deref() != Ok("1") {
+            return Ok(Samples::File(Arc::new(bounded.unwrap()), None));
+        }
+    }
     let mut file = std::fs::File::open(&locator.path)?;
     file.seek(SeekFrom::Start(locator.offset))?;
     let mut bytes = vec![0; locator.size];
     file.read_exact(&mut bytes)?;
-    match crate::assets::wwise::prepare_shared_wem(&bytes.into())? {
+    let io_ms = started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
+    let prepared = match crate::assets::wwise::prepare_shared_wem(&bytes.into())? {
         crate::assets::wwise::SourceMedia::Vorbis(media) => Ok(Samples::Vorbis(Arc::new(media))),
         crate::assets::wwise::SourceMedia::Adpcm(media) => Ok(Samples::Adpcm(Arc::new(media))),
         crate::assets::wwise::SourceMedia::Decoded(_) => Err(invalid("streamed Wwise source no longer stays encoded")),
+    };
+    if let Some(started) = started {
+        eprintln!("MEMORY streamed source acquisition: bytes={} io_ms={:.3} total_ms={:.3}",
+            locator.size, io_ms.unwrap(), started.elapsed().as_secs_f64() * 1000.0);
+    }
+    match bounded {
+        Some(media) => Ok(Samples::File(Arc::new(media), Some(Arc::new(prepared?)))),
+        None => prepared,
     }
 }
 
 /// A voice's decoder over its encoded media.
-enum Stream { Vorbis(crate::assets::wwise::VorbisCursor), Adpcm(crate::assets::wwise::AdpcmCursor) }
-impl Stream {
+enum EncodedCursor {
+    Vorbis(crate::assets::wwise::VorbisCursor), Adpcm(crate::assets::wwise::AdpcmCursor),
+    File { cursor: crate::assets::wwise::file_source::FileCursor, reference: Option<Box<EncodedCursor>>,
+        failed: bool, compared: u64, differences: u64, maximum_error: f32 },
+}
+impl EncodedCursor {
     fn new(samples: &Samples) -> Option<Self> {
         match samples {
             Samples::Vorbis(media) => Some(Self::Vorbis(crate::assets::wwise::VorbisCursor::new(media.clone()))),
             Samples::Adpcm(media) => Some(Self::Adpcm(crate::assets::wwise::AdpcmCursor::new(media.clone()))),
-            // The playback that started this voice holds the media.
-            Samples::Streamed(source) => Self::new(&*source.resident.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?),
-            Samples::Pcm(_) | Samples::Silence(_) => None,
+            Samples::File(media, reference) => Some(Self::File { cursor: crate::assets::wwise::file_source::FileCursor::new(media.clone()),
+                reference: reference.as_ref().and_then(|reference| Self::new(reference)).map(Box::new),
+                failed: false, compared: 0, differences: 0, maximum_error: 0.0 }),
+            _ => None,
         }
     }
     fn sample(&mut self, frame: usize, channel: usize) -> Option<f32> {
         match self {
             Self::Vorbis(cursor) => cursor.sample(frame, channel),
             Self::Adpcm(cursor) => cursor.sample(frame, channel),
+            Self::File { cursor, reference, failed, compared, differences, maximum_error } => {
+                if *failed { return None; }
+                match cursor.sample(frame, channel) {
+                    Ok(value) => {
+                        if let (Some(value), Some(reference)) = (value, reference.as_mut()) {
+                            let expected = reference.sample(frame, channel);
+                            *compared += 1;
+                            if expected != Some(value) {
+                                *differences += 1;
+                                *maximum_error = maximum_error.max(expected.map_or(f32::INFINITY, |expected| (expected - value).abs()));
+                                if *differences == 1 { eprintln!("STREAM_PCM_DIFFERENCE frame={frame} channel={channel} expected={expected:?} actual={value}"); }
+                            }
+                        }
+                        value
+                    }
+                    Err(error) => { warn!("Streamed sound decoder failed: {error}"); *failed = true; None }
+                }
+            }
         }
     }
+    fn waiting(&self) -> bool { matches!(self, Self::File { cursor, failed: false, .. } if cursor.waiting()) }
+}
+
+impl Drop for EncodedCursor {
+    fn drop(&mut self) {
+        if let Self::File { reference: Some(_), compared, differences, maximum_error, .. } = self {
+            eprintln!("STREAM_PCM_COMPARISON samples={compared} differences={differences} maximum_error={maximum_error}");
+        }
+    }
+}
+
+enum Stream {
+    Resident(EncodedCursor),
+    Streamed { source: Arc<StreamedSource>, hold: Option<StreamHold>, decoder: Option<EncodedCursor>, retry_at: u64, failed: bool },
+}
+impl Stream {
+    fn new(samples: &Samples, now: u64) -> Option<Self> {
+        match samples {
+            Samples::Streamed(source) => {
+                let mut stream = Self::Streamed { source: source.clone(), hold: None, decoder: None, retry_at: 0, failed: false };
+                stream.ready(now); // Selected-source preparation, before its scheduled frame.
+                Some(stream)
+            }
+            _ => EncodedCursor::new(samples).map(Self::Resident),
+        }
+    }
+    fn awaiting_read(&self, now: u64) -> bool {
+        matches!(self, Self::Streamed { decoder, retry_at, failed: false, .. }
+            if now < *retry_at && decoder.as_ref().is_none_or(EncodedCursor::waiting))
+    }
+    fn ready(&mut self, now: u64) -> bool {
+        let Self::Streamed { source, hold, decoder, retry_at, failed } = self else { return true };
+        if *failed { return true; }
+        if let Some(decoder) = decoder {
+            if decoder.waiting() {
+                if now < *retry_at { return false; }
+                *retry_at = (now / 1024).saturating_add(1).saturating_mul(1024);
+            }
+            return true;
+        }
+        if now < *retry_at { return false; }
+        *retry_at = (now / 1024).saturating_add(1).saturating_mul(1024);
+        match source.acquire() {
+            Ok(next) => {
+                if let Some(samples) = &next.resident {
+                    *decoder = EncodedCursor::new(samples);
+                    *failed = decoder.is_none();
+                    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                        eprintln!("MEMORY sound selected source ready: source={:08x} source_bytes={} prefetched={} failed={failed}",
+                            source.sound, source.locator.size, source.prefetched.is_some());
+                    }
+                }
+                // Acquire the replacement before dropping an earlier pending
+                // lease, so a completed read cannot disappear between retries.
+                *hold = Some(next);
+                decoder.is_some() || *failed
+            }
+            Err(error) => {
+                warn!("Selected streamed sound unavailable: {error}");
+                *hold = None;
+                *failed = true;
+                true // Sampling fails as EOF/error, never as an endless wait.
+            }
+        }
+    }
+    fn sample(&mut self, frame: usize, channel: usize) -> Option<f32> {
+        match self {
+            Self::Resident(cursor) => cursor.sample(frame, channel),
+            Self::Streamed { decoder, .. } => decoder.as_mut()?.sample(frame, channel),
+        }
+    }
+    fn waiting(&self) -> bool {
+        match self { Self::Resident(cursor) => cursor.waiting(),
+            Self::Streamed { decoder, failed, .. } => !*failed && decoder.as_ref().is_none_or(EncodedCursor::waiting) }
+    }
+}
+
+/// Temporary same-build control of the former all-child admission path.
+pub(super) fn preload_event_streams() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("DH2_DEBUG_PRELOAD_EVENT_STREAMS").as_deref() == Ok("1"))
 }
 
 /// Prepared media by (Wwise sound id, media size). A sound's media is
 /// resident once however many events play it (1410f1910 / 141122400 share
 /// a loaded Sound's source), across events as within one.
 type PreparedMedia = (Samples, ChannelCount, SampleRate, usize, Option<[u32; 2]>);
-/// Diagnostic: per codec, (media, installed bytes, held bytes).
-pub(super) static CODECS: std::sync::LazyLock<Mutex<std::collections::BTreeMap<u16, (usize, usize, usize)>>> = std::sync::LazyLock::new(Default::default);
 static MEDIA: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>> = std::sync::LazyLock::new(Default::default);
 /// Streamed sources by (Wwise sound id, media size): one per sound, so all
 /// events playing it share its resident media.
@@ -161,7 +290,7 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
     if let Some(prepared) = STREAMED.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.source_size())) {
         return Ok(prepared.clone());
     }
-    let format = if std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1") {
+    let format = if media.is_prefetched() || std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1") {
         crate::assets::wwise::stream_format(media, media.source_size())?
     } else { None };
     let (channels, rate, frames, points) = if let Some(format) = format {
@@ -179,7 +308,13 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
     };
     let channels = ChannelCount::new(channels).ok_or_else(|| invalid("invalid Wwise streamed channel count"))?;
     let rate = SampleRate::new(rate).ok_or_else(|| invalid("invalid Wwise streamed sample rate"))?;
-    let source = StreamedSource { locator, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(std::sync::Weak::new()) };
+    let prefix = media.is_prefetched().then(|| media.clone());
+    let prefetched = if std::env::var("DH2_DEBUG_COMPARE_STREAM_PCM").as_deref() != Ok("1") {
+        prefix.as_ref().map(|prefix| crate::assets::wwise::file_source::FileMedia::from_prefetch(
+            locator.pool.clone(), Arc::new(locator.path.clone()), locator.offset, locator.size, prefix.clone()))
+            .transpose()?.flatten().map(|media| Arc::new(Samples::File(Arc::new(media), None)))
+    } else { None };
+    let source = StreamedSource { sound, locator, prefix, prefetched, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(std::sync::Weak::new()) };
     let prepared = (Samples::Streamed(Arc::new(source)), channels, rate, frames, points);
     // Parallel event preparation can reach the same source concurrently.
     // Publish one identity; losing preparations must not escape into graphs.
@@ -220,14 +355,25 @@ fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes) -> io::Re
         if let Some(prepared) = cache.get(&(sound, media.len())) { return Ok(prepared.clone()); }
         cache.insert((sound, media.len()), prepared.clone());
     }
-    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
-        let held = match &prepared.0 { Samples::Pcm(p) => p.samples.len() * 4, Samples::Vorbis(v) => v.ogg.len(), Samples::Adpcm(a) => a.data.len(), Samples::Silence(_) | Samples::Streamed(_) => 0 };
-        let codec = crate::assets::wwise::wem_codec(media).unwrap_or(0);
-        let mut tally = CODECS.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = tally.entry(codec).or_default();
-        entry.0 += 1; entry.1 += media.len(); entry.2 += held;
-    }
     Ok(prepared)
+}
+
+/// Current source views, not cumulative acquisitions from previously visited
+/// maps. Logical view lengths can overlap a bank allocation; physical backing
+/// is accounted for separately by resident_allocations and the bank owner.
+pub(super) fn resident_media_stats() -> std::collections::BTreeMap<&'static str, (usize, usize, usize)> {
+    let mut result = std::collections::BTreeMap::new();
+    for ((_, source_bytes), prepared) in MEDIA.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        let (representation, logical_bytes) = match &prepared.0 {
+            Samples::Vorbis(media) => ("Vorbis", media.ogg.len()),
+            Samples::Adpcm(media) => ("IMA ADPCM", media.data.len()),
+            Samples::Pcm(media) => ("decoded PCM", media.samples.len() * std::mem::size_of::<f32>()),
+            Samples::Silence(_) | Samples::Streamed(_) | Samples::File(_, _) => continue,
+        };
+        let entry = result.entry(representation).or_insert((0, 0, 0));
+        entry.0 += 1; entry.1 += source_bytes; entry.2 += logical_bytes;
+    }
+    result
 }
 
 /// Physical encoded allocations, not the sum of overlapping source views.
@@ -279,7 +425,7 @@ impl Sound {
         stream: Option<&mut Stream>) -> Option<f32> {
         match &self.samples {
             Samples::Pcm(pcm) => resampler.sample_looped(&pcm.samples, usize::from(self.channels.get()), channel, looping),
-            Samples::Vorbis(_) | Samples::Adpcm(_) | Samples::Streamed(_) => {
+            Samples::Vorbis(_) | Samples::Adpcm(_) | Samples::File(_, _) | Samples::Streamed(_) => {
                 let stream = stream?;
                 resampler.sample_with(|frame| {
                     let frame = match looping { Some(looping) => looping.frame(frame as u64)?, None => frame };
@@ -692,9 +838,9 @@ impl Runtime {
                 let count = sound.loop_count.sample(random15);
                 let silence = match sound.samples {
                     Samples::Silence(parameters) => Some(crate::gameplay::sound::silence::Voice::new(parameters, sound.sample_rate.get(), count, random15)),
-                    Samples::Pcm(_) | Samples::Vorbis(_) | Samples::Adpcm(_) | Samples::Streamed(_) => None,
+                    Samples::Pcm(_) | Samples::Vorbis(_) | Samples::Adpcm(_) | Samples::File(_, _) | Samples::Streamed(_) => None,
                 };
-                let stream = Stream::new(&sound.samples);
+                let stream = Stream::new(&sound.samples, now);
                 State::Sound { frame: 0, random, silence, stream,
                 looping: sound.looping.map(|looping| looping.with_count(count)),
                 resampler: None,
@@ -884,6 +1030,9 @@ impl Runtime {
             (State::Sound { frame, random, looping, silence, stream, resampler, gain: ramp, gain_tick, filters, output_filters,
                 routes, auxiliary, auxiliary_initialized, virtualized, _activity: _ }, Kind::Sound(index)) => {
                 let sound = &definition.sounds[*index];
+                if *gain_tick == Some(now / 1024) && stream.as_ref().is_some_and(|stream| stream.awaiting_read(now)) {
+                    return true;
+                }
                 if *frame % 1024 == 0 {
                     let cents = f32::from_bits(audio.control.pitches[*index].load(Ordering::Relaxed)) + random.pitch_cents;
                     let Ok(step) = pitch_step(cents, sound.sample_rate.get(), definition.rate.get()) else { return false };
@@ -997,7 +1146,7 @@ impl Runtime {
                     Some(false) if behaviour == BelowThreshold::Virtual && !*virtualized => {
                         *virtualized = true;
                         // 141161c80 frees the decoder unless the voice resumes.
-                        if queue != VirtualReturn::Resume { *stream = Stream::new(&sound.samples); }
+                        if queue != VirtualReturn::Resume { *stream = Stream::new(&sound.samples, now); }
                     }
                     _ => {}
                 }
@@ -1015,9 +1164,14 @@ impl Runtime {
                     *frame += 1;
                     return true;
                 }
+                // File-source readiness is not source exhaustion. Original
+                // 141161770/141161240 defer without advancing the source clock.
+                if stream.as_mut().is_some_and(|stream| !stream.ready(now)) { return true; }
                 let mut samples = [0.0; 8];
                 for (channel, sample) in samples[..channels].iter_mut().enumerate() {
-                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref(), stream.as_mut()) else { return false };
+                    let Some(value) = sound.sample(resampler, channel, *looping, silence.as_ref(), stream.as_mut()) else {
+                        return stream.as_ref().is_some_and(Stream::waiting);
+                    };
                     *sample = value;
                 }
                 let gains = ramp.next_frame();
@@ -1057,7 +1211,8 @@ impl Runtime {
                     }
                     resampler.advance();
                     *frame += 1;
-                    return sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some();
+                    return (sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some()
+                    || stream.as_ref().is_some_and(Stream::waiting));
                 }
                 if sound.spatial.is_some() {
                     let output_channels = output.len();
@@ -1079,7 +1234,8 @@ impl Runtime {
                 }
                 resampler.advance();
                 *frame += 1;
-                sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some()
+                (sound.sample(resampler, 0, *looping, silence.as_ref(), stream.as_mut()).is_some()
+                    || stream.as_ref().is_some_and(Stream::waiting))
             },
             (State::Layer(children), _) => {
                 let mut failed = false;

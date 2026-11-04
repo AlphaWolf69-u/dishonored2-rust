@@ -5,6 +5,8 @@ use super::{invalid, loop_points, slice_u16, slice_u32, wem_source_metadata};
 use std::io::{self, Read};
 
 pub struct StreamFormat {
+    pub codec: u16,
+    pub data: std::ops::Range<usize>,
     pub channels: u16,
     pub sample_rate: u32,
     pub frames: usize,
@@ -50,7 +52,7 @@ pub fn stream_format(bytes: &[u8], source_size: usize) -> io::Result<Option<Stre
             .ok_or_else(|| invalid("Wwise stream chunk exceeds source size"))?;
         match &bytes[cursor..cursor + 4] {
             b"fmt " => fmt = Some(bytes.get(start..end).ok_or_else(|| invalid("truncated Wwise stream format"))?),
-            b"data" => { data = Some(size); break; },
+            b"data" => { data = Some(start..end); break; },
             _ => {},
         }
         cursor = end + (size & 1);
@@ -65,13 +67,13 @@ pub fn stream_format(bytes: &[u8], source_size: usize) -> io::Result<Option<Stre
     let (frames, points) = wem_source_metadata(bytes)?;
     let frames = if codec == 2 {
         let block = 0x24 * usize::from(channels);
-        if channels > 8 || slice_u16(fmt, 14)? != 4 || usize::from(slice_u16(fmt, 12)?) != block || data % block != 0 {
+        if channels > 8 || slice_u16(fmt, 14)? != 4 || usize::from(slice_u16(fmt, 12)?) != block || data.len() % block != 0 {
             return Err(invalid("invalid Wwise streamed IMA block layout"));
         }
-        data / block * 64
+        data.len() / block * 64
     } else {
         let Some(frames) = frames else { return Ok(None); };
         frames as usize
     };
-    Ok(Some(StreamFormat { channels, sample_rate, frames, loop_points: loop_points(points, frames)? }))
+    Ok(Some(StreamFormat { codec, data, channels, sample_rate, frames, loop_points: loop_points(points, frames)? }))
 }

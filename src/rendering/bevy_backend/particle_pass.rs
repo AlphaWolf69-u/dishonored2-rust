@@ -336,7 +336,6 @@ struct MaterialGpu {
 /// Allocations are bounded by the admitted declaration's capacity and sprite
 /// count. Construct a new owner when changing level or target formats.
 pub struct ParticlePass {
-    images: super::particle_images::ParticleImagesGpu,
     view: UniformBuffer<ViewParameters>,
     fog_view: UniformBuffer<FogViewParameters>,
     instances: Buffer,
@@ -798,7 +797,6 @@ impl ParticlePass {
             comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
             _unused_cube: unused_cube,
             unused_cube_view,
-            images: Default::default(),
             materials: HashMap::new(),
             material_sampler: None,
             view_bindings: None,
@@ -812,6 +810,7 @@ impl ParticlePass {
 
     fn material(
         &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
         device: &RenderDevice,
         queue: &RenderQueue,
         source: Arc<ParticleMaterial>,
@@ -824,7 +823,7 @@ impl ParticlePass {
         parameters.write_buffer(device, queue);
         let mut views = HashMap::new();
         for (name, image) in &source.images {
-            let view = self.images.acquire(
+            let view = images.acquire(
                 device,
                 queue,
                 image,
@@ -843,15 +842,14 @@ impl ParticlePass {
                     view_formats: &[],
                 },
                 TextureDataOrder::LayerMajor,
-                &image.payload,
-            );
+            )?;
             views.insert(name.as_str(), view);
         }
         let opacity = views
             .get("fx/opacity")
             .ok_or("particle opacity image absent")?;
         let volume_view = if let Some(volume) = &source.volume {
-            let view = self.images.acquire(
+            let view = images.acquire(
                 device,
                 queue,
                 volume,
@@ -870,14 +868,13 @@ impl ParticlePass {
                     view_formats: &[],
                 },
                 TextureDataOrder::MipMajor,
-                &volume.payload,
-            );
+            )?;
             Some(view)
         } else {
             None
         };
         let distortion_volume_view = if let Some(volume) = &source.distortion_volume {
-            let view = self.images.acquire(
+            let view = images.acquire(
                 device,
                 queue,
                 volume,
@@ -896,8 +893,7 @@ impl ParticlePass {
                     view_formats: &[],
                 },
                 TextureDataOrder::MipMajor,
-                &volume.payload,
-            );
+            )?;
             Some(view)
         } else {
             None
@@ -1118,13 +1114,14 @@ impl ParticlePass {
     /// were created.
     pub fn prepare_materials<'a>(
         &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
         device: &RenderDevice,
         queue: &RenderQueue,
         materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
         cvars: &crate::platform::cvars::CVars,
         surface_sampler: &Sampler,
     ) -> Result<usize, String> {
-        self.prepare_materials_bounded(device, queue, materials, cvars, surface_sampler, None)
+        self.prepare_materials_bounded(images, device, queue, materials, cvars, surface_sampler, None)
             .map(|(created, _)| created)
     }
 
@@ -1134,6 +1131,7 @@ impl ParticlePass {
     /// material exist. Ordinary gameplay retains the unbounded path.
     pub fn prepare_materials_bounded<'a>(
         &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
         device: &RenderDevice,
         queue: &RenderQueue,
         materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
@@ -1157,7 +1155,7 @@ impl ParticlePass {
                 if max_created.is_some_and(|limit| created >= limit) {
                     return Ok((created, false));
                 }
-                let gpu = self.material(device, queue, material.clone(), state, transparency.mode != 0, surface_sampler)?;
+                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler)?;
                 self.materials.insert(key, gpu);
                 created += 1;
             }
@@ -1167,6 +1165,7 @@ impl ParticlePass {
 
     pub fn record(
         &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
         device: &RenderDevice,
         queue: &RenderQueue,
         encoder: &mut CommandEncoder,
@@ -1226,6 +1225,7 @@ impl ParticlePass {
             if !self.materials.contains_key(&key) {
                 let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
                 let material = self.material(
+                        images,
                         device,
                         queue,
                         draw.material.clone(),

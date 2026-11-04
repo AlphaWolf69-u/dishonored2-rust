@@ -138,12 +138,14 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             let parameter = object.energy;
             let mut holds = Vec::new();
             let mut loading = false;
-            for action in prepared.actions.iter() {
-                let SourceAction::Play { definition, .. } = action else { continue };
-                for source in definition.streamed() {
-                    match source.acquire() {
-                        Ok(hold) => { loading |= !hold.is_ready(); holds.push(hold); },
-                        Err(error) => warn!("FX event {} streamed media unavailable: {error}", prepared.declaration.name),
+            if super::graph::preload_event_streams() {
+                for action in prepared.actions.iter() {
+                    let SourceAction::Play { definition, .. } = action else { continue };
+                    for source in definition.streamed() {
+                        match source.acquire() {
+                            Ok(hold) => { loading |= !hold.is_ready(); holds.push(hold); },
+                            Err(error) => warn!("FX event {} streamed media unavailable: {error}", prepared.declaration.name),
+                        }
                     }
                 }
             }

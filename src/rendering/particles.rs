@@ -4,7 +4,7 @@ use bevy_math::{Vec2, Vec4};
 pub mod bounds;
 pub mod clipping;
 pub mod definition;
-pub(crate) mod image_resources;
+pub mod image_resources;
 pub mod geometry;
 pub mod mesh_publication;
 pub mod material;

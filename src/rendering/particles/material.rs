@@ -119,9 +119,9 @@ pub struct ParticleMaterial {
     pub darkvision_layer: u8,
     pub options: BTreeMap<String, i32>,
     pub uniforms: BTreeMap<String, [f32; 4]>,
-    pub images: BTreeMap<String, Arc<crate::texture::InlineCompressedChain>>,
-    pub volume: Option<Arc<crate::texture::InlineVolumeChain>>,
-    pub distortion_volume: Option<Arc<crate::texture::InlineVolumeChain>>,
+    pub images: BTreeMap<String, Arc<super::image_resources::ParticleImage>>,
+    pub volume: Option<Arc<super::image_resources::ParticleImage>>,
+    pub distortion_volume: Option<Arc<super::image_resources::ParticleImage>>,
     pub lighting: Option<ParticleLightingMaterial>,
 }
 impl ParticleMaterial {

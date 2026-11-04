@@ -616,6 +616,27 @@ the task/result, while completed media stays shared through ready voice holds
 or other pending read leases. File-source release follows `141160cc0`; this is a
 host asynchronous ownership mechanism, not yet bounded incremental streaming.
 
+Bounded file-reader preparation evidence: original file Vorbis constructor /
+initialization / packet assembly / decode / destruction are `141160e10`,
+`1411614e0`, `141161240`, `1411610b0`, `141160cc0` respectively. The bank
+source functions are distinct. Packet assembly retains only an unfinished
+packet across buffer boundaries, and pending IO (`0x2e`) is distinct from
+exhaustion (`0x11`). Sparse seeking delegates `141160ba0`, whose u16 frame/byte
+deltas are relative to the end of the table. Production-only diagnostic
+`DH2_DEBUG_SOUND_SEEK_METADATA=1` records how those authored offsets align
+with the existing decoder's packet frame positions before replacing its
+whole-file index. It changes no acquisition or playback decisions.
+
+Texture streaming settings connection: original `14030d1e0` reads the live
+per-frame upload budget, `14030cce0` reads the maximum candidate texture size
+and add-all-mips flag, and `14030f3d0` reads freeze/unload controls. The host
+streamer instead used constant 4096 KB / 131072 KB / 60 frames and never
+honoured those registered settings. Expected correction: unchanged decisions
+at defaults; changed configured limits reach their existing eligibility and
+upload helpers. Cache the parsed settings by console generation so unchanged
+frames add one generation read, not repeated console locks/string lookups.
+This does not replace the outstanding VRAM pressure/priority policy.
+
 Release shader acquisition (`lifecycles-shader-release-*`), same-build control,
 EotW -> Dust -> EotW, both exit 0: repeated index acquisition 4.822 / 4.539 ms
 and 733,409 logical bytes per map -> 0.314 / 0.276 ms and zero index reads;
@@ -631,29 +652,6 @@ UI/postprocess overlap. The remaining distinct images cannot be counted as
 cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
-Production ownership validation (`lifecycles-image-bindings-client`):
-EotW -> Dust -> EotW exited 0, no fatal client/GPU errors. All three VMs closed
-with zero retained objects. The pending/ready read-owner path released 130
-completed reads; no unclaimed read cancellation occurred in this sequence,
-so cancellation reclamation is established by the weak ownership path and
-still needs an actual cancelled in-flight event for a measured byte claim.
-UI named-image binding followed EotW view28 -> Dust view12948 -> EotW view28,
-reusing the existing image-owner texture without a second upload. This run
-validates handoff/reuse; it does not exercise a live same-name texture resize.
-
-### Connected texture streaming controls
-
-Texture streaming settings connection: original `14030d1e0` reads the live
-per-frame upload budget, `14030cce0` reads the maximum candidate texture size
-and add-all-mips flag, and `14030f3d0` reads freeze/unload controls. The host
-streamer instead used constant 4096 KB / 131072 KB / 60 frames and never
-honoured those registered settings. Expected correction: unchanged decisions
-at defaults; changed configured limits reach their existing eligibility and
-upload helpers. Cache the parsed settings by console generation so unchanged
-frames add one generation read, not repeated console locks/string lookups.
-This does not replace the outstanding VRAM pressure/priority policy.
-
-
 Original automatic image-budget initialization is in the disassembled tail
 `140369eed`–`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
@@ -667,6 +665,49 @@ capacity to the image owner without adding per-frame driver calls. Vulkan
 unified/CPU heaps cannot be claimed as dedicated VRAM and use the source's
 fallback when no equivalent dedicated capacity is available.
 
+Production ownership validation (`lifecycles-image-bindings-client`):
+EotW -> Dust -> EotW exited 0, no fatal client/GPU errors. All three VMs closed
+with zero retained objects. The pending/ready read-owner path released 130
+completed reads; no unclaimed read cancellation occurred in this sequence,
+so cancellation reclamation is established by the weak ownership path and
+still needs an actual cancelled in-flight event for a measured byte claim.
+UI named-image binding followed EotW view28 -> Dust view12948 -> EotW view28,
+reusing the existing image-owner texture without a second upload. This run
+validates handoff/reuse; it does not exercise a live same-name texture resize.
+
+Sound residency diagnostics correction: the old CODECS totals counted every
+acquisition and never subtracted map-unloaded sources, so EotW -> Dust -> EotW
+reported monotonically increasing codec residency despite MEDIA pruning.
+Replace the mutable cumulative counter with a snapshot of the actual current
+MEDIA owner at the loading report. Label representation and logical view bytes
+explicitly; overlapping bank-backed ranges are not physical allocations.
+Existing physical bank/source allocation deduplication remains the authority
+for retained encoded bytes. This fixes accounting, not an additional measured
+memory saving, and removes the diagnostic tally lock from source preparation.
+
+Bounded sound IO owner implementation in progress: `assets/wwise/stream_io`
+uses the original device's 2 MiB encoded-byte capacity and 16 KiB blocks.
+Host integration is a lazy blocking reader thread with shared package-range
+requests and least-recently-used idle blocks. Active buffer leases count
+against the same capacity; only the reader waits for space. Cancellation is
+checked under the registry lock before starting an unrequested queued read;
+failed reads are not retained in the cache. Device teardown signals both
+wait conditions, joins the reader and releases cached buffers/package handles.
+The old whole-file playback path is not yet replaced; do not count this
+in-progress owner as completed streaming or claim memory savings from it.
+
+Selected-voice source admission: the current event preparer acquires every
+streamed child before container selection, so one selected random/switch child
+can pin unselected files for the event's entire lifetime. Original file-source
+construction/destruction (`141160e10` / `141160cc0`) belongs to a voice; deferred
+buffer readiness is separate from EOF (`141161770`, `141161240`). Expected
+correction: selected audible source owns its pending/readied media; unrelated
+children are not read. The audio callback only submits/polls background reads,
+with readiness checked at the existing 1024-frame audio quantum. No source
+clock advancement or completion is fabricated while its first buffer is
+pending. Keep an opt-in event-preload comparison until production acquisition
+counts and output-clock behaviour have been measured; active whole-file
+reading remains until the bounded decoder is connected.
 
 Production stream-metadata validation (`lifecycles-stream-metadata-*`): both
 DirectX 12 and Vulkan clients exited 0, no fatal client/GPU errors. Each
@@ -681,3 +722,229 @@ the physical capacity reports were 17,130,815,488 / 17,163,091,968 bytes,
 respectively. This verifies the read-only backend bridge and configured mip
 limit propagation (131072 -> -1 in the client), not the remaining eviction
 scheduler or sound decoder connection.
+
+Bounded decoder connection (currently opt-in while validating):
+`DH2_DEBUG_BOUNDED_SOUND_STREAMS=1` acquires only RIFF/setup/seek metadata,
+then uses shared encoded windows for Vorbis and IMA ADPCM playback. The packed
+seek table stays packed; no whole-file packet index or PCM expansion is kept.
+A source's initial/ongoing IO wait preserves its clock and is distinct from
+EOF. Lewton sparse priming aligns the authored point with its output tail;
+an earlier authored point supplies any required long/short tail samples.
+`DH2_DEBUG_COMPARE_STREAM_PCM=1` retains the existing encoded decoder only as
+a production diagnostic and compares actual played frame/channel samples;
+this diagnostic's duplicate encoded backing is not production residency.
+Default playback remains the existing file reader until those results and
+changed-function costs have been reviewed. Contiguous packets now borrow their
+IO block; only cross-block/prefix packets spill into owned assembly storage.
+
+### Prediction correction: selected-source admission
+
+The pre-change statement specified selected-only reads and voice-owned
+residency, but did not specify a quantitative CPU prediction. That omission
+cannot be repaired by calling the observed timing an expected result after
+the change. Keep this implementation unfinished until affected-function CPU
+cost and behaviour are compared; it is not included in main's 0b39187.
+
+Completed dev runs (`lifecycles-selected-stream-*`) exited 0, no fatal errors:
+event-wide preload 53 file reads / 12,315,654 bytes / 13.123 ms combined
+read-and-prepare wall time; selected-only 47 reads / 7,437,056 bytes / 13.271 ms.
+The sampled source choices differ (135 vs 82 source-ready notifications) and
+IO task wall time includes scheduling, so these are neither identical CPU
+workloads nor evidence of a CPU improvement/regression. They show the observed
+IO volume in those runs; they do not measure resident-memory peak.
+
+For subsequent validation, separate these requirements before further changes:
+- Admission must issue zero reads solely for unselected children. Count the
+  actual selected source identities and physical reads, rather than predict a
+  universal percentage from the total event graph.
+- Existing per-voice decode/mix work must not regress. Compare the affected
+  decoder calls on the exact same played source frames, and measure pending
+  readiness overhead separately from successful sample work. Do not use frame
+  rate or asynchronous task wall time as CPU time.
+- The bounded device must retain at most 2,097,152 encoded bytes including
+  active block leases; metadata/seek tables and codec workspaces are separate
+  and must be accounted for rather than hidden in that figure.
+- The contiguous-packet path must copy zero encoded payload bytes; only
+  packets crossing IO block boundaries require a spill copy. Its precise
+  changed-function CPU cost remains to be measured, not asserted as unchanged.
+
+Any CPU regression or discrepancy from these work/count predictions requires
+investigation of the implementation or cost model before acceptance. The
+source already written before this record is implementation under review,
+not a newly documented pre-implementation prediction.
+
+Bounded production playback result (`lifecycles-bounded-sound-client`):
+EotW -> Dust -> EotW exited 0. Fifty-one actual voice decoders compared
+8,331,264 played frame/channel samples with the existing encoded decoder:
+zero differences, maximum absolute error 0. The shared encoded IO cache peaked
+at 1,021,584 bytes (limit 2,097,152). No decoder failures or fatal client/GPU
+errors were recorded. Comparison mode also retains the reference full files;
+that duplication is diagnostic-only and is not a production memory figure.
+The latest contiguous-packet zero-copy path and affected-function CPU cost
+still need their final build/measurement before enabling bounded playback by
+default. Upcoming traces use the actual audio callback/decoder/IO functions;
+no file IO, allocator work or seek-table scan is expected on a cached sample.
+Any such stack or a material per-function regression invalidates acceptance.
+
+Prefetch continuation prediction (before implementation): type-1 sources
+must retain their authored bank prefix by borrowed bank range and read only
+continuation bytes when selected. For prefixes covering setup and the initial
+audio packets, source admission must perform zero file reads and must not
+wait for IO before decoding those bytes. Incomplete/absent prefixes must defer
+until required bytes arrive, as file-source initialization already does.
+Expected loading work eliminated: full-file acquisition and full packet-index
+construction for these sources; do not predict a CPU percentage without their
+packet counts. Cached PCM sampling must gain no IO/prefix parsing work. The
+prefix shares its bank backing, so zero extra physical prefix allocation is
+expected; the continuation still shares the 2 MiB encoded device budget.
+
+Prefetch implementation (awaiting production validation): extent-aware bank
+resolution borrows the DIDX/DATA prefix and registers its package extent
+without reading the full file. MediaBytes uses a resident/header/prefetch
+extent in place of the previous optional source size; the bytes/range remain
+shared. Legacy whole-resource tooling keeps its existing provider contract.
+Complete prefixes prepare metadata without file IO and are immediately
+available to selected voices. Windows consume the bank bytes first and request
+only continuation ranges starting after that prefix. Packets crossing either
+the prefix boundary or an IO block boundary use the same spill assembler.
+Comparison mode deliberately prepares the reference whole file in background;
+its initial wait/bytes are diagnostic and cannot prove normal prefetch latency.
+
+Package-retirement prediction (before implementation): the new IO device
+currently retains package handles until session end. At the existing map-bank
+unload boundary (`1400c97e0` -> `1400c0360`), retire cached ranges/queued reads
+for packages no longer owned by retained banks, and close those reader handles
+on the reader thread. Expected result after acknowledgement: zero cache entries,
+queued reads or reader handles for unloaded packages; an already executing
+16 KiB read and active buffer leases can finish/release normally. Cached audio
+sampling gains no work. New IO requests gain one package-membership check;
+map teardown visits cached entries/queued requests once, with no per-frame
+sweeps or extra reads within a loaded map. This is host handle/cache retirement
+following the verified bank lifetime, not a claim that the game's internal
+cache invalidation implementation has been copied.
+
+Map-package retirement is now connected to audio::begin_level after the
+engine's outgoing-voice release. Retained banks define the allowed packages;
+new package registration admits their paths. The reader retires queued/cache
+entries immediately, closes obsolete handles on its own control wake (even
+while idle), and cannot publish a completed outgoing read into a replacement
+request with the same key. This path still needs the queued three-map run;
+source-level ownership is not substituted for that execution evidence.
+
+Budget-wakeup correction prediction (before implementation): a released
+ReadLease can make a cached block evictable without decreasing used bytes.
+If its notification lands between the worker's eviction scan and wait, the
+worker can sleep indefinitely. Retiring an in-flight package request has the
+same race. Record a wake generation under the budget mutex and wait only if
+it has not changed since the scan. Expected result: neither release can be
+lost; cached sample lookup/decode gains zero work, one generation increment
+per lease release/package retirement, and one snapshot/check per full-budget
+retry. This is a host concurrency correction, not a throughput improvement.
+
+Prefetch/contiguous-packet production comparison (`lifecycles-prefetch-*`):
+library and game-bin checks, dev build and both three-map clients exited 0.
+Comparison mode matched 8,730,624 played samples across 92 voice decoders,
+zero differences and maximum absolute error 0. Encoded cache peak was
+1,037,728 bytes in comparison mode and 526,645 bytes in normal mode, both
+below 2,097,152. Normal mode prepared 26 bank-prefetch metadata records, but
+none of these sources was selected during those saved-view runs. This proves
+prefix preparation executes, not immediate type-1 playback latency. The newer
+package-retirement/wakeup changes are excluded from those runs and have their
+own queued production validation. No CPU acceptance is inferred from them.
+
+Installed prefetch extent audit (2026-11-04,
+`artifacts/lifecycles-prefetch-inputs.json`): the actual common/init and
+EotW/Dust bank IDs from wwisedescription.txt select seven available packages
+and seven banks in the installed Russian/SFX set. All 33,259 type-1 Sound
+references (22,015 unique media/language pairs) have a package continuation;
+every DIDX/DATA prefix byte matches that continuation's beginning. Zero
+missing continuations or prefix mismatches. References sum to 32,594,418
+prefix bytes and 1,059,610,258 full-source bytes, with repeated references;
+these totals are not allocations or predicted RAM savings. This validates
+borrowed-prefix continuation offsets across the installed sources, without
+claiming all those dialogue sources were played by the saved-view benchmark.
+
+Changed-function CPU baseline (`lifecycles-stream-cpu-whole`, same profiling
+binary as the queued bounded control): 47.811 seconds, 2,110 samples in
+VorbisCursor::sample (44.132 sampled CPU ms/s, inclusive), 1,534 in its decode
+(32.085 ms/s), 2,247 in EncodedCursor::sample (46.998 ms/s), and 32 in
+Stream::ready (0.669 ms/s). These nested costs must not be summed. This is an
+unpaired baseline, not acceptance or a regression result. Different randomized
+sound choices can change cost. A fresh production comparison capture runs the
+bounded and reference cursor on each same played sample; per-cursor function
+stacks distinguish their costs in that capture. It also records pending/read
+costs separately. CPU-only ETW capture omits scheduler/wakeup stacks to avoid
+the unrelated 24 GB dump from the full scheduling trace; production code is
+unchanged by that trace configuration. The profiling build/run is serialized
+after the package-retirement dev validation, preserving the PDB for each trace.
+
+Trace setup correction: the old bounded-control client completed its full
+benchmark, but no ETW capture was started: the helper awaited only the
+waiting->ready transition message. When loading has completed render gates
+before the benchmark runs, that transition does not occur. The same production
+ready path always emits BENCHMARK_INPUT; the helper now accepts that marker
+as well. The failed capture contributes no CPU comparison. The fresh paired
+capture uses the corrected helper and CPU samples only. The first retirement runner stopped before writing its initial command result;
+its cause is not established by the empty log. The retry uses explicit native
+command exit codes with Continue preference, and an outer runner captures
+PowerShell failures separately. No successful build/run is inferred from queueing.
+
+Particle upload-source retirement prediction (before implementation): image
+registry 1400607f0/14005feb0 owns identity independently of material/pass, and
+1402ea140 uploads the installed compiled blocks. Current particle materials
+and the GPU identity cache both pin the compressed Vec after upload. Host
+correction: retain stable descriptor/identity but retire those bytes only
+after create_texture_with_data has copied them into backend staging. Keep
+GPU image residency across colour/depth target rebuilds; samplers and target
+pipelines may rebuild without rereading/reuploading images. Prediction for
+the measured EotW workload: same 59 uploads / 16,046,296 uploaded bytes,
+16,046,296 compressed CPU bytes released after those uploads (unrequested
+images remain staged), zero additional image uploads on target rebuild.
+One uncontended mutex acquisition per initial upload; cached acquisitions
+and gameplay draws gain zero payload locking/allocation or IO. Retain-data
+and duplicate-image diagnostic modes preserve their baseline bytes for a
+same-build comparison. Validate through production counters and map/rebuild
+runs, not a whole-process RAM delta or synthetic tests.
+
+Particle source retirement implementation: typed image identities retain only
+the descriptor, original payload byte count and a take-on-upload staging Vec.
+The backend retires that Vec after the queue upload call; GPU residency owns
+the stable identity without pinning payload bytes. CameraGpu owns the image
+cache separately from ParticlePass, because transient missing view/source
+inputs and target-format changes can discard a pass without ending the level.
+Only release_level retires this level image cache. Material preparation and
+lazy first-use acquisition borrow the same cache; there is no mutex/cache
+lookup added to an already prepared material's draw. Production release logs
+now include cpu_released_bytes; retained-data control leaves upload identity
+and rendered data unchanged. Compilation and runtime comparison are queued,
+not inferred from this ownership inspection. Canonical cross-domain images
+and finer-mip demand remain separate unfinished requirements.
+
+Resource-class purge source findings (2026-11-04): 1400410f0 always performs
+outgoing world/audio teardown before its conditional resource purge. That
+purge calls 1400600d0(0), and optionally (1). 1400600d0 serializes all resource
+lists; 140060180 traverses a list backwards, removes matching +0x24 lifetime
+classes from the ID hash/list, clears their registered ID and dispatches the
++0x08 destructor. Nonmatching resources receive their +0x48 callback instead.
+140060b60 promotes all currently registered resources to class 2; builtin
+acquisition 14005fde0 also creates class-2 resources. Constructor 14005e740
+initializes class 0/1 from the virtual +0x98 flag returned through 1401548e0; manifest loading
+1400661e0 can mark selected resource types class 1. Therefore a map teardown,
+a class purge and destruction of every session cache are different operations;
+a host Arc owner is not evidence that an optional force-purge was ported.
+These functions give the common lifecycle rule for the per-class work;
+the host must preserve session identities while ending map payload ownership.
+
+Texture pressure scheduling source resolution: 14030f3d0 ages records, builds
+its packed sort key, and reduces residency only when its +0x3310 byte counter
+plus headroom exceeds its configured budget. The headroom is the registered
+per-frame upload KB plus maximum texture KB (both shifted by 10), not a
+fixed arbitrary reserve. It drops an aged candidate to minimum through
+14030d7a0; otherwise an oversized projected-area candidate drops one level
+through 14030d8d0. It considers an upgrade only while current bytes are within
+budget. Priority multiplier defaults to 1 when r_skipAnisoTextureStreaming
+is enabled; otherwise bits 1..5 scale projected area. Read-only Ghidra bytes
+confirm float constants 1.0 (141f697b0), 4.0 (141ac8fdc) and 0.5
+(141ab3764). Existing area-only demand and unconditional idle reductions
+cannot establish parity. This identifies the required accounting/order/gate
+change; enabling budget-only eviction without those inputs would be incomplete.
