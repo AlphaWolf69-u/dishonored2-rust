@@ -1776,7 +1776,7 @@ pub(super) fn prepare(
         particle_resources.use_scene_images();
     }
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
-        let (water,sources)=super::water_scene::WaterScene::load_with_model_colours(catalog,parameters,&scene.area_environments,&resolver.water_materials,&resolver.water_model_colours, resident_images, &mut *resolver.images)
+        let (water,sources)=super::water_scene::WaterScene::load_with_model_colours(catalog,parameters,&scene.area_environments,&resolver.water_materials,&resolver.water_model_colours, resident_images, images)
             .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));
         commands.insert_resource(water);
         commands.insert_resource(sources);

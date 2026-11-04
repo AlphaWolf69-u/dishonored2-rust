@@ -138,16 +138,14 @@ impl OceanScene {
                 displacement: self.waves.query_displacement_views(),
                 collision_height: self.waves.collision_height_view(),
                 foam: self.waves.foam_view(),
-                shore_distance: &self
+                shore_distance: self
                     .images
                     .get(&settings.shore_distance_image)
-                    .ok_or("head wave shore mask absent")?
-                    .view,
-                amplitude_mask: &self
+                    .ok_or("head wave shore mask absent")?,
+                amplitude_mask: self
                     .images
                     .get(&settings.wave_amplitude_image)
-                    .ok_or("head wave amplitude mask absent")?
-                    .view,
+                    .ok_or("head wave amplitude mask absent")?,
             };
             let texture_ids = [textures.shore_distance.id(), textures.amplitude_mask.id()];
             if let Some(queries) = self.head_queries.as_mut() {
