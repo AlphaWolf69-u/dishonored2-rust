@@ -2749,3 +2749,37 @@ all scripted curve behavior. Evidence: original decompilation and local
 `artifacts/fog-curve-capture-comparison.json`,
 `artifacts/fog-curve-index-mapping.json` in the feature checkout and
 `analysis/fog-runtime-inputs.json` in the main checkout.
+
+
+### UI library session scope
+
+The production loading/pause route acquired 12 bitmap libraries. Matching
+their actual `.iggy` paths against the installed `init` and `common`
+`.mapResources` records finds four in `init` and all 12 in `common`. This
+supports keeping those observed immutable libraries for the session instead
+of repeatedly reading them on a map transition. The EotW and Dust map lists
+each contain the separate `interactive_map_legend` Iggy declaration/import,
+which this route did not acquire; this evidence does not establish eviction
+behavior for future map-only movie libraries. Evidence:
+`artifacts/ui-library-manifest-scope.json` and
+`artifacts/full-owned-ui-comparison.json` in the feature checkout.
+
+A scan of all 38 installed `init`, `common` and map manifests found no
+direct map-exclusive `.iggy` path, but that does not settle indirect movie
+imports: `interactive_map_legend.iggyfile` names `map_legend.swf`, and its
+map-scoped `.imp` lists `lib_map_legend.swf`. The indexed
+`ui/map_legend.iggy` is 173,585 bytes and is outside the common direct-path
+set; the imported `lib_map_legend.iggy` and its bitmap data are common. The
+current loading/pause route never opens this movie, so the measured session
+cache results do not establish its lifecycle or savings from evicting it.
+Evidence: `artifacts/ui-map-only-libraries.json` and the installed declaration
+and import record.
+
+All 13 parsed Iggy files observed in the loading/pause production route occur
+in the common list, including the font library. A direct scan of all 39
+indexed `mapInfo` declarations found one loading-movie path,
+`ui/loading_screen.iggy`, also in common; the two pause movies and global
+message-box movie named by the current client are common as well. Keeping
+these currently used files for the UI worker therefore matches their session
+scope. This does not extend the claim to the currently unimplemented
+interactive-map movie.
