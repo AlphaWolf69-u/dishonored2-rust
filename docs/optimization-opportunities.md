@@ -343,15 +343,13 @@ six (ten texture uploads / 1,315,840 bytes avoided). TLF borrow-upload staging
 removes exactly four allocations per preparation, with equal first-map required
 upload volume. No CPU/GPU time claim. Source descriptors/payload CRCs match.
 
-Remaining ocean-mask finding: `OceanScene::admit_images` still owns a separate
-2D upload map, while `WaterImageSources.ocean` retains its compressed CPU chains.
-The source parser selects the inline chain. Reusing ResidentImages' full-mip UI
-loader without a matching-view policy would silently change source resolution.
-Resolve these masks through the existing image owner while preserving selected
-mip/view identity; compare native loaded-map named image descriptors first. Do
-not create another texture cache or pin full-resolution masks as a shortcut.
-Unused prefetched typed sky staging likewise cannot be counted as retired: the
-36,700,160-byte result covers acquired sources only.
+Former ocean-mask finding (resolved below): earlier versions had a separate
+2D upload map and retained compressed CPU chains. The current shared image
+owner preserves inline view selection, registers separately indexed mips with
+the streamer and hands committed views to ocean consumers. The original EotW
+waterfront observation found no finer demand in 900 samples; that observation
+is not a claim about every camera or map. Unused prefetched typed sky staging
+remains outside the 36,700,160-byte staging-retirement result.
 
 
 Resolution-retirement finding resolved (14909a0): a culled ocean colour pass
@@ -380,8 +378,22 @@ uploader and the retained compressed-chain table. ResidentImages supplies fixed
 inline handles through normal render-only asset extraction. Three-map shared
 acquisitions 17 -> 6 / 14,252,368 -> 5,854,544 cumulative bytes, all seven source
 descriptors/content fingerprints match; ocean CPU payload backing is zero at
-all three ready snapshots. Native environment-image finer demand remains a
-separate policy question: the amplitude mask really has a finer indexed level,
-and the owner must not silently substitute the UI loader's mip choice. The
-previous warning about that choice remains relevant; duplicated upload/staging
-ownership itself is fixed.
+all three ready snapshots. The later environment-image audit registered separately indexed finer mips
+with the shared streamer while preserving inline views by default; the sampled
+original EotW waterfront showed zero demand throughout. A diagnostic demand
+confirmed view handoff on EotW and Curator boat, as recorded in the parity ledger.
+
+
+Streaming-owner sweep resolved: direct receiver-to-ready transfer and
+map-scoped reusable upload scratch removed the measured temporary batch
+capacity and most bookkeeping growth; completed-read paths are borrowed. The
+same-build four-level comparison, generation releases and matching image
+signatures are recorded in `resource-parity.md`.
+
+`upload_compressed_mips` also creates and submits a command encoder for every
+replacement that copies an existing GPU mip chain. The maximum avoidable
+submission count is one per such replacement; the actual time and potential
+batching benefit are unmeasured. A batching change must preserve the ordering
+between each copy, `write_texture` and completion acknowledgement, and must
+first be compared with the installed upload path. It is not part of the
+current allocation changes.

@@ -139,6 +139,8 @@ fn reset_scene_publications(world: &mut World) {
     );
     super::audio::begin_level(world);
     if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
-        *mailbox.0.lock().unwrap() = Default::default();
+        let mut state = mailbox.0.lock().unwrap();
+        let generation = state.generation.wrapping_add(1);
+        *state = super::texture_streaming::PreparedImageState { generation, ..Default::default() };
     }
 }

@@ -271,3 +271,11 @@ fallback. On a four-level production route, 12 libraries and 430 images had
 matching formats, dimensions and CRCs while 430 copies totalling 34,556,544
 bytes were avoided. Source capacity was 34,556,556 bytes. This measures copies
 and allocations, not process RSS or CPU timings.
+
+
+Texture streaming now transfers completed reads directly into its map-owned
+queue and reuses upload bookkeeping only within the current mailbox generation.
+In the four-level production comparison, 1,437 completed-read path copies and
+568,960 cumulative bytes of temporary completion-vector capacity were avoided;
+upload scratch was empty and released on every observed map change. Image
+packing signatures matched. These are allocation counts, not RSS savings.

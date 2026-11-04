@@ -2664,3 +2664,64 @@ layouts. This compares diagnostic text structure, not a frame-for-frame trace
 or pixel output. All three clients exited 0. Local evidence:
 `artifacts/texture-event-comparison.json` and
 `artifacts/texture-event-trace-layout.json`.
+
+### Texture completion and upload scratch prediction
+
+The read-completion consumer collects a temporary vector and immediately
+moves its items into its existing `ready` queue. Draining the receiver directly
+into that queue preserves channel order and avoids at least one temporary
+vector allocation per nonempty completion batch. The channel sender does not
+take the receiver mutex; the queue remains owned by the current map.
+
+The GPU mailbox takes its pending vector each render frame and builds separate
+waiting, completed and failed vectors. Reusing bounded render-system scratch
+should eliminate capacity growth after warmup, preserving deferred jobs before
+new arrivals, upload budget/order, all completion/failure acknowledgements and
+map teardown. Drained scratch must hold no payloads at frame end, and its capacity must be released when the mailbox is reset for a new map. Compare
+capacity-growth and batch counters with a same-build reference path; compare
+image descriptors and request/upload/commit event identities. These are
+transient-allocation counts, not resident-RSS or whole-frame timing predictions.
+
+
+Texture completion/upload production comparison: same-build reference and
+reuse clients completed Edge of the World -> Curator boat -> Dust District ->
+Edge of the World. Reference completion batches used 572,320 cumulative bytes
+of temporary vector capacity across 265 nonempty batches; direct transfer used
+zero temporary batch capacity for the same 1,437 received items. Across the
+first three map retirements, waiting/completion scratch grew on 167/172 frames
+in the reference and 6/3 in the reuse path. Reuse scratch had capacities
+32/32/16/0 entries and lengths 0/0/0/0 at each mailbox generation change,
+then released those buffers. All 13,457 logged image packing descriptors and
+checksums matched, as did the 1,828 observed request/upload event identity
+pairs. Three event logs per run reported dropped diagnostic events, so these
+sets are not a complete event-order comparison. These are temporary-capacity
+and ownership counts, not process RSS or CPU-time measurements. Both clients
+exited 0. Evidence: `artifacts/texture-scratch-v2-comparison.json`.
+
+
+### Completed-read path ownership prediction
+
+Each received image read clones its indexed resource path before handling the
+result, but uses the clone only for immediate diagnostic or error messages.
+Borrowing the indexed path at each message site avoids one temporary path
+String per completion; the separate path owned by each asynchronous request
+remains necessary. The previously captured four-level trace recorded at least
+1,437 completion events and 130,498 path bytes, excluding dropped events.
+Compare actual completion and cloned-byte counters with a same-build reference
+over map transitions; retain the exact trace/error text and image descriptors.
+This predicts temporary allocation reduction, not an RSS or CPU-time change.
+
+
+Final combined production comparison: the four-level reference and reuse
+clients both completed. The reference made 1,437 temporary completed-read
+path copies containing 130,635 cumulative path bytes; the default made zero.
+The reference also used 568,960 cumulative bytes of temporary completion
+vector capacity, while direct transfer used zero. At the first three map
+retirements, waiting/completion upload scratch grew on 169/172 frames in the
+reference and 6/3 in the reuse mode. All reused buffers were empty at each
+generation reset and their capacity was released. The 13,457 logged image
+packing signatures and 1,828 observed request/upload identity pairs matched;
+three logs per run reported dropped events, so this is not a complete event
+ordering comparison. Counts describe cumulative temporary allocations and
+buffer ownership, not process RSS or CPU-time changes. Evidence:
+`artifacts/texture-scratch-v3-comparison.json`.

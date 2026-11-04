@@ -329,6 +329,7 @@ pub(super) struct PreparedImageState {
     pub(super) pending: Vec<PendingGpuImageUpload>,
     pub(super) completed: Vec<AssetId<Image>>,
     pub(super) failed: Vec<(AssetId<Image>, String)>,
+    pub(super) generation: u64,
 }
 
 pub(super) struct PendingGpuImageUpload {
@@ -358,6 +359,32 @@ pub(super) struct UploadStats {
     peak_job_bytes: u64,
 }
 
+/// Host staging metadata only: drained jobs and their payloads remain owned by
+/// the mailbox or are dropped after upload, never by these empty buffers.
+pub(super) struct UploadScratch {
+    pending: Vec<PendingGpuImageUpload>,
+    waiting: Vec<PendingGpuImageUpload>,
+    completed: Vec<AssetId<Image>>,
+    failed: Vec<(AssetId<Image>, String)>,
+    generation: Option<u64>,
+    separate: bool,
+    timing: bool,
+    waiting_growth_frames: usize,
+    completed_growth_frames: usize,
+    failed_growth_frames: usize,
+}
+impl Default for UploadScratch {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(), waiting: Vec::new(), completed: Vec::new(), failed: Vec::new(),
+            generation: None,
+            separate: std::env::var("DH2_DEBUG_ALLOCATE_TEXTURE_UPLOAD_SCRATCH").as_deref() == Ok("1"),
+            timing: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
+            waiting_growth_frames: 0, completed_growth_frames: 0, failed_growth_frames: 0,
+        }
+    }
+}
+
 pub(super) fn report_prepared_diffuse_images(
     gpu_images: Res<RenderAssets<GpuImage>>,
     render_device: Res<RenderDevice>,
@@ -366,19 +393,45 @@ pub(super) fn report_prepared_diffuse_images(
     mut settings: Local<settings::SettingsCache>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
     mut stats: Local<UploadStats>,
+    mut scratch: Local<UploadScratch>,
 ) {
     let settings = settings.get(adapter.as_deref());
     // 14030d1e0 limits actual uploads, not only game-thread staging.
     let mut budget = texture::MipUploadBudget::new(settings.upload_kb);
     let mut frame_bytes = 0u64;
-    let pending = {
+    if scratch.separate {
+        // Same-build reference for the former per-frame allocation path.
+        scratch.pending = Vec::new();
+        scratch.waiting = Vec::new();
+        scratch.completed = Vec::new();
+        scratch.failed = Vec::new();
+    }
+    let UploadScratch { pending, waiting, completed, failed, generation, separate, timing,
+        waiting_growth_frames, completed_growth_frames, failed_growth_frames } = &mut *scratch;
+    {
         let mut state = mailbox.0.lock().unwrap();
-        std::mem::take(&mut state.pending)
-    };
-    let mut waiting = Vec::new();
-    let mut completed = Vec::new();
-    let mut failed = Vec::new();
-    for job in pending {
+        if *generation != Some(state.generation) {
+            if *timing && generation.is_some() {
+                eprintln!("MEMORY texture upload scratch map release: generation={} capacities={}/{}/{}/{} empty={}/{}/{}/{} growth_frames={}/{}/{} separate={}",
+                    state.generation, pending.capacity(), waiting.capacity(), completed.capacity(), failed.capacity(),
+                    pending.len(), waiting.len(), completed.len(), failed.len(),
+                    waiting_growth_frames, completed_growth_frames, failed_growth_frames, separate);
+            }
+            // A mailbox reset follows outgoing-render acknowledgement. These
+            // empty vectors are map scratch, so do not retain peak capacity.
+            *pending = Vec::new();
+            *waiting = Vec::new();
+            *completed = Vec::new();
+            *failed = Vec::new();
+            *generation = Some(state.generation);
+            *waiting_growth_frames = 0;
+            *completed_growth_frames = 0;
+            *failed_growth_frames = 0;
+        }
+        std::mem::swap(&mut state.pending, pending);
+    }
+    let capacities = (waiting.capacity(), completed.capacity(), failed.capacity());
+    for job in pending.drain(..) {
         if !budget.allows_next_upload() {
             stats.deferred += 1;
             waiting.push(job);
@@ -421,12 +474,22 @@ pub(super) fn report_prepared_diffuse_images(
     let mut state = mailbox.0.lock().unwrap();
     // Older deferred jobs precede jobs staged while this batch ran.
     waiting.append(&mut state.pending);
-    state.pending = waiting;
-    state.completed.extend(completed);
-    state.failed.extend(failed);
+    if *timing {
+        *waiting_growth_frames += usize::from(waiting.capacity() > capacities.0);
+        *completed_growth_frames += usize::from(completed.capacity() > capacities.1);
+        *failed_growth_frames += usize::from(failed.capacity() > capacities.2);
+    }
+    std::mem::swap(&mut state.pending, waiting);
+    state.completed.extend(completed.drain(..));
+    state.failed.extend(failed.drain(..));
     drop(state);
     stats.frames += 1;
     stats.peak_frame_bytes = stats.peak_frame_bytes.max(frame_bytes);
+    if stats.frames % 600 == 0 && *timing {
+        eprintln!("MEMORY texture upload scratch: frames={} separate={} growth_frames={}/{}/{} empty={}/{}/{}/{}",
+            stats.frames, separate, waiting_growth_frames, completed_growth_frames, failed_growth_frames,
+            pending.len(), waiting.len(), completed.len(), failed.len());
+    }
     if stats.frames % 600 == 0 && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!("MEMORY texture GPU uploads: frames={} jobs={} upload_bytes={} deferred_jobs={} peak_frame_bytes={} peak_job_bytes={} budget_kb={}",
             stats.frames, stats.uploads, stats.bytes, stats.deferred, stats.peak_frame_bytes, stats.peak_job_bytes, settings.upload_kb);
@@ -1134,13 +1197,33 @@ pub(super) struct FrameRequests {
     timing: bool,
     flag_growth_frames: usize,
     order_growth_frames: usize,
+    collect_completions: bool,
+    completion_batches: usize,
+    completion_items: usize,
+    completion_temp_bytes: usize,
+    clone_completion_paths: bool,
+    completion_path_clones: usize,
+    completion_path_bytes: usize,
     pressure: residency::Pressure,
 }
 impl Default for FrameRequests {
     fn default() -> Self {
         Self { flags: Vec::new(), order: Vec::new(), flag_growth_frames: 0, order_growth_frames: 0, pressure: Default::default(),
+            collect_completions: std::env::var("DH2_DEBUG_COLLECT_TEXTURE_COMPLETIONS").as_deref() == Ok("1"),
+            completion_batches: 0, completion_items: 0, completion_temp_bytes: 0,
+            clone_completion_paths: std::env::var("DH2_DEBUG_CLONE_TEXTURE_COMPLETION_PATHS").as_deref() == Ok("1"),
+            completion_path_clones: 0, completion_path_bytes: 0,
             allocate_each_frame: std::env::var("DH2_DEBUG_ALLOCATE_TEXTURE_REQUESTS").as_deref() == Ok("1"),
             timing: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") }
+    }
+}
+impl Drop for FrameRequests {
+    fn drop(&mut self) {
+        if self.timing {
+            eprintln!("MEMORY texture completion map release: collect={} batches={} items={} temporary_capacity_bytes={} path_clones={} path_clone_bytes={}",
+                self.collect_completions, self.completion_batches, self.completion_items, self.completion_temp_bytes,
+                self.completion_path_clones, self.completion_path_bytes);
+        }
     }
 }
 
@@ -1177,7 +1260,9 @@ pub(super) fn stream_visible_textures(
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
     let FrameRequests { flags: requested, order: request_order, allocate_each_frame, timing,
-        flag_growth_frames, order_growth_frames, pressure } = &mut *scratch;
+        flag_growth_frames, order_growth_frames, collect_completions, completion_batches,
+        completion_items, completion_temp_bytes, clone_completion_paths, completion_path_clones,
+        completion_path_bytes, pressure } = &mut *scratch;
     if *allocate_each_frame { *requested = Vec::new(); *request_order = Vec::new(); }
     let flag_capacity = requested.capacity();
     let order_capacity = request_order.capacity();
@@ -1333,11 +1418,33 @@ pub(super) fn stream_visible_textures(
             }
         }
     }
-    let completions = {
+    let completion_count = {
+        let worker = &mut *worker;
         let receiver = worker.completed.lock().unwrap();
-        std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>()
+        let incoming = std::iter::from_fn(|| receiver.try_recv().ok());
+        if *collect_completions {
+            // Same-build control for the former temporary batch allocation.
+            let completions = incoming.collect::<Vec<_>>();
+            let count = completions.len();
+            if *timing { *completion_temp_bytes += completions.capacity() * std::mem::size_of::<TextureReadResult>(); }
+            worker.ready.extend(completions);
+            count
+        } else {
+            // Sender owns the channel, not this receiver mutex. Transfer each
+            // completion directly to the map's queue, preserving FIFO order.
+            let before = worker.ready.len();
+            worker.ready.extend(incoming);
+            worker.ready.len() - before
+        }
     };
-    worker.ready.extend(completions);
+    if *timing {
+        *completion_batches += usize::from(completion_count != 0);
+        *completion_items += completion_count;
+        if frame % 600 == 0 {
+            eprintln!("MEMORY texture completion batches: frames={frame} collect={} batches={} items={} temporary_capacity_bytes={}",
+                collect_completions, completion_batches, completion_items, completion_temp_bytes);
+        }
+    }
     let mut budget = texture::MipUploadBudget::new(settings.upload_kb);
     while budget.allows_next_upload() {
         let Some((slot, target, result)) = worker.ready.pop_front() else {
@@ -1347,11 +1454,20 @@ pub(super) fn stream_visible_textures(
         worker.inflight_count -= 1;
         // The read belongs to this map even if the camera moved meanwhile.
         // Its original reservation remains charged through GPU completion.
-        let path = queue.diffuse_image_paths[slot].clone();
+        // The async request already owned its path. A completed read needs the
+        // indexed name only for immediate diagnostics and errors.
+        let path_copy = (*clone_completion_paths).then(|| queue.diffuse_image_paths[slot].clone());
+        if *timing {
+            if let Some(path) = &path_copy {
+                *completion_path_clones += 1;
+                *completion_path_bytes += path.len();
+            }
+        }
         let mut streamed = match result {
             Ok(Some(image)) => image,
             Ok(None) => {
                 queue.diffuse_mip_states[slot].reserved_bytes = 0;
+                let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format_args!(
                         "read_missing stream_frame={frame} slot={slot} path={path:?} target={target:?} resident={:?}",
@@ -1366,6 +1482,7 @@ pub(super) fn stream_visible_textures(
             }
             Err(error) => {
                 queue.diffuse_mip_states[slot].reserved_bytes = 0;
+                let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format_args!(
                         "read_failed stream_frame={frame} slot={slot} path={path:?} target={target:?} resident={:?} error={error:?}",
@@ -1385,6 +1502,7 @@ pub(super) fn stream_visible_textures(
         if matches!(target, TextureReadTarget::Exact(_, _)) {
             let Some(old) = previous.and_then(|id| Assets::get(&*images, id)) else {
                 queue.diffuse_mip_states[slot].reserved_bytes = 0;
+                let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format_args!(
                         "exact_mip_lost_resident stream_frame={frame} slot={slot} path={path:?} target={target:?} recorded_resident={:?} handle_id={previous:?}",
@@ -1408,6 +1526,7 @@ pub(super) fn stream_visible_textures(
         }
         let upload_mips = streamed.uploads.len();
         if let Some(diagnostics) = diagnostics.as_deref_mut() {
+            let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
             diagnostics.texture_event(format_args!(
                 "read_succeeded stream_frame={frame} slot={slot} path={path:?} target={target:?} resident_before={:?} loaded_level={level:?} upload_mips={upload_mips} upload_bytes={upload_bytes}",
                 queue.diffuse_mip_states[slot].resident,
@@ -1426,6 +1545,7 @@ pub(super) fn stream_visible_textures(
             queue.diffuse_image_pending[slot] = Some(handle.clone());
             queue.diffuse_mip_states[slot].pending = Some(level);
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
+                let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
                 diagnostics.texture_event(format_args!(
                     "gpu_upload_submitted stream_frame={frame} slot={slot} path={path:?} image_id={image_id:?} previous={previous:?} copy={copy:?} target={target:?} level={level:?} mip_count={mip_count} upload_mips={upload_mips} upload_bytes={upload_bytes}",
                 ));
@@ -1456,6 +1576,7 @@ pub(super) fn stream_visible_textures(
                 registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
             }
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
+                let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
                 diagnostics.texture_event(format_args!(
                     "resident_committed_without_gpu_mailbox stream_frame={frame} slot={slot} path={path:?} image_id={image_id:?} target={target:?} level={level:?} mip_count={mip_count} upload_mips={upload_mips} upload_bytes={upload_bytes} resident_after={:?}",
                     queue.diffuse_mip_states[slot].resident,
