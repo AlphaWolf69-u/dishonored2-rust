@@ -1796,3 +1796,19 @@ cloned field/string/vector payload -> zero, with descriptor metadata storage
 unchanged. Typed runtime definitions stay owned. Use the same production
 binary's explicit copy control and record selected-array/field bytes plus
 prepared particle/renderer admission counts. No CPU-time/RSS saving predicted.
+
+
+Adjacent UI audit reconciliation: the optimization table's raw-byte Iggy cache
+and whole-page GPU glyph upload findings were stale. flash::Player::load_installed
+now calls assets::iggy::acquire and receives shared Rc<IggyFile>; the three-map
+logs preserve library identities across movies. GPU glyph pages update dirty
+rectangles using dirty_base/version (14107b7e0 / 14107b2d0), falling back only
+when an older version was skipped. CPU page snapshots preserve immutable
+in-flight draw-list versions and copy only when Arc ownership overlaps; that
+is required backing, not redundant per-frame conversion. FX dispatch borrowing
+was likewise already implemented/accepted; its stale opportunity is closed.
+The separate gradient-cache question is not resolved by those changes:
+1410947c0 generates a 64x1 premultiplied ramp and 141095740 routes it through
+GDraw callbacks; the current production pause run retained one content-cached
+ramp, while loading-only runs retained none. No animated-ramp growth is proven.
+Do not infer texture ownership from 14108a580/14108a6b0: those are audio slots.
