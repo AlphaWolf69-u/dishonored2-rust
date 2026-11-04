@@ -327,3 +327,13 @@ pipelines and 3 -> 1 shader/layout sets, with unchanged image upload counts/
 bytes. Dust and the return map created no new states. This closes repeated
 map shader compilation for this owner; other pass shader/device residency and
 physical allocation accounting remain distinct work.
+
+
+Probe owner sweep: raw primary/reflection sample vectors and cell occluder
+indices survived after CellGeometry construction, with no gameplay readers.
+Explicit gameplay preparation retirement now releases 23,425,664 / 19,970,016 /
+23,425,664 capacity bytes across EotW/Dust/EotW. Prepared query cells/quads and
+probe counts match the retain control; lighting coefficients, spatial planes/
+neighbors/tetrahedra and reflection metadata remain live. No per-query decoding
+or CPU timing change was introduced. The underlying PRB parser stays complete
+for standalone acquisition/inspection. This closes that retained-staging defect.

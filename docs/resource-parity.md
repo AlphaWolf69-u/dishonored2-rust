@@ -28,7 +28,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 |---|---|---|
 | `1402ea140` LoadResourceInternal | reads the `.bimage` and uploads its base mip chain through `1402e9ff0` at load | ported: setup initializes every scene image's base chain |
 | `1400607f0` / `14005feb0` acquired image lookup | returns the resident resource identity | host: `texture_streaming::SharedImages` captures committed init/common images on map teardown and transfers matching handles/states into destination setup without a base read/upload. Transfer removes the old session-held handle, preventing it from pinning a superseded active texture. Inactive common images remain charged and eligible for mailbox-acknowledged pressure reduction. Scene and particle 2D identities share the streamer. UI, fog, lens, area-light and cloud/depth-default full-mip consumers share the session ResidentImages owner; original 14005feb0/140060180 lookup/purge boundaries are implemented with Bevy handles and explicit movie leases. Full-mip versus streamed scene identity remains a separate unresolved boundary |
-| `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original API-level upload remains untraced |
+| `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original upload dispatch is traced: 1402f5500 selects 1402f50c0 (2D/cube UpdateSubresource1 or Map/copy/Unmap) or 1402f52f0 (3D row/slice pitches); 1402f4060 finalizes descriptors and releases replaced views/resources. Host Bevy/wgpu preparation and compressed queue uploads replace those D3D11 calls |
 | `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Particle 2D demand uses this same streamer; full-mip resident consumers still need identity/pinning integration with streamed scene consumers |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
 | `listImages` | the original's image listing (sizes, classes) | capture pending |
@@ -1844,3 +1844,33 @@ capacities and prepared geometry counts. Do not assign MB before measurement.
 Original RESOURCE budget 51,830,920 bytes includes multiple resource families;
 it is not a separate measured probe tag. This is a host representation-lifetime
 improvement, not an assertion that the original discards its live query samples.
+
+
+Probe preparation acceptance (compiled source ae19ab7): library/game-bin checks,
+dev build and retain/retire EotW -> Dust -> EotW production clients all exited 0,
+no fatal/error lines. Retired capacities per map were:
+- EotW: primary samples 20,348,928 + reflection samples 638,976 + cell occluder
+  indices 2,437,760 = 23,425,664 bytes; each capacity became zero.
+- Dust: primary 17,356,800 + reflection 681,984 + indices 1,931,232 =
+  19,970,016 bytes; each became zero.
+- Return EotW: same 23,425,664 bytes. Neither map had alternate sample capacity.
+Retain mode kept exactly those capacities. Prepared geometry remained
+3,312 cells / 213,317 quads / 3,312 primary and 104 reflection probes in EotW;
+2,825 / 171,859 / 2,825 / 111 in Dust. Particle identities matched, and no
+runtime query/SH/reflection upload path was changed. This is actual retired
+Vec capacity, excluding allocator overhead and not claiming an equal RSS drop.
+No walking CPU benchmark is needed for freeing vectors no gameplay reader uses;
+no per-frame work or recomputation was added. Standalone PRB readers keep full
+source data. Local report: artifacts/lifecycles-probe-preparation-comparison.json.
+
+
+Named-image source clarification for the next registry integration: 1402df8c0
+looks up the existing image through 14005feb0 and acquires its current SRV via
+1402bd380; it does not itself request full mips or disable streaming. It stores
+the wrapper's view and dimensions while that named wrapper has references.
+1402bd790 includes first mip/count, layer range and format in the view key;
+1402e9cb0 derives its dimensions from the selected mip. Therefore old leased
+views and current source residency are distinct ownership scopes. A universal
+full-resolution pin inferred from UI binding would be unsupported. Integration
+must share equal source/view identities while preserving explicit snapshots
+and streamer replacement/eviction, rather than silently changing image quality.
