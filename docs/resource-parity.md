@@ -215,7 +215,7 @@ claim that live-movie cyclic garbage collection has been implemented.
 | world/render target teardown | `bevy_backend::shadow_pass`: outgoing shadow target and descriptor ownership | host: map-boundary release clears directional/local target references, prepared caster records, alpha material views and mesh/resource bindings, while preserving compiled pipelines/samplers and upload capacity. Before correction, actual GPU diagnostics showed 3/6/9 static-cache textures after three map loads; verified: three textures / 60 MiB on all four repeated-map loads |
 | `1400473b0`, `1400479a0` | `app::loading_movie`: installed mapinfo data and authored Iggy layout/callbacks | partial: mission/map text, image, shuffled tips, actual resource progress, authored continue/close callback connected; cinematic and saved-transition variants remain outside this direct-map flow |
 | `1400607f0` -> `14005feb0` | `flash::bitmap_resources`: shared immutable compressed library images; `app::resident_images`: shared game-image handles; `gameplay::map_info`: shared immutable parsed declarations | host: Arc registry lifetime; acquisition returns the resident identity, movie state remains separate; forced purge classes remain partial |
-| `1410150f0`, `14101d290`, `14103bb40` | `flash::iggy_functions` / `flash::render` / `bevy_backend::flash_ui`: named game image bound to Bitmap | partial: binding obtains the resident image's actual dimensions before movie layout; bounds and drawing use those dimensions and full UVs, replacing the embedded placeholder rectangle. The compositor uses the image owner's existing GPU texture. Host: worker-to-main request/reply transports the synchronous texture callback without blocking the window thread. Forced image purge remains with image lifecycle above |
+| `1410150f0`, `14101d290`, `14103bb40` | `flash::iggy_functions` / `flash::render` / `bevy_backend::flash_ui`: named game image bound to Bitmap | host: binding obtains the resident image's dimensions before layout; bounds/drawing use those dimensions and full UVs. Display objects and submitted draw lists own shared opaque binding leases (14101d160); publishing forwards those handles instead of reacquiring names. Map purge drops non-common UI registry entries while actual consumers retain their leases; init/common identities survive. Worker-to-main request/reply transports the synchronous callback without blocking the window thread. Cross-domain image identity remains incomplete |
 
 Expected cost of this change: `level_prepare::prepare_level` moves its existing
 parsing off the event/render thread, without changing the parsers or geometry.
@@ -1370,3 +1370,47 @@ shadow-target retirement events. Source-absent entries are now pruned before
 revision reuse, but this route did not replace an atlas within one map. No
 measured GPU memory saving or live quality/resolution coverage is claimed;
 that broader coverage remains open. Existing map-boundary cleanup is unchanged.
+
+
+Named UI image lifetime evidence/prediction (before implementation):
+1410150f0 replaces a bitmap's texture wrapper; 14101d290/14100d6f0 share
+wrappers and track context references. 14101d160 releases the last context
+through 1402dfb00 -> 1402df680; 1402df6f0 drains those releases and destroys the
+substitution handle via 1402e39d0. Acquisition 1402df8c0 separately loads the
+underlying image from the resource manager through 14005feb0: movie-binding
+release is not an instruction to purge every image in the resource registry.
+
+Current UiImages holds every visited map's image/alias/dimensions forever, while
+the movie's Display holds only its name and extent. Implement a host opaque
+image lease carried by each bound Display and submitted draw list, with weak
+wrapper lookup. At map teardown purge UI registry entries outside the existing
+init/common image classification; retain common handles to avoid reopen latency.
+An outgoing/prepared movie or submitted frame keeps its own lease even when
+registry membership changes. Same-name binding is a no-op as in 1410150f0.
+Publish existing leased handles instead of resolving/reloading names while
+publishing every frame. No format, mip quality, sampler, GPU pass, or image
+payload copy changes. Expected invariant: after map purge, strong registry
+entries contain only common/init images, with old non-common images retained
+only by actual consumers; weak wrapper metadata cannot accumulate dead entries.
+Quantify registry/consumer counts on the existing three-map production route.
+No CPU milliseconds or MB savings are predicted from ownership/count changes;
+no additional CPU benchmark is justified for them.
+
+Movie-close sweep prediction: pause_menu::run retains last_frame after Close,
+which retains that closed movie's draw-list/library-image references until the
+next Open. Clear that private reuse slot on Close, alongside the loaded movie;
+submitted main/render frames keep independent references until they retire.
+Expected retained worker reuse frames after Close: one to zero. No extra IO,
+GPU work, per-frame processing, or CPU benchmark is needed for this ownership
+correction (movie destruction 1410298b0).
+
+
+Named UI image production acceptance: the first implementation's library/game
+checks, dev build and EotW -> Dust -> EotW route exited 0. The first purge
+released two registry entries (bootstrap plus outgoing map background); the
+second released one, with zero common entries or live wrappers at both purge
+checkpoints. Each movie resolved its 1920x1080 background, and all three maps
+used one catalogue/device/window/audio output without reported errors. These
+are registry ownership counts, not GPU heap/RSS measurements. The subsequent
+Close reuse-slot correction is included in the cohesive retirement run; its
+final result is recorded separately, not inferred from this earlier binary.

@@ -28,7 +28,7 @@ pub(super) fn prepare_image(
     } else {
         let mut loaded =
             read_streamed_diffuse_at_target(catalog, &path, TextureReadTarget::Initial(Some(0)))?
-                .ok_or_else(|| format!("missing resident resident image {path}"))?;
+                .ok_or_else(|| format!("missing resident image {path}"))?;
         loaded.image.data = Some(
             loaded
                 .uploads
@@ -48,49 +48,65 @@ pub(super) fn prepare_image(
     Ok(handle)
 }
 
-/// UI consumers request the same installed-image owner as scene consumers.
-/// Retain the handles across bootstrap/loading/pause; no UI-owned copy/upload.
+/// Registry ownership is separate from each movie's binding reference
+/// (14005feb0 vs 14101d160). Init/common images survive map purge; movie/frame
+/// leases keep still-used map images alive until the last consumer retires.
 #[derive(Resource, Default)]
 pub(super) struct UiImages {
     pub resident: HashMap<String, Handle<Image>>,
     pub aliases: HashMap<String, Handle<Image>>,
-    dimensions: HashMap<bevy::asset::AssetId<Image>, [f64; 2]>,
+    bindings: HashMap<String, std::sync::Weak<crate::flash::iggy_functions::TextureBinding>>,
+}
+impl UiImages {
+    fn acquire(&mut self, catalog: &archive::Catalog, name: &str,
+        images: &mut Assets<Image>) -> Result<crate::flash::iggy_functions::BoundTexture, String> {
+        let path = crate::material::image_load_resource(catalog, name)
+            .ok_or_else(|| format!("unresolved resident image source {name}"))?;
+        if let Some(binding) = self.bindings.get(&path).and_then(std::sync::Weak::upgrade) {
+            // A prepared/outgoing movie can outlive a registry purge. Re-admit
+            // its live identity rather than uploading the same image again.
+            let handle = binding.owner::<Handle<Image>>().ok_or("UI image owner unavailable")?;
+            self.resident.insert(path, handle.clone());
+            self.aliases.insert(name.to_owned(), handle.clone());
+            return Ok(binding);
+        }
+        let handle = prepare_image(catalog, name, images, &mut self.resident, &mut self.aliases)?;
+        let image = images.get(&handle).ok_or("UI image descriptor unavailable")?;
+        let binding = std::sync::Arc::new(crate::flash::iggy_functions::TextureBinding::new(
+            [image.width() as f64, image.height() as f64], handle));
+        self.bindings.insert(path, std::sync::Arc::downgrade(&binding));
+        Ok(binding)
+    }
+
+    pub(super) fn release_level(&mut self, shared: &super::texture_streaming::SharedImages) {
+        // Host counterpart of map-class purge (140060180). Live Iggy bindings
+        // and submissions retain independent leases through this purge.
+        let before = self.resident.len();
+        self.resident.retain(|path, _| shared.contains(path));
+        let ids: std::collections::HashSet<_> = self.resident.values().map(Handle::id).collect();
+        self.aliases.retain(|_, handle| ids.contains(&handle.id()));
+        self.bindings.retain(|_, binding| binding.strong_count() != 0);
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY UI image registry purge: released={} retained_common={} live_bindings={}",
+                before - self.resident.len(), self.resident.len(), self.bindings.len());
+        }
+    }
 }
 
 pub(super) fn publish_ui_images(
     mut frame: ResMut<crate::rendering::bevy_backend::flash_ui::FlashUiFrame>,
-    mut cache: ResMut<UiImages>,
-    mut images: ResMut<Assets<Image>>,
-    loading: Res<super::loading_screen::Acquisition>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if !frame.is_changed() {
-        return;
-    }
-    let Some(frame) = frame.0.as_mut() else {
-        return;
-    };
-    let mut named = HashMap::new();
-    for batch in &frame.list.batches {
-        let crate::flash::render::Texture::Game(name) = &batch.texture else {
-            continue;
+    if !frame.is_changed() { return; }
+    let Some(frame) = frame.0.as_mut() else { return; };
+    let mut named = HashMap::with_capacity(frame.list.named_images.len());
+    for (name, binding) in &frame.list.named_images {
+        let Some(image) = binding.owner::<Handle<Image>>() else {
+            error!("UI image {name}: renderer owner unavailable");
+            exit.write(AppExit::error());
+            return;
         };
-        if named.contains_key(name) {
-            continue;
-        }
-        let UiImages {
-            resident, aliases, ..
-        } = &mut *cache;
-        match prepare_image(&loading.catalog, name, &mut images, resident, aliases) {
-            Ok(image) => {
-                named.insert(name.clone(), image);
-            }
-            Err(error) => {
-                error!("UI image acquisition failed: {error}");
-                exit.write(AppExit::error());
-                return;
-            }
-        }
+        named.insert(name.clone(), image.clone());
     }
     frame.game_images = std::sync::Arc::new(named);
 }
@@ -99,7 +115,7 @@ pub(super) fn publish_ui_images(
 /// The movie worker can wait without blocking the window/event loop.
 pub(super) struct UiTextureRequest {
     pub name: String,
-    pub reply: std::sync::mpsc::SyncSender<Result<[f64; 2], String>>,
+    pub reply: std::sync::mpsc::SyncSender<Result<crate::flash::iggy_functions::BoundTexture, String>>,
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -114,22 +130,7 @@ impl UiImageService<'_> {
         catalog: &archive::Catalog,
     ) {
         for request in pause.texture_requests() {
-            let UiImages {
-                resident, aliases, ..
-            } = &mut *self.cache;
-            let result = prepare_image(catalog, &request.name, &mut self.images, resident, aliases)
-                .and_then(|handle| {
-                    if let Some(extent) = self.cache.dimensions.get(&handle.id()) {
-                        return Ok(*extent);
-                    }
-                    let image = self
-                        .images
-                        .get(&handle)
-                        .ok_or("UI image descriptor unavailable")?;
-                    let extent = [image.width() as f64, image.height() as f64];
-                    self.cache.dimensions.insert(handle.id(), extent);
-                    Ok(extent)
-                });
+            let result = self.cache.acquire(catalog, &request.name, &mut self.images);
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 eprintln!("LOAD UI texture binding: {} {result:?}", request.name);
             }

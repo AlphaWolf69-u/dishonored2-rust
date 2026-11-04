@@ -76,6 +76,8 @@ pub(super) struct SharedImages {
 }
 
 impl SharedImages {
+    pub(super) fn contains(&self, path: &str) -> bool { self.paths.contains(path) }
+
     pub(super) fn can_reuse(&self, path: &str, preferred: Option<u8>) -> bool {
         self.resident.get(path).is_some_and(|(mip, _, _)| *mip == preferred)
     }

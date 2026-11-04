@@ -261,3 +261,23 @@ one map; no GPU-memory reduction is assigned. Resource bindings, mesh allocator
 entries and alpha materials already have invalidation/pruning. A live quality
 or resolution replacement still needs residency coverage; do not infer it from
 map teardown or add a second cleanup for caches already pruned.
+
+
+UI owner sweep: per-display/per-submission image leases and map-class registry
+purge now replace perpetual strong map-image caching. Shared bootstrap/common
+identities stay resident. Worker Close also releases its private last_frame,
+which otherwise kept a closed movie's library-image/draw references alive until
+next Open. Cross-domain scene/UI/particle canonical identity is still separate
+work; this change does not claim that unification. Production retirement counts
+are pending the cohesive implementation run; no CPU timing claim is assigned.
+
+Setup model temporary ownership: model_cache/md6_cache are only referenced
+through the placement summary, but remain allocated until setup returns after
+water/FX/particle acquisition. Their decoded surface vectors are staging, while
+published mesh/query/skinning owners hold runtime backing independently. Next
+change: release both caches at their actual last use, before later acquisition,
+and report the capacities being released as temporary payload bytes (excluding
+allocator/header overhead). Expected benefit is a lower overlapping loading
+peak, not lower gameplay CPU or necessarily lower steady-state memory. No extra
+cache, parallel copy or source conversion is needed. Native model input closes
+at 14025aa00's exit; runtime geometry lifetime is a separate owner.

@@ -109,6 +109,9 @@ pub struct DrawList {
     pub ramps: Vec<[u8; 256]>,
     /// Glyph cache pages (`glyph_cache`), as of the end of the build.
     pub glyph_pages: Vec<std::sync::Arc<super::glyph_cache::Page>>,
+    /// Keep named images alive until this submitted list retires, even if
+    /// its movie is already closed or a map registry has been purged.
+    pub named_images: HashMap<String, super::iggy_functions::BoundTexture>,
     pub stage: (f32, f32),
 }
 
@@ -601,7 +604,7 @@ impl Builder<'_> {
     /// The object's own drawing and its children.
     fn draw_content(&mut self, o: &Obj, m: &Affine, c: &Colour) {
         let Some(d) = display_ref(o) else { return };
-        let (kind, character, graphics, blend, game_texture, game_size) = (d.kind, d.character, d.graphics.clone(), d.blend, d.game_texture.clone(), d.game_texture_size);
+        let (kind, character, graphics, blend, game_texture, game_size, binding) = (d.kind, d.character, d.graphics.clone(), d.blend, d.game_texture.clone(), d.game_texture_size, d.game_texture_binding.clone());
         drop(d);
         let (m, c) = (*m, *c);
         if let Some(g) = graphics {
@@ -632,6 +635,7 @@ impl Builder<'_> {
                 let smooth = o.host::<super::Native>().is_some_and(|n| n.flag);
                 let from_data = data.as_ref().and_then(|v| v.as_object()?.host::<super::Native>()?.bitmap_data.clone()).and_then(|s| s.character);
                 if let (Some(name), Some([width, height])) = (game_texture, game_size) {
+                    if let Some(binding) = binding { self.out.named_images.entry(name.clone()).or_insert(binding); }
                     // The external texture has its own extent and full UVs;
                     // the embedded placeholder's rectangle/UVs do not apply.
                     self.bitmap(Texture::Game(name), width as f32, height as f32, [1.0, 1.0, 0.0, 0.0], &m, &c, smooth, blend);
@@ -895,6 +899,7 @@ pub fn stack(base: &mut DrawList, mut top: DrawList) {
     base.batches.append(&mut top.batches);
     base.ramps.append(&mut top.ramps);
     base.glyph_pages.append(&mut top.glyph_pages);
+    base.named_images.extend(top.named_images);
 }
 
 #[cfg(test)]

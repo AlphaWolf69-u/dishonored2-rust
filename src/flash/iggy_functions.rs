@@ -5,10 +5,26 @@ use super::avm2::Vm;
 use super::display::display;
 use super::player;
 
-// 14101d290 resolves a named texture through the engine callback and stores
-// its actual dimensions at wrapper +0x28/+0x2c. The UI worker requests that
-// same image owner; it never reads or uploads an independent image copy.
-type TextureResolver = Box<dyn FnMut(&str) -> std::result::Result<[f64; 2], String>>;
+/// Named wrapper from 14101d290/14100d6f0, released with its last context
+/// reference (14101d160). Host: carry the renderer's handle across the movie
+/// worker without coupling the Flash runtime to Bevy.
+pub struct TextureBinding {
+    pub extent: [f64; 2],
+    owner: Box<dyn std::any::Any + Send + Sync>,
+}
+impl TextureBinding {
+    pub fn new(extent: [f64; 2], owner: impl std::any::Any + Send + Sync) -> Self {
+        Self { extent, owner: Box::new(owner) }
+    }
+    pub fn owner<T: std::any::Any>(&self) -> Option<&T> { self.owner.downcast_ref() }
+}
+impl std::fmt::Debug for TextureBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureBinding").field("extent", &self.extent).finish_non_exhaustive()
+    }
+}
+pub type BoundTexture = std::sync::Arc<TextureBinding>;
+type TextureResolver = Box<dyn FnMut(&str) -> std::result::Result<BoundTexture, String>>;
 thread_local! {
     static TEXTURE_RESOLVER: std::cell::RefCell<Option<TextureResolver>> = const { std::cell::RefCell::new(None) };
 }
@@ -103,14 +119,18 @@ pub fn install(vm: &mut Vm) {
                 Value::Null | Value::Undefined => None,
                 v => Some(vm.to_string(&v)?.to_string()),
             };
-            let extent = name.as_deref().map(|name| TEXTURE_RESOLVER.with(|slot| {
+            // 1410150f0 does not reacquire an unchanged binding.
+            if arg(a, 0).as_object().and_then(super::display::display_ref)
+                .is_some_and(|d| d.game_texture == name) { return Ok(Value::Undefined); }
+            let binding = name.as_deref().map(|name| TEXTURE_RESOLVER.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 slot.as_mut().ok_or("game texture resolver unavailable".to_owned())?(name)
             })).transpose().map_err(super::avm2::Error::Internal)?;
             if let Some(o) = arg(a, 0).as_object() {
                 if let Some(mut d) = display(o) {
                     d.game_texture = name;
-                    d.game_texture_size = extent;
+                    d.game_texture_size = binding.as_ref().map(|image| image.extent);
+                    d.game_texture_binding = binding;
                 }
             }
             Ok(Value::Undefined)

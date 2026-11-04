@@ -98,6 +98,9 @@ pub struct Display {
     pub game_texture: Option<String>,
     /// Bound image dimensions (14101d290 +0x28/+0x2c).
     pub game_texture_size: Option<[f64; 2]>,
+    /// Released with the Display, including invisible/prepared movies that
+    /// are not currently producing a draw list (14101d160).
+    pub game_texture_binding: Option<super::iggy_functions::BoundTexture>,
 }
 
 impl Display {
@@ -145,6 +148,7 @@ impl Display {
             antialiasing: true,
             game_texture: None,
             game_texture_size: None,
+            game_texture_binding: None,
         }
     }
 

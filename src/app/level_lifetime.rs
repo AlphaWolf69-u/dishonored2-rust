@@ -44,6 +44,9 @@ impl LevelLifetime {
                 if let Some(queue) = world.get_resource::<super::SceneRenderQueue>() {
                     shared.capture(queue);
                 }
+                if let Some(mut ui) = world.get_resource_mut::<super::resident_images::UiImages>() {
+                    ui.release_level(&shared);
+                }
             },
         );
         let entities: Vec<_> = world

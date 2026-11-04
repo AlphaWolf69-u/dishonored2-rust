@@ -403,7 +403,12 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     }
                 }
             }
-            Command::Close => loaded = None,
+            Command::Close => {
+                loaded = None;
+                // 1410298b0 closes the movie and its draw ownership. Only an
+                // actually submitted frame may outlive it, not this reuse slot.
+                last_frame = None;
+            },
             Command::DebugDump { window } => {
                 let Some(l) = loaded.as_mut() else { continue };
                 let mut out = format!("window {window:?}\n== pause movie\n");
