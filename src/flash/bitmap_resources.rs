@@ -141,12 +141,14 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
 /// separate. Share immutable compressed images across loading and pause players.
 /// bevy_backend: Arc owns the payload independently of either movie thread.
 type LibraryImages = std::sync::Arc<Vec<(u16, std::sync::Arc<Image>)>>;
-static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(std::path::PathBuf, String), LibraryImages>>> = std::sync::Mutex::new(None);
+static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(u64, String), LibraryImages>>> = std::sync::Mutex::new(None);
 
 pub fn acquire(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<LibraryImages, String> {
-    let key = (catalog.base().to_owned(), resource.replace('\\', "/").to_ascii_lowercase());
+    let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
     let mut resident = RESIDENT.lock().unwrap();
     let resident = resident.get_or_insert_with(Default::default);
+    // Movie/image leases keep their data if another catalog becomes active.
+    resident.retain(|(identity, _), _| *identity == catalog.identity());
     if let Some(images) = resident.get(&key) { return Ok(images.clone()); }
     let images: LibraryImages = std::sync::Arc::new(load(catalog, resource, file)?.into_iter()
         .map(|(id, image)| (id, std::sync::Arc::new(image))).collect());

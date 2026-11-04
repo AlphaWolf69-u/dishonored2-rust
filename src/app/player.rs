@@ -116,21 +116,39 @@ struct Rig {
     path: String,
 }
 
+/// Only these rig fields remain necessary when resolving arm scene clips.
+struct ArmSceneRig {
+    aliases: HashMap<String, String>,
+    rest: Vec<crate::edge_skeleton::JointRestPose>,
+}
+impl From<Rig> for ArmSceneRig {
+    fn from(rig: Rig) -> Self {
+        Self { aliases: rig.aliases, rest: rig.skeleton.rest }
+    }
+}
+
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
     Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
 }
 
 fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    let mut source_crc = flate2::Crc::new();
+    let mut animset_count = 0usize;
+    let mut animset_bytes = 0usize;
     let stem = model.strip_suffix(".md6").ok_or_else(|| format!("{model} is not an md6"))?;
     let binding = crate::bmd6::resolve_skeleton_binding(&format!("generated/basemodel/{stem}.bmd6model"), |path| text_of(catalog, path).ok().flatten())?
         .ok_or_else(|| format!("{model} has no skeleton"))?;
     let skeleton_stem = binding.name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
     let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
     let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
+    if trace { source_crc.update(&bytes); }
+    let skeleton_bytes = bytes.len();
     let skeleton = crate::edge_skeleton::parse(&bytes)?;
     let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
     let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
     let md6 = text_of(catalog, &md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?;
+    if trace { source_crc.update(md6.as_bytes()); }
     let tokens: Vec<String> = crate::entities::declaration_lexemes(&md6)?.into_iter().map(str::to_owned).collect();
     let mut aliases = HashMap::new();
     if let Some(start) = tokens.iter().position(|t| t == "animsets") {
@@ -138,8 +156,12 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
             let name = token.trim_matches('"');
             let animset = format!("generated/decls/animset/{name}.decl");
             let source = text_of(catalog, &animset)?.ok_or_else(|| format!("{animset} is absent"))?;
+            if trace { animset_count += 1; animset_bytes += source.len(); source_crc.update(source.as_bytes()); }
             crate::edge_animation::animset_aliases(&source, &mut aliases)?;
         }
+    }
+    if trace {
+        eprintln!("MEMORY player rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6.len(), source_crc.sum());
     }
     Ok(Rig { skeleton, root, aliases, tokens, path })
 }
@@ -218,7 +240,7 @@ fn load_arm(
     camera: &CameraDecl,
     locomotion: &[(String, crate::entities::Value)],
     body_decl: &[(String, crate::entities::Value)],
-) -> Result<crate::gameplay::player::arms::Arm, String> {
+) -> Result<(crate::gameplay::player::arms::Arm, ArmSceneRig), String> {
     use crate::gameplay::player::animation::{LocoData, LocoNode, SpeedSet, Transition};
     use crate::gameplay::player::arms::{Arm, ArmSkeleton};
     const EQUIP: &str = "Empty";
@@ -262,7 +284,7 @@ fn load_arm(
     let mut arm = Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items);
     arm.sound_settings = crate::entities::player::entity_component(def, "cpntaudio", read)?
         .map(|fields| crate::gameplay::sound::component::Settings::read(&fields)).transpose()?;
-    Ok(arm)
+    Ok((arm, rig.into()))
 }
 
 /// The body skeleton, its animsets' aliases and the stance clips
@@ -328,8 +350,19 @@ fn load_body(
     let jump_items = decls::camera_jump_aliases(body_decl).map(|alias| alias.and_then(|a| node.index_of(&a)));
     let parts = decls::arm_parts(body_decl)?;
     let mut arms = Vec::new();
+    let mut arm_rigs = Vec::new();
+    let separate_rigs = catalog.has_overlays()
+        || std::env::var("DH2_DEBUG_SEPARATE_PLAYER_RIGS").as_deref() == Ok("1");
     for (side, part) in parts.iter().enumerate() {
-        arms.push(load_arm(catalog, side, part, &rig, camera, locomotion, body_decl)?);
+        let (arm, arm_rig) = load_arm(catalog, side, part, &rig, camera, locomotion, body_decl)?;
+        arms.push(arm);
+        arm_rigs.push(arm_rig);
+    }
+    // 1400607f0 reuses the acquired definition; scene clips need the same rig.
+    // Mutable overlays and the diagnostic retain the former read order.
+    if separate_rigs {
+        arm_rigs.clear();
+        for arm in &arms { arm_rigs.push(load_rig(catalog, &arm.model)?.into()); }
     }
     use crate::gameplay::sound::Emitter;
     let arm_models: Vec<String> = arms.iter().map(|arm| arm.model.clone()).collect();
@@ -343,11 +376,10 @@ fn load_body(
     // the graph reaches for this body md6.
     let mut scenes = Scenes::new();
     // The arm groups resolve through each arm's own animsets.
-    let arm_rigs = arms.iter().map(|arm| load_rig(catalog, &arm.model)).collect::<Result<Vec<_>, _>>()?;
     let mut arm_clips: Vec<Clips> = arms
         .iter_mut()
         .zip(&arm_rigs)
-        .map(|(arm, rig)| Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
+        .map(|(arm, rig)| Clips { catalog, aliases: &rig.aliases, rest: &rig.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
         .collect();
     for path in scene_paths {
         let resource = format!("generated/decls/midnightscene/{path}.decl");

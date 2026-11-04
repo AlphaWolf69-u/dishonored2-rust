@@ -18,7 +18,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 | Original | Behavior | Status |
 |---|---|---|
-| `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` records reads, actual manifest progress and readiness gates; `app::loading_screen` presents bootstrap/map stages in one renderer; the rewrite's loads are not driven by the lists yet |
+| `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` derives approximate progress from a session read history, and readiness uses independent gates; `app::loading_screen` presents bootstrap/map stages in one renderer. Loads are not driven by the lists, and some historical successful reads can still be credited as acquisitions; failed reads no longer advance progress. Owner-driven retirement covers animation clips and probe sets; see the loading read-history investigation below |
 | `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | host: lookup is `140064590` (vtable `141acc328` + `0xb0`), which normalizes the manifest path and searches registered container name tables; `assets::map_resources::load_list` resolves the manifest's owning archive, then interprets ids against that archive's index. Installed input audit: 38 manifest paths, no cross-container duplicates. Redundant index rescans are separate acquisition work, not an unresolved virtual call |
 | "%i streamed" entries (`140066ac0`-`140066b8c`) | the map preloader skips index flag `0x20` and `.sbcm`/`.tbcm`/`.bwm` records | partial: classification traced in installed instructions; `140068800` reads the index flags into record+`0x4a0`. In installed `game1_001.index`, 6,952 flagged records are image mips (6,476), Iggy (350) and generic files (126). This does not imply that every ordinary placed mesh is spatially streamed. Typed rewrite owners request these payloads themselves; unified registry-driven loading remains partial |
 
@@ -31,7 +31,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 | `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original upload dispatch is traced: 1402f5500 selects 1402f50c0 (2D/cube UpdateSubresource1 or Map/copy/Unmap) or 1402f52f0 (3D row/slice pitches); 1402f4060 finalizes descriptors and releases replaced views/resources. Host Bevy/wgpu preparation and compressed queue uploads replace those D3D11 calls |
 | `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Particle 2D demand uses this same streamer; named UI acquisition now reuses committed scene/common views without forcing full mips; compatible registered base views avoid scene reacquisition |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
-| `listImages` / readonly resource registry | the original's named image residency (sizes, classes, views) | bootstrap captured: 643 resource registries / 23,534 registered entries, including 1,548 named images. Readonly full-Steam capture validates image list `1432e9ff0`, registry `+38/+40`, scope `+24`, and current image/view descriptors. Map capture requires a loaded EotW view; allocator totals alone do not supply this data. The earlier loading request became stale when that process was closed. A fresh full-Steam process was verified running on 2026-11-04 before requesting the level again |
+| `listImages` / readonly resource registry | the original's named image residency (sizes, classes, views) | verified snapshots: bootstrap has 643 resource registries / 23,534 entries including 1,548 named images; full-Steam Institute and EotW snapshots capture named image scopes and current views, including the EotW ocean streamer record. The user-driven waterfront observation sampled that record over movement; precise coverage and limits are recorded below. Allocator totals alone do not supply named image residency |
 | `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Particle 2D identities/demand now use the scene owner (3dd8a11); remaining volumes retain complete single-mip authored data. Equivalent registered scene-base views and current named-UI snapshots now share handles; intentionally different mip views remain independent |
 
 ### Sound (Wwise)
@@ -87,7 +87,7 @@ trailing `*` covers a family of kinds.
 | `drop` | none | none: no owner yet |
 | `entityDef` | `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
 | `env` | `assets::entities`, `assets::environment` | partial: reads its resources; lifecycle not ported (see its class) |
-| `EnvProbe` | `assets::bprobe`, `assets::texture` (probe network) | partial: the per-vertex probe references become the GPU vertex-probe buffer at setup and are then released (no main-world copy of either); load path not compared with the original |
+| `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
 | `fade` | `assets::fx::fade`, `app::loading_fade` | partial: world-authored load colour/opacity curves and durations; runtime sampling follows `140166f60` / `140166e40` / `140167170`. Host display UI composition; priority/listener/script arbitration remains outside the direct-map loader |
@@ -112,7 +112,7 @@ trailing `*` covers a family of kinds.
 | `kiscule` | `assets::entities::effects::declarations` | partial: level and declaration graph definitions shared by Arc; runtime variables, gate values, owner overrides and queues stay instance-local (`7bc1d0`/`7bb9d0`). Host ownership optimization; full lifecycle not ported |
 | `layer` | none | none: no owner yet |
 | `loco` | none | none: no owner yet |
-| `mapInfo` | `gameplay::map_info` | partial: reads its resources; lifecycle not ported (see its class) |
+| `mapInfo` | `gameplay::map_info` | host: session declaration index follows `1400607f0` / `14005feb0`; only requested parsed declarations are retained and aliases share the same immutable identity. A five-level production comparison reduced reads 50 -> 19 and decoded bytes 200,076 -> 77,776 with matching declaration fingerprints. Overlay and read-failure paths retain the existing scan; whole resource-class purge remains partial |
 | `massprops` | `assets::physworld::mass`, `assets::entities::machinery` | partial: reads its resources; lifecycle not ported (see its class) |
 | `material` | `app::material_loading` (material class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `md6Def` | `assets::bmd6`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -2783,3 +2783,356 @@ message-box movie named by the current client are common as well. Keeping
 these currently used files for the UI worker therefore matches their session
 scope. This does not extend the claim to the currently unimplemented
 interactive-map movie.
+
+
+### Map-info lookup prediction
+
+The original init/common manifests register 28/39 mapInfo resources and
+`1400607f0` / `14005feb0` resolve their resident identities. The rewrite
+currently scans and parses mapInfo declarations in archive order for every
+previously unseen map, discarding all nonmatching parsed declarations. An
+incremental index of only the discovered low/high map paths and declaration
+indices can skip already-scanned records, while caching full declarations only
+when a requested map actually uses them. Low/high aliases of the same declaration
+should share one immutable `Arc`; per-map callers retain their own reference.
+Two installed map names occur in multiple declarations; the index keeps the
+first declaration in the same sorted order as the existing scan. Modded
+mapInfo overlays keep the existing scan behavior so in-session overlay changes
+do not invalidate a speculative index. A parse/read failure likewise
+falls back to the existing scan. Independently opened catalogues for the same
+installation can contain different overlay snapshots; the index and last-map
+cache must also invalidate on catalogue identity, rather than only on path.
+
+Installed data contains 39 declarations; in sorted order the EotW, Curator
+boat and Dust targets are positions 17, 1 and 15. For the EotW -> Curator boat
+-> Dust -> EotW route, predict 33 declaration reads with the existing cache
+versus 19 with incremental indexing. Appending EotW high chaos to the route
+is expected to raise the reference to 50 reads while the indexed path shares
+the already requested declaration and stays at 19. The indexed uncompressed
+resource sizes predict 200,076 -> 77,776 decoded bytes for that five-load
+route. The 39 indexed resource paths contain 2,818 UTF-8 bytes, and the 59 quoted map-path
+entries found in those declarations contain 2,817 UTF-8 bytes before deduplication; vectors, hash
+tables and allocator overhead are additional. This session metadata replaces
+repeated scans without retaining full parsed declarations for unrequested maps. Count
+reads, decoded bytes and index storage with same-build controls and compare
+resolved declaration fingerprints. These are I/O and logical metadata counts,
+not a CPU-time or process-RSS prediction.
+
+
+### Map-info lookup result
+
+The same-binary EotW low / Curator boat / Dust / EotW low / EotW high route
+completed in both modes. Reference and indexed reads were 50 -> 19, with
+200,076 -> 77,776 decoded bytes, exactly as predicted. All four distinct
+map/declaration fingerprints match; the high-chaos alias reused the already
+parsed EotW identity with zero reads. The indexed route retained 3,822 UTF-8
+string bytes for resource paths and discovered map keys at its final lookup;
+vector, hash-table and allocator overhead are additional. These are read and
+logical-string counts, not process RAM or CPU timings. Mod overlay and read-error
+fallbacks were checked in code; these successful clients do not exercise them.
+Evidence: local `artifacts/mapinfo-index-v2-comparison.json` and paired client
+logs. No tests or visual inspection performed.
+
+### Loading read-history ownership investigation
+
+The original load loop at `1400661e0` advances its request cursor after
+`1400607f0` acquires the indexed resource identity. The rewrite currently
+records a `Catalog::read` before the archive or overlay read succeeds, and
+keeps that record across world teardown. `begin_level` treats every historical
+read as already acquired, including map-scoped data that the owner released.
+Consequently this is a read-history approximation, not an accurate resident
+registry or original request cursor; readiness gates remain independent.
+
+Before changing it: successful reads should still be counted once in the
+current load, failed reads should contribute zero, and a released map resource
+should not be counted at the next load until reacquired. Cache hits must be
+recorded by the actual owner or derived from its live identities, including
+init/common and shared image, animation and UI resources. Merely preserving
+every path named in a common manifest is insufficient evidence of residency.
+Measure per-kind retained entries/bytes and current-load acquisitions on a
+multi-map route; do not claim a CPU timing or physical RAM result from path
+counts.
+
+Existing `artifacts/full-owned-compact.err` reports permit an exact history
+entry count without a new run: for each kind, listed-and-read plus unlisted
+read paths equals the session set size. On its four-load EotW / boat / Dust /
+EotW route, the totals are 22,857 / 24,643 / 29,922 / 29,961 distinct paths.
+The history grows by 7,104 entries by the return to EotW; this is metadata
+count, not measured bytes or proof that all of those entries are stale. The
+return's listed-and-read count is 20,357 versus 20,138 on the first visit;
+that difference alone cannot distinguish actual shared owners from stale
+history. The animation-owner comparison recorded 38 map-only clips released
+at each transition with zero outgoing map leases; their read-history entries
+nevertheless remain after the owner releases them. A gated diagnostic will
+measure path capacities and precredited entries; actual owner acquisition/release
+events are needed to classify the full set.
+
+
+Animation history release prediction: the compressed-clip owner already knows
+which weak entries have no remaining leases at the map boundary. Removing only
+those exact paths from the loading read history should remove 38 entries at
+each measured transition in the EotW / boat / Dust / EotW route, while leaving
+the 162 pinned common clips and any live map leases untouched. On return, the
+38 released clips should count only after successful new acquisition; common
+clip reuse should require no new reads. Those 38 reacquired paths in the existing
+production log total 3,844 UTF-8 bytes; allocated string capacities may differ.
+Measure retained path capacity and removed entries at the owner boundary, plus
+the existing animation acquisition fingerprints. This changes transition bookkeeping, not gameplay-frame work;
+this is not a CPU time or process-RAM prediction. Other resource owners need
+their own release integration.
+
+
+### Probe-network staging prediction
+
+The original network loader `1402b15e0` reads from its input stream and
+acquires probe identities while loading; it does not need the rewrite's whole
+source file to remain live after decoding. In `load_for_world`, names, spatial
+tables and vertex-reference buffers are owned values: once all three have been
+parsed, the `network` Vec has no remaining reader, but its destructor currently
+runs only when the function returns after every individual probe has loaded.
+Release that source before the probe loops. Prediction: at the start and end of
+those loops, source staging capacity falls from the network's measured capacity
+to zero (installed EotW is 247,791,156 decoded bytes and Dust District is
+321,048,211), with the same probe identities, spatial and vertex-reference counts, and probe data. This
+reduces overlapping live allocation, not necessarily process RSS or gameplay
+CPU time. Compare retained-source and early-release modes in production clients
+on multiple maps; no per-frame work or output precision changes. An installed
+index scan found 36 distinct probe-network paths and all 36 are compressed;
+decoded sizes range from 2,333,900 to 321,277,840 bytes. The early release
+still allocates the decoded input during parsing. Incremental decompression
+and parsing are the next lifecycle step, using the original's stream order;
+it must preserve every parser validation and output while avoiding a second
+whole decoded file and without imposing a gameplay-frame cost. All 36 indexed
+networks are PNW v7 with Voronoi v9 and feature byte zero; their primary probe
+counts range from 63 to 5,085. The existing parser accepts older supported
+PNW versions as well, so a replacement must preserve those rather than specializing the game
+files. Prediction: stream each compressed member once, keeping bounded input
+buffering and the same required output arrays; remove the full 247,791,156-byte
+EotW and 321,048,211-byte Dust staging allocations even during parsing. Compare
+all parsed records and the affected parsing/decompression time, not whole-frame
+time; record actual buffer capacity and investigate a result beyond the stated
+prediction before accepting it.
+
+
+Probe history release prediction: the production probe loader owns the parsed
+`.bprobe` data through `ProbeLightingSet`, shared by scene and particle
+consumers using `Arc`. All 71,594 distinct installed `EnvProbe` index paths
+end in `.bprobe`; source search found the game loads these through this owner.
+A shared lifetime lease should remove that kind's read-history set only after
+the last probe set is gone, while a new/in-flight set keeps it alive. Existing
+EotW / boat / Dust / EotW snapshots report historical EnvProbe totals of
+3,312 / 3,915 / 6,740 / 6,740. Prediction after owner-driven retirement is
+3,312 / 603 / 2,825 / 3,312 for the respective active sets, absent unrelated
+reads; that avoids retaining outgoing path strings without touching their
+parsed probe data or gameplay-frame work. Measure removed entries and string
+capacity at the actual last-owner drop and compare probe fingerprints;
+allocator buckets and process RSS are separate quantities.
+
+
+### Animation history and probe staging results
+
+The same-build four-load EotW / Curator boat / Dust / EotW comparison
+completed in both probe-staging modes. The animation owner removed exactly
+38 stale history paths and 3,844 bytes of string capacity at each of three
+transitions, while retaining 162 common clips and reporting zero outgoing map
+leases. Its 800 clip acquisition fingerprints match the first four loads of
+the pre-change production route; each route reused 486 clips. This is path
+metadata and acquisition evidence, not an RSS or CPU-time measurement.
+
+The retained vs early-release comparison reports the same parsed-network
+fingerprint for every load and the same probe names/counts. The source Vec
+capacity alive during individual probe acquisition was 247,791,156 -> 0
+bytes in EotW, 43,103,144 -> 0 on Curator boat and 321,048,211 -> 0 in Dust.
+This removes overlapping live source allocations; it does not establish a
+process-RSS change. Both production clients exited successfully. Evidence:
+local `artifacts/lifecycle-batch-comparison.json` and paired logs. No tests or
+visual inspection were performed.
+
+
+### Contact declaration reuse prediction
+
+`app::audio::contacts::texts_at_load` rereads its complete init/common/map
+contact, physics-material and sound-event list for every world, then stores
+per-level decoded text. Original `1400661e0` requests init/common separately,
+while `1400607f0` / `14005feb0` reuse their registered identities. Installed
+manifest/index inspection found 9,009 distinct matching common declarations
+(1,408,166 indexed decoded bytes), no matching init entries, and 382 / 389
+additional map entries for EotW / Dust. The latter sets have no path overlap
+with common in those maps. Assuming all selected reads succeed, EotW -> Dust ->
+EotW currently needs 28,180 distinct-per-load reads and 4,428,182 indexed
+decoded source bytes; retaining one immutable common text table should reduce
+that to 10,162 reads and 1,611,850 bytes. Per-map entries must still release
+with their owner. Do not keep a second common copy in each map, and do not
+cache mutable mod overlays. Compare actual successful read counts, bytes and
+declaration-text fingerprints, along with session and map ownership; this is
+an IO prediction, not a CPU-time or process-RAM claim.
+
+
+Listed sound-event overlap prediction: the installed common list contains
+1,296 sound-event entries and the EotW / Dust map lists contain 382 / 388.
+`ContactSounds` reads their declaration text before `prepare_listed_events`
+reads and resolves the same listed events again. A single shared text snapshot
+should satisfy at least 5,040 direct listed-event source requests across
+EotW -> Dust -> EotW (1,678 / 1,684 / 1,678); inheritance may add cache hits
+or genuine fallback reads. Keep the existing declaration parser and typed
+outputs, support the independent fallback initializer, and report actual hit,
+fallback and source-byte counts plus resolved-event fingerprints. A common
+owner must expose the snapshot to both users without retaining duplicate text.
+
+
+The candidate sequential parser now shares its implementation between slice
+readers and the buffered archive stream. A production diagnostic read all 36
+installed networks through each implementation; all 36 full parsed-record
+fingerprints match and every acquisition succeeded. The affected input/parse
+thread CPU summed 8,125.0 ms for the existing path and 8,218.75 ms for the
+streamed path; that aggregate alone is not acceptance because the single-sample
+Dunwall Tower result differed by more than 30%. Repeated targeted measurements
+are underway to distinguish that discrepancy from the 15.625 ms timer
+quantization and run-to-run variation. Evidence: local
+`artifacts/probe-stream-world-comparison.json` and the per-mode world records.
+
+
+Manifest cache identity correction: `Catalog::open` can create another catalog
+for the same installation with a different enabled-overlay snapshot. The old
+init/common and weak combined-manifest cache keys included only installation
+path, map and language, so they could return descriptors from a different
+catalog. Key both caches by catalog identity and release the cache owner's
+references for other catalogs; live callers retain their own Arc. A loose
+init/common manifest is read on each new assembly because the overlay file
+can change in place. The ordinary one-catalog route should keep the same
+manifest identities, reads, descriptors and loading gates; this is a
+correctness/lifetime fix, not a predicted gameplay CPU improvement.
+
+Repeated affected-thread measurements (six acquisitions per mode) investigated
+the tower outlier: baseline median 390.625 ms, streaming 367.1875 ms. The
+single 218.75 ms baseline sample was not representative of those repeats.
+Interior medians were 132.8125 -> 117.1875 ms, EotW 406.25 -> 421.875 ms,
+and Dust 468.75 -> 476.5625 ms. The Windows thread CPU counter advanced in
+15.625 ms steps, so the small EotW/Dust differences do not establish an
+exact percentage change. These timings cover only network input and parsing,
+not whole-frame or GPU time. Further repeats for short networks address other
+single-sample deviations affected by the same quantization. Evidence:
+`artifacts/probe-stream-targeted-comparison.json`.
+
+
+Catalog identity sweep prediction: the animation, Iggy file, Iggy bitmap and
+render-parameter registries keyed cached installed content only by base path;
+the Flash string-table registry used language alone. Independently opened catalogs can have different overlay snapshots even
+for that same path. Scope these registries to the catalog identity, discarding
+the registry's old-catalog references while allowing live Arc/Rc users to keep
+their own data. For the normal one-catalog multi-level route, requested
+identities, IO counts and output fingerprints should remain unchanged; this
+fixes stale cross-catalog reuse and unneeded old-catalog pinning rather than
+predicting a gameplay-frame speedup. Shader-cache indices opened directly
+from `base/shaderCache` use their own file-backed key and already prune other
+installations; they are not catalog overlay entries.
+
+
+### Streamed probe and shared declaration results
+
+All 36 installed probe networks were parsed by both the buffered stream and
+the prior whole-input path; all parsed-record fingerprints match. Repeated
+affected-thread CPU measurements on selected networks were timer-quantized at
+15.625 ms; no whole-frame performance claim follows. The EotW / Dust / EotW
+production clients released 3,312 / 2,825 / 3,312 probe-history names with
+their last owners. These counts do not represent physical RSS.
+
+The same production route read contact declarations 28,180 -> 10,162 times
+and 4,428,182 -> 1,611,850 decoded bytes. The sound resolver satisfied 5,040
+requests from that shared snapshot instead of rereading them; both contact
+and sound fingerprints matched. Common texts remain session-owned and map
+texts release at transition. Mutable overlays preserve separate reads.
+Evidence: local `artifacts/contact-shared-comparison.json` and
+`artifacts/probe-stream-world-comparison.json`.
+
+
+### Stream completion and mutable manifest correction
+
+The former whole-member archive reader reads one byte past the indexed
+decoded size, which both detects oversized output and forces compressed
+trailer validation. The bounded probe stream must perform the same final
+read after consuming the indexed length. Prediction: one end-of-stream read
+per network, with unchanged parsed records for valid installed resources;
+no extra whole-member allocation.
+
+A combined load-list lease can outlive a mutable loose manifest. A new
+acquisition must bypass the combined cache if any of the init, common or
+map manifests is overlaid, while existing holders keep their own list.
+Map-info scans likewise must not reuse a resolved result or loading-info
+result when its declaration can change. Prediction: unmodified installed
+catalogs keep their existing read/reuse counts; affected overlay acquisitions
+observe current file contents rather than a previously cached descriptor.
+
+
+Catalog-scope transition comparison: the EotW / Dust / EotW production
+client exited successfully after catalog identity was added to animation,
+Iggy, library bitmap, localization and shader-parameter cache owners.
+Contact, sound and 600 animation request fingerprints matched the earlier
+client; shader parameter counts and all 430 observed UI bitmap fingerprints
+also matched.
+Iggy acquisition/reuse counts stayed 13 / 14. On an installation with no
+overlays, the common declaration owner skipped exactly two bootstrap and
+9,009 declaration overlay checks at initial acquisition. These are
+acquisition and content measurements, not frame-time or RSS measurements.
+Evidence: local `artifacts/catalog-sweep-comparison.json`.
+
+
+Probe input CPU follow-up: the six short-network measurements used six
+affected-thread runs per mode with 15.625 ms timer steps. The Tutorial
+medians were 93.75 -> 62.5 ms, a two-tick, greater-than-30% change, while
+the sums were 515.625 -> 437.5 ms (15.2% lower); individual baseline
+samples ranged from 46.875 to 109.375 ms. This noisy result does not
+establish the size of a CPU gain. The six-run sums of the other five
+short networks ranged from 27.3% lower to 11.1% higher. Larger EotW and
+Dust median changes were approximately 4% and 2%, respectively, also close
+to this timer's resolution. All measurements concern only the input/parse
+thread, not gameplay frames. Evidence: local
+`artifacts/probe-stream-small-comparison.json` and
+`artifacts/probe-stream-targeted-comparison.json`.
+
+
+Material source handoff production comparison: EotW / Dust / EotW used
+1,308 / 1,327 / 1,308 handoffs, avoiding 3,943 declaration reads and
+3,464,990 cumulative decoded source bytes. The largest temporary handoff
+capacity was 3,073 bytes. Source, shadow-admission and colour-resolution
+input fingerprints match the separate-read control. One temporary source
+is held at a time, and mutable overlays use the former separate reads.
+This is neither an RSS nor a frame-time measurement. Evidence: local
+`artifacts/material-handoff-comparison.json`; both production clients exited
+successfully.
+
+
+### Archive, player rig and loading-history comparison
+
+The two production clients completed EotW / Dust / EotW without errors.
+On the no-overlay installation, the archive fast path skipped path
+normalization for at least 68,608 underlying reader acquisitions at the
+last recorded checkpoint. Other overlay lookups add to that count. Nonempty
+overlay catalogs use their existing lookup path.
+
+Rig acquisition fell from 15 to 9 across the route, as predicted. Counted
+skeleton bytes plus decoded MD6 and animset text were 6,736,494 -> 3,984,234
+bytes (2,752,260 cumulative bytes avoided); binding lookups are outside
+that byte total. Unique rig source fingerprints matched. Only aliases and
+rest poses survive arm construction for scene preparation; they release
+afterward. Overlay catalogs retain separate reads and their former order.
+
+At the last pre-play checkpoint, the read-history control performed 68,608
+path-normalization operations and allocated 68,608 kind keys; the borrowed
+path implementation performed 282 normalizations and allocated 138 kind
+keys across 68,572 reads. The two counts include 36 fewer source reads from
+the rig change. Both recorded 31,735 insertions cumulatively, and
+the three progress snapshots matched (34/40,335, 17,496/40,510 and
+19,666/40,335 precredited/requested). The late-read log recorded zero in each client; streamed mips are excluded
+from that log. The control's `canonical`
+metric is zero because it deliberately bypasses the canonical-path scan;
+it does not describe its inputs.
+
+`QueryThreadCycleTime` around only `loading::read` recorded 7,714 -> 5,541
+cycles per read, approximately 28.2% lower, in one instrumented run per
+mode. Both modes include the same counter overhead; thread cycles are not
+elapsed time and this does not establish a whole-frame improvement or a
+result on every machine. Contact, sound, 600 animation, material input, 430
+UI bitmap and probe-network fingerprints matched. These are acquisition
+counts, logical input bytes and targeted cycles, not a process-RSS result.
+Evidence: local `artifacts/archive-overlay-comparison.json` and paired logs.

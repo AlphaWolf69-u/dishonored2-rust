@@ -21,50 +21,27 @@ struct Group {
 }
 struct Definitions {
     catalog: std::sync::Arc<Catalog>,
-    /// Declaration text read with the level (`texts_at_load`).
-    texts: HashMap<String, String>,
+    texts: super::declaration_texts::DeclarationTexts,
     database: ContactDatabase,
     chains: HashMap<String, Vec<String>>,
     effects: HashMap<String, Arc<Vec<Group>>>,
-}
-
-fn text(catalog: &Catalog, texts: &HashMap<String, String>, path: &str) -> Result<Option<String>, String> {
-    if let Some(text) = texts.get(&path.to_ascii_lowercase()) { return Ok(Some(text.clone())); }
-    catalog.read(path).map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
-}
-
-/// The map load reads every listed decl before play (`FUN_1400661e0`):
-/// the contact system's physics materials, its FX and sound events are
-/// read here, so a first contact resolves without reading the installation.
-fn texts_at_load(base: &std::path::Path, catalog: &Catalog) -> Result<HashMap<String, String>, String> {
-    let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
-    let map = map.trim_start_matches("maps/").trim_end_matches(".map");
-    let language = crate::assets::lang::read_text_language(base)?;
-    let list = crate::assets::map_resources::acquire_level_list(base, catalog, map, language)?;
-    let mut texts = HashMap::new();
-    for resource in list.iter().filter(|r| r.kind == "physicsMaterial" || r.kind == "soundevent"
-        || (r.kind == "fx" && r.path.contains("/contactsystem/")))
-    {
-        if let Some(text) = text(catalog, &texts, &resource.path)? { texts.insert(resource.path.clone(), text); }
-    }
-    Ok(texts)
 }
 
 impl Definitions {
     fn load() -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
         let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
-        let source = text(&catalog, &HashMap::new(), "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
+        let source = super::declaration_texts::read(&catalog, &Default::default(), "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
         let database = ContactDatabase::parse(&source)?;
-        let texts = texts_at_load(&base, &catalog).unwrap_or_else(|error| {
+        let texts = super::declaration_texts::acquire(&base, &catalog).unwrap_or_else(|error| {
             warn!("Contact declarations not read with the level: {error}");
-            HashMap::new()
+            Default::default()
         });
         Ok(Self { catalog, texts, database, chains: HashMap::new(), effects: HashMap::new() })
     }
 
     fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
-        let event = asset.resolve_with(|path| text(&self.catalog, &self.texts, path))?.map(|event| event.id);
+        let event = asset.resolve_with(|path| super::declaration_texts::read(&self.catalog, &self.texts, path))?.map(|event| event.id);
         Ok(TimedEvent { delay: asset.delay, event })
     }
 
@@ -72,7 +49,7 @@ impl Definitions {
         use crate::{entities::scene_motion::child, gameplay::options::decl::list_items};
         for name in [&contact.source, &contact.target] {
             if !self.chains.contains_key(name) {
-                self.chains.insert(name.clone(), material_chain(name, |path| text(&self.catalog, &self.texts, path))?);
+                self.chains.insert(name.clone(), material_chain(name, |path| super::declaration_texts::read(&self.catalog, &self.texts, path))?);
             }
         }
         let Some(effect) = self.database.effect(&self.chains[&contact.source], &self.chains[&contact.target]) else {
@@ -80,7 +57,7 @@ impl Definitions {
         };
         if let Some(groups) = self.effects.get(effect) { return Ok(groups.clone()); }
         let effect = effect.to_owned();
-        let fields = resolved_decl("fx", &effect, |path| text(&self.catalog, &self.texts, path))?;
+        let fields = resolved_decl("fx", &effect, |path| super::declaration_texts::read(&self.catalog, &self.texts, path))?;
         let mut groups = Vec::new();
         for item in list_items(child(&fields, "m_groups")) {
             let Value::Scope(fields) = item else { return Err(format!("{effect}: invalid FX group")) };
@@ -119,6 +96,9 @@ pub(super) struct ContactSounds {
     reported: HashSet<String>,
 }
 impl ContactSounds {
+    pub(super) fn declarations(&self) -> Option<&super::declaration_texts::DeclarationTexts> {
+        self.definitions.as_ref()?.as_ref().ok().map(|definitions| &definitions.texts)
+    }
     pub(super) fn acquire() -> Self {
         let _span = crate::app::load_timing::Span::new("contact declaration acquisition");
         Self { definitions: Some(Definitions::load()), ..Default::default() }

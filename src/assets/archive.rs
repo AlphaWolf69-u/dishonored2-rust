@@ -71,6 +71,8 @@ impl Names {
 }
 
 pub struct Catalog {
+    /// Distinguish independently opened catalogs for session metadata caches.
+    identity: u64,
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
@@ -139,6 +141,7 @@ use index::archive_path;
 /// One catalog per installation for the whole process: every owner reads the
 /// same index instead of opening its own copy.
 static SHARED: std::sync::Mutex<Option<(PathBuf, std::sync::Arc<Catalog>)>> = std::sync::Mutex::new(None);
+static NEXT_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Catalog {
     /// The process's catalog of `base`, opened on first use.
@@ -241,6 +244,7 @@ impl Catalog {
             (Names::new(pairs.iter().map(|(name, _)| name.as_str())), pairs.iter().map(|&(_, i)| i as u32).collect())
         };
         Ok(Self {
+            identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             containers: Default::default(),
             kinds,
             base: base.to_path_buf(),
@@ -254,11 +258,20 @@ impl Catalog {
 
     /// The overlay file replacing `path`, if any.
     fn overlay_file(&self, path: &str) -> Option<&Path> {
+        if self.overlay.is_empty() { return None; }
         let normalized = path.replace('\\', "/").to_ascii_lowercase();
         self.overlay
             .binary_search_by(|(key, _)| key.as_str().cmp(&normalized))
             .ok()
             .map(|i| self.overlay[i].1.as_path())
+    }
+
+    /// An active overlay can change while a level is loading.
+    pub(crate) fn has_overlays(&self) -> bool { !self.overlay.is_empty() }
+
+    /// An overlay can change independently of the installed archive index.
+    pub(crate) fn has_overlay_file(&self, path: &str) -> bool {
+        self.overlay_file(path).is_some()
     }
 
     /// Resource paths of the archives and the overlay, sorted and unique.
@@ -329,6 +342,9 @@ impl Catalog {
         self.all_paths(move |path| path.contains(&needle))
     }
 
+    /// A newly opened catalog may have a different overlay even for the same installation.
+    pub(crate) fn identity(&self) -> u64 { self.identity }
+
     /// The installed `base` folder the catalog reads.
     pub fn base(&self) -> &Path {
         &self.base
@@ -341,19 +357,63 @@ impl Catalog {
 
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let entry = self.entry(path);
+        let result = if let Some(file) = self.overlay_file(path) {
+            Ok(Some(std::fs::read(file)?))
+        } else {
+            entry
+                .map(|entry| {
+                    let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
+                    let length = reader.length;
+                    read_file(&mut reader.file, length, path, entry)
+                })
+                .transpose()
+        };
+        // A failed acquisition cannot advance loading progress. Record only
+        // actual payloads after archive/overlay IO and decompression succeed.
+        if matches!(&result, Ok(Some(_))) {
+            if let Some(entry) = entry {
+                crate::loading::read(&self.kinds[entry.kind as usize], path);
+            }
+        }
+        result
+    }
+
+    /// Borrow a bounded, buffered stream over an installed member. The
+    /// container lease remains owned here until the consumer returns, so a
+    /// compressed member need not be expanded into a whole-file allocation.
+    pub(crate) fn with_stream<T>(&self, path: &str, consume: impl FnOnce(&mut dyn Read, usize) -> std::result::Result<T, String>) -> std::result::Result<Option<T>, String> {
+        let entry = self.entry(path);
+        let value = if let Some(file) = self.overlay_file(path) {
+            let input = File::open(file).map_err(|e| e.to_string())?;
+            let size = input.metadata().map_err(|e| e.to_string())?.len() as usize;
+            let mut input = std::io::BufReader::with_capacity(65536, input);
+            consume(&mut input, size)?
+        } else {
+            let Some(entry) = entry else { return Ok(None); };
+            let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot).map_err(|e| e.to_string())?;
+            validate_extent(path, entry, reader.length).map_err(|e| e.to_string())?;
+            reader.file.seek(SeekFrom::Start(entry.offset)).map_err(|e| e.to_string())?;
+            let input = (&mut reader.file).take(u64::from(entry.stored_size));
+            if entry.size == entry.stored_size {
+                let mut input = std::io::BufReader::with_capacity(65536, input);
+                consume(&mut input, entry.size as usize)?
+            } else {
+                let mut input = std::io::BufReader::with_capacity(65536, ZlibDecoder::new(input));
+                let value = consume(&mut input, entry.size as usize)?;
+                // read_file probes beyond the indexed decoded size, forcing
+                // trailer validation and detecting oversized output.
+                let mut extra = [0u8; 1];
+                if input.read(&mut extra).map_err(|e| e.to_string())? != 0 {
+                    return Err(format!("{path}: decoded data exceeds indexed size {}", entry.size));
+                }
+                value
+            }
+        };
+        // Match read(): successful streaming acquisitions count toward loading.
         if let Some(entry) = entry {
             crate::loading::read(&self.kinds[entry.kind as usize], path);
         }
-        if let Some(file) = self.overlay_file(path) {
-            return Ok(Some(std::fs::read(file)?));
-        }
-        entry
-            .map(|entry| {
-                let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
-                let length = reader.length;
-                read_file(&mut reader.file, length, path, entry)
-            })
-            .transpose()
+        Ok(Some(value))
     }
 
     /// Read only the start of an installed resource. This is useful for large

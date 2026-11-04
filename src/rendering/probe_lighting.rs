@@ -185,6 +185,32 @@ pub struct ProbeLighting {
     pub filtered_sky_occlusion_sh: [f32; 9],
 }
 
+// Only probe sets own gameplay EnvProbe identities. Keep their shared read
+// history while any set or in-flight load is alive, and retire it when the
+// final owner releases its data (140060180's map resource boundary).
+static PROBE_OWNERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+#[derive(Debug)]
+struct ProbeLease;
+impl ProbeLease {
+    fn acquire() -> std::sync::Arc<Self> {
+        *PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        std::sync::Arc::new(Self)
+    }
+}
+impl Drop for ProbeLease {
+    fn drop(&mut self) {
+        let mut owners = PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        *owners -= 1;
+        if *owners == 0 {
+            if let Some((entries, string_bytes, slots)) = crate::loading::forget_kind("EnvProbe") {
+                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                    eprintln!("MEMORY probe history release: entries={entries} path_capacity_bytes={string_bytes} table_capacity={slots}");
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProbeLightingSet {
     pub network_resource: String,
@@ -195,6 +221,8 @@ pub struct ProbeLightingSet {
     pub spatial: pnetwork::SpatialData,
     pub vertex_references: pnetwork::VertexReferences,
     pub cell_geometry: Vec<query::CellGeometry>,
+    // Last field: release the history after the owned probe data drops.
+    _lease: std::sync::Arc<ProbeLease>,
 }
 
 #[derive(Clone, Debug)]
@@ -265,29 +293,33 @@ pub fn load_for_world(
     let Some(network_resource) = level.probe_network else {
         return Ok(None);
     };
-    // FUN_1402b15e0 loads both trailing world-vertex buffers, not just the
-    // ordered names/Voronoi prefix. Bound decoding by the indexed asset size;
-    // EOTW's PNW is 247 MiB and its reference buffer follows the first 64 MiB.
-    let network_size = catalog
-        .resource_size(&network_resource)
+    let lease = ProbeLease::acquire();
+    // 1402b15e0 consumes the network from its input stream. Parse in the
+    // same order from the archive decoder, keeping only the required tables.
+    let probe_cpu_start = (std::env::var("DH2_DEBUG_PNW_CPU").as_deref() == Ok("1"))
+        .then(pnetwork::thread_cpu_100ns).flatten();
+    let expected_size = catalog.resource_size(&network_resource)
         .ok_or_else(|| format!("missing probe network {network_resource}"))?;
-    let network = catalog
-        .read_prefix(&network_resource, network_size)
-        .map_err(|error| error.to_string())?
+    let (names, secondary_resources, spatial, vertex_references) = catalog
+        .with_stream(&network_resource, |source, size| {
+            if size != expected_size { return Err(format!("probe network size changed: {size} vs {expected_size}")); }
+            pnetwork::read_stream(source, size)
+        })?
         .ok_or_else(|| format!("missing probe network {network_resource}"))?;
-    if network.len() != network_size {
-        return Err(format!(
-            "truncated probe network {network_resource}: {} of {network_size} bytes",
-            network.len()
-        ));
+    if let Some(start) = probe_cpu_start {
+        if let Some(now) = pnetwork::thread_cpu_100ns() {
+            eprintln!("MEMORY probe network input CPU: path={network_resource} cpu_100ns={}", now.saturating_sub(start));
+        }
     }
-    let (_, names, secondary_resources, spatial_offset) =
-        pnetwork::ordered_probe_names(&network).map_err(|error| error.to_string())?;
-    let spatial =
-        pnetwork::spatial_data(&network, spatial_offset).map_err(|error| error.to_string())?;
-    let vertex_references =
-        pnetwork::vertex_references(&network, spatial.bytes_consumed, secondary_resources.len())?;
-
+    if std::env::var("DH2_DEBUG_PNW_FINGERPRINT").as_deref() == Ok("1") {
+        eprintln!("MEMORY probe network records: path={network_resource} fingerprint={:08x}",
+            pnetwork::fingerprint(&names, &secondary_resources, &spatial, &vertex_references));
+    }
+    let trace_staging = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    if trace_staging {
+        eprintln!("MEMORY probe network stream: phase=before_probes path={network_resource} source_bytes={expected_size} peak_input_buffer_bytes=65536 primary={} secondary={} cells={} tetrahedra={} vertex_indices={} instance_offsets={}",
+            names.len(), secondary_resources.len(), spatial.cells.len(), spatial.tetrahedra.len(), vertex_references.tetrahedron_indices.len(), vertex_references.instance_offsets.len());
+    }
     let mut probes = Vec::with_capacity(names.len());
     let mut reflection_probes = Vec::with_capacity(secondary_resources.len());
     for name in &secondary_resources {
@@ -345,6 +377,13 @@ pub fn load_for_world(
             &cell.occluder_samples,
         )?);
     }
+    if trace_staging {
+        let mut crc = flate2::Crc::new();
+        for probe in &probes { crc.update(probe.resource.as_bytes()); crc.update(&[0]); }
+        for name in &secondary_resources { crc.update(name.as_bytes()); crc.update(&[0]); }
+        eprintln!("MEMORY probe network stream: phase=after_probes path={network_resource} source_bytes={expected_size} peak_input_buffer_bytes=65536 primary={} secondary={} cells={} tetrahedra={} vertex_indices={} instance_offsets={} identity_crc={:08x}",
+            probes.len(), reflection_probes.len(), spatial.cells.len(), spatial.tetrahedra.len(), vertex_references.tetrahedron_indices.len(), vertex_references.instance_offsets.len(), crc.sum());
+    }
     Ok(Some(ProbeLightingSet {
         network_resource,
         probes,
@@ -354,6 +393,7 @@ pub fn load_for_world(
         spatial,
         vertex_references,
         cell_geometry,
+        _lease: lease,
     }))
 }
 

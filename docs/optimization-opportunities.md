@@ -8,30 +8,6 @@ Remove an entry when it is implemented and measured.
 Resource lifetime audit follow-ups (full owner inventory and evidence in
 `resource-lifetimes.md`):
 
-- Surface, resident UI/postprocess and particle image registries still have
-  separate identity domains. Joining them can remove duplicate compiled chains
-  and GPU textures for paths requested by several domains, and connect particle
-  finer-mip demand to streaming. Saving is the intersection of their live path
-  sets, not the sum of their allocations. Production EotW/Dust found two
-  overlapping particle/scene paths (88,400 compiled payload bytes), so
-  consolidation must not claim the full particle allocation as duplicate.
-  UI/postprocess overlap and GPU allocation still need separate accounting. Preserve dimensional fallbacks, per-use samplers, mip demand and
-  readiness gates before consolidating.
-- Wwise type-2 acquisition is now format-only: production release read
-  232,514 instead of 530,033,360 logical package bytes and took 189.805 instead
-  of 383.678 ms. Playback still holds a whole encoded file; type-1 prefetch
-  still needs a bounded continuation after its bank prefix. The original game
-  initializes 2 MiB IO storage, 16 KiB granularity and 100 ms read-ahead.
-  Implement that lifecycle without synchronous audio-callback IO or PCM
-  expansion. Sample-rate identity was also missing from the shared Vorbis
-  identification-header key and is corrected; compare formats after that fix.
-- Vorbis header/setup caches now prune unused definitions after outgoing media
-  release. The measured four setups were all live/common (4 -> 4), so there is
-  no demonstrated eviction saving to pursue there on assumption.
-- Temporary map manifests and progress indices now release after acquisition/
-  coverage; init/common metadata remains shared. Production transitions retain
-  one combined table at a time rather than accumulating visited-map copies;
-  EotW releases 6,878,036 descriptor bytes with one remaining owner at handoff.
 - Live-movie cycle collection and original weak listeners/Dictionary keys are
   implemented. Sustained menu collection exposed excessive temporary adjacency
   allocations; contiguous edges and the existing pointer-key hasher remove that
@@ -40,11 +16,6 @@ Resource lifetime audit follow-ups (full owner inventory and evidence in
   (172 objects reclaimed in both); further reduction must preserve those
   semantics. No live-heap savings were observed in loading movies, whereas
   pause movies did produce cyclic garbage.
-- `bevy_backend::particle_pass` rebuilds pipelines/uniforms as well as bindings
-  on surface-sampler changes. Image uploads are now reused. Reusing compatible
-  pipelines could remove one creation per affected material/state on that rare
-  transition; measure those creations before splitting this cache. No new
-  per-frame scanning or locking should be introduced.
 - Some backend caches retain the last view's bindings/area-light handles until
   destination preparation replaces them, while viewport capacity intentionally
   persists. Trace the outgoing-world boundary separately from settled memory
@@ -397,3 +368,141 @@ batching benefit are unmeasured. A batching change must preserve the ordering
 between each copy, `write_texture` and completion acknowledgement, and must
 first be compared with the installed upload path. It is not part of the
 current allocation changes.
+
+
+Material acquisition overlap resolved: the caster passes a single temporary
+source buffer to the next matching colour-material resolution. The measured
+EotW / Dust / EotW route removed 3,943 reads and 3,464,990 decoded source
+bytes, retaining at most 3,073 bytes in that handoff. Admission, source and
+colour-resolution input fingerprints match the separate-read control. Loose
+overlays retain separate reads. This is acquisition IO and temporary buffer
+capacity, not a frame-time or process-RSS measurement.
+
+
+Sound declaration acquisition overlap resolved: one shared common/level text
+owner supplies contact and sound-event preparation. EotW / Dust / EotW
+contact reads 28,180 -> 10,162 and decoded bytes 4,428,182 -> 1,611,850;
+sound-event reads 5,040 -> 0. Contact and resolved-event fingerprints match.
+Mutable overlays retain the separate read path. These are acquisition counts,
+not a claim about frame time or process RSS.
+
+Declaration overlay discovery resolved: the production EotW / Dust / EotW
+client skipped exactly 9,009 common declaration checks and two bootstrap
+manifest checks when the overlay set was empty. Contact and sound signatures
+matched the earlier client. Existing per-path checks remain when overlays are
+present; there is no claimed gameplay-frame or CPU-time gain.
+
+
+Material-source handoff prediction (before implementation): world setup often
+requests caster admission immediately before resolving the same material for
+colour. Keep only the most recent successful caster source until the next
+admission or colour request, and transfer it only when its full path matches.
+This is a single temporary byte buffer, not a session or map-resident raw
+material cache. Bypass the handoff if overlays are enabled. On EotW / Dust /
+EotW, each matched transfer should eliminate exactly one archive read and its
+source bytes; unmatched sources follow the old path. Measure transfers,
+source bytes and source/admission fingerprints in the same production client
+with handoff enabled and disabled, and track the largest held source capacity.
+No frame-time or process-RSS gain is predicted.
+
+
+Ocean environment view ownership comparison: a prior production Institute
+camera path crossed from the world environment into the exterior area.
+Retiring names outside the active selection removed one `_white` view lease;
+that builtin remains shared and resident, so this does not establish a GPU
+allocation saving. The selected views and source fingerprints matched. Do not
+add four path comparisons per frame and retain another set of names for this
+observed result. A stale view after an independently streamed inactive image
+replacement remains a conditional possibility, but no normal producer was
+observed in the waterfront capture. Evidence: local
+`artifacts/ocean-area-final-comparison.json` and its paired client logs.
+
+
+Archive overlay lookup prediction (before implementation): every
+`Catalog::overlay_file` call currently normalizes a path even when the
+catalog contains no overlay files. The three-map production client recorded
+at least 72,704 archive reader acquisitions, each preceded by an overlay
+lookup, with an empty overlay set. The material handoff in the next client
+removes up to 3,943 of those reads, and the arm-rig handoff removes more;
+expect roughly 68,000–73,000 remaining acquisitions at a comparable checkpoint,
+with additional overlay lookups outside those acquisitions. Returning
+immediately for an empty set removes their path-string allocations without
+changing archive reads, lookup results, or the nonempty-overlay path. This
+affects resource acquisition, including late reads; count calls and compare
+resource fingerprints rather than infer whole-frame speed or RSS savings.
+
+
+Player arm rig handoff prediction (before implementation): `load_arm`
+loads and parses each arm rig, then `load_body` loads both rigs a second
+time for Midnight scene aliases and skeleton validation. The original
+resource lookup `1400607f0` reuses acquired definitions; `1407021d0`
+constructs per-instance animation state separately. Return only each first rig's aliases and rest pose with its arm and borrow
+them during scene preparation. For the ordinary two-arm
+player this removes exactly two of five rig loads per level (body plus two
+loads for each arm become body plus one per arm), including each repeated
+skeleton, MD6 and animset source. Both rig values were already needed during
+setup; these inputs release after scene preparation. The first arm's scene
+inputs are kept slightly earlier while the second arm is constructed, so a
+lower peak RSS is not assumed. If overlays are present,
+keep separate reads so a live modified file is not silently cached. Compare
+actual source reads, rig content and scene/clip fingerprints in a matched
+production sequence. No gameplay-frame or process-RSS gain is predicted.
+
+
+Player arm scene aliases: the EotW / Dust / EotW Corvo production client
+requested exactly 200 animation paths per load, with 200 distinct paths on each
+load. Thus the proposed alias-map handoff cannot save any of those measured
+clip requests and has not been added. Other characters and scene graphs were
+not exercised. Evidence: `artifacts/material-handoff-shared.err` animation
+acquisition records.
+
+
+Loading read-history allocation prediction (before implementation): the
+host progress approximation normalizes every acquired path into two new
+strings and allocates a kind string before attempting a HashSet insertion,
+even for paths already present. Normalized lowercase paths can be looked up
+by reference; allocate a stored path only on first insertion, and allocate
+a kind only on its first use. Paths needing normalization retain the same
+ASCII case and separator rules. The three-map client already observed tens
+of thousands of archive acquisitions and far fewer distinct history names,
+so repeated canonical reads should need zero path/kind allocations instead
+of at least three each. Count borrowed paths, new identities and kind
+insertions in a production comparison with the former allocation behavior
+selectable; both modes derive late-read decisions from insertion, so the
+control is not a byte-for-byte copy of the former implementation. Verify
+progress, late-read identities and resource fingerprints. A diagnostic
+thread-cycle counter around only `loading::read` will compare average work
+per read; expect it not to increase, and investigate a change over 30% in
+either direction. The counter adds the same instrumentation to both modes
+and cycles are not elapsed time. No process-RSS or gameplay-frame gain is
+assumed from allocation counts.
+
+
+Physics-material acquisition overlap under investigation: the world physics
+loader resolves each material with a fresh inheritance cache, static model
+collision has another resolver, and contact audio later acquires the same
+listed declaration family. Original `1406798b0` requests the listed material
+identities through the resource manager. A level-scoped shared declaration
+owner may remove repeated reads and parses of the same parent and child
+resources, but it must preserve mutable-overlay semantics, share data without
+retaining a second full text tree, and release map-only entries. The observed
+312 unique physics-material history names bound distinct identities, not the
+number of duplicate reads or a byte saving. Prediction: inherited parents
+will cause at least one repeated world-physics read, and at least one world
+input will overlap the contact list in the sampled maps. Count exact path
+overlap and cumulative bytes first; if either prediction fails, revise the
+model before changing ownership. Then compare resolved collision properties and
+contact behavior; no saving is claimed yet.
+
+
+Archive / rig / read-history production result: the no-overlay route
+skipped normalization for at least 68,608 archive acquisitions. Player rig
+loads fell 15 -> 9, with counted skeleton and decoded declaration inputs
+6,736,494 -> 3,984,234 bytes and matching unique rig fingerprints. At the
+last pre-play checkpoint, read-history normalization operations fell
+68,608 -> 282 and kind-key allocations 68,608 -> 138; the new run also
+made 36 fewer total reads due to the rig handoff. The changed function's
+instrumented thread cycles per read were 7,714 -> 5,541 in one run per
+mode; cycles are not elapsed time. Progress snapshots and all recorded
+resource fingerprints matched. Full values and limits are in the parity
+ledger and local `artifacts/archive-overlay-comparison.json`.

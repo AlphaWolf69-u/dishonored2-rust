@@ -1932,6 +1932,7 @@ pub(super) fn prepare(
         commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images, &ocean_inline_slots)
             .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
     }
+    resolver.cache.report_source_handoff();
     let image_catalog = catalog_storage.clone();
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {

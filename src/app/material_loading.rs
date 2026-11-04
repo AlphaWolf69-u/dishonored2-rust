@@ -586,7 +586,10 @@ impl MaterialResolver<'_> {
             &source,
             main.as_deref(),
         )?;
-        Ok(u8::from(present) | (u8::from(source.needs_wind) << 6))
+        let admission = u8::from(present) | (u8::from(source.needs_wind) << 6);
+        self.cache.record_source(path, &bytes, Some(admission));
+        self.cache.stage_source(path, bytes, !catalog.has_overlays());
+        Ok(admission)
     }
     pub(super) fn append_probe_record(&mut self, game_position: [f32; 3]) -> u32 {
         let record = if self.lit {
@@ -686,12 +689,13 @@ impl MaterialResolver<'_> {
             });
         }
         let key = path.to_owned();
-        let bytes = self.catalog.and_then(|c| {
+        let bytes = self.cache.take_source(path).or_else(|| self.catalog.and_then(|c| {
             c.read(&format!("generated/decls/material/{path}.decl"))
                 .ok()
                 .flatten()
-        });
+        }));
         let bytes = bytes.as_deref().unwrap_or(&[]);
+        self.cache.record_source(path, bytes, None);
         if material::is_screen_gate_impostor(path, bytes) {
             self.cache.insert(key, geometry, None);
             return None;

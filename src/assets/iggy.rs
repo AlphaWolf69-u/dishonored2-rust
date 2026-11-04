@@ -529,12 +529,18 @@ mod tests;
 /// timeline state; only the parsed file/relocations and borrowed fonts share.
 /// Host: the UI worker uses Rc; no VM object crosses thread boundaries.
 pub fn acquire(catalog: &super::archive::Catalog, resource: &str) -> std::result::Result<std::rc::Rc<IggyFile>, String> {
-    type Key = (std::path::PathBuf, String);
+    type Key = (u64, String);
     thread_local! {
         static FILES: std::cell::RefCell<std::collections::HashMap<Key, std::rc::Rc<IggyFile>>> = std::cell::RefCell::new(Default::default());
     }
-    let key = (catalog.base().to_owned(), resource.replace('\\', "/").to_ascii_lowercase());
-    if let Some(file) = FILES.with(|files| files.borrow().get(&key).cloned()) {
+    let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
+    let existing = FILES.with(|files| {
+        let mut files = files.borrow_mut();
+        // Existing players own their Rc; the registry keeps only this catalog.
+        files.retain(|(identity, _), _| *identity == catalog.identity());
+        files.get(&key).cloned()
+    });
+    if let Some(file) = existing {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("LOAD Iggy reuse: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
         }

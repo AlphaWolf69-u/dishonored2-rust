@@ -93,11 +93,19 @@ pub fn level_load_list(base: &Path, catalog: &Catalog, map: &str, language: &str
 /// Bootstrap manifests are shared for the session. A map's temporary request
 /// table belongs to acquisition (1400661e0), not the registered resources.
 pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
-    type Key = (std::path::PathBuf, String, String);
+    type Key = (u64, std::path::PathBuf, String, String);
     static LISTS: std::sync::Mutex<Option<HashMap<Key, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
-    let key = (base.to_owned(), name.to_ascii_lowercase(), language.to_ascii_lowercase());
+    let normalized = name.to_ascii_lowercase();
+    // A loose manifest can change without changing the catalog snapshot.
+    let manifest = format!("generated/buildgame/{normalized}.mapresources");
+    if catalog.has_overlay_file(&manifest) {
+        return Ok(std::sync::Arc::new(load_list(base, catalog, name, language)?));
+    }
+    let key = (catalog.identity(), base.to_owned(), normalized, language.to_ascii_lowercase());
     let mut lists = LISTS.lock().unwrap();
     let lists = lists.get_or_insert_with(Default::default);
+    // Existing callers keep their Arc; the owner no longer pins another catalog.
+    lists.retain(|(identity, _, _, _), _| *identity == catalog.identity());
     if let Some(list) = lists.get(&key) { return Ok(list.clone()); }
     let list = std::sync::Arc::new(load_list(base, catalog, name, language)?);
     if matches!(name, "init" | "common")
@@ -111,16 +119,22 @@ pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) 
 /// Share the immutable request descriptors between consumers; the registered
 /// resource owners decide whether each payload is already resident.
 pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
-    type Key = (std::path::PathBuf, String, String);
+    // A live loose manifest may change while another consumer owns an older
+    // combined list. Preserve that old lease but do not reuse it for new reads.
+    if catalog.has_overlays() && ["init", "common", map].iter().any(|name|
+        catalog.has_overlay_file(&format!("generated/buildgame/{}.mapresources", name.to_ascii_lowercase()))) {
+        return Ok(std::sync::Arc::new(level_load_list(base, catalog, map, language)?));
+    }
+    type Key = (u64, std::path::PathBuf, String, String);
     // 1400661e0 releases its assembled request table after acquisition. Source
     // manifests above remain reusable metadata; a combined copy belongs only
     // to its active consumers, not every map visited during this session.
     type Cached = (std::sync::Weak<Vec<Resource>>, Option<std::sync::Arc<Vec<Resource>>>);
     static LISTS: std::sync::Mutex<Option<HashMap<Key, Cached>>> = std::sync::Mutex::new(None);
-    let key = (base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
+    let key = (catalog.identity(), base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
     let mut lists = LISTS.lock().unwrap();
     let lists = lists.get_or_insert_with(Default::default);
-    lists.retain(|_, (list, _)| list.strong_count() != 0);
+    lists.retain(|(identity, _, _, _), (list, _)| *identity == catalog.identity() && list.strong_count() != 0);
     if let Some(list) = lists.get(&key).and_then(|(list, _)| list.upgrade()) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("LOAD manifest reuse: {map} identity={:p}", std::sync::Arc::as_ptr(&list));

@@ -13,6 +13,7 @@ struct Entry {
 }
 struct Registry {
     base: PathBuf,
+    catalog_identity: u64,
     lists: [Arc<Vec<Resource>>; 2],
     shared: Vec<(u8, u32)>,
     entries: HashMap<String, Entry>,
@@ -26,7 +27,7 @@ impl Registry {
             entries.iter().enumerate().filter(|(_, entry)| entry.kind == "anim")
                 .map(move |(index, _)| (list as u8, index as u32))).collect();
         shared.sort_unstable_by(|&(a, i), &(b, j)| lists[a as usize][i as usize].path.cmp(&lists[b as usize][j as usize].path));
-        Ok(Self { base: catalog.base().to_owned(), lists, shared, entries: Default::default() })
+        Ok(Self { base: catalog.base().to_owned(), catalog_identity: catalog.identity(), lists, shared, entries: Default::default() })
     }
     fn is_shared(&self, path: &str) -> bool {
         self.shared.binary_search_by(|&(list, index)|
@@ -55,15 +56,15 @@ fn record(path: &str, animation: &EdgeAnimation, signature: u32, source_bytes: u
 pub fn acquire(catalog: &Catalog, name: &str) -> Result<EdgeAnimation, String> {
     let path = name.replace('\\', "/").to_ascii_lowercase();
     if !separate() {
-        let needs_owner = REGISTRY.lock().unwrap().as_ref().is_none_or(|owner| owner.base != catalog.base());
+        let needs_owner = REGISTRY.lock().unwrap().as_ref().is_none_or(|owner| owner.base != catalog.base() || owner.catalog_identity != catalog.identity());
         if needs_owner {
             // No archive/declaration IO while holding the resource mutex.
             let owner = Registry::new(catalog)?;
             let mut current = REGISTRY.lock().unwrap();
-            if current.as_ref().is_none_or(|owner| owner.base != catalog.base()) { *current = Some(owner); }
+            if current.as_ref().is_none_or(|owner| owner.base != catalog.base() || owner.catalog_identity != catalog.identity()) { *current = Some(owner); }
         }
         let owner = REGISTRY.lock().unwrap();
-        if let Some(entry) = owner.as_ref().filter(|owner| owner.base == catalog.base()).and_then(|owner| owner.entries.get(&path)) {
+        if let Some(entry) = owner.as_ref().filter(|owner| owner.base == catalog.base() && owner.catalog_identity == catalog.identity()).and_then(|owner| owner.entries.get(&path)) {
             if let Some(data) = entry.weak.upgrade() {
                 let animation = EdgeAnimation(data);
                 record(&path, &animation, entry.signature, entry.source_bytes, true);
@@ -82,7 +83,7 @@ pub fn acquire(catalog: &Catalog, name: &str) -> Result<EdgeAnimation, String> {
         return Ok(animation);
     }
     let mut current = REGISTRY.lock().unwrap();
-    let owner = current.as_mut().filter(|owner| owner.base == catalog.base())
+    let owner = current.as_mut().filter(|owner| owner.base == catalog.base() && owner.catalog_identity == catalog.identity())
         .ok_or("animation installation changed during acquisition")?;
     if let Some(entry) = owner.entries.get(&path) {
         if let Some(data) = entry.weak.upgrade() {
@@ -101,8 +102,20 @@ pub(crate) fn release_level() {
     let mut current = REGISTRY.lock().unwrap();
     let Some(owner) = current.as_mut() else { return; };
     let before = owner.entries.len();
-    owner.entries.retain(|_, entry| entry.pinned.is_some() || entry.weak.strong_count() != 0);
+    let mut forgotten = 0;
+    let mut forgotten_bytes = 0;
+    owner.entries.retain(|path, entry| {
+        let keep = entry.pinned.is_some() || entry.weak.strong_count() != 0;
+        if !keep {
+            if let Some(bytes) = crate::loading::forget("anim", path) {
+                forgotten += 1;
+                forgotten_bytes += bytes;
+            }
+        }
+        keep
+    });
     if tracing() {
+        eprintln!("MEMORY animation history release: entries={forgotten} path_capacity_bytes={forgotten_bytes}");
         eprintln!("MEMORY animation purge: removed={} retained_common={} retained_common_bytes={} live_map_leases={}",
             before - owner.entries.len(), owner.entries.values().filter(|entry| entry.pinned.is_some()).count(),
             owner.entries.values().filter_map(|entry| entry.pinned.as_ref()).map(EdgeAnimation::retained_bytes).sum::<usize>(),

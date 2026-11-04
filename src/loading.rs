@@ -31,7 +31,42 @@ struct State {
     required_next: Vec<usize>,
     acquired: usize,
     requested: usize,
+    history_metrics: HistoryMetrics,
 }
+
+#[derive(Default)]
+struct HistoryMetrics {
+    reads: usize,
+    canonical: usize,
+    inserted: usize,
+    new_kinds: usize,
+    normalizations: usize,
+    kind_allocations: usize,
+    cycle_reads: usize,
+    cycles: u64,
+}
+fn history_modes() -> (bool, bool) {
+    static MODES: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    *MODES.get_or_init(|| (
+        std::env::var("DH2_DEBUG_SEPARATE_READ_HISTORY").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_READ_HISTORY_METRICS").as_deref() == Ok("1"),
+    ))
+}
+
+/// Diagnostic only: CPU cycles consumed by this thread in the affected code.
+#[cfg(windows)]
+fn history_thread_cycles() -> Option<u64> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThread() -> isize;
+        fn QueryThreadCycleTime(thread: isize, cycles: *mut u64) -> i32;
+    }
+    let mut cycles = 0;
+    // The pseudo-handle and output pointer remain valid for this call.
+    (unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } != 0).then_some(cycles)
+}
+#[cfg(not(windows))]
+fn history_thread_cycles() -> Option<u64> { None }
 
 fn resource_key(kind: &str, path: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -49,16 +84,59 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
 
 /// `Catalog::read` read `path`, a resource of index kind `kind`.
 pub fn read(kind: &str, path: &str) {
-    let path = path.to_ascii_lowercase().replace('\\', "/");
+    use std::borrow::Cow;
+    let (separate, trace) = history_modes();
+    let cycle_start = if trace { history_thread_cycles() } else { None };
+    let canonical = !separate && path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase());
+    let path: Cow<'_, str> = if separate || !canonical {
+        Cow::Owned(path.to_ascii_lowercase().replace('\\', "/"))
+    } else {
+        Cow::Borrowed(path)
+    };
+    let normalized: &str = path.as_ref();
     let late = with(|s| {
-        let late = s.playing && !s.loaded.get(kind).is_some_and(|paths| paths.contains(&path));
-        if s.loaded.entry(kind.to_owned()).or_default().insert(path.clone()) {
-            let mut index = s.required_heads.get(&resource_key(kind, &path)).copied().unwrap_or(usize::MAX);
+        let (inserted, new_kind) = if separate {
+            // Diagnostic control: reproduce the former per-read key allocations.
+            use std::collections::hash_map::Entry;
+            match s.loaded.entry(kind.to_owned()) {
+                Entry::Occupied(mut entry) => (entry.get_mut().insert(path.to_string()), false),
+                Entry::Vacant(entry) => {
+                    let mut paths = HashSet::new();
+                    let inserted = paths.insert(path.to_string());
+                    entry.insert(paths);
+                    (inserted, true)
+                }
+            }
+        } else if let Some(paths) = s.loaded.get_mut(kind) {
+            if paths.contains(normalized) { (false, false) }
+            else { (paths.insert(normalized.to_owned()), false) }
+        } else {
+            let mut paths = HashSet::new();
+            let inserted = paths.insert(normalized.to_owned());
+            s.loaded.insert(kind.to_owned(), paths);
+            (inserted, true)
+        };
+        let late = s.playing && inserted;
+        if trace {
+            let m = &mut s.history_metrics;
+            m.reads += 1;
+            m.canonical += usize::from(canonical);
+            m.inserted += usize::from(inserted);
+            m.new_kinds += usize::from(new_kind);
+            m.normalizations += usize::from(separate || !canonical);
+            m.kind_allocations += usize::from(separate || new_kind);
+        }
+        if inserted {
+            let mut index = s.required_heads.get(&resource_key(kind, normalized)).copied().unwrap_or(usize::MAX);
             while index != usize::MAX {
                 let required = &s.required[index];
-                if required.kind == kind && required.path == path { s.acquired += 1; }
+                if required.kind == kind && required.path == normalized { s.acquired += 1; }
                 index = s.required_next[index];
             }
+        }
+        if let (Some(start), Some(end)) = (cycle_start, if trace { history_thread_cycles() } else { None }) {
+            s.history_metrics.cycle_reads += 1;
+            s.history_metrics.cycles = s.history_metrics.cycles.saturating_add(end.saturating_sub(start));
         }
         late
     });
@@ -67,10 +145,51 @@ pub fn read(kind: &str, path: &str) {
     }
 }
 
+/// Forget a resource only when its owning cache releases the last lease.
+/// 140060180 purges registered map resources separately from map requests.
+pub(crate) fn forget(kind: &str, path: &str) -> Option<usize> {
+    with(|s| {
+        let removed = s.loaded.get_mut(kind)?.take(path)?;
+        let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
+        while index != usize::MAX {
+            let required = &s.required[index];
+            if required.kind == kind && required.path == path { s.acquired = s.acquired.saturating_sub(1); }
+            index = s.required_next[index];
+        }
+        Some(removed.capacity())
+    })
+}
+
+/// Release one resource family's read identities after its last owner drops.
+pub(crate) fn forget_kind(kind: &str) -> Option<(usize, usize, usize)> {
+    with(|s| {
+        let paths = s.loaded.remove(kind)?;
+        let mut removed_required = 0usize;
+        if !s.required_heads.is_empty() {
+            for path in &paths {
+                let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
+                while index != usize::MAX {
+                    let required = &s.required[index];
+                    if required.kind == kind && required.path.as_str() == path.as_str() { removed_required += 1; }
+                    index = s.required_next[index];
+                }
+            }
+        }
+        s.acquired = s.acquired.saturating_sub(removed_required);
+        Some((paths.len(), paths.iter().map(String::capacity).sum(), paths.capacity()))
+    })
+}
+
 /// The level is shown: later first reads are late loads.
 pub fn play_started() {
     with(|s| {
         s.playing = true;
+        let (separate, trace) = history_modes();
+        if trace {
+            let m = &s.history_metrics;
+            eprintln!("MEMORY read history allocation operations: separate={separate} reads={} canonical={} inserted={} new_kinds={} normalizations={} kind_allocations={} cycle_reads={} cycles={}",
+                m.reads, m.canonical, m.inserted, m.new_kinds, m.normalizations, m.kind_allocations, m.cycle_reads, m.cycles);
+        }
         // 1400661e0 frees the temporary acquisition table after loading.
         // Progress is now 1; late-load reporting only needs the read registry.
         if std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() != Ok("1") {
@@ -119,6 +238,17 @@ pub fn begin_level(list: std::sync::Arc<Vec<crate::assets::map_resources::Resour
             let previous = s.required_heads.insert(resource_key(&resource.kind, &resource.path), index).unwrap_or(usize::MAX);
             s.required_next.push(previous);
             if s.loaded.get(&resource.kind).is_some_and(|paths| paths.contains(&resource.path)) { s.acquired += 1; }
+        }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let mut by_kind: Vec<_> = s.loaded.iter().map(|(kind, paths)| {
+                let bytes = paths.iter().map(String::capacity).sum::<usize>();
+                (kind.as_str(), paths.len(), bytes)
+            }).collect();
+            by_kind.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
+            eprintln!("MEMORY loading read history: kinds={} entries={} path_capacity_bytes={} precredited={} requested={} largest={:?}",
+                by_kind.len(), by_kind.iter().map(|x| x.1).sum::<usize>(),
+                by_kind.iter().map(|x| x.2).sum::<usize>(), s.acquired, s.requested,
+                by_kind.iter().take(10).collect::<Vec<_>>());
         }
     });
 }

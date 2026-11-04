@@ -2,6 +2,15 @@
 //! variants when the two source selectors assign different passes.
 use super::{CachedMaterial, HashMap};
 
+fn trace_source() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"))
+}
+fn separate_source() -> bool {
+    static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_MATERIAL_SOURCE").as_deref() == Ok("1"))
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::app) enum MaterialGeometry {
     World,
@@ -21,9 +30,55 @@ impl MaterialGeometry {
 pub(in crate::app) struct MaterialCache {
     entries: HashMap<String, [Option<Option<CachedMaterial>>; 2]>,
     image_priorities: Vec<u8>,
+    pending_source: Option<(String, Vec<u8>)>,
+    source_matches: usize,
+    source_bytes: usize,
+    max_source_capacity: usize,
+    source_crc: Option<flate2::Crc>,
+    admission_crc: Option<flate2::Crc>,
+    resolved_crc: Option<flate2::Crc>,
 }
 
 impl MaterialCache {
+    // Transient handoff only: 1400607f0 reuses an acquired material identity.
+    // Loose overlays keep independent reads because their contents can change.
+    pub(in crate::app) fn stage_source(&mut self, path: &str, bytes: Vec<u8>, enabled: bool) {
+        self.pending_source = enabled.then(|| {
+            self.max_source_capacity = self.max_source_capacity.max(bytes.capacity());
+            (path.to_owned(), bytes)
+        });
+    }
+
+    pub(in crate::app) fn take_source(&mut self, path: &str) -> Option<Vec<u8>> {
+        let (name, bytes) = self.pending_source.take()?;
+        if name != path { return None; }
+        if trace_source() {
+            self.source_matches += 1;
+            self.source_bytes += bytes.len();
+            self.source_crc.get_or_insert_with(flate2::Crc::new).update(&bytes);
+        }
+        if separate_source() { None } else { Some(bytes) }
+    }
+
+    pub(in crate::app) fn record_source(&mut self, path: &str, bytes: &[u8], admission: Option<u8>) {
+        if trace_source() {
+            let crc = match admission { Some(_) => &mut self.admission_crc, None => &mut self.resolved_crc };
+            let crc = crc.get_or_insert_with(flate2::Crc::new);
+            crc.update(path.as_bytes());
+            crc.update(bytes);
+            if let Some(value) = admission { crc.update(&[value]); }
+        }
+    }
+
+    pub(in crate::app) fn report_source_handoff(&self) {
+        if trace_source() {
+            eprintln!("MEMORY material source handoff: matches={} bytes={} max_capacity={} signature={:08x} admission={:08x} resolved={:08x}",
+                self.source_matches, self.source_bytes, self.max_source_capacity,
+                self.source_crc.as_ref().map_or(0, flate2::Crc::sum),
+                self.admission_crc.as_ref().map_or(0, flate2::Crc::sum),
+                self.resolved_crc.as_ref().map_or(0, flate2::Crc::sum));
+        }
+    }
     pub(in crate::app) fn raise_image_priority(&mut self, slot: usize, priority: u8) {
         if self.image_priorities.len() <= slot { self.image_priorities.resize(slot + 1, 1); }
         crate::texture::raise_image_priority(&mut self.image_priorities[slot], priority);

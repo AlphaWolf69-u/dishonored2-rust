@@ -8,6 +8,7 @@ mod graph;
 mod bevy_backend;
 mod fade;
 mod contacts;
+mod declaration_texts;
 mod effects;
 mod spatial;
 pub(super) mod level;
@@ -436,10 +437,10 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
 /// is then decoded while it plays. Every listed event's media is read and
 /// prepared here, on all cores, instead of on the main thread at its first
 /// post.
-fn preload_level_events(mut registry: ResMut<WwiseRegistry>) {
-    if !registry.preloaded { prepare_listed_events(&mut registry, None); }
+fn preload_level_events(mut registry: ResMut<WwiseRegistry>, contacts: Option<Res<contacts::ContactSounds>>) {
+    if !registry.preloaded { prepare_listed_events(&mut registry, None, contacts.as_deref().and_then(|c| c.declarations())); }
 }
-fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>) {
+fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>, declarations: Option<&declaration_texts::DeclarationTexts>) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
@@ -449,10 +450,25 @@ fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<
         let language = crate::assets::lang::read_text_language(&base)?;
         let list = crate::assets::map_resources::acquire_level_list(&base, &catalog, map, language)?;
         let mut events = Vec::new();
+        let mut hits = 0usize;
+        let mut reads = 0usize;
+        let mut decoded_bytes = 0usize;
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        // Mutable overlays can change between the two acquisition phases.
+        let reuse = !catalog.has_overlays() && std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() != Ok("1");
         for resource in list.iter().filter(|r| r.kind == "soundevent") {
             let Some(name) = resource.path.strip_prefix("generated/decls/soundevent/").and_then(|p| p.strip_suffix(".decl")) else { continue };
             let asset = crate::assets::fx::SoundEventAsset { delay: [0.0; 2], event: Some(name.to_owned()) };
-            match asset.resolve(&catalog) {
+            match asset.resolve_with(|path| {
+                if let Some(value) = declarations.filter(|_| reuse).and_then(|texts| texts.get(path)) {
+                    if trace { hits += 1; }
+                    return Ok(Some(value.to_owned()));
+                }
+                if trace { reads += 1; }
+                let bytes = catalog.read(path).map_err(|error| format!("{path}: {error}"))?;
+                if trace { decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
+                Ok(bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+            }) {
                 Ok(Some(declaration)) => events.push(declaration.id),
                 Ok(None) => {}
                 Err(error) => debug!(target: "dh2::loading", "Listed sound event {name}: {error}"),
@@ -460,6 +476,11 @@ fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<
         }
         events.sort_unstable();
         events.dedup();
+        if trace {
+            let mut crc = flate2::Crc::new();
+            for event in &events { crc.update(&event.to_le_bytes()); }
+            eprintln!("MEMORY listed sound declaration sources: map={map} cache_hits={hits} reads={reads} decoded_bytes={decoded_bytes} events={} signature={:08x}", events.len(), crc.sum());
+        }
         Ok(events)
     })();
     let events = match result {
@@ -726,7 +747,7 @@ impl AudioPreparation {
         }
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands) {
-        commands.insert_resource(contacts::ContactSounds::acquire());
+        let contacts = contacts::ContactSounds::acquire();
         prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
         // Host: cold media reads/decodes must not occupy the frame executor.
         // Keep its existing parallelism rather than the smaller async pool,
@@ -736,7 +757,8 @@ impl AudioPreparation {
                 .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num().max(1))
                 .thread_name("sound acquisition".to_owned())
                 .build());
-        prepare_listed_events(&mut self.registry, pool.as_ref());
+        prepare_listed_events(&mut self.registry, pool.as_ref(), contacts.declarations());
+        commands.insert_resource(contacts);
     }
     pub fn publish(self, world: &mut World) {
         world.insert_resource(self.registry);

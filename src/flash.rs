@@ -207,18 +207,26 @@ impl Player {
     ) -> std::result::Result<(Player, Vec<(usize, String)>), String> {
         use crate::assets::lang;
         thread_local! {
-            static STRINGS: RefCell<std::collections::HashMap<String, Rc<lang::StringTable>>> = RefCell::new(std::collections::HashMap::new());
+            static STRINGS: RefCell<Option<(u64, std::collections::HashMap<String, Rc<lang::StringTable>>)>> = RefCell::new(None);
         }
         let read = |p: &str| crate::assets::iggy::acquire(catalog, p);
         let movie = read(movie_path)?;
         let info = movie.movie().map_err(|e| e.to_string())?;
         let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
         let mut player = Player::new(size, info.frame_rate as f64).map_err(|e| format!("{e:?}"))?;
-        let strings = match STRINGS.with(|s| s.borrow().get(language).cloned()) {
+        let cached = STRINGS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.as_ref().is_none_or(|(identity, _)| *identity != catalog.identity()) {
+                // Active players keep their Rc; this registry holds only the current catalog.
+                *cache = Some((catalog.identity(), Default::default()));
+            }
+            cache.as_ref().unwrap().1.get(language).cloned()
+        });
+        let strings = match cached {
             Some(s) => s,
             None => {
                 let s = Rc::new(lang::StringTable::load(catalog, language)?);
-                STRINGS.with(|cache| cache.borrow_mut().insert(language.to_string(), s.clone()));
+                STRINGS.with(|cache| cache.borrow_mut().as_mut().unwrap().1.insert(language.to_string(), s.clone()));
                 s
             }
         };
