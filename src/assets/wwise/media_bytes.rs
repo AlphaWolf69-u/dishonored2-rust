@@ -6,13 +6,24 @@ use std::{ops::{Deref, Range}, sync::Arc};
 pub struct MediaBytes {
     bytes: Arc<[u8]>,
     range: Range<usize>,
+    source_size: Option<usize>,
 }
 
 impl MediaBytes {
     pub fn slice(&self, range: Range<usize>) -> Self {
         assert!(range.start <= range.end && range.end <= self.len());
-        Self { bytes: self.bytes.clone(), range: self.range.start + range.start..self.range.start + range.end }
+        Self { bytes: self.bytes.clone(), range: self.range.start + range.start..self.range.start + range.end, source_size: None }
     }
+
+    /// Format-only acquisition for a file source. The audio payload stays in
+    /// its package; dereferencing this value exposes only the acquired header.
+    pub fn stream_header(bytes: Vec<u8>, source_size: usize) -> Self {
+        let mut header = Self::from(bytes);
+        header.source_size = Some(source_size);
+        header
+    }
+
+    pub fn source_size(&self) -> usize { self.source_size.unwrap_or(self.bytes[self.range.clone()].len()) }
 
     /// Identity and size of the retained allocation, for residency accounting.
     pub fn allocation(&self) -> (usize, usize) {
@@ -38,7 +49,7 @@ impl std::fmt::Debug for MediaBytes {
 impl From<Arc<[u8]>> for MediaBytes {
     fn from(bytes: Arc<[u8]>) -> Self {
         let range = 0..bytes.len();
-        Self { bytes, range }
+        Self { bytes, range, source_size: None }
     }
 }
 

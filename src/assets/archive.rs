@@ -17,6 +17,7 @@ struct Entry {
     slot: u16,
     /// Index into `Catalog::kinds`.
     kind: u16,
+    flags: u16,
 }
 
 /// Sorted strings packed into one buffer. The installed index lists about a
@@ -115,6 +116,13 @@ fn image_program_key(source: &str) -> String {
 }
 
 impl Catalog {
+    /// 140066ac0..140066b8c classifies these as streamed rather than map
+    /// preload requests. The load-list reader already normalizes this path.
+    pub(crate) fn preloads(&self, path: &str) -> bool {
+        let streamed = self.paths.search(path).ok().is_some_and(|index| self.entries[index].flags & 0x20 != 0);
+        !streamed && ![".sbcm", ".tbcm", ".bwm"].iter().any(|suffix| path.contains(suffix))
+    }
+
     fn entry(&self, path: &str) -> Option<&Entry> {
         let normalized = path.replace('\\', "/").to_ascii_lowercase();
         self.paths.search(&normalized).ok().map(|index| &self.entries[index])
@@ -157,6 +165,7 @@ impl Catalog {
                     size,
                     stored_size,
                     archive_slot,
+                    flags,
                     ..
                 } = record;
                 path.make_ascii_lowercase();
@@ -186,6 +195,7 @@ impl Catalog {
                         stored_size,
                         slot: archive_slot,
                         kind,
+                        flags,
                     },
                 ));
             })?;

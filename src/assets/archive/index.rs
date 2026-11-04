@@ -16,6 +16,7 @@ pub struct IndexEntry {
     pub offset: u64,
     pub size: u32,
     pub stored_size: u32,
+    pub flags: u16,
     pub archive_slot: u16,
 }
 
@@ -81,7 +82,7 @@ fn parse_index(
         let size = be_u32(input)?;
         let stored_size = be_u32(input)?;
         let _unknown = number::<6>(input)?;
-        let _flags = be_u16(input)?;
+        let flags = be_u16(input)?;
         let archive_slot = be_u16(input)? >> 2;
         visit(IndexEntry {
             group,
@@ -92,6 +93,7 @@ fn parse_index(
             offset,
             size,
             stored_size,
+            flags,
             archive_slot,
         });
     }
@@ -161,6 +163,7 @@ pub fn read_entry(base: &Path, entry: &IndexEntry) -> Result<Vec<u8>> {
             stored_size: entry.stored_size,
             slot: entry.archive_slot,
             kind: 0,
+            flags: entry.flags,
         },
     )
 }

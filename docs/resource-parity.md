@@ -100,7 +100,7 @@ trailing `*` covers a family of kinds.
 | `gamesoundproperties` | none | none: no owner yet |
 | `gameVideoClip` | none | none: no owner yet |
 | `greatestMomentsManager` | none | none: no owner yet |
-| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Only mip 0 is connected, as before; original mip-chain and CPU library-cache unload remain partial |
+| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners) |
 | `image` | `app::texture_streaming`, `assets::texture` (image class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `inventoryitem` | none | none: no owner yet |
 | `inventoryItemCollection` | none | none: no owner yet |
@@ -161,6 +161,38 @@ trailing `*` covers a family of kinds.
 | `gameLogicState*` | `gameplay::pause_state` (pause only) | partial: pause state only |
 | `mainMenuSection*` | none | none: no main menu |
 | `menuSectionOption*` | `gameplay::options` | partial |
+
+### Active implementation: original lifecycle completion
+
+- Sound source release: `141122400` releases an old bank-backed source before
+  assigning new media; `1410f1910` reuses the registered Sound object. The host
+  now prunes unused Vorbis header/codebook cache entries after map voices and
+  prepared media are released, preserving identities still held by live/common
+  sources. Same-build retention control: `DH2_DEBUG_RETAIN_SOUND_HEADERS`.
+- Map request descriptors: `1400661e0` releases its assembled request table
+  after acquisition. Combined rewrite manifests now use weak cache entries;
+  active consumers retain one identity. Init/common source manifests remain
+  available without rescanning archives; map request tables and progress indices
+  release after their acquisition/report consumers finish. Control: `DH2_DEBUG_RETAIN_LEVEL_MANIFESTS`.
+- World teardown: `1400410f0` ends world ownership independently of resource
+  class purging. The backend now also drops outgoing screen-shadow bindings,
+  area-light image slot handles, projected-decal skin/resource bindings and
+  direct-draw bindings. Fixed viewport/upload capacity stays reusable.
+- Live Iggy collection: installed `1410b0040` jumps to `141062a90`; the rewrite
+  previously returned without collecting. The original marks roots through
+  `1410642f0`/`141064430`, traces in `141063ed0`, and sweeps through `141063530`.
+  `flash::avm2::heap` now traces object references and shared capture scopes,
+  preserves VM/host/stack roots, and breaks unreachable cycles during a live
+  movie. `System.gc` invokes it; movie safepoints use host growth-relative
+  scheduling instead of Iggy's allocator-specific incremental budget. No
+  collector runs on the ordinary gameplay update path when no movie ticks.
+  Control: `DH2_DEBUG_RETAIN_UI_GARBAGE`.
+
+Production-client validation and measured effects for these changes are
+recorded below. Unused setup eviction yielded no saving in the sampled maps
+because those setups remained live. Combined descriptors release after use;
+closed VMs release all tracked runtime objects. No steady-state frame-time
+claim is assigned to unload operations.
 
 ### Loading presentation and shared UI acquisitions
 
@@ -292,3 +324,231 @@ docs/loading.md; full responsiveness is not yet claimed.
 | `1400661e0`, `1400607f0` / `14005feb0` | resource acquisition with pre-registered identities | host: `bevy_backend::asset_preparation` prepares CPU payloads using the existing asset handle providers; `app::setup_commands` reserves entities with the live world's remote allocator. `app::scene_preparation` runs the existing setup implementation on the acquisition worker and transfers payloads/commands once. Canonical asset stores, shared resource caches and GPU uploads stay in their existing owners. Scene base-image bytes are read by the same texture owner on that worker; common/map GPU upload phases remain separate. Audio owner data moves to that worker while map systems are suspended, retaining its resource identities/output and shared-bank backing; the same bank/event preparation helpers serve synchronous diagnostic callers. Screen-shadow/depth preparation runs before setup transfers the catalog. GPU attachment/mesh/buffer readiness precedes camera activation; forward and shadow submissions precede continuation. EotW -> Dust -> EotW completes without shader errors; remaining subsecond loading stalls are under investigation (docs/loading.md) |
 | renderer-complete handoff | `bevy_backend::display_scene`, `app::texture_streaming` | host: initial gameplay readiness requires successful atmosphere/camera/lens composition and initial visible image residency, in addition to pipeline/upload gates. No timer substitutes for missing rendering |
 | `1408aac09` / `1408aac1f` / `1408aac49`, `140166f60`, `140166e40`, `140167170` | `assets::fx::fade`, `app::loading_fade` | partial: read world initial/later-load declarations and durations, parse colour/opacity curves using the existing partial-edit array readers, advance/sample the fade after loading. Host: black loading cover is a persistent UI node below the authored Flash presentation, then fades into gameplay. Native priority/listener arbitration and script-triggered fades remain separate. Direct first launch maps to the initial-load variant; later host map commands map to the later-load variant. No save-game mode is inferred |
+
+### Acquisition descriptors: completion and measurement
+
+Expected gain: release each map's parsed source request list after assembly,
+then release the combined list and its progress hash/chains after the loading
+presentation closes. Keep init/common source metadata for session reuse, and
+keep registered resource payloads in their actual owners. This ports the
+request-table release in `1400661e0`; it does not purge the resource registry.
+Diagnostic coverage must relinquish its temporary strong reference after its
+single report. EotW's combined table alone accounts for 6,878,036 bytes; retained
+copies and source lists should disappear during gameplay, with no per-frame
+work. Measure descriptor identities/bytes, not process-wide FPS.
+
+Production dev-client validation of the preceding unload changes completed
+EotW -> Dust District -> EotW with both retention controls and corrections,
+exit code 0 in both runs. Disabling outgoing world cameras before render
+cleanup is required: standard Bevy mesh phases otherwise outlive publication
+and access released bindings. The replacement loading camera keeps the loading
+presentation active while the outgoing renderer retires.
+
+Weak event listeners now follow `141083aa0`'s useWeakReference flag and
+`141065f20`'s broadcast root rule. `141064cd0` clears dead weak handles and
+`141086220` prunes their records. The host uses weak object references and a
+tracing collector rather than Iggy's allocator. A three-map production dev run
+completed with exit code 0; each closed UI VM reported zero remaining runtime
+objects. Live collections visited 3,527/3,528/3,527 objects and freed zero:
+these loading movies' live heaps are not evidence of a live-garbage memory
+saving. System.gc correctness and unreachable-cycle handling are distinct
+from the already measured movie-close leak correction. Full collector pauses
+were 1.652/1.649/1.649 ms in dev, once per movie in that sequence; release cost
+and long-running menu allocation behavior remain to be measured.
+
+Dictionary weak-key lifetime is also implemented. Original `141044820`
+recognizes Dictionary's class tag 0x21 and exactly one true argument
+(`DAT_142424049`), creates its weak dynamic table, and sets its weak-table
+field. `141063ed0` marks the values of that table while deferring object keys;
+`141064cd0` removes entries whose keys were not marked. The host collector
+counts the physical key references without making them roots, preserves the
+original strong value references (including value-to-key cycles), and removes
+dead-key entries at collection. Primitive keys remain ordinary keys. Expected
+gain is release of unreachable object keys/values from long-running UI caches;
+loading movies need not contain such garbage, so their zero collected count
+is not a savings claim.
+
+### Stream format acquisition
+
+Original `1411606d0` takes source format/frame count from RIFF metadata and
+`141149320` handles the pre-data loop record. Source playback uses the Wwise
+stream device, whose game initialization `1400bc8f0` overrides the defaults in
+`1410bf740`: 2 MiB IO memory, 16 KiB granularity, blocking scheduler, cached
+reads, and 100 ms target automatic buffering (installed DAT_141ac8ffc).
+
+Expected acquisition correction: read the RIFF header/chunks through the data
+chunk header, retain no audio bytes at map acquisition, and derive the exact
+same channel/rate/frame/loop fields without constructing a full Vorbis packet
+index. This removes whole-file reads and transient buffers from the type-2
+format-acquisition path. Unsupported format layouts still acquire their full
+payload through the existing decoder; no guessed frame counts. Resident and
+prefetched sources preserve their current decoding. Same-build control:
+`DH2_DEBUG_EAGER_STREAM_ACQUISITION=1`. Record actual acquired header bytes vs
+referenced source bytes and acquisition CPU/read cost. Earlier EotW logs list
+2,070 type-2 source files totaling 422 MiB; repeated source references can make
+actual eliminated IO larger. This does not yet change whole-file playback IO
+or implement the original bounded playback buffering; those remain required.
+
+### Glyph page residency and updates
+
+Original `14107b7e0` creates one R8 page when player+0x468 is empty;
+`14107b2d0` uploads only a bordered glyph rectangle through GDraw+0xa8.
+`14107b980` stamps the current draw counter on a cache hit. At capacity,
+`14107a980` scans fitting shelves and reuses entries not used this draw whose
+reserved width is in [requestedWidth, requestedWidth+6); it keeps slots used
+by the current draw and falls back to vector drawing if no slot qualifies.
+The rewrite instead cleared the entire page at capacity and recreated/uploaded
+the whole GPU texture for every page version.
+
+The host now keeps draw ages and physical slots, applies that reuse rule, and
+keeps the GPU page identity while updating dirty rectangles. Dirty bounds are
+unioned only within a draw; a renderer that skipped a version uploads the full
+page into the same identity. There is no unbounded update journal. Direct movie
+replacement also releases the outgoing player's bitmap/glyph textures, even
+when no empty UI frame separates the two players.
+
+Expected gain: GPU page creations fall from one per page revision to one per
+page; updated bytes follow changed glyph rectangles. Capacity pressure no
+longer invalidates every cached glyph or overwrites glyphs used by the same
+draw. Normal glyph hits add the original draw-age stamp; no extra GPU pass or
+shader/output change. Same-build page recreation control:
+`DH2_DEBUG_RECREATE_GLYPH_PAGES=1`. Production diagnostics record uploaded bytes,
+page creation/update counts and CPU time of that path; targeted release
+measurement is required before assigning a CPU improvement.
+
+### Animation resource ownership
+
+Original `14024adf0` replaces/releases the previous resource buffer at +0x48,
+then allocates only the authored Edge blob (+0x54 size rule) under
+TAG_ANIMATION. Registry lookup `1400607f0`/`14005feb0` gives consumers that
+resource identity; actor playback clocks/poses are independent. The retained
+original EotW tag baseline is 195,174,788 bytes, including more animation
+systems than the rewrite currently implements.
+
+The player loader deduplicated by rig alias, so multiple aliases resolving to
+one resource and different body/arm rigs could still independently acquire,
+parse and own identical clip bytes. The resource owner now shares immutable
+Edge definitions by installation/resource path through Arc, with weak registry
+entries. Pose sampling takes the same references and does not perform registry
+lookups, locks or reference-count operations. Outgoing world teardown prunes
+expired weak identities; startup/player clocks remain separate.
+
+Expected gain: clip reads, retained blobs/tables and acquisition CPU follow
+unique resources rather than aliases. If installed aliases do not duplicate a
+resource, this change has no demonstrated residency gain and must not be kept
+as an optimization on assumption alone. Same-build control:
+`DH2_DEBUG_DUPLICATE_ANIMATIONS=1`. Production diagnostics report requests,
+reads, live unique payloads, payload bytes and acquisition time.
+
+### Stream classification in acquisition progress
+
+`140068800` reads the resource-index flags into record+0x4a0. The preloader
+`140066ac0`/`140066b8c` classifies flag 0x20 and paths containing .sbcm, .tbcm or
+.bwm as streamed instead of ordinary preload requests. The archive owner now
+preserves that flags word; loading-progress indexing applies the same rule.
+Typed resource owners and complete coverage reports still see the full list.
+This changes classification/progress bookkeeping, not resource decoding or
+payload readiness gates. It does not claim a completed registry-driven loader.
+
+Stream acquisition release measurement (`lifecycles-stream-release-*`): both
+modes completed with exit 0 and no fatal client/GPU errors. At 2,492 requests,
+logical package bytes read fell from 530,033,360 to 232,514; cumulative read/
+acquisition CPU time fell from 383.678 to 189.805 ms. The separately timed
+initial event preparation fell from 285.880 to 157.283 ms; the later 33-event
+batch fell from 12.108 to 2.679 ms. These are acquisition measurements, not
+walking CPU or whole-frame improvements.
+
+Comparing all 2,381 prepared source formats found 118 rate differences and no
+channel/frame/loop differences. Investigation identified an existing baseline
+cache bug: WWISE_HEADERS keyed identification headers only by codebook bytes,
+channels and block sizes, incorrectly reusing a 48 kHz identity for 44.1 kHz
+files. `1411606d0` reads each source's sample rate from fmt+4. Header keys now
+include that rate; decoded setup/codebook sharing remains independent of rate.
+A fresh comparison after that correction is required; the old baseline's
+wrong rate must not be reproduced as supposed parity.
+
+A further world-release defect was found in ScreenEffects: its cached passes
+owned material textures and depth/HDR bindings, but the cache was reused only
+by viewport configuration and survived `clear_frame`. A same-size destination
+world could therefore reuse outgoing material images. World unload now drops
+that material/pass owner, not merely its completed-frame flag. The original
+world ownership boundary is `1400410f0`; device-level shader services remain
+separate. This is correctness as well as residency, with no ordinary-gameplay
+update work added.
+
+### Authored Iggy bitmap mip chains
+
+Original `1402e2c00` takes the raw entry's mip count from byte+5, builds one
+subresource record for each authored mip, advances by ceil(width/blockEdge) *
+ceil(height/blockEdge) * blockBytes, and creates the texture with that count.
+The bitmap owner currently copied/uploaded mip 0 only despite retaining the
+entry's authored count. Correct acquisition must preserve the whole chain;
+block-aligned BC7 entries stay compressed, while the existing wgpu-only
+nonaligned fallback decodes each actual level with its proper extent.
+
+Expected fidelity change: minified UI bitmaps use their authored mip chain.
+Expected cost is exactly the extra authored levels, not an RGBA expansion of
+BC7 assets. Counts/bytes are reported against the retained IGGY tag budget
+(86,057,717 CPU bytes); no lower-memory claim is made for restoring missing
+levels. `DH2_DEBUG_UI_SINGLE_MIP=1` reproduces the previous incomplete upload
+for owner accounting. No new shader or GPU pass is needed.
+Native bitmap sampling was traced with the mip-chain fix: `1402dfd40` creates
+D3D sampler filter 0x15 for smooth fills and 0x10 otherwise. The host now uses
+linear minification for both, with linear magnification/mips for smooth fills
+and point magnification/mips for nonsmooth fills. Previously mip filtering was
+always point and nonsmooth minification was also point. Addresses/repeat modes
+and glyph rasterization remain separate from this authored sampling rule.
+
+Animation result: the production release loaded 200 clips from 200 distinct
+resources (1,133,582 payload/table bytes); the proposed shared-definition owner
+removed no acquisition in that case. It was reverted, including the Arc wrapper
+and extra registry, rather than keeping unmeasured complexity. Existing body/
+arm owners retain compressed clips and release them with their map; CPU skin
+sampling and GPU-only mesh upload remain separate required representations.
+
+Sustained pause collection revealed a performance defect in the first host
+collector: tracing about 13,694 live objects took roughly 4.8-5.2 ms, repeatedly
+freeing only eight cyclic objects. Its per-object adjacency Vec allocated once
+per traced object and used the standard string-oriented hasher for pointer
+indices. The collector now stores edges contiguously with per-node offsets,
+and uses the project's existing hashbrown hasher for pointer identities. Root,
+weak-key/listener, collection scheduling and sweep rules are unchanged. Expected
+gain is lower collection CPU/transient allocation, without delayed weak cleanup.
+`DH2_DEBUG_UI_GC_NESTED_EDGES=1` restores both the previous adjacency layout and
+standard hasher in the same build for targeted comparison.
+
+### Pending sound acquisition ownership
+
+Source inspection found a pending-event lifetime defect: both ordinary and FX
+queues discarded completed StreamHolds whenever any other source was still
+loading. Since StreamedSource keeps only a Weak resident reference, a completed
+file could be freed and requested again on the next retry, potentially
+preventing a multi-source event from ever becoming ready. Original file-source
+state retains its pending/ready media through source ownership (`1411606d0`,
+release `141160970`); a partial completion must not lose that ownership.
+
+Expected correction: each queued request/ticket retains its completed holds
+across retries, hands them to the actual voice on admission, and releases them
+on cancellation/world teardown. Scope is the pending event, not a process-wide
+strong source cache. This is a correctness fix established by the ownership
+path; any reduction in repeated reads needs actual production observation.
+It does not solve all-child preloading or whole-file active playback, which
+remain required streaming work.
+
+Latest production dev validation (`lifecycles-owner-dev2-*`) completed
+EotW -> Dust District -> EotW in both modes, exit 0, no fatal client/GPU
+errors. All 2,699 captured source formats now match between eager preparation
+and metadata-only preparation after the identification-header key correction.
+Every closed VM reports zero remaining runtime objects. The 430 acquired UI
+bitmaps in these loading-library sets all have one authored mip: full-chain
+support changes neither their 34,556,544 retained bytes nor mip count (430).
+The screen-distortion material cache was not instantiated at these saved views
+(material_owner=false), so that run verifies safe teardown integration rather
+than demonstrating savings from that cache.
+
+Release glyph-page comparison (`lifecycles-owner-release-*`, 9 actual page
+revisions per run): full recreation used 9 textures / 7,864,320 uploaded bytes /
+0.984 ms cumulative acquisition CPU; page reuse used 2 textures + 7 rectangle
+updates / 2,313,100 uploaded bytes / 0.535 ms. Both clients exited 0 without
+GPU validation errors. These are nine acquisition operations, not hundreds of
+independent timing samples or a whole-frame FPS improvement.

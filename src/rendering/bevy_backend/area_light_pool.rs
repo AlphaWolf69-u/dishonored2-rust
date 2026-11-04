@@ -56,6 +56,15 @@ impl AreaLightPool {
 
     pub fn copy_revision(&self) -> u64 { self.copy_revision }
 
+    /// World references end with 1400410f0; the fixed pool allocation remains
+    /// reusable. Slot handles otherwise keep outgoing images resident even
+    /// when the destination never requests an area-light texture.
+    pub(super) fn release_images(&mut self) -> usize {
+        let count = self.slots.iter().filter(|slot| slot.is_some()).count();
+        self.slots.fill(None);
+        count
+    }
+
     pub fn prepare(
         &mut self,
         device: &RenderDevice,

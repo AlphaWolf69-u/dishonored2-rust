@@ -179,6 +179,24 @@ struct DecalGpu {
     // Physical slot identity and immutable probe-bank identity bound the cache.
     lighting: std::collections::HashMap<u32, (u64, usize, [f32; 3], [[f32; 4]; 9])>,
 }
+
+pub(super) fn release_level(world: &mut World) {
+    let mut gpu = world.resource_mut::<DecalGpu>();
+    let bindings = gpu.bindings.len();
+    gpu.bindings.clear();
+    gpu.identities = None;
+    gpu.previous.clear();
+    gpu.receiver_indices.clear();
+    gpu.world_target_floors.clear();
+    gpu.lighting.clear();
+    gpu.projections.get_mut().clear();
+    gpu.receivers.get_mut().clear();
+    gpu.remap.get_mut().clear();
+    // Preserve upload capacity; release world/skinning references separately.
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY decal release: resource_bindings={bindings}");
+    }
+}
 fn prepare(
     scene: Res<DecalScene>,
     receivers: Res<DecalReceivers>,

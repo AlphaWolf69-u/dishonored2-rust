@@ -76,6 +76,10 @@ pub struct Page {
     pub coverage: Vec<u8>,
     /// Changes whenever texels change.
     pub version: u64,
+    /// Changes since this version, unioned within one movie draw. A render
+    /// consumer that missed that version falls back to updating the full page.
+    pub dirty_base: u64,
+    pub dirty: [u32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +89,16 @@ struct Entry {
     /// UVs (`+0x20..0x2c`) and the quad in em units (`+0x38..0x44`).
     uv: [f32; 4],
     quad: [f32; 4],
+    slot: Slot,
+    used: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    position: (i32, i32),
+    width: i32,
+    shelf: usize,
+    order: u64,
 }
 
 /// A shelf: its y, height and filled width.
@@ -108,6 +122,9 @@ pub struct GlyphCache {
     shelves: Vec<Shelf>,
     /// By (font address, glyph index).
     entries: HashMap<(usize, usize), Vec<Entry>>,
+    frame: u64,
+    next_slot: u64,
+    frame_base: u64,
 }
 
 impl GlyphCache {
@@ -118,9 +135,12 @@ impl GlyphCache {
         }
         GlyphCache {
             caching,
-            page: Arc::new(Page { id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed), width: w, height: h, coverage: vec![0; (w * h) as usize], version: 0 }),
+            page: Arc::new(Page { id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed), width: w, height: h, coverage: vec![0; (w * h) as usize], version: 0, dirty_base: 0, dirty: [0; 4] }),
             shelves: Vec::new(),
             entries: HashMap::new(),
+            frame: 0,
+            next_slot: 0,
+            frame_base: 0,
         }
     }
 
@@ -130,6 +150,11 @@ impl GlyphCache {
 
     pub fn page(&self) -> &Arc<Page> {
         &self.page
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        self.frame_base = self.page.version;
     }
 
     /// `FUN_141098c20`: whether a glyph of these em extents is drawn from the
@@ -142,11 +167,12 @@ impl GlyphCache {
     /// rasterising it when none matches. `None` when the glyph has no
     /// coverage or the page is full.
     pub fn glyph(&mut self, key: (usize, usize), points: &[PathPoint], scale: (f32, f32)) -> Option<CachedGlyph> {
-        if let Some(e) = self.entries.get(&key).and_then(|list| {
-            list.iter().find(|e| {
+        if let Some(e) = self.entries.get_mut(&key).and_then(|list| {
+            list.iter_mut().find(|e| {
                 MATCH.0 * scale.0 <= e.scale.0 && e.scale.0 <= MATCH.1 * scale.0 && MATCH.0 * scale.1 <= e.scale.1 && e.scale.1 <= MATCH.1 * scale.1
             })
         }) {
+            e.used = self.frame;
             return Some(CachedGlyph { quad: e.quad, uv: e.uv });
         }
         let entry = self.make(points, scale)?;
@@ -186,9 +212,20 @@ impl GlyphCache {
                 }
             }
         }
-        let (px, py) = self.place(w, h)?;
+        let slot = self.place(w, h)?;
+        let (px, py) = slot.position;
         // Copy the bordered raster to (px - border, py - border).
         let page = Arc::make_mut(&mut self.page);
+        let dirty = [(px - border).max(0) as u32, (py - border).max(0) as u32,
+            (px - border + stride).clamp(0, page.width as i32) as u32,
+            (py - border + rows).clamp(0, page.height as i32) as u32];
+        if page.dirty_base != self.frame_base || page.version == self.frame_base {
+            page.dirty_base = self.frame_base;
+            page.dirty = dirty;
+        } else {
+            page.dirty = [page.dirty[0].min(dirty[0]), page.dirty[1].min(dirty[1]),
+                page.dirty[2].max(dirty[2]), page.dirty[3].max(dirty[3])];
+        }
         for row in 0..rows {
             for col in 0..stride {
                 let (tx, ty) = (px - border + col, py - border + row);
@@ -211,14 +248,14 @@ impl GlyphCache {
             ((origin_x as f32 + k_half + w as f32) / factor + 0.5) / scale.0,
             ((y0 as f32 + k_half + h as f32) / factor + 0.5) / scale.1,
         ];
-        Some(Entry { scale, uv, quad })
+        Some(Entry { scale, uv, quad, slot, used: self.frame })
     }
 
     /// `FUN_14107a980`'s shelves: the lowest shelf tall enough with room,
     /// else a new shelf of `k + 2 + (h + 2) / 5 + h` (clipped to the page);
-    /// a full page starts over (the original evicts entries unused this
-    /// frame from fitting shelves; not ported).
-    fn place(&mut self, w: i32, h: i32) -> Option<(i32, i32)> {
+    /// a full page reuses an unused-this-frame slot of width [w, w+6)
+    /// from a fitting shelf. Entries already used this frame remain intact.
+    fn place(&mut self, w: i32, h: i32) -> Option<Slot> {
         let (pw, ph) = (self.page.width as i32, self.page.height as i32);
         let reach = K + 1;
         let (need_w, need_h) = (w + reach, h + reach);
@@ -237,13 +274,21 @@ impl GlyphCache {
                     height = ph - top;
                 }
                 if self.shelves.len() == MAX_SHELVES || height < need_h {
-                    // Start over: every entry is dropped with its texels.
-                    self.shelves.clear();
-                    self.entries.clear();
-                    let page = Arc::make_mut(&mut self.page);
-                    page.coverage.fill(0);
-                    page.version += 1;
-                    return self.place(w, h);
+                    // 14107a980 scans shelves in allocation order, then the
+                    // oldest physical slot in each shelf. Reuse preserves
+                    // its reserved width, even for a slightly narrower glyph.
+                    let candidate = self.entries.iter().flat_map(|(&key, entries)| entries.iter().enumerate().map(move |(index, entry)| (key, index, *entry)))
+                        .filter(|(_, _, entry)| {
+                            let shelf = &self.shelves[entry.slot.shelf];
+                            need_h <= shelf.height && shelf.height < reach + h * 2
+                                && entry.used < self.frame && w <= entry.slot.width && entry.slot.width < w + 6
+                        })
+                        .min_by_key(|(_, _, entry)| (entry.slot.shelf, entry.slot.order));
+                    let (key, index, entry) = candidate?;
+                    let entries = self.entries.get_mut(&key).unwrap();
+                    entries.remove(index);
+                    if entries.is_empty() { self.entries.remove(&key); }
+                    return Some(entry.slot);
                 }
                 self.shelves.push(Shelf { y: top, height, x: reach });
                 self.shelves.len() - 1
@@ -252,7 +297,9 @@ impl GlyphCache {
         let shelf = &mut self.shelves[index];
         let at = (shelf.x, shelf.y);
         shelf.x += w + reach;
-        Some(at)
+        let order = self.next_slot;
+        self.next_slot += 1;
+        Some(Slot { position: at, width: w, shelf: index, order })
     }
 }
 

@@ -123,8 +123,10 @@ pub(super) fn level_ready(
             eprintln!("LOAD big {} MB in {blocks}: {frames}", bytes >> 20);
         }
     }
-    if let Some(list) = &*LIST.lock().unwrap() {
-        let report = crate::loading::report(list);
+    // Coverage is emitted once. A diagnostic must not retain the map's
+    // acquisition descriptors throughout gameplay or into the next load.
+    if let Some(list) = LIST.lock().unwrap().take() {
+        let report = crate::loading::report(&list);
         let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
         eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");
         for c in report.iter().filter(|c| c.listed > 0 || c.unlisted > 0) {

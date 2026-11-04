@@ -171,7 +171,7 @@ pub fn install(vm: &mut Vm) {
     define(vm, s);
 
     let mut s = Spec::new("flash.system", "System", Some(object));
-    s.statics = vec![("gc", |_, _, _| Ok(Value::Undefined))];
+    s.statics = vec![("gc", |vm, _, _| { vm.collect_garbage(); Ok(Value::Undefined) })];
     define(vm, s);
 }
 

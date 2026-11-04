@@ -14,6 +14,15 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct Obj(Rc<RefCell<ObjectData>>);
 
+#[derive(Clone, Debug)]
+pub struct WeakObj(std::rc::Weak<RefCell<ObjectData>>);
+
+impl WeakObj {
+    pub fn upgrade(&self) -> Option<Obj> { self.0.upgrade().map(Obj) }
+    pub fn alive(&self) -> bool { self.0.strong_count() != 0 }
+    pub fn matches(&self, object: &Obj) -> bool { self.0.as_ptr() == Rc::as_ptr(&object.0) }
+}
+
 impl fmt::Debug for Obj {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.try_borrow() {
@@ -48,6 +57,8 @@ impl Obj {
     pub(super) fn downgrade(&self) -> std::rc::Weak<RefCell<ObjectData>> {
         Rc::downgrade(&self.0)
     }
+
+    pub fn weak(&self) -> WeakObj { WeakObj(Rc::downgrade(&self.0)) }
 
     pub fn borrow(&self) -> Ref<'_, ObjectData> {
         self.0.borrow()
@@ -151,6 +162,10 @@ impl Dynamic {
         self.entries.iter().filter(|e| e.2).map(|e| (&e.0, &e.1))
     }
 
+    pub(super) fn values(&self) -> impl Iterator<Item = &Value> {
+        self.entries.iter().map(|entry| &entry.1)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -175,6 +190,9 @@ pub struct ObjectData {
     /// Method closures are cached so `o.f === o.f`, as in the AVM2.
     pub closures: HashMap<QName, Obj>,
     pub kind: Kind,
+    /// Dictionary(true) excludes object keys from GC roots (141044820).
+    /// Physical references remain until the collector prunes dead keys.
+    pub weak_dictionary_keys: bool,
 }
 
 impl ObjectData {
@@ -187,6 +205,7 @@ impl ObjectData {
             dynamic: Dynamic::default(),
             closures: HashMap::new(),
             kind: Kind::Plain,
+            weak_dictionary_keys: false,
         }
     }
 }

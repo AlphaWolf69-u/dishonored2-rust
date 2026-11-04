@@ -297,6 +297,7 @@ impl Player {
         hit::update_drag(&self.vm);
         mouse::moved(&mut self.vm, None)?;
         self.state.borrow_mut().frame += 1;
+        self.vm.collect_at_safepoint();
         Ok(())
     }
 

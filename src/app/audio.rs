@@ -32,12 +32,13 @@ struct WwiseRegistry {
     level_prepared: bool,
     /// Package location of every media read, for streamed sources.
     locators: std::sync::Mutex<HashMap<u32, graph::StreamLocator>>,
+    stream_acquisition: std::sync::Mutex<(u64, u64, u64, std::time::Duration)>,
 }
 
 impl WwiseRegistry {
     fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
         let mut files = HashMap::<usize, std::fs::File>::new();
-        self.library.event_playback(event, |owner, media_id| {
+        self.library.event_playback_shared(event, |owner, media_id, stream_type| {
             let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
@@ -49,7 +50,27 @@ impl WwiseRegistry {
                 hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 hashbrown::hash_map::Entry::Vacant(entry) => entry.insert(std::fs::File::open(&bank.path)?),
             };
-            bank.package.read_entry(file, media).map(Some)
+            if stream_type == 2 {
+                use std::io::{Seek, SeekFrom};
+                let started = std::time::Instant::now();
+                let size = usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise stream too large"))?;
+                let header_only = std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1")
+                    && std::env::var("DH2_DEBUG_RESIDENT_STREAMS").as_deref() != Ok("1");
+                let acquired = if header_only {
+                    file.seek(SeekFrom::Start(media.offset))?;
+                    let header = crate::assets::wwise::read_stream_header(file, size)?;
+                    if crate::assets::wwise::stream_format(&header, size)?.is_some() {
+                        crate::assets::wwise::MediaBytes::stream_header(header, size)
+                    } else { bank.package.read_entry(file, media)?.into() }
+                } else { bank.package.read_entry(file, media)?.into() };
+                let mut totals = self.stream_acquisition.lock().unwrap_or_else(|e| e.into_inner());
+                totals.0 += 1;
+                totals.1 += acquired.len() as u64;
+                totals.2 += size as u64;
+                totals.3 += started.elapsed();
+                return Ok(Some(acquired));
+            }
+            bank.package.read_entry(file, media).map(|bytes| Some(bytes.into()))
         })?.ok_or_else(|| "event has no supported Wwise actions".into())
     }
     fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
@@ -165,7 +186,14 @@ impl Plugin for AudioAssetsPlugin {
 }
 
 #[derive(Resource, Default)]
-struct PendingSounds(Vec<Request>);
+struct PendingSounds(Vec<PendingSound>);
+
+struct PendingSound {
+    request: Request,
+    // A retry must not release its already completed reads while another
+    // source is pending; the source's own resident lookup is deliberately weak.
+    media: Vec<graph::StreamHold>,
+}
 
 pub(super) fn begin_level(world: &mut World) {
     world.resource::<bevy_backend::Engine>().release_level();
@@ -465,6 +493,10 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
     let count = prepared.len();
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
         println!("PERF sound preparation: events={count} wall_ms={:.3}", prepare_started.elapsed().as_secs_f64() * 1000.0);
+        let streams = registry.stream_acquisition.lock().unwrap_or_else(|e| e.into_inner());
+        println!("MEMORY stream acquisition: requests={} read_bytes={} source_bytes={} read_ms={:.3}",
+            streams.0, streams.1, streams.2, streams.3.as_secs_f64() * 1000.0);
+        drop(streams);
         let banks = registry.library.resident_allocations().collect::<HashMap<_, _>>();
         let sources = graph::resident_allocations();
         let mut owners = banks.clone();
@@ -529,21 +561,23 @@ fn play_events(
     let Some(mixer) = &mix.mixer else { events.clear(); return };
     // A request whose streamed media is still being read waits, keeping its
     // place ahead of later requests for the same emitter.
-    let requests: Vec<Request> = std::mem::take(&mut pending.0).into_iter().chain(events.read().map(|message| message.0)).collect();
+    let requests: Vec<PendingSound> = std::mem::take(&mut pending.0).into_iter()
+        .chain(events.read().map(|message| PendingSound { request: message.0, media: Vec::new() })).collect();
     let mut waiting = Vec::new();
-    for request in requests {
+    for queued in requests {
+        let request = queued.request;
         let (event, emitter, parameter, position) = match request {
             Request::Post { event, emitter } => (event, emitter, None, None),
             Request::PostWithParameter { event, emitter, parameter, value } => (event, emitter, Some((parameter, value)), None),
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Stop { event, emitter } => {
-                if waiting.contains(&emitter) { pending.0.push(request); continue; }
+                if waiting.contains(&emitter) { pending.0.push(queued); continue; }
                 engine.stop_event(event, emitter);
                 continue;
             }
         };
-        if waiting.contains(&emitter) { pending.0.push(request); continue; }
+        if waiting.contains(&emitter) { pending.0.push(queued); continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { continue; }
@@ -564,9 +598,12 @@ fn play_events(
                     }
                 }
             }
+            // All previously ready sources now have replacement holds. Keep
+            // the old ones alive through acquisition, then transfer ownership.
+            drop(queued.media);
             if loading {
                 waiting.push(emitter);
-                pending.0.push(request);
+                pending.0.push(PendingSound { request, media: holds });
                 continue;
             }
             let playing_id = engine.playing_id();

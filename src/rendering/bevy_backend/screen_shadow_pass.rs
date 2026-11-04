@@ -121,6 +121,15 @@ pub(super) struct ScreenGpu {
     reported: bool,
 }
 impl ScreenGpu {
+    pub(super) fn release_level(world: &mut World) {
+        let mut gpu = world.resource_mut::<Self>();
+        // Cached bind groups own the outgoing cloud/depth/atlas views, even
+        // after their asset handles and ShadowSceneGpu target have gone away.
+        gpu.cached = None;
+        gpu.ambient = None;
+        gpu.unhack = None;
+    }
+
     /// This frame's FUN_1402fcff0 copy with the model depth hack undone.
     pub(super) fn unhacked_depth(&self) -> Option<&bevy::render::render_resource::Texture> {
         self.unhack.as_ref().map(|unhack| &unhack.texture)

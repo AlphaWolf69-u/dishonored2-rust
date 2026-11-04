@@ -822,6 +822,7 @@ pub fn debug_draw_all_cached(vm: &Vm, cache: &mut Cache) -> DrawList {
 
 fn build(vm: &Vm, cache: &mut Cache, debug_ignore_visibility: bool) -> DrawList {
     cache.trim();
+    if let Some(glyphs) = cache.glyph_cache.as_mut() { glyphs.begin_frame(); }
     let (stage, size, projection) = {
         let shared = player::state(vm);
         let p = shared.borrow();

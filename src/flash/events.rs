@@ -9,9 +9,60 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct Listener {
     pub kind: Rc<str>,
-    pub function: Value,
+    pub function: ListenerFunction,
     pub capture: bool,
     pub priority: i32,
+}
+
+/// 141083aa0 stores useWeakReference at listener+1e; the root visitor
+/// 141065f20 only marks non-weak broadcast callbacks and their dispatchers.
+#[derive(Clone)]
+pub enum ListenerFunction {
+    Strong(Value),
+    Weak(super::avm2::object::WeakObj),
+}
+impl ListenerFunction {
+    pub fn value(&self) -> Option<Value> {
+        match self {
+            Self::Strong(value) => Some(value.clone()),
+            Self::Weak(object) => object.upgrade().map(Value::Object),
+        }
+    }
+    pub fn alive(&self) -> bool {
+        match self { Self::Strong(_) => true, Self::Weak(object) => object.alive() }
+    }
+    fn matches(&self, value: &Value) -> bool {
+        match self {
+            Self::Strong(function) => super::avm2::strict_equals(function, value),
+            Self::Weak(object) => value.as_object().is_some_and(|value| object.matches(value)),
+        }
+    }
+}
+
+pub struct BroadcastTarget {
+    kind: Rc<str>,
+    object: super::avm2::object::WeakObj,
+    // As in 141065f20, a non-weak, non-capture broadcast listener also roots
+    // the dispatcher. Weak-only dispatchers may disappear during collection.
+    _root: Option<Obj>,
+}
+
+fn update_broadcast(vm: &Vm, kind: Rc<str>, object: &Obj) {
+    if !BROADCAST.contains(&&*kind) { return; }
+    let Some(native) = object.host::<Native>() else { return };
+    let any = native.listeners.iter().any(|listener| listener.kind == kind && listener.function.alive());
+    let root = native.listeners.iter().any(|listener| listener.kind == kind && !listener.capture
+        && matches!(listener.function, ListenerFunction::Strong(_)));
+    drop(native);
+    let state = super::player::state(vm);
+    let mut state = state.borrow_mut();
+    state.broadcast.retain(|entry| entry.object.alive());
+    if let Some(index) = state.broadcast.iter().position(|entry| entry.kind == kind && entry.object.matches(object)) {
+        if any { state.broadcast[index]._root = root.then(|| object.clone()); }
+        else { state.broadcast.remove(index); }
+    } else if any {
+        state.broadcast.push(BroadcastTarget { kind, object: object.weak(), _root: root.then(|| object.clone()) });
+    }
 }
 
 #[derive(Clone, Default)]
@@ -115,12 +166,12 @@ fn invoke(vm: &mut Vm, current: &Value, event: &Value, phase: u32) -> Result<()>
     let kind = event_state(event, |e| e.kind.clone()).unwrap_or_else(|| "".into());
     let capture = phase == CAPTURING_PHASE;
     let mut listeners: Vec<Listener> = match native(current) {
-        Some(n) => n
+        Some(mut n) => { n.listeners.retain(|listener| listener.function.alive()); n
             .listeners
             .iter()
             .filter(|l| l.kind == kind && (phase == AT_TARGET && !l.capture || l.capture == capture && phase != AT_TARGET))
             .cloned()
-            .collect(),
+            .collect() },
         None => return Ok(()),
     };
     // Higher priority first; equal priorities keep registration order.
@@ -132,7 +183,8 @@ fn invoke(vm: &mut Vm, current: &Value, event: &Value, phase: u32) -> Result<()>
     for l in listeners {
         // A listener removed by an earlier one in this phase still runs:
         // Flash snapshots the list at the start of each node.
-        vm.call(&l.function, Value::Null, std::slice::from_ref(event))?;
+        let Some(function) = l.function.value() else { continue };
+        vm.call(&function, Value::Null, std::slice::from_ref(event))?;
         if event_state(event, |e| e.stop_now).unwrap_or(false) {
             break;
         }
@@ -186,7 +238,12 @@ pub fn dispatch_simple(vm: &mut Vm, target: &Value, kind: &str, bubbles: bool) -
 /// `FUN_1410865d0`: broadcast an event to every registered dispatcher, in
 /// reverse registration order (nodes are pushed at the list head).
 pub fn broadcast(vm: &mut Vm, kind: &str) -> Result<()> {
-    let targets: Vec<Obj> = super::player::state(vm).borrow().broadcast.iter().filter(|(k, _)| &**k == kind).map(|(_, o)| o.clone()).collect();
+    let state = super::player::state(vm);
+    let targets: Vec<Obj> = {
+        let mut state = state.borrow_mut();
+        state.broadcast.retain(|entry| entry.object.upgrade().is_some_and(|object| has_listener(&object, &entry.kind)));
+        state.broadcast.iter().filter(|entry| &*entry.kind == kind).filter_map(|entry| entry.object.upgrade()).collect()
+    };
     for o in targets.into_iter().rev() {
         let target = Value::Object(o);
         let e = new_event(vm, "Event", &[kind.into()])?;
@@ -198,7 +255,7 @@ pub fn broadcast(vm: &mut Vm, kind: &str) -> Result<()> {
 }
 
 pub fn has_listener(target: &Obj, kind: &str) -> bool {
-    target.host::<Native>().is_some_and(|n| n.listeners.iter().any(|l| &*l.kind == kind))
+    target.host::<Native>().is_some_and(|n| n.listeners.iter().any(|l| &*l.kind == kind && l.function.alive()))
 }
 
 /// Iggy has no exitFrame or frameConstructed (no such string in the exe).
@@ -292,20 +349,15 @@ fn dispatcher_methods() -> Vec<(&'static str, NativeFn)> {
             let priority = vm.to_int(&arg(a, 3))?;
             if let Some(mut n) = native(this) {
                 // Re-adding an identical listener is a no-op.
-                let exists = n.listeners.iter().any(|l| l.kind == kind && l.capture == capture && super::avm2::strict_equals(&l.function, &function));
+                let exists = n.listeners.iter().any(|l| l.kind == kind && l.capture == capture && l.function.matches(&function));
                 if !exists {
+                    let function = if arg(a, 4).to_boolean() {
+                        ListenerFunction::Weak(function.as_object().unwrap().weak())
+                    } else { ListenerFunction::Strong(function) };
                     n.listeners.push(Listener { kind: kind.clone(), function, capture, priority });
                 }
                 drop(n);
-                // Broadcast types also register the dispatcher (`FUN_141083aa0`).
-                if BROADCAST.contains(&&*kind) {
-                    let o = this.as_object().unwrap().clone();
-                    let shared = super::player::state(vm);
-                    let mut p = shared.borrow_mut();
-                    if !p.broadcast.iter().any(|(k, x)| *k == kind && *x == o) {
-                        p.broadcast.push((kind, o));
-                    }
-                }
+                update_broadcast(vm, kind, this.as_object().unwrap());
             }
             Ok(Value::Undefined)
         }),
@@ -313,17 +365,10 @@ fn dispatcher_methods() -> Vec<(&'static str, NativeFn)> {
             let kind = vm.to_string(&arg(a, 0))?;
             let function = arg(a, 1);
             let capture = arg(a, 2).to_boolean();
-            let remaining = match native(this) {
-                Some(mut n) => {
-                    n.listeners.retain(|l| !(l.kind == kind && l.capture == capture && super::avm2::strict_equals(&l.function, &function)));
-                    n.listeners.iter().any(|l| l.kind == kind)
-                }
-                None => true,
-            };
-            if !remaining {
-                let o = this.as_object().unwrap().clone();
-                super::player::state(vm).borrow_mut().broadcast.retain(|(k, x)| !(*k == kind && *x == o));
+            if let Some(mut n) = native(this) {
+                n.listeners.retain(|l| l.function.alive() && !(l.kind == kind && l.capture == capture && l.function.matches(&function)));
             }
+            if let Some(object) = this.as_object() { update_broadcast(vm, kind, object); }
             Ok(Value::Undefined)
         }),
         ("dispatchEvent", |vm, this, a| Ok(dispatch(vm, this, arg(a, 0))?.into())),

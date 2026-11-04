@@ -390,6 +390,20 @@ fn acquire(world: &mut World) {
                     state.finished = false;
                     for mut colour in world.query_filtered::<&mut BackgroundColor, With<super::loading_fade::FadeLayer>>().iter_mut(world) { colour.0 = Color::BLACK; }
                     state.next = Some(level);
+                    // Stop outgoing view submission before the render-world
+                    // release acknowledgement. Merely gating our publishers
+                    // leaves Bevy's previous mesh phases drawable for another
+                    // frame, after their resource bindings have been released.
+                    for mut camera in world.query_filtered::<&mut Camera, (With<Camera3d>, Without<LoadingCamera>)>().iter_mut(world) {
+                        camera.is_active = false;
+                    }
+                    world.spawn((
+                        Camera3d::default(),
+                        bevy::core_pipeline::tonemapping::Tonemapping::None,
+                        Msaa::Off,
+                        bevy::camera::visibility::RenderLayers::none(),
+                        LoadingCamera,
+                    ));
                     state.gpu.0.store(3, std::sync::atomic::Ordering::Release);
                     world.resource_mut::<ScenePublished>().0 = false;
                     world

@@ -5,6 +5,7 @@ use crate::assets::{archive::Catalog, iggy::IggyFile, texture::ImageFormat};
 pub struct Image {
     pub width: u32,
     pub height: u32,
+    pub mip_count: u32,
     /// Authored GPU format. The GDraw canvas samples display colours as UNORM.
     pub format: ImageFormat,
     pub bytes: Box<[u8]>,
@@ -21,23 +22,41 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
     let expanded = std::env::var("DH2_DEBUG_UI_EXPANDED_BITMAPS").as_deref() == Ok("1");
     let mut images = Vec::with_capacity(entries.len());
     let mut rgba_bytes = 0usize;
-    for entry in entries {
+    for mut entry in entries {
         let (width, height) = (entry.width as u32, entry.height as u32);
-        rgba_bytes += width as usize * height as usize * 4;
+        if width == 0 || height == 0 { return Err("empty iggytex image".into()); }
+        if std::env::var("DH2_DEBUG_UI_SINGLE_MIP").as_deref() == Ok("1") { entry.mips = 1; }
+        let mip_count = u32::from(entry.mips.max(1));
+        if mip_count > width.max(height).ilog2() + 1 { return Err("iggytex mip count exceeds its dimensions".into()); }
+        rgba_bytes += (0..mip_count).map(|mip| (width >> mip).max(1) as usize * (height >> mip).max(1) as usize * 4).sum::<usize>();
         // Host: wgpu requires block-aligned base extents. Keep the existing
         // cropped decode for nonaligned bitmaps; never pad/stretch their UVs.
         let (format, bytes) = if entry.format == 13 && width % 4 == 0 && height % 4 == 0 && !expanded {
-            let size = width as usize / 4 * (height as usize / 4) * 16;
+            let size = entry.byte_len().ok_or("unsupported iggytex block format")?;
             let start = entry.offset as usize;
             (ImageFormat::Bc7, data.get(start..start + size).ok_or("iggytex entry outside file")?.to_vec())
+        } else if entry.format == 0 {
+            let size = entry.byte_len().ok_or("unsupported iggytex block format")?;
+            let start = entry.offset as usize;
+            (ImageFormat::Rgba8, data.get(start..start + size).ok_or("iggytex entry outside file")?.to_vec())
         } else {
-            (ImageFormat::Rgba8, super::raster::decode_entry(&data, &entry)?)
+            let mut pixels = Vec::new();
+            let mut offset = entry.offset;
+            for mip in 0..mip_count {
+                let level = crate::assets::iggy::shape::TextureEntry {
+                    offset, width: (width >> mip).max(1) as u16, height: (height >> mip).max(1) as u16, mips: 1, ..entry
+                };
+                pixels.extend(super::raster::decode_entry(&data, &level)?);
+                offset = offset.checked_add(u32::try_from(level.byte_len().ok_or("unsupported iggytex block format")?).map_err(|_| "iggytex mip size overflow")?)
+                    .ok_or("iggytex mip offset overflow")?;
+            }
+            (ImageFormat::Rgba8, pixels)
         };
-        images.push((entry.character, Image { width, height, format, bytes: bytes.into_boxed_slice() }));
+        images.push((entry.character, Image { width, height, mip_count, format, bytes: bytes.into_boxed_slice() }));
     }
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-        println!("MEMORY UI bitmaps: resource={resource} bytes={} rgba_bytes={rgba_bytes} images={} load_ms={:.3}",
-            images.iter().map(|(_, image)| image.bytes.len()).sum::<usize>(), images.len(), started.elapsed().as_secs_f64() * 1000.0);
+        println!("MEMORY UI bitmaps: resource={resource} bytes={} rgba_bytes={rgba_bytes} images={} mip_levels={} load_ms={:.3}",
+            images.iter().map(|(_, image)| image.bytes.len()).sum::<usize>(), images.len(), images.iter().map(|(_, image)| image.mip_count).sum::<u32>(), started.elapsed().as_secs_f64() * 1000.0);
     }
     Ok(images)
 }

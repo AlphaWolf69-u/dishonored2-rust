@@ -9,9 +9,12 @@ use std::path::Path;
 mod bank;
 mod vorbis;
 pub use vorbis::VorbisCursor;
+pub(crate) use vorbis::release_unused_headers;
 mod declaration;
 mod playback;
 mod media_bytes;
+mod stream;
+pub use stream::{read_stream_header, stream_format, StreamFormat};
 pub use media_bytes::MediaBytes;
 pub use playback::{Controls, PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
@@ -245,8 +248,8 @@ fn wem_source_metadata(bytes: &[u8]) -> io::Result<(Option<u32>, Option<[u32; 2]
         let size = slice_u32(bytes, cursor + 4)? as usize;
         let start = cursor + 8;
         let end = start.checked_add(size).ok_or_else(|| invalid("Wwise chunk overflow"))?;
-        let chunk = bytes.get(start..end).ok_or_else(|| invalid("truncated Wwise loop chunk"))?;
         if tag == b"data" { break; }
+        let chunk = bytes.get(start..end).ok_or_else(|| invalid("truncated Wwise loop chunk"))?;
         // 1411606d0 takes the exact Vorbis frame count from fmt+18.
         if tag == b"fmt " && slice_u16(chunk, 0)? == 0xffff && chunk.len() == 0x42 {
             frames = Some(slice_u32(chunk, 0x18)?);
@@ -914,7 +917,7 @@ pub static STREAMED_MEDIA: std::sync::LazyLock<std::sync::Mutex<std::collections
 fn media_from_sound(
     sound: &[u8],
     chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
-    package_media: &mut impl FnMut(u32) -> io::Result<Option<Vec<u8>>>,
+    package_media: &mut impl FnMut(u32, u8) -> io::Result<Option<MediaBytes>>,
     hold_bank: impl Fn(&[u8]) -> MediaBytes,
 ) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
     if sound.len() < 13 { return Ok(None); }
@@ -922,16 +925,16 @@ fn media_from_sound(
     // Streamed and prefetched sources use the full package file. DIDX may
     // contain only a prefetch prefix, which must not replace the full media.
     if sound[8] != 0 {
-        if let Some(media) = package_media(media_id)? {
+        if let Some(media) = package_media(media_id, sound[8])? {
             let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
                 .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
                 .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
-            STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.len(), prefix));
+            STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
             // Type 2 streams with no prefix: the original starts it once its
             // stream delivers. Type 1 (prefetch) starts at once from a bank
             // prefix (~4 KB); at eotw that is 13 media, 1 MB in all, so they
             // stay resident whole, which starts them at once as well.
-            return Ok(Some((media.into(), (sound[8] == 2).then_some(media_id))));
+            return Ok(Some((media, (sound[8] == 2).then_some(media_id))));
         }
     }
     if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
@@ -943,7 +946,7 @@ fn media_from_sound(
             return Ok(Some((hold_bank(data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?), None)));
         }
     }
-    Ok(package_media(media_id)?.map(|media| (media.into(), None)))
+    Ok(package_media(media_id, sound[8])?.map(|media| (media, None)))
 }
 
 /// List event object IDs in the HIRC chunk for building an installed-bank index.

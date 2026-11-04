@@ -23,6 +23,7 @@ pub(super) struct EffectAudio {
     events: Vec<PreparedEvent>,
     reported_playback: bool,
     trace_frame: u32,
+    pending_media: std::collections::HashMap<crate::gameplay::sound::playing::PlayingId, Vec<super::graph::StreamHold>>,
 }
 
 /// Prepare dependencies, publish actual sound-object frames, then execute
@@ -38,6 +39,10 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
     let (Some(sources), Some(sounds), Some(mixer), Some(mut level)) = (sources, sounds, &mix.mixer, level) else { return };
     let mut bridge = sounds.lock();
     bridge.pump_notifications();
+    let state = &mut *state;
+    // Released/cancelled tickets cease owning their completed reads even if
+    // there is no replacement event to prepare this frame.
+    state.pending_media.retain(|id, _| bridge.queued.iter().any(|ticket| ticket.id() == *id));
     let result = (|| -> Result<(), String> {
         bridge.identities = Some(identities.clone());
         bridge.acoustics = Some(level.world.clone());
@@ -126,6 +131,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         // A ticket whose streamed media is still being read stays queued.
         let mut loading_tickets = Vec::new();
         for ticket in std::mem::take(&mut bridge.queued) {
+            let previous_media = state.pending_media.remove(&ticket.id());
             let event = ticket.event();
             let prepared = state.events.get(event.declaration as usize).ok_or("accepted FX event declaration is absent")?;
             let object = bridge.objects.get(&event.object).ok_or("accepted FX event object is absent")?;
@@ -142,7 +148,9 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                     }
                 }
             }
+            drop(previous_media);
             if loading {
+                state.pending_media.insert(ticket.id(), holds);
                 loading_tickets.push(ticket);
                 continue;
             }

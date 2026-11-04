@@ -73,7 +73,7 @@ pub struct PlayerState {
     pub gotos: Vec<(Obj, u32, bool)>,
     /// Broadcast listeners (activate, deactivate, enterFrame, render,
     /// mouseLeave) in registration order (`VM+0xf0+id*8`).
-    pub broadcast: Vec<(Rc<str>, Obj)>,
+    pub broadcast: Vec<super::events::BroadcastTarget>,
     /// `stage.invalidate()` was called (`VM+0xd4c`).
     pub invalidated: bool,
     /// Uncaught AS3 exceptions reported by player-driven code

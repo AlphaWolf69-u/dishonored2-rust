@@ -31,6 +31,7 @@ pub struct WwiseLayout {
     setup: usize,
     first_audio: usize,
     channels: u8,
+    sample_rate: u32,
     blocksizes: (u8, u8),
     mod_packets: bool,
     granule_headers: bool,
@@ -75,6 +76,7 @@ pub fn wwise_layout(bytes: &[u8]) -> Option<WwiseLayout> {
         first_audio: u32_at(bytes, offsets + 4)? as usize,
         data,
         channels,
+        sample_rate: u32_at(bytes, fmt.start + 4)?,
         blocksizes: (*bytes.get(blocksizes)?, *bytes.get(blocksizes + 1)?),
         mod_packets,
         granule_headers,
@@ -83,13 +85,16 @@ pub fn wwise_layout(bytes: &[u8]) -> Option<WwiseLayout> {
 
 /// Decoder headers by Wwise setup packet: rebuilt once from the codebook
 /// library by converting only the media's header (no audio packets).
-static WWISE_HEADERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, (Arc<IdentHeader>, Arc<SetupHeader>)>>> =
+type HeaderKey = (SetupKey, u32);
+static WWISE_HEADERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<HeaderKey, (Arc<IdentHeader>, Arc<SetupHeader>)>>> =
     std::sync::LazyLock::new(Default::default);
 
 fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(Arc<IdentHeader>, Arc<SetupHeader>)> {
     let data = &bytes[layout.data.clone()];
     let setup = data.get(layout.setup..layout.first_audio).ok_or_else(|| invalid("Wwise setup outside data"))?;
-    let key = (setup.to_vec(), layout.channels, layout.blocksizes);
+    // Codebooks can share across sample rates; the identification header
+    // cannot. 1411606d0 reads each source's fmt sample rate independently.
+    let key = ((setup.to_vec(), layout.channels, layout.blocksizes), layout.sample_rate);
     if let Some(headers) = WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Ok(headers.clone());
     }
@@ -110,6 +115,26 @@ fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidDa
 type SetupKey = (Vec<u8>, u8, (u8, u8));
 static SETUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, Arc<SetupHeader>>>> =
     std::sync::LazyLock::new(Default::default);
+
+/// Bank/source release (141122400/1410f1910) also ends ownership of decoder
+/// definitions. Host sharing must not make unused codebooks process resident.
+/// Run after outgoing voices and prepared media have released their references.
+pub(crate) fn release_unused_headers() {
+    let retain = std::env::var("DH2_DEBUG_RETAIN_SOUND_HEADERS").as_deref() == Ok("1");
+    let mut headers = WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner());
+    let before_headers = headers.len();
+    if !retain {
+        // Ident is private to this header identity. A live PacketIndex holds
+        // it too; setup alone also has the SETUPS cache reference below.
+        headers.retain(|_, (ident, _)| Arc::strong_count(ident) > 1);
+    }
+    let mut setups = SETUPS.lock().unwrap_or_else(|e| e.into_inner());
+    let before_setups = setups.len();
+    if !retain { setups.retain(|_, setup| Arc::strong_count(setup) > 1); }
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY sound header release: retain={retain} headers={before_headers}->{} setups={before_setups}->{}", headers.len(), setups.len());
+    }
+}
 
 fn shared_setup(packet: &[u8], channels: u8, blocksizes: (u8, u8)) -> io::Result<Arc<SetupHeader>> {
     let key = (packet.to_vec(), channels, blocksizes);

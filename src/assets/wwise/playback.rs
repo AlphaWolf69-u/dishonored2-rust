@@ -294,7 +294,7 @@ impl<'a> PlaybackBanks<'a> {
         Ok(MediaProperties { nodes, bus })
     }
 
-    fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>,
+    fn resolve_node(&self, id: u32, media: &mut impl FnMut(usize, u32, u8) -> io::Result<Option<MediaBytes>>,
         visited: &mut HashSet<u32>, sources: &mut HashMap<u32, Option<(MediaBytes, Option<u32>)>>) -> io::Result<Option<PlaybackNode>> {
         if !visited.insert(id) { return Err(invalid("cycle in Wwise playback graph")); }
         let Some(&object) = self.actors.get(&id) else { visited.remove(&id); return Ok(None); };
@@ -336,7 +336,7 @@ impl<'a> PlaybackBanks<'a> {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
-                    let source = media_from_sound(bytes, &chunks, &mut |id| media(object.bank, id),
+                    let source = media_from_sound(bytes, &chunks, &mut |id, stream| media(object.bank, id, stream),
                         |bytes| self.banks[object.bank].bytes.media(bytes))?;
                     entry.insert(source).clone()
                 },
@@ -377,12 +377,19 @@ impl<'a> PlaybackBanks<'a> {
     /// including when its event, action or actor parent came from another bank.
     pub fn actor_playback(&self, actor: u32,
         mut media: impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>) -> io::Result<Option<PlaybackNode>> {
-        self.resolve_node(actor, &mut media, &mut HashSet::new(), &mut HashMap::new())
+        self.resolve_node(actor, &mut |owner, id, _| media(owner, id).map(|bytes| bytes.map(Into::into)), &mut HashSet::new(), &mut HashMap::new())
     }
 
     /// Resolve event actions through the same loaded actor registry.
     pub fn event_playback(&self, event: u32,
         mut media: impl FnMut(usize, u32) -> io::Result<Option<Vec<u8>>>) -> io::Result<Option<Vec<PlaybackCommand>>> {
+        self.event_playback_shared(event, |owner, id, _| media(owner, id).map(|bytes| bytes.map(Into::into)))
+    }
+
+    /// Registered sources can supply shared resident ranges or format-only
+    /// headers for package streams, without copying an entire encoded file.
+    pub fn event_playback_shared(&self, event: u32,
+        mut media: impl FnMut(usize, u32, u8) -> io::Result<Option<MediaBytes>>) -> io::Result<Option<Vec<PlaybackCommand>>> {
         let Some(&event) = self.events.get(&event) else { return Ok(None); };
         let bytes = self.bytes(event);
         let count = read_u32_slice(bytes, 4)? as usize;

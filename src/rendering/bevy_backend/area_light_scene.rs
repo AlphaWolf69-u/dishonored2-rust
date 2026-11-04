@@ -24,6 +24,17 @@ pub(super) struct AreaLightScene {
     camera: Option<Entity>,
 }
 impl AreaLightScene {
+    pub(super) fn release_level(world: &mut World) {
+        let mut scene = world.resource_mut::<Self>();
+        let images = scene.pool.as_mut().map_or(0, AreaLightPool::release_images);
+        scene.packets = Default::default();
+        scene.source = None;
+        scene.camera = None;
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY area-light release: image_handles={images}");
+        }
+    }
+
     pub fn matches(&self, frame: &LocalFogFrame) -> bool {
         self.camera == frame.camera
             && self

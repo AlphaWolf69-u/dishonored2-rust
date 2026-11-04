@@ -144,7 +144,11 @@ pub(super) fn release_level(world: &mut World) {
     gpu.particle_publication = None;
     gpu.particles = None;
     gpu.screen_sources = None;
-    gpu.screen_effects.clear_frame();
+    if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() == Ok("1") {
+        gpu.screen_effects.clear_frame();
+    } else {
+        gpu.screen_effects.release_level();
+    }
 }
 impl CameraGpu {
     pub(super) fn is_complete(&self, camera: Entity, frame: u32) -> bool {

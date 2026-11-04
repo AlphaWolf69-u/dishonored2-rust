@@ -471,6 +471,7 @@ type TextureReadRequest = (usize, String, TextureReadTarget);
 struct TextureReadQueue {
     pending: VecDeque<TextureReadRequest>,
     reading: bool,
+    cancelled: bool,
 }
 
 #[derive(Resource)]
@@ -482,6 +483,17 @@ pub(super) struct TextureReadWorker {
     pub(super) ready: VecDeque<TextureReadResult>,
     pub(super) inflight: Vec<bool>,
     pub(super) inflight_count: usize,
+}
+
+impl Drop for TextureReadWorker {
+    fn drop(&mut self) {
+        // Map teardown cancels queued acquisitions. A blocking archive read
+        // already executing can finish, but may neither publish nor start
+        // another outgoing-map request after the owner has been released.
+        let mut queue = self.queue.lock().unwrap();
+        queue.cancelled = true;
+        queue.pending.clear();
+    }
 }
 
 impl TextureReadWorker {
@@ -525,6 +537,7 @@ impl TextureReadWorker {
                 loop {
                     let Some((slot, stem, target)) = ({
                         let mut queue = queue.lock().unwrap();
+                        if queue.cancelled { return; }
                         let next = queue.pending.pop_front();
                         queue.reading = next.is_some();
                         next
@@ -532,6 +545,7 @@ impl TextureReadWorker {
                         return;
                     };
                     let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
+                    if queue.lock().unwrap().cancelled { return; }
                     if completed_tx.send((slot, target, result)).is_err() {
                         return;
                     }

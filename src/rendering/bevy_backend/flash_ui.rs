@@ -291,8 +291,11 @@ impl Programs {
                 label: Some("flash fill"),
                 address_mode_u: address,
                 address_mode_v: address,
-                min_filter: filter,
+                // GDraw 1402dfd40: smooth=0x15 (all linear), otherwise
+                // 0x10 (linear minification, point magnification/mips).
+                min_filter: FilterMode::Linear,
                 mag_filter: filter,
+                mipmap_filter: if smooth { MipmapFilterMode::Linear } else { MipmapFilterMode::Nearest },
                 ..Default::default()
             })
         };
@@ -356,16 +359,20 @@ fn upload(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, r
 }
 
 fn upload_format(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, format: TextureFormat, pixels: &[u8]) -> (Texture, TextureView) {
+    upload_mips(device, queue, width, height, 1, format, pixels)
+}
+
+fn upload_mips(device: &RenderDevice, queue: &RenderQueue, width: u32, height: u32, mip_count: u32, format: TextureFormat, pixels: &[u8]) -> (Texture, TextureView) {
     let texture = device.create_texture_with_data(
         queue,
         &TextureDescriptor {
             label: Some("flash bitmap"),
             size: Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
+            mip_level_count: mip_count,
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
-            usage: TextureUsages::TEXTURE_BINDING,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats: &[],
         },
         TextureDataOrder::MipMajor,
@@ -448,6 +455,17 @@ fn render_flash_ui(
         }
         return;
     };
+    // Loading can replace one movie directly with another without publishing
+    // an empty frame. 1410298b0 still destroys the old player's cache then;
+    // glyph IDs from that player must not survive until a later UI close.
+    if gpu.uploaded.is_some_and(|(generation, _)| generation != frame.generation) {
+        let before = gpu.textures.len();
+        gpu.textures.retain(|key, _| !matches!(key, TextureKey::Bitmap(_, _) | TextureKey::Glyphs(_, _)));
+        gpu.uploaded = None;
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            println!("MEMORY UI replaced: released_textures={}", before - gpu.textures.len());
+        }
+    }
     if frame.list.batches.is_empty() {
         return;
     }
@@ -475,11 +493,6 @@ fn render_flash_ui(
         })
         .collect();
     gpu.textures.retain(|k, _| !matches!(k, TextureKey::Bitmap(g, _) if *g != frame.generation));
-    // Only the current version of each glyph page stays uploaded.
-    gpu.textures.retain(|k, _| match k {
-        TextureKey::Glyphs(id, version) => frame.list.glyph_pages.iter().all(|p| p.id != *id || p.version == *version),
-        _ => true,
-    });
     for key in &keys {
         if gpu.textures.contains_key(key) {
             continue;
@@ -493,26 +506,61 @@ fn render_flash_ui(
                 None => return, // The image owner has not uploaded it yet.
             },
             TextureKey::Bitmap(_, c) => match frame.images.get(c) {
-                Some(image) => upload_format(&device, &queue, image.width, image.height,
+                Some(image) => upload_mips(&device, &queue, image.width, image.height, image.mip_count,
                     super::image_formats::gpu_image_format(image.format).remove_srgb_suffix(), &image.bytes),
                 None => continue,
             },
             TextureKey::Glyphs(id, version) => match frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
                 Some(page) => {
+                    let started = std::time::Instant::now();
                     // Diagnostic A/B of the former RGBA expansion. Glyph
                     // sampling and every draw remain identical in both modes.
-                    if std::env::var("DH2_DEBUG_GLYPH_RGBA").as_deref() == Ok("1") {
+                    let uploaded = if std::env::var("DH2_DEBUG_GLYPH_RGBA").as_deref() == Ok("1") {
                         let rgba = page.coverage.iter().flat_map(|&coverage| [coverage; 4]).collect::<Vec<_>>();
                         upload(&device, &queue, page.width, page.height, &rgba)
                     } else {
-                        upload_format(&device, &queue, page.width, page.height, TextureFormat::R8Unorm, &page.coverage)
+                        let previous = (std::env::var("DH2_DEBUG_RECREATE_GLYPH_PAGES").as_deref() != Ok("1"))
+                            .then(|| gpu.textures.keys().find(|key| matches!(key, TextureKey::Glyphs(previous_id, _) if previous_id == id)).cloned()).flatten();
+                        if let Some(TextureKey::Glyphs(_, old_version)) = previous {
+                            let old_key = TextureKey::Glyphs(*id, old_version);
+                            let texture = gpu.textures.remove(&old_key).unwrap();
+                            // 14107b7e0 creates the page once; 14107b2d0 updates
+                            // the bordered glyph rectangle through GDraw+a8.
+                            // Queue writes stay ordered after previous frames.
+                            let [x, y, right, bottom] = if old_version >= page.dirty_base { page.dirty }
+                                else { [0, 0, page.width, page.height] };
+                            queue.write_texture(
+                                TexelCopyTextureInfo { texture: &texture.0, mip_level: 0,
+                                    origin: Origin3d { x, y, z: 0 }, aspect: TextureAspect::All },
+                                &page.coverage,
+                                TexelCopyBufferLayout { offset: u64::from(y * page.width + x), bytes_per_row: Some(page.width), rows_per_image: Some(bottom - y) },
+                                Extent3d { width: right - x, height: bottom - y, depth_or_array_layers: 1 },
+                            );
+                            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                                println!("MEMORY glyph page update: bytes={} full_bytes={}", (right - x) * (bottom - y), page.coverage.len());
+                            }
+                            texture
+                        } else {
+                            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                                println!("MEMORY glyph page create: bytes={}", page.coverage.len());
+                            }
+                            upload_format(&device, &queue, page.width, page.height, TextureFormat::R8Unorm, &page.coverage)
+                        }
+                    };
+                    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                        println!("PERF glyph page acquisition: cpu_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
                     }
+                    uploaded
                 },
                 None => continue,
             },
         };
         gpu.textures.insert(key.clone(), uploaded);
     }
+    gpu.textures.retain(|key, _| match key {
+        TextureKey::Glyphs(id, version) => frame.list.glyph_pages.iter().any(|page| page.id == *id && page.version == *version),
+        _ => true,
+    });
     if gpu.stage.is_none() {
         gpu.stage = Some(device.create_buffer(&BufferDescriptor { label: Some("flash stage"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false }));
     }

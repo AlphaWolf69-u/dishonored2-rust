@@ -363,7 +363,14 @@ pub fn install(vm: &mut Vm) {
 
     let mut s = Spec::new("flash.utils", "Dictionary", Some(object.clone()));
     s.sealed = false;
-    s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::Dictionary(Vec::new()))), call: None, init: Some(|_, _, _| Ok(Value::Undefined)) };
+    s.native = NativeClass { allocate: Some(|_, _| Ok(Kind::Dictionary(Vec::new()))), call: None, init: Some(|_, this, args| {
+        // 141044820 special-cases Dictionary with exactly one true argument;
+        // its ordinary native constructor is intentionally empty.
+        if let Some(object) = this.as_object() {
+            object.borrow_mut().weak_dictionary_keys = args.len() == 1 && matches!(args[0], Value::Bool(true));
+        }
+        Ok(Value::Undefined)
+    }) };
     define(vm, s);
 
     super::xml::install(vm);

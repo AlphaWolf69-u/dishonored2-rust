@@ -144,6 +144,10 @@ impl Vm {
         self.heap.allocate(data)
     }
 
+    pub fn collect_garbage(&self) { self.heap.collect(true); }
+
+    pub(crate) fn collect_at_safepoint(&self) { self.heap.collect(false); }
+
     // ---- errors ----
 
     fn error_of(&mut self, class: Rc<Class>, id: u32, message: String) -> Error {
@@ -1084,6 +1088,7 @@ impl Vm {
             dynamic: Default::default(),
             closures: HashMap::new(),
             kind,
+            weak_dictionary_keys: false,
         }))
     }
 

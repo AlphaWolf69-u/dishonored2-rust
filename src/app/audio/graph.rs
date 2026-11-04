@@ -114,21 +114,30 @@ static STREAMED: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>
 pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) {
     MEDIA.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
     STREAMED.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
+    crate::assets::wwise::release_unused_headers();
 }
 
 /// A streamed source's format, read once at load; its media is not kept.
 /// Media that decode to PCM stay resident (`prepare_media`).
 fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator) -> io::Result<PreparedMedia> {
-    if let Some(prepared) = STREAMED.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.len())) {
+    if let Some(prepared) = STREAMED.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.source_size())) {
         return Ok(prepared.clone());
     }
-    let format = if std::env::var("DH2_DEBUG_SOUND_COPIED_MEDIA").as_deref() == Ok("1") {
-        crate::assets::wwise::prepare_wem(media)?
-    } else { crate::assets::wwise::prepare_shared_wem(media)? };
-    let (channels, rate, frames, points) = match format {
-        crate::assets::wwise::SourceMedia::Vorbis(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
-        crate::assets::wwise::SourceMedia::Adpcm(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
-        crate::assets::wwise::SourceMedia::Decoded(_) => return prepare_media(sound, media),
+    let format = if std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1") {
+        crate::assets::wwise::stream_format(media, media.source_size())?
+    } else { None };
+    let (channels, rate, frames, points) = if let Some(format) = format {
+        (format.channels, format.sample_rate, format.frames, format.loop_points)
+    } else {
+        let format = if std::env::var("DH2_DEBUG_SOUND_COPIED_MEDIA").as_deref() == Ok("1") {
+            crate::assets::wwise::prepare_wem(media)?
+        } else { crate::assets::wwise::prepare_shared_wem(media)? };
+        let (channels, rate, frames, points) = match format {
+            crate::assets::wwise::SourceMedia::Vorbis(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
+            crate::assets::wwise::SourceMedia::Adpcm(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
+            crate::assets::wwise::SourceMedia::Decoded(_) => return prepare_media(sound, media),
+        };
+        (channels, rate, frames, points)
     };
     let channels = ChannelCount::new(channels).ok_or_else(|| invalid("invalid Wwise streamed channel count"))?;
     let rate = SampleRate::new(rate).ok_or_else(|| invalid("invalid Wwise streamed sample rate"))?;
@@ -137,7 +146,7 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
     // Parallel event preparation can reach the same source concurrently.
     // Publish one identity; losing preparations must not escape into graphs.
     Ok(STREAMED.lock().unwrap_or_else(|e| e.into_inner())
-        .entry((sound, media.len())).or_insert(prepared).clone())
+        .entry((sound, media.source_size())).or_insert(prepared).clone())
 }
 
 fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes) -> io::Result<PreparedMedia> {
@@ -196,6 +205,11 @@ pub(super) fn resident_allocations() -> Vec<(usize, usize)> {
 /// Optional: reading every encoded byte is inappropriate for ordinary loads.
 pub(super) fn capture_media_signatures() {
     use std::hash::{Hash, Hasher};
+    if std::env::var("DH2_DEBUG_STREAM_FORMATS").as_deref() == Ok("1") {
+        for (&(sound, size), (_, channels, rate, frames, points)) in STREAMED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            println!("STREAM source={sound:08x} size={size} channels={} rate={} frames={frames} loops={points:?}", channels.get(), rate.get());
+        }
+    }
     if std::env::var("DH2_DEBUG_SOUND_HASHES").as_deref() != Ok("1") { return; }
     let cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
     for (&(sound, size), (samples, channels, rate, frames, points)) in cache.iter() {

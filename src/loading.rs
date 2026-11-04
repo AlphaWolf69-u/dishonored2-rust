@@ -30,6 +30,7 @@ struct State {
     required_heads: HashMap<u64, usize>,
     required_next: Vec<usize>,
     acquired: usize,
+    requested: usize,
 }
 
 fn resource_key(kind: &str, path: &str) -> u64 {
@@ -68,7 +69,21 @@ pub fn read(kind: &str, path: &str) {
 
 /// The level is shown: later first reads are late loads.
 pub fn play_started() {
-    with(|s| s.playing = true);
+    with(|s| {
+        s.playing = true;
+        // 1400661e0 frees the temporary acquisition table after loading.
+        // Progress is now 1; late-load reporting only needs the read registry.
+        if std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() != Ok("1") {
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("MEMORY loading descriptor release: entries={} descriptor_bytes={} owners={} index_capacity={}",
+                    s.required.len(), crate::assets::map_resources::descriptor_bytes(&s.required),
+                    std::sync::Arc::strong_count(&s.required), s.required_heads.capacity() + s.required_next.capacity());
+            }
+            s.required = Default::default();
+            s.required_heads = Default::default();
+            s.required_next = Default::default();
+        }
+    });
 }
 
 /// Re-arm per-world readiness while retaining the session acquisition registry.
@@ -79,6 +94,7 @@ pub fn restart_level() {
         s.required_heads.clear();
         s.required_next.clear();
         s.acquired = 0;
+        s.requested = 0;
         for (_, ready) in &mut s.gates { *ready = false; }
     });
 }
@@ -86,14 +102,20 @@ pub fn restart_level() {
 /// Start the map resource phase while keeping registry/resident identities.
 /// 1400661e0 reports resources acquired / resources requested; streaming mips
 /// remain outside this progress count.
-pub fn begin_level(list: std::sync::Arc<Vec<crate::assets::map_resources::Resource>>) {
+pub fn begin_level(list: std::sync::Arc<Vec<crate::assets::map_resources::Resource>>, catalog: &crate::assets::archive::Catalog) {
     with(|s| {
         s.playing = false;
         s.required = list;
         s.required_heads.clear();
         s.required_next.clear();
         s.acquired = 0;
+        s.requested = 0;
         for (index, resource) in s.required.iter().enumerate() {
+            if !catalog.preloads(&resource.path) {
+                s.required_next.push(usize::MAX);
+                continue;
+            }
+            s.requested += 1;
             let previous = s.required_heads.insert(resource_key(&resource.kind, &resource.path), index).unwrap_or(usize::MAX);
             s.required_next.push(previous);
             if s.loaded.get(&resource.kind).is_some_and(|paths| paths.contains(&resource.path)) { s.acquired += 1; }
@@ -104,8 +126,8 @@ pub fn begin_level(list: std::sync::Arc<Vec<crate::assets::map_resources::Resour
 pub fn progress() -> f64 {
     with(|s| {
         if s.playing { return 1.0; }
-        if s.required.is_empty() { return 0.0; }
-        s.acquired as f64 / s.required.len() as f64
+        if s.requested == 0 { return 0.0; }
+        s.acquired as f64 / s.requested as f64
     })
 }
 

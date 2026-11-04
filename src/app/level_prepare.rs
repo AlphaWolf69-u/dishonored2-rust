@@ -34,7 +34,7 @@ pub(super) fn prepare_level(
         language,
     )
     .map_err(std::io::Error::other)?;
-    crate::loading::begin_level(list);
+    crate::loading::begin_level(list, catalog.as_ref().unwrap());
     let bytes = level.read_world(catalog.as_ref().unwrap())?;
     let world =
         world_mesh::parse(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;

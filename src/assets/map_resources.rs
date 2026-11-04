@@ -25,6 +25,11 @@ pub struct Resource {
     pub path: String,
 }
 
+pub(crate) fn descriptor_bytes(list: &Vec<Resource>) -> usize {
+    list.capacity() * std::mem::size_of::<Resource>()
+        + list.iter().map(|resource| resource.kind.capacity() + resource.path.capacity()).sum::<usize>()
+}
+
 /// The ids of a `.mapResources` file, in load order.
 pub fn ids(bytes: &[u8]) -> Result<Vec<u32>> {
     let count = bytes.get(8..HEADER).ok_or("map resources header is truncated")?;
@@ -90,8 +95,8 @@ pub fn level_load_list(base: &Path, catalog: &Catalog, map: &str, language: &str
     Ok(list)
 }
 
-/// One immutable manifest per installed list/language. In particular common
-/// and init are not read and parsed again for every destination map.
+/// Bootstrap manifests are shared for the session. A map's temporary request
+/// table belongs to acquisition (1400661e0), not the registered resources.
 pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
     type Key = (std::path::PathBuf, String, String);
     static LISTS: std::sync::Mutex<Option<HashMap<Key, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
@@ -100,7 +105,10 @@ pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) 
     let lists = lists.get_or_insert_with(Default::default);
     if let Some(list) = lists.get(&key) { return Ok(list.clone()); }
     let list = std::sync::Arc::new(load_list(base, catalog, name, language)?);
-    lists.insert(key, list.clone());
+    if matches!(name, "init" | "common")
+        || std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() == Ok("1") {
+        lists.insert(key, list.clone());
+    }
     Ok(list)
 }
 
@@ -109,21 +117,31 @@ pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) 
 /// resource owners decide whether each payload is already resident.
 pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
     type Key = (std::path::PathBuf, String, String);
-    static LISTS: std::sync::Mutex<Option<HashMap<Key, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
+    // 1400661e0 releases its assembled request table after acquisition. Source
+    // manifests above remain reusable metadata; a combined copy belongs only
+    // to its active consumers, not every map visited during this session.
+    type Cached = (std::sync::Weak<Vec<Resource>>, Option<std::sync::Arc<Vec<Resource>>>);
+    static LISTS: std::sync::Mutex<Option<HashMap<Key, Cached>>> = std::sync::Mutex::new(None);
     let key = (base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
     let mut lists = LISTS.lock().unwrap();
     let lists = lists.get_or_insert_with(Default::default);
-    if let Some(list) = lists.get(&key) {
+    lists.retain(|_, (list, _)| list.strong_count() != 0);
+    if let Some(list) = lists.get(&key).and_then(|(list, _)| list.upgrade()) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("LOAD manifest reuse: {map} identity={:p}", std::sync::Arc::as_ptr(list));
+            eprintln!("LOAD manifest reuse: {map} identity={:p}", std::sync::Arc::as_ptr(&list));
         }
-        return Ok(list.clone());
+        return Ok(list);
     }
     let list = std::sync::Arc::new(level_load_list(base, catalog, map, language)?);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!("LOAD manifest acquire: {map} identity={:p} entries={}", std::sync::Arc::as_ptr(&list), list.len());
     }
-    lists.insert(key, list.clone());
+    let retained = (std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() == Ok("1")).then(|| list.clone());
+    lists.insert(key, (std::sync::Arc::downgrade(&list), retained));
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        let bytes = lists.values().filter_map(|(list, _)| list.upgrade()).map(|list| descriptor_bytes(&list)).sum::<usize>();
+        eprintln!("MEMORY combined manifests: lists={} capacity_bytes={bytes}", lists.len());
+    }
     Ok(list)
 }
 

@@ -50,6 +50,16 @@ struct ScreenConfig {
 }
 impl ScreenEffects {
     pub(super) fn clear_frame(&mut self) { self.completed = false; }
+    pub(super) fn release_level(&mut self) {
+        // 1400410f0 ends ownership of the world's effect materials. These
+        // passes contain their uploaded images, not just viewport scratch;
+        // matching dimensions cannot make them valid for a different world.
+        let released = self.gpu.take().is_some();
+        self.completed = false;
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY screen-effect release: material_owner={released}");
+        }
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record(
         &mut self,

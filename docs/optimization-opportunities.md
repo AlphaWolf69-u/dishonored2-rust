@@ -15,31 +15,27 @@ Resource lifetime audit follow-ups (full owner inventory and evidence in
   sets, not the sum of their allocations; that intersection has not been
   measured. Preserve dimensional fallbacks, per-use samplers, mip demand and
   readiness gates before consolidating.
-- Wwise type-2 source preparation reads the whole encoded media to obtain its
-  format/index; active playback also holds a whole encoded file rather than a
-  bounded incremental IO buffer. Type-1 prefetch keeps the full media (earlier
-  EotW measurement: 13 sources, roughly 1 MiB) to avoid start latency. Expected
-  saving is unused encoded media beyond the required prefix/read-ahead window.
-  Proper incremental Vorbis packet indexing and IO readiness need tracing;
-  synchronous file reads or page faults on the audio callback would sacrifice
-  performance. Do not replace this with eager PCM expansion.
-- `assets::wwise::vorbis` setup/header caches retain encountered codebooks across
-  maps. Measure unused decoded setups after map-bank release before choosing
-  eviction: live media must keep shared headers and cross-event setup decoding
-  must remain once per identity. The retained codebook byte count is not yet
-  measured, so no MB claim is assigned.
-- `assets::map_resources` retains source and combined manifest descriptor lists
-  per visited map. A weak combined-list registry can remove duplicate request
-  strings after their last active consumer releases them, without repeating
-  source index reads. Quantify descriptor bytes and map-return combination CPU
-  before changing the cache; payload ownership is separate from these lists.
-- Closed-movie AVM2 cycles are now reclaimed. Cyclic garbage during a long-lived
-  movie is still not collected; expected saving depends on unreachable objects
-  accumulated by that actual movie. Obtain a retained-object trace before
-  implementing collection. Resetting a live VM or dropping AS3 event listeners
-  would change behavior. Existing teardown takes under 3 ms on the UI worker;
-  its repeated empty class-scope allocations are a smaller follow-up than live
-  runtime collection and need targeted teardown attribution.
+- Wwise type-2 acquisition is now format-only: production release read
+  232,514 instead of 530,033,360 logical package bytes and took 189.805 instead
+  of 383.678 ms. Playback still holds a whole encoded file; type-1 prefetch
+  still needs a bounded continuation after its bank prefix. The original game
+  initializes 2 MiB IO storage, 16 KiB granularity and 100 ms read-ahead.
+  Implement that lifecycle without synchronous audio-callback IO or PCM
+  expansion. Sample-rate identity was also missing from the shared Vorbis
+  identification-header key and is corrected; compare formats after that fix.
+- Vorbis header/setup caches now prune unused definitions after outgoing media
+  release. The measured four setups were all live/common (4 -> 4), so there is
+  no demonstrated eviction saving to pursue there on assumption.
+- Temporary map manifests and progress indices now release after acquisition/
+  coverage; init/common metadata remains shared. Production transitions retain
+  one combined table at a time rather than accumulating visited-map copies;
+  EotW releases 6,878,036 descriptor bytes with one remaining owner at handoff.
+- Live-movie cycle collection and original weak listeners/Dictionary keys are
+  implemented. Sustained menu collection exposed excessive temporary adjacency
+  allocations; contiguous edges and the existing pointer-key hasher remove that
+  work without changing weak-reference collection timing. Measure against the
+  same-build nested-edge/SipHash control; no live-heap savings were observed in
+  loading movies, whereas pause movies did produce cyclic garbage.
 - `bevy_backend::particle_pass` rebuilds pipelines/uniforms as well as bindings
   on surface-sampler changes. Image uploads are now reused. Reusing compatible
   pipelines could remove one creation per affected material/state on that rare
