@@ -268,8 +268,9 @@ purge now replace perpetual strong map-image caching. Shared bootstrap/common
 identities stay resident. Worker Close also releases its private last_frame,
 which otherwise kept a closed movie's library-image/draw references alive until
 next Open. Cross-domain scene/UI/particle canonical identity is still separate
-work; this change does not claim that unification. Production retirement counts
-are pending the cohesive implementation run; no CPU timing claim is assigned.
+work; this change does not claim that unification. Cohesive production retirement completed with exit 0: purges released 2 then 1
+registry entries over three maps, with zero live wrapper entries at purge.
+No CPU timing or RSS claim is assigned.
 
 Setup model temporary ownership: model_cache/md6_cache are only referenced
 through the placement summary, but remain allocated until setup returns after

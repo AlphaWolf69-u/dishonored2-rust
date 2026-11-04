@@ -1433,3 +1433,13 @@ between these scratch surface vectors and later acquisition, not lower gameplay
 CPU or an asserted RSS delta. Report released vertex/index vector capacities
 (excluding strings, structs, hash tables and allocator overhead) on the existing
 production loading route. No extra conversion, copy, cache or benchmark.
+
+
+Cohesive UI retirement acceptance: lifecycles-ui-image-retirement library check,
+game-bin check, dev build and EotW -> Dust -> EotW production client all exited
+0. This binary includes Close clearing last_frame. Registry purges again
+released 2 then 1 entries, retained zero common entries in this route, and had
+zero live wrapper entries at purge. Background bindings and all three loading
+gates completed; one device/window/catalogue/audio output was retained. No
+reported runtime errors, CPU benchmark, test or visual inspection. UI source
+commit c1c8760 is integrated into main; its release build was started separately.
