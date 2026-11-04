@@ -2362,3 +2362,14 @@ contain the Edge of the World amplitude mask; its finer-mip demand remains
 unresolved. The previous startup and loaded-level class captures also show
 session and map model identities separately; no claim is made about native
 allocation sizes or about each model's CPU/GPU backing from class alone.
+
+
+Institute installed-header comparison: the existing `material-audit --image-info`
+reader resolves all three captured resources through the installed archive.
+The original's live width, height, mip count and low 21 format bits match the
+compiled inline headers exactly: ocean mask 256x256 / 7 / 582990 (BC1), shore
+512x512 / 1 / 460098 (R16_UNORM), foam 2048x2048 / 1 / 812436 (BC7 sRGB).
+An installed index lookup finds no separate `institute_ocean_m.bimage7_mip`
+resources. Thus the rewrite's inline chain provides the complete available
+Institute ocean mask; this evidence does not settle the distinct EotW mask,
+which has an indexed finer mip. Capture and source paths are as above.
