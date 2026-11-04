@@ -52,15 +52,11 @@ Resource lifetime audit follow-ups (full owner inventory and evidence in
   steady-state saving. Keep compiled pipelines and reusable viewport capacity;
   existing shadow static-cache accumulation was already fixed and measured.
 
-- Wwise playback preparation repeatedly parses/clones parent property chains
-  into event graphs (`assets::wwise::playback::media_properties`,
-  `app::audio::graph::Definition::decode`). The load attribution includes
-  49 MiB in bank lookup and 25 MiB in graph construction; only an unmeasured
-  fraction is these properties. Sharing immutable chains could save tens of
-  MiB and startup parsing, but needs per-owner accounting before changing
-  graph-local node indexing and inherited property evaluation. Encoded media
-  duplication is addressed separately; do not count logical source lengths
-  as physical allocations when the sources share bank DATA.
+- Resolved: Wwise inherited property chains now use immutable flat Arc slices
+  with weak actor lookup. Same-binary three-map runs removed 26,280,144 EotW /
+  26,479,152 Dust live chain allocation bytes (excluding weak lookup metadata),
+  with identical content/request fingerprints and EotW return counts. The flat
+  runtime iteration layout is retained; this is not an audio-thread CPU claim.
 - Navigation candidates still allocate a temporary Vec per query, as before.
   At roughly 1.4 microseconds/query in the measured release walk, reusable
   per-worker scratch is a low priority. Shared mutable scratch would serialize
@@ -156,7 +152,7 @@ quality-change capture, rather than changing the ordinary shadow hot path here.
 window/event thread. `app::setup` and audio startup still build their Bevy assets
 synchronously after publication. Existing release load traces (`residency-expanded`
 and `residency-profile-baseline`, local artifacts) put scene construction at
-roughly 7–9 seconds including initial image reads; this can hold the last loading
+roughly 7вЂ“9 seconds including initial image reads; this can hold the last loading
 frame during that phase. Incremental publication would improve event/animation
 responsiveness rather than reduce the underlying parser/mesh work. It requires
 separating CPU cooking from main-world Assets/Commands publication while keeping
@@ -223,8 +219,8 @@ construction reacquired the destination manifest and contact/sound declarations
 on the window thread. This finding is resolved: `AudioPreparation` acquires
 that same map-scoped owner on its existing worker, publication supplies it before
 map systems run, and unload resets mutable state without reacquisition. The
-recorded production run placed 837–866 ms of acquisition on the worker and
-measured 117–130 ms transition intervals, with initial/return handoffs succeeding.
+recorded production run placed 837вЂ“866 ms of acquisition on the worker and
+measured 117вЂ“130 ms transition intervals, with initial/return handoffs succeeding.
 See resource-parity.md, Responsive loading and load fade. No new work is queued
 for the old one-second main-thread acquisition hypothesis.
 

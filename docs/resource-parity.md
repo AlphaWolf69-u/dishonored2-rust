@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837Р Р†Р вЂљРІР‚Сљ866 ms of acquisition on the worker and 117Р Р†Р вЂљРІР‚Сљ130 ms transition intervals,
+837Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™866 ms of acquisition on the worker and 117Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686Р Р†Р вЂљРІР‚Сљ13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`Р Р†Р вЂљРІР‚Сљ`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -1937,3 +1937,33 @@ guessed from the coarse sound-preparation allocation tag. Production diagnostic
 weak tracking will count those allocations and fingerprint requested property
 contents in both modes; it owns no chain payload. No steady-state property
 evaluation algorithm, PCM decoder or output routing changes.
+
+
+Sound-chain sharing acceptance (32c3909 source): library/game-bin compilation
+checks, dev build and copied/shared production clients all exited 0. Six
+EotW -> Dust -> EotW preparation checkpoints matched all requested-chain
+content fingerprints, request counts and identity counts. Final prepared chain
+allocations/owned bytes were:
+
+| Level | Independent chains | Shared chains | Removed chain bytes |
+|---|---:|---:|---:|
+| EotW | 30,302 / 43,882,288 | 12,822 / 17,602,144 | 26,280,144 |
+| Dust | 29,521 / 42,336,448 | 11,881 / 15,857,296 | 26,479,152 |
+| EotW return | 30,302 / 43,882,288 | 12,822 / 17,602,144 | 26,280,144 |
+
+These are actual flat Arc slice/header and nested Vec capacity bytes from live
+weakly observed chain allocations; the weak lookup table/diagnostic metadata
+and allocator reservation are excluded. No whole-process delta is claimed.
+Across three visits, created chain allocations fell 102,820 -> 41,802 and
+cumulative allocated chain bytes 145,011,880 -> 56,543,144. The prediction is
+confirmed: live duplicates share their existing allocation, and root clones no
+longer deep-copy the chain. Weak lookup does not retain otherwise unused data;
+map truncation removes keys/chains depending on removed actors. EotW return
+retained exactly its first-visit counts/bytes. Encoded bank/source residency
+was unchanged at every checkpoint (209,705,529 EotW and 217,113,796 Dust unique
+bank-backed bytes). Runtime property evaluation still walks the same flat
+NodeProperties slices; no new locks/refcount operations enter those loops.
+Local evidence: artifacts/lifecycles-sound-properties-comparison.json.
+No tests, visual inspection or CPU benchmarks were run.
+
+Delivery: main 4861bb1 image-view release completed with exit 0.

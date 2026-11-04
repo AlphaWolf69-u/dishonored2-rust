@@ -112,6 +112,7 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 | Projected decals | `assets/decal`, `bevy_backend/projected_decals` | Typed definitions plus per-instance state; lazy receiver geometry upload; level publication reset | Residency is separate from authored animation fidelity; do not classify a missing effect implementation as memory saving |
 | Sound packages/banks/events | `app/audio`, `assets/wwise` | Shared package indices/startup banks; map sources/actions/banks removed by `audio::begin_level`; DATA byte ranges share Arc backing | Existing measurements confirm encoded backing sharing; startup audio output is intentionally persistent |
 | Sound media/streams | `app/audio/graph`, `assets/wwise/vorbis` | Encoded media shared per sound; per-voice bounded decoded blocks; file sources use a shared 2 MiB encoded IO device during selected playback | Incremental Vorbis/IMA file playback is now the default; type-1 sources borrow authored bank prefixes. Acquisition reads required format metadata (232,514 vs 530,033,360 logical bytes in the measured dev run), without whole-file conversion/indexing. Final default three-map encoded-device peak 552,547 bytes; walking compared 82,699,258 samples with zero differences and no detected affected-decoder CPU regression (19.492 vs 19.746 CPU ms/s) |
+| Sound actor property chains | `assets::wwise::PlaybackBanks`, `wwise::property_chains` | Immutable flat Arc slices; per-bank weak actor lookup, live definitions hold the data; map truncation prunes removed actor dependencies | Same-binary three-map comparison removes 26,280,144 EotW / 26,479,152 Dust live chain bytes, excluding weak-map metadata. All six property request/content fingerprints match; EotW return has identical retained counts. Mutable voice/mixer state remains separate; no extra hot-loop locks or altered property iteration |
 | Sound decoder setup | `assets/wwise/vorbis::{WWISE_HEADERS,SETUPS}` | Shared immutable definitions; unload prunes entries after outgoing prepared sources/voices release | Original `141122400` releases old media ownership. EotW/Dust transitions retained four live/common setups: 4 -> 4, no measured savings claimed |
 | Iggy files/ABC | `assets/iggy::acquire`, `flash/avm2::Unit` | One immutable parsed source/ABC per UI worker; player namespaces/classes/VM are separate | File cache intentionally survives movie close; parsed runtime Unit ownership must not keep closed VM state alive |
 | Fonts/glyphs/library bitmaps | `assets/iggy/font`, `flash/glyph_cache`, `flash/bitmap_resources`, `bevy_backend/flash_ui` | Metadata-only lookups; lazy outlines; R8 glyph pages; BC7 library images passed through; obsolete movie-generation GPU textures removed on close | Original page creation/update and unused-slot reuse are implemented (`14107b7e0`, `14107b2d0`, `14107a980`); versions update one GPU identity with dirty rectangles. Immutable bitmap caching and source-backed CPU page snapshots remain separate ownership questions |
@@ -175,3 +176,14 @@ justify a new duplicate-bank cache. A separate demonstrated cost remains in
 `PlaybackBanks::node_hierarchy`: inherited properties are decoded into each
 prepared graph; quantify repeated actor/property ownership before changing
 that representation.
+
+
+UI bitmap backing review: `flash::bitmap_resources::load` reads the separate
+`.raw.iggytex` member, copies just the selected compiled image ranges and then
+drops the source member. Those bitmap blocks are not embedded duplicates in
+`IggyFile`'s retained `.iggy` bytes. The session library cache prevents repeated
+bitmap reads/decode; it is intentional, not a second resident raw-file copy.
+Aligned BC7 data remains compressed; the documented nonaligned backend fallback
+still needs cropped RGBA output. The generic entity document likewise drops at
+the end of `app::level_prepare`; runtime scene ownership holds typed records,
+not the whole parser tree.
