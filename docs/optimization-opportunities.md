@@ -290,7 +290,10 @@ this pass's formats/layout/shader stay fixed. Sampler-driven material rebuilding
 reuses those pipeline identities. Production requests 72/94/72 used 18/16/18 unique pipelines (54/78/54 reuses);
 no CPU-time claim follows from counts. The subsequent shared 2D route includes
 metadata acquisition, scene slots/uploads, demand and binding refresh, with its
-own production validation still pending. Sampler refresh was not exercised by
-the earlier run. 3D volumes retain their dimension-aware acquisition/upload;
-check active full/inline extents and separate mip resources before claiming a
-missing streaming policy or forcing them through the 2D scheduler.
+production execution completed with exit 0 over EotW/Dust/EotW. The cache-only
+retirement follow-up reduced registered 2D identities 57/48/57 -> 54/48/54;
+volume uploads remained 9/10/9. Combined binding-refresh counts do not isolate
+sampler refresh, which remains unmeasured. All 102 installed bimage7 volumes
+have one complete authored mip and no separate levels; there is no missing
+finer volume payload to request. This establishes ownership/count changes,
+not a targeted CPU-time or total VRAM saving.

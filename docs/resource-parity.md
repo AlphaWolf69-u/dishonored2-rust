@@ -1622,3 +1622,18 @@ Original 1402e9ff0 / 1402f4060 loads/uploads the base; 14030dbf0 registration
 requires the current count to be below the full count. Descriptor finalization
 1402e98a0 preserves an explicit one-mip count. This does not certify unrelated
 image-family ownership. The local report is artifacts/lifecycles-installed-volumes.json.
+
+
+Resource-consumer acceptance (compiled source d372bf8): library/game-bin checks,
+dev build and EotW -> Dust -> EotW production execution exited 0. Cache-only
+retirement removed 42/41/42 declarations, 2/0/2 materials, 5/0/5 models and
+3/0/3 images; no field images retired. Acquisition image payload bytes were zero
+for these metadata-only entries. Scene particle 2D identities became 54/48/54
+(previously 57/48/57); custom volume uploads remained 9/10/9 and staging bytes
+13,729,792 / 28,311,552 / 13,729,792. Thus the observed admission reduction is
+three unused EotW images, none in Dust; no total GPU byte or RSS delta assigned.
+Particle pipeline specialization counts remained 18/16/18, with 54/78/54 reuse.
+FX step/insertion/emission now borrow immutable definitions instead of cloning
+Node/link data; mutable instance storage remains separate. This run verifies
+compilation and map lifetimes, not a targeted CPU-time improvement or a visual
+comparison. No tests or CPU benchmarks were run.
