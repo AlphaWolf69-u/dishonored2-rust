@@ -162,6 +162,7 @@ impl bevy::render::extract_component::ExtractComponent for WaterMesh {
 /// the drawing owner uploads only the images it actually consumes.
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct WaterImageSources {
+    pub noise: Arc<super::noise_textures::NoiseTextureSource>,
     pub skies: Arc<HashMap<String, Arc<super::layered_images::LayeredImageSource>>>,
     pub caustics: Arc<HashMap<String, Arc<super::layered_images::LayeredImageSource>>>,
     pub ocean: Arc<HashMap<String, Arc<crate::texture::InlineCompressedChain>>>,

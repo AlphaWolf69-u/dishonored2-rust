@@ -140,7 +140,7 @@ pub struct OceanScene {
     pub state: OceanUpdateState,
     waves: OceanWaves,
     mesh: OceanMeshBuffers,
-    noise: super::noise_textures::NoiseTextures,
+    noise: Arc<super::noise_textures::NoiseTextures>,
     images: HashMap<String, Image2d>,
     wrap: Sampler,
     clamp: Sampler,
@@ -175,6 +175,10 @@ impl OceanScene {
         planes
     }
     pub fn new(device: &RenderDevice, queue: &RenderQueue) -> Result<Self, String> {
+        Self::with_noise(device, queue, Arc::new(super::noise_textures::NoiseTextures::new(device, queue)))
+    }
+    pub(super) fn with_noise(device: &RenderDevice, queue: &RenderQueue,
+        noise: Arc<super::noise_textures::NoiseTextures>) -> Result<Self, String> {
         let sampler = |address| {
             device.create_sampler(&SamplerDescriptor {
                 address_mode_u: address,
@@ -192,7 +196,7 @@ impl OceanScene {
             waves: OceanWaves::for_view(device, queue)?,
             // 302960 writes owner+8c=16 before 301780 uploads the shared grid.
             mesh: OceanMeshBuffers::new(device, build_ocean_geometry(16)?),
-            noise: super::noise_textures::NoiseTextures::new(device, queue),
+            noise,
             images: default(),
             wrap: sampler(AddressMode::Repeat),
             clamp: sampler(AddressMode::ClampToEdge),

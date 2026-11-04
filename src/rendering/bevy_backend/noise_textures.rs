@@ -20,6 +20,11 @@ pub struct NoiseTextures {
 impl NoiseTextures {
     pub fn new(device: &RenderDevice, queue: &RenderQueue) -> Self {
         let pixels = crate::rendering::noise_textures::generate_noise_textures();
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let mut crc = flate2::Crc::new(); crc.update(&pixels.permutation); crc.update(&pixels.gradients);
+            eprintln!("MEMORY procedural image creation: textures=2 bytes={} signature={:08x}",
+                pixels.permutation.len() + pixels.gradients.len(), crc.sum());
+        }
         let upload = |label, height, format, bytes: &[u8]| {
             let size = Extent3d {
                 width: 256,
@@ -96,6 +101,23 @@ impl NoiseTextures {
     pub fn texture_bytes(&self) -> u64 {
         u64::from(self.permutation.width()) * u64::from(self.permutation.height()) * 4
             + u64::from(self.gradients.width()) * u64::from(self.gradients.height()) * 4
+    }
+}
+
+/// 1402f6450's class-2 renderer images, acquired through ResidentImages.
+/// The source owns no generated CPU pixel buffers after its initial uploads.
+#[derive(Default)]
+pub struct NoiseTextureSource {
+    image: std::sync::OnceLock<std::sync::Arc<NoiseTextures>>,
+}
+impl NoiseTextureSource {
+    pub fn acquire(&self, device: &RenderDevice, queue: &RenderQueue) -> std::sync::Arc<NoiseTextures> {
+        static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_PROCEDURAL_IMAGES").as_deref() == Ok("1")) {
+            std::sync::Arc::new(NoiseTextures::new(device, queue))
+        } else {
+            self.image.get_or_init(|| std::sync::Arc::new(NoiseTextures::new(device, queue))).clone()
+        }
     }
 }
 

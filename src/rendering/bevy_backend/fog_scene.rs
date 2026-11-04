@@ -727,7 +727,9 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
             )?;
             if current.ocean.is_some() || (water_frame.ocean_environment.view.enabled && !water_frame.ocean_render_settings.skip) {
                 if current.ocean.is_none() {
-                    current.ocean=Some(super::ocean_scene::OceanScene::new(&resources.device,&resources.queue)?);
+                    let source = resources.water_images.as_ref().ok_or("ocean image sources unavailable")?;
+                    current.ocean=Some(super::ocean_scene::OceanScene::with_noise(&resources.device,&resources.queue,
+                        source.noise.acquire(&resources.device, &resources.queue))?);
                 }
                 let ocean=current.ocean.as_mut().unwrap();
                 ocean.prepare_with_selection(&resources.device,&resources.queue,context.command_encoder(),water_frame,
@@ -1176,13 +1178,15 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                         TextureFormat::Depth32FloatStencil8,
                     )
                 }) {
-                    current.water_colour = Some(WaterColourScene::new(
+                    current.water_colour = Some(WaterColourScene::with_noise(
                         &resources.device,
                         &resources.queue,
                         full.to_array(),
                         compressed,
                         target.main_texture_format(),
                         TextureFormat::Depth32FloatStencil8,
+                        resources.water_images.as_ref().ok_or("water image sources unavailable")?
+                            .noise.acquire(&resources.device, &resources.queue),
                     )?);
                 }
                 let (water_atlas, shadow) = match &atlas_frame.state {

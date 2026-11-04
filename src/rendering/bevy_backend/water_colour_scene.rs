@@ -88,7 +88,7 @@ pub struct WaterColourScene {
     host_format: TextureFormat,
     depth_format: TextureFormat,
     hdr: WaterHdr,
-    noise: NoiseTextures,
+    noise: Arc<NoiseTextures>,
     programs: Vec<Program>,
     keys: HashMap<Key, usize>,
     draws: Vec<Draw>,
@@ -127,6 +127,13 @@ impl WaterColourScene {
         host_format: TextureFormat,
         depth_format: TextureFormat,
     ) -> Result<Self, String> {
+        Self::with_noise(device, queue, extent, compressed, host_format, depth_format,
+            Arc::new(NoiseTextures::new(device, queue)))
+    }
+    pub(super) fn with_noise(
+        device: &RenderDevice, queue: &RenderQueue, extent: [u32; 2], compressed: bool,
+        host_format: TextureFormat, depth_format: TextureFormat, noise: Arc<NoiseTextures>,
+    ) -> Result<Self, String> {
         let sampler = |mipmap_filter, address_mode| {
             device.create_sampler(&SamplerDescriptor {
                 address_mode_u: address_mode,
@@ -145,7 +152,7 @@ impl WaterColourScene {
             host_format,
             depth_format,
             hdr: WaterHdr::new(device, queue, extent, compressed, host_format)?,
-            noise: NoiseTextures::new(device, queue),
+            noise,
             programs: default(),
             keys: default(),
             draws: default(),

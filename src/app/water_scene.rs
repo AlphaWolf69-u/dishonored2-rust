@@ -73,7 +73,7 @@ impl WaterScene {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let tracks = WaterTracks::new(&defaults)?;
-        let mut sources = WaterImageSources::default();
+        let mut sources = WaterImageSources {noise: resident.noise_source(), ..Default::default()};
         let mut cubes = HashMap::new();
         let mut arrays = HashMap::new();
         let mut admit = |role: usize, name: &str| -> Result<(), String> {

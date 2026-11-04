@@ -2128,3 +2128,14 @@ resolution and persistent ownership. Prediction: acquired builtin identities
 survive map purge, removing one recreation per affected builtin on later maps;
 compiled-file IO is unchanged. Classification must allocate no pixels just to
 answer whether a name is an intrinsic; pixel generation itself stays identical.
+
+
+Procedural image scope prediction: `1402f6450` creates the renderer's
+`_perlinNoisePerm2D` (256x256 RGBA8_UNORM) and `_perlinNoiseGradients`
+(256x1 RGBA8_SNORM). The readonly original snapshot shows class 2 for both.
+WaterColourScene and OceanScene each call NoiseTextures::new independently.
+Acquire these through the session image owner, lazily once on the renderer.
+Each removed factory call saves two GPU uploads and 263,168 payload bytes;
+all calls still use the unchanged permutation/gradient generator and samplers.
+No per-frame lookup or refcount operation is needed. Separate diagnostic mode
+restores per-consumer generation; record factory counts and payload CRCs.

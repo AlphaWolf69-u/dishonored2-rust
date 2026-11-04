@@ -18,6 +18,7 @@ pub(super) struct ResidentImage {
 struct Registry {
     resident: HashMap<String, Arc<ResidentImage>>,
     layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
+    noise: Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource>,
     leases: HashMap<String, Weak<ResidentImage>>,
     requests: usize,
     loads: usize,
@@ -120,6 +121,10 @@ impl ResidentImages {
         registry.resident.insert(path.to_owned(), image);
     }
 
+    pub(super) fn noise_source(&self) -> Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource> {
+        self.registry.lock().unwrap().noise.clone()
+    }
+
     /// The same registry boundary also owns cube/array identities. Their
     /// backend source retires upload staging and leases one immutable GPU image.
     pub(super) fn layered(&self, path: &str, cube: bool,
@@ -148,7 +153,7 @@ impl ResidentImages {
         registry.layered.retain(|path, _| persistent(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("MEMORY resident image registry purge: requests={} loads={} uploaded_bytes={} released={} retained_common={} retained_bytes={} live_leases={}",
+            eprintln!("MEMORY resident image registry purge: requests={} loads={} uploaded_bytes={} released={} retained_persistent={} retained_bytes={} live_leases={}",
                 registry.requests, registry.loads, registry.bytes, before-registry.resident.len(),
                 registry.resident.len(), registry.resident.values().map(|image|image.bytes).sum::<usize>(), registry.leases.len());
             eprintln!("MEMORY layered image registry purge: released={} retained_persistent={}",
