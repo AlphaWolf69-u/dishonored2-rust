@@ -2563,3 +2563,18 @@ same indexed-resource rule; only these two formats/maps were exercised in this
 runtime comparison. The diagnostic demand is not present in ordinary play.
 Evidence: `artifacts/ocean-stream-targeted-comparison.json`, paired logs and
 client results. No tests or visual inspection were performed.
+
+UI bitmap shared-backing prediction (before implementation): `1402e2c00`
+consumes installed Iggy texture records directly. The rewrite reads each raw
+member and separately copies every eligible aligned BC7 image into its own
+buffer. Installed index sizes and the measured loading/pause run show that the
+12 used raw members total exactly 34,556,544 bytes, equal to the 430 selected
+image payloads. Where validated direct-image ranges cover a complete member
+without gaps or overlap, keep that one allocation behind shared immutable range
+views; fall back to the existing per-image copy/decode otherwise. Prediction:
+for those eligible members remove 430 full-image buffers and 34,556,544 copied
+bytes while preserving every payload, format, dimension and upload; resident
+payload should remain the same 34,556,544 bytes rather than grow from retained
+padding. Compare production per-image fingerprints, source/retained bytes and
+allocations against a same-client copy control. No CPU-time or RSS gain is
+assumed from copy counts.
