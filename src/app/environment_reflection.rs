@@ -71,6 +71,11 @@ pub(super) fn load(
 ) -> Result<LoadedReflections, String> {
     let count = probes.map_or(0, |p| p.reflection_probes.len());
     let mut words = vec![count as u32, 0, 0, 0];
+    fn append(dst: &mut Vec<u8>, source: &[u8], growths: &mut usize) {
+        let before = dst.capacity();
+        dst.extend_from_slice(source);
+        *growths += usize::from(dst.capacity() > before);
+    }
     let mut data = Vec::new();
     let mut growths = 0usize;
     let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");
@@ -103,7 +108,6 @@ pub(super) fn load(
             spec = Some(info);
             cube_indices.push(cube_indices.len().try_into().map_err(|_| "too many reflection cubes")?);
             let start = data.len();
-            let prior_capacity = data.capacity();
             if copy {
                 let cube = texture::compressed_inline_cube(&bytes).map_err(|e| format!("{path}: {e}"))?;
                 // Bevy consumes layer-major; installed records are mip-major.
@@ -112,18 +116,17 @@ pub(super) fn load(
                     for level in 0..info.mip_count {
                         let width = (info.width >> level).max(1);
                         let size = info.format.mip_bytes(width, width);
-                        data.extend_from_slice(&cube.payload[offset + face * size..offset + (face + 1) * size]);
+                        append(&mut data, &cube.payload[offset + face * size..offset + (face + 1) * size], &mut growths);
                         offset += 6 * size;
                     }
                 }
             } else {
                 for face in 0..6usize {
                     for level in 0..info.mip_count as usize {
-                        data.extend_from_slice(&bytes[ranges[level * 6 + face].clone()]);
+                        append(&mut data, &bytes[ranges[level * 6 + face].clone()], &mut growths);
                     }
                 }
             }
-            growths += usize::from(data.capacity() > prior_capacity);
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 let mut crc = flate2::Crc::new();
                 crc.update(&data[start..]);
