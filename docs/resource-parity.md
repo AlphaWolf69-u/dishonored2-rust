@@ -1609,3 +1609,16 @@ Expected invariant: no cache-only image becomes a scene GPU asset. Count retired
 entries and their acquisition payload bytes; do not presume a nonzero count or
 infer RSS savings. Runtime definitions, future stages and active bindings keep
 their references, so prefetch and acquisition latency are preserved.
+
+
+Installed-volume classification (header-only acquisition audit, 2026-11-04):
+scanned the final patched PC bimage7 selection across all four installed index
+groups: 14,885 image headers, 102 volume images, zero read/header errors. Every
+volume has exactly one authored mip, matching full/inline XY, and no indexed
+separate mip levels. Thus the remaining volume owner retains the complete
+authored chain; there is no finer installed volume data to stream. This extends
+the earlier two-map observation without rendering assets or running CPU tests.
+Original 1402e9ff0 / 1402f4060 loads/uploads the base; 14030dbf0 registration
+requires the current count to be below the full count. Descriptor finalization
+1402e98a0 preserves an explicit one-mip count. This does not certify unrelated
+image-family ownership. The local report is artifacts/lifecycles-installed-volumes.json.
