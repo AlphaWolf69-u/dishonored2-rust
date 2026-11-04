@@ -510,14 +510,34 @@ startup work. Compare actual released capacities and affected acquisition CPU
 in same-build retained/released clients. Counts across all installed worlds do
 not represent simultaneous residency or a process-RSS saving.
 
+Before the release CPU measurement, the expected cost of those extra lookups
+is less than 30% of trigger shape acquisition, which already parses each HKX
+and constructs query geometry. Measure acquisition and retirement on the
+loading thread separately, then investigate if their combined cost differs by
+more than that bound. This is a startup prediction, not a gameplay-FPS claim.
+
 Trigger acquisition overlap prediction: area/wind preparation reads shape
 files through `TriggerVolume::load`, while the physics scene separately reads
-trigger shape files into `TriggerAssets`. At least one path is expected to
+trigger shape files into `TriggerAssets`. The original trigger initializer
+`140779530` calls `14008c840`, which acquires the shape through the shared
+resource registry `1400607f0`. At least one path is expected to
 overlap in EotW because both are derived from authored trigger placements.
 Record successful paths and source-byte fingerprints in a production route
 before proposing a shared owner; different trigger recipes or geometry needs
 may mean the apparent overlap does not exist. No saving is assumed until
 the path overlap and output requirements are measured.
+
+Trigger acquisition overlap result: the four-map production route found
+400 / 184 / 31 / 400 repeated reads after matching path, size and CRC;
+the potential avoided decoded bytes total 5,983,276. EotW's 204 distinct
+area/wind shapes all reappear in physics, and 196 of them are also reread by
+the other area/wind consumer. The original `140779530 -> 14008c840 ->
+1400607f0` resolves a shared shape identity. A shared preparation owner must
+keep the different world-space volume and physics query representations,
+retain sources until all consumers have finished, and avoid adding unbounded
+or cross-map source residency. Measure peak source/schema capacity and the
+affected acquisition CPU as well as matching shape output fingerprints.
+Evidence: local `artifacts/trigger-overlap-comparison.json`.
 
 Area-environment acquisition prediction: `level_prepare` resolves every
 authored environment volume once for the area selection and again for the
@@ -549,6 +569,15 @@ the retained field capacities, resolved area/profile fingerprints and water
 selection in real map transitions. This predicts lower live owner storage,
 not an exact RSS or frame-time change; count actual data before reporting it.
 
+Environment-volume residency result: retained/compact four-map clients
+matched area geometry, compact volume values including Dust return's water
+profile, trigger/physics and other recorded resource fingerprints. The
+counted source-profile/placement capacities plus source-to-runtime vector
+capacity change were 11,403,356 / 5,441,286 / 936,718 / 11,403,356 bytes
+for EotW / Dust / Dust return / EotW. The area parameter capacities matched;
+these are owner allocation capacities, not process RSS or a camera-in-water
+selection measurement. Local evidence: `artifacts/compact-volume-comparison.json`.
+
 Water selection allocation: `app::water_scene` converts the selected
 volume's `surface_material` from `&str` to a new `Arc<str>` on each query
 publication. A volume-owned Arc could replace that allocation with a reference
@@ -564,6 +593,36 @@ selection per view/update could remove repeated geometry queries, but the
 affected CPU time and the number of genuinely shared points are unmeasured.
 Track timing and positions first; preserve query timing, area precedence and
 independent camera/body views before changing this gameplay-frame path.
+
+Environment declaration layers: each profile currently owns its parsed
+inheritance layers as separate strings and vectors. A shared parent declaration
+is expected to occur in more than one EotW profile. Count distinct layer
+content, duplicate capacities and actual owner lifetimes before considering
+sharing; preserve per-profile layer order and hot-path parameter lookup cost.
+No resident saving is claimed from inheritance depth alone.
+
+Environment parent preparation prediction: direct installed entity-text
+inspection found 204 Edge of the World area environment strings using two
+immediate parent names (119 and 85 entries), plus one separate shrine entry.
+Dust has 92 area entries using eight immediate parents plus one shrine entry;
+Dust return has 16 entries using four parents. A level-scoped cache of parsed
+immutable parent layers should avoid at least 202 + 84 + 12 + 202 = 500
+immediate-parent reads on the four-level route, with additional savings for
+shared ancestors. Root inline parameters remain per volume. Clone the parsed
+layers into the existing live representation so layer precedence, consumers
+and gameplay lookup do not change; release the temporary cache at the end of
+preparation. Bypass sharing for mutable overlays. Compare full profile/area
+signatures and changed loading CPU; temporary cache capacity and persistent
+profile memory are separate measurements. Evidence: local
+`artifacts/environment-parent-scan.json`.
+
+Map-info fallback ownership prediction: when an indexed declaration cannot
+be read, `disable_index` permanently switches this registry to reference scans
+and clears its index and declaration table. Its `resolved` table is then
+never read again but still pins prior declaration Arcs. Clearing that table at
+the same transition should release only cache-owned references; existing
+callers keep their leases. The normal indexed path gains no work. This is an
+error/fallback lifetime correction, not a predicted gameplay CPU improvement.
 
 Physics-material targeted CPU prediction: the shared path eliminates 687 of
 749 observed source reads over the three-map route, while adding source-map

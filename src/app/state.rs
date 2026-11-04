@@ -57,11 +57,11 @@ pub(super) struct PickupState {
 #[derive(Resource)]
 pub(super) struct NavigationWorld(pub(super) navigation::CollisionWorld);
 
-/// All authored environment profiles, including water profiles omitted from
-/// ordinary area blending. Contact indices retain this declaration order.
+/// Live contact and water inputs, including water volumes omitted from
+/// ordinary area blending. Contact indices retain declaration order.
 #[derive(Resource)]
 pub(super) struct EnvironmentVolumes(
-    pub(super) Vec<crate::rendering::environment::EnvironmentVolume>,
+    pub(super) Vec<crate::rendering::environment::RuntimeEnvironmentVolume>,
 );
 
 #[derive(Resource)]

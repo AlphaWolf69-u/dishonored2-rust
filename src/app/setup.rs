@@ -425,9 +425,9 @@ pub(super) fn prepare(
     if let Some(volumes)=environment_volumes.as_ref() {
         for volume in volumes.0.iter().filter(|v|v.is_water_volume) {
             if let Some(material)=volume.surface_material.as_deref() {
-                let resolved=resolver.get(material,0,volume.placement.position);
+                let resolved=resolver.get(material,0,volume.position);
                 if !resolved.is_some_and(|m|matches!(m.handle,super::MaterialHandle::Water(_))) {
-                    warn!("Water volume {} surface material is not ready for water rendering: {material}",volume.placement.id);
+                    warn!("Water volume {} surface material is not ready for water rendering: {material}",volume.id);
                 }
             }
         }

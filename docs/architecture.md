@@ -1528,12 +1528,14 @@ installed factory verify resource names and the resulting body parameters.
 Missing entity positions use the constructor's zero position; missing basis
 columns retain its identity basis. Trigger shape scale remains one.
 
-`TriggerAssets` owns the resolved HKX bytes and schema, sharing resource files
-between placements while keeping every file's item references local. It retains
-compound trees, instance transforms and shape tags for query dispatch. Resource
-indices are not runtime body IDs. Runtime allocation, broadphase insertion and
-entity ownership remain with the world owner; these asset readers alone do not
-establish gameplay water contacts.
+`TriggerAssets` shares each resolved HKX resource between placements while
+keeping file-local item references in the decoded query geometry. After
+physics scene initialization, immutable resources release their source bytes
+and schema after retaining the root mass result; mutable resources keep their
+source. Compound trees, instance transforms and shape tags remain available
+for query dispatch. Resource indices are not runtime body IDs. Runtime
+allocation, broadphase insertion and entity ownership remain with the world
+owner.
 
 `TriggerShapeAsset::query_shapes` retains decoded compound trees and convex
 polytopes once per resource. Child references remain file-local item indices;

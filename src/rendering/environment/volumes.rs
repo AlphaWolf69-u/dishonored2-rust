@@ -11,6 +11,16 @@ pub struct EnvironmentVolume {
     pub surface_material: Option<String>,
 }
 
+/// The live physics and water owners need only these selected values.
+pub(crate) struct RuntimeEnvironmentVolume {
+    pub id: String,
+    pub position: [f32; 3],
+    pub is_water_volume: bool,
+    pub surface_material: Option<String>,
+    // Diagnostic comparison keeps the preparation payload alive.
+    pub _retained: Option<Box<EnvironmentVolume>>,
+}
+
 pub(super) fn resolve(
     placement: entities::PlacedEnvironmentVolume,
     catalog: &archive::Catalog,

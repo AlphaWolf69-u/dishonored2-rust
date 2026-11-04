@@ -180,7 +180,7 @@ impl PhysicsScene {
         catalog: &archive::Catalog,
         document: &entities::Document,
         map: &str,
-        volumes: &[crate::rendering::environment::EnvironmentVolume],
+        volumes: &[crate::rendering::environment::RuntimeEnvironmentVolume],
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
     ) -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
@@ -228,7 +228,12 @@ impl PhysicsScene {
             hierarchy.type_range(types.factory(factories[1])?.class)?,
             hierarchy.type_range(types.factory(factories[2])?.class)?,
         ];
+        let trace_shape_cpu = std::env::var("DH2_DEBUG_TRIGGER_SOURCE_CPU").as_deref() == Ok("1");
+        let shape_cpu_start = if trace_shape_cpu { crate::loading::thread_cycles() } else { None };
         let geometry = TriggerAssets::load(document, map, catalog)?;
+        if let (Some(start), Some(end)) = (shape_cpu_start, if trace_shape_cpu { crate::loading::thread_cycles() } else { None }) {
+            eprintln!("MEMORY trigger acquisition CPU: shapes={} cycles={}", geometry.shapes.len(), end.saturating_sub(start));
+        }
         let read = |name: &str| {
             catalog
                 .read(name)
@@ -252,7 +257,7 @@ impl PhysicsScene {
         let volume_indices = volumes
             .iter()
             .enumerate()
-            .map(|(i, v)| (v.placement.id.as_str(), (i, v.is_water_volume)))
+            .map(|(i, v)| (v.id.as_str(), (i, v.is_water_volume)))
             .collect::<HashMap<_, _>>();
         let constants = Arc::new(crate::assets::physics_material::MaterialConstants::load(
             &base,

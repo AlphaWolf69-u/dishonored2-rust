@@ -308,13 +308,13 @@ pub(super) fn prepare_level(
                     .map_err(std::io::Error::other)?;
                 let volumes = crate::rendering::environment::load_environment_volumes(document, catalog)
                     .map_err(std::io::Error::other)?;
-                (areas, volumes)
+                crate::rendering::environment::prepare_volume_owners(volumes, catalog, Some(areas))
+                    .map_err(std::io::Error::other)?
             } else {
                 let volumes = crate::rendering::environment::load_environment_volumes(document, catalog)
                     .map_err(std::io::Error::other)?;
-                let areas = crate::rendering::environment::area_environments_from_volumes(&volumes, catalog)
-                    .map_err(std::io::Error::other)?;
-                (areas, volumes)
+                crate::rendering::environment::prepare_volume_owners(volumes, catalog, None)
+                    .map_err(std::io::Error::other)?
             }
         }
         _ => (Vec::new(), Vec::new()),

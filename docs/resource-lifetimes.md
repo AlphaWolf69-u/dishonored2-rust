@@ -89,8 +89,10 @@ source. Targeted release startup CPU measurement remains pending.
 Area-environment acquisition now resolves one profile list for its area and
 physics consumers. The EotW / Dust / EotW production comparison reduced
 resolutions 1,000 -> 500 and inherited reads 2,636 -> 1,318 with matching
-ordered area geometry and profile signatures. Consumers still retain separate
-runtime data; the measured input-byte reduction is cumulative I/O, not RSS.
+ordered area geometry and profile signatures. The compact volume handoff
+subsequently removed 11,403,356 / 5,441,286 / 936,718 counted capacity bytes
+from EotW / Dust / Dust return live owners, with matching area, compact-volume
+and trigger fingerprints. These are allocation capacities, not process RSS.
 
 Normal release transition runs EotW -> Dust -> EotW both exit 0. With cleanup
 disabled, each closed loading movie retains 3,722 / 3,723 / 3,722 objects. With

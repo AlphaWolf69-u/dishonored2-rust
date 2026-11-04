@@ -3,6 +3,7 @@
 use crate::{archive, entities, gameplay::trigger_volume::TriggerVolume};
 mod volumes;
 pub use volumes::{load_environment_volumes, EnvironmentVolume};
+pub(crate) use volumes::RuntimeEnvironmentVolume;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvironmentSource {
@@ -144,29 +145,72 @@ pub fn load_area_environments(
     Ok(result)
 }
 
-/// Reuse the same resolved resource inputs for area and physics consumers.
-pub(crate) fn area_environments_from_volumes(
-    volumes: &[EnvironmentVolume], catalog: &archive::Catalog,
-) -> Result<Vec<AreaEnvironment>, String> {
-    let mut result = Vec::new();
+/// Publish only the values needed by the physics and water owners, moving the
+/// declaration parameters into the area owner when both use this acquisition.
+pub(crate) fn prepare_volume_owners(
+    volumes: Vec<EnvironmentVolume>, catalog: &archive::Catalog,
+    separate_areas: Option<Vec<AreaEnvironment>>,
+) -> Result<(Vec<AreaEnvironment>, Vec<RuntimeEnvironmentVolume>), String> {
+    let make_areas = separate_areas.is_none();
+    let mut areas = separate_areas.unwrap_or_default();
+    let retain = std::env::var("DH2_DEBUG_RETAIN_ENVIRONMENT_PROFILES").as_deref() == Ok("1");
+    let trace = std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() == Ok("1");
+    let mut parameter_capacity = 0usize;
+    let mut placement_capacity = 0usize;
+    let input_vector_capacity = volumes.capacity() * std::mem::size_of::<EnvironmentVolume>();
+    let mut live = Vec::with_capacity(volumes.len());
     for volume in volumes {
-        if volume.is_water_volume { continue; }
-        if let Some(area) = area_from_volume(volume.placement.clone(), volume.parameters.clone(), volume.is_water_volume, catalog)? { result.push(area); }
+        if trace {
+            parameter_capacity += profile_capacity(&volume.parameters);
+            placement_capacity += volume.placement.environment_decl.capacity()
+                + volume.placement.model.as_ref().map_or(0, String::capacity)
+                + volume.placement.scattering_source.as_ref().map_or(0, String::capacity);
+        }
+        if retain {
+            if make_areas && !volume.is_water_volume {
+                if let Some(area) = area_from_volume(volume.placement.clone(), volume.parameters.clone(), false, catalog)? { areas.push(area); }
+            }
+            live.push(RuntimeEnvironmentVolume { id: volume.placement.id.clone(), position: volume.placement.position,
+                is_water_volume: volume.is_water_volume, surface_material: volume.surface_material.clone(), _retained: Some(Box::new(volume)) });
+        } else {
+            let EnvironmentVolume { placement, parameters, is_water_volume, surface_material } = volume;
+            live.push(RuntimeEnvironmentVolume { id: placement.id.clone(), position: placement.position,
+                is_water_volume, surface_material, _retained: None });
+            if make_areas {
+                if let Some(area) = area_from_volume(placement, parameters, is_water_volume, catalog)? { areas.push(area); }
+            }
+        }
     }
-    result.sort_by(|a, b| b.volume.size_squared().total_cmp(&a.volume.size_squared()));
-    report_area_signatures(&result);
-    Ok(result)
+    if make_areas {
+        areas.sort_by(|a, b| b.volume.size_squared().total_cmp(&a.volume.size_squared()));
+        report_area_signatures(&areas);
+    }
+    if trace {
+        let mut crc = flate2::Crc::new();
+        for volume in &live { crc.update(format!("{}{:?}{:?}{:?}", volume.id, volume.position, volume.is_water_volume, volume.surface_material).as_bytes()); crc.update(&[0]); }
+        eprintln!("MEMORY environment volume retirement: retained={retain} volumes={} parameter_capacity={parameter_capacity} placement_capacity={placement_capacity} input_vector_capacity={input_vector_capacity} runtime_vector_capacity={} signature={:08x}", live.len(), live.capacity() * std::mem::size_of::<RuntimeEnvironmentVolume>(), crc.sum());
+    }
+    Ok((areas, live))
 }
 
 fn report_area_signatures(areas: &[AreaEnvironment]) {
     if std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() != Ok("1") { return; }
     let mut crc = flate2::Crc::new();
+    let mut parameter_capacity = 0usize;
     for area in areas {
         crc.update(area.id.as_bytes());
         crc.update(format!("{:?}{:?}{:?}", area.parameters, area.blend_duration, area.volume).as_bytes());
         crc.update(&[0]);
+        parameter_capacity += profile_capacity(&area.parameters);
     }
-    eprintln!("MEMORY area environment output: count={} signature={:08x}", areas.len(), crc.sum());
+    eprintln!("MEMORY area environment output: count={} signature={:08x} parameter_capacity={parameter_capacity}", areas.len(), crc.sum());
+}
+
+fn profile_capacity(parameters: &entities::EnvironmentRenderParameters) -> usize {
+    parameters.layers.capacity() * std::mem::size_of::<entities::EnvironmentRenderParameterLayer>()
+        + parameters.layers.iter().map(|layer| layer.resource.capacity()
+            + layer.parameters.capacity() * std::mem::size_of::<(String, String)>()
+            + layer.parameters.iter().map(|(key, value)| key.capacity() + value.capacity()).sum::<usize>()).sum::<usize>()
 }
 
 fn area_from_volume(volume: entities::PlacedEnvironmentVolume, parameters: entities::EnvironmentRenderParameters,

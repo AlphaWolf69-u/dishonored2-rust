@@ -195,6 +195,11 @@ impl TriggerVolume {
             .read(&path)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("{id}: missing trigger {path}"))?;
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1")) {
+            let mut crc = flate2::Crc::new(); crc.update(&bytes);
+            eprintln!("MEMORY trigger source acquisition: owner=volume path={path} bytes={} signature={:08x}", bytes.len(), crc.sum());
+        }
         let physics = physworld::parse_hkx(&bytes)?;
         let geometry = physics.standalone_shapes(&bytes)?;
         if !geometry.unknown_shapes.is_empty()

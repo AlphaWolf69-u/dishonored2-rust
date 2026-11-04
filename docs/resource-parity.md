@@ -86,7 +86,7 @@ trailing `*` covers a family of kinds.
 | `difficultyPreset` | `gameplay::options::gameplay` | partial: reads its resources; lifecycle not ported (see its class) |
 | `drop` | none | none: no owner yet |
 | `entityDef` | `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
-| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation, while retaining their own runtime data; editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318 with matching ordered area/profile fingerprints. Full declaration registry lifecycle remains partial |
+| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation; runtime physics/water records retain only needed fields and ordinary area parameters move to the area owner. Editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318. Four-map comparisons, including Dust return water, match ordered area and compact-volume fingerprints. Full declaration registry lifecycle remains partial |
 | `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
@@ -3045,6 +3045,12 @@ texts release at transition. Mutable overlays preserve separate reads.
 Evidence: local `artifacts/contact-shared-comparison.json` and
 `artifacts/probe-stream-world-comparison.json`.
 
+Map-info fallback now drops the unused resolved-result cache when the
+registry switches permanently to reference scans. Existing Arc holders keep
+their own data. The normal indexed route is unchanged; this error-path
+cleanup follows the ownership review and was not exercised by the successful
+four-level clients.
+
 
 ### Stream completion and mutable manifest correction
 
@@ -3218,3 +3224,31 @@ mutable shapes retain their source. Cached mass fields add per-shape storage,
 and allocator overhead and process RSS are not measured by these counters.
 Release-profile startup CPU measurement is pending. Local evidence:
 `artifacts/trigger-sharing-comparison.json`.
+
+### Environment-volume ownership and trigger overlap
+
+The EotW / Dust / Dust return / EotW retained-versus-compact production
+clients both exited 0. All four area, volume, trigger, physics, contact,
+sound, material and probe signatures matched, as did 800 animation and 430 UI
+bitmap signatures and loading progress snapshots. Dust return included one
+water volume; its compact record's identity, position, classification and
+surface material were included in the matching fingerprint. This does not
+claim a moving camera entered that volume.
+
+The source profile/placement allocations and vector-capacity differences
+account for 11,403,356 / 5,441,286 / 936,718 / 11,403,356 bytes removed
+from these live owners; the retained area-parameter capacities matched in
+both modes. These are counted allocation capacities, not process RSS.
+Physics and water retain compact records in authored order; ordinary area
+profiles keep their parameters, and unused water profile parameters drop.
+Local evidence: `artifacts/compact-volume-comparison.json`. Release CPU
+measurement is still pending.
+
+Successful source records additionally show 400 / 184 / 31 / 400 redundant
+trigger-shape reads across those loads, with 5,983,276 cumulative decoded
+bytes, assuming one acquisition per identical path per level. The EotW
+area/wind consumers requested 400 files representing 204 identities; physics
+requested all 204 identities again. Matching paths carried matching source
+CRCs. These are I/O counts, not resident savings. Their different derived
+geometry and original registry ownership still need a shared-source design.
+Evidence: `artifacts/trigger-overlap-comparison.json`.

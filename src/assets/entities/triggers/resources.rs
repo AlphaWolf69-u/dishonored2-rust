@@ -118,12 +118,14 @@ impl TriggerAssets {
         let mut released = 0usize;
         let mut source_capacity = 0usize;
         let mut schema_capacity = 0usize;
+        let mut mass_errors = 0usize;
         let mut crc = flate2::Crc::new();
         for shape in &mut self.shapes {
             if shape.is_mutable || shape.cached_mass.is_some() { continue; }
             if retain && !trace { continue; }
             let mass = shape.physics.shape_mass_properties(&shape.bytes, 1);
             if trace {
+                mass_errors += usize::from(mass.is_err());
                 crc.update(shape.path.as_bytes());
                 crc.update(format!("{mass:?}{:?}", shape.query_shapes).as_bytes());
                 crc.update(&[0]);
@@ -152,7 +154,7 @@ impl TriggerAssets {
             eprintln!("MEMORY trigger source CPU: retained={retain} shapes={released} cycles={}", end.saturating_sub(start));
         }
         if trace {
-            eprintln!("MEMORY trigger source retirement: retained={retain} shapes={released} source_capacity={source_capacity} schema_capacity={schema_capacity} signature={:08x}", crc.sum());
+            eprintln!("MEMORY trigger source retirement: retained={retain} shapes={released} source_capacity={source_capacity} schema_capacity={schema_capacity} signature={:08x} cache_field_capacity={} mass_errors={mass_errors}", crc.sum(), self.shapes.capacity() * std::mem::size_of::<Option<Result<Option<physworld::mass::PrincipalMassProperties>, String>>>());
         }
     }
 
@@ -183,6 +185,11 @@ impl TriggerAssets {
                                     placement.binding.entity_id
                                 )
                             })?;
+                    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1")) {
+                        let mut crc = flate2::Crc::new(); crc.update(&bytes);
+                        eprintln!("MEMORY trigger source acquisition: owner=physics path={path} bytes={} signature={:08x}", bytes.len(), crc.sum());
+                    }
                     let physics =
                         physworld::parse_hkx(&bytes).map_err(|e| format!("{path}: {e}"))?;
                     let root = physics
