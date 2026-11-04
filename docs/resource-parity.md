@@ -2593,3 +2593,23 @@ normal mode. The audio fingerprint describes source identities and sizes, not
 PCM equality or measured CPU time. These diagnostics do not establish process
 RSS savings. Evidence: `audio-owned-comparison.json` and
 `audio-owned-layered-comparison.json` in the feature checkout artifacts.
+
+
+Installed-index scope for UI bitmap backing: 54 distinct `.raw.iggytex`
+members total 157,096,320 uncompressed indexed bytes across the installation;
+this is not a claim that all are loaded together. The loading/pause production
+sequence above uses 12 members. The complete-partition check is applied per
+member and falls back for gaps, overlaps, partial mip selection or decoded
+formats, so other libraries are not assumed to have the same layout. Local
+index evidence: `artifacts/ui-bitmap-all-index.json`.
+
+Production comparison for the shared UI backing: client source `2ab52d5`,
+loading and pause across Edge of the World, Curator boat, Dust District and
+return to Edge of the World. All 12 acquired libraries met the complete
+partition rule. The copy path allocated 430 image payloads and copied
+34,556,544 bytes; shared backing made zero per-image payload copies, retaining
+34,556,556 bytes of source capacity (12 bytes above payload size). All 430
+image identities, dimensions, mip counts, formats and CRCs matched. Both
+clients exited successfully. These are allocation/copy counts and payload
+signatures, not a process RSS or CPU timing measurement. Evidence:
+`artifacts/full-owned-ui-comparison.json`.
