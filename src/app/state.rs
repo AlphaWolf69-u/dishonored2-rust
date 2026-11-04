@@ -259,11 +259,19 @@ impl StreamingDiagnostics {
         }
     }
 
-    pub(super) fn texture_event(&mut self, message: impl Into<String>) {
+    pub(super) fn texture_event(&mut self, message: impl std::fmt::Display) {
+        let (eager, count) = texture_event_diagnostics();
+        if count { TEXTURE_EVENT_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
         if !self.trace_texture_streaming {
+            // Same-build control for the former eager formatting path.
+            if eager {
+                std::hint::black_box(message.to_string());
+                if count { TEXTURE_EVENT_FORMATTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            }
             return;
         }
-        let event = format!("frame={} {}", self.frame, message.into());
+        if count { TEXTURE_EVENT_FORMATTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        let event = format!("frame={} {}", self.frame, message);
         if self.texture_event_history.len() == 256 {
             self.texture_event_history.pop_front();
         }
@@ -278,6 +286,12 @@ impl StreamingDiagnostics {
     }
 
     pub(super) fn record(&mut self, sample: String, active: usize, capture: bool) {
+        let (eager, count) = texture_event_diagnostics();
+        if count && self.frame != 0 && self.frame % 600 == 0 {
+            use std::sync::atomic::Ordering::Relaxed;
+            eprintln!("MEMORY texture event formatting: attempts={} formatted={} eager={eager} trace={}",
+                TEXTURE_EVENT_ATTEMPTS.load(Relaxed), TEXTURE_EVENT_FORMATTED.load(Relaxed), self.trace_texture_streaming);
+        }
         let changed = self.status != self.previous_status;
         let cliff = active.abs_diff(self.previous_active) > active.max(self.previous_active) / 2;
         if changed || cliff || capture || self.last_logged.elapsed().as_secs_f32() >= 1.0 {
@@ -332,6 +346,17 @@ impl StreamingDiagnostics {
         self.previous_status.clone_from(&self.status);
         self.previous_active = active;
     }
+}
+
+static TEXTURE_EVENT_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TEXTURE_EVENT_FORMATTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn texture_event_diagnostics() -> (bool, bool) {
+    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| (
+        std::env::var("DH2_DEBUG_EAGER_TEXTURE_EVENTS").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_COUNT_TEXTURE_EVENTS").as_deref() == Ok("1"),
+    ))
 }
 
 #[cfg(test)]

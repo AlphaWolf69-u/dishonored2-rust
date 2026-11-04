@@ -1233,7 +1233,7 @@ pub(super) fn stream_visible_textures(
                 queue.diffuse_image_paths[slot]
             );
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                diagnostics.texture_event(format!(
+                diagnostics.texture_event(format_args!(
                     "gpu_upload_failed stream_frame={frame} slot={slot} path={:?} image_id={id:?} resident={:?} pending={:?} error={error:?}",
                     queue.diffuse_image_paths[slot],
                     queue.diffuse_mip_states[slot].resident,
@@ -1290,7 +1290,7 @@ pub(super) fn stream_visible_textures(
                     }
                 }
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "gpu_upload_committed stream_frame={frame} slot={slot} path={:?} image_id={image_id:?} requested={} reduction={} mip_count={mip_count} resident_before={resident_before:?} resident_after={:?}",
                         queue.diffuse_image_paths[slot],
                         requested[slot],
@@ -1306,7 +1306,7 @@ pub(super) fn stream_visible_textures(
         if needed {
             if last_visible == 0 || last_visible != frame.saturating_sub(1) {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "demand_enter stream_frame={frame} slot={slot} path={:?} projected_area={:.3} viewport_pixels={} resident={:?} pending={:?} attempted={} unavailable_finer={:?}",
                         queue.diffuse_image_paths[slot],
                         queue.diffuse_image_demands[slot].area(),
@@ -1321,7 +1321,7 @@ pub(super) fn stream_visible_textures(
             queue.diffuse_image_last_visible[slot] = frame;
         } else if last_visible == frame.saturating_sub(1) {
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                diagnostics.texture_event(format!(
+                diagnostics.texture_event(format_args!(
                     "demand_exit stream_frame={frame} slot={slot} path={:?} idle_frames={} resident={:?} pending={:?} attempted={} unavailable_finer={:?}",
                     queue.diffuse_image_paths[slot],
                     frame.saturating_sub(last_visible),
@@ -1353,7 +1353,7 @@ pub(super) fn stream_visible_textures(
             Ok(None) => {
                 queue.diffuse_mip_states[slot].reserved_bytes = 0;
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "read_missing stream_frame={frame} slot={slot} path={path:?} target={target:?} resident={:?}",
                         queue.diffuse_mip_states[slot].resident,
                     ));
@@ -1367,7 +1367,7 @@ pub(super) fn stream_visible_textures(
             Err(error) => {
                 queue.diffuse_mip_states[slot].reserved_bytes = 0;
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "read_failed stream_frame={frame} slot={slot} path={path:?} target={target:?} resident={:?} error={error:?}",
                         queue.diffuse_mip_states[slot].resident,
                     ));
@@ -1386,7 +1386,7 @@ pub(super) fn stream_visible_textures(
             let Some(old) = previous.and_then(|id| Assets::get(&*images, id)) else {
                 queue.diffuse_mip_states[slot].reserved_bytes = 0;
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "exact_mip_lost_resident stream_frame={frame} slot={slot} path={path:?} target={target:?} recorded_resident={:?} handle_id={previous:?}",
                         queue.diffuse_mip_states[slot].resident,
                     ));
@@ -1408,7 +1408,7 @@ pub(super) fn stream_visible_textures(
         }
         let upload_mips = streamed.uploads.len();
         if let Some(diagnostics) = diagnostics.as_deref_mut() {
-            diagnostics.texture_event(format!(
+            diagnostics.texture_event(format_args!(
                 "read_succeeded stream_frame={frame} slot={slot} path={path:?} target={target:?} resident_before={:?} loaded_level={level:?} upload_mips={upload_mips} upload_bytes={upload_bytes}",
                 queue.diffuse_mip_states[slot].resident,
             ));
@@ -1426,7 +1426,7 @@ pub(super) fn stream_visible_textures(
             queue.diffuse_image_pending[slot] = Some(handle.clone());
             queue.diffuse_mip_states[slot].pending = Some(level);
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                diagnostics.texture_event(format!(
+                diagnostics.texture_event(format_args!(
                     "gpu_upload_submitted stream_frame={frame} slot={slot} path={path:?} image_id={image_id:?} previous={previous:?} copy={copy:?} target={target:?} level={level:?} mip_count={mip_count} upload_mips={upload_mips} upload_bytes={upload_bytes}",
                 ));
             }
@@ -1456,7 +1456,7 @@ pub(super) fn stream_visible_textures(
                 registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
             }
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                diagnostics.texture_event(format!(
+                diagnostics.texture_event(format_args!(
                     "resident_committed_without_gpu_mailbox stream_frame={frame} slot={slot} path={path:?} image_id={image_id:?} target={target:?} level={level:?} mip_count={mip_count} upload_mips={upload_mips} upload_bytes={upload_bytes} resident_after={:?}",
                     queue.diffuse_mip_states[slot].resident,
                 ));
@@ -1480,7 +1480,7 @@ pub(super) fn stream_visible_textures(
         let previous = queue.diffuse_image_handles[slot].as_ref().unwrap().id();
         let handle = images.add(empty_streamed_image(level.width, level.height, mip_count, gpu_image_format(level.format)));
         if let Some(diagnostics) = diagnostics.as_deref_mut() {
-            diagnostics.texture_event(format!("mip_reduction_requested stream_frame={frame} slot={slot} path={:?} dropped={dropped} released_bytes={released_bytes} charged_bytes={charged} budget_bytes={}",
+            diagnostics.texture_event(format_args!("mip_reduction_requested stream_frame={frame} slot={slot} path={:?} dropped={dropped} released_bytes={released_bytes} charged_bytes={charged} budget_bytes={}",
                 queue.diffuse_image_paths[slot], residency::budget_bytes(settings)));
         }
         if let Some(prepared_images) = prepared_images.as_ref() {
@@ -1521,7 +1521,7 @@ pub(super) fn stream_visible_textures(
             queue.diffuse_image_demands[slot].take();
             if frame % 60 == 0 {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "request_waiting stream_frame={frame} slot={slot} path={:?} read_inflight={} gpu_pending={} resident={:?} pending={:?} demand_area={:.3}",
                         queue.diffuse_image_paths[slot],
                         worker.inflight[slot],
@@ -1536,7 +1536,7 @@ pub(super) fn stream_visible_textures(
         }
         if worker.inflight_count == TEXTURE_READ_QUEUE_CAPACITY {
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                diagnostics.texture_event(format!(
+                diagnostics.texture_event(format_args!(
                     "read_queue_saturated stream_frame={frame} inflight={}/{} remaining_requests={}",
                     worker.inflight_count,
                     TEXTURE_READ_QUEUE_CAPACITY,
@@ -1582,7 +1582,7 @@ pub(super) fn stream_visible_textures(
         match worker.request((slot, queue.diffuse_image_paths[slot].clone(), target)) {
             Ok(()) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "read_requested stream_frame={frame} slot={slot} path={:?} target={target:?} resident={:?} projected_area={demand_area:.3} viewport_pixels={} inflight_before={}/{} unavailable_finer={:?}",
                         queue.diffuse_image_paths[slot],
                         queue.diffuse_mip_states[slot].resident,
@@ -1610,7 +1610,7 @@ pub(super) fn stream_visible_textures(
             }
             Err(_) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
+                    diagnostics.texture_event(format_args!(
                         "read_queue_full stream_frame={frame} slot={slot} path={:?} target={target:?} inflight={}/{}",
                         queue.diffuse_image_paths[slot],
                         worker.inflight_count,

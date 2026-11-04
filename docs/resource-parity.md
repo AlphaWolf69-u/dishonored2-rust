@@ -2631,3 +2631,36 @@ consumers. This evidence does not demonstrate the cost or safety of that change.
 Local evidence: `artifacts/model-common-trace-summary.json`,
 `artifacts/lifecycles-manifest-models.json`, and the successful three-level
 `model-common-trace` client.
+
+### Texture-event diagnostic allocation prediction
+
+`StreamingDiagnostics::texture_event` discards events immediately unless
+`DH2_TRACE_TEXTURE_STREAMING=1`, but each of its 15 streamer call sites first
+constructs a formatted `String`. With tracing off, those allocations and all
+formatting have no consumer and do not affect streaming or F8 history. Pass
+format arguments to the method and format after the existing trace decision.
+Prediction: during the same production traversal, the number of formatted
+messages with tracing off falls from the number of attempted events to zero;
+with tracing on the event text and ordering remain unchanged. No changes to
+texture choices, uploads, history or scheduling are expected. Count only event
+attempts and formatting, not whole-frame CPU time or process RSS.
+The earlier four-level targeted-demand production trace retained 17,385
+texture-event lines; three of four logs also report dropped diagnostic events,
+so that is a lower bound for that run rather than its exact total. The event
+classes include demand entry/exit and read/upload transitions. This trace was
+collected with logging enabled and does not by itself measure the disabled case.
+
+
+
+Texture-event production comparison: three EotW clients of the same build
+completed an identical moving camera route. At the third 600-frame checkpoint,
+the prior eager-format control formatted 31,498 of 31,498 attempted events
+with detailed tracing off; the default formatted zero of 31,433 attempted
+events. Different attempt counts reflect runtime scheduling; the measured
+formatting ratio is 100% versus 0%, not a CPU-time or RSS measurement. With
+tracing enabled, 31,154 of 31,154 attempts were formatted, and all eight event
+types observed in both the historical trace and this run had matching field
+layouts. This compares diagnostic text structure, not a frame-for-frame trace
+or pixel output. All three clients exited 0. Local evidence:
+`artifacts/texture-event-comparison.json` and
+`artifacts/texture-event-trace-layout.json`.
