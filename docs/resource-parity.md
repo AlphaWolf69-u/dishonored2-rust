@@ -1658,3 +1658,8 @@ map-purge identities using the separate-cache diagnostic in the same build.
 No walking CPU or total RSS improvement is predicted. Scene-streamed images
 remain separate until full-resolution consumer pinning is connected; full-mip
 residency must never be silently replaced by a reduced scene mip.
+
+
+Delivery: main source 63f5d1d completed its release build with exit 0. The
+subsequent full-mip registry change 3be3ac1 has passed library and game-bin
+compilation checks; its production acquisition/purge comparison remains pending.

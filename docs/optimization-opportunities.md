@@ -219,23 +219,27 @@ The transition trace (`loading-teardown`) disproves the hypothesis that deep
 world-resource destruction causes the remaining one-second blank interval:
 entities take 1.374 / 2.746 ms, publication reset 39.257 / 48.000 ms, total
 `LevelLifetime::clear` 86.754 / 96.303 ms. After that, contact-sound `FromWorld`
-construction reacquires the destination manifest and contact/sound declarations
-on the window thread. Move that same owner acquisition into `AudioPreparation`
-on the existing worker; reset only its mutable level state on unload. Expected
-gain is removal of the remaining roughly 0.8–1 second acquisition from the
-window thread, not faster destruction or reduced audio coverage. Startup's
-synchronous diagnostic path must skip an already acquired owner. Verification
-is pending.
+construction reacquired the destination manifest and contact/sound declarations
+on the window thread. This finding is resolved: `AudioPreparation` acquires
+that same map-scoped owner on its existing worker, publication supplies it before
+map systems run, and unload resets mutable state without reacquisition. The
+recorded production run placed 837–866 ms of acquisition on the worker and
+measured 117–130 ms transition intervals, with initial/return handoffs succeeding.
+See resource-parity.md, Responsive loading and load fade. No new work is queued
+for the old one-second main-thread acquisition hypothesis.
 
-Texture streamer module sweep: request flags, completion collection and
-projected-area order still allocate temporary vectors. Unused diagnostic
-result formatting was moved inside the invisible-read history branch. GPU mailbox uploads
-also lack the original upload-byte budget at the actual render submission
-boundary, although main-world staging has a byte budget. Settings are now
-read from the registered cvars via a generation cache. Preserve initial
-loading gates and committed image handles while correcting the outstanding
-pressure/priority and submission scheduling; quantify changed-function cost
-before replacing existing temporary storage.
+Texture streamer module sweep: request flag/order storage now belongs to the
+level's FrameRequests; production diagnostics reported growth only on its initial
+fill across 1,200 frames. Completion/mailbox vectors still deserve allocation
+profiling before any scratch refactor; no bytes or CPU gain is assumed. Unused
+diagnostic result formatting is guarded by its enabled history branch. The
+actual render submission budget is implemented in report_prepared_diffuse_images
+from 14030d1e0, not just at main-world staging. Same-binary 4096/32 KB runs both
+submitted 367 jobs / 169,213,952 bytes; the largest observed render frame fell
+5,767,168 -> 2,097,152 bytes at the lower limit, with the permitted oversized
+final job. This closes the missing upload-budget finding without changing total
+submitted data. Settings use the existing generation cache.
+
 
 
 ## Archive acquisition owner sweep
