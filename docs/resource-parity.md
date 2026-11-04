@@ -2509,3 +2509,12 @@ Prediction: final-array capacity changes at most once rather than growing with
 the number of probes, with identical layer-major bytes and no extra full-sized
 buffer. Report production capacity-growth counts and payload sizes; allocation
 counts are not whole-process memory or CPU-time measurements.
+
+
+The global `r_addAllMips` production diagnostic was stopped after it saturated
+the 4 GiB streamer budget and repeatedly evicted unrelated textures before the
+loading gate completed. Its output does not verify the handoff. A diagnostic-
+only control now submits visible-area demand to the registered environment
+slots, exercising their ordinary read/upload/commit path without forcing every
+other image. The control is absent from normal play and does not represent a
+claim that the original normally submits this demand.
