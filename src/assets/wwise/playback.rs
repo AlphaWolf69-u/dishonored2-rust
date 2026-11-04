@@ -3,7 +3,7 @@
 use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
     PlaybackContainer, PlaybackNode, PlaybackSwitch, MediaBytes};
-use std::{borrow::Cow, collections::{HashMap, HashSet}, io};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, io, sync::{Arc, Mutex, Weak}};
 
 struct LoadedBank<'a> { bytes: BankBytes<'a>, feedback: bool }
 
@@ -70,6 +70,7 @@ pub struct PlaybackBanks<'a> {
     actions: HashMap<u32, Object>,
     events: HashMap<u32, Object>,
     custom_effects: HashMap<u32, Object>,
+    property_chains: Mutex<HashMap<u32, Weak<[super::NodeProperties]>>>,
 }
 
 impl<'a> PlaybackBanks<'a> {
@@ -83,6 +84,10 @@ impl<'a> PlaybackBanks<'a> {
         self.actions.retain(|_, object| object.bank < count);
         self.events.retain(|_, object| object.bank < count);
         self.custom_effects.retain(|_, object| object.bank < count);
+        self.property_chains.get_mut().unwrap().retain(|id, weak| {
+            self.actors.contains_key(id) && weak.upgrade().is_some_and(|chain|
+                chain.iter().all(|node| self.actors.contains_key(&node.id)))
+        });
     }
 
     /// Insert in bank-load order. Native loaders retain existing actor/event
@@ -135,7 +140,7 @@ impl<'a> PlaybackBanks<'a> {
     /// (141115df0 / 1410e9950), independently of playlist membership.
     pub fn actor_hierarchy(&self, id: u32) -> io::Result<Option<Vec<u32>>> {
         if !self.actors.contains_key(&id) { return Ok(None); }
-        Ok(Some(self.node_hierarchy(id)?.into_iter().map(|node| node.id).collect()))
+        Ok(Some(self.node_hierarchy(id)?.iter().map(|node| node.id).collect()))
     }
     /// Follow the actual Play references without reading or decoding media.
     /// Playlist/case membership is independent of serialized hierarchy lists.
@@ -270,7 +275,15 @@ impl<'a> PlaybackBanks<'a> {
         &self.banks[object.bank].bytes[object.start..object.start + object.length]
     }
 
-    fn node_hierarchy(&self, mut id: u32) -> io::Result<Vec<super::NodeProperties>> {
+    fn node_hierarchy(&self, mut id: u32) -> io::Result<super::property_chains::Chain> {
+        let root = id;
+        if !super::property_chains::separate() {
+            let existing = self.property_chains.lock().unwrap().get(&root).and_then(Weak::upgrade);
+            if let Some(chain) = existing {
+                super::property_chains::requested(root, &chain);
+                return Ok(chain);
+            }
+        }
         let mut nodes = Vec::new();
         let mut visited = HashSet::new();
         while id != 0 {
@@ -280,12 +293,19 @@ impl<'a> PlaybackBanks<'a> {
             id = node.parent;
             nodes.push(node);
         }
-        Ok(nodes)
+        let chain = super::property_chains::make(nodes);
+        let chain = if super::property_chains::separate() { chain } else {
+            let mut cached = self.property_chains.lock().unwrap();
+            if let Some(existing) = cached.get(&root).and_then(Weak::upgrade) { existing }
+            else { cached.insert(root, Arc::downgrade(&chain)); chain }
+        };
+        super::property_chains::requested(root, &chain);
+        Ok(chain)
     }
 
     fn media_properties(&self, id: u32) -> io::Result<MediaProperties> {
         let nodes = self.node_hierarchy(id)?;
-        for node in &nodes {
+        for node in nodes.iter() {
             if self.actors.get(&node.id).is_some_and(|object| matches!(object.kind, 10..=13)) {
                 return Err(invalid_owned(format!("Wwise music parent {:#010x} requires music properties", node.id)));
             }

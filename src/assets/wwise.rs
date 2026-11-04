@@ -12,6 +12,8 @@ pub use vorbis::VorbisCursor;
 pub(crate) use vorbis::release_unused_headers;
 mod declaration;
 mod playback;
+mod property_chains;
+pub(crate) use property_chains::capture as capture_property_chains;
 mod media_bytes;
 mod stream;
 pub(crate) mod stream_io;
@@ -777,11 +779,17 @@ pub struct MediaVariant {
     pub properties: MediaProperties,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct MediaProperties {
     /// Sound and actor/container ancestors, from the sound to the root.
-    pub nodes: Vec<NodeProperties>,
+    pub nodes: std::sync::Arc<[NodeProperties]>,
     pub bus: u32,
+}
+
+impl Clone for MediaProperties {
+    fn clone(&self) -> Self {
+        Self { nodes: property_chains::clone(&self.nodes), bus: self.bus }
+    }
 }
 
 /// A voice's response to falling below the volume threshold (node+0xb0

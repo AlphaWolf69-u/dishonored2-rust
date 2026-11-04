@@ -205,7 +205,7 @@ impl Mixer {
     fn voice_routing_inner(&self, source: &MediaProperties, parameters: &[(u32, f32)], ducking: bool) -> Result<VoiceRouting, String> {
         let mut volume_db = 0.0;
         let mut makeup_db = 0.0;
-        for node in &source.nodes {
+        for node in source.nodes.iter() {
             volume_db += node.float(0);
             volume_db = self.rtpc_contribution(node, 0, parameters)? + volume_db;
             makeup_db += node.float(0x21);
@@ -332,7 +332,7 @@ impl Mixer {
     {
         if !matches!(property, 2 | 3 | 4) { return Err("unsupported Wwise source property".into()); }
         let mut result = 0.0;
-        for node in &source.nodes {
+        for node in source.nodes.iter() {
             result += node.float(property);
             result = self.rtpc_contribution(node, property, parameters)? + result;
         }

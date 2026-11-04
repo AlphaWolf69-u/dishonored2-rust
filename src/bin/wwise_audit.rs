@@ -720,7 +720,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
             let controls = mixer.auxiliary_controls(&variant.properties, &[], &[])?;
             println!("{indent}  Auxiliary buses with no game-object sends: {:?}",
                 dishonored2_rust::gameplay::sound::auxiliary::bus_sends(&controls));
-            for properties in &variant.properties.nodes {
+            for properties in variant.properties.nodes.iter() {
                 if !metadata.properties.insert(properties.id) {
                     println!("{indent}  Node {:#010x} properties already described", properties.id);
                     continue;
@@ -739,7 +739,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
                         properties.float(2), properties.float(3), properties.float(4));
                 }
             }
-            for properties in &variant.properties.nodes {
+            for properties in variant.properties.nodes.iter() {
                 if properties.positioning_flags & 1 != 0 {
                     println!("{indent}  Positioning node={:#010x} flags={:#x} {:?}", properties.id, properties.positioning_flags, properties.positioning_3d);
                     break;

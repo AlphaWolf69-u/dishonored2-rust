@@ -515,6 +515,7 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
             owners.values().sum::<usize>(), sources.iter().copied().collect::<HashMap<_, _>>().len(),
             sources.iter().filter(|(id, _)| banks.contains_key(id)).count());
         graph::capture_media_signatures();
+        crate::assets::wwise::capture_property_chains();
         for (representation, (n, installed, views)) in graph::resident_media_stats() {
             eprintln!("LOAD sound media representation {representation}: {n} current sources, {} MB installed, {} MB logical views", installed >> 20, views >> 20);
         }

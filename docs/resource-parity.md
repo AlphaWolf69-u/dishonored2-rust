@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837РІР‚вЂњ866 ms of acquisition on the worker and 117РІР‚вЂњ130 ms transition intervals,
+837Р Р†Р вЂљРІР‚Сљ866 ms of acquisition on the worker and 117Р Р†Р вЂљРІР‚Сљ130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686РІР‚вЂњ13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686Р Р†Р вЂљРІР‚Сљ13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`РІР‚вЂњ`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`Р Р†Р вЂљРІР‚Сљ`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -1914,3 +1914,26 @@ the scene's minimum chain. Local evidence:
 artifacts/lifecycles-scene-image-views-comparison.json. No tests or visuals run.
 
 Delivery: the preceding main 90bbcf2 release completed with exit 0.
+
+
+### Sound property-chain ownership: prediction before implementation
+
+Original first-owner actor registration (`1410f2370`/`1410f2270`) and node
+initialization (`1410de430`, `1410deb00`) retain authored properties on actors.
+The rewrite repeatedly decodes the same actor/parent hierarchy in
+`PlaybackBanks::node_hierarchy`; `Definition::decode` clones the root hierarchy
+again while converting the tree into runtime definitions. Immutable flat
+property chains can share an Arc allocation, acquired through weak per-bank
+lookup, without changing iteration order/layout of the NodeProperties array.
+Weak lookup must not pin unused definitions; map-bank truncation must reject
+chains referring to removed actors. Runtime mixer parameters, random values,
+voice filters, selections and cursors remain independent.
+
+Prediction: repeated live acquisitions of a root use one chain allocation;
+root clones copy no property vectors in shared mode. The exact saved retained
+bytes are the difference between actual live chain allocations/capacities,
+including nested values/ranges/curves/effect slots. No MB or CPU-time gain is
+guessed from the coarse sound-preparation allocation tag. Production diagnostic
+weak tracking will count those allocations and fingerprint requested property
+contents in both modes; it owns no chain payload. No steady-state property
+evaluation algorithm, PCM decoder or output routing changes.

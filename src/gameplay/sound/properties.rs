@@ -14,7 +14,7 @@ pub struct RandomProperties {
 impl RandomProperties {
     pub fn sample(properties: &MediaProperties, mut random15: impl FnMut() -> u16) -> Self {
         let mut values = [0.0; 5];
-        for node in &properties.nodes {
+        for node in properties.nodes.iter() {
             // The getter queries these property IDs in this order, rather
             // than using the serialized order of the modifier bundle. Other
             // serialized ranges, including bus properties 5/0x17, are not

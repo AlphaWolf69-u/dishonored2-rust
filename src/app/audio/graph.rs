@@ -577,7 +577,7 @@ impl Definition {
                         children.push(node(child, nodes, sounds, sources, attenuations, locate)?);
                         weights.push(weight);
                     }
-                    let properties = container.properties.nodes.into_iter().next()
+                    let properties = container.properties.nodes.first().cloned()
                         .filter(|properties| properties.id == container.node)
                         .ok_or_else(|| invalid("Wwise container has no own properties"))?;
                     (container.node, Kind::Container(Container { properties, children, weights, mode: container.mode,
@@ -751,7 +751,7 @@ impl Playing {
             // Validate the complete authored random range before the worker
             // starts a voice; malformed pitch must remain a host-side error.
             let mut bounds = [cents; 2];
-            for node in &sound.properties.nodes {
+            for node in sound.properties.nodes.iter() {
                 if let Some(range) = node.ranges.iter().find(|range| range.property == 2) {
                     bounds[0] += range.min;
                     bounds[1] += range.max;
