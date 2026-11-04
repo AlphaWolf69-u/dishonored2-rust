@@ -2405,3 +2405,16 @@ routine `14030dbf0` inserts the image identity with zero initial area and
 priority field 1 before any producer updates it. Shader binding records confirm
 the mask is consumed directly as an ocean environment input; those bindings
 alone do not show a call to the material demand producer `14031a510`.
+
+
+During the user-driven waterfront walk, the original mask's streamer record
+was sampled 900 times over 91.2 seconds, starting before movement; the separate
+post-walk image capture occurred 31.4 seconds after sampling started. Every
+sample found the record, area zero and 256x256 view. Sampling at 100 ms cannot
+exclude shorter demand spikes. The image loader `1402e9ff0` registers any image
+whose current mip count is below its complete count through `14030dbf0`;
+registration is independent of whether the image has a material consumer.
+This confirms that retaining the inline view matches the observed default path,
+while general streamer registration and demand/view handoff remain open.
+Evidence: `artifacts/resource-eotw-mask-moving.json` and
+`artifacts/resource-residency-eotw-after-movement.json` in the main checkout.
