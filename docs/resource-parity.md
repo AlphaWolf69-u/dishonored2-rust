@@ -1734,3 +1734,7 @@ descriptors occupy at most 16 stack entries; required cross-thread upload
 buffers still own their payload. All reader validation remains shared with
 compressed_inline_chain. Local evidence: artifacts/lifecycles-inline-staging-
 comparison.json and the two production logs. No tests or visuals inspected.
+
+Particle program batch first game compilation found a missing TextureFormat
+qualification in CameraGpu's new cache field. Fixed before any delivery build;
+the failed check is not runtime acceptance evidence.

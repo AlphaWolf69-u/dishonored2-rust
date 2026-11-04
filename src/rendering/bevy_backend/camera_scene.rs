@@ -45,7 +45,7 @@ pub(super) struct CameraGpu {
     pub(super) particle_publication: Option<ParticlePublicationFrame>,
     particles: Option<ParticleGpu>,
     particle_images: super::particle_images::ParticleImagesGpu,
-    particle_programs: std::collections::HashMap<(TextureFormat, TextureFormat), std::sync::Arc<super::particle_pass::ParticlePrograms>>,
+    particle_programs: std::collections::HashMap<(bevy::render::render_resource::TextureFormat, bevy::render::render_resource::TextureFormat), std::sync::Arc<super::particle_pass::ParticlePrograms>>,
     screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 pub(super) struct ParticlePublicationFrame {
