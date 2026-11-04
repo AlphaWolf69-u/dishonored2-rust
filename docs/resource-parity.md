@@ -2578,3 +2578,18 @@ payload should remain the same 34,556,544 bytes rather than grow from retained
 padding. Compare production per-image fingerprints, source/retained bytes and
 allocations against a same-client copy control. No CPU-time or RSS gain is
 assumed from copy counts.
+
+
+Follow-up production comparison (source `cad105e`): copy and compact modes
+both completed four levels with exit 0, and all layered upload descriptors and
+fingerprints and all 343 reflection output fingerprints match again. Corrected
+per-append instrumentation recorded reflection-array capacity growths of
+11 / 9 / 11 / 11 in copy mode and 1 / 1 / 1 / 1 with reservation. Across the
+same eight sound-preparation checkpoints, both modes recorded matching counts
+and an order-independent fingerprint of media IDs, stream types and sizes.
+The former diagnostic table performed 7,355 inserts and retained 2,441 entries;
+the opt-in implementation performed zero inserts and retained zero entries in
+normal mode. The audio fingerprint describes source identities and sizes, not
+PCM equality or measured CPU time. These diagnostics do not establish process
+RSS savings. Evidence: `audio-owned-comparison.json` and
+`audio-owned-layered-comparison.json` in the feature checkout artifacts.
