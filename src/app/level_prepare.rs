@@ -350,7 +350,8 @@ pub(super) fn prepare_level(
             parameters.sun_ground_color
         );
     }
-    if let Some(probes) = &environment_probes {
+    if let Some(probes) = &mut environment_probes {
+        probes.release_preparation_data();
         println!(
             "Loaded authored probe lighting from {}: {} probes, {} secondary network entries, {} rejected PRB resources ({:.2}s)",
             probes.network_resource,

@@ -358,6 +358,33 @@ pub fn load_for_world(
 }
 
 impl ProbeLightingSet {
+    /// Host queries use the prepared quads, in place of reading PRB samples
+    /// through 382d90/383d80 at runtime. Retire superseded preparation backing;
+    /// retain the complete parsed representation for standalone asset readers.
+    pub fn release_preparation_data(&mut self) {
+        let capacities = |set: &Self| [
+            set.probes.iter().map(|p| p.samples.capacity()).sum::<usize>() * std::mem::size_of::<bprobe::Sample>(),
+            set.reflection_probes.iter().map(|p| p.samples.capacity()).sum::<usize>() * std::mem::size_of::<bprobe::Sample>(),
+            set.reflection_probes.iter().filter_map(|p|p.alternate_results.as_ref()).map(|p|p.samples.capacity()).sum::<usize>() * std::mem::size_of::<bprobe::Sample>(),
+            set.spatial.cells.iter().map(|c|c.occluder_samples.capacity()).sum::<usize>() * std::mem::size_of::<usize>(),
+        ];
+        let before = capacities(self);
+        let retain = std::env::var("DH2_DEBUG_RETAIN_PROBE_SAMPLES").as_deref() == Ok("1");
+        if !retain {
+            for probe in &mut self.probes { probe.samples = Vec::new(); }
+            for probe in &mut self.reflection_probes {
+                probe.samples = Vec::new();
+                if let Some(alternate) = &mut probe.alternate_results { alternate.samples = Vec::new(); }
+            }
+            for cell in &mut self.spatial.cells { cell.occluder_samples = Vec::new(); }
+        }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let after = capacities(self);
+            eprintln!("MEMORY probe preparation retirement: retain={retain} primary_bytes={}->{} reflection_bytes={}->{} alternate_bytes={}->{} index_bytes={}->{} geometry_cells={} geometry_quads={} primary_probes={} reflection_probes={}",
+                before[0], after[0], before[1], after[1], before[2], after[2], before[3], after[3],
+                self.cell_geometry.len(), self.cell_geometry.iter().map(|g|g.quads.len()).sum::<usize>(), self.probes.len(), self.reflection_probes.len());
+        }
+    }
     pub fn reflection_info(&self, probe: usize) -> (u32, f32) {
         let index = self
             .spatial

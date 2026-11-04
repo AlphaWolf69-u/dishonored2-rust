@@ -1824,3 +1824,23 @@ were no fatal/error lines. This is transient syntax-copy removal, not a 631 KB
 resident saving or measured CPU-time improvement. Omitted/default slots and
 error/order handling still run through the same shared descriptor decoder.
 Local evidence: artifacts/lifecycles-fx-descriptors-comparison.json.
+
+
+Probe preparation retirement prediction (before implementation): installed
+PRB loading/sample decoding is 1402b99a0 / 1402b9720; native Voronoi query paths
+140382d90/140383d80/140383750/140382f90 read their source representation. The host
+already precomputes CellGeometry quads for fast runtime queries, but keeps the
+primary sample vectors and cell occluder index lists used only by that build.
+Secondary reflection samples (including alternate-result sample vectors) have
+no runtime consumer; their reflection planes/names/positions/SH remain needed.
+After gameplay probe preparation, release only these superseded sample/index
+vectors. Standalone installed-resource readers retain the complete format.
+Expected capacity bytes retired: sum of primary/reflection/alternate sample
+Vec capacities times sizeof(Sample), plus cell occluder-index capacities times
+sizeof(usize). Prepared quads, spatial planes/neighbors/tetrahedra, SH and GPU
+reflection data remain unchanged; no query recomputation or per-frame work.
+A retain control in the same production client records exact before/after
+capacities and prepared geometry counts. Do not assign MB before measurement.
+Original RESOURCE budget 51,830,920 bytes includes multiple resource families;
+it is not a separate measured probe tag. This is a host representation-lifetime
+improvement, not an assertion that the original discards its live query samples.
