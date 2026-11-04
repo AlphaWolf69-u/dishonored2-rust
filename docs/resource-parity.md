@@ -928,8 +928,14 @@ classes from the ID hash/list, clears their registered ID and dispatches the
 +0x08 destructor. Nonmatching resources receive their +0x48 callback instead.
 140060b60 promotes all currently registered resources to class 2; builtin
 acquisition 14005fde0 also creates class-2 resources. Constructor 14005e740
-initializes class 0/1 from the virtual +0x98 flag returned through 1401548e0; manifest loading
-1400661e0 can mark selected resource types class 1. Therefore a map teardown,
+initializes class 0/1 from the active allocation scope: 1401548e0 returns the
+idMemLocal singleton (constructor 1400fa870; vtable 141ae5098). Its +0x98
+slot is 1400fa990, which tests virtual +0xa8 (1400fa900) == 1. The latter
+reads the TLS heap stack at +0x130/+0x140; 1400fa930 names heap 0 system,
+1 persistent, 2 map. Therefore constructor class 1 means persistent allocation
+scope; other active scopes produce class 0. Static resource class 2 is the
+separate promotion above, not heap enum 2. Push/pop are 1400faa20/1400fa9b0.
+Manifest loading 1400661e0 can also mark selected resource types class 1. Therefore a map teardown,
 a class purge and destruction of every session cache are different operations;
 a host Arc owner is not evidence that an optional force-purge was ported.
 These functions give the common lifecycle rule for the per-class work;
@@ -1414,3 +1420,16 @@ used one catalogue/device/window/audio output without reported errors. These
 are registry ownership counts, not GPU heap/RSS measurements. The subsequent
 Close reuse-slot correction is included in the cohesive retirement run; its
 final result is recorded separately, not inferred from this earlier binary.
+
+
+Model staging lifetime prediction (before implementation): setup's model_cache
+and md6_cache have no consumer after the placement summary but currently survive
+through environment/water/FX/particle acquisition until setup returns. Release
+these scratch owners at their last use. Published meshes, shadow/query geometry
+and skinning definitions retain their independently owned runtime backing.
+Original compiled-input ownership ends at 14025aa00's exit; host decoding
+scratch is separate from resident model geometry. Expected benefit: no overlap
+between these scratch surface vectors and later acquisition, not lower gameplay
+CPU or an asserted RSS delta. Report released vertex/index vector capacities
+(excluding strings, structs, hash tables and allocator overhead) on the existing
+production loading route. No extra conversion, copy, cache or benchmark.

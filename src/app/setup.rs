@@ -1164,6 +1164,25 @@ pub(super) fn prepare(
     println!(
         "MD6 skeletal instances shown in compiled rest pose: {md6_rest_pose_instances}; joint animation is not implemented"
     );
+    // Host decoding scratch ends here, before later water/FX acquisition.
+    // Runtime meshes/query/skinning owners already hold their required data;
+    // as with input retirement at 14025aa00's exit, staging is not residency.
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        fn capacity_bytes<T>(values: &Vec<T>) -> usize {
+            values.capacity() * std::mem::size_of::<T>()
+        }
+        let static_bytes: usize = model_cache.values().flatten().flat_map(|model| &model.surfaces)
+            .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
+                + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)).sum();
+        let skeletal_bytes: usize = md6_cache.values().flatten().flat_map(|model| &model.surfaces)
+            .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
+                + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)
+                + capacity_bytes(&s.skin_weights) + capacity_bytes(&s.skin_indices)).sum();
+        eprintln!("MEMORY model staging retirement: static_resources={} skeletal_resources={} vertex_index_capacity_bytes={}",
+            model_cache.len(), md6_cache.len(), static_bytes + skeletal_bytes);
+    }
+    drop(model_cache);
+    drop(md6_cache);
     println!(
         "Materials: {} unique, {} registered texture resources, {} without diffuse ({} transparent surfaces suppressed); initial mip {}",
         resolver.cache.len(),
