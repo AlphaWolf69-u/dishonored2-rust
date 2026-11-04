@@ -150,6 +150,7 @@ pub struct OceanScene {
     vertices: Vec<OceanVertexParameters>,
     surface: Option<OceanSurfaceParameters>,
     last_frame: Option<u32>,
+    viewport: Option<[u32; 2]>,
     colour_targets: Option<ColourTargets>,
     colour_programs:
         HashMap<(usize, TextureFormat, crate::render_state::RenderState), ColourProgram>,
@@ -206,6 +207,7 @@ impl OceanScene {
             vertices: Vec::new(),
             surface: None,
             last_frame: None,
+            viewport: None,
             colour_targets: None,
             colour_programs: default(),
             colour_uniform: None,
@@ -216,6 +218,25 @@ impl OceanScene {
             head_queries: None,
         })
     }
+    /// Host viewport storage is not ocean simulation history. Invalidate it
+    /// before draw admission: a culled pass must not pin obsolete scene views
+    /// through its cached HDR/foam bindings until the ocean becomes visible.
+    fn update_viewport(&mut self, extent: [u32; 2]) {
+        if self.viewport == Some(extent) { return; }
+        let previous = self.viewport.replace(extent);
+        static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *RETAIN.get_or_init(|| std::env::var("DH2_DEBUG_RETAIN_RESIZED_OCEAN_TARGETS").as_deref() == Ok("1")) {
+            return;
+        }
+        let colour = self.colour_targets.as_ref().is_some_and(|targets| targets.extent != extent);
+        let underwater = self.underwater.as_ref().is_some_and(|targets| targets.extent != UVec2::from_array(extent));
+        if colour { self.colour_targets = None; }
+        if underwater { self.underwater = None; }
+        if (colour || underwater) && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY ocean viewport retirement: previous={previous:?} extent={extent:?} colour={colour} underwater={underwater}");
+        }
+    }
+
     fn admit_images(
         &mut self,
         device: &RenderDevice,
@@ -294,6 +315,7 @@ impl OceanScene {
         extent: [u32;2],
         selection: Option<&crate::rendering::environment_contacts::WaterViewPublication>,
     ) -> Result<(), String> {
+        self.update_viewport(extent);
         self.records.clear();
         self.vertices.clear();
         let settings = &frame.ocean_environment;

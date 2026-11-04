@@ -41,6 +41,10 @@ pub(super) fn observe_resize(
     }
     sequence.frames += 1;
     if sequence.frames < 120 { return; }
+    let finer_bytes: u64 = scene.diffuse_mip_states.iter().map(|state| state.streamed_bytes).sum();
+    let reserved_bytes: u64 = scene.diffuse_mip_states.iter().map(|state| state.reserved_bytes).sum();
+    eprintln!("MEMORY resize streaming: sample={} finer_bytes={finer_bytes} reserved_bytes={reserved_bytes} upgrades={}",
+        sequence.step, scene.diffuse_mip_upgrades);
     eprintln!("MEMORY resize snapshot: sample={} width={} height={} frames={} resident_images={} pending_images={}",
         sequence.step, wanted.x, wanted.y, sequence.frames,
         scene.diffuse_image_handles.iter().filter(|image| image.is_some()).count(),

@@ -2204,3 +2204,26 @@ A rising live count for a repeated size requires tracing retained references;
 a rising reserved heap alone does not establish a leak. Record image streaming
 counts alongside target snapshots so texture-demand changes are not mislabeled
 as target retention. No production resource policy changes are justified yet.
+
+
+Resolution observation 64b2924 completed both EotW and Dust clients, exit 0,
+seven snapshots each. EotW named viewport targets return to exactly the same
+allocation counts/bytes at each repeated size; its increasing unlabeled image
+bytes require separate streaming accounting and are not assigned to targets.
+Dust exposes a concrete dormant-pass defect: after the 960x540 stage, the ocean
+colour target remains alive at larger sizes when no surface patches are drawn.
+Its cached foam/HDR bindings also retain the old depthWater and main a/b views.
+At 1280x720 the extra old-size allocations include depthWater 3,538,944 B,
+main a/b 4,784,128 B each, pre-water source and water HDR 2,686,976 B each,
+foam targets 262,144 B, plus their uniforms, descriptors and opaque input.
+
+Prediction before correction: invalidate incompatible ocean colour and
+underwater viewport targets on viewport changes, even if the draw path returns
+early. Existing colour/depth pipelines, authored images, growing patch buffers,
+wave simulation and history remain owned. No render-pass/input changes are
+needed: an active pass already rejects and replaces a mismatched target before
+using it. Removing its dormant old-size targets should also remove their stale
+main/depth references after normal queued work completes. Track actual target
+retirements and repeated-size allocation differences in a same-binary
+retain/invalidate comparison. No CPU-time gain is predicted; no image-resolution
+policy changes are included.
