@@ -31,7 +31,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 | `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original upload dispatch is traced: 1402f5500 selects 1402f50c0 (2D/cube UpdateSubresource1 or Map/copy/Unmap) or 1402f52f0 (3D row/slice pitches); 1402f4060 finalizes descriptors and releases replaced views/resources. Host Bevy/wgpu preparation and compressed queue uploads replace those D3D11 calls |
 | `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Particle 2D demand uses this same streamer; named UI acquisition now reuses committed scene/common views without forcing full mips; compatible registered base views avoid scene reacquisition |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
-| `listImages` / readonly resource registry | the original's named image residency (sizes, classes, views) | bootstrap captured: 643 resource registries / 23,534 registered entries, including 1,548 named images. Readonly full-Steam capture validates image list `1432e9ff0`, registry `+38/+40`, scope `+24`, and current image/view descriptors. Map capture requires the requested human-loaded EotW view; allocator totals alone do not supply this data |
+| `listImages` / readonly resource registry | the original's named image residency (sizes, classes, views) | bootstrap captured: 643 resource registries / 23,534 registered entries, including 1,548 named images. Readonly full-Steam capture validates image list `1432e9ff0`, registry `+38/+40`, scope `+24`, and current image/view descriptors. Map capture requires a loaded EotW view; allocator totals alone do not supply this data. The earlier loading request became stale when that process was closed. A fresh full-Steam process was verified running on 2026-11-04 before requesting the level again |
 | `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Particle 2D identities/demand now use the scene owner (3dd8a11); remaining volumes retain complete single-mip authored data. Equivalent registered scene-base views and current named-UI snapshots now share handles; intentionally different mip views remain independent |
 
 ### Sound (Wwise)
@@ -47,10 +47,12 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 ### Material, model, animation, physics, FX, Iggy, entities
 
-Lifecycle not traced. Each owner below reads its resources at startup, but
-its load, upload and unload path has not been compared with the original.
-Next step per class: find its `LoadResourceInternal` vtable entry (as for
-`idImage`) and port it.
+The per-kind rows and subsequent acceptance records distinguish traced owners
+from remaining gaps. In particular, model loading (`14025aa00`/`140259960`),
+animation blob ownership (`14024adf0`), Iggy image upload (`1402e2c00`) and the
+resource lookup/purge boundary (`1400607f0`/`140060180`) have source evidence;
+this does not certify every declaration subtype or unconsumed system. Generic
+rows below remain incomplete until their own lifecycle has been traced.
 
 ## Kinds
 
