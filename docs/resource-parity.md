@@ -524,8 +524,9 @@ queues discarded completed StreamHolds whenever any other source was still
 loading. Since StreamedSource keeps only a Weak resident reference, a completed
 file could be freed and requested again on the next retry, potentially
 preventing a multi-source event from ever becoming ready. Original file-source
-state retains its pending/ready media through source ownership (`1411606d0`,
-release `141160970`); a partial completion must not lose that ownership.
+state retains its pending/ready media through source ownership (bank source
+`1411606d0` / release `141160970`; file source `1411614e0` / release
+`141160cc0`); a partial completion must not lose that ownership.
 
 Expected correction: each queued request/ticket retains its completed holds
 across retries, hands them to the actual voice on admission, and releases them
@@ -552,3 +553,43 @@ revisions per run): full recreation used 9 textures / 7,864,320 uploaded bytes /
 updates / 2,313,100 uploaded bytes / 0.535 ms. Both clients exited 0 without
 GPU validation errors. These are nine acquisition operations, not hundreds of
 independent timing samples or a whole-frame FPS improvement.
+
+### Session shader metadata reuse
+
+Original bootstrap `140064e00` constructs global cache DAT_142be6ee0 once
+through `1402c8d50`, registers its destructor at exit, and initializes indices
+through `1402ca800` -> `1402ca9c0`; shared names use `1402cc070`. The rewrite
+instead reconstructs those immutable indices and render-parameter schema for
+every ProgramLibrary at map acquisition. Its stage/definition payload streams
+already remain on disk, and per-world prepared shadow/program definitions still
+have live consumers.
+
+Expected correction: share only immutable index/schema/default metadata for
+the session, keeping separate seekable data-stream handles and per-owner
+prepared definitions. No mutable file cursor may be shared through File cloning.
+Expected gain is zero repeated index reads/schema parsing after the first
+acquisition of an installation/backend. Steady-state sampling/draw logic must
+not change. Compare same-build `DH2_DEBUG_UNSHARED_SHADER_METADATA=1` against
+normal reuse with targeted acquisition time, read bytes and retained metadata
+counts. Existing original SHADERCACHE budget is 43,566,840 CPU bytes; do not
+confuse serialized index bytes or descriptor-capacity estimates with that tag's
+entire live allocation.
+
+Production release collector measurement (`lifecycles-owner-performance-*`):
+29 sustained pause-menu collections per mode, visiting 13,686–13,695 objects.
+Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
+edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
+changed collection function. Both modes reclaimed 172 objects over the run
+and exited 0. Collection scheduling and weak-reference rules were identical.
+This sample supports the data-layout improvement, not a whole-frame claim or
+hundreds of independent collection samples.
+
+Production dev shader acquisition (`lifecycles-shader-metadata-*`) completed
+EotW -> Dust District -> EotW in both modes, exit 0. Unshared mode read
+733,409 index bytes on each acquisition and rebuilt 1,688 parameter kinds /
+239 option defaults each time. Shared mode read the indices once, preserved
+index/schema identities across all maps, and read zero index bytes on both
+subsequent acquisitions; parameter acquisition took 0.007 / 0.005 ms instead
+of 159.217 / 155.381 ms in that dev run. Release timing is measured separately;
+file-handle opening remains required and is not counted as eliminated work.
+

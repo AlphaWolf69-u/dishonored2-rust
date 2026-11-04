@@ -11,15 +11,17 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::{Arc, LazyLock, Mutex};
 
 type Result<T> = std::result::Result<T, String>;
 mod water;
 mod boat;
+mod parameters;
 pub use water::{CachedWaterDepthClass, CachedWaterDepthSource};
 const VERSION: u32 = 14;
 
 /// Cache slots 0/1, NOT the render-program platform enum's PC/PC_D3D12 IDs.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShaderCacheBackend {
     Pc,
     D3d12Pc,
@@ -63,15 +65,29 @@ pub struct CachedStageBytes {
 
 #[derive(Debug)]
 pub struct ShaderCache {
-    pub names: Vec<Vec<u8>>,
-    pub programs: HashMap<Vec<u8>, CachedProgramIndex>,
-    pub stages: Vec<CachedStageIndex>,
-    pub stage_counts: [u32; 2],
-    // Keep the large data streams on disk; indices alone are resident.
+    index: Arc<ShaderIndex>,
+    // Independent cursors per library; File::try_clone shares the underlying
+    // seek position and cannot safely provide concurrent owner-local reads.
     definitions: File,
     variants: File,
     bytecode: File,
 }
+
+#[derive(Debug)]
+pub struct ShaderIndex {
+    pub names: Vec<Vec<u8>>,
+    pub programs: HashMap<Vec<u8>, CachedProgramIndex>,
+    pub stages: Vec<CachedStageIndex>,
+    pub stage_counts: [u32; 2],
+}
+
+impl std::ops::Deref for ShaderCache {
+    type Target = ShaderIndex;
+    fn deref(&self) -> &ShaderIndex { &self.index }
+}
+
+type IndexKey = (std::path::PathBuf, ShaderCacheBackend);
+static INDICES: LazyLock<Mutex<HashMap<IndexKey, Arc<ShaderIndex>>>> = LazyLock::new(Default::default);
 
 fn name_key(name: &[u8]) -> Vec<u8> {
     name.iter()
@@ -127,6 +143,7 @@ impl<'a> Cursor<'a> {
 impl ShaderCache {
     /// `base` is the installed game's `base/`, not `base/shaderCache/`.
     pub fn open(base: &Path, backend: ShaderCacheBackend) -> Result<Self> {
+        let started = std::time::Instant::now();
         let directory = base.join("shaderCache");
         let path = |extension| directory.join(format!("{}.{}", backend.stem(), extension));
         let read = |extension| {
@@ -137,15 +154,36 @@ impl ShaderCache {
             let path = path(extension);
             File::open(&path).map_err(|error| format!("{}: {error}", path.display()))
         };
-        Self::from_indices(
-            &read("rpi")?,
-            &read("rpvi")?,
-            &read("uci")?,
-            &read("str")?,
+        let key = (base.to_owned(), backend);
+        let mut indices = INDICES.lock().unwrap_or_else(|error| error.into_inner());
+        indices.retain(|(installation, _), _| installation == base);
+        let shared = std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
+        if let Some(index) = indices.get(&key).filter(|_| shared) {
+            let cache = Self { index: index.clone(), definitions: open("rpd")?, variants: open("rpvd")?, bytecode: open("ucd")? };
+            cache.report_index(true, 0, started);
+            return Ok(cache);
+        }
+        let (rpi, rpvi, uci, strings) = (read("rpi")?, read("rpvi")?, read("uci")?, read("str")?);
+        let bytes = rpi.len() + rpvi.len() + uci.len() + strings.len();
+        let cache = Self::from_indices(
+            &rpi,
+            &rpvi,
+            &uci,
+            &strings,
             open("rpd")?,
             open("rpvd")?,
             open("ucd")?,
-        )
+        )?;
+        if shared { indices.insert(key, cache.index.clone()); }
+        cache.report_index(false, bytes, started);
+        Ok(cache)
+    }
+
+    fn report_index(&self, reused: bool, read_bytes: usize, started: std::time::Instant) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY shader index acquisition: reused={reused} read_bytes={read_bytes} programs={} stages={} identity={:p} acquire_ms={:.3}",
+                self.programs.len(), self.stages.len(), Arc::as_ptr(&self.index), started.elapsed().as_secs_f64() * 1000.0);
+        }
     }
 
     fn from_indices(
@@ -204,10 +242,7 @@ impl ShaderCache {
             program.variants.extend(variants);
         }
         Ok(Self {
-            names,
-            programs,
-            stages: stage_index,
-            stage_counts,
+            index: Arc::new(ShaderIndex { names, programs, stages: stage_index, stage_counts }),
             definitions,
             variants,
             bytecode,
@@ -367,8 +402,8 @@ fn is_captured_rigid_opaque_stage(bytes: &[u8]) -> bool {
 #[derive(Debug)]
 pub struct ProgramLibrary {
     pub cache: ShaderCache,
-    pub parameter_kinds: HashMap<Vec<u8>, crate::render_program::RenderParameterKind>,
-    option_defaults: HashMap<Vec<u8>, i32>,
+    pub parameter_kinds: Arc<HashMap<Vec<u8>, crate::render_program::RenderParameterKind>>,
+    option_defaults: Arc<HashMap<Vec<u8>, i32>>,
     float_vector_defaults: HashMap<Vec<u8>, Result<[u32; 4]>>,
     definitions: HashMap<Vec<u8>, crate::render_program::RenderProgramDefinition>,
     rigid_shadow_sources:
@@ -386,29 +421,11 @@ impl ProgramLibrary {
         catalog: &crate::archive::Catalog,
     ) -> Result<Self> {
         let cache = ShaderCache::open(base, backend)?;
-        let parameter_kinds = crate::render_program::render_parameter_schema(catalog)?;
-        let mut option_defaults = HashMap::new();
-        for (name, kind) in &parameter_kinds {
-            if *kind != crate::render_program::RenderParameterKind::Option {
-                continue;
-            }
-            let path = format!(
-                "generated/decls/renderparm/{}.decl",
-                std::str::from_utf8(name).map_err(|e| e.to_string())?
-            );
-            let bytes = catalog
-                .read(&path)
-                .map_err(|error| format!("{path}: {error}"))?
-                .ok_or_else(|| format!("missing option declaration {path}"))?;
-            let value =
-                crate::entities::declaration_option_default(&String::from_utf8_lossy(&bytes))
-                    .map_err(|error| format!("{path}: {error}"))?;
-            option_defaults.insert(name.clone(), value);
-        }
+        let parameters = parameters::acquire(base, catalog)?;
         Ok(Self {
             cache,
-            parameter_kinds,
-            option_defaults,
+            parameter_kinds: parameters.kinds,
+            option_defaults: parameters.options,
             float_vector_defaults: HashMap::new(),
             definitions: HashMap::new(),
             rigid_shadow_sources: HashMap::new(),

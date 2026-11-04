@@ -293,6 +293,16 @@ pub fn render_parameter_schema(
     catalog: &crate::archive::Catalog,
 ) -> Result<std::collections::HashMap<Vec<u8>, RenderParameterKind>, String> {
     let mut schema = std::collections::HashMap::new();
+    visit_render_parameters(catalog, |name, kind, _| { schema.insert(name.to_vec(), kind); Ok(()) })?;
+    Ok(schema)
+}
+
+/// Typed metadata consumers share one declaration read per pass; collecting
+/// option defaults must not reopen declarations already read for their kind.
+pub(crate) fn visit_render_parameters(
+    catalog: &crate::archive::Catalog,
+    mut visit: impl FnMut(&[u8], RenderParameterKind, &str) -> Result<(), String>,
+) -> Result<(), String> {
     for path in catalog.paths_containing("generated/decls/renderparm/") {
         let Some(name) = path
             .strip_prefix("generated/decls/renderparm/")
@@ -308,9 +318,9 @@ pub fn render_parameter_schema(
         // reject an otherwise valid header; no body/value is decoded here.
         let source = String::from_utf8_lossy(&bytes);
         let kind = render_parameter_kind(&source).map_err(|error| format!("{path}: {error}"))?;
-        schema.insert(name.as_bytes().to_vec(), kind);
+        visit(name.as_bytes(), kind, &source).map_err(|error| format!("{path}: {error}"))?;
     }
-    Ok(schema)
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

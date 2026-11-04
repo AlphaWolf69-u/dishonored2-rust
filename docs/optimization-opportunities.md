@@ -33,9 +33,11 @@ Resource lifetime audit follow-ups (full owner inventory and evidence in
 - Live-movie cycle collection and original weak listeners/Dictionary keys are
   implemented. Sustained menu collection exposed excessive temporary adjacency
   allocations; contiguous edges and the existing pointer-key hasher remove that
-  work without changing weak-reference collection timing. Measure against the
-  same-build nested-edge/SipHash control; no live-heap savings were observed in
-  loading movies, whereas pause movies did produce cyclic garbage.
+  work without changing weak-reference collection timing. Same-build release
+  comparison measured 4.862 -> 3.238 ms mean over 29 pause collections per mode
+  (172 objects reclaimed in both); further reduction must preserve those
+  semantics. No live-heap savings were observed in loading movies, whereas
+  pause movies did produce cyclic garbage.
 - `bevy_backend::particle_pass` rebuilds pipelines/uniforms as well as bindings
   on surface-sampler changes. Image uploads are now reused. Reusing compatible
   pipelines could remove one creation per affected material/state on that rare
