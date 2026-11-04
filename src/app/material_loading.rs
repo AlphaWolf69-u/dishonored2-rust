@@ -1131,6 +1131,7 @@ impl MaterialResolver<'_> {
         let mut images = Vec::new();
         for (role, name) in surface.texture_bindings(program_is_decal).into_iter().filter(|_| !boat_volume && surface.program() != material_surface::Program::Water) {
             if let Some(slot) = self.register_image(name) {
+                self.cache.raise_image_priority(slot, crate::texture::image_sampling_priority(surface.texture_parameter_name(role), alpha_test));
                 images.push((slot, surface_gpu::ImageRole(role)));
             } else {
                 eprintln!("Material image missing {path} role={role} name={name}");

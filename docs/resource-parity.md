@@ -19,7 +19,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 | Original | Behavior | Status |
 |---|---|---|
 | `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` records reads, actual manifest progress and readiness gates; `app::loading_screen` presents bootstrap/map stages in one renderer; the rewrite's loads are not driven by the lists yet |
-| `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | blocked: vfunc `+0xb0` (map name to container id) not traced |
+| `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | host: lookup is `140064590` (vtable `141acc328` + `0xb0`), which normalizes the manifest path and searches registered container name tables; `assets::map_resources::load_list` resolves the manifest's owning archive, then interprets ids against that archive's index. Installed input audit: 38 manifest paths, no cross-container duplicates. Redundant index rescans are separate acquisition work, not an unresolved virtual call |
 | "%i streamed" entries (`140066ac0`-`140066b8c`) | the map preloader skips index flag `0x20` and `.sbcm`/`.tbcm`/`.bwm` records | partial: classification traced in installed instructions; `140068800` reads the index flags into record+`0x4a0`. In installed `game1_001.index`, 6,952 flagged records are image mips (6,476), Iggy (350) and generic files (126). This does not imply that every ordinary placed mesh is spatially streamed. Typed rewrite owners request these payloads themselves; unified registry-driven loading remains partial |
 
 ### Image (`idImage`)
@@ -27,9 +27,9 @@ behavior and improve performance/memory rather than copying inefficiencies.
 | Original | Behavior | Status |
 |---|---|---|
 | `1402ea140` LoadResourceInternal | reads the `.bimage` and uploads its base mip chain through `1402e9ff0` at load | ported: setup initializes every scene image's base chain |
-| `1400607f0` / `14005feb0` acquired image lookup | returns the resident resource identity | partial: `texture_streaming::SharedImages` retains the current committed GPU handle/mip state for explicitly listed init/common images at a map boundary; destination setup binds that identity without reading/uploading another base chain. No gameplay cache work is added. UI handles remain with `resident_images::UiImages`. General map image retention/purge and original streamer eviction remain partial |
+| `1400607f0` / `14005feb0` acquired image lookup | returns the resident resource identity | host: `texture_streaming::SharedImages` captures committed init/common images on map teardown and transfers matching handles/states into destination setup without a base read/upload. Transfer removes the old session-held handle, preventing it from pinning a superseded active texture. Inactive common images remain charged and eligible for mailbox-acknowledged pressure reduction. UI and particle identities still have distinct backend owners; general registry identity remains partial |
 | `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original API-level upload remains untraced |
-| `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | partial: `app::texture_streaming` uses its own request and residency rules, not the original's |
+| `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Cross-domain identities and particle finer mips remain incomplete |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
 | `listImages` | the original's image listing (sizes, classes) | capture pending |
 | `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Cross-family scene/UI/particle identity unification and particle finer-mip streaming remain partial |
@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837вЂ“866 ms of acquisition on the worker and 117вЂ“130 ms transition intervals,
+837–866 ms of acquisition on the worker and 117–130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686вЂ“13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686–13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`вЂ“`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`–`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -1139,3 +1139,141 @@ The map particle owners still report 59/54/59 uploads and release exactly
 retirement without extra image uploads; no additional loading-CPU improvement
 is claimed. The earlier dev selected-source wall spans remain inconclusive
 for CPU and cannot be retrospectively called a fulfilled prediction.
+
+
+Texture pressure/reservation prediction (before implementation): replace the
+unconditional 60-frame invisible-image reduction with 14030f3d0's pressure
+gate and 14030d7a0/14030d8d0's minimum/one-level reductions. Count finer mips
+only, including accepted read reservations; base-chain allocations are excluded
+from the native +0x3310 counter. Keep that charge with init/common images on
+map reuse, clear failed/cancelled reservations, and release map-only accounting
+with its owner. Headroom is (per-frame KB + maximum-texture KB) << 10. With
+charge + headroom <= budget, expected pressure reductions are exactly zero,
+regardless of invisible age. Above headroom, choose one eligible low-priority
+resident image per scheduling frame: expired images go to minimum, otherwise
+oversized projected density loses one level. Do not reduce an image with an
+outstanding read/upload. Upgrades stop once charged bytes exceed the budget;
+one accepted job can cross the threshold, as in the original.
+
+A completed read/upload stays owned by its current map even if it became
+invisible meanwhile; the original finishes requested mip work and later
+pressure scheduling decides residency. Expected invisible-result discards:
+zero, avoiding repeated reads/uploads when turning back. GPU completion still
+precedes handle replacement. There is no new pixel conversion or GPU pass;
+reductions copy only retained mip levels as before. Main-thread accounting
+adds one integer charge sum to the existing image scan, with no per-frame
+allocation; mip-byte arithmetic runs only at transitions. No CPU speedup is
+predicted. GPU residency may increase within budget, trading previously
+premature eviction for reuse. Priority/producer metadata must be connected
+before claiming full scheduler parity; pressure validation alone cannot prove
+that ordering.
+
+
+Priority input resolution: shared Ghidra instruction captures establish that
+14031ad30 submits mode 1 at 14031b9ef, while static world calls 140339742 and
+14033d2ad submit mode 0. Sampling priority comes from the source parameter
+identity, not the backend binding number: arkSimpleSprite's backend slot zero
+is textureMap (4), whereas diffuseMap is 1. Supported material bindings now
+raise their shared image priority with 1402d4e20's actual whitelist, including
+specularMap 16/alpha-test 4; dynamic and static producers publish their actual
+mode with the area through the existing packed CAS. This is fidelity work;
+it is not a prediction of lower CPU cost. Inactive/unimplemented source banks
+remain outside current material rendering, so those are not claimed covered
+by the implemented binding inventory.
+
+Shared-image handoff prediction (before implementation): the session cache
+currently keeps a strong handle to the old texture after a reused common
+image upgrades in the active map. Transfer cached ownership into the new map
+instead of retaining a stale parallel handle; capture the current committed
+identity back on teardown. Expected extra session-held superseded textures:
+zero. Base/read/GPU upload counts on reuse remain zero, and old handles still
+live until their admitted GPU copies/consumers complete. Preserve the maximum
+sampling priority across those transfers. No per-frame cache update/lookup is
+needed. Retained common images absent from the active map remain charged,
+rather than disappearing from global budget accounting; their pressure
+reduction needs the same canonical owner as active images.
+
+
+Inactive shared-image pressure prediction (before implementation): include
+retained common images in candidate selection, with their age advanced by the
+same owner scheduling tick. Otherwise an inactive image could keep the budget
+full while the active map has nothing left to evict. Queue its minimum/one-mip
+copy through the existing upload mailbox; old cache handles remain committed
+until acknowledgement. Count pending reduction at its target size, restore
+old charge on failure, and cancel uncommitted cache replacements at map
+publication reset. Choose the single lowest key across active and inactive
+images; no second reduction or new GPU pass per frame. All inactive cache
+replacement bookkeeping is empty in frames with no such job.
+
+
+Texture implementation batch now connects scoped finer-mip/reservation
+accounting, pressure-only minimum/one-level reductions across active and
+inactive shared images, path/mode/age ordering and sampling-priority density
+inputs for implemented material bindings. Static producer mode 0 and dynamic
+producer mode 1 are read from installed call instructions. Pending mip results
+stay with their admitting map until completion; source/GPU failure releases
+reservations. Reused common image handles transfer to active ownership, so an
+old session-cache handle cannot pin a superseded GPU allocation. Cache-only
+reductions use the existing completion mailbox and restore committed ownership
+on failure/cancellation. Host reduction selection scans for the lowest key
+instead of sorting all residents, and uses stable slot/path tie-breaking.
+This batch is on the feature worktree awaiting the queued production residency
+runs; it is not the main release built from 67da10c. No tests or visual checks
+were run. Whole-registry image identity and finer particle mip participation
+remain required work; this batch is not full image-lifecycle completion.
+
+
+First pressure batch result (`lifecycles-texture-pressure-4096`): library and
+game-bin checks, dev build and the production walking client exited 0. The
+registered budget was actually 4096 MiB; gameplay quality changed the maximum
+texture setting from 131072 to -1 KB, which the pressure headroom reads live.
+Across streaming frames 600/1200/1800/2400/3000, finer-mip charge remained
+522,584,064 bytes with exactly zero reductions/released bytes. This matches
+the predicted absence of eviction while comfortably within budget, even over
+many 60-frame invisible intervals. The same 628 mip jobs / 522,584,064 upload
+bytes remain stable over those samples, rather than accumulating new uploads
+on each walk. Request flag/order storage each grows once. Both ten-metre route
+waypoints are reached repeatedly; no decoder, GPU upload, device-loss or fatal
+errors occur. This is residency/work-count validation, not a dev CPU/FPS claim.
+The higher detail total includes the newly restored original sampling-role
+priorities; do not present it as a byte reduction against the old area-only
+admission. The 256 MiB pressure and repeated-map handoff runs remain required
+before this texture batch can enter main.
+
+
+Low-budget result (`lifecycles-texture-pressure-256`): the same dev client
+exited 0. At the actual 256 MiB budget, owner samples from frames 600 through
+4200 stayed at 271,056,896 charged bytes, 64 reductions and 35,258,368 bytes
+released. Total upload work stabilized at 383 jobs / 306,315,264 bytes, with
+an 8,388,608-byte largest job. The 2,621,440-byte budget overshoot fits one
+accepted final job; no continuing admissions or eviction/read cycle appears
+in these samples. No decoder/GPU/fatal errors. This matches the native
+pre-job budget gate and pressure-only reduction prediction. Normal-budget
+and constrained-budget outputs intentionally have different mip residency;
+they are not image-equivalence or CPU comparisons.
+
+Final ownership correction prediction (before implementation): a one-level
+reduction that lands on the inline minimum must retain that minimum's exact
+resource identity, rather than inventing a separate-file mip index for it.
+Use the same reduction descriptor builder for active and cached images.
+Expected copy extent, dropped level count and byte release stay unchanged;
+only the incorrect minimum resource_mip/next-suffix metadata is corrected.
+Cache the native path priority when a shared image is captured, removing
+repeated string classification during inactive pressure scans. No draw/pass,
+read or per-frame allocation is added. Host accounting uses actual compressed
+block extents; native +0x3310 uses the width*height*format-bpp estimate. Their
+scope is finer mips/reservations in both cases; padded sub-block byte differences
+are an explicit backend accounting difference, not a byte-parity claim.
+
+
+Final texture-owner acceptance (`lifecycles-texture-handoff`): current library
+and game-bin checks, dev build and EotW -> Dust -> EotW client all exit 0.
+One catalog, render device, window and audio output span all three maps.
+Outgoing common-image capture counts are 194 and 184, with the union bounded
+at 202 identities; the destination GPU readiness gates complete. No missing
+resident source, mip-copy/upload error, decoder failure, device loss or fatal
+error occurs. This includes the corrected minimum-mip identity and cache path
+priority. Compile-only checks and actual clients were used; no tests or visual
+inspection. The map run proves successful lifecycle execution; it does not
+claim pixel equivalence or measure a new CPU improvement. The standalone
+budget runs provide the direct pressure/work-count evidence above.

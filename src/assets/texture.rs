@@ -1,6 +1,6 @@
 //! Decode Void bimage7 mips and port the original texture streamer rules.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "texture/volume.rs"]
 mod volume;
@@ -694,46 +694,72 @@ impl<'a> BimageMipResource<'a> {
     }
 }
 
-/// Area-only arithmetic model for FUN_14031a410. The game updates area and
-/// packed metadata in one 64-bit compare/exchange; use
-/// `PackedTextureVisibilityDemand` when those metadata bits are available.
-/// This smaller type does not model the full streamer record.
-#[derive(Debug, Default)]
+/// 1402d4e20 / 1402eab10: maximum sampling-role priority per image. The
+/// spelling is the source render parameter, independent of backend bind slots.
+pub fn image_sampling_priority(parameter: &str, alpha_test: bool) -> u8 {
+    if parameter.eq_ignore_ascii_case("specularMap") {
+        return if alpha_test { 4 } else { 16 };
+    }
+    const FOUR: &[&str] = &[
+        "Layer1_Maskmap", "Layer2_bumpMap", "detailBumpmap", "selfShadowedBumpMap",
+        "hairFresnelLUT", "hairAlphaMap", "hairSpecularMask", "hairFlowMap",
+        "SSS/SkinFresnelLookup", "translucencyMap", "emissiveMap", "Layer0_Maskmap",
+        "textureMap", "Layer2_Maskmap", "Layer1_diffuseMap", "Layer2_diffuseMap",
+        "metallicMap", "Layer1_metallicMap", "Layer2_metallicMap", "Layer1_specularMap",
+        "bumpMap", "Layer2_specularMap", "emissiveNoise1Map", "emissiveNoise2Map",
+        "emissiveMaskMap", "emissiveGradientMap", "arkDefault",
+    ];
+    if FOUR.iter().any(|name| parameter.eq_ignore_ascii_case(name)) { 4 } else { 1 }
+}
+
+/// Coherent material area, mode and sampling-role publication (14031a410).
+/// The request scheduler separately owns path priority and frame age.
+#[derive(Debug)]
 pub struct ProjectedAreaDemand {
-    area_bits: AtomicU32,
+    demand: PackedTextureVisibilityDemand,
+    image_priority: u8,
+}
+
+impl Default for ProjectedAreaDemand {
+    fn default() -> Self { Self::with_priority(1) }
 }
 
 impl ProjectedAreaDemand {
+    pub fn with_priority(image_priority: u8) -> Self {
+        Self { demand: Default::default(), image_priority }
+    }
+
+    pub fn raise_priority(&mut self, priority: u8) {
+        raise_image_priority(&mut self.image_priority, priority);
+    }
+
     /// Submit one visible-material area metric, preserving the original
     /// compare/exchange retry behavior when workers submit concurrently.
     pub fn submit(&self, area: f32) {
-        let mut observed = self.area_bits.load(Ordering::Relaxed);
-        loop {
-            let previous = f32::from_bits(observed);
-            // The original COMISS/JBE sequence keeps the previous value for
-            // both area <= previous and unordered comparisons (including
-            // NaN). A negated `<=` test would incorrectly store NaN.
-            let next = if area > previous { area } else { previous };
-            match self.area_bits.compare_exchange_weak(
-                observed,
-                next.to_bits(),
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(actual) => observed = actual,
-            }
-        }
+        self.demand.submit(area, 0, self.image_priority);
+    }
+
+    /// 14031b9ef: dynamic-model materials submit mode one. Static world
+    /// materials use mode zero at 14033973f / 14033d2a3.
+    pub fn submit_dynamic(&self, area: f32) {
+        self.demand.submit(area, 1, self.image_priority);
     }
 
     /// Read and clear this helper's area value. This explicit convenience
     /// operation does not model FUN_14030f3d0's conditional scheduling branch.
     pub fn take(&self) -> f32 {
-        f32::from_bits(self.area_bits.swap(0.0f32.to_bits(), Ordering::AcqRel))
+        self.demand.clear_area()
     }
 
     pub fn area(&self) -> f32 {
-        f32::from_bits(self.area_bits.load(Ordering::Acquire))
+        self.demand.area()
+    }
+
+    pub fn metadata(&self) -> u16 { self.demand.metadata() }
+
+    pub fn projected_pixels(&self, viewport_pixels: u32, priority_multiplier: bool) -> f32 {
+        let priority = if priority_multiplier { (self.metadata() >> 1 & 31) as f32 } else { 1.0 };
+        self.area() * priority * viewport_pixels as f32
     }
 }
 

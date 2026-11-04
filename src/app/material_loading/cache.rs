@@ -20,9 +20,19 @@ impl MaterialGeometry {
 #[derive(Default)]
 pub(in crate::app) struct MaterialCache {
     entries: HashMap<String, [Option<Option<CachedMaterial>>; 2]>,
+    image_priorities: Vec<u8>,
 }
 
 impl MaterialCache {
+    pub(in crate::app) fn raise_image_priority(&mut self, slot: usize, priority: u8) {
+        if self.image_priorities.len() <= slot { self.image_priorities.resize(slot + 1, 1); }
+        crate::texture::raise_image_priority(&mut self.image_priorities[slot], priority);
+    }
+
+    pub(in crate::app) fn image_priority(&self, slot: usize) -> u8 {
+        self.image_priorities.get(slot).copied().unwrap_or(1)
+    }
+
     pub(in crate::app) fn get_for(
         &self,
         path: &str,

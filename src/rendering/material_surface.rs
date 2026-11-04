@@ -372,6 +372,21 @@ impl Surface {
         }
     }
 
+    /// Source parameter identity for the implemented binding. Simple sprites
+    /// reuse the backend's diffuse slot but consume textureMap, not diffuseMap.
+    pub fn texture_parameter_name(&self, role: usize) -> &'static str {
+        match role {
+            0 if self.program() == Program::SimpleSprite => "texturemap",
+            34 => "sss/skinfresnellookup",
+            35 => "diffuselookup",
+            36 => "sss/mask",
+            37 => "fuzz/mask",
+            38 if self.program() == Program::Vegetation => "translucencymap",
+            38 => "translucency/mask",
+            _ => TEXTURE_PARAMETERS[role],
+        }
+    }
+
     /// Image roles consumed by the implemented original material branches.
     /// Disabled and reused maps do not cause independent texture requests.
     pub fn texture_bindings(&self, is_decal: bool) -> Vec<(usize, &str)> {

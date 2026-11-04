@@ -7,6 +7,7 @@ pub(super) struct Settings {
     pub unload_frames: u32,
     pub add_all_mips: bool,
     pub frozen: bool,
+    pub priority_multiplier: bool,
     pub memory_budget_mb: u64,
 }
 
@@ -43,6 +44,7 @@ impl SettingsCache {
             unload_frames: console.cvars.int("r_maxFramesBeforeTextureUnload").unwrap_or(super::TEXTURE_REDUCE_AFTER_FRAMES as i32) as u32,
             add_all_mips: console.cvars.int("r_addAllMips").unwrap_or(0) != 0,
             frozen: console.cvars.int("r_freezeTextureStreaming").unwrap_or(0) != 0,
+            priority_multiplier: console.cvars.int("r_skipAnisoTextureStreaming").unwrap_or(0) == 0,
             memory_budget_mb: if configured < 0 { self.automatic_budget.unwrap_or(256) } else { configured as u64 },
         };
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {

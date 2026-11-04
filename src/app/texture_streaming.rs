@@ -1,5 +1,6 @@
 //! Texture streaming.
 mod settings;
+mod residency;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::ImageAccess;
 use super::{
@@ -56,6 +57,12 @@ pub(super) struct DiffuseMipState {
     pub(super) minimum_mip_count: u32,
     pub(super) pending_reduction: bool,
     pub(super) unavailable_finer: Option<u8>,
+    /// 14030f3d0's +0x3310 counts finer-mip bytes, not base-chain storage.
+    pub(super) streamed_bytes: u64,
+    pub(super) reserved_bytes: u64,
+    pub(super) sampling_priority: u8,
+    pub(super) idle_frames: u32,
+    pub(super) path_priority: u16,
 }
 
 /// Explicit init/common image references survive world destruction. Capture
@@ -65,6 +72,7 @@ pub(super) struct DiffuseMipState {
 pub(super) struct SharedImages {
     paths: std::collections::HashSet<String>,
     resident: std::collections::HashMap<String, (Option<u8>, Handle<Image>, DiffuseMipState)>,
+    pending: std::collections::HashMap<AssetId<Image>, residency::SharedReplacement>,
 }
 
 impl SharedImages {
@@ -91,10 +99,18 @@ impl SharedImages {
         Ok(Self {
             paths,
             resident: Default::default(),
+            pending: Default::default(),
         })
     }
 
     pub fn capture(&mut self, queue: &SceneRenderQueue) {
+        // Publication reset cancels outstanding backend replacements. Keep
+        // the last committed source, including its original byte charge.
+        self.pending.clear();
+        for (_, _, state) in self.resident.values_mut() {
+            state.pending = None;
+            state.pending_reduction = false;
+        }
         let mut count = 0;
         for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
             if !self.paths.contains(path) {
@@ -112,6 +128,9 @@ impl SharedImages {
             let mut state = state.clone();
             state.pending = None;
             state.pending_reduction = false;
+            state.reserved_bytes = 0;
+            state.path_priority = residency::path_priority(path);
+            state.idle_frames = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
             self.resident
                 .insert(path.clone(), (queue.preferred_mip, handle.clone(), state));
             count += 1;
@@ -126,7 +145,7 @@ impl SharedImages {
 }
 
 pub(super) fn reuse_shared_image(
-    shared: &SharedImages,
+    shared: &mut SharedImages,
     slot: usize,
     queue: &mut SceneRenderQueue,
     images: &mut Assets<Image>,
@@ -134,9 +153,9 @@ pub(super) fn reuse_shared_image(
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
 ) -> bool {
-    let Some((_, handle, state)) = shared
+    let Some((_, handle, mut state)) = shared
         .resident
-        .get(&queue.diffuse_image_paths[slot])
+        .remove(&queue.diffuse_image_paths[slot])
         .filter(|(preferred, _, _)| *preferred == queue.preferred_mip)
     else {
         return false;
@@ -150,7 +169,9 @@ pub(super) fn reuse_shared_image(
         decal_materials,
         sky_materials,
     );
-    queue.diffuse_mip_states[slot] = state.clone();
+    state.sampling_priority = state.sampling_priority.max(queue.diffuse_mip_states[slot].sampling_priority);
+    queue.diffuse_image_demands[slot].raise_priority(state.sampling_priority);
+    queue.diffuse_mip_states[slot] = state;
     queue.diffuse_image_attempted[slot] = true;
     true
 }
@@ -164,7 +185,7 @@ fn with_scene_images<R>(
         &mut Assets<ProbeMaterial>,
         &mut Assets<DecalMaterial>,
         &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
-        &SharedImages,
+        &mut SharedImages,
     ) -> R,
 ) -> R {
     world.resource_scope(|world, mut scene: Mut<SceneRenderQueue>| {
@@ -176,13 +197,14 @@ fn with_scene_images<R>(
                          mut skies: Mut<
                             Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
                         >| {
+                            let mut shared = world.resource_mut::<SharedImages>();
                             f(
                                 &mut scene,
                                 &mut images,
                                 &mut probes,
                                 &mut decals,
                                 &mut skies,
-                                world.resource::<SharedImages>(),
+                                &mut shared,
                             )
                         },
                     )
@@ -1013,6 +1035,10 @@ pub(super) fn commit_prepared_diffuse_level(
     }
     queue.diffuse_mip_states[slot].resident = Some(level);
     queue.diffuse_mip_states[slot].pending_reduction = false;
+    queue.diffuse_mip_states[slot].reserved_bytes = 0;
+    queue.diffuse_mip_states[slot].streamed_bytes = residency::finer_bytes(
+        level, queue.diffuse_mip_states[slot].minimum.unwrap(),
+    );
 }
 
 /// Host scratch belongs to the loaded world's streaming jobs, not one frame.
@@ -1023,10 +1049,11 @@ pub(super) struct FrameRequests {
     timing: bool,
     flag_growth_frames: usize,
     order_growth_frames: usize,
+    pressure: residency::Pressure,
 }
 impl Default for FrameRequests {
     fn default() -> Self {
-        Self { flags: Vec::new(), order: Vec::new(), flag_growth_frames: 0, order_growth_frames: 0,
+        Self { flags: Vec::new(), order: Vec::new(), flag_growth_frames: 0, order_growth_frames: 0, pressure: Default::default(),
             allocate_each_frame: std::env::var("DH2_DEBUG_ALLOCATE_TEXTURE_REQUESTS").as_deref() == Ok("1"),
             timing: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") }
     }
@@ -1050,6 +1077,7 @@ pub(super) fn stream_visible_textures(
     mut initial_view_ready: Local<bool>,
     mut settings: Local<settings::SettingsCache>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
+    mut shared_images: Option<ResMut<SharedImages>>,
 ) {
     let Some(mut worker) = worker else {
         return;
@@ -1063,7 +1091,7 @@ pub(super) fn stream_visible_textures(
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
     let FrameRequests { flags: requested, order: request_order, allocate_each_frame, timing,
-        flag_growth_frames, order_growth_frames } = &mut *scratch;
+        flag_growth_frames, order_growth_frames, pressure } = &mut *scratch;
     if *allocate_each_frame { *requested = Vec::new(); *request_order = Vec::new(); }
     let flag_capacity = requested.capacity();
     let order_capacity = request_order.capacity();
@@ -1102,6 +1130,11 @@ pub(super) fn stream_visible_textures(
             )
         };
         for (id, error) in failed {
+            if shared_images.as_deref_mut().is_some_and(|shared| shared.finish_replacement(id, false)) {
+                eprintln!("Shared image GPU reduction failed: {error}");
+                images.remove(id);
+                continue;
+            }
             let Some(slot) = queue
                 .diffuse_image_pending
                 .iter()
@@ -1125,6 +1158,7 @@ pub(super) fn stream_visible_textures(
             let target = queue.diffuse_mip_states[slot].pending.take();
             let was_reduction = queue.diffuse_mip_states[slot].pending_reduction;
             queue.diffuse_mip_states[slot].pending_reduction = false;
+            queue.diffuse_mip_states[slot].reserved_bytes = 0;
             if queue.diffuse_image_handles[slot].is_none() {
                 queue.diffuse_image_attempted[slot] = false;
             } else if !was_reduction {
@@ -1135,6 +1169,7 @@ pub(super) fn stream_visible_textures(
             images.remove(id);
         }
         for id in completed {
+            if shared_images.as_deref_mut().is_some_and(|shared| shared.finish_replacement(id, true)) { continue; }
             let Some(slot) = queue
                 .diffuse_image_pending
                 .iter()
@@ -1151,7 +1186,8 @@ pub(super) fn stream_visible_textures(
                 .unwrap_or(0);
             let image_id = handle.id();
             let resident_before = queue.diffuse_mip_states[slot].resident;
-            if requested[slot] || reduction {
+            // 14030d1e0 finishes admitted work; pressure owns later eviction.
+            {
                 attach_prepared_diffuse_image(
                     slot,
                     handle,
@@ -1172,18 +1208,6 @@ pub(super) fn stream_visible_textures(
                         reduction,
                         queue.diffuse_mip_states[slot].resident,
                     ));
-                }
-            } else {
-                if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                    diagnostics.texture_event(format!(
-                        "gpu_upload_discarded_invisible stream_frame={frame} slot={slot} path={:?} image_id={image_id:?} mip_count={mip_count} resident={resident_before:?} pending={prepared_level:?}",
-                        queue.diffuse_image_paths[slot],
-                    ));
-                }
-                queue.diffuse_mip_states[slot].pending_reduction = false;
-                images.remove(id);
-                if queue.diffuse_image_handles[slot].is_none() {
-                    queue.diffuse_image_attempted[slot] = false;
                 }
             }
         }
@@ -1219,73 +1243,6 @@ pub(super) fn stream_visible_textures(
                 ));
             }
         }
-        if !settings.frozen && !needed && frame.saturating_sub(last_visible) > u64::from(settings.unload_frames) {
-            let state = &queue.diffuse_mip_states[slot];
-            let (Some(resident), Some(minimum), Some(old_handle)) = (
-                state.resident,
-                state.minimum,
-                queue.diffuse_image_handles[slot].as_ref(),
-            ) else {
-                continue;
-            };
-            if resident == minimum
-                || state.pending.is_some()
-                || queue.diffuse_image_pending[slot].is_some()
-                || worker.inflight[slot]
-            {
-                continue;
-            }
-            let Some(old_image) = images.get(old_handle) else {
-                continue;
-            };
-            let old_count = old_image.texture_descriptor.mip_level_count;
-            let minimum_count = state.minimum_mip_count;
-            if minimum_count == 0 || old_count <= minimum_count {
-                continue;
-            }
-            let previous = old_handle.id();
-            let dropped = old_count - minimum_count;
-            if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                diagnostics.texture_event(format!(
-                    "mip_reduction_requested stream_frame={frame} slot={slot} path={:?} old_mip_count={old_count} minimum_mip_count={minimum_count} dropped={dropped} resident={resident:?} minimum={minimum:?} idle_frames={}",
-                    queue.diffuse_image_paths[slot],
-                    frame.saturating_sub(queue.diffuse_image_last_visible[slot]),
-                ));
-            }
-            let handle = images.add(empty_streamed_image(
-                minimum.width,
-                minimum.height,
-                minimum_count,
-                gpu_image_format(minimum.format),
-            ));
-            if let Some(prepared_images) = prepared_images.as_ref() {
-                queue.diffuse_image_pending[slot] = Some(handle.clone());
-                queue.diffuse_mip_states[slot].pending = Some(minimum);
-                queue.diffuse_mip_states[slot].pending_reduction = true;
-                prepared_images
-                    .0
-                    .lock()
-                    .unwrap()
-                    .pending
-                    .push(PendingGpuImageUpload {
-                        id: handle.id(),
-                        previous: Some(previous),
-                        copy: GpuMipCopy::Reduce { dropped },
-                        uploads: Vec::new(),
-                    });
-            } else {
-                attach_prepared_diffuse_image(
-                    slot,
-                    handle,
-                    &mut queue,
-                    &mut images,
-                    &mut probe_materials,
-                    &mut decal_materials,
-                    &mut sky_materials,
-                );
-                commit_prepared_diffuse_level(&mut queue, slot, minimum, minimum_count);
-            }
-        }
     }
     let completions = {
         let receiver = worker.completed.lock().unwrap();
@@ -1299,40 +1256,13 @@ pub(super) fn stream_visible_textures(
         };
         worker.inflight[slot] = false;
         worker.inflight_count -= 1;
-        // A read may finish after its last visible instance has left the
-        // query. Do not stage that payload or keep it resident for the unload
-        // grace period; a later visible frame can request it again.
-        if !requested[slot] {
-            if let Some(diagnostics) = diagnostics.as_deref_mut() {
-                let result_summary = match &result {
-                    Ok(Some(image)) => format!(
-                        "loaded_level={:?} upload_mips={} upload_bytes={}",
-                        image.level,
-                        image.uploads.len(),
-                        image
-                            .uploads
-                            .iter()
-                            .map(|mip| mip.payload.len())
-                            .sum::<usize>(),
-                    ),
-                    Ok(None) => "missing".to_owned(),
-                    Err(error) => format!("error={error:?}"),
-                };
-                diagnostics.texture_event(format!(
-                    "read_completed_invisible stream_frame={frame} slot={slot} path={:?} target={target:?} resident={:?} result={result_summary}",
-                    queue.diffuse_image_paths[slot],
-                    queue.diffuse_mip_states[slot].resident,
-                ));
-            }
-            if queue.diffuse_image_handles[slot].is_none() {
-                queue.diffuse_image_attempted[slot] = false;
-            }
-            continue;
-        }
+        // The read belongs to this map even if the camera moved meanwhile.
+        // Its original reservation remains charged through GPU completion.
         let path = queue.diffuse_image_paths[slot].clone();
         let mut streamed = match result {
             Ok(Some(image)) => image,
             Ok(None) => {
+                queue.diffuse_mip_states[slot].reserved_bytes = 0;
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
                         "read_missing stream_frame={frame} slot={slot} path={path:?} target={target:?} resident={:?}",
@@ -1346,6 +1276,7 @@ pub(super) fn stream_visible_textures(
                 continue;
             }
             Err(error) => {
+                queue.diffuse_mip_states[slot].reserved_bytes = 0;
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
                         "read_failed stream_frame={frame} slot={slot} path={path:?} target={target:?} resident={:?} error={error:?}",
@@ -1364,6 +1295,7 @@ pub(super) fn stream_visible_textures(
             .map(|handle| handle.id());
         if matches!(target, TextureReadTarget::Exact(_, _)) {
             let Some(old) = previous.and_then(|id| Assets::get(&*images, id)) else {
+                queue.diffuse_mip_states[slot].reserved_bytes = 0;
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
                         "exact_mip_lost_resident stream_frame={frame} slot={slot} path={path:?} target={target:?} recorded_resident={:?} handle_id={previous:?}",
@@ -1382,6 +1314,9 @@ pub(super) fn stream_visible_textures(
             .map(|mip| mip.payload.len())
             .sum::<usize>();
         let level = streamed.level;
+        if matches!(target, TextureReadTarget::Exact(_, _)) {
+            queue.diffuse_mip_states[slot].reserved_bytes = upload_bytes as u64;
+        }
         let upload_mips = streamed.uploads.len();
         if let Some(diagnostics) = diagnostics.as_deref_mut() {
             diagnostics.texture_event(format!(
@@ -1436,10 +1371,48 @@ pub(super) fn stream_visible_textures(
             }
         }
     }
+    if let Some(shared) = shared_images.as_deref_mut() { shared.age(); }
+    let inactive_bytes = shared_images.as_deref().map_or(0, |shared| shared.charged_bytes());
+    let mut charged = residency::charged_bytes(&queue) + inactive_bytes;
+    let mut reduction = pressure.choose(&queue, &worker, &images, settings, charged);
+    if let Some(shared) = shared_images.as_deref_mut() {
+        if let Some(released) = shared.reduce(&mut images, prepared_images.as_deref(), settings, charged, reduction.as_ref().map(|r| r.key)) {
+            charged -= released;
+            pressure.reductions += 1;
+            pressure.released_bytes += released;
+            reduction = None;
+        }
+    }
+    if let Some(reduction) = reduction {
+        let residency::Reduction { slot, level, mip_count, dropped, released_bytes, .. } = reduction;
+        let previous = queue.diffuse_image_handles[slot].as_ref().unwrap().id();
+        let handle = images.add(empty_streamed_image(level.width, level.height, mip_count, gpu_image_format(level.format)));
+        if let Some(diagnostics) = diagnostics.as_deref_mut() {
+            diagnostics.texture_event(format!("mip_reduction_requested stream_frame={frame} slot={slot} path={:?} dropped={dropped} released_bytes={released_bytes} charged_bytes={charged} budget_bytes={}",
+                queue.diffuse_image_paths[slot], residency::budget_bytes(settings)));
+        }
+        if let Some(prepared_images) = prepared_images.as_ref() {
+            queue.diffuse_image_pending[slot] = Some(handle.clone());
+            queue.diffuse_mip_states[slot].pending = Some(level);
+            queue.diffuse_mip_states[slot].pending_reduction = true;
+            prepared_images.0.lock().unwrap().pending.push(PendingGpuImageUpload {
+                id: handle.id(), previous: Some(previous), copy: GpuMipCopy::Reduce { dropped }, uploads: Vec::new(),
+            });
+        } else {
+            attach_prepared_diffuse_image(slot, handle, &mut queue, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials);
+            commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
+        }
+        charged -= released_bytes;
+        pressure.reductions += 1;
+        pressure.released_bytes += released_bytes;
+    }
+    if *timing && frame % 600 == 0 {
+        eprintln!("MEMORY texture residency: frames={frame} charged_bytes={charged} budget_bytes={} reductions={} released_bytes={}",
+            residency::budget_bytes(settings), pressure.reductions, pressure.released_bytes);
+    }
     request_order.clear();
-    if !settings.frozen {
-        texture::projected_area_request_order_into(requested, &queue.diffuse_image_demands, request_order)
-            .expect("diffuse request flags align with image demands");
+    if !settings.frozen && charged <= residency::budget_bytes(settings) {
+        pressure.request_order(&queue, requested, settings.add_all_mips, request_order);
     }
     *order_growth_frames += usize::from(request_order.capacity() > order_capacity);
     if *timing && frame % 600 == 0 {
@@ -1448,7 +1421,9 @@ pub(super) fn stream_visible_textures(
     }
     let request_count = request_order.len();
     for &slot in request_order.iter() {
+        if charged > residency::budget_bytes(settings) { break; }
         if worker.inflight[slot] || queue.diffuse_image_pending[slot].is_some() {
+            queue.diffuse_image_demands[slot].take();
             if frame % 60 == 0 {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
@@ -1475,7 +1450,7 @@ pub(super) fn stream_visible_textures(
             }
             break;
         }
-        let demand_area = queue.diffuse_image_demands[slot].area();
+        let demand_area = queue.diffuse_image_demands[slot].take();
         let target = if let Some(level) = queue.diffuse_mip_states[slot].resident {
             let Some(next_suffix) = level.next_separate_suffix else {
                 continue;
@@ -1483,8 +1458,8 @@ pub(super) fn stream_visible_textures(
             if queue.diffuse_mip_states[slot].unavailable_finer == Some(next_suffix) {
                 continue;
             }
-            let projected_pixels =
-                queue.diffuse_image_demands[slot].area() * queue.texture_viewport_pixels as f32;
+            let multiplier = if settings.priority_multiplier { (queue.diffuse_image_demands[slot].metadata() >> 1 & 31) as f32 } else { 1.0 };
+            let projected_pixels = demand_area * multiplier * queue.texture_viewport_pixels as f32;
             let (Ok(width), Ok(height)) = (i32::try_from(level.width), i32::try_from(level.height))
             else {
                 continue;
@@ -1522,9 +1497,16 @@ pub(super) fn stream_visible_textures(
                         queue.diffuse_mip_states[slot].unavailable_finer,
                     ));
                 }
-                // The original scheduler clears accumulated area only when
-                // it accepts work for that image, not on every frame.
-                queue.diffuse_image_demands[slot].take();
+                // Accepted finer-mip work is charged before the next image is
+                // considered, as at 14030ff34. Base chains remain excluded.
+                if let TextureReadTarget::Exact(_, _) = target {
+                    let mut next = queue.diffuse_mip_states[slot].resident.unwrap();
+                    next.width *= 2;
+                    next.height *= 2;
+                    let bytes = residency::level_bytes(next);
+                    queue.diffuse_mip_states[slot].reserved_bytes = bytes;
+                    charged += bytes;
+                }
                 if matches!(target, TextureReadTarget::Initial(_)) {
                     queue.diffuse_image_attempted[slot] = true;
                 }

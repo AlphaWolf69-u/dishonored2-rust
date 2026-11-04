@@ -93,7 +93,7 @@ impl PlayerArms {
                     demands
                         .get(slot)
                         .ok_or("arm material references an unknown image")?
-                        .submit(area);
+                        .submit_dynamic(area);
                 }
             }
         }

@@ -204,7 +204,7 @@ impl TomeRenderInstanceMap {
         // Fold this sequential producer's repeated image submissions first,
         // then publish through the same atomic max operation. Other producer
         // maxima still compose, and no packed streamer metadata is changed.
-        let mut maximum_area = vec![0.0; image_demands.len()];
+        let mut maximum_area = vec![f32::NEG_INFINITY; image_demands.len()];
         let result = (|| {
             let mut submitted = 0;
             for (&tome_object, area_metric) in visible_tome_indices.iter().zip(area_metrics) {
@@ -248,7 +248,7 @@ impl TomeRenderInstanceMap {
         // Flush even on an invalid later mapping: retain the original prefix's
         // updates and error order, rather than discarding a partially valid list.
         for (demand, area) in image_demands.iter().zip(maximum_area) {
-            if area > 0.0 {
+            if area >= 0.0 {
                 demand.submit(area);
             }
         }

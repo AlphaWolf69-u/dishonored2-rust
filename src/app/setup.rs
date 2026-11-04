@@ -1588,7 +1588,7 @@ pub(super) fn prepare(
                         // and m_AngularFalloff for its inner transition boundary.
                         let outer_angle = cutoff_cosine.acos();
                         let inner_angle = falloff_cosine.acos();
-                        // Bevy's spot-light implementation requires a sub-90В°
+                        // Bevy's spot-light implementation requires a sub-90°
                         // outer cone; the authored mission cutoffs are within
                         // that range after the game's half-angle conversion.
                         let outer_angle =
@@ -1850,7 +1850,7 @@ pub(super) fn prepare(
         world_lods_by_render_instance,
         last_bwm_lod_visibility_report: None,
         diffuse_image_demands: (0..diffuse_image_count)
-            .map(|_| texture::ProjectedAreaDemand::default())
+            .map(|slot| texture::ProjectedAreaDemand::with_priority(resolver.cache.image_priority(slot)))
             .collect(),
         diffuse_image_paths: std::mem::take(&mut resolver.diffuse_image_paths),
         diffuse_image_materials,
@@ -1862,7 +1862,7 @@ pub(super) fn prepare(
         shadow_diffuse_membership: Vec::new(),
         diffuse_image_pending: vec![None; diffuse_image_count],
         diffuse_mip_states: (0..diffuse_image_count)
-            .map(|_| DiffuseMipState::default())
+            .map(|slot| DiffuseMipState { sampling_priority: resolver.cache.image_priority(slot), ..Default::default() })
             .collect(),
         diffuse_image_attempted: vec![false; diffuse_image_count],
         diffuse_image_last_visible: vec![0; diffuse_image_count],

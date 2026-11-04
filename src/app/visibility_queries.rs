@@ -551,7 +551,7 @@ pub(super) fn stream_visible_models(
                                             for &slot in slots {
                                                 scene.diffuse_image_demands.get(slot)
                                                     .ok_or("placed model material references an unknown image")?
-                                                    .submit(area);
+                                                    .submit_dynamic(area);
                                             }
                                         }
                                         Ok(())
@@ -656,7 +656,7 @@ pub(super) fn stream_visible_models(
             // bounds live in the render-world FX update, so request them whole.
             for &slot in &scene.particle_surface_images {
                 if let Some(demand) = scene.diffuse_image_demands.get(slot) {
-                    demand.submit(1.0);
+                    demand.submit_dynamic(1.0);
                 }
             }
             mapping_ns = mapping_started.elapsed().as_nanos();

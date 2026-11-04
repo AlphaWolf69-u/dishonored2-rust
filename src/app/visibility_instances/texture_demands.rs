@@ -52,7 +52,7 @@ impl PreparedTextureDemands {
         if indices.len() != metrics.len() {
             return Err("Tome visibility indices and area outputs have different lengths".into());
         }
-        let mut maximum = vec![0.0; demands.len()];
+        let mut maximum = vec![f32::NEG_INFINITY; demands.len()];
         let result = (|| {
             let mut submitted = 0;
             for (&index, metric) in indices.iter().zip(metrics) {
@@ -82,7 +82,7 @@ impl PreparedTextureDemands {
         // As in the reference consumer, an invalid later association retains
         // all contributions made before it, including a partial material list.
         for (demand, area) in demands.iter().zip(maximum) {
-            if area > 0.0 {
+            if area >= 0.0 {
                 demand.submit(area);
             }
         }
