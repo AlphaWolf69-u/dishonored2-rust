@@ -1719,3 +1719,18 @@ control. Counts establish removed compilation operations, not total driver RAM
 or CPU timings. This explicitly increases residency of useful compiled GPU
 objects to avoid recompilation, separate from the original's proven serialized-cache lifetime.
 Prepared source is local-only until the current inline staging snapshot completes.
+
+
+Inline staging acceptance (compiled source 60c92eb): library/game-bin checks,
+dev build and copy/borrowed production clients exited 0. Both EotW -> Dust ->
+EotW runs recorded exactly 11,840 image acquisitions across 4,959 image/target
+identities, 1,102,163,164 prepared upload bytes. Every identity's byte count,
+mip count and payload/descriptor checksum matched; no missing/extra identity
+and no fatal/error line. Redundant packed-chain copy bytes were
+1,101,966,556 -> 0; the largest single removed packed payload was 16,777,216
+bytes. This measures cumulative copying and the removed per-acquisition
+temporary, not a 1.1 GB resident-memory or measured CPU-time saving. Borrowed
+descriptors occupy at most 16 stack entries; required cross-thread upload
+buffers still own their payload. All reader validation remains shared with
+compressed_inline_chain. Local evidence: artifacts/lifecycles-inline-staging-
+comparison.json and the two production logs. No tests or visuals inspected.

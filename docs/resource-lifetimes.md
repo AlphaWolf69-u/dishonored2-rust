@@ -148,3 +148,11 @@ partial implementations whose actual cost and required behavior remain to be
 measured. Concrete next measurements and expected gains are recorded in
 `optimization-opportunities.md`; absent game systems remain absent, rather
 than being counted as resource savings or implemented by this audit.
+
+
+Inline image staging is now borrowed through the common installed-record
+validator before copying into required upload buffers. Same-executable
+copy/borrowed EotW/Dust/EotW production runs removed 1,101,966,556 cumulative
+copy bytes, with the largest removed temporary 16,777,216 bytes. All 4,959
+image/target payload/descriptor checksums, mip counts and byte totals matched.
+No residency, whole-frame or CPU-time gain is inferred from cumulative bytes.

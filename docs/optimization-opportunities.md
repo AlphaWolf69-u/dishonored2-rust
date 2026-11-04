@@ -301,3 +301,16 @@ sampler refresh, which remains unmeasured. All 102 installed bimage7 volumes
 have one complete authored mip and no separate levels; there is no missing
 finer volume payload to request. This establishes ownership/count changes,
 not a targeted CPU-time or total VRAM saving.
+
+
+Inline image packing sweep: the temporary packed inline chain between BIM
+validation and per-mip upload buffers is removed. The common borrowed visitor
+retains the existing validation; production A/B matched 4,959 image/target
+identities and removed 1,101,966,556 cumulative copying bytes (16 MiB largest
+removed temporary). Required owned buffers remain across the IO/render boundary.
+Full-mip Image publication still assembles the final contiguous payload from
+those owned mip buffers; changing that ownership needs a coherent whole-chain
+transfer rather than another duplicate parser or per-mip shared-reference work.
+Expected remaining opportunity is one packing copy for whole-chain consumers,
+not an assumed resident-memory or walking-CPU reduction. It waits while device
+program retention is compiled/validated so source snapshots remain unambiguous.
