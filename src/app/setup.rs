@@ -1789,7 +1789,7 @@ pub(super) fn prepare(
     // World FX load after the water and ocean programs, as before. Particle
     // surface proxies may register further images: extend the tables.
     let mut particle_surfaces = Vec::new();
-    let mut particle_world_images = HashMap::new();
+    let mut particle_world_images = std::collections::HashMap::new();
     let mut dynamic_particle_materials = HashSet::new();
     if let (Some(catalog), Some(graphs)) = (catalog, effect_graphs) {
         let programs = resolver.programs.as_deref_mut().expect("world FX program library").as_mut()
@@ -1958,7 +1958,7 @@ fn spawn_particle_surfaces(
     meshes: &mut dyn AssetWrite<Mesh>,
     commands: &mut super::setup_commands::SetupCommands,
     resources: &mut crate::rendering::particles::definition::ParticleResources,
-    world_images: &mut HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
+    world_images: &mut std::collections::HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
     dynamic_materials: &mut HashSet<super::MaterialHandle>,
 ) -> Vec<(super::MaterialHandle, Vec<(usize, crate::rendering::bevy_backend::surface_gpu::ImageRole)>)> {
     let mut proxies = Vec::new();
