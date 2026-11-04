@@ -152,7 +152,7 @@ quality-change capture, rather than changing the ordinary shadow hot path here.
 window/event thread. `app::setup` and audio startup still build their Bevy assets
 synchronously after publication. Existing release load traces (`residency-expanded`
 and `residency-profile-baseline`, local artifacts) put scene construction at
-roughly 7вЂ“9 seconds including initial image reads; this can hold the last loading
+roughly 7–9 seconds including initial image reads; this can hold the last loading
 frame during that phase. Incremental publication would improve event/animation
 responsiveness rather than reduce the underlying parser/mesh work. It requires
 separating CPU cooking from main-world Assets/Commands publication while keeping
@@ -219,8 +219,8 @@ construction reacquired the destination manifest and contact/sound declarations
 on the window thread. This finding is resolved: `AudioPreparation` acquires
 that same map-scoped owner on its existing worker, publication supplies it before
 map systems run, and unload resets mutable state without reacquisition. The
-recorded production run placed 837вЂ“866 ms of acquisition on the worker and
-measured 117вЂ“130 ms transition intervals, with initial/return handoffs succeeding.
+recorded production run placed 837–866 ms of acquisition on the worker and
+measured 117–130 ms transition intervals, with initial/return handoffs succeeding.
 See resource-parity.md, Responsive loading and load fade. No new work is queued
 for the old one-second main-thread acquisition hypothesis.
 

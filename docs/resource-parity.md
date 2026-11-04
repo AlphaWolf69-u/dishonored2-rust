@@ -89,7 +89,7 @@ trailing `*` covers a family of kinds.
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
 | `fade` | `assets::fx::fade`, `app::loading_fade` | partial: world-authored load colour/opacity curves and durations; runtime sampling follows `140166f60` / `140166e40` / `140167170`. Host display UI composition; priority/listener/script arbitration remains outside the direct-map loader |
-| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the remaining decoded Tome tables (links, cell codes, object data) are still copies |
+| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the decoded traversal/object tables intentionally retain flat runtime query data. Historical source a34a947 measured the associated query package at 826 -> 682 CPU ms/s and 3.05 -> 2.30 ms median query span; this is a host performance representation, not abandoned parse staging. The source blob and typed query data share map ownership and release together |
 | `Font` | `assets::iggy::font`, `flash::text` | partial: metadata reads do not decode glyphs; host outline caches decode only requested glyphs over shared library bytes (original provider `14102bd60` / metric reader `14102ba20` reads serialized tables). Glyph pages use R8_UNORM as `14107b7e0` format 6; atlas sizing follows `14002c440` movie-stage caps and the high-resolution `bnet` exception using already loaded metadata; full lifecycle not ported |
 | `footStepPhysMat` | none | none: no owner yet |
 | `fx` | `rendering::particles::world_sources`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў866 ms of acquisition on the worker and 117Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў130 ms transition intervals,
+837–866 ms of acquisition on the worker and 117–130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686–13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`–`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -1995,3 +1995,18 @@ keeps the already required compressed allocation across the load boundary.
 Production acquisition can also transfer its owned archive buffer into the
 clip instead of making a second blob copy; the borrowed standalone parser
 remains available and must produce identical clip contents.
+
+
+Tome retained-table finding resolved from existing performance evidence:
+commit a34a947 (2026-10-31) introduced load-time traversal/object tables
+together with fixed query scratch and hashing changes. Its same-view moving
+camera traces measured query CPU 826 -> 724 -> 682 ms/s, with 3.05 -> 2.30 ms
+median query span; the accepted visible count remained 4,927/100,169. The
+combined gain is not attributed exclusively to any one decoded table. Current
+source d05a6f5 already descends packed cell trees in place; the remaining
+decoded tables have actual query consumers and preserve that accepted runtime
+representation. They are not data awaiting retirement after parsing. A new
+packed-query redesign would require its own affected-query performance proof;
+this resource audit does not undo the measured implementation. Source blob,
+prepared tables and worker Arcs all release at the map boundary. No new CPU
+measurement, test or visual inspection was used for this finding.

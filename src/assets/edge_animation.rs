@@ -319,7 +319,7 @@ impl EdgeAnimation {
     }
 }
 
-/// `animsets` alias tables (`alias { name ... anim ... }`): alias name в†’
+/// `animsets` alias tables (`alias { name ... anim ... }`): alias name →
 /// md6anim resource. Call it in the md6's animset order: a later animset's
 /// alias replaces an earlier one, as the model def's lookups
 /// (FUN_1401c7030 / FUN_1401c7bf0) search the list from its last entry.
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn smallest_three_restores_the_dropped_component() {
-        // a = b = c = 0 after offset: raw 16384 в‰€ 0.7071/scale; dropped w.
+        // a = b = c = 0 after offset: raw 16384 ≈ 0.7071/scale; dropped w.
         let raw = |v: f32| ((v - QUAT_OFFSET) / QUAT_SCALE).round() as u64;
         let packed = (raw(0.0) << 32) | (raw(0.0) << 17) | (raw(0.0) << 2) | 3;
         let bytes: Vec<u8> = (0..6).rev().map(|k| (packed >> (8 * k)) as u8).collect();
