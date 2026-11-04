@@ -2373,3 +2373,24 @@ An installed index lookup finds no separate `institute_ocean_m.bimage7_mip`
 resources. Thus the rewrite's inline chain provides the complete available
 Institute ocean mask; this evidence does not settle the distinct EotW mask,
 which has an indexed finer mip. Capture and source paths are as above.
+
+
+### Edge of the World environment-image streamer evidence
+
+The user loaded Edge of the World in the full Steam process. The read-only
+`resource-residency-eotw-verified.json` capture records the authored ocean
+amplitude mask as a class-1 resident 256x256 seven-mip image and the shoreline
+as a class-1 512x512 one-mip image; foam is class 2 at 2048x2048. A separate
+read-only snapshot of the actual streamer table (`1432f0210 + 1b8`, 24-byte
+entries as indexed by `14030d6b0`) finds the amplitude image identity among
+4,337 entries, while the one-mip shore and foam have no table entry. The
+amplitude record's area was zero at that instant. This proves eligibility for
+streamer management, not that the environment renderer submits demand or that
+the full 512x512 mip is requested during play. `14031a510` forwards material
+images to `14031a410`; its observed callers cover surface/material paths. The
+rewrite's environment image currently uses an inline view outside the shared
+streamer, so its eligibility, demand and view handoff need a general solution
+if the original requests finer data. Trace environment use and demand before
+selecting a producer; do not force full resolution or add a map-name exception.
+Local evidence: `artifacts/resource-residency-eotw-verified.json` and
+`artifacts/resource-eotw-water-stream-records.json` in the main checkout.
