@@ -64,6 +64,11 @@ impl SharedImages {
         self.resident.get(path).is_some_and(|(mip, _, _)| *mip == preferred)
     }
 
+    pub(super) fn current_view(&self, path: &str) -> Option<(Handle<Image>, DiffuseMipLevel)> {
+        let (_, handle, state) = self.resident.get(path)?;
+        Some((handle.clone(), state.resident?))
+    }
+
     pub fn new(catalog: &archive::Catalog) -> Result<Self, String> {
         let language = crate::assets::lang::read_text_language(catalog.base())?;
         let mut paths = std::collections::HashSet::new();
@@ -202,15 +207,23 @@ fn with_scene_images<R>(
 /// 14005feb0's placeholder entries). Bevy then retries dependent materials,
 /// rather than preparing them against temporary fallback bindings.
 pub(super) fn reserve_scene_images(world: &mut World) {
+    let mut prepared = world.remove_resource::<PreparedBaseImages>().unwrap_or_default();
     with_scene_images(world, |scene, images, probes, decals, skies, shared| {
         for slot in 0..scene.diffuse_image_paths.len() {
             if reuse_shared_image(shared, slot, scene, images, probes, decals, skies) {
+                continue;
+            }
+            if let Some(view) = prepared.views.remove(&slot) {
+                attach_prepared_diffuse_image(slot, view.handle.clone(), scene, images, probes, decals, skies);
+                commit_prepared_diffuse_level(scene, slot, view.level, view.mip_count);
+                scene.diffuse_image_attempted[slot] = true;
                 continue;
             }
             let handle = images.reserve_handle();
             attach_prepared_diffuse_image(slot, handle, scene, images, probes, decals, skies);
         }
     });
+    world.insert_resource(prepared);
 }
 
 /// 1400661e0 acquires init/common resources before map resources. Keep those
@@ -231,7 +244,7 @@ pub(super) fn initialize_scene_images(
             }
             let resident = scene.diffuse_mip_states[slot].resident.is_some();
             let size =
-                if let Some(streamed) = prepared.0.remove(&slot) {
+                if let Some(streamed) = prepared.payloads.remove(&slot) {
                     commit_resident_image(streamed, slot, scene, images, probes, decals, skies)?
                 } else {
                     initialize_resident_image(catalog, slot, scene, images, probes, decals, skies)?
@@ -249,23 +262,42 @@ pub(super) fn initialize_scene_images(
         info!(target: "dh2::textures", common, resident_images=loaded, resident_bytes=bytes, reused_images=reused, "Scene base mips initialized");
         Ok(ids)
     });
-    if !prepared.0.is_empty() { world.insert_resource(prepared); }
+    if !prepared.payloads.is_empty() { world.insert_resource(prepared); }
     result
 }
 
 #[derive(Resource, Default)]
-pub(super) struct PreparedBaseImages(pub std::collections::HashMap<usize, StreamedDiffuse>);
+pub(super) struct PreparedBaseImages {
+    payloads: std::collections::HashMap<usize, StreamedDiffuse>,
+    views: std::collections::HashMap<usize, Arc<super::resident_images::ResidentImage>>,
+}
 
-pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages) -> Result<PreparedBaseImages, String> {
-    let mut result = PreparedBaseImages::default();
+pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages,
+    resident: &super::resident_images::ResidentImages) -> Result<PreparedBaseImages, String> {
+    let mut result = PreparedBaseImages { payloads: Default::default(),
+        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip) };
+    let mut reused_bytes = 0usize;
+    let mut reused = 0;
     for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
         if shared.can_reuse(path, queue.preferred_mip) { continue; }
+        if let Some(view) = result.views.get(&slot) {
+            reused += 1;
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("MEMORY scene registered view: path={path} level={:?} mips={}", view.level, view.mip_count);
+            }
+            reused_bytes += (0..view.mip_count).map(|mip| view.level.format.mip_bytes(
+                (view.level.width >> mip).max(1), (view.level.height >> mip).max(1))).sum::<usize>();
+            continue;
+        }
         let mut streamed = read_resident_diffuse_image(catalog, path, queue.preferred_mip)?
             .ok_or_else(|| format!("resident image is absent: {path}"))?;
         if !streamed.uploads.is_empty() {
             streamed.image.data = Some(std::mem::take(&mut streamed.uploads).into_iter().flat_map(|mip| mip.payload).collect());
         }
-        result.0.insert(slot, streamed);
+        result.payloads.insert(slot, streamed);
+    }
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY scene registered views: reused={reused} reused_bytes={reused_bytes} prepared={}", result.payloads.len());
     }
     Ok(result)
 }
@@ -1122,7 +1154,7 @@ pub(super) fn stream_visible_textures(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     mut sky_materials: ResMut<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
-    arms: Option<Res<super::player_arms::PlayerArms>>,
+    owners: (Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::resident_images::ResidentImages>>),
     mut instance_slots: Local<InstanceImageSlots>,
     mut scratch: Local<FrameRequests>,
     mut initial_view_ready: Local<bool>,
@@ -1130,6 +1162,7 @@ pub(super) fn stream_visible_textures(
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
     mut shared_images: Option<ResMut<SharedImages>>,
 ) {
+    let (arms, registry) = owners;
     let Some(mut worker) = worker else {
         return;
     };
@@ -1181,7 +1214,7 @@ pub(super) fn stream_visible_textures(
             )
         };
         for (id, error) in failed {
-            if shared_images.as_deref_mut().is_some_and(|shared| shared.finish_replacement(id, false)) {
+            if shared_images.as_deref_mut().is_some_and(|shared| shared.finish_replacement(id, false, registry.as_deref())) {
                 eprintln!("Shared image GPU reduction failed: {error}");
                 images.remove(id);
                 continue;
@@ -1220,7 +1253,7 @@ pub(super) fn stream_visible_textures(
             images.remove(id);
         }
         for id in completed {
-            if shared_images.as_deref_mut().is_some_and(|shared| shared.finish_replacement(id, true)) { continue; }
+            if shared_images.as_deref_mut().is_some_and(|shared| shared.finish_replacement(id, true, registry.as_deref())) { continue; }
             let Some(slot) = queue
                 .diffuse_image_pending
                 .iter()
@@ -1250,6 +1283,9 @@ pub(super) fn stream_visible_textures(
                 );
                 if let Some(level) = prepared_level {
                     commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
+                    if let Some(registry) = registry.as_deref() {
+                        registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                    }
                 }
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format!(
@@ -1414,6 +1450,9 @@ pub(super) fn stream_visible_textures(
                 &mut sky_materials,
             );
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
+            if let Some(registry) = registry.as_deref() {
+                registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+            }
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
                 diagnostics.texture_event(format!(
                     "resident_committed_without_gpu_mailbox stream_frame={frame} slot={slot} path={path:?} image_id={image_id:?} target={target:?} level={level:?} mip_count={mip_count} upload_mips={upload_mips} upload_bytes={upload_bytes} resident_after={:?}",
@@ -1452,6 +1491,9 @@ pub(super) fn stream_visible_textures(
         } else {
             attach_prepared_diffuse_image(slot, handle, &mut queue, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials);
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
+            if let Some(registry) = registry.as_deref() {
+                registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+            }
         }
         charged -= released_bytes;
         pressure.reductions += 1;

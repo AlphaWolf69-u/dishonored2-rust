@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837–866 ms of acquisition on the worker and 117–130 ms transition intervals,
+837вЂ“866 ms of acquisition on the worker and 117вЂ“130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686–13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686вЂ“13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`–`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`вЂ“`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -1874,3 +1874,24 @@ views and current source residency are distinct ownership scopes. A universal
 full-resolution pin inferred from UI binding would be unsupported. Integration
 must share equal source/view identities while preserving explicit snapshots
 and streamer replacement/eviction, rather than silently changing image quality.
+
+
+### Scene and named-UI image views: implementation prediction
+
+1402df8c0 resolves the registered image through 14005feb0 and acquires its
+current SRV with 1402bd380. Its named wrapper retains that snapshot until the
+last binding reference is released; acquiring a name does not force full mips.
+The host image owner will reuse an already acquired scene-base view only when
+its initial complete-chain view selects the scene loader's requested source mip.
+Already replaced/trimmed views are not treated as complete base chains. This
+preserves the scene minimum/residency policy rather than pinning full chains.
+Later UI acquisitions use the committed scene/common view; existing wrappers
+retain their previous view. Registered current views change only on successful
+streaming commits, including inactive common-image reductions.
+
+Prediction: each eligible base slot removes exactly one independent payload
+preparation and upload, equal to that registered view's payload bytes. Mip and
+payload output must stay identical. No whole-frame or CPU timing improvement
+is predicted or required; validation uses production acquisition/upload counts
+and image descriptors/checksums. DH2_DEBUG_SEPARATE_SCENE_IMAGE_VIEWS restores
+the former independent acquisition for the same-build comparison.

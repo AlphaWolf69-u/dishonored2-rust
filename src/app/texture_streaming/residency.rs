@@ -158,6 +158,7 @@ pub(super) struct SharedReplacement {
     path: String,
     handle: Handle<Image>,
     level: DiffuseMipLevel,
+    mip_count: u32,
 }
 
 impl SharedImages {
@@ -174,12 +175,15 @@ impl SharedImages {
         }).sum()
     }
 
-    pub(super) fn finish_replacement(&mut self, id: AssetId<Image>, success: bool) -> bool {
+    pub(super) fn finish_replacement(&mut self, id: AssetId<Image>, success: bool, registry: Option<&super::super::resident_images::ResidentImages>) -> bool {
         let Some(replacement) = self.pending.remove(&id) else { return false };
         let (_, handle, state) = self.resident.get_mut(&replacement.path).expect("pending shared image owner");
         state.pending = None;
         state.pending_reduction = false;
         if success {
+            if let Some(registry) = registry {
+                registry.publish_view(&replacement.path, &replacement.handle, replacement.level, replacement.mip_count);
+            }
             *handle = replacement.handle;
             state.resident = Some(replacement.level);
             state.streamed_bytes = finer_bytes(replacement.level, state.minimum.unwrap());
@@ -212,7 +216,7 @@ impl SharedImages {
         mailbox.0.lock().unwrap().pending.push(PendingGpuImageUpload {
             id: handle.id(), previous: Some(old.id()), copy: GpuMipCopy::Reduce { dropped }, uploads: Vec::new(),
         });
-        self.pending.insert(handle.id(), SharedReplacement { path, handle, level });
+        self.pending.insert(handle.id(), SharedReplacement { path, handle, level, mip_count: count });
         Some(released)
     }
 }

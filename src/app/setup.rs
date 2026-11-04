@@ -1918,7 +1918,7 @@ pub(super) fn prepare(
         super::load_timing::keep_load_list(catalog);
     }
     if let (Some(catalog), Some(shared)) = (catalog, shared_images) {
-        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared)
+        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images)
             .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
     }
     let image_catalog = catalog_storage.clone();

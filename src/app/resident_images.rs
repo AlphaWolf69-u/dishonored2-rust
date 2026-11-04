@@ -1,15 +1,18 @@
-//! Session ownership of full-mip images. Streamed consumers use the scene owner.
+//! Registered image views and named UI leases, shared with scene residency.
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
-use super::{archive, texture_streaming::read_resident_diffuse_image};
+use super::{archive, texture_streaming::{read_resident_diffuse_image, DiffuseMipLevel, SharedImages}, SceneRenderQueue};
 use bevy::prelude::*;
 use std::{collections::HashMap, sync::{Arc, Mutex, Weak}};
 
 /// A binding may precede off-thread batch publication (1400607f0 placeholders).
 /// Dimensions belong to the identity, so UI layout never waits for that batch.
 pub(super) struct ResidentImage {
-    handle: Handle<Image>,
+    pub(super) handle: Handle<Image>,
     extent: [f64; 2],
     bytes: usize,
+    pub(super) level: DiffuseMipLevel,
+    pub(super) mip_count: u32,
+    initial_view: bool,
 }
 #[derive(Default)]
 struct Registry {
@@ -63,11 +66,13 @@ impl ResidentImages {
         if !loaded.uploads.is_empty() {
             loaded.image.data = Some(loaded.uploads.into_iter().flat_map(|mip| mip.payload).collect());
         }
+        let level = loaded.level;
+        let mip_count = loaded.image.texture_descriptor.mip_level_count;
         let extent = [loaded.image.width() as f64, loaded.image.height() as f64];
         let bytes = loaded.image.data.as_ref().map_or(0, Vec::len);
         let mut registry = self.registry.lock().unwrap();
         if let Some(image) = registry.resident.get(&path) { return Ok(image.clone()); }
-        let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes});
+        let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes, level, mip_count, initial_view: true});
         registry.loads += 1;
         registry.bytes += bytes;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
@@ -81,6 +86,38 @@ impl ResidentImages {
         images: &mut dyn AssetWrite<Image>) -> Result<Handle<Image>, String> {
         Ok(self.acquire(catalog, name, images)?.handle.clone())
     }
+    /// 14005feb0 returns the registered resource, not a new upload per caller.
+    /// Only equivalent base views qualify; the scene's mip minimum stays intact.
+    pub(super) fn scene_views(&self, catalog: &archive::Catalog, paths: &[String],
+        preferred: Option<u8>) -> HashMap<usize, Arc<ResidentImage>> {
+        if separate_scene_views() { return HashMap::new(); }
+        let registry = self.registry.lock().unwrap();
+        paths.iter().enumerate().filter_map(|(slot, path)| {
+            let image = registry.resident.get(path)?;
+            if !image.initial_view { return None; }
+            let selected = preferred.and_then(|mip| (0..=mip).rev()
+                .find(|mip| catalog.contains(&format!("{path}_mip{mip}"))));
+            (image.level.resource_mip == selected).then(|| (slot, image.clone()))
+        }).collect()
+    }
+
+    /// 1402f5530 replaces the resource's current view. Existing named wrappers
+    /// keep their old snapshot (1402df8c0); only subsequent acquisitions change.
+    /// Called at commits, never for unchanged images in the streaming hot loop.
+    pub(super) fn publish_view(&self, path: &str, handle: &Handle<Image>,
+        level: DiffuseMipLevel, mip_count: u32) {
+        if separate_scene_views() { return; }
+        let mut registry = self.registry.lock().unwrap();
+        let Some(previous) = registry.resident.get(path) else { return; };
+        if previous.handle == *handle { return; }
+        let bytes = (0..mip_count).map(|mip| level.format.mip_bytes(
+            (level.width >> mip).max(1), (level.height >> mip).max(1))).sum();
+        let image = Arc::new(ResidentImage {handle: handle.clone(),
+            extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false});
+        registry.leases.insert(path.to_owned(), Arc::downgrade(&image));
+        registry.resident.insert(path.to_owned(), image);
+    }
+
     fn release_level(&self, shared: &super::texture_streaming::SharedImages) {
         let mut registry = self.registry.lock().unwrap();
         let before = registry.resident.len();
@@ -112,11 +149,22 @@ pub(super) struct UiImages {
 impl UiImages {
     pub(super) fn new(registry: ResidentImages) -> Self { Self {registry, bindings: HashMap::new()} }
     fn acquire(&mut self, catalog: &archive::Catalog, name: &str,
-        images: &mut Assets<Image>) -> Result<crate::flash::iggy_functions::BoundTexture, String> {
+        images: &mut Assets<Image>, scene: Option<&SceneRenderQueue>, shared: Option<&SharedImages>) -> Result<crate::flash::iggy_functions::BoundTexture, String> {
         let path = crate::material::image_load_resource(catalog, name)
             .ok_or_else(|| format!("unresolved resident image source {name}"))?;
-        let image = self.registry.acquire(catalog, name, images)?;
         if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) { return Ok(binding); }
+        let current = if separate_scene_views() { None } else {
+            scene.and_then(|scene| {
+                let slot = scene.diffuse_image_paths.iter().position(|source| source == &path)?;
+                Some((scene.diffuse_image_handles[slot].clone()?, scene.diffuse_mip_states[slot].resident?))
+            }).or_else(|| shared.and_then(|shared| shared.current_view(&path)))
+        };
+        let image = if let Some((handle, level)) = current {
+            let source = images.get(&handle).ok_or_else(|| format!("committed UI image view unavailable: {path}"))?;
+            Arc::new(ResidentImage {handle: handle.clone(), extent: [source.width() as f64, source.height() as f64],
+                bytes: source.data.as_ref().map_or(0, Vec::len), level,
+                mip_count: source.texture_descriptor.mip_level_count, initial_view: false})
+        } else { self.registry.acquire(catalog, name, images)? };
         let binding = Arc::new(crate::flash::iggy_functions::TextureBinding::new(image.extent, image));
         self.bindings.insert(path, Arc::downgrade(&binding));
         Ok(binding)
@@ -156,6 +204,8 @@ pub(super) struct UiTextureRequest {
 pub(super) struct UiImageService<'w> {
     images: ResMut<'w, Assets<Image>>,
     cache: ResMut<'w, UiImages>,
+    scene: Option<Res<'w, SceneRenderQueue>>,
+    shared: Option<Res<'w, SharedImages>>,
 }
 impl UiImageService<'_> {
     pub(super) fn service(
@@ -164,7 +214,7 @@ impl UiImageService<'_> {
         catalog: &archive::Catalog,
     ) {
         for request in pause.texture_requests() {
-            let result = self.cache.acquire(catalog, &request.name, &mut self.images);
+            let result = self.cache.acquire(catalog, &request.name, &mut self.images, self.scene.as_deref(), self.shared.as_deref());
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 eprintln!("LOAD UI texture binding: {} {result:?}", request.name);
             }
@@ -179,4 +229,9 @@ pub(super) fn service_ui_images(
     state: Res<super::loading_screen::Acquisition>,
 ) {
     service.service(&pause, &state.catalog);
+}
+
+fn separate_scene_views() -> bool {
+    static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_SCENE_IMAGE_VIEWS").as_deref() == Ok("1"))
 }
