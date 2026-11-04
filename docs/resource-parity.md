@@ -1769,3 +1769,30 @@ image buffer in both modes. Initial/separate mip selection, descriptors and
 final bytes must remain identical. A split-output diagnostic restores the old
 assembly in the same binary; record final payload CRC/descriptor equality and
 intermediate buffer counts/bytes. No whole-frame CPU or RSS gain is predicted.
+
+
+Whole-image packing acceptance (compiled source b37d03b): library/game-bin
+checks, dev build and split/packed production clients exited 0. Both EotW ->
+Dust -> EotW clients prepared 11,852 whole images across 4,963 image/target
+identities, with 1,102,175,452 final payload bytes. All final CRCs, dimensions,
+mip counts and GPU formats matched; no missing/extra identity or fatal/error
+line. Intermediate per-mip buffers fell 80,400 -> 0 and their cumulative
+payload bytes 1,102,175,452 -> 0. One final Image payload remains in both modes,
+with the largest 16,777,216 bytes. These are eliminated intermediate ownership/
+copying counts, not allocator RSS or a claimed 1.1 GB permanent saving.
+Streaming exact-mip jobs still use their required independent payloads. Local
+evidence: artifacts/lifecycles-image-packing-comparison.json. No tests/visuals.
+
+FX descriptor borrowing prediction (before implementation): 2263f0 and the
+existing typed FX constructors establish defaults before serialized partial
+edits; the shared descriptor_list preserves count, ordering and omitted slots.
+world_sources::descriptor_fields unnecessarily deep-clones each selected Fields
+subtree before its typed parser consumes it. Add the input lifetime to the
+existing decoder and use borrowed Cow slices at that boundary; empty/default
+slots remain empty borrowed fields so typed constructors still supply defaults.
+All four consumers (groups, particles, decals, deferred family admission) read
+these fields immutably. Expected cloned syntax bytes/array: the recursively
+cloned field/string/vector payload -> zero, with descriptor metadata storage
+unchanged. Typed runtime definitions stay owned. Use the same production
+binary's explicit copy control and record selected-array/field bytes plus
+prepared particle/renderer admission counts. No CPU-time/RSS saving predicted.
