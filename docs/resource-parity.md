@@ -2394,3 +2394,14 @@ if the original requests finer data. Trace environment use and demand before
 selecting a producer; do not force full resolution or add a map-name exception.
 Local evidence: `artifacts/resource-residency-eotw-verified.json` and
 `artifacts/resource-eotw-water-stream-records.json` in the main checkout.
+
+
+A 30-second, 300-sample read-only observation of the loaded Edge of the World
+streamer (`artifacts/resource-eotw-mask-observation.json`) found the amplitude
+mask registered in every sample, with zero area and a 256x256 view throughout.
+This covers one unattended camera position only; it does not establish behavior
+while moving or across other environment consumers. The native registration
+routine `14030dbf0` inserts the image identity with zero initial area and
+priority field 1 before any producer updates it. Shader binding records confirm
+the mask is consumed directly as an ocean environment input; those bindings
+alone do not show a call to the material demand producer `14031a510`.
