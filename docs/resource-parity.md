@@ -2611,3 +2611,23 @@ image identities, dimensions, mip counts, formats and CRCs matched. Both
 clients exited successfully. These are allocation/copy counts and payload
 signatures, not a process RSS or CPU timing measurement. Evidence:
 `artifacts/full-owned-ui-comparison.json`.
+
+### Common placed-model residency scope
+
+The installed common manifest contains 131 static `model` entries and 88
+`baseModel` entries. A production-client startup trace on Edge of the World,
+Dust District and return to Edge of the World found 13, 11 and 13 distinct
+placed static resource paths from the common manifest respectively; nine of
+the paths occur in both levels. Their indexed uncompressed source sizes total
+776,914 and 516,540 bytes for the first two levels. The trace also identifies
+one common skeletal base path in Edge of the World. These counts concern paths
+observed before setup's filtering, and source byte sizes are not decoded mesh
+size or GPU residency. The per-map model scratch is currently discarded after
+mesh preparation, whereas the generated mesh and its shadow, skin and vegetation
+attributes have consumers with different mutation and lifetime requirements.
+Keeping all parsed common model geometry would add resident CPU memory; a safe
+session mesh owner must first establish immutable variants and cover those
+consumers. This evidence does not demonstrate the cost or safety of that change.
+Local evidence: `artifacts/model-common-trace-summary.json`,
+`artifacts/lifecycles-manifest-models.json`, and the successful three-level
+`model-common-trace` client.
