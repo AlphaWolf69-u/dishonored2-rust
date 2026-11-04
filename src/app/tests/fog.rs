@@ -91,6 +91,7 @@ fn installed_fog_scene_assets_and_area_tracks() {
             sun,
             7000.,
             &mut images,
+            &super::super::resident_images::ResidentImages::default(),
         )
         .unwrap_or_else(|e| panic!("{resource}: {e}"));
         let position = entities::player_start(&document)

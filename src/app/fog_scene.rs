@@ -49,7 +49,7 @@ pub(super) struct FogScene {
     lookup_initialized: bool,
     sun: Option<(Vec3, Vec3)>,
     images: HashMap<String, Handle<Image>>,
-    resident: HashMap<String, Handle<Image>>,
+    resident: super::resident_images::ResidentImages,
     profiles: EnvironmentProfiles<Handle<Image>>,
     volumes: Vec<super::fog_volumes::AreaFog>,
     area_states: crate::rendering::bevy_backend::fog::AreaFogStates,
@@ -64,6 +64,7 @@ impl FogScene {
         sun: Option<(Vec3, Vec3)>,
         far_clip: f32,
         images: &mut dyn AssetWrite<Image>,
+        registry: &super::resident_images::ResidentImages,
     ) -> Result<Self, String> {
         let mut shadow_options = Vec::new();
         for path in [
@@ -133,7 +134,7 @@ impl FogScene {
             .iter()
             .map(|area| EnvironmentParameters::supplied(catalog, &area.parameters, &world))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut resident = HashMap::<String, Handle<Image>>::new();
+        let resident = registry.consumer();
         let mut aliases = HashMap::new();
         for source in std::iter::once(&world)
             .chain(std::iter::once(&defaults))
@@ -143,7 +144,7 @@ impl FogScene {
                 let EnvironmentValue::Image(name) = value else {
                     continue;
                 };
-                prepare_image(catalog,name,images,&mut resident,&mut aliases)?;
+                prepare_image(catalog,name,images,&resident,&mut aliases)?;
             }
         }
         let EnvironmentValue::Image(default_shadow) = &defaults.values["ocean/projectedshadowheightmap"]
@@ -154,7 +155,7 @@ impl FogScene {
             .get(default_shadow)
             .ok_or("unprepared projected fog shadow default")?
             .clone();
-        let fallback=super::texture_streaming::load_resident_2d(catalog,"_default",images,&mut resident)?;
+        let fallback=super::texture_streaming::load_resident_2d(catalog,"_default",images,&resident)?;
         aliases.insert("_default".into(),fallback);
         let registered_curve=match defaults.values.get("atm/worlddistancefog/colorlut") {
             Some(EnvironmentValue::Image(image))=>Some(image.clone()),
@@ -188,7 +189,7 @@ impl FogScene {
         name: &str,
         images: &mut dyn AssetWrite<Image>,
     ) -> Result<std::sync::Arc<PreparedEnvironmentProfile<Handle<Image>>>, String> {
-        let resident = &mut self.resident;
+        let resident = &self.resident;
         let aliases = &mut self.images;
         self.profiles.load(catalog,name,|_,source| prepare_image(catalog,source,images,resident,aliases))
     }

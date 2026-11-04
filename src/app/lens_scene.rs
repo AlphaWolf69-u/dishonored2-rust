@@ -11,7 +11,6 @@ use crate::{
     },
 };
 use bevy::prelude::*;
-use std::collections::HashMap;
 
 const FLOATS: [&str; 13] = [
     "env/bloom/veil_size",
@@ -68,10 +67,11 @@ impl LensScene {
         world: &EnvironmentRenderParameters,
         areas: &[AreaEnvironment],
         images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
+        registry: &super::resident_images::ResidentImages,
     ) -> Result<Self, String> {
-        let mut resident = HashMap::new();
+        let resident = registry.consumer();
         let mut image = |name: &str| {
-            super::texture_streaming::load_resident_2d(catalog, name, images, &mut resident)
+            super::texture_streaming::load_resident_2d(catalog, name, images, &resident)
         };
         let empty = EnvironmentRenderParameters { layers: Vec::new() };
         let defaults = ParameterReader {

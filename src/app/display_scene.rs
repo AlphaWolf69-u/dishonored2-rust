@@ -64,6 +64,7 @@ impl DisplayScene {
         areas: &[AreaEnvironment],
         screen_fx: Option<&EnvironmentRenderParameters>,
         images: &mut dyn AssetWrite<Image>,
+        registry: &super::resident_images::ResidentImages,
     ) -> Result<Self, String> {
         let empty = EnvironmentRenderParameters { layers: Vec::new() };
         let default_reader = ParameterReader {
@@ -133,7 +134,7 @@ impl DisplayScene {
             areas: prepared,
             tracks: std::array::from_fn(|i| EnvironmentTrack::new(defaults[i])),
             cube_track: EnvironmentTrack::new((default_cube, 1.)),
-            lens: super::lens_scene::LensScene::load(catalog, world, areas, images)?,
+            lens: super::lens_scene::LensScene::load(catalog, world, areas, images, registry)?,
             camera_effects: super::camera_effects::CameraScene::load(catalog, world, areas, screen_fx)?,
         })
     }

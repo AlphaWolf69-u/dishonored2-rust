@@ -25,6 +25,7 @@ pub(super) struct ScenePreparation {
     device: RenderDevice,
     shared_images: super::texture_streaming::SharedImages,
     audio: super::audio::AudioPreparation,
+    resident_images: super::resident_images::ResidentImages,
 }
 impl ScenePreparation {
     pub fn new(world: &mut World) -> Self {
@@ -41,6 +42,7 @@ impl ScenePreparation {
                 .resource::<super::texture_streaming::SharedImages>()
                 .clone(),
             audio: super::audio::AudioPreparation::take(world),
+            resident_images: world.resource::<super::resident_images::ResidentImages>().clone(),
         }
     }
     pub fn prepare(
@@ -72,11 +74,12 @@ impl ScenePreparation {
                 &scene,
                 programs,
                 &mut self.images,
+                &self.resident_images,
             )?;
             commands.insert_resource(frame);
             commands.insert_resource(source);
         }
-        commands.insert_resource(super::area_lights::prepare(&scene, &mut self.images));
+        commands.insert_resource(super::area_lights::prepare(&scene, &mut self.images, &self.resident_images));
         super::setup::prepare(
             &mut commands,
             &mut scene,
@@ -95,6 +98,7 @@ impl ScenePreparation {
             volumes.as_ref(),
             effects.as_ref(),
             Some(&self.shared_images),
+            &self.resident_images,
         );
         match super::ParallelShadowOwner::from_scene(&scene, &mut self.images) {
             Ok(owner) => commands.insert_resource(owner),

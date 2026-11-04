@@ -82,16 +82,17 @@ pub(super) fn setup(
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
-    effect_graphs: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>,
+    effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>),
 ) {
     let (mut programs, prepared) = programs;
+    let (effect_graphs, resident_images) = effects_and_images;
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
     prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
         &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
         &mut world_matrices, machinery.as_deref(), environment_volumes.as_deref(),
-        effect_graphs.as_deref(), None);
+        effect_graphs.as_deref(), None, &resident_images);
 }
 
 pub(super) fn prepare(
@@ -112,6 +113,7 @@ pub(super) fn prepare(
     environment_volumes: Option<&super::state::EnvironmentVolumes>,
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
     shared_images: Option<&super::texture_streaming::SharedImages>,
+    resident_images: &super::resident_images::ResidentImages,
 ) {
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
@@ -153,6 +155,7 @@ pub(super) fn prepare(
             sun,
             DEFAULT_FAR,
             images,
+            resident_images,
         )
         .unwrap_or_else(|error| panic!("fog scene preparation failed: {error}"));
         let screen_fx = super::pause_fx::load(catalog)
@@ -172,6 +175,7 @@ pub(super) fn prepare(
             &scene.area_environments,
             screen_fx_environment.as_ref(),
             images,
+            resident_images,
         )
         .unwrap_or_else(|error| panic!("display scene preparation failed: {error}"));
         fog.upload_volumes(std::mem::take(&mut scene.area_fog), meshes);

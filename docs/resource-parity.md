@@ -1637,3 +1637,24 @@ FX step/insertion/emission now borrow immutable definitions instead of cloning
 Node/link data; mutable instance storage remains separate. This run verifies
 compilation and map lifetimes, not a targeted CPU-time improvement or a visual
 comparison. No tests or CPU benchmarks were run.
+
+
+Full-mip image owner consolidation prediction (before implementation):
+1400607f0 first returns the existing 14005feb0 image identity, and 140060180
+purges map-class resources independently of consumers. UI, fog, lens and
+area-light preparation currently have separate full-mip path maps despite using
+the same reader. Route these through one session registry, retaining init/common
+entries across map purge and explicit movie/frame leases. Keep image IO outside
+the registry mutex and publish one canonical Bevy handle even if acquisitions
+race. Store dimensions with the identity so an off-thread prepared image can be
+bound before batch publication without blocking the window thread. Cloud
+sampling already uses the backend's explicit bilinear-wrap sampler; its mutable
+per-image sampler override is redundant and must not mutate a shared resource.
+Expected result: same-path full-mip acquisitions publish/upload one image rather
+than one per consumer cache; redundant loads and logical uploaded bytes fall by
+the observed overlap, whose size is not yet measured. Stable gameplay adds no
+registry lookup, lock or GPU pass. Count production acquisitions, reuse and
+map-purge identities using the separate-cache diagnostic in the same build.
+No walking CPU or total RSS improvement is predicted. Scene-streamed images
+remain separate until full-resolution consumer pinning is connected; full-mip
+residency must never be silently replaced by a reduced scene mip.

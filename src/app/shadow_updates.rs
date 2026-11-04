@@ -3,14 +3,14 @@
 use super::{
     camera_projection, coarse_depth, frame_profile, game_clock, game_clock_runtime,
     game_pose_from_view_transform, material, material_option_overrides,
-    view_distance_scale, placed_direction, read_streamed_diffuse_at_target, render_model,
+    view_distance_scale, placed_direction, render_model,
     render_program, render_shadow, screen_shadow_pass, screen_shadow_pipeline, shader_cache,
     shadow_pass, shadow_pipeline, shadow_receiver, shadow_sampling, tome, view_to_game, Arc,
     Extent3d, ParallelShadowOwner, ProgramCacheSource, ShadowCasterWorld,
     ShadowMaterials, ShadowModelBoundsSources, VegetationMeshInputs,
     ViewSettings, WorldShadowMeshSources, PickupState, Projection, RenderModelSurface,
-    RenderSourcePlacements, SceneData, SceneRenderQueue, ShaderBuffer, TextureDimension,
-    TextureFormat, TextureReadTarget, TomeWorld,
+    RenderSourcePlacements, SceneData, SceneRenderQueue, ShaderBuffer,
+    TomeWorld,
 };
 use bevy::prelude::*;
 mod query_cache;
@@ -315,9 +315,10 @@ pub(super) fn initialize_screen_shadow_source(
     mut programs: ResMut<ProgramCacheSource>,
     mut images: ResMut<Assets<Image>>,
     existing: Option<Res<ScreenShadowSource>>,
+    resident: Res<super::resident_images::ResidentImages>,
 ) {
     if existing.is_some() { return; }
-    match prepare_screen_shadow_source(&scene, &mut programs, &mut images) {
+    match prepare_screen_shadow_source(&scene, &mut programs, &mut images, &resident) {
         Ok((frame, source)) => { commands.insert_resource(frame); commands.insert_resource(source); }
         Err(error) => {
             eprintln!("Screen source unavailable: {error}");
@@ -329,6 +330,7 @@ pub(super) fn initialize_screen_shadow_source(
 pub(super) fn prepare_screen_shadow_source(
     scene: &SceneData, programs: &mut ProgramCacheSource,
     images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
+    registry: &super::resident_images::ResidentImages,
 ) -> Result<(screen_shadow_pass::ScreenShadowFrame, ScreenShadowSource), String> {
     let result = (|| -> Result<(ScreenShadowParameters, Handle<Image>, Option<Handle<Image>>), String> {
         let library = programs.0.as_mut().map_err(|error| error.clone())?;
@@ -370,48 +372,10 @@ pub(super) fn prepare_screen_shadow_source(
             .ok_or("cloud texture owner is unavailable")?
             .trim()
             .trim_matches('"');
-        let cloud = if cloud_name.eq_ignore_ascii_case("_black") {
-            // Actual inherited env/default assigns engine _black. Red=0 makes
-            // exp(-sample*density) exactly 1 for every position and clock.
-            images.add(Image::new_fill(
-                Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                &[0, 0, 0, 0],
-                TextureFormat::Rgba8Unorm,
-                Default::default(),
-            ))
-        } else {
-            let stem = material::compiled_image_stem(catalog, cloud_name)
-                .ok_or_else(|| format!("game cloud image source unresolved: {cloud_name}"))?;
-            let mut loaded = read_streamed_diffuse_at_target(
-                catalog,
-                &stem,
-                TextureReadTarget::Initial(Some(0)),
-            )?
-            .ok_or("game cloud authored mip0 is unavailable")?;
-            loaded.image.data = Some(
-                loaded
-                    .uploads
-                    .into_iter()
-                    .flat_map(|upload| upload.payload)
-                    .collect(),
-            );
-            images.add(loaded.image)
-        };
-        images
-            .get_mut(&cloud)
-            .ok_or("game cloud image allocation failed")?
-            .sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
-            address_mode_u: bevy::image::ImageAddressMode::Repeat,
-            address_mode_v: bevy::image::ImageAddressMode::Repeat,
-            mag_filter: bevy::image::ImageFilterMode::Linear,
-            min_filter: bevy::image::ImageFilterMode::Linear,
-            ..Default::default()
-        });
+        // The pass binds its own bilinear-wrap sampler; never mutate the
+        // descriptor of an image shared with another resident consumer.
+        let resident = registry.consumer();
+        let cloud = resident.load(catalog, cloud_name, images)?;
         let material = catalog
             .read("generated/decls/material/screenshadows.material.decl")
             .map_err(|e| e.to_string())?
@@ -432,7 +396,7 @@ pub(super) fn prepare_screen_shadow_source(
             let empty = crate::entities::EnvironmentRenderParameters {layers:Vec::new()};
             let defaults = crate::assets::environment::ParameterReader {catalog,parameters:&empty};
             let source = defaults.image_source("SSAO/Zbuffer")?;
-            Some(super::texture_streaming::load_resident_2d(catalog,&source,images,&mut Default::default())?)
+            Some(super::texture_streaming::load_resident_2d(catalog,&source,images,&resident)?)
         } else {None};
         Ok((
             ScreenShadowParameters {

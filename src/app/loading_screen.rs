@@ -252,7 +252,9 @@ pub(super) fn install(
     }
     let map = level.entities.trim_end_matches(".entities").to_owned() + ".map";
     app.insert_resource(crate::gameplay::game_clock_runtime::GamePaused(true));
-    app.init_resource::<super::resident_images::UiImages>();
+    app.init_resource::<super::resident_images::ResidentImages>();
+    let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
+    app.insert_resource(super::resident_images::UiImages::new(resident));
     app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
     let upload_budget = app.world().resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes;
     limit_loading_uploads(app.world_mut());
@@ -313,7 +315,7 @@ fn show_bootstrap(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     state: Res<Acquisition>,
-    mut cache: ResMut<super::resident_images::UiImages>,
+    cache: Res<super::resident_images::UiImages>,
 ) {
     commands.spawn((
         Camera3d::default(),
@@ -325,15 +327,8 @@ fn show_bootstrap(
     commands.spawn((Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
         BackgroundColor(Color::BLACK), GlobalZIndex(i32::MAX - 1), super::loading_fade::FadeLayer));
     let catalog = &state.input.as_ref().unwrap().0;
-    let super::resident_images::UiImages {
-        resident, aliases, ..
-    } = &mut *cache;
-    let image = super::resident_images::prepare_image(
-        catalog,
-        "models/guis/loading_screens/loading_mainmenu_is.png",
-        &mut images,
-        resident,
-        aliases,
+    let image = cache.registry.load(
+        catalog, "models/guis/loading_screens/loading_mainmenu_is.png", &mut images,
     )
     .unwrap_or_else(|error| panic!("startup loading background: {error}"));
     commands.spawn((

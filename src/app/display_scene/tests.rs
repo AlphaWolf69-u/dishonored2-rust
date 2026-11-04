@@ -33,7 +33,7 @@ fn installed_gameplay_display_inputs_prepare_for_every_level() {
         };
         let areas = crate::rendering::environment::load_area_environments(&doc, &catalog).unwrap();
         let mut images = Assets::<Image>::default();
-        let mut scene = DisplayScene::load(&catalog, &parameters, &areas, None, &mut images)
+        let mut scene = DisplayScene::load(&catalog, &parameters, &areas, None, &mut images, &super::super::resident_images::ResidentImages::default())
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         let resident_count = images.len();
         let camera = scene.camera_effects
@@ -137,7 +137,7 @@ fn the_pause_screen_fx_overrides_depth_of_field_and_colour_cube() {
     let environment = crate::app::pause_fx::environment_parameters(&catalog, &fx.environment).unwrap();
     let world = EnvironmentRenderParameters { layers: Vec::new() };
     let mut images = Assets::<Image>::default();
-    let mut scene = DisplayScene::load(&catalog, &world, &[], Some(&environment), &mut images).unwrap();
+    let mut scene = DisplayScene::load(&catalog, &world, &[], Some(&environment), &mut images, &super::super::resident_images::ResidentImages::default()).unwrap();
     let at = |scene: &mut DisplayScene, weight: f32| {
         let camera = scene.camera_effects.update(&[], weight, [0., 0., 0.], 1., 0.).unwrap();
         camera.settings.bokeh_size()
