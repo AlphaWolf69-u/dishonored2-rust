@@ -51,6 +51,11 @@ impl Default for ParticleResources {
     }
 }
 impl ParticleResources {
+    pub fn use_scene_images(&mut self) { self.images.use_scene_images(); }
+    pub fn images(&self) -> impl Iterator<Item = &Arc<super::image_resources::ParticleImage>> {
+        self.images.images()
+    }
+
     pub fn report_scene_images(&self, paths: &[String]) { self.images.report_scene_overlap(paths); }
 
     /// Diagnostic acquisition A/B; production always shares immutable assets.

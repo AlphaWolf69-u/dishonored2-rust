@@ -179,6 +179,8 @@ impl CameraGpu {
 }
 pub(super) fn register(app: &mut App) {
     app.init_resource::<super::particle_pass::ParticleMaterialSampler>();
+    app.init_resource::<super::particle_images::SceneParticleImages>()
+        .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::particle_images::SceneParticleImages>::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<super::particle_pass::ParticleMaterialSampler>::default());
     app.init_resource::<super::particle_systems::ParticleQueryFrame>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
@@ -263,6 +265,7 @@ pub(crate) struct FxUpdate;
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
 struct ParticleLightingScene<'w> {
+    scene_images: Res<'w, super::particle_images::SceneParticleImages>,
     upload_budget: Res<'w, bevy::render::render_asset::RenderAssetBytesPerFrameLimiter>,
     screen: Option<Res<'w, super::screen_shadow_pass::ScreenShadowFrame>>,
     sampler: Option<Res<'w,super::particle_pass::ParticleMaterialSampler>>,
@@ -399,6 +402,10 @@ fn render_particles(
         if let Some(sampler) = lighting_scene.sampler.as_ref().and_then(|sampler| images.get(&sampler.0)).map(|image| &image.sampler) {
             let CameraGpu { particles, particle_images, .. } = &mut *gpu;
             let particles = particles.as_mut().unwrap();
+            if particle_images.sync_scene(&lighting_scene.scene_images, &images,
+                particles.pass.sampler_changed(sampler))? {
+                particles.pass.refresh_scene_bindings(particle_images, &device, &queue, sampler)?;
+            }
             if !particles.prepared || particles.pass.sampler_changed(sampler) {
                 let console = crate::platform::console::shared().read();
                 let materials = lighting_scene.world_sources.0.particle_materials().chain(sources.particle_materials());

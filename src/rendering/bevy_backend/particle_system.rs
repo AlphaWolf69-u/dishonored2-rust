@@ -245,6 +245,9 @@ impl ParticleSystem {
                     );
                     self.debug_reported_child_draw = true;
                 }
+                for image in material.images.values() {
+                    if image.scene_owned { image.demand.submit_dynamic(self.texture_area); }
+                }
                 output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
                     lighting: if material.option("fx/opt/use_lighting")? != 0 {
@@ -295,6 +298,9 @@ impl ParticleSystem {
                 if material.distortion{transparency.mode=0;}
                 let (state,stencil_reference)=crate::render_state::alpha_surface_draw_state(material.state,
                     transparency.mode!=0,self.water_flags&8!=0);
+                for image in material.images.values() {
+                    if image.scene_owned { image.demand.submit_dynamic(self.texture_area); }
+                }
                 output.push(super::particle_pass::ParticleDraw {
                     material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
                     transparency,state,stencil_reference,grid_level:0,
@@ -369,6 +375,7 @@ impl ParticleSystem {
             visibility: Default::default(),
             force_simulate,
             force_visible,
+            texture_area: 0.,
             probe_query: Default::default(),
             debug_reported_child_draw: false,
         })
@@ -466,14 +473,28 @@ impl ParticleSystem {
             )
             .culled
         };
+        // 14031ad30 forwards the flag-zero bounds-query area to image demand.
+        // This is the same query already used for ordinary particle admission.
+        let mut area = None;
         let root_visible = if declaration.visibility.always_visible || self.force_visible {
             frustum_visible()
         } else {
             match visibility {
-                Some(query) => query.visible(bounds)?,
+                Some(query) => {
+                    let (visible, projected_area) = query.visibility_and_area(bounds)?;
+                    area = Some(projected_area);
+                    visible
+                },
                 None => frustum_visible(),
             }
         };
+        self.texture_area = if root_visible {
+            area.unwrap_or_else(|| {
+                let projected = crate::render_shadow::projected_box_bounds(
+                    &view.view_projection, bounds, false);
+                (projected[1][0] - projected[0][0]) * (projected[1][1] - projected[0][1]) * 0.5
+            })
+        } else { 0. };
         let schedule = self.visibility.prepare(
             &declaration.visibility,
             crate::rendering::particles::visibility::ParticleAdmission {

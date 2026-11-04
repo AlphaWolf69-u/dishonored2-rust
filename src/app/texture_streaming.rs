@@ -1,6 +1,7 @@
 //! Texture streaming.
 mod settings;
 mod residency;
+pub(super) mod particle_images;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::ImageAccess;
 use super::{

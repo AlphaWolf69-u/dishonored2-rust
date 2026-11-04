@@ -362,6 +362,7 @@ pub(super) fn stream_visible_models(
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
     arms: Option<Res<super::player_arms::PlayerArms>>,
+    particle_images: Option<Res<crate::rendering::bevy_backend::particle_images::SceneParticleImages>>,
     mut early: Option<ResMut<EarlyTomeQuery>>,
 ) {
     if scene.is_added() {
@@ -369,6 +370,18 @@ pub(super) fn stream_visible_models(
         *updates = Default::default();
     }
     let started = Instant::now();
+    // Host render-to-main feedback. The persistent scene owner still performs
+    // the original conditional consumption, scheduling and pressure policy.
+    if let Some(particles) = particle_images.as_deref() {
+        for (slot, image) in particles.slots.iter() {
+            if let Some(area) = image.demand.take_submission() {
+                if let Some(demand) = scene.diffuse_image_demands.get(*slot) {
+                    demand.submit_dynamic(area);
+                }
+            }
+        }
+    }
+
     let mut early_jobs = early.as_deref_mut().and_then(|early| early.pending.take());
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
         *query_cache = TomeRenderQueryCache::default();

@@ -751,6 +751,14 @@ impl ProjectedAreaDemand {
         self.demand.clear_area()
     }
 
+    /// Host render-to-main publication channel, not the native scheduler's
+    /// conditional area clear. Metadata marks even an explicit zero-area
+    /// submission; atomically take the entire word so producers cannot be lost.
+    pub fn take_submission(&self) -> Option<f32> {
+        let word = self.demand.word.swap(0, Ordering::AcqRel);
+        (word != 0).then(|| f32::from_bits(word as u32))
+    }
+
     pub fn area(&self) -> f32 {
         self.demand.area()
     }

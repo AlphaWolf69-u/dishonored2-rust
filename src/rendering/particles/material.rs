@@ -476,6 +476,13 @@ impl ParticleMaterial {
         let distortion_volume = if distortion && options["fx/opt/use_flipbook"] != 0 {
             Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbooknormals")?)?)
         } else { None };
+        // 1402d4e20 / 1402eab10: all material consumers raise one image's
+        // role priority; it is not a separate priority per draw-state variant.
+        let alpha_test = crate::material::program_option(&bytes, program.as_bytes(), "alphaTest");
+        for (parameter, image) in &images {
+            image.sampling_priority.fetch_max(crate::texture::image_sampling_priority(parameter, alpha_test),
+                std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(Self {
             name: name.to_owned(),
             distortion,

@@ -1768,6 +1768,9 @@ pub(super) fn prepare(
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
     commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     let mut particle_resources = crate::rendering::particles::definition::ParticleResources::default();
+    if std::env::var("DH2_DEBUG_SEPARATE_PARTICLE_IMAGES").as_deref() != Ok("1") {
+        particle_resources.use_scene_images();
+    }
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
         let (water,sources)=super::water_scene::WaterScene::load_with_model_colours(catalog,parameters,&scene.area_environments,&resolver.water_materials,&resolver.water_model_colours)
             .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));
@@ -1797,6 +1800,17 @@ pub(super) fn prepare(
             &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
+    let mut particle_image_slots = Vec::new();
+    for image in particle_resources.images().filter(|image| image.scene_owned) {
+        let slot = resolver.register_image(&image.path)
+            .unwrap_or_else(|| panic!("particle scene image unresolved: {}", image.path));
+        resolver.cache.raise_image_priority(slot,
+            image.sampling_priority.load(std::sync::atomic::Ordering::Relaxed));
+        particle_image_slots.push((slot, image.clone()));
+    }
+    commands.insert_resource(crate::rendering::bevy_backend::particle_images::SceneParticleImages {
+        slots: Arc::new(particle_image_slots), ..Default::default()
+    });
     particle_resources.report_scene_images(&resolver.diffuse_image_paths);
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
     let diffuse_image_count = resolver.diffuse_image_paths.len();

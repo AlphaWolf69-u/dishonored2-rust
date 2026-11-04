@@ -7,7 +7,13 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 /// Host: queue upload copies compiled bytes; material/pass rebuilds reuse GPU
 /// residency instead of retaining a second copy on the CPU.
 pub struct ParticleImage {
+    /// Canonical installed identity, shared with the acquisition registry key
+    /// (idResource+8). Material variants do not own another path allocation.
+    pub path: Arc<str>,
     pub info: BimageInfo,
+    pub scene_owned: bool,
+    pub sampling_priority: std::sync::atomic::AtomicU8,
+    pub demand: Arc<crate::texture::ProjectedAreaDemand>,
     pub depth: u32,
     pub payload_bytes: usize,
     payload: Mutex<Option<Vec<u8>>>,
@@ -15,8 +21,13 @@ pub struct ParticleImage {
 }
 
 impl ParticleImage {
-    fn new(info: BimageInfo, depth: u32, payload: Vec<u8>, retain_payload: bool) -> Self {
-        Self { info, depth, payload_bytes: payload.len(), payload: Mutex::new(Some(payload)), retain_payload }
+    fn new(path: Arc<str>, info: BimageInfo, depth: u32, payload: Vec<u8>, retain_payload: bool) -> Self {
+        Self { path, info, scene_owned: false, sampling_priority: std::sync::atomic::AtomicU8::new(1), demand: Arc::default(), depth, payload_bytes: payload.len(), payload: Mutex::new(Some(payload)), retain_payload }
+    }
+
+    fn scene(path: Arc<str>, info: BimageInfo) -> Self {
+        Self { path, info, scene_owned: true, sampling_priority: std::sync::atomic::AtomicU8::new(1), demand: Arc::default(), depth: 1,
+            payload_bytes: 0, payload: Mutex::new(None), retain_payload: false }
     }
 
     pub(crate) fn upload<T>(&self, upload: impl FnOnce(&[u8]) -> T) -> Result<(T, usize), String> {
@@ -29,9 +40,10 @@ impl ParticleImage {
 }
 
 pub(crate) struct ParticleImages {
-    images: HashMap<String, Arc<ParticleImage>>,
-    volumes: HashMap<String, Arc<ParticleImage>>,
+    images: HashMap<Arc<str>, Arc<ParticleImage>>,
+    volumes: HashMap<Arc<str>, Arc<ParticleImage>>,
     shared: bool,
+    scene_images: bool,
     retain_payload: bool,
     requests: usize,
     reads: usize,
@@ -42,6 +54,7 @@ impl Default for ParticleImages {
     fn default() -> Self {
         Self {
             images: Default::default(), volumes: Default::default(),
+            scene_images: false,
             shared: std::env::var("DH2_DEBUG_DUPLICATE_PARTICLE_IMAGES").as_deref() != Ok("1"),
             retain_payload: std::env::var("DH2_DEBUG_RETAIN_PARTICLE_IMAGE_DATA").as_deref() == Ok("1")
                 || std::env::var("DH2_DEBUG_DUPLICATE_PARTICLE_IMAGES").as_deref() == Ok("1"),
@@ -51,24 +64,38 @@ impl Default for ParticleImages {
 }
 
 impl ParticleImages {
+    pub fn use_scene_images(&mut self) { self.scene_images = self.shared; }
+    pub fn images(&self) -> impl Iterator<Item = &Arc<ParticleImage>> { self.images.values() }
     pub fn report_scene_overlap(&self, paths: &[String]) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
         let paths: std::collections::HashSet<_> = paths.iter().map(String::as_str).collect();
-        let overlap: Vec<_> = self.images.iter().filter(|(path, _)| paths.contains(path.as_str())).collect();
+        let overlap: Vec<_> = self.images.iter().filter(|(path, _)| paths.contains(path.as_ref())).collect();
         eprintln!("MEMORY particle/scene images: particle_2d={} particle_3d={} shared_paths={} shared_payload_bytes={}",
             self.images.len(), self.volumes.len(), overlap.len(), overlap.iter().map(|(_, image)| image.payload_bytes).sum::<usize>());
     }
 
     pub fn image(&mut self, catalog: &Catalog, source: &str) -> Result<Arc<ParticleImage>, String> {
         self.requests += 1;
-        let path = crate::material::image_load_resource(catalog, source)
+        let path: Arc<str> = crate::material::image_load_resource(catalog, source)
             .ok_or_else(|| format!("particle image unresolved: {source}"))?
-            .replace('\\', "/").to_ascii_lowercase();
+            .replace('\\', "/").to_ascii_lowercase().into();
         if self.shared {
             if let Some(image) = self.images.get(&path) { return Ok(image.clone()); }
         }
-        let image = crate::material::load_2d_image(catalog, source)?;
-        let image = Arc::new(ParticleImage::new(image.info, 1, image.payload, self.retain_payload));
+        let image = if self.scene_images {
+            let info = if path.starts_with('_') {
+                crate::material::load_2d_image(catalog, source)?.info
+            } else {
+                let header = catalog.read_prefix(&path, 48).map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("particle image absent: {path}"))?;
+                self.bytes += header.len();
+                BimageInfo::parse(&header)?
+            };
+            Arc::new(ParticleImage::scene(path.clone(), info))
+        } else {
+            let image = crate::material::load_2d_image(catalog, source)?;
+            Arc::new(ParticleImage::new(path.clone(), image.info, 1, image.payload, self.retain_payload))
+        };
         self.reads += 1;
         self.bytes += image.payload_bytes;
         if self.shared { self.images.insert(path, image.clone()); }
@@ -77,14 +104,14 @@ impl ParticleImages {
 
     pub fn volume(&mut self, catalog: &Catalog, source: &str) -> Result<Arc<ParticleImage>, String> {
         self.requests += 1;
-        let path = crate::material::image_load_resource(catalog, source)
+        let path: Arc<str> = crate::material::image_load_resource(catalog, source)
             .ok_or_else(|| format!("particle volume unresolved: {source}"))?
-            .replace('\\', "/").to_ascii_lowercase();
+            .replace('\\', "/").to_ascii_lowercase().into();
         if self.shared {
             if let Some(image) = self.volumes.get(&path) { return Ok(image.clone()); }
         }
         let image = crate::material::load_3d_image(catalog, source)?;
-        let image = Arc::new(ParticleImage::new(image.info, image.depth, image.payload, self.retain_payload));
+        let image = Arc::new(ParticleImage::new(path.clone(), image.info, image.depth, image.payload, self.retain_payload));
         self.reads += 1;
         self.bytes += image.payload_bytes;
         if self.shared { self.volumes.insert(path, image.clone()); }

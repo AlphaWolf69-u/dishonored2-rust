@@ -327,8 +327,8 @@ struct GeometryGpu {
     count: u32,
 }
 struct MaterialGpu {
-    _source: Arc<ParticleMaterial>,
-    _parameters: UniformBuffer<MaterialParameters>,
+    source: Arc<ParticleMaterial>,
+    parameters: UniformBuffer<MaterialParameters>,
     binding: BindGroup,
     pipeline: RenderPipeline,
 }
@@ -371,6 +371,7 @@ pub struct ParticlePass {
     // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
     pipelines: HashMap<(crate::render_state::RenderState, bool, bool, i32), RenderPipeline>,
     pipeline_requests: usize,
+    binding_refreshes: usize,
     material_sampler: Option<SamplerId>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
@@ -804,6 +805,7 @@ impl ParticlePass {
             materials: HashMap::new(),
             pipelines: HashMap::new(),
             pipeline_requests: 0,
+            binding_refreshes: 0,
             material_sampler: None,
             view_bindings: None,
             fog_binding: None,
@@ -814,19 +816,17 @@ impl ParticlePass {
         })
     }
 
-    fn material(
-        &mut self,
+    /// Image/sampler residency can change without new shader programs or
+    /// uniforms (host descriptor side of 14005feb0 / 1402c9f00 ownership).
+    fn material_binding(
+        &self,
         images: &mut super::particle_images::ParticleImagesGpu,
         device: &RenderDevice,
         queue: &RenderQueue,
-        source: Arc<ParticleMaterial>,
-        state: crate::render_state::RenderState,
-        accumulation: bool,
+        source: &ParticleMaterial,
+        parameters: &UniformBuffer<MaterialParameters>,
         anisotropic_sampler: &Sampler,
-    ) -> Result<MaterialGpu, String> {
-        let accumulation = accumulation && !source.distortion;
-        let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
-        parameters.write_buffer(device, queue);
+    ) -> Result<BindGroup, String> {
         let mut views = HashMap::new();
         for (name, image) in &source.images {
             let view = images.acquire(
@@ -1036,6 +1036,62 @@ impl ParticlePass {
                 },
             ],
         );
+        Ok(binding)
+    }
+
+    fn rebind_materials(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        sampler: &Sampler,
+    ) -> Result<(), String> {
+        // Move the existing allocation out briefly, so immutable layout/sampler
+        // fields and mutable bindings can be borrowed independently.
+        let mut materials = std::mem::take(&mut self.materials);
+        let result = (|| {
+            for material in materials.values_mut() {
+                material.binding = self.material_binding(images, device, queue,
+                    &material.source, &material.parameters, sampler)?;
+                self.binding_refreshes += 1;
+            }
+            Ok(())
+        })();
+        self.materials = materials;
+        result
+    }
+
+    pub fn refresh_scene_bindings(&mut self, images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice, queue: &RenderQueue, sampler: &Sampler) -> Result<(), String> {
+        let mut materials = std::mem::take(&mut self.materials);
+        let result = (|| {
+            for material in materials.values_mut() {
+                if material.source.images.values().any(|image| images.changed_paths.contains(&image.path)) {
+                    material.binding = self.material_binding(images, device, queue,
+                        &material.source, &material.parameters, sampler)?;
+                    self.binding_refreshes += 1;
+                }
+            }
+            Ok(())
+        })();
+        self.materials = materials;
+        result
+    }
+
+    fn material(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        source: Arc<ParticleMaterial>,
+        state: crate::render_state::RenderState,
+        accumulation: bool,
+        anisotropic_sampler: &Sampler,
+    ) -> Result<MaterialGpu, String> {
+        let accumulation = accumulation && !source.distortion;
+        let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
+        parameters.write_buffer(device, queue);
+        let binding = self.material_binding(images, device, queue, &source, &parameters, anisotropic_sampler)?;
         let lighting_mode = if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? };
         let pipeline_key = (state, accumulation, source.distortion, lighting_mode);
         self.pipeline_requests += 1;
@@ -1111,8 +1167,8 @@ impl ParticlePass {
             pipeline
         };
         Ok(MaterialGpu {
-            _source: source,
-            _parameters: parameters,
+            source,
+            parameters,
             binding,
             pipeline,
         })
@@ -1155,7 +1211,7 @@ impl ParticlePass {
         max_created: Option<usize>,
     ) -> Result<(usize, bool), String> {
         if self.material_sampler != Some(surface_sampler.id()) {
-            self.materials.clear();
+            self.rebind_materials(images, device, queue, surface_sampler)?;
             self.material_sampler = Some(surface_sampler.id());
         }
         let mut created = 0;
@@ -1232,7 +1288,8 @@ impl ParticlePass {
         }
         let sampler_id = input.surface_sampler.unwrap_or(&self.wrap).id();
         if self.material_sampler != Some(sampler_id) {
-            self.materials.clear();
+            let sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
+            self.rebind_materials(images, device, queue, &sampler)?;
             self.material_sampler = Some(sampler_id);
         }
         for draw in draws {
@@ -1740,9 +1797,9 @@ impl Drop for ParticlePass {
     fn drop(&mut self) {
         if self.pipeline_requests != 0
             && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("MEMORY particle pipeline release: requests={} unique={} reused={}",
+            eprintln!("MEMORY particle pipeline release: requests={} unique={} reused={} binding_refreshes={}",
                 self.pipeline_requests, self.pipelines.len(),
-                self.pipeline_requests.saturating_sub(self.pipelines.len()));
+                self.pipeline_requests.saturating_sub(self.pipelines.len()), self.binding_refreshes);
         }
     }
 }

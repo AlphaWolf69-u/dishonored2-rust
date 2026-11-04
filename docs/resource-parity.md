@@ -1460,3 +1460,73 @@ when those tuples already exist. No extra GPU pass, altered shader constants,
 format, state, draw or descriptor binding. Report request/unique/reuse counts at
 pass release; no CPU-time claim from counts. This prerequisite prevents future
 streamed-image binding refresh from recompiling shaders per texture change.
+
+
+Particle binding refresh prediction (before implementation): isolate material
+image-view/sampler binding creation from its uniform upload and pipeline lookup.
+When the canonical surface sampler changes, rebind existing material variants
+instead of clearing them and constructing new uniforms/pipelines. Expected
+per sampler change: one binding recreation per resident material variant,
+zero new uniform buffers/uploads and zero pipeline lookup/creation requests.
+Reuse the same map allocation while refreshing; restore ownership even if a
+binding reports an error. This also supplies the required binding-only entry
+point for future image residency changes. All binding indices, fallback views,
+shader parameters and draw states stay the same. This host descriptor refresh
+stands in for the original resource/material separation (14005feb0, 1402c9f00).
+Counts distinguish exercised sampler changes from the normal loading route;
+no CPU milliseconds or sampler-switch coverage is inferred from compilation.
+
+
+Particle image identity preparation (before implementation): idResource owns its
+resolved resource name (+8); image/material variants refer to that identity
+rather than an allocation address. Preserve the already resolved particle image
+path in the acquired resource and share its immutable text with the acquisition
+map key. This adds no image read or decoded copy and permits source-to-scene
+identity matching without a second name-resolution pass. Backend address-based
+GPU caching is not claimed to be replaced until the shared-image binding route
+is wired. No memory/CPU saving is predicted from path metadata alone.
+
+
+Particle shared-image route prediction (before implementation): enable the scene
+image owner for 2D particle resources in the gameplay acquisition context, with
+standalone acquisition remaining explicit. Keep only the 48-byte BIM metadata
+needed by BimageInfo::parse at particle-definition acquisition; the scene owner
+reads/uploads the compiled base chain once, streams finer mips and drops staging.
+Intrinsics use the existing generator/format metadata. Scene-owned definitions
+must never invoke the custom particle GPU upload or fall back to empty payloads.
+3D volumes remain on their dimension-specific route until separately integrated.
+
+Register canonical 2D paths in the scene's existing image slots, publish committed
+handles to the render world with shared immutable snapshots, and refresh only
+material bindings when those views change. Preserve pending/old bindings until
+new GPU resources are prepared. Particle visibility already queries live system
+bounds; retain its flag-zero projected area (14031ad30 / 14031a510) and publish it
+to each accepted material image, rather than submitting whole-screen demand.
+Reuse the existing projected-area atomic publication and upload/pressure budgets.
+Expected custom 2D GPU uploads: zero for the shared route; CPU definition payload
+residency: metadata only. GPU residency moves to the scene owner, not an assumed
+16 MB total saving. Finer requested mips can increase detail/residency legitimately.
+The existing world-material particle proxies remain separately identified until
+their material-slot demand is connected; no claim of complete particle parity.
+
+
+Particle model bounds source confirmation: 1401fb4d0 constructs one
+arkRenderModelParticleSystem (a render-model subclass). 140201480 writes its
+whole-system authored/live union to +0x1840/+0x1850; 1401c3890 supplies authored
+bounds and +0x1e58/+0x1e64 supplies the live renderer union unless fixed-box is
+set. The existing particles::bounds::system_bounds implements that union and
+1efbe0 descriptor-radius handling. Thus texture demand uses the system model's
+bounds, not a guessed screen radius per sprite. RenderAabbQuery::visible already
+calls visibility_and_area on the no-grid branch; retaining that area avoids a
+second query. Render-to-main feedback atomically takes a separate entire packed
+publication word (including explicit zero demand) and submits to the persistent
+scene record; native conditional area clearing stays with the existing streamer.
+
+Completed preceding batch: the EotW -> Dust -> EotW production run exited 0.
+Temporary model vertex/index capacities retired before later acquisition were
+30,158,970 / 26,266,368 / 30,158,970 bytes, excluding metadata/allocator overhead;
+no RSS delta is assigned. Particle pipeline requests 72/94/72 used 18/16/18
+unique pipelines, reusing 54/78/54. That run reported zero binding refreshes, so
+it does not prove sampler-switch refresh coverage. The new shared-image route
+and metadata-only particle acquisition are not certified by that earlier run.
+The c1c8760 main release build completed with exit 0.

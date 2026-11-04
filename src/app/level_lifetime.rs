@@ -124,6 +124,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::world_effects::WorldEffectFrames,
         backend::world_sounds::WorldSounds,
         backend::particle_pass::ParticleMaterialSampler,
+        backend::particle_images::SceneParticleImages,
         backend::particle_systems::ParticleQueryFrame,
         backend::physics_queries::PhysicsQueryFrame,
         backend::shadow_pass::ShadowSceneFrame,
