@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™866 ms of acquisition on the worker and 117Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™130 ms transition intervals,
+837Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў866 ms of acquisition on the worker and 117Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`Р В Р вЂ Р В РІР‚С™Р Р†Р вЂљРЎС™`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`Р В Р’В Р В РІР‚В Р В Р’В Р Р†Р вЂљРЎв„ўР В Р вЂ Р В РІР‚С™Р РЋРЎв„ў`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -1967,3 +1967,31 @@ Local evidence: artifacts/lifecycles-sound-properties-comparison.json.
 No tests, visual inspection or CPU benchmarks were run.
 
 Delivery: main 4861bb1 image-view release completed with exit 0.
+
+
+### Init/common animation reuse: prediction before implementation
+
+The previous one-map animation-cache candidate was correctly reverted: 200
+requests were 200 distinct clips. That does not cover the session boundary.
+Installed manifests contain 2,641 anim entries in common and none in init;
+`1400661e0` acquires init/common before maps and `1400607f0` returns existing
+resource identity. `14024adf0` owns the compressed animation blob at +0x48;
+`1412e2c30`/`1412e6a70` sample that backing.
+
+Expected change: immutable Arc clip data; acquire by resource path, pin only
+requested init/common clips, weak references for map-only clips, and prune weak
+lookup entries on map release. Per-character clocks, poses, blending and
+validation against each skeleton remain independent. Classification shares the
+already acquired manifests and keeps sorted integer indices, not another set
+of copied resource-name strings. No cache lookup/lock belongs in sampling.
+
+Prediction: first-visit distinct acquisition is unchanged; each later request
+for a still-live/shared clip removes one archive read and parse. If the same 200
+common player clips are requested over all three maps, reads fall 600 -> 200.
+Record actual path/identity reuse and clip-content fingerprints; adjust that
+prediction from the measured common/map classification rather than retaining
+unrequested animations. No steady-state CPU or RAM saving is predicted: this
+keeps the already required compressed allocation across the load boundary.
+Production acquisition can also transfer its owned archive buffer into the
+clip instead of making a second blob copy; the borrowed standalone parser
+remains available and must produce identical clip contents.

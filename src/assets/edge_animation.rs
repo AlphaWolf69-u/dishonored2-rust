@@ -9,13 +9,25 @@
 //! are rejected. The slerp uses an exact reciprocal square root where the
 //! game's SSE path uses unrefined RSQRTPS (differences up to ~2e-4).
 use crate::edge_skeleton::JointRestPose;
+mod residency;
+pub use residency::acquire;
+pub(crate) use residency::release_level;
+
+/// An immutable compressed resource; poses and playback time belong to actors.
+#[derive(Clone, Debug)]
+pub struct EdgeAnimation(std::sync::Arc<AnimationData>);
+impl std::ops::Deref for EdgeAnimation {
+    type Target = AnimationData;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
 
 /// sqrt(2)/32767 (DAT_141f69970) and -sqrt(1/2) (DAT_141f69aa0).
 const QUAT_SCALE: f32 = 4.315_969e-5;
 const QUAT_OFFSET: f32 = -0.707_106_77;
 
-#[derive(Clone, Debug)]
-pub struct EdgeAnimation {
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct AnimationData {
     data: Vec<u8>,
     /// Per-joint blend weights (u16@0x28 bytes at u32@0x30), if present.
     pub joint_weights: Option<Vec<u8>>,
@@ -105,11 +117,30 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 
 impl EdgeAnimation {
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let (mut data, size) = Self::parse_header(bytes)?;
+        data.data = bytes[..size].to_vec();
+        Ok(Self(std::sync::Arc::new(data)))
+    }
+
+    fn parse_owned(mut bytes: Vec<u8>) -> Result<Self, String> {
+        let (mut data, size) = Self::parse_header(&bytes)?;
+        bytes.truncate(size);
+        data.data = bytes;
+        Ok(Self(std::sync::Arc::new(data)))
+    }
+
+    fn retained_bytes(&self) -> usize {
+        2 * std::mem::size_of::<usize>() + std::mem::size_of::<AnimationData>()
+            + self.data.capacity() + self.joint_weights.as_ref().map_or(0, Vec::capacity)
+            + self.tables.iter().map(|table| table.capacity() * 2).sum::<usize>()
+    }
+
+    fn parse_header(bytes: &[u8]) -> Result<(AnimationData, usize), String> {
         if bytes.get(..4) != Some(b"80AE") {
             return Err("not an Edge animation".into());
         }
         let size = u32_at(bytes, 0x54)? as usize + 0x54;
-        let data = bytes.get(..size).ok_or("Edge animation shorter than its header size")?.to_vec();
+        let data = bytes.get(..size).ok_or("Edge animation shorter than its header size")?;
         let flags = u32_at(&data, 0x2c)?;
         if flags & 0x1b != 0 {
             return Err(format!("Edge animation compression flags {flags:#x} are not decoded"));
@@ -146,7 +177,7 @@ impl EdgeAnimation {
         } else {
             None
         };
-        Ok(Self {
+        Ok((AnimationData {
             joint_weights,
             flags,
             properties,
@@ -155,8 +186,8 @@ impl EdgeAnimation {
             frame_set_count: u16_at(&data, 0x12)?,
             counts,
             tables,
-            data,
-        })
+            data: Vec::new(),
+        }, size))
     }
 
     /// FUN_140240150: `(frames - 1) / ceil(rate)`, 0 for a still pose.
@@ -288,7 +319,7 @@ impl EdgeAnimation {
     }
 }
 
-/// `animsets` alias tables (`alias { name ... anim ... }`): alias name →
+/// `animsets` alias tables (`alias { name ... anim ... }`): alias name в†’
 /// md6anim resource. Call it in the md6's animset order: a later animset's
 /// alias replaces an earlier one, as the model def's lookups
 /// (FUN_1401c7030 / FUN_1401c7bf0) search the list from its last entry.
@@ -344,7 +375,7 @@ mod tests {
 
     #[test]
     fn smallest_three_restores_the_dropped_component() {
-        // a = b = c = 0 after offset: raw 16384 ≈ 0.7071/scale; dropped w.
+        // a = b = c = 0 after offset: raw 16384 в‰€ 0.7071/scale; dropped w.
         let raw = |v: f32| ((v - QUAT_OFFSET) / QUAT_SCALE).round() as u64;
         let packed = (raw(0.0) << 32) | (raw(0.0) << 17) | (raw(0.0) << 2) | 3;
         let bytes: Vec<u8> = (0..6).rev().map(|k| (packed >> (8 * k)) as u8).collect();

@@ -78,6 +78,7 @@ impl LevelLifetime {
                 }
             }
         }
+        crate::edge_animation::release_level();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
     }

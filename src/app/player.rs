@@ -187,8 +187,7 @@ impl Clips<'_> {
         }
         let anim = self.aliases.get(alias).ok_or_else(|| format!("no animset alias {alias}"))?;
         let resource = crate::edge_animation::resource_path(anim).ok_or_else(|| format!("{anim} is not an md6anim"))?;
-        let bytes = self.catalog.read(&resource).map_err(|e| e.to_string())?.ok_or_else(|| format!("{resource} is absent"))?;
-        let animation = crate::edge_animation::EdgeAnimation::parse(&bytes).map_err(|e| format!("{resource}: {e}"))?;
+        let animation = crate::edge_animation::acquire(self.catalog, &resource)?;
         animation.sample(self.rest, 0.0).map_err(|e| format!("{resource}: {e}"))?;
         self.animations.push(animation);
         self.loaded.insert(alias.to_owned(), self.animations.len() - 1);
@@ -894,7 +893,7 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
         lean_step(&mut player, "E held 0.1s", 12, vec![key(ACTION_LEAN_RIGHT, true)]);
         lean_step(&mut player, "E held 0.3s", 24, Vec::new());
         lean_step(&mut player, "E released +0.25s", 30, vec![key(ACTION_LEAN_RIGHT, false)]);
-        // Turn 70° while holding E, release, turn back, then press E again.
+        // Turn 70В° while holding E, release, turn back, then press E again.
         lean_step(&mut player, "E held again", 1, vec![key(ACTION_LEAN_RIGHT, true)]);
         for _ in 0..30 {
             player.physics.add_yaw(70f32.to_radians() / 30.0);
@@ -902,7 +901,7 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
             player.frame(&world, &[], &settings, dt, dt, probe_time.get(), 80.0);
             player.view();
         }
-        lean_step(&mut player, "turning 70°", 0, Vec::new());
+        lean_step(&mut player, "turning 70В°", 0, Vec::new());
         lean_step(&mut player, "E released after turn", 1, vec![key(ACTION_LEAN_RIGHT, false)]);
         for _ in 0..30 {
             player.physics.add_yaw(-70f32.to_radians() / 30.0);
@@ -910,7 +909,7 @@ pub(super) fn probe_player(catalog: &Catalog, world: &CollisionWorld, feet: Vec3
             player.frame(&world, &[], &settings, dt, dt, probe_time.get(), 80.0);
             player.view();
         }
-        lean_step(&mut player, "turning back 70°", 0, Vec::new());
+        lean_step(&mut player, "turning back 70В°", 0, Vec::new());
         lean_step(&mut player, "E pressed after turn +0.3s", 36, vec![key(ACTION_LEAN_RIGHT, true)]);
         lean_step(&mut player, "E released", 1, vec![key(ACTION_LEAN_RIGHT, false)]);
         lean_step(&mut player, "walk +0.5s", 60, vec![key(ACTION_MOVE_FORWARD, true)]);
