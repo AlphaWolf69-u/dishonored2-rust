@@ -741,8 +741,7 @@ pub fn image_load_resource(catalog: &crate::archive::Catalog, name: &str) -> Opt
         compiled_image_stem(catalog, name)?
     };
     Some(
-        if catalog.contains(&resource) || intrinsic_image_pixels(&resource).is_some()
-            || resource.eq_ignore_ascii_case("_defaultCube") {
+        if catalog.contains(&resource) || intrinsic_image_kind(&resource).is_some() {
             resource
         } else {
             "_default".into()
@@ -755,7 +754,7 @@ pub fn image_load_resource(catalog: &crate::archive::Catalog, name: &str) -> Opt
 /// constant RGBA face. Preserve those actual blocks; recompressing the colours
 /// or using six fallback checkers would produce a different image.
 pub fn intrinsic_cube_image(name: &str) -> Option<crate::texture::InlineCubeChain> {
-    if !name.eq_ignore_ascii_case("_defaultCube") {return None;}
+    if intrinsic_image_kind(name) != Some(IntrinsicImageKind::DefaultCube) {return None;}
     let mut payload = Vec::with_capacity(48);
     for face in 1..=6u8 {
         let pixel = [(face & 1) * 255, ((face >> 1) & 1) * 255, ((face >> 2) & 1) * 255, 255];
@@ -785,7 +784,7 @@ pub fn load_cube_image(catalog: &crate::archive::Catalog, name: &str) -> Result<
     if let Some(image) = intrinsic_cube_image(&resource) {
         return Ok(CubeImage {resource, image, defaulted: false});
     }
-    if intrinsic_image_pixels(&resource).is_some() {
+    if intrinsic_image_kind(&resource).is_some() {
         return Err(format!("2D intrinsic {resource} requested as cube"));
     }
     if let Some(bytes) = catalog.read(&resource).map_err(|error|error.to_string())? {
@@ -838,20 +837,28 @@ fn default_cube_preserves_executed_upload_blocks() {
     assert!(intrinsic_cube_image("_default").is_none());
 }
 
+/// Builtin resource kinds registered as class 2 by 14005fde0. Keep the
+/// supported generator set explicit; arbitrary underscore names are not builtins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntrinsicImageKind { Default, Black, White, DefaultCube }
+pub fn intrinsic_image_kind(name: &str) -> Option<IntrinsicImageKind> {
+    [("_default", IntrinsicImageKind::Default), ("_black", IntrinsicImageKind::Black),
+        ("_white", IntrinsicImageKind::White), ("_defaultCube", IntrinsicImageKind::DefaultCube)]
+        .into_iter().find_map(|(key, kind)| name.eq_ignore_ascii_case(key).then_some(kind))
+}
+
 /// Image_intrinsic.cpp: FUN_1402f5fc0, 1402f5630 and 1402f6a60.
 /// Intrinsics use linear RGBA8 (native packed format0x54a), not a white
 /// unbound-texture placeholder. The default is a16x16 grey image/white border.
 pub fn intrinsic_image_pixels(name: &str) -> Option<Vec<u8>> {
-    let name = name.to_ascii_lowercase();
-    if !matches!(name.as_str(), "_default" | "_black" | "_white") {
-        return None;
-    }
+    let kind = intrinsic_image_kind(name)?;
+    if kind == IntrinsicImageKind::DefaultCube { return None; }
     Some(
         (0..16 * 16)
             .flat_map(|i| {
-                if name == "_black" {
+                if kind == IntrinsicImageKind::Black {
                     [0; 4]
-                } else if name == "_white"
+                } else if kind == IntrinsicImageKind::White
                     || i / 16 == 0
                     || i / 16 == 15
                     || i % 16 == 0
@@ -893,7 +900,7 @@ pub fn load_3d_image(catalog: &crate::archive::Catalog, source: &str)
     -> Result<crate::texture::InlineVolumeChain, String> {
     let path = image_load_resource(catalog, source)
         .ok_or_else(|| format!("material volume unresolved: {source}"))?;
-    if intrinsic_image_pixels(&path).is_some() {
+    if intrinsic_image_kind(&path).is_some_and(|kind| kind != IntrinsicImageKind::DefaultCube) {
         let image = load_2d_image(catalog, source)?;
         return Ok(crate::texture::InlineVolumeChain {
             info: image.info, depth: 16, payload: image.payload.repeat(16),

@@ -2116,3 +2116,15 @@ class boundary, so per-pass sharing also survives map changes for explicitly
 common images. The source's cached GPU result survives view resizing; its CPU
 payload does not. Standalone borrowed-chain upload helpers remain available,
 but production consumers request the acquired source.
+
+
+Intrinsic image scope finding: native `14005fde0` registers builtins with
+resource class 2. The readonly original snapshot confirms `_default`,
+`_defaultcube`, `_white`, `_black` all have that class. They have no installed
+index entries and cannot appear in the archive-backed common-path set. The
+current purge therefore incorrectly treats acquired builtins as map images.
+Use the existing generator's exact supported-kind classifier for both resource
+resolution and persistent ownership. Prediction: acquired builtin identities
+survive map purge, removing one recreation per affected builtin on later maps;
+compiled-file IO is unchanged. Classification must allocate no pixels just to
+answer whether a name is an intrinsic; pixel generation itself stays identical.

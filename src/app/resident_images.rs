@@ -25,7 +25,8 @@ struct Registry {
 }
 
 /// Host counterpart of image lookup 14005feb0 / map purge 140060180.
-/// No payload cache: Assets owns upload staging, consumers own handles/leases.
+/// No duplicate decoded-payload cache: Bevy owns 2D staging, while acquired
+/// layered sources retire staging after upload and lease their immutable GPU image.
 #[derive(Resource, Clone)]
 pub(super) struct ResidentImages {
     registry: Arc<Mutex<Registry>>,
@@ -141,15 +142,20 @@ impl ResidentImages {
         let mut registry = self.registry.lock().unwrap();
         let before = registry.resident.len();
         let layered_before = registry.layered.len();
-        registry.resident.retain(|path, _| shared.contains(path));
-        registry.layered.retain(|path, _| shared.contains(path));
+        // 14005fde0's builtins are class 2 even without archive manifest entries.
+        let persistent = |path: &String| shared.contains(path) || crate::material::intrinsic_image_kind(path).is_some();
+        registry.resident.retain(|path, _| persistent(path));
+        registry.layered.retain(|path, _| persistent(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY resident image registry purge: requests={} loads={} uploaded_bytes={} released={} retained_common={} retained_bytes={} live_leases={}",
                 registry.requests, registry.loads, registry.bytes, before-registry.resident.len(),
                 registry.resident.len(), registry.resident.values().map(|image|image.bytes).sum::<usize>(), registry.leases.len());
-            eprintln!("MEMORY layered image registry purge: released={} retained_common={}",
+            eprintln!("MEMORY layered image registry purge: released={} retained_persistent={}",
                 layered_before - registry.layered.len(), registry.layered.len());
+            eprintln!("MEMORY intrinsic image registry: retained_2d={} retained_layered={}",
+                registry.resident.keys().filter(|path| crate::material::intrinsic_image_kind(path).is_some()).count(),
+                registry.layered.keys().filter(|path| crate::material::intrinsic_image_kind(path).is_some()).count());
         }
     }
 }
