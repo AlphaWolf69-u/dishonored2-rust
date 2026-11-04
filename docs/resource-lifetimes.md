@@ -156,3 +156,10 @@ copy/borrowed EotW/Dust/EotW production runs removed 1,101,966,556 cumulative
 copy bytes, with the largest removed temporary 16,777,216 bytes. All 4,959
 image/target payload/descriptor checksums, mip counts and byte totals matched.
 No residency, whole-frame or CPU-time gain is inferred from cumulative bytes.
+
+Full-image preparation now copies validated records directly into the final
+Image payload; the split/packed production comparison removed 80,400 transient
+per-mip buffers, with identical final CRCs/descriptors for 4,963 identities. FX
+descriptor acquisition likewise borrows its source trees; the 941-array run
+removed 631,105 cloned syntax bytes while preserving all selected entries.
+These are allocation/copy counts, not whole-process RAM or CPU-time deltas.

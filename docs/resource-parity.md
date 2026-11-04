@@ -1812,3 +1812,15 @@ The separate gradient-cache question is not resolved by those changes:
 GDraw callbacks; the current production pause run retained one content-cached
 ramp, while loading-only runs retained none. No animated-ramp growth is proven.
 Do not infer texture ownership from 14108a580/14108a6b0: those are audio slots.
+
+
+FX descriptor acceptance (compiled source 440fb6e): library/game-bin checks,
+dev build and copy/borrowed three-map production clients all exited 0. Both
+modes selected 941 descriptor arrays / 616 entries, 631,105 logical field-tree
+bytes and 58,368 bytes of descriptor-vector capacity. Deep-cloned syntax bytes
+fell 631,105 -> 0; metadata capacity and prepared particle identity counts
+54/48/54 (2D), 9/10/9 (volumes) matched, as did cache-retirement counts. There
+were no fatal/error lines. This is transient syntax-copy removal, not a 631 KB
+resident saving or measured CPU-time improvement. Omitted/default slots and
+error/order handling still run through the same shared descriptor decoder.
+Local evidence: artifacts/lifecycles-fx-descriptors-comparison.json.
