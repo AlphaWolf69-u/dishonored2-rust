@@ -1684,3 +1684,18 @@ Local reports: artifacts/lifecycles-resident-images-{separate,shared}.* and
 lifecycles-resident-images-comparison.json. Scene-streamed/full-mip identity
 remains the next separate policy boundary: a full-resolution consumer must
 pin that image rather than receive a reduced scene chain.
+
+
+Inline image staging prediction (before implementation): 1402e9ff0 walks the
+compiled mip records and passes their payload pointers to 1402f5500; it does not
+need a second packed CPU chain between the file and per-mip upload. The host
+read_streamed_diffuse_at_target currently constructs compressed_inline_chain's
+owned payload, then copies every mip to a separate CompressedMipUpload Vec.
+Expose the same validator through borrowed record visitation; keep at most 16
+borrowed descriptors on the stack and copy directly into the required cross-
+thread upload buffers. Keep the owned-chain API for consumers that need one
+packed chain, using the same validator. Expected removed copy/live temporary
+bytes per acquisition: exactly the sum of inline mip payload sizes. GPU upload
+count/bytes, mip shape, selection and validation errors remain unchanged. Use
+the same production executable's copy control and acquisition checksums/counts;
+no walking CPU timing or total RAM delta is predicted.

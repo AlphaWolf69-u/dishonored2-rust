@@ -672,8 +672,31 @@ pub(super) fn read_streamed_diffuse_at_target(
     let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
         return Err(format!("missing base BIM format descriptor {stem}"));
     };
-    let inline = texture::compressed_inline_chain(&bytes)?;
-    let format = inline.info.format;
+    // Host cross-thread buffers still own their bytes. Borrow validated source
+    // records instead of first building and then splitting a packed payload.
+    static STAGING: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    let (copy_inline, report_staging) = *STAGING.get_or_init(|| (
+        std::env::var("DH2_DEBUG_COPY_INLINE_MIPS").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_IMAGE_STAGING").as_deref() == Ok("1"),
+    ));
+    let copied = if copy_inline { Some(texture::compressed_inline_chain(&bytes)?) } else { None };
+    let mut inline_mips = [None; 16];
+    let inline = if let Some(chain) = &copied {
+        let mut offset = 0;
+        for index in 0..chain.info.mip_count {
+            let width = (chain.info.width >> index).max(1);
+            let height = (chain.info.height >> index).max(1);
+            let size = chain.info.format.mip_bytes(width, height);
+            inline_mips[index as usize] = Some(texture::CompressedMip {
+                width, height, payload: &chain.payload[offset..offset + size],
+            });
+            offset += size;
+        }
+        chain.info
+    } else {
+        texture::visit_inline_mips(&bytes, |index, mip| inline_mips[index as usize] = Some(mip))?
+    };
+    let format = inline.format;
     let highest_separate = (0..=15)
         .rev()
         .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
@@ -716,25 +739,32 @@ pub(super) fn read_streamed_diffuse_at_target(
         }
     }
     if let Some((width, height)) = previous {
-        if inline.info.width != (width / 2).max(1) || inline.info.height != (height / 2).max(1) {
+        if inline.width != (width / 2).max(1) || inline.height != (height / 2).max(1) {
             return Err("authored inline base does not follow separate mips".into());
         }
     }
-    top.get_or_insert((inline.info.width, inline.info.height));
-    let mut offset = 0;
-    for index in 0..inline.info.mip_count {
-        let width = (inline.info.width >> index).max(1);
-        let height = (inline.info.height >> index).max(1);
-        let size = format.mip_bytes(width, height);
+    top.get_or_insert((inline.width, inline.height));
+    for (index, mip) in inline_mips.iter().flatten().enumerate() {
         uploads.push(CompressedMipUpload {
-            mip_level: mip_count + index,
-            width,
-            height,
-            payload: inline.payload[offset..offset + size].to_vec(),
+            mip_level: mip_count + index as u32,
+            width: mip.width,
+            height: mip.height,
+            payload: mip.payload.to_vec(),
         });
-        offset += size;
     }
-    mip_count += inline.info.mip_count;
+    mip_count += inline.mip_count;
+    if report_staging {
+        use std::hash::{Hash, Hasher};
+        let mut checksum = std::hash::DefaultHasher::new();
+        inline.packed_format.hash(&mut checksum);
+        for mip in &uploads {
+            (mip.mip_level, mip.width, mip.height).hash(&mut checksum);
+            mip.payload.hash(&mut checksum);
+        }
+        let inline_bytes = inline_mips.iter().flatten().map(|mip| mip.payload.len()).sum::<usize>();
+        eprintln!("MEMORY image staging: path={stem} target={target:?} inline_bytes={inline_bytes} redundant_copy_bytes={} upload_bytes={} mips={} checksum={:016x}",
+            if copy_inline {inline_bytes} else {0}, uploads.iter().map(|mip|mip.payload.len()).sum::<usize>(), uploads.len(), checksum.finish());
+    }
     let (width, height) = top.ok_or("authored image has no mip payload")?;
     Ok(Some(StreamedDiffuse {
         image: empty_streamed_image(width, height, mip_count, gpu_image_format(format)),

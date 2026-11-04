@@ -569,12 +569,20 @@ fn normalized_16_lookup_mips_preserve_authored_words() {
     bytes.pop();assert!(compressed_inline_chain(&bytes).is_err());
 }
 pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, String> {
+    let mut payload = Vec::new();
+    let info = visit_inline_mips(bytes, |_, mip| payload.extend_from_slice(mip.payload))?;
+    Ok(InlineCompressedChain { info, payload })
+}
+
+/// Validate installed inline records while borrowing their compiled payloads.
+/// 1402e9ff0 hands each record to 1402f5500; no intermediate packed copy is needed.
+pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, CompressedMip<'a>))
+    -> Result<BimageInfo, String> {
     let info = BimageInfo::parse(bytes)?;
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
         return Err("invalid BIM dimensions/mip count".into());
     }
     let mut at = 62usize;
-    let mut payload = Vec::new();
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
         let height = (info.height >> level).max(1);
@@ -591,13 +599,13 @@ pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, St
         if (mip.width, mip.height) != (width, height) {
             return Err("inline mip dimensions disagree with BIM header".into());
         }
-        payload.extend_from_slice(mip.payload);
+        visit(level, mip);
         at = end;
     }
     if at != bytes.len() {
         return Err("inline mip chain size mismatch".into());
     }
-    Ok(InlineCompressedChain { info, payload })
+    Ok(info)
 }
 
 pub struct RgbaImage {
