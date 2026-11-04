@@ -1738,3 +1738,21 @@ comparison.json and the two production logs. No tests or visuals inspected.
 Particle program batch first game compilation found a missing TextureFormat
 qualification in CameraGpu's new cache field. Fixed before any delivery build;
 the failed check is not runtime acceptance evidence.
+
+
+Particle program acceptance (compiled source 547006e): corrected game-bin check
+and dev build exited 0; recreate/reuse production clients both completed EotW ->
+Dust -> EotW, exit 0, no fatal/error lines. Recreate compiled 18/16/18 pipelines
+(52 total) and three shader/layout sets. Reuse compiled 18/0/0 (18 total), with
+one shader/layout set; Dust's 16 states were already in EotW's 18-state set.
+The return EotW reused all 18. Per-map pipeline requests remained 72/94/72;
+volume image uploads remained 9/10/9 and 13,729,792 / 28,311,552 / 13,729,792
+bytes in both runs. Material bindings and CPU upload staging still retire with
+the map. Cache keys include colour/depth formats; format replacement preserves
+separate specialization sets. This is host compiled-object reuse, not evidence
+that 1402c9f00 (serialized cache lookup) retains GPU objects. No CPU-time or
+physical GPU/driver memory reduction is inferred. Local evidence:
+artifacts/lifecycles-particle-programs-comparison.json. No tests/visuals run.
+
+Delivery: main source 596c051 release completed with exit 0 before integrating
+the accepted inline staging and particle program changes.

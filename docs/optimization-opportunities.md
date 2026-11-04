@@ -314,3 +314,14 @@ transfer rather than another duplicate parser or per-mip shared-reference work.
 Expected remaining opportunity is one packing copy for whole-chain consumers,
 not an assumed resident-memory or walking-CPU reduction. It waits while device
 program retention is compiled/validated so source snapshots remain unambiguous.
+
+
+Particle program lifetime sweep: CameraGpu now retains an Arc of immutable
+shader/layout/pipeline objects across maps, keyed by target formats. Active
+ParticlePass owns mutable buffers and image/material bindings separately. No
+per-frame mutex, added pipeline lookup or pipeline-map copy is introduced.
+Same-build EotW/Dust/EotW recreate/reuse production comparison created 52 -> 18
+pipelines and 3 -> 1 shader/layout sets, with unchanged image upload counts/
+bytes. Dust and the return map created no new states. This closes repeated
+map shader compilation for this owner; other pass shader/device residency and
+physical allocation accounting remain distinct work.
