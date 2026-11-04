@@ -931,7 +931,8 @@ static STREAM_DIAGNOSTIC_INSERTS: std::sync::atomic::AtomicU64 = std::sync::atom
 static STREAM_DIAGNOSTIC_SIGNATURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn stream_diagnostic_mode() -> (bool, bool) {
     *STREAM_DIAGNOSTIC_MODE.get_or_init(|| (
-        std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")
+        (std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")
+            && std::env::var("DH2_DEBUG_STREAM_DIAGNOSTIC_OFF").as_deref() != Ok("1"))
             || std::env::var("DH2_DEBUG_RETAIN_STREAMED_MEDIA_DIAGNOSTICS").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_STREAM_DIAGNOSTIC_METRICS").as_deref() == Ok("1"),
     ))
