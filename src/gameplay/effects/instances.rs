@@ -173,11 +173,8 @@ impl FxGraphInstances {
         errors
     }
     fn insert(&mut self, index: usize, id: u32, port: u32) -> Result<(), String> {
-        let node = self[index]
-            .as_ref()
-            .ok_or("FX graph busy")?
-            .node(id)?
-            .clone();
+        let definition = self[index].as_ref().ok_or("FX graph busy")?.shared_definition();
+        let node = definition.node(id)?;
         if node.class == "arkKisculeNodeDeclInstance" {
             if let Some(error) = self.failures.get(&(index, id)) {
                 return Err(error.clone());
@@ -194,21 +191,16 @@ impl FxGraphInstances {
                 .find(|point| point.id == port)
                 .ok_or("declaration input port absent")?
                 .name;
-            let entries = self[child]
-                .as_ref()
-                .unwrap()
-                .definition()
-                .nodes
-                .iter()
+            let child_definition = self[child].as_ref().unwrap().shared_definition();
+            let entries = child_definition.nodes.iter()
                 .filter(|node| {
                     node.class == "arkKisculeNodeDeclEntry"
                         && atom(&node.params, "m_entryName").unwrap_or("") == name
                 })
-                .cloned()
-                .collect::<Vec<_>>();
+                ;
             let mut auto_exit = false;
             let mut refreshed = false;
-            for entry in &entries {
+            for entry in entries.clone() {
                 let runtime = self[child].as_ref().unwrap();
                 auto_exit |= runtime.boolean_parameter(entry, "m_autoExit", true)?;
                 if !refreshed

@@ -1803,6 +1803,7 @@ pub(super) fn prepare(
             &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
+    particle_resources.retire_unused();
     let mut particle_image_slots = Vec::new();
     for image in particle_resources.images().filter(|image| image.scene_owned) {
         let slot = resolver.register_image(&image.path)

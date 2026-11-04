@@ -95,6 +95,12 @@ pub struct FxGraph {
     pub effects: HashMap<u32, FxNodeParameters>,
     pub variables: Vec<declarations::GraphVariable>,
 }
+impl FxGraph {
+    pub fn node(&self, id: u32) -> Result<&Node, String> {
+        self.nodes.iter().find(|node| node.id == id)
+            .ok_or_else(|| format!("missing node {id}"))
+    }
+}
 fn child<'a>(fields: &'a [(String, Value)], name: &str) -> &'a [(String, Value)] {
     scope(field(fields, name)).unwrap_or(&[])
 }

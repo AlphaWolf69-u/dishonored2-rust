@@ -1553,3 +1553,59 @@ volumetric overrides (14028bfa0/14028c100), not the particle constructor
 particle surface-material traversal. First shared-route game compilation found
 two integration defects (system arity and an omitted state field), corrected
 before any build was delivered; that failed check is not acceptance evidence.
+
+
+FX dispatch borrowing prediction (before implementation): 1407c0e30 obtains
+existing node/input pointers via 1407bbec0/1407bbf80 and invokes callbacks;
+1407bb9d0 inserts declaration entries through existing definitions. Runtime::step
+and Instances::insert instead deep-clone immutable Node parameters/ports/links;
+emit clones its output links, and insertion clones matching entry nodes into a
+Vec. Hold a local definition Arc and borrow those nodes/links while mutating only
+runtime state. Replay borrowed entry iteration for the existing two passes.
+Expected copies: one Node per step -> zero; one Node plus entry copies per
+insertion -> zero; one link Vec per emit -> zero. Preserve lookup errors,
+authored order, owner overrides, queues, callbacks and mutable variables/gates.
+No CPU-time or resident-RAM saving is inferred from these transient-copy counts.
+The prepared change waits until the current image build snapshot is finished.
+
+Adjacent queue sweep: take_pending transfers its Vec so recursive insertion can
+run without holding a runtime borrow, potentially losing capacity at flush
+boundaries. A recursive scratch strategy needs active allocation/depth evidence;
+do not add a shared locked buffer or reorder insertion. Dynamic parameter/entity
+snapshots remain owned because runtime callbacks may retain their values.
+
+
+Shared particle image acceptance (source 3dd8a11): game-bin check, dev build and
+EotW -> Dust -> EotW production execution exited 0, with one catalogue/device/
+window/audio output. Scene bindings covered 57/48/57 distinct 2D identities;
+custom particle uploads were 9/10/9, all volumes, versus 59/54/59 previously.
+Their uploaded/retired staging bytes were 13,729,792 / 28,311,552 / 13,729,792.
+Those bytes move only for the remaining 3D owner; 2D storage moved to the scene
+owner, so this is not a claim of equivalent total GPU memory savings. Acquired
+particle-definition bytes were 13,732,480 / 28,313,808 / 13,732,480, including
+metadata for scene-owned images. Two binding-only refreshes occurred in the
+return EotW pass; the current combined counter does not identify sampler versus
+image-view causes. No reported runtime errors. No CPU benchmark, tests or visual
+inspection. Source integrated into main; release delivery build started.
+
+Active volume evidence: all captured 3D flipbooks had one authored mip, full XY
+equal to inline XY, and zero indexed separate levels. Dimensions ranged from
+128x128x4 to 512x512x64 (also 256x256x128). They retain all authored data and
+retire CPU upload staging; forcing these into a 2D mip scheduler would invent
+absent levels. This verifies these consumed volumes in two levels, not every
+volume asset in the installation. Other image families and cache policies remain
+within the broader goal, including complete installed-volume classification.
+
+
+Acquisition-cache admission prediction (before implementation): scene image
+registration currently iterates every image acquired while preparing particle
+materials, including any temporary/overridden image that only its cache retains.
+After all definitions/proxies are prepared, retire cache-only declarations and
+materials first, then cache-only model/field/image backing. Live definitions and
+world-material binding lists already own their Arcs. Register only the remaining
+2D image identities. This implements the owner-release boundary of 140060180
+using actual consumer ownership rather than guessing resource age or paths.
+Expected invariant: no cache-only image becomes a scene GPU asset. Count retired
+entries and their acquisition payload bytes; do not presume a nonzero count or
+infer RSS savings. Runtime definitions, future stages and active bindings keep
+their references, so prefetch and acquisition latency are preserved.

@@ -59,6 +59,22 @@ impl ParticleResources {
         self.images.images()
     }
 
+    /// Acquisition caches cannot promote an otherwise unused asset into GPU
+    /// residency. Runtime declarations/materials own their required backing.
+    pub fn retire_unused(&mut self) {
+        let before = (self.declarations.len(), self.materials.len(), self.models.len(), self.field_images.len());
+        self.declarations.retain(|_, value| value.as_ref().is_ok_and(|value| Arc::strong_count(value) > 1));
+        self.materials.retain(|_, value| Arc::strong_count(value) > 1);
+        self.models.retain(|_, value| Arc::strong_count(value) > 1);
+        self.field_images.retain(|_, value| Arc::strong_count(value) > 1);
+        let (images, payload_bytes) = self.images.retire_unused();
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY particle cache retirement: declarations={} materials={} models={} fields={} images={} acquisition_payload_bytes={}",
+                before.0 - self.declarations.len(), before.1 - self.materials.len(),
+                before.2 - self.models.len(), before.3 - self.field_images.len(), images, payload_bytes);
+        }
+    }
+
     pub fn report_scene_images(&self, paths: &[String]) { self.images.report_scene_overlap(paths); }
 
     /// Diagnostic acquisition A/B; production always shares immutable assets.

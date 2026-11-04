@@ -259,14 +259,15 @@ impl FxGraphRuntime {
         std::mem::take(&mut self.pending)
     }
     pub(super) fn emit(&mut self, id: u32, name: &str) -> Result<(), String> {
-        let node = self.node(id)?;
+        let definition = self.shared_definition();
+        let node = definition.node(id)?;
         let links = node
             .ports
             .iter()
             .find(|p| p.name == name && p.kind.starts_with("Output"))
-            .map(|p| p.links.clone())
+            .map(|p| p.links.as_slice())
             .unwrap_or_default();
-        for (target, port) in links {
+        for &(target, port) in links {
             if !self.relevant.contains(&target) {
                 continue;
             }
@@ -304,7 +305,9 @@ impl FxGraphRuntime {
         let Some((id, port)) = self.pending.pop() else {
             return Ok(GraphStep::Idle);
         };
-        let node = self.node(id)?.clone();
+        // 1407c0e30 uses the existing definition, with separate execution state.
+        let definition = self.shared_definition();
+        let node = definition.node(id)?;
         let port = node
             .ports
             .iter()

@@ -69,6 +69,20 @@ impl ParticleImages {
     pub fn scene_image(&mut self, catalog: &Catalog, name: &str) -> Result<Option<Arc<ParticleImage>>, String> {
         if self.scene_images { self.image(catalog, name).map(Some) } else { Ok(None) }
     }
+    pub fn retire_unused(&mut self) -> (usize, usize) {
+        let mut count = 0;
+        let mut bytes = 0;
+        for images in [&mut self.images, &mut self.volumes] {
+            images.retain(|_, image| {
+                if Arc::strong_count(image) > 1 { return true; }
+                count += 1;
+                bytes += image.payload_bytes;
+                false
+            });
+        }
+        (count, bytes)
+    }
+
     pub fn report_scene_overlap(&self, paths: &[String]) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
         let paths: std::collections::HashSet<_> = paths.iter().map(String::as_str).collect();
