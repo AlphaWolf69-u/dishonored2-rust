@@ -2499,3 +2499,13 @@ combined array in the same face/level order. This removes one full cube staging
 allocation per probe; the final combined GPU upload payload and its ordering
 remain necessary. Compare the real copy and direct paths by per-cube output
 checksums, descriptors and allocation counts, not whole-frame CPU timing.
+
+
+Reflection final-buffer prediction (before implementation): each cube has an
+identical validated descriptor, so the probe count and first cube's validated
+record ranges determine the exact final array size. Reserve it once before
+appending the first cube; the legacy diagnostic keeps geometric growth.
+Prediction: final-array capacity changes at most once rather than growing with
+the number of probes, with identical layer-major bytes and no extra full-sized
+buffer. Report production capacity-growth counts and payload sizes; allocation
+counts are not whole-process memory or CPU-time measurements.

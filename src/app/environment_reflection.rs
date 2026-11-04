@@ -72,6 +72,8 @@ pub(super) fn load(
     let count = probes.map_or(0, |p| p.reflection_probes.len());
     let mut words = vec![count as u32, 0, 0, 0];
     let mut data = Vec::new();
+    let mut growths = 0usize;
+    let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");
     let mut spec = None;
     let mut cube_indices = Vec::<u32>::with_capacity(count);
     if let Some(probes) = probes {
@@ -92,11 +94,16 @@ pub(super) fn load(
                 if previous != info {
                     return Err(format!("reflection cube descriptors disagree: {path}"));
                 }
+            } else if !copy {
+                let one_cube: usize = ranges.iter().map(|range| range.len()).sum();
+                let total = one_cube.checked_mul(count).ok_or("reflection array size overflow")?;
+                data.try_reserve_exact(total).map_err(|error| format!("reflection array allocation: {error}"))?;
+                growths += usize::from(total != 0);
             }
             spec = Some(info);
             cube_indices.push(cube_indices.len().try_into().map_err(|_| "too many reflection cubes")?);
             let start = data.len();
-            let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");
+            let prior_capacity = data.capacity();
             if copy {
                 let cube = texture::compressed_inline_cube(&bytes).map_err(|e| format!("{path}: {e}"))?;
                 // Bevy consumes layer-major; installed records are mip-major.
@@ -116,6 +123,7 @@ pub(super) fn load(
                     }
                 }
             }
+            growths += usize::from(data.capacity() > prior_capacity);
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 let mut crc = flate2::Crc::new();
                 crc.update(&data[start..]);
@@ -124,6 +132,9 @@ pub(super) fn load(
             }
             words.extend(crate::rendering::environment_reflection::probe_words(probe));
         }
+    }
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY reflection array: copy={copy} probes={count} payload_bytes={} capacity={} growths={growths}", data.len(), data.capacity());
     }
     let (width, mips) = spec.map_or((4, 1), |s| (s.width, s.mip_count));
     if count == 0 {
