@@ -119,7 +119,7 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 | Iggy files/ABC | `assets/iggy::acquire`, `flash/avm2::Unit` | One immutable parsed source/ABC per UI worker; player namespaces/classes/VM are separate | File cache intentionally survives movie close; parsed runtime Unit ownership must not keep closed VM state alive |
 | Fonts/glyphs/library bitmaps | `assets/iggy/font`, `flash/glyph_cache`, `flash/bitmap_resources`, `bevy_backend/flash_ui` | Metadata-only lookups; lazy outlines; R8 glyph pages; BC7 library images passed through; obsolete movie-generation GPU textures removed on close | Original page creation/update and unused-slot reuse are implemented (`14107b7e0`, `14107b2d0`, `14107a980`); versions update one GPU identity with dirty rectangles. Immutable bitmap caching and source-backed CPU page snapshots remain separate ownership questions |
 | Movie runtime | `flash::Player`, `flash/avm2::heap` | Per-movie roots, tracing of objects/shared scopes, weak listeners and Dictionary keys, explicit closed-VM teardown | Original `141062a90`/`141063ed0`/`141064cd0` collection and weak-handle behavior implemented with host reference tracing; automatic scheduling is a host difference. Three-map production run completed, zero retained objects on close; measured live loading heaps contained no garbage |
-| Render targets/descriptors/history | `bevy_backend/{camera_scene,fog_scene,display_scene,shadow_pass,auto_exposure}` | Level acknowledgement releases world/view references before destination acquisition; device pipelines and reusable viewport capacity survive | Prior repeated-map measurements verified static shadow cache no longer accumulates. Quality/resolution changes within one map need separate residency coverage |
+| Render targets/descriptors/history | `bevy_backend/{camera_scene,fog_scene,display_scene,shadow_pass,auto_exposure}` | Level acknowledgement releases world/view references before destination acquisition; device pipelines and reusable viewport capacity survive | Prior repeated-map measurements verified static shadow cache no longer accumulates. Repeated production resizes completed in EotW and Dust. The Dust ocean pass retained culled 960x540 targets/bindings: pre-admission invalidation now releases 21,954,560 B of obsolete live GPU allocations, with identical streamed bytes and upgrade counts in the same-binary comparison. Size-independent wave history and resources remain. Quality-setting replacement still needs separate coverage |
 | Pending IO/uploads/diagnostics | `TextureReadWorker`, `PreparedImageMailbox`, render extraction, F8 histories | Receiver drop stops outgoing reader after the current read; publication mailboxes reset; pending extraction retains handles until prepared | Bounded in-flight work can briefly outlive map teardown; do not treat allocator-reserved GPU heaps or OS file cache as live resources |
 
 Absent systems remain `none` in `resource-parity.md`; they are not silently
@@ -189,3 +189,19 @@ Aligned BC7 data remains compressed; the documented nonaligned backend fallback
 still needs cropped RGBA output. The generic entity document likewise drops at
 the end of `app::level_prepare`; runtime scene ownership holds typed records,
 not the whole parser tree.
+
+
+2026-11-04 viewport acceptance (14909a0): both same-binary Dust retain/retire
+clients completed seven resize snapshots, exit 0. At snapshots 3, 4 and 6,
+retirement removes exactly 21,954,560 B in the affected old-size texture,
+uniform and sampler-index allocation labels. This matches the predicted stale
+960x540 colour/depth/HDR/foam/input owners. Snapshots 0..2 have equal viewport
+target storage before there is a dormant colour target to invalidate. The two
+runs have exactly the same streamed finer bytes and upgrade counts at all seven
+snapshots (286,654,464 B / 270 initially; 383,254,528 B / 318 afterward).
+Staging and unrelated animated particle-material allocations vary and are not
+included in that saving. Wave data, patch buffers, authored textures and draw
+admission remain unchanged; only incompatible viewport allocations retire.
+No CPU benchmarks, tests or visual inspection were performed. Numeric evidence:
+artifacts/lifecycles-ocean-viewport-comparison.json. The earlier main release
+at f4bb382 completed successfully before this source was integrated.

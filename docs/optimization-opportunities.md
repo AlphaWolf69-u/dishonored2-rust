@@ -352,3 +352,14 @@ mip/view identity; compare native loaded-map named image descriptors first. Do
 not create another texture cache or pin full-resolution masks as a shortcut.
 Unused prefetched typed sky staging likewise cannot be counted as retired: the
 36,700,160-byte result covers acquired sources only.
+
+
+Resolution-retirement finding resolved (14909a0): a culled ocean colour pass
+returned before validating viewport targets, so old foam/HDR bindings pinned
+960x540 main colour, water depth and opaque inputs. Pre-admission invalidation
+removes exactly 21,954,560 B of live GPU allocations at three larger-size
+snapshots in a same-binary Dust comparison. Both clients exit 0; finer image
+bytes and mip upgrades match at every snapshot. Unchanged-size frames only
+compare the cached extent; wave simulation/history, images and size-independent
+program/buffer capacity remain. No extra passes or CPU-time claim. This covers
+resolution replacement for the observed owners, not unmeasured quality changes.
