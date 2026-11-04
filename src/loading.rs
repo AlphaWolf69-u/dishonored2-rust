@@ -37,7 +37,7 @@ struct State {
 #[derive(Default)]
 struct HistoryMetrics {
     reads: usize,
-    canonical: usize,
+    borrowed_paths: usize,
     inserted: usize,
     new_kinds: usize,
     normalizations: usize,
@@ -87,8 +87,8 @@ pub fn read(kind: &str, path: &str) {
     use std::borrow::Cow;
     let (separate, trace) = history_modes();
     let cycle_start = if trace { history_thread_cycles() } else { None };
-    let canonical = !separate && path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase());
-    let path: Cow<'_, str> = if separate || !canonical {
+    let borrowed_path = !separate && path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase());
+    let path: Cow<'_, str> = if !borrowed_path {
         Cow::Owned(path.to_ascii_lowercase().replace('\\', "/"))
     } else {
         Cow::Borrowed(path)
@@ -120,10 +120,10 @@ pub fn read(kind: &str, path: &str) {
         if trace {
             let m = &mut s.history_metrics;
             m.reads += 1;
-            m.canonical += usize::from(canonical);
+            m.borrowed_paths += usize::from(borrowed_path);
             m.inserted += usize::from(inserted);
             m.new_kinds += usize::from(new_kind);
-            m.normalizations += usize::from(separate || !canonical);
+            m.normalizations += usize::from(!borrowed_path);
             m.kind_allocations += usize::from(separate || new_kind);
         }
         if inserted {
@@ -187,8 +187,8 @@ pub fn play_started() {
         let (separate, trace) = history_modes();
         if trace {
             let m = &s.history_metrics;
-            eprintln!("MEMORY read history allocation operations: separate={separate} reads={} canonical={} inserted={} new_kinds={} normalizations={} kind_allocations={} cycle_reads={} cycles={}",
-                m.reads, m.canonical, m.inserted, m.new_kinds, m.normalizations, m.kind_allocations, m.cycle_reads, m.cycles);
+            eprintln!("MEMORY read history allocation operations: separate={separate} reads={} borrowed_paths={} inserted={} new_kinds={} normalizations={} kind_allocations={} cycle_reads={} cycles={}",
+                m.reads, m.borrowed_paths, m.inserted, m.new_kinds, m.normalizations, m.kind_allocations, m.cycle_reads, m.cycles);
         }
         // 1400661e0 frees the temporary acquisition table after loading.
         // Progress is now 1; late-load reporting only needs the read registry.

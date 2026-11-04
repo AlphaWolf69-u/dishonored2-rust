@@ -128,7 +128,7 @@ trailing `*` covers a family of kinds.
 | `pauseMenuSectionOptions` | `gameplay::options` | partial: reads its resources; lifecycle not ported (see its class) |
 | `pblock` | `rendering::render_program` | partial: reads its resources; lifecycle not ported (see its class) |
 | `physhape` | `assets::physworld` | partial: reads its resources; lifecycle not ported (see its class) |
-| `physicsMaterial` | `assets::entities::physics_material`, `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |
+| `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
 | `physSystem` | none | none: no owner yet |
 | `physworld` | `assets::physworld`, `gameplay::body_storage`, `gameplay::navigation` | partial: reads its resources; lifecycle not ported (see its class). Host navigation broad phase keeps decoded full-precision triangles for query speed; immutable cell lists pack u32 shape keys into one allocation, retaining their order and releasing construction capacity. This replaces the Havok compressed-mesh tree (`141262020`); no per-query mesh decoding or reduced precision |
 | `playerLocomotion` | `assets::entities::player` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -3136,3 +3136,52 @@ result on every machine. Contact, sound, 600 animation, material input, 430
 UI bitmap and probe-network fingerprints matched. These are acquisition
 counts, logical input bytes and targeted cycles, not a process-RSS result.
 Evidence: local `artifacts/archive-overlay-comparison.json` and paired logs.
+
+
+### Physics-material sharing prediction
+
+Installed world-physics acquisition recorded 134 reads of 45 distinct
+physics-material paths in EotW (89 repeated reads, 3,261 repeated decoded
+bytes), 115 of 41 in Dust (74, 2,548 bytes), and 114 of 40 in Institute
+(74, 2,387 bytes). The resolved-output fingerprints were respectively
+`d5e0bead8c732708`, `672e9c7850dc6d6b`, and `bc32baabad7b780c`; no
+resolution errors occurred. EotW / Dust / Institute have 42 / 39 / 38
+world paths also present in the contact list, all in the 306 common
+physics-material entries. The sampled files did not change size between reads.
+Evidence: local `artifacts/physics-material-overlap.json` and
+`artifacts/physics-material-membership.json`.
+
+Before implementation: one level-scoped source owner should serve model
+collision, world physics, machinery and physics-world startup, then transfer
+its already acquired listed texts to the existing contact declaration owner.
+The existing session common table should serve later levels without a second
+read. For EotW / Dust / EotW, world physics should fall from 383 reads to
+at most 50 and the initial contact acquisition should avoid at least 42 more,
+a combined minimum of 375 reads. The world-only source bytes are predicted
+16,858 -> at most 2,963 and initial contact should avoid at least 2,446
+additional bytes. Model-collision or machinery overlap can add savings; it
+must not be counted twice. Retain only the unique texts needed for that handoff
+and move them into the common table rather than keeping two copies. Unlisted
+texts drop after acquisition, live overlays keep separate reads, and no
+gameplay-frame or RSS improvement is assumed. Compare actual per-consumer
+reads/bytes, resolved collision properties, contact and sound fingerprints,
+owner release and loading progress in real clients; investigate a prediction
+difference over 30%.
+
+### Physics-material sharing result
+
+The separate/shared EotW / Dust / EotW production clients both exited 0.
+World reads fell 383 -> 46 and decoded source bytes 16,858 -> 2,666,
+within the prediction. Including model collision, machinery and startup,
+reads fell 749 -> 62 and decoded bytes 40,060 -> 5,111; initial contact
+acquisition avoided 45 additional reads and 2,686 decoded bytes. Machinery
+made 306 source requests and needed no extra reads in shared mode because
+the earlier consumers or session owner had those texts. The maximum
+temporary handoff string capacity was 6,748 bytes; after transfer, the
+unlisted strings drop with the handoff. Existing common and map tables have
+the same measured capacities in both modes. World and model material values,
+contact and sound signatures, 600 animation and 430 UI bitmap signatures,
+probe fingerprints, and loading progress snapshots matched. These counts
+are not process RSS or gameplay-frame timings; a targeted acquisition CPU
+comparison is still required. Evidence: local
+`artifacts/physics-sharing-comparison.json` and paired client logs.

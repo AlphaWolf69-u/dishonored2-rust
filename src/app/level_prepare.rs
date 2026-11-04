@@ -3,12 +3,15 @@
 use super::{
     BenchmarkSeconds, DirectionalLightShadowMap, Instant, NavigationWorld, PathBuf,
     PointLightShadowMap, ProgramCacheSource, SceneData, ShadowCasterWorld, SnapshotPath,
-    StreamingDiagnostics, TomeWorld, ViewSettings, acquire_static_model_collision, archive,
+    StreamingDiagnostics, TomeWorld, ViewSettings, archive,
     entities, env, expanded_model_placements, game_affine_to_view, game_settings, game_to_view,
     navigation, physworld, placed_transform, placed_vertex, probe_lighting, render_light,
     shader_cache, shadow_target_dimensions, tome, transformed, view_to_game, world_mesh,
 };
 use bevy::prelude::*;
+
+#[derive(Resource)]
+pub(super) struct PreparedPhysicsTexts(pub(crate) crate::assets::declaration_texts::PhysicsSeed);
 
 pub(super) fn prepare_level(
     base: PathBuf,
@@ -35,6 +38,9 @@ pub(super) fn prepare_level(
     )
     .map_err(std::io::Error::other)?;
     crate::loading::begin_level(list, catalog.as_ref().unwrap());
+    let mut physics_texts = crate::assets::declaration_texts::PhysicsSeed::new(
+        catalog.as_ref().unwrap(), language,
+    );
     let bytes = level.read_world(catalog.as_ref().unwrap())?;
     let world =
         world_mesh::parse(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -495,7 +501,14 @@ pub(super) fn prepare_level(
                 .as_ref()
                 .map(entities::rigid_body_settings)
                 .unwrap_or_default();
-            let collision = acquire_static_model_collision(catalog, &placed_models, &bodies);
+            let collision = super::view_geometry::acquire_static_model_collision_with_texts(
+                catalog, &placed_models, &bodies, &mut physics_texts,
+            );
+            if env::var("DH2_DEBUG_PHYSICS_SIGNATURES").as_deref() == Ok("1") {
+                let mut crc = flate2::Crc::new();
+                crc.update(format!("{:?}", collision.materials).as_bytes());
+                eprintln!("MEMORY model collision materials: count={} signature={:08x}", collision.materials.len(), crc.sum());
+            }
             println!(
                 "Placed static-model collision: {} matched authored root HKX bodies, {} triangles, {} failures/unsupported recipes; ExtraHD: {} acquired, {} unresolved",
                 collision.matched,
@@ -520,19 +533,24 @@ pub(super) fn prepare_level(
             .materials
             .iter()
             .map(|name| {
-                let read = |path: &str| {
-                    catalog
-                        .as_ref()
-                        .unwrap()
-                        .read(path)
-                        .map(|b| b.map(|b| entities::declaration_text(&b).into_owned()))
-                        .map_err(|e| e.to_string())
-                };
+                let read = |path: &str| physics_texts.read(
+                    catalog.as_ref().unwrap(), path,
+                    crate::assets::declaration_texts::PhysicsUse::World,
+                );
                 entities::physics_material::physics_material(name, read).map_err(|error| {
                     missing_materials.push(error);
                 })
             })
             .collect();
+        if env::var("DH2_DEBUG_PHYSICS_SIGNATURES").as_deref() == Ok("1") {
+            let mut crc = flate2::Crc::new();
+            for (name, material) in physics.materials.iter().zip(&materials) {
+                crc.update(name.as_bytes());
+                crc.update(format!("{material:?}").as_bytes());
+                crc.update(&[0]);
+            }
+            eprintln!("MEMORY physics material output: count={} signature={:08x}", materials.len(), crc.sum());
+        }
         if !missing_materials.is_empty() {
             println!("Physics materials unresolved: {missing_materials:?}");
         }
@@ -768,10 +786,11 @@ pub(super) fn prepare_level(
         // must not depend on which window has focus.
         app.insert_resource(bevy::winit::WinitSettings::continuous());
     }
-    let machinery = super::machinery::AmbientMachinery::load(
+    let machinery = super::machinery::AmbientMachinery::load_with_texts(
         catalog.as_ref().unwrap(),
         entity_document.as_ref(),
         &placed_models,
+        &mut physics_texts,
     )
     .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
@@ -792,7 +811,7 @@ pub(super) fn prepare_level(
             .unwrap_or(&level.entities)
             .strip_suffix(".entities")
             .ok_or("physics entity resource has no map name")?;
-        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes)
+        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts)
         {
             Ok(physics) => {
                 app.insert_resource(physics);
@@ -880,6 +899,7 @@ pub(super) fn prepare_level(
             catalog,
         })
         .insert_resource(super::state::EnvironmentVolumes(environment_volumes));
+    app.insert_resource(PreparedPhysicsTexts(physics_texts));
     app.insert_resource(ViewSettings(view_settings));
     app.insert_resource(StreamingDiagnostics::new(&path));
     drop(entity_document);

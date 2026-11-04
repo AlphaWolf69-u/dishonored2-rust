@@ -181,6 +181,7 @@ impl PhysicsScene {
         document: &entities::Document,
         map: &str,
         volumes: &[crate::rendering::environment::EnvironmentVolume],
+        texts: &mut crate::assets::declaration_texts::PhysicsSeed,
     ) -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
         let installed = crate::assets::class_metadata::ClassDeclarations::load(&base)?;
@@ -257,13 +258,13 @@ impl PhysicsScene {
             &base,
         )?);
         let mut materials = crate::gameplay::materials::MaterialOwner::new(constants, 16)?;
-        let declaration = materials.declaration(catalog, "narrow_phase_trigger")?;
+        let declaration = materials.declaration_with_texts(catalog, "narrow_phase_trigger", texts)?;
         let trigger_material = materials.resolve(declaration, |_, _, _, _| {
             panic!("material subscriber before level initialization")
         })?;
         let water_declarations = water_bindings
             .iter()
-            .map(|binding| binding.startup(|name| materials.declaration(catalog, name)))
+            .map(|binding| binding.startup(|name| materials.declaration_with_texts(catalog, name, texts)))
             .collect::<Result<Vec<_>, String>>()?;
         let bounds = entities::physics::world_physics_bounds(document)?
             .ok_or("physics worldspawn bounds absent")?;

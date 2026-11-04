@@ -167,6 +167,15 @@ pub fn load(
     document: &Document,
     placements: &[PlacedModel],
 ) -> Result<MachineryRecipes, String> {
+    load_with_texts(catalog, document, placements, &mut Default::default())
+}
+
+pub(crate) fn load_with_texts(
+    catalog: &Catalog,
+    document: &Document,
+    placements: &[PlacedModel],
+    texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+) -> Result<MachineryRecipes, String> {
     let read = |path: &str| {
         catalog
             .read(path)
@@ -263,7 +272,7 @@ pub fn load(
         visited.extend(selected.iter().copied());
         let mut selected: Vec<_> = selected.into_iter().collect();
         selected.sort_unstable();
-        let assemble = || -> Result<AssemblyRecipe, String> {
+        let mut assemble = || -> Result<AssemblyRecipe, String> {
             let mut joints = Vec::new();
             for index in &selected {
                 let j = &constraints[*index];
@@ -293,7 +302,7 @@ pub fn load(
             let mut ids: Vec<_> = ids.iter().copied().collect();
             ids.sort_unstable();
             let mut recipes = Vec::new();
-            let make = |id: &str| -> Result<BodyRecipe, String> {
+            let mut make = |id: &str| -> Result<BodyRecipe, String> {
                 let body = bodies
                     .get(id)
                     .ok_or_else(|| format!("{id}: missing body declaration"))?;
@@ -341,7 +350,9 @@ pub fn load(
                             let name = body.material.as_deref().ok_or_else(|| {
                                 format!("{id}: unresolved model physics material")
                             })?;
-                            mass.volume * material_density(name, read)?
+                            mass.volume * material_density(name, |path| texts.read(
+                                catalog, path, crate::assets::declaration_texts::PhysicsUse::Machinery,
+                            ))?
                         };
                         mass.set_mass(target);
                         // 140808ea0: a locked axis (decl +0xc4 bits 3..5)

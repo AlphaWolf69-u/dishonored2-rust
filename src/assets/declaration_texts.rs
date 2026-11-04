@@ -1,11 +1,11 @@
-//! Shared declaration-text acquisition for contact FX and sound events.
+//! Shared declaration-text acquisition for physics, contact FX and sound.
 //! Session init/common and map-only snapshots retain distinct lifetimes.
 use crate::assets::archive::Catalog;
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 type TextMap = HashMap<String, String>;
 #[derive(Default)]
-pub(super) struct DeclarationTexts {
+pub(crate) struct DeclarationTexts {
     common: Option<Arc<TextMap>>,
     level: TextMap,
 }
@@ -22,6 +22,113 @@ struct SharedTexts {
 }
 static COMMON_TEXTS: std::sync::Mutex<Option<SharedTexts>> = std::sync::Mutex::new(None);
 
+#[derive(Clone, Copy)]
+pub(crate) enum PhysicsUse { World, Model, Machinery, Runtime }
+
+#[derive(Default)]
+struct PhysicsStats {
+    requests: usize,
+    reads: usize,
+    bytes: usize,
+    common_hits: usize,
+    local_hits: usize,
+}
+
+/// Temporary physics source ownership until the contact table takes the
+/// listed declarations. 1400607f0 shares each acquired resource identity.
+#[derive(Default)]
+pub(crate) struct PhysicsSeed {
+    enabled: bool,
+    common: Option<Arc<TextMap>>,
+    local: TextMap,
+    stats: [PhysicsStats; 4],
+    cached_bytes: usize,
+    peak_cached_bytes: usize,
+    transfers: usize,
+}
+
+impl PhysicsSeed {
+    pub(crate) fn new(catalog: &Catalog, language: &str) -> Self {
+        let enabled = !catalog.has_overlays()
+            && std::env::var("DH2_DEBUG_SEPARATE_PHYSICS_TEXTS").as_deref() != Ok("1")
+            && std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() != Ok("1");
+        let common = if enabled {
+            COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .filter(|entry| entry.catalog == catalog.identity() && entry.language == language)
+                .and_then(|entry| entry.common.clone())
+        } else { None };
+        Self { enabled, common, ..Default::default() }
+    }
+
+    pub(crate) fn read(&mut self, catalog: &Catalog, path: &str, role: PhysicsUse) -> Result<Option<String>, String> {
+        let stats = &mut self.stats[role as usize];
+        stats.requests += 1;
+        let key: Cow<'_, str> = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
+            Cow::Borrowed(path)
+        } else {
+            Cow::Owned(path.replace('\\', "/").to_ascii_lowercase())
+        };
+        if self.enabled {
+            if let Some(value) = self.common.as_deref().and_then(|texts| texts.get(key.as_ref())) {
+                stats.common_hits += 1;
+                return Ok(Some(value.clone()));
+            }
+            if let Some(value) = self.local.get(key.as_ref()) {
+                stats.local_hits += 1;
+                return Ok(Some(value.clone()));
+            }
+        }
+        stats.reads += 1;
+        let bytes = catalog.read(path).map_err(|error| error.to_string())?;
+        stats.bytes += bytes.as_ref().map_or(0, Vec::len);
+        let text = bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned());
+        if self.enabled {
+            if let Some(value) = &text {
+                let key = key.into_owned();
+                let retained = value.clone();
+                self.cached_bytes += key.capacity() + retained.capacity();
+                self.peak_cached_bytes = self.peak_cached_bytes.max(self.cached_bytes);
+                self.local.insert(key, retained);
+            }
+        }
+        Ok(text)
+    }
+
+    fn take(&mut self, path: &str) -> Option<String> {
+        let (key, value) = self.local.remove_entry(path)?;
+        self.cached_bytes = self.cached_bytes.saturating_sub(key.capacity() + value.capacity());
+        self.transfers += 1;
+        Some(value)
+    }
+
+    fn report(&self, map: &str) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        for (role, stats) in ["world", "model", "machinery", "runtime"].into_iter().zip(&self.stats) {
+            eprintln!("MEMORY physics text source: map={map} role={role} enabled={} requests={} reads={} decoded_bytes={} common_hits={} local_hits={}",
+                self.enabled, stats.requests, stats.reads, stats.bytes, stats.common_hits, stats.local_hits);
+        }
+        eprintln!("MEMORY physics text handoff: map={map} transfers={} remaining={} remaining_capacity_bytes={} peak_capacity_bytes={}",
+            self.transfers, self.local.len(), self.cached_bytes, self.peak_cached_bytes);
+    }
+}
+
+/// Later runtime consumers share session declarations when available.
+pub(crate) fn read_common_or_catalog(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
+    if !catalog.has_overlays()
+        && std::env::var("DH2_DEBUG_SEPARATE_PHYSICS_TEXTS").as_deref() != Ok("1")
+    {
+        let owner = COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(value) = owner.as_ref().filter(|entry| entry.catalog == catalog.identity())
+            .and_then(|entry| entry.common.as_deref()).and_then(|texts| texts.get(path))
+        {
+            return Ok(Some(value.clone()));
+        }
+    }
+    catalog.read(path)
+        .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+        .map_err(|error| error.to_string())
+}
+
 fn read_text(
     catalog: &Catalog,
     path: &str,
@@ -33,7 +140,7 @@ fn read_text(
     Ok(bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
 }
 
-pub(super) fn read(
+pub(crate) fn read(
     catalog: &Catalog,
     texts: &DeclarationTexts,
     path: &str,
@@ -65,7 +172,7 @@ impl Drop for DeclarationTexts {
 }
 
 impl DeclarationTexts {
-    pub(super) fn get(&self, path: &str) -> Option<&str> {
+    pub(crate) fn get(&self, path: &str) -> Option<&str> {
         let key = path.to_ascii_lowercase();
         self.common
             .as_deref()
@@ -89,6 +196,7 @@ fn shared_texts(
     catalog: &Catalog,
     language: &str,
     stats: &mut TextLoads,
+    seed: &mut PhysicsSeed,
 ) -> Result<Option<Arc<TextMap>>, String> {
     if std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() == Ok("1") {
         return Ok(None);
@@ -147,7 +255,11 @@ fn shared_texts(
         .filter(|r| contact_resource(r))
     {
         if !shared.contains_key(&resource.path) {
-            if let Some(value) = read_text(catalog, &resource.path, stats)? {
+            let value = match seed.take(&resource.path) {
+                Some(value) => Some(value),
+                None => read_text(catalog, &resource.path, stats)?,
+            };
+            if let Some(value) = value {
                 shared.insert(resource.path.clone(), value);
             }
         }
@@ -163,16 +275,17 @@ fn shared_texts(
 
 /// Prepare the listed declarations before contacts are admitted. The shared
 /// table has one session owner; the level table drops with ContactSounds.
-pub(super) fn acquire(
+pub(crate) fn acquire(
     base: &std::path::Path,
     catalog: &Catalog,
+    map: &str,
+    language: &str,
+    mut seed: PhysicsSeed,
 ) -> Result<DeclarationTexts, String> {
-    let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
     let map = map.trim_start_matches("maps/").trim_end_matches(".map");
-    let language = crate::assets::lang::read_text_language(base)?;
     let list = crate::assets::map_resources::acquire_level_list(base, catalog, map, language)?;
     let mut stats = TextLoads::default();
-    let common = shared_texts(base, catalog, language, &mut stats)?;
+    let common = shared_texts(base, catalog, language, &mut stats, &mut seed)?;
     let mut level = TextMap::new();
     for resource in list.iter().filter(|r| contact_resource(r)) {
         if level.contains_key(&resource.path)
@@ -182,7 +295,11 @@ pub(super) fn acquire(
         {
             continue;
         }
-        if let Some(value) = read_text(catalog, &resource.path, &mut stats)? {
+        let value = match seed.take(&resource.path) {
+            Some(value) => Some(value),
+            None => read_text(catalog, &resource.path, &mut stats)?,
+        };
+        if let Some(value) = value {
             level.insert(resource.path.clone(), value);
         }
     }
@@ -213,5 +330,6 @@ pub(super) fn acquire(
             common.is_some(), common.as_ref().map_or(0, |shared| shared.len()), level.len(),
             common.as_deref().map_or(0, bytes), bytes(&level), stats.reads, stats.bytes);
     }
+    seed.report(map);
     Ok(DeclarationTexts { common, level })
 }

@@ -21,16 +21,26 @@ impl AmbientMachinery {
     pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
         self.skins.iter().map(|s| s.placement()).collect()
     }
+    #[allow(dead_code)]
     pub(super) fn load(
         catalog: &Catalog,
         document: Option<&Document>,
         placements: &[PlacedModel],
     ) -> Result<Self, String> {
+        Self::load_with_texts(catalog, document, placements, &mut Default::default())
+    }
+
+    pub(super) fn load_with_texts(
+        catalog: &Catalog,
+        document: Option<&Document>,
+        placements: &[PlacedModel],
+        texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+    ) -> Result<Self, String> {
         let Some(document) = document else {
             return Ok(Self::default());
         };
         let placements = super::expanded_model_placements(placements, catalog);
-        let recipes = crate::entities::machinery::recipes::load(catalog, document, &placements)?;
+        let recipes = crate::entities::machinery::recipes::load_with_texts(catalog, document, &placements, texts)?;
         for diagnostic in &recipes.unsupported {
             warn!("Ambient machinery assembly unsupported: {diagnostic}");
         }

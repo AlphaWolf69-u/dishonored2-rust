@@ -30,17 +30,29 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
         catalog: &crate::assets::archive::Catalog,
         name: &str,
     ) -> Result<usize, String> {
+        self.declaration_using(name, |path| {
+            crate::assets::declaration_texts::read_common_or_catalog(catalog, path)
+        })
+    }
+    pub(crate) fn declaration_with_texts(
+        &mut self,
+        catalog: &crate::assets::archive::Catalog,
+        name: &str,
+        texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+    ) -> Result<usize, String> {
+        self.declaration_using(name, |path| texts.read(
+            catalog, path, crate::assets::declaration_texts::PhysicsUse::Runtime,
+        ))
+    }
+    fn declaration_using(
+        &mut self,
+        name: &str,
+        read: impl FnMut(&str) -> Result<Option<String>, String>,
+    ) -> Result<usize, String> {
         if let Some(&handle) = self.names.get(name) {
             return Ok(handle);
         }
-        let material = crate::assets::entities::physics_material::physics_material(name, |path| {
-            catalog
-                .read(path)
-                .map(|bytes| {
-                    bytes.map(|b| crate::assets::entities::declaration_text(&b).into_owned())
-                })
-                .map_err(|e| e.to_string())
-        })?;
+        let material = crate::assets::entities::physics_material::physics_material(name, read)?;
         let handle = self.declarations.len();
         self.declarations.push(material);
         self.names.insert(name.to_owned(), handle);

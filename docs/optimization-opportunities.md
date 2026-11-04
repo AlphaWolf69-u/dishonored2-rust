@@ -494,6 +494,35 @@ overlap and cumulative bytes first; if either prediction fails, revise the
 model before changing ownership. Then compare resolved collision properties and
 contact behavior; no saving is claimed yet.
 
+Animation, Iggy, UI bitmap, localization and render-parameter caches return
+resident resources for the same catalog. The original registry lookup
+`1400607f0` / `14005feb0` likewise returns an existing identity. In-place mod
+edits alone do not establish a reload boundary; do not bypass those caches
+without evidence for one. Mutable load-list and map-info acquisition have
+separate handling because they are descriptors rather than resident payloads.
+
+Trigger-shape ownership investigation: `TriggerShapeAsset` retains the HKX
+source and parsed schema as well as its owned query geometry. The remaining
+runtime read of the source/schema is `shape_mass_properties`; geometry queries
+use `query_shapes`. If the root mass result can be captured once without
+changing deferred error behavior, source and schema storage might be released
+after acquisition. First measure their retained capacities and the affected
+mass-resolution work on real maps; preserve mutable-shape and body-creation
+behavior. No saving is claimed until those measurements and ownership checks
+are complete.
+
+Area-environment acquisition prediction: `level_prepare` resolves every
+authored environment volume once for the area selection and again for the
+physics/environment list. The previous production route created 204 / 92 /
+204 ordinary area shapes; each required a resolved environment in both passes.
+Reusing the first resolved volume list for area preparation should eliminate
+at least 500 repeated resolutions over that route, while retaining the same
+area order, trigger geometry, profiles and separate live consumers. Water
+volumes may add to that count. Mutable overlays require the previous separate
+reads. Compare resolution/read counts and ordered profile/area signatures in
+the same production sequence; this is loading work, not a frame-time or RSS
+prediction.
+
 
 Archive / rig / read-history production result: the no-overlay route
 skipped normalization for at least 68,608 archive acquisitions. Player rig

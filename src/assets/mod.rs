@@ -5,6 +5,7 @@ pub mod bprobe;
 pub mod camera_blur;
 pub mod class_metadata;
 pub mod decal;
+pub(crate) mod declaration_texts;
 pub mod edge_animation;
 pub mod edge_skeleton;
 pub mod entities;

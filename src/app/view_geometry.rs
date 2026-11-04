@@ -611,12 +611,11 @@ fn collision_material_slot(
     name: &str,
     slots: &mut HashMap<String, Option<u32>>,
     materials: &mut Vec<entities::physics_material::PhysicsMaterial>,
+    texts: &mut crate::assets::declaration_texts::PhysicsSeed,
 ) -> Option<u32> {
     *slots.entry(name.to_owned()).or_insert_with(|| {
         match entities::physics_material::physics_material(name, |path| {
-            catalog.read(path)
-                .map(|bytes| bytes.map(|bytes| entities::declaration_text(&bytes).into_owned()))
-                .map_err(|error| error.to_string())
+            texts.read(catalog, path, crate::assets::declaration_texts::PhysicsUse::Model)
         }) {
             Ok(material) => {
                 let slot = materials.len() as u32;
@@ -643,10 +642,11 @@ pub(super) struct ModelCollision {
     pub extra_hd_failed: usize,
 }
 
-pub(super) fn acquire_static_model_collision(
+pub(super) fn acquire_static_model_collision_with_texts(
     catalog: &archive::Catalog,
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
+    texts: &mut crate::assets::declaration_texts::PhysicsSeed,
 ) -> ModelCollision {
     let roots: HashMap<_, _> = placements
         .iter()
@@ -734,7 +734,7 @@ pub(super) fn acquire_static_model_collision(
         // well, or the coarse primary would still block weapon/vision rays.
         let primary_slot = if hd_material.is_some() {
             body.material.as_deref().and_then(|name| {
-                collision_material_slot(catalog, name, &mut material_slots, &mut materials)
+                collision_material_slot(catalog, name, &mut material_slots, &mut materials, texts)
             })
         } else { None };
         let primary_filter = primary_slot.map_or(filter, |slot| {
@@ -767,7 +767,7 @@ pub(super) fn acquire_static_model_collision(
             extra_hd_failed += 1;
             continue;
         };
-        let slot = collision_material_slot(catalog, material_name, &mut material_slots, &mut materials);
+        let slot = collision_material_slot(catalog, material_name, &mut material_slots, &mut materials, texts);
         let Some(slot) = slot else {
             extra_hd_failed += 1;
             continue;
@@ -793,7 +793,7 @@ pub(super) fn static_model_collision(
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
 ) -> (Vec<([Vec3; 3], u32, u32)>, Vec<String>, usize, usize) {
-    let result = acquire_static_model_collision(catalog, placements, bodies);
+    let result = acquire_static_model_collision_with_texts(catalog, placements, bodies, &mut Default::default());
     (result.triangles.into_iter().map(|(vertices, owner, _, filter)| (vertices, owner, filter)).collect(),
      result.owners, result.matched, result.failed)
 }

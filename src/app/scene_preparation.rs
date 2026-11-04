@@ -68,7 +68,9 @@ impl ScenePreparation {
             allocator: self.allocator,
             queue: Default::default(),
         };
-        self.audio.prepare(&mut commands);
+        let physics_texts = prepared.take_resource::<super::level_prepare::PreparedPhysicsTexts>()
+            .map_or_else(Default::default, |texts| texts.0);
+        self.audio.prepare(&mut commands, physics_texts);
         if let Some(programs) = &mut programs {
             let (frame, source) = super::shadow_updates::prepare_screen_shadow_source(
                 &scene,

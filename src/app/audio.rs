@@ -8,7 +8,7 @@ mod graph;
 mod bevy_backend;
 mod fade;
 mod contacts;
-mod declaration_texts;
+use crate::assets::declaration_texts;
 mod effects;
 mod spatial;
 pub(super) mod level;
@@ -746,8 +746,9 @@ impl AudioPreparation {
             outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch::new(world.resource::<Assets<bevy_backend::OutputAudio>>()),
         }
     }
-    pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands) {
-        let contacts = contacts::ContactSounds::acquire();
+    pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands,
+        seed: declaration_texts::PhysicsSeed) {
+        let contacts = contacts::ContactSounds::acquire_with_seed(seed);
         prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
         // Host: cold media reads/decodes must not occupy the frame executor.
         // Keep its existing parallelism rather than the smaller async pool,

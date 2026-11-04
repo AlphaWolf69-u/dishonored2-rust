@@ -6,6 +6,7 @@ use crate::{archive::Catalog, assets::{entities::{contacts::{material_chain, Con
         game_clock_runtime::{ClockRuntime, GamePaused}, sound::{Contact, Emitter, Request}}};
 use bevy::prelude::*;
 use std::{collections::{HashMap, HashSet}, sync::Arc};
+use crate::assets::declaration_texts;
 
 #[derive(Message)]
 pub(in crate::app) struct ContactSound(pub Contact);
@@ -21,19 +22,23 @@ struct Group {
 }
 struct Definitions {
     catalog: std::sync::Arc<Catalog>,
-    texts: super::declaration_texts::DeclarationTexts,
+    texts: declaration_texts::DeclarationTexts,
     database: ContactDatabase,
     chains: HashMap<String, Vec<String>>,
     effects: HashMap<String, Arc<Vec<Group>>>,
 }
 
 impl Definitions {
-    fn load() -> Result<Self, String> {
+    fn load(seed: declaration_texts::PhysicsSeed) -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
         let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
-        let source = super::declaration_texts::read(&catalog, &Default::default(), "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
+        let source = declaration_texts::read(&catalog, &Default::default(), "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
         let database = ContactDatabase::parse(&source)?;
-        let texts = super::declaration_texts::acquire(&base, &catalog).unwrap_or_else(|error| {
+        let texts = (|| {
+            let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
+            let language = crate::assets::lang::read_text_language(&base)?;
+            declaration_texts::acquire(&base, &catalog, &map, language, seed)
+        })().unwrap_or_else(|error: String| {
             warn!("Contact declarations not read with the level: {error}");
             Default::default()
         });
@@ -41,7 +46,7 @@ impl Definitions {
     }
 
     fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
-        let event = asset.resolve_with(|path| super::declaration_texts::read(&self.catalog, &self.texts, path))?.map(|event| event.id);
+        let event = asset.resolve_with(|path| declaration_texts::read(&self.catalog, &self.texts, path))?.map(|event| event.id);
         Ok(TimedEvent { delay: asset.delay, event })
     }
 
@@ -49,7 +54,7 @@ impl Definitions {
         use crate::{entities::scene_motion::child, gameplay::options::decl::list_items};
         for name in [&contact.source, &contact.target] {
             if !self.chains.contains_key(name) {
-                self.chains.insert(name.clone(), material_chain(name, |path| super::declaration_texts::read(&self.catalog, &self.texts, path))?);
+                self.chains.insert(name.clone(), material_chain(name, |path| declaration_texts::read(&self.catalog, &self.texts, path))?);
             }
         }
         let Some(effect) = self.database.effect(&self.chains[&contact.source], &self.chains[&contact.target]) else {
@@ -57,7 +62,7 @@ impl Definitions {
         };
         if let Some(groups) = self.effects.get(effect) { return Ok(groups.clone()); }
         let effect = effect.to_owned();
-        let fields = resolved_decl("fx", &effect, |path| super::declaration_texts::read(&self.catalog, &self.texts, path))?;
+        let fields = resolved_decl("fx", &effect, |path| declaration_texts::read(&self.catalog, &self.texts, path))?;
         let mut groups = Vec::new();
         for item in list_items(child(&fields, "m_groups")) {
             let Value::Scope(fields) = item else { return Err(format!("{effect}: invalid FX group")) };
@@ -96,12 +101,15 @@ pub(super) struct ContactSounds {
     reported: HashSet<String>,
 }
 impl ContactSounds {
-    pub(super) fn declarations(&self) -> Option<&super::declaration_texts::DeclarationTexts> {
+    pub(super) fn declarations(&self) -> Option<&declaration_texts::DeclarationTexts> {
         self.definitions.as_ref()?.as_ref().ok().map(|definitions| &definitions.texts)
     }
     pub(super) fn acquire() -> Self {
+        Self::acquire_with_seed(Default::default())
+    }
+    pub(super) fn acquire_with_seed(seed: declaration_texts::PhysicsSeed) -> Self {
         let _span = crate::app::load_timing::Span::new("contact declaration acquisition");
-        Self { definitions: Some(Definitions::load()), ..Default::default() }
+        Self { definitions: Some(Definitions::load(seed)), ..Default::default() }
     }
 }
 
