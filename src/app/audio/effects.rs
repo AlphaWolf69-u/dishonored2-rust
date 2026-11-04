@@ -142,8 +142,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                 let SourceAction::Play { definition, .. } = action else { continue };
                 for source in definition.streamed() {
                     match source.acquire() {
-                        Ok(Some(hold)) => holds.push(hold),
-                        Ok(None) => loading = true,
+                        Ok(hold) => { loading |= !hold.is_ready(); holds.push(hold); },
                         Err(error) => warn!("FX event {} streamed media unavailable: {error}", prepared.declaration.name),
                     }
                 }

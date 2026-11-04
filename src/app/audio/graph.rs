@@ -35,33 +35,71 @@ pub(super) struct StreamLocator {
 pub(super) struct StreamedSource {
     locator: StreamLocator,
     resident: Mutex<std::sync::Weak<Samples>>,
-    loading: Mutex<Option<bevy::tasks::Task<io::Result<Samples>>>>,
+    loading: Mutex<std::sync::Weak<StreamRead>>,
 }
 
-/// Keeps a streamed source's media resident while a playback holds it.
+struct StreamRead {
+    state: Mutex<StreamReadState>,
+}
+
+struct StreamReadState {
+    task: Option<bevy::tasks::Task<io::Result<Samples>>>,
+    samples: Option<Arc<Samples>>,
+}
+
+/// A pending event owns its IO request; an admitted playback owns its media.
+/// The cached source owns neither, so cancelling the last request also drops
+/// a completed-but-unclaimed result (141160cc0 releases file-source state).
 #[derive(Clone)]
-pub(super) struct StreamHold(#[allow(dead_code)] Arc<Samples>);
+pub(super) struct StreamHold {
+    resident: Option<Arc<Samples>>,
+    _read: Option<Arc<StreamRead>>,
+}
+
+impl StreamHold {
+    pub(super) fn is_ready(&self) -> bool { self.resident.is_some() }
+}
+
+impl Drop for StreamRead {
+    fn drop(&mut self) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let unclaimed = self.state.get_mut().unwrap_or_else(|e| e.into_inner()).task.is_some();
+            eprintln!("MEMORY sound read release: unclaimed={unclaimed}");
+        }
+    }
+}
 
 impl StreamedSource {
-    /// Game thread: the resident media, or None while its read (started
-    /// here on first use) is in flight.
-    pub(super) fn acquire(&self) -> io::Result<Option<StreamHold>> {
+    /// Game thread: retain this hold even while its IO is not ready. A retry
+    /// acquires the replacement hold before dropping its previous one.
+    pub(super) fn acquire(&self) -> io::Result<StreamHold> {
         if let Some(samples) = self.resident.lock().unwrap_or_else(|e| e.into_inner()).upgrade() {
-            return Ok(Some(StreamHold(samples)));
+            return Ok(StreamHold { resident: Some(samples), _read: None });
         }
         let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(task) = loading.as_mut() {
-            let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) else {
-                return Ok(None);
-            };
-            *loading = None;
-            let samples = Arc::new(result?);
-            *self.resident.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&samples);
-            return Ok(Some(StreamHold(samples)));
+        let read = if let Some(read) = loading.upgrade() { read } else {
+            let locator = self.locator.clone();
+            let read = Arc::new(StreamRead { state: Mutex::new(StreamReadState {
+                task: Some(bevy::tasks::IoTaskPool::get().spawn(async move { read_streamed(&locator) })),
+                samples: None,
+            }) });
+            *loading = Arc::downgrade(&read);
+            read
+        };
+        let mut state = read.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(samples) = &state.samples {
+            return Ok(StreamHold { resident: Some(samples.clone()), _read: None });
         }
-        let locator = self.locator.clone();
-        *loading = Some(bevy::tasks::IoTaskPool::get().spawn(async move { read_streamed(&locator) }));
-        Ok(None)
+        let pending = state.task.as_mut().ok_or_else(|| invalid("streamed read completed without resident media"))?;
+        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(pending)) {
+            state.task = None;
+            let samples = Arc::new(result?);
+            state.samples = Some(samples.clone());
+            *self.resident.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&samples);
+            return Ok(StreamHold { resident: Some(samples), _read: None });
+        }
+        drop(state);
+        Ok(StreamHold { resident: None, _read: Some(read) })
     }
 }
 
@@ -141,7 +179,7 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
     };
     let channels = ChannelCount::new(channels).ok_or_else(|| invalid("invalid Wwise streamed channel count"))?;
     let rate = SampleRate::new(rate).ok_or_else(|| invalid("invalid Wwise streamed sample rate"))?;
-    let source = StreamedSource { locator, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(None) };
+    let source = StreamedSource { locator, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(std::sync::Weak::new()) };
     let prepared = (Samples::Streamed(Arc::new(source)), channels, rate, frames, points);
     // Parallel event preparation can reach the same source concurrently.
     // Publish one identity; losing preparations must not escape into graphs.

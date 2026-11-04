@@ -23,6 +23,14 @@ impl Default for ParticleImages {
 }
 
 impl ParticleImages {
+    pub fn report_scene_overlap(&self, paths: &[String]) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        let paths: std::collections::HashSet<_> = paths.iter().map(String::as_str).collect();
+        let overlap: Vec<_> = self.images.iter().filter(|(path, _)| paths.contains(path.as_str())).collect();
+        eprintln!("MEMORY particle/scene images: particle_2d={} particle_3d={} shared_paths={} shared_payload_bytes={}",
+            self.images.len(), self.volumes.len(), overlap.len(), overlap.iter().map(|(_, image)| image.payload.len()).sum::<usize>());
+    }
+
     pub fn image(&mut self, catalog: &Catalog, source: &str) -> Result<Arc<InlineCompressedChain>, String> {
         self.requests += 1;
         let path = crate::material::image_load_resource(catalog, source)

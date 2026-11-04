@@ -556,6 +556,13 @@ independent timing samples or a whole-frame FPS improvement.
 
 ### Session shader metadata reuse
 
+UI named-image binding correction: `1410150f0` binds the image resource,
+whose current GPU view can change independently of a movie's draw list. The
+host compositor cached that view by name forever. Expected correction is zero
+stale named-image views after replacement, and zero compositor-owned named
+views after movie close; the image owner's resource lifetime is unchanged.
+Only a changed view needs a replacement cache entry, with no texture upload.
+
 Original bootstrap `140064e00` constructs global cache DAT_142be6ee0 once
 through `1402c8d50`, registers its destructor at exit, and initializes indices
 through `1402ca800` -> `1402ca9c0`; shared names use `1402cc070`. The rewrite
@@ -593,3 +600,43 @@ subsequent acquisitions; parameter acquisition took 0.007 / 0.005 ms instead
 of 159.217 / 155.381 ms in that dev run. Release timing is measured separately;
 file-handle opening remains required and is not counted as eliminated work.
 
+Mapinfo loading-header lookup now keys by installation and map, matching its
+underlying declaration owner. Switching installations also releases registry
+references to outgoing installation declarations; existing callers keep their
+Arc until finished. This prevents stale mission metadata for equal map paths
+from different installations; it does not change authored loading text.
+
+Pending read cancellation correction: StreamedSource previously retained its
+IO Task strongly for the cached source's entire lifetime. If the requesting
+event was cancelled before its next retry, a completed Task retained a whole
+encoded file with no active playback. Expected correction is zero strong
+read-result owners in the source registry: pending ordinary/FX event holds own
+a shared StreamRead; the source keeps only a Weak. The last cancellation drops
+the task/result, while completed media stays shared through ready voice holds
+or other pending read leases. File-source release follows `141160cc0`; this is a
+host asynchronous ownership mechanism, not yet bounded incremental streaming.
+
+Release shader acquisition (`lifecycles-shader-release-*`), same-build control,
+EotW -> Dust -> EotW, both exit 0: repeated index acquisition 4.822 / 4.539 ms
+and 733,409 logical bytes per map -> 0.314 / 0.276 ms and zero index reads;
+parameter acquisition 139.144 / 139.974 ms -> 0.005 / 0.004 ms. First acquired
+indices/schema remain resident and keep identical identities on reuse. These
+are targeted loading costs, not a frame-rate measurement.
+
+Particle/scene live-path overlap in the same production runs: EotW 53 2D / 9
+3D particle image paths, Dust 44 2D / 10 3D; each has two paths in common with
+the surface registry, totalling 88,400 compiled payload bytes. This bounds the
+observed duplicated particle/scene source payload, not GPU allocation or
+UI/postprocess overlap. The remaining distinct images cannot be counted as
+cross-domain duplicates. Canonical ownership and particle mip demand remain
+separate work.
+
+Production ownership validation (`lifecycles-image-bindings-client`):
+EotW -> Dust -> EotW exited 0, no fatal client/GPU errors. All three VMs closed
+with zero retained objects. The pending/ready read-owner path released 130
+completed reads; no unclaimed read cancellation occurred in this sequence,
+so cancellation reclamation is established by the weak ownership path and
+still needs an actual cancelled in-flight event for a measured byte claim.
+UI named-image binding followed EotW view28 -> Dust view12948 -> EotW view28,
+reusing the existing image-owner texture without a second upload. This run
+validates handoff/reuse; it does not exercise a live same-name texture resize.

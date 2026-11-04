@@ -12,8 +12,10 @@ Resource lifetime audit follow-ups (full owner inventory and evidence in
   separate identity domains. Joining them can remove duplicate compiled chains
   and GPU textures for paths requested by several domains, and connect particle
   finer-mip demand to streaming. Saving is the intersection of their live path
-  sets, not the sum of their allocations; that intersection has not been
-  measured. Preserve dimensional fallbacks, per-use samplers, mip demand and
+  sets, not the sum of their allocations. Production EotW/Dust found two
+  overlapping particle/scene paths (88,400 compiled payload bytes), so
+  consolidation must not claim the full particle allocation as duplicate.
+  UI/postprocess overlap and GPU allocation still need separate accounting. Preserve dimensional fallbacks, per-use samplers, mip demand and
   readiness gates before consolidating.
 - Wwise type-2 acquisition is now format-only: production release read
   232,514 instead of 530,033,360 logical package bytes and took 189.805 instead
@@ -224,3 +226,4 @@ gain is removal of the remaining roughly 0.8–1 second acquisition from the
 window thread, not faster destruction or reduced audio coverage. Startup's
 synchronous diagnostic path must skip an already acquired owner. Verification
 is pending.
+

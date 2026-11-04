@@ -34,6 +34,9 @@ pub fn find(catalog: &Catalog, map: &str) -> Option<std::sync::Arc<Fields>> {
     let key = (catalog.base().to_owned(), map.to_ascii_lowercase());
     let mut resident = RESIDENT.lock().unwrap();
     let resident = resident.get_or_insert_with(Default::default);
+    // A session uses one installation. Outgoing callers keep their own Arc;
+    // the registry must not pin declarations from installations no longer used.
+    resident.retain(|(base, _), _| base == catalog.base());
     if let Some(edit) = resident.get(&key) { return edit.clone(); }
     let result = find_uncached(catalog, map).map(std::sync::Arc::new);
     resident.insert(key, result.clone());
@@ -53,15 +56,17 @@ fn find_uncached(catalog: &Catalog, map: &str) -> Option<Fields> {
 /// The loaded map's loading info, looked up once per map (the game holds
 /// the decl as `m_mapInfo` from the map load).
 pub fn current_loading_info(catalog: &Catalog) -> Option<LoadingInfo> {
-    static CACHE: RwLock<Option<(String, Option<LoadingInfo>)>> = RwLock::new(None);
+    type Key = (std::path::PathBuf, String);
+    static CACHE: RwLock<Option<(Key, Option<LoadingInfo>)>> = RwLock::new(None);
     let map = current_map()?;
+    let key = (catalog.base().to_owned(), map);
     if let Some((cached, info)) = CACHE.read().unwrap().as_ref() {
-        if *cached == map {
+        if *cached == key {
             return info.clone();
         }
     }
-    let info = find(catalog, &map).and_then(|edit| loading_info(&edit));
-    *CACHE.write().unwrap() = Some((map, info.clone()));
+    let info = find(catalog, &key.1).and_then(|edit| loading_info(&edit));
+    *CACHE.write().unwrap() = Some((key, info.clone()));
     info
 }
 

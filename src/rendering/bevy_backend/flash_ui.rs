@@ -448,7 +448,7 @@ fn render_flash_ui(
             // IDs survived every open indefinitely. Keep shared ramps/white;
             // bitmap generations were already re-uploaded on every new open.
             let before = gpu.textures.len();
-            gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_) | TextureKey::Game(_)));
+            gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 println!("MEMORY UI closed: released_textures={} retained_shared={}", before - gpu.textures.len(), gpu.textures.len());
             }
@@ -493,7 +493,25 @@ fn render_flash_ui(
         })
         .collect();
     gpu.textures.retain(|k, _| !matches!(k, TextureKey::Bitmap(g, _) if *g != frame.generation));
+    // 1410150f0 binds the image owner, not a permanently captured view. Drop
+    // outgoing named bindings even when one movie replaces another directly.
+    gpu.textures.retain(|key, _| match key {
+        TextureKey::Game(name) => frame.game_images.contains_key(name),
+        _ => true,
+    });
     for key in &keys {
+        if let TextureKey::Game(name) = key {
+            let Some(image) = frame.game_images.get(name).and_then(|handle| images.get(handle.id())) else {
+                return; // Keep the movie covered until its image is prepared.
+            };
+            if gpu.textures.get(key).is_none_or(|(_, view)| view.id() != image.texture_view.id()) {
+                gpu.textures.insert(key.clone(), (image.texture.clone(), image.texture_view.clone()));
+                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                    println!("MEMORY UI named image binding: name={name} view={:?}", image.texture_view.id());
+                }
+            }
+            continue;
+        }
         if gpu.textures.contains_key(key) {
             continue;
         }

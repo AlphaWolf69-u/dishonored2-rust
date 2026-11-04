@@ -1778,6 +1778,7 @@ pub(super) fn prepare(
             &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
+    particle_resources.report_scene_images(&resolver.diffuse_image_paths);
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
     let diffuse_image_count = resolver.diffuse_image_paths.len();
     // A proxy streams the images of the material it was cloned from.

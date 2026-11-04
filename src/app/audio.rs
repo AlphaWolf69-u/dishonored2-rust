@@ -592,8 +592,7 @@ fn play_events(
                 let SourceAction::Play { definition, .. } = action else { continue };
                 for source in definition.streamed() {
                     match source.acquire() {
-                        Ok(Some(hold)) => holds.push(hold),
-                        Ok(None) => loading = true,
+                        Ok(hold) => { loading |= !hold.is_ready(); holds.push(hold); },
                         Err(error) => warn!("Wwise event {event:#010x} streamed media unavailable: {error}"),
                     }
                 }

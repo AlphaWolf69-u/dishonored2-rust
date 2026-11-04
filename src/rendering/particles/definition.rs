@@ -51,6 +51,8 @@ impl Default for ParticleResources {
     }
 }
 impl ParticleResources {
+    pub fn report_scene_images(&self, paths: &[String]) { self.images.report_scene_overlap(paths); }
+
     /// Diagnostic acquisition A/B; production always shares immutable assets.
     pub fn debug_set_sharing(&mut self, shared: bool) {
         self.shared = shared;
