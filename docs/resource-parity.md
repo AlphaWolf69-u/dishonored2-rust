@@ -640,3 +640,44 @@ still needs an actual cancelled in-flight event for a measured byte claim.
 UI named-image binding followed EotW view28 -> Dust view12948 -> EotW view28,
 reusing the existing image-owner texture without a second upload. This run
 validates handoff/reuse; it does not exercise a live same-name texture resize.
+
+### Connected texture streaming controls
+
+Texture streaming settings connection: original `14030d1e0` reads the live
+per-frame upload budget, `14030cce0` reads the maximum candidate texture size
+and add-all-mips flag, and `14030f3d0` reads freeze/unload controls. The host
+streamer instead used constant 4096 KB / 131072 KB / 60 frames and never
+honoured those registered settings. Expected correction: unchanged decisions
+at defaults; changed configured limits reach their existing eligibility and
+upload helpers. Cache the parsed settings by console generation so unchanged
+frames add one generation read, not repeated console locks/string lookups.
+This does not replace the outstanding VRAM pressure/priority policy.
+
+
+Original automatic image-budget initialization is in the disassembled tail
+`140369eed`–`140369f8f` (the prior decompilation stopped at logging calls).
+For a negative configured budget it uses inspected dedicated video memory in
+MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
+back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
+hardware inspector `1400ddf60` selects vendor inspection (`1400dd580`,
+`1400dd330`) then fallback `1400dd950`; NVIDIA memory is reported in KiB and
+converted to bytes. Expected backend bridge: query the actual rendering
+adapter once, not a second arbitrary system adapter; expose read-only
+capacity to the image owner without adding per-frame driver calls. Vulkan
+unified/CPU heaps cannot be claimed as dedicated VRAM and use the source's
+fallback when no equivalent dedicated capacity is available.
+
+
+Production stream-metadata validation (`lifecycles-stream-metadata-*`): both
+DirectX 12 and Vulkan clients exited 0, no fatal client/GPU errors. Each
+observed 1,674 Vorbis sources / 130,109 seek-table entries, with zero offsets
+missing a packet boundary. The dominant (current packet start minus authored
+seek frame, packet end minus authored seek frame) pairs were (-1024, 0),
+(-128, 0), (-576, 0); long/short transitions also produced an end difference
+of +448 frames. Sparse seeking must preserve priming/output-window alignment,
+not use the table's frame as the existing decoder packet's output start.
+Both adapters resolved the source-derived automatic image budget to 4096 MiB;
+the physical capacity reports were 17,130,815,488 / 17,163,091,968 bytes,
+respectively. This verifies the read-only backend bridge and configured mip
+limit propagation (131072 -> -1 in the client), not the remaining eviction
+scheduler or sound decoder connection.

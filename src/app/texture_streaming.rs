@@ -1,4 +1,5 @@
 //! Texture streaming.
+mod settings;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::ImageAccess;
 use super::{
@@ -990,10 +991,13 @@ pub(super) fn stream_visible_textures(
     arms: Option<Res<super::player_arms::PlayerArms>>,
     mut instance_slots: Local<InstanceImageSlots>,
     mut initial_view_ready: Local<bool>,
+    mut settings: Local<settings::SettingsCache>,
+    adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
 ) {
     let Some(mut worker) = worker else {
         return;
     };
+    let settings = settings.get(adapter.as_deref());
     if queue.is_added() {
         *initial_view_ready = false;
         *instance_slots = Default::default();
@@ -1150,7 +1154,7 @@ pub(super) fn stream_visible_textures(
                 ));
             }
         }
-        if !needed && frame.saturating_sub(last_visible) > TEXTURE_REDUCE_AFTER_FRAMES {
+        if !settings.frozen && !needed && frame.saturating_sub(last_visible) > u64::from(settings.unload_frames) {
             let state = &queue.diffuse_mip_states[slot];
             let (Some(resident), Some(minimum), Some(old_handle)) = (
                 state.resident,
@@ -1223,7 +1227,7 @@ pub(super) fn stream_visible_textures(
         std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>()
     };
     worker.ready.extend(completions);
-    let mut budget = texture::MipUploadBudget::new(TEXTURE_UPLOAD_BUDGET_KB);
+    let mut budget = texture::MipUploadBudget::new(settings.upload_kb);
     while budget.allows_next_upload() {
         let Some((slot, target, result)) = worker.ready.pop_front() else {
             break;
@@ -1233,22 +1237,22 @@ pub(super) fn stream_visible_textures(
         // A read may finish after its last visible instance has left the
         // query. Do not stage that payload or keep it resident for the unload
         // grace period; a later visible frame can request it again.
-        let result_summary = match &result {
-            Ok(Some(image)) => format!(
-                "loaded_level={:?} upload_mips={} upload_bytes={}",
-                image.level,
-                image.uploads.len(),
-                image
-                    .uploads
-                    .iter()
-                    .map(|mip| mip.payload.len())
-                    .sum::<usize>(),
-            ),
-            Ok(None) => "missing".to_owned(),
-            Err(error) => format!("error={error:?}"),
-        };
         if !requested[slot] {
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
+                let result_summary = match &result {
+                    Ok(Some(image)) => format!(
+                        "loaded_level={:?} upload_mips={} upload_bytes={}",
+                        image.level,
+                        image.uploads.len(),
+                        image
+                            .uploads
+                            .iter()
+                            .map(|mip| mip.payload.len())
+                            .sum::<usize>(),
+                    ),
+                    Ok(None) => "missing".to_owned(),
+                    Err(error) => format!("error={error:?}"),
+                };
                 diagnostics.texture_event(format!(
                     "read_completed_invisible stream_frame={frame} slot={slot} path={:?} target={target:?} resident={:?} result={result_summary}",
                     queue.diffuse_image_paths[slot],
@@ -1367,9 +1371,10 @@ pub(super) fn stream_visible_textures(
             }
         }
     }
-    let request_order =
+    let request_order = if settings.frozen { Vec::new() } else {
         texture::projected_area_request_order(&requested, &queue.diffuse_image_demands)
-            .expect("diffuse request flags align with image demands");
+            .expect("diffuse request flags align with image demands")
+    };
     let request_count = request_order.len();
     for slot in request_order {
         if worker.inflight[slot] || queue.diffuse_image_pending[slot].is_some() {
@@ -1421,8 +1426,8 @@ pub(super) fn stream_visible_textures(
                 height,
                 level.format.bits_per_pixel(),
                 projected_pixels,
-                false,
-                131_072,
+                settings.add_all_mips,
+                settings.max_texture_kb,
             ) {
                 continue;
             }

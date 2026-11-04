@@ -132,6 +132,39 @@ pub struct RenderQueue(pub Arc<WgpuWrapper<Queue>>);
 #[derive(Resource, Clone, Debug, Deref, DerefMut)]
 pub struct RenderAdapter(pub Arc<WgpuWrapper<Adapter>>);
 
+impl RenderAdapter {
+    /// Host image-streamer integration: read the selected adapter's dedicated
+    /// capacity at initialization, replacing the game's hardware inspector.
+    /// Does not query live budgets or wait for GPU work.
+    pub fn dedicated_memory_bytes(&self) -> Option<u64> {
+        #[cfg(target_os = "windows")]
+        // SAFETY: the HAL guard keeps the adapter alive; GetDesc1 only reads
+        // its immutable description and does not submit or mutate GPU work.
+        if let Some(adapter) = unsafe { self.as_hal::<wgpu::hal::api::Dx12>() } {
+            return unsafe { adapter.as_raw().GetDesc1() }.ok()
+                .map(|description| description.DedicatedVideoMemory as u64)
+                .filter(|&bytes| bytes != 0);
+        }
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
+        {
+            if matches!(self.get_info().device_type, wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::Cpu) {
+                return None; // Unified system heaps are not dedicated VRAM.
+            }
+            // SAFETY: the adapter owns this physical device and instance. The
+            // Vulkan call reads physical memory properties, with no GPU wait.
+            if let Some(adapter) = unsafe { self.as_hal::<wgpu::hal::api::Vulkan>() } {
+                let properties = unsafe { adapter.shared_instance().raw_instance()
+                    .get_physical_device_memory_properties(adapter.raw_physical_device()) };
+                let bytes = properties.memory_heaps[..properties.memory_heap_count as usize]
+                    .iter().filter(|heap| heap.flags.as_raw() & 1 != 0) // VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+                    .map(|heap| heap.size).sum::<u64>();
+                return (bytes != 0).then_some(bytes);
+            }
+        }
+        None
+    }
+}
+
 /// The GPU instance is used to initialize the [`RenderQueue`] and [`RenderDevice`],
 /// as well as to create [`WindowSurfaces`](crate::view::window::WindowSurfaces).
 #[derive(Resource, Clone, Deref, DerefMut)]

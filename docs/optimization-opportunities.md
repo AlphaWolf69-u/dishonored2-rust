@@ -227,3 +227,12 @@ window thread, not faster destruction or reduced audio coverage. Startup's
 synchronous diagnostic path must skip an already acquired owner. Verification
 is pending.
 
+Texture streamer module sweep: request flags, completion collection and
+projected-area order still allocate temporary vectors. Unused diagnostic
+result formatting was moved inside the invisible-read history branch. GPU mailbox uploads
+also lack the original upload-byte budget at the actual render submission
+boundary, although main-world staging has a byte budget. Settings are now
+read from the registered cvars via a generation cache. Preserve initial
+loading gates and committed image handles while correcting the outstanding
+pressure/priority and submission scheduling; quantify changed-function cost
+before replacing existing temporary storage.
