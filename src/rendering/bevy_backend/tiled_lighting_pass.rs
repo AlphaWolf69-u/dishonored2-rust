@@ -52,14 +52,7 @@ pub struct TiledLightingPass {
 impl TiledLightingPass {
     pub fn grid(&self) -> TileGrid { self.grid }
     fn upload<const N: usize>(queue: &RenderQueue, buffer: &Buffer, records: &[[u32; N]]) {
-        if !records.is_empty() {
-            let bytes: Vec<u8> = records
-                .iter()
-                .flatten()
-                .flat_map(|word| word.to_le_bytes())
-                .collect();
-            queue.write_buffer(buffer, 0, &bytes);
-        }
+        super::tiled_lighting_gpu::write_words(queue, buffer, records.as_flattened());
     }
     fn heads(device: &RenderDevice, grid: TileGrid, types: u64) -> Buffer {
         device.create_buffer(&BufferDescriptor {
@@ -341,5 +334,11 @@ impl TiledLightingPass {
             pass.dispatch_workgroups(self.grid.dimensions[0], self.grid.dimensions[1], 1);
         }
         Ok(())
+    }
+}
+
+impl Drop for TiledLightingPass {
+    fn drop(&mut self) {
+        super::tiled_lighting_gpu::report_uploads();
     }
 }

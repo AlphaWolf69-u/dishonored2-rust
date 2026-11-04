@@ -2050,3 +2050,21 @@ presented as EotW residency. It establishes actual name/scope/view descriptors
 where the previous per-tag budget had totals only. Asset names and process
 pointers remain local in artifacts/resource-residency-initial.json. No input,
 visual capture, breakpoint, in-process command or GPU pass is used.
+
+
+### Tiled-light upload staging: prediction before implementation
+
+The ported `1402f7260` producer already prepares 112-byte lighting records and
+48-byte cull packets; shadow records are 144 bytes. The host uploader then
+allocates byte vectors for lighting/shadow records, and the packet uploader
+allocates both flattened words and serialized bytes. None of those intermediate
+buffers has a consumer after `RenderQueue::write_buffer` copies its input.
+
+On little-endian hosts, borrow the contiguous u32 arrays as bytes; preserve
+explicit little-endian serialization for other targets. Borrow flattened packet
+words directly from the existing fixed stack array. Expected removal per
+nonempty preparation: one temporary allocation per lighting/shadow upload and
+two per cull upload, with copied bytes 112*L + 144*S + 96*C -> 0. Required GPU
+staging and submitted record bytes remain unchanged. Diagnostic copy mode
+restores both former allocations. Counters will report per-upload values in
+the production client; no CPU-time claim is predicted.

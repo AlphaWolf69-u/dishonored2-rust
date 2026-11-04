@@ -310,13 +310,7 @@ impl TlfBuffers {
         if words.len() / 12 > LIGHT_BUFFER_CAPACITY {
             return Err("TLF cull packet count exceeds 448".into());
         }
-        let bytes = words
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .collect::<Vec<_>>();
-        if !bytes.is_empty() {
-            queue.write_buffer(&self.packets, 0, &bytes);
-        }
+        write_words(queue, &self.packets, words);
         Ok(())
     }
 
@@ -331,12 +325,13 @@ impl TlfBuffers {
     ) -> Result<usize, String> {
         let mut packets = [[0; 12]; LIGHT_BUFFER_CAPACITY];
         let count = prepare_light_cull_packets(view, lighting, &mut packets)?;
-        let words = packets[..count]
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>();
-        self.upload_cull_packets(queue, &words)?;
+        if copied_uploads() {
+            let words: Vec<_> = packets[..count].iter().flatten().copied().collect();
+            record_copy(std::mem::size_of_val(words.as_slice()));
+            self.upload_cull_packets(queue, &words)?;
+        } else {
+            self.upload_cull_packets(queue, packets[..count].as_flattened())?;
+        }
         Ok(count)
     }
 
@@ -345,4 +340,52 @@ impl TlfBuffers {
     pub fn begin_frame(&self, encoder: &mut CommandEncoder) {
         encoder.clear_buffer(&self.counter, 0, None);
     }
+}
+
+// Host upload representation for 1402f7260's prepared u32 record arrays.
+// This borrows only for the synchronous queue upload; no staging owner escapes.
+fn upload_mode() -> (bool, bool) {
+    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| (
+        std::env::var("DH2_DEBUG_COPY_TLF_UPLOADS").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_TLF_UPLOADS").as_deref() == Ok("1"),
+    ))
+}
+fn copied_uploads() -> bool { upload_mode().0 }
+static UPLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static UPLOAD_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COPY_ALLOCATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COPY_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn record_copy(bytes: usize) {
+    if bytes == 0 || !upload_mode().1 { return; }
+    use std::sync::atomic::Ordering::Relaxed;
+    COPY_ALLOCATIONS.fetch_add(1, Relaxed);
+    COPY_BYTES.fetch_add(bytes as u64, Relaxed);
+}
+pub(super) fn write_words(queue: &RenderQueue, buffer: &Buffer, words: &[u32]) {
+    if words.is_empty() { return; }
+    #[cfg(target_endian = "little")]
+    let bytes: std::borrow::Cow<'_, [u8]> = if !copied_uploads() {
+        // SAFETY: u32 has no padding and all initialized bit patterns are valid
+        // bytes. The immutable byte view has exactly the source slice's extent
+        // and lifetime. Host endianness matches the installed little-endian ABI.
+        std::borrow::Cow::Borrowed(unsafe { std::slice::from_raw_parts(
+            words.as_ptr().cast::<u8>(), std::mem::size_of_val(words)) })
+    } else { std::borrow::Cow::Owned(words.iter().flat_map(|word| word.to_le_bytes()).collect()) };
+    #[cfg(target_endian = "big")]
+    let bytes: std::borrow::Cow<'_, [u8]> = std::borrow::Cow::Owned(
+        words.iter().flat_map(|word| word.to_le_bytes()).collect());
+    if matches!(bytes, std::borrow::Cow::Owned(_)) { record_copy(bytes.len()); }
+    if upload_mode().1 {
+        use std::sync::atomic::Ordering::Relaxed;
+        UPLOADS.fetch_add(1, Relaxed);
+        UPLOAD_BYTES.fetch_add(bytes.len() as u64, Relaxed);
+    }
+    queue.write_buffer(buffer, 0, &bytes);
+}
+pub(super) fn report_uploads() {
+    if !upload_mode().1 { return; }
+    use std::sync::atomic::Ordering::Relaxed;
+    eprintln!("MEMORY TLF upload staging: uploads={} upload_bytes={} temporary_allocations={} temporary_bytes={}",
+        UPLOADS.load(Relaxed), UPLOAD_BYTES.load(Relaxed), COPY_ALLOCATIONS.load(Relaxed), COPY_BYTES.load(Relaxed));
 }
