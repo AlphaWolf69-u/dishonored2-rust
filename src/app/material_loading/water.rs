@@ -3,6 +3,14 @@ use super::{material, render_program, shader_cache};
 use std::sync::Arc;
 
 pub(super) type DepthSource = Result<Option<Arc<shader_cache::CachedWaterDepthSource>>, String>;
+type ColourParameters = Arc<[render_program::SerializedParameterBlock; 2]>;
+type ColourSource = Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String>;
+pub(super) struct ColourSources {
+    pub parameters: ColourParameters,
+    pub world: ColourSource,
+    pub model: ColourSource,
+}
+
 
 /// 29f890's world-bank colour selection, after 2d5210 bank construction and
 /// finalization. Keep serialized stages separate from GPU ABI admission.
@@ -13,7 +21,7 @@ pub(super) fn world_colour_source(
     reference: &render_program::SerializedParameterBlock,
     state: crate::render_state::RenderState,
 ) -> Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String> {
-    colour_source(library, bytes, main, reference, state, 2)
+    colour_source(library, bytes, main, reference, state, 2, &mut ParameterCache::new(""))
 }
 
 pub(super) fn model_colour_source(
@@ -23,7 +31,7 @@ pub(super) fn model_colour_source(
     reference: &render_program::SerializedParameterBlock,
     state: crate::render_state::RenderState,
 ) -> Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String> {
-    colour_source(library, bytes, main, reference, state, 0)
+    colour_source(library, bytes, main, reference, state, 0, &mut ParameterCache::new(""))
 }
 
 fn colour_source(
@@ -33,6 +41,7 @@ fn colour_source(
     reference: &render_program::SerializedParameterBlock,
     state: crate::render_state::RenderState,
     bank: u8,
+    parameters: &mut ParameterCache<'_>,
 ) -> Result<Option<Arc<crate::rendering::water::program::WorldWaterColourSource>>, String> {
     let multi = library.registered_option_value(reference, b"useMultiInstancing")? != 0;
     let direct = library.registered_option_value(reference, b"useDirectInstancing")? != 0;
@@ -108,7 +117,7 @@ fn colour_source(
     let variant = library
         .serialized_variant(selected.as_bytes(), &options)?
         .ok_or_else(|| format!("world water colour needs runtime compilation: {selected}"))?;
-    let parameters = colour_parameters(library, bytes, &selected)?;
+    let parameters = parameters.acquire(library, bytes, &selected)?;
     let mut enabled = |name: &[u8]| {
         library
             .option_value(selected.as_bytes(), &options, name)
@@ -278,6 +287,65 @@ pub(super) fn colour_parameters(
     library: &mut shader_cache::ProgramLibrary,
     bytes: &[u8],
     main: &str,
-) -> Result<[render_program::SerializedParameterBlock; 2], String> {
-    crate::rendering::water::program::parameters(library,bytes,main)
+) -> Result<ColourParameters, String> {
+    crate::rendering::water::program::parameters(library,bytes,main).map(Arc::new)
+}
+
+
+/// A material's selected banks share immutable scopes when they select the same
+/// program. The cache dies after preparation; view evaluation only borrows data.
+pub(super) fn colour_sources(
+    library: &mut shader_cache::ProgramLibrary, bytes: &[u8], path: &str,
+    main: &str, reference: &render_program::SerializedParameterBlock,
+    state: crate::render_state::RenderState,
+) -> Result<ColourSources, String> {
+    let mut parameters = ParameterCache::new(path);
+    let root = parameters.acquire(library, bytes, main)?;
+    let world = colour_source(library, bytes, main, reference, state, 2, &mut parameters);
+    let model = colour_source(library, bytes, main, reference, state, 0, &mut parameters);
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY water unused preparation: path={path} declaration_bytes={} main_name_bytes={} option_bytes={}",
+            bytes.len(), main.len(), parameter_bytes(std::slice::from_ref(reference)));
+    }
+    Ok(ColourSources { parameters: root, world, model })
+}
+
+struct ParameterCache<'a> {
+    material: &'a str,
+    scopes: std::collections::HashMap<String, ColourParameters>,
+}
+impl<'a> ParameterCache<'a> {
+    fn new(material: &'a str) -> Self { Self { material, scopes: Default::default() } }
+    fn acquire(&mut self, library: &mut shader_cache::ProgramLibrary, bytes: &[u8], main: &str)
+        -> Result<ColourParameters, String> {
+        static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let separate = *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_WATER_PARAMETERS").as_deref() == Ok("1"));
+        let key = main.to_ascii_lowercase();
+        let existing = if separate { None } else { self.scopes.get(&key).cloned() };
+        let reused = existing.is_some();
+        let scopes = if let Some(scopes) = existing { scopes }
+            else { colour_parameters(library, bytes, main)? };
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let mut crc = flate2::Crc::new();
+            crc.update(format!("{scopes:?}").as_bytes());
+            eprintln!("MEMORY water parameter scopes: material={} program={key} reused={reused} bytes={} signature={:08x}",
+                self.material, parameter_bytes(scopes.as_slice()), crc.sum());
+        }
+        if !separate && !reused { self.scopes.insert(key, scopes.clone()); }
+        Ok(scopes)
+    }
+}
+
+/// Owned structure/vector bytes, excluding Arc headers and allocator overhead.
+fn parameter_bytes(blocks: &[render_program::SerializedParameterBlock]) -> usize {
+    std::mem::size_of_val(blocks) + blocks.iter().map(|block| {
+        block.parameters.capacity() * std::mem::size_of::<render_program::SerializedParameter>()
+            + block.parameters.iter().map(|parameter| {
+                parameter.name.capacity() + match &parameter.value {
+                    render_program::SerializedParameterValue::Name(name) => name.capacity(),
+                    render_program::SerializedParameterValue::SamplerThenProgram { sampler, program } => sampler.capacity() + program.capacity(),
+                    _ => 0,
+                }
+            }).sum::<usize>()
+    }).sum::<usize>()
 }

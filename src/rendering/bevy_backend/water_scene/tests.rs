@@ -53,17 +53,11 @@ fn water_scene_extracts_visible_shared_meshes_and_material_identity() {
     );
     let name: std::sync::Arc<str> = "test/water.material".into();
     let material = std::sync::Arc::new(WaterMaterialSource {
-        main_program: "arkWater".into(),
         state: [0; 9],
-        options: render_program::SerializedParameterBlock {
+        parameters: std::sync::Arc::new(std::array::from_fn(|_| render_program::SerializedParameterBlock {
             flags: 0,
             parameters: Vec::new(),
-        },
-        declaration: b"{}".as_slice().into(),
-        parameters: std::array::from_fn(|_| render_program::SerializedParameterBlock {
-            flags: 0,
-            parameters: Vec::new(),
-        }),
+        })),
         depth: [Ok(None), Ok(None)],
         world_colour: Ok(None),
     });

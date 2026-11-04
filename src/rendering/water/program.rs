@@ -29,7 +29,7 @@ pub struct WorldWaterColourSource {
     pub class: Result<WorldWaterColourClass, String>,
     /// Selected program defaults, then material values. A different selected
     /// program must not inherit MAIN's uniform/image defaults.
-    pub parameters: [SerializedParameterBlock; 2],
+    pub parameters: std::sync::Arc<[SerializedParameterBlock; 2]>,
 }
 
 impl WorldWaterColourSource {

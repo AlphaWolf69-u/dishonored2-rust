@@ -9,14 +9,9 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub struct WaterMaterialSource {
-    pub main_program: String,
     pub state: crate::render_state::RenderState,
-    /// Material-only options. Program defaults and pass specialization remain
-    /// separate, as in the installed material constructor.
-    pub options: crate::render_program::SerializedParameterBlock,
-    pub declaration: Arc<[u8]>,
     /// Colour program defaults, then actual material numeric/image assignments.
-    pub parameters: [crate::render_program::SerializedParameterBlock; 2],
+    pub parameters: Arc<[crate::render_program::SerializedParameterBlock; 2]>,
     /// 29f890 selects world bank2 slot0, or slot2 when slot12 (SSS) exists.
     /// A serialized variant is not a claim that its GPU stages are implemented.
     pub world_colour:

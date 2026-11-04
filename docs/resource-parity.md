@@ -2227,3 +2227,25 @@ main/depth references after normal queued work completes. Track actual target
 retirements and repeated-size allocation differences in a same-binary
 retain/invalidate comparison. No CPU-time gain is predicted; no image-resolution
 policy changes are included.
+
+
+### Water material preparation: prediction before ownership cleanup
+
+The typed water owner still retains three preparation-only fields: a copied
+MAIN name, the pre-specialization option dictionary, and copied declaration
+bytes. Searches of all consumers find no runtime reads of those fields. Runtime
+state, depth selections, colour selections and numeric/image parameter scopes
+have separate typed owners and remain necessary. Native `1402d5210` constructs
+material parameter scopes/program banks; `14029f890` selects those prepared
+banks. This cleanup changes host retention, not that selection algorithm.
+
+The MAIN, world-colour and model-colour constructors also independently call
+the same colour-parameter parser for the same material/program pair. Share one
+immutable Arc of those two parameter blocks per selected program during one
+material construction. A different selected alpha program must retain its own
+defaults; never share merely because the material name matches. The temporary
+lookup itself drops before publication. Prediction: one parse/backing instead
+of up to three for an equal selected program, unchanged block fingerprints,
+no runtime lookup/lock and no change to per-view evaluated water settings.
+Count actual constructed vs reused scopes and their owned capacity, and the
+removed unused source bytes. No CPU-time or large-RAM saving is presumed.

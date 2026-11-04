@@ -1227,18 +1227,13 @@ impl MaterialResolver<'_> {
                 let depth = water::depth_sources(library, bytes, main, &options, state);
                 let stencil=water::stencil_sources(library,bytes,main,&options,state);
                 std::sync::Arc::make_mut(&mut self.water_stencil_materials.0).insert(path.into(),stencil);
-                let parameters = water::colour_parameters(library, bytes, main)?;
-                let world_colour = water::world_colour_source(library, bytes, main, &options, state);
-                let model_colour = water::model_colour_source(library,bytes,main,&options,state);
-                std::sync::Arc::make_mut(&mut self.water_model_colours.0).insert(path.into(),model_colour);
+                let colours = water::colour_sources(library, bytes, path, main, &options, state)?;
+                std::sync::Arc::make_mut(&mut self.water_model_colours.0).insert(path.into(),colours.model);
                 Ok(std::sync::Arc::new(crate::rendering::bevy_backend::water_scene::WaterMaterialSource {
-                    main_program: main.to_owned(),
                     state,
-                    options,
                     depth,
-                    declaration: bytes.into(),
-                    parameters,
-                    world_colour,
+                    parameters: colours.parameters,
+                    world_colour: colours.world,
                 }))
             })();
             if let Err(error) = &inputs { eprintln!("Water material unavailable {path}: {error}"); }

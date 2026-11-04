@@ -48,12 +48,9 @@ fn installed_material() -> Arc<super::super::water_scene::WaterMaterialSource> {
             continue;
         }
         return Arc::new(super::super::water_scene::WaterMaterialSource {
-            main_program: main.clone(),
             state,
-            options,
             parameters: selector::colour_parameters(&mut library, &bytes, &main).unwrap(),
             depth,
-            declaration: bytes.into(),
             world_colour: Ok(None),
         });
     }
