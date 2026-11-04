@@ -2068,3 +2068,17 @@ two per cull upload, with copied bytes 112*L + 144*S + 96*C -> 0. Required GPU
 staging and submitted record bytes remain unchanged. Diagnostic copy mode
 restores both former allocations. Counters will report per-upload values in
 the production client; no CPU-time claim is predicted.
+
+
+Initial image descriptor comparison (before the requested loaded-level capture):
+1,425 native image names resolve through installed PC bimage7 source aliases.
+Header-only reads reported zero errors. No resident image was below its
+authored inline extent; 125 were above it (67 class-2, 58 class-1), confirming
+that persistent/common scope does not mean a fixed resident mip. The remaining
+non-intrinsic name is the runtime-generated save screenshot placeholder, not
+an absent compiled texture. This supports the existing base-chain minimum and
+independent common-image pressure policy, without substituting this startup
+snapshot for map residency. Native first-view mip zero refers to the current
+GPU allocation and does not imply the highest source-file resolution (for
+example, an authored 512x512 source can have a 256x256 allocation). Local
+evidence: artifacts/lifecycles-initial-image-descriptors.json.
