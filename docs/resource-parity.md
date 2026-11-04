@@ -2387,11 +2387,9 @@ entries as indexed by `14030d6b0`) finds the amplitude image identity among
 amplitude record's area was zero at that instant. This proves eligibility for
 streamer management, not that the environment renderer submits demand or that
 the full 512x512 mip is requested during play. `14031a510` forwards material
-images to `14031a410`; its observed callers cover surface/material paths. The
-rewrite's environment image currently uses an inline view outside the shared
-streamer, so its eligibility, demand and view handoff need a general solution
-if the original requests finer data. Trace environment use and demand before
-selecting a producer; do not force full resolution or add a map-name exception.
+images to `14031a410`; its observed callers cover surface/material paths. At this point in the investigation, the rewrite used an inline view outside
+the shared streamer. The subsequent implementation and its measured handoff
+are recorded below; it does not force full resolution or use map-name exceptions.
 Local evidence: `artifacts/resource-residency-eotw-verified.json` and
 `artifacts/resource-eotw-water-stream-records.json` in the main checkout.
 
@@ -2415,7 +2413,7 @@ exclude shorter demand spikes. The image loader `1402e9ff0` registers any image
 whose current mip count is below its complete count through `14030dbf0`;
 registration is independent of whether the image has a material consumer.
 This confirms that retaining the inline view matches the observed default path,
-while general streamer registration and demand/view handoff remain open.
+and informed the later general streamer registration and view handoff below.
 Evidence: `artifacts/resource-eotw-mask-moving.json` and
 `artifacts/resource-residency-eotw-after-movement.json` in the main checkout.
 

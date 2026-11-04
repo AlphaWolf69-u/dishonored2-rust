@@ -140,9 +140,10 @@ shared FX definitions already avoid the previously identified unnecessary
 expansion/deep copies. Decoded collision/query data and source-backed Tome
 bytes have actual runtime consumers and are intentionally retained.
 
-The audit does **not** certify full lifecycle parity. The main open areas are
-image identity shared across renderer domains,
-resident UI/fog image policy and device-cache accounting. Particle 2D mip demand is connected to the scene streamer; all 102 installed bimage7 volumes have a single complete authored mip and no finer indexed levels. Scene texture pressure/priority rules are implemented;
+The audit does **not** certify full lifecycle parity. Remaining work includes full per-class lifecycle parity, complete resource purge
+policy and device-cache accounting. Image identities and resident UI/fog image
+ownership were subsequently consolidated as described in the rows above; their
+coverage is not a claim that every resource-class lifecycle is complete. Particle 2D mip demand is connected to the scene streamer; all 102 installed bimage7 volumes have a single complete authored mip and no finer indexed levels. Scene texture pressure/priority rules are implemented;
 equivalent registered scene-base views and named-UI current-view acquisition are now connected; resident UI/fog/lens/area/cloud consumers now share one owner. Live UI collection is implemented; automatic scheduling is a host difference.
 The sustained release pause-menu run measured 29 collections per mode: mean
 4.862 -> 3.238 ms in the collector, with 172 objects reclaimed in both runs.
@@ -252,3 +253,21 @@ textures retire independently of whether vertex preparation succeeded.
 Both runs remain below the installed texture-cache budget, so pressure
 retirement is source-backed but was not exercised by this content. Main now
 contains this change, with its release compilation started separately.
+
+## Latest integrated ownership measurements
+
+Ocean environment images with separately indexed mips now register with the
+shared image streamer. User-driven Edge of the World sampling observed the
+authored 256x256 mask and zero demand throughout 900 samples; a diagnostic
+demand verified committed 512x512 view replacement and old inline lease
+retirement for both Edge of the World and Curator boat, including a return
+visit. This is a general indexed-image path, not a map-specific exception; the
+121 installed environment declarations were scanned. See the parity ledger
+for scope and sampling limits.
+
+UI library bitmap loading retains a shared archive member when its direct GPU
+image ranges partition that member; other layouts retain the prior per-image
+fallback. On a four-level production route, 12 libraries and 430 images had
+matching formats, dimensions and CRCs while 430 copies totalling 34,556,544
+bytes were avoided. Source capacity was 34,556,556 bytes. This measures copies
+and allocations, not process RSS or CPU timings.
