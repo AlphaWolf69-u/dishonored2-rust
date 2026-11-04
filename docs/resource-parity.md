@@ -2346,3 +2346,19 @@ successful runs do not reproduce cancellation during partial preparation.
 The backend lease/epoch eviction remains `host`, not an exact native fence
 implementation. Evidence: local `lifecycles-ui-texture-owner-comparison.json`
 and the paired production logs. No tests or visual inspection performed.
+
+
+### Original Institute image residency capture (2026-11-04)
+
+The user confirmed the loaded level was Institute. The read-only registry
+capture `artifacts/resource-residency-eotw-loaded.json` (in the main checkout;
+the historical filename does not identify this level) records 5,414 named
+images. `rendering/water/foam_d.tga` is class 2, with a resident GPU resource
+and a 2048x2048 single-mip view. `models/campaign/institute/institute_shore_df.dds`
+is class 1, with a 512x512 resident view; the Institute ocean mask has a
+256x256 resident view. These are single observations after loading, not proof
+of their full-mip demand or behavior as the camera moves. The capture does not
+contain the Edge of the World amplitude mask; its finer-mip demand remains
+unresolved. The previous startup and loaded-level class captures also show
+session and map model identities separately; no claim is made about native
+allocation sizes or about each model's CPU/GPU backing from class alone.
