@@ -530,6 +530,7 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
             eprintln!("LOAD sound streamed type {kind}: {count} media, {} MB; {prefixed} with a DIDX entry, {} KB in them", bytes >> 20, prefix_bytes >> 10);
         }
     }
+    crate::assets::wwise::report_stream_diagnostics();
     registry.sources.extend(prepared);
     count
 }

@@ -2518,3 +2518,15 @@ only control now submits visible-area demand to the registered environment
 slots, exercising their ordinary read/upload/commit path without forcing every
 other image. The control is absent from normal play and does not represent a
 claim that the original normally submits this demand.
+
+Streamed-media diagnostic table prediction (before implementation):
+`media_from_sound` scans bank DIDX and locks a process-global map for every
+streamed source, but the table is read only inside load-timing diagnostics.
+The native sound source owns media through its bank/package (`141122400` /
+`1410f1910`), not this host-only aggregate. Populate the aggregate only when
+load timing is enabled; leave the separate prefetch-prefix lookup and source
+ownership unchanged. Normal mode should retain zero table entries and perform
+zero table inserts or diagnostic DIDX scans, versus one insert per streamed
+source before; debug timing keeps the existing reporting behavior. Measure
+source and table counters in the production client, without a whole-frame CPU
+benchmark or a claim about physical RAM saved from entry counts alone.

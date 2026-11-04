@@ -925,6 +925,26 @@ pub fn bank_mix(bytes: &[u8]) -> io::Result<Option<BankMix>> {
 pub static STREAMED_MEDIA: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (u8, usize, Option<usize>)>>> =
     std::sync::LazyLock::new(Default::default);
 
+static STREAM_DIAGNOSTIC_MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+static STREAM_DIAGNOSTIC_REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STREAM_DIAGNOSTIC_INSERTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STREAM_DIAGNOSTIC_SIGNATURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn stream_diagnostic_mode() -> (bool, bool) {
+    *STREAM_DIAGNOSTIC_MODE.get_or_init(|| (
+        std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")
+            || std::env::var("DH2_DEBUG_RETAIN_STREAMED_MEDIA_DIAGNOSTICS").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_STREAM_DIAGNOSTIC_METRICS").as_deref() == Ok("1"),
+    ))
+}
+/// Diagnostic counters; no tracking is performed in ordinary play.
+pub(crate) fn report_stream_diagnostics() {
+    if !stream_diagnostic_mode().1 { return; }
+    use std::sync::atomic::Ordering::Relaxed;
+    eprintln!("MEMORY stream diagnostic table: requests={} inserts={} entries={} signature={:016x}",
+        STREAM_DIAGNOSTIC_REQUESTS.load(Relaxed), STREAM_DIAGNOSTIC_INSERTS.load(Relaxed),
+        STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).len(), STREAM_DIAGNOSTIC_SIGNATURE.load(Relaxed));
+}
+
 fn media_from_sound(
     sound: &[u8],
     chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
@@ -937,10 +957,21 @@ fn media_from_sound(
     // contain only a prefetch prefix, which must not replace the full media.
     if sound[8] != 0 {
         if let Some(mut media) = package_media(media_id, sound[8])? {
-            let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
-                .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
-                .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
-            STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
+            let (track, metrics) = stream_diagnostic_mode();
+            if metrics {
+                use std::sync::atomic::Ordering::Relaxed;
+                STREAM_DIAGNOSTIC_REQUESTS.fetch_add(1, Relaxed);
+                let signature = (u64::from(media_id) << 32) ^ (media.source_size() as u64)
+                    ^ (u64::from(sound[8]) << 56);
+                STREAM_DIAGNOSTIC_SIGNATURE.fetch_add(signature, Relaxed);
+            }
+            if track {
+                let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
+                    .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
+                    .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
+                STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
+                if metrics { STREAM_DIAGNOSTIC_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            }
             let prefetched = sound[8] == 1 && media.is_stream_header();
             if prefetched {
                 let entry = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
