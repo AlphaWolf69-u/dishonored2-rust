@@ -333,3 +333,22 @@ probe counts match the retain control; lighting coefficients, spatial planes/
 neighbors/tetrahedra and reflection metadata remain live. No per-query decoding
 or CPU timing change was introduced. The underlying PRB parser stays complete
 for standalone acquisition/inspection. This closes that retained-staging defect.
+
+
+Typed-image owner sweep (c9b2206, accepted 2026-11-04): source ownership, common
+scope and Cube/CubeArray view reuse remove four redundant caustics uploads over
+EotW/Dust/EotW (5,592,064 cumulative payload bytes). Used cube/array staging
+retires 36,700,160 capacity bytes; one persistent procedural factory replaces
+six (ten texture uploads / 1,315,840 bytes avoided). TLF borrow-upload staging
+removes exactly four allocations per preparation, with equal first-map required
+upload volume. No CPU/GPU time claim. Source descriptors/payload CRCs match.
+
+Remaining ocean-mask finding: `OceanScene::admit_images` still owns a separate
+2D upload map, while `WaterImageSources.ocean` retains its compressed CPU chains.
+The source parser selects the inline chain. Reusing ResidentImages' full-mip UI
+loader without a matching-view policy would silently change source resolution.
+Resolve these masks through the existing image owner while preserving selected
+mip/view identity; compare native loaded-map named image descriptors first. Do
+not create another texture cache or pin full-resolution masks as a shortcut.
+Unused prefetched typed sky staging likewise cannot be counted as retired: the
+36,700,160-byte result covers acquired sources only.

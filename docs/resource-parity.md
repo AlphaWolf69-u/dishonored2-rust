@@ -2139,3 +2139,49 @@ Each removed factory call saves two GPU uploads and 263,168 payload bytes;
 all calls still use the unchanged permutation/gradient generator and samplers.
 No per-frame lookup or refcount operation is needed. Separate diagnostic mode
 restores per-consumer generation; record factory counts and payload CRCs.
+
+
+### Verified typed-image and lighting-staging ownership (2026-11-04)
+
+Source c9b2206 completed the production EotW -> Dust -> EotW route in both
+copied/separate and shared modes, exit 0 each. No tests or visual inspection
+were run. All three acquired cube/array resource identities matched format,
+extent, mip/layer counts and exact compressed-payload CRC. This is resource
+content/ownership evidence, not a pixel comparison or total process-RAM claim.
+
+| Affected operation | Copied/separate | Shared | Scope |
+| --- | ---: | ---: | --- |
+| Cube/array uploads | 8 | 4 | Three-map route |
+| Cube/array upload payload | 41,592,992 B | 36,000,928 B | Cumulative logical bytes |
+| Caustics uploads | 5 | 1 | Same common source across consumers/maps |
+| Procedural image uploads | 12 | 2 | One session factory instead of six |
+| Procedural upload payload | 1,579,008 B | 263,168 B | Same generator CRC ad10a461 |
+| TLF intermediate allocations | 1,016 | 0 | First map: exactly 254 preparations |
+| TLF intermediate copy bytes | 3,710,432 B | 0 | Same first-map upload count/bytes |
+| TLF required queue uploads | 762 / 2,930,144 B | 762 / 2,930,144 B | Unchanged first-map submitted record volume |
+
+Shared sources retired 36,700,160 B of used CPU staging capacity during the
+route. This includes vector capacity, whereas upload sizes above count payload
+length. Unused prefetched Dust reflection-cube staging (8,388,608 B) and the
+48-byte unused builtin cube remained until source release; they were not
+uploaded just to make their CPU-buffer counter disappear. Per-map ocean cubes
+were released and reacquired on return. Purges retained two persistent typed
+sources (common caustics and builtin cube), and three intrinsic 2D identities.
+No per-frame owner lookup, extra render pass, image precision change or sampler
+change was introduced.
+
+The TLF prediction is met: three borrowed record uploads replace four temporary
+allocations per nonempty preparation. Later-map frame counts differ, so their
+raw cumulative timing or copy totals are not compared as identical work. No CPU
+or GPU time gain is claimed. The lifecycle launcher now removes benchmark and
+profiling timers explicitly; its existing level-sequence driver already supplies
+completion. The completed run had no CPU/render profiling enabled; benchmark
+configuration was redundant and is not acceptance evidence.
+
+Native scope/identity evidence is `14005fde0`, `140060180`, `1400607f0`,
+`14005feb0`, `1402bd380`, and procedural creation `1402f6450`. Queue/Arc source
+ownership is a host implementation of those boundaries. Local numeric evidence:
+artifacts/lifecycles-image-ownership-comparison.json and the two completed client
+outputs. Remaining 2D ocean masks still have a separate upload/CPU-staging path;
+that is not claimed fixed by the cube/array result. A loaded-map native named
+image capture remains needed before changing their mip/streaming policy.
