@@ -297,6 +297,8 @@ pub(super) fn prepare_level(
         environment_data
             .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
             .unwrap_or((None, None, 1.0));
+    let trace_environment_cpu = env::var("DH2_DEBUG_ENVIRONMENT_CPU").as_deref() == Ok("1");
+    let environment_cpu_start = if trace_environment_cpu { crate::loading::thread_cycles() } else { None };
     let (area_environments, environment_volumes) = match (entity_document.as_ref(), catalog.as_ref()) {
         (Some(document), Some(catalog)) => {
             let separate = catalog.has_overlays()
@@ -317,6 +319,9 @@ pub(super) fn prepare_level(
         }
         _ => (Vec::new(), Vec::new()),
     };
+    if let (Some(start), Some(end)) = (environment_cpu_start, if trace_environment_cpu { crate::loading::thread_cycles() } else { None }) {
+        eprintln!("MEMORY environment preparation CPU: areas={} volumes={} cycles={}", area_environments.len(), environment_volumes.len(), end.saturating_sub(start));
+    }
     println!(
         "Loaded {} area environment trigger shapes",
         area_environments.len()

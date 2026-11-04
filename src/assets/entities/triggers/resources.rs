@@ -10,12 +10,15 @@ use std::collections::HashMap;
 
 pub struct TriggerShapeAsset {
     pub path: String,
-    pub bytes: Vec<u8>,
-    pub physics: PhysWorld,
+    // Source is retired only after cached_mass has been filled. Runtime users
+    // obtain mass through the methods below and geometry through query_shapes.
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) physics: PhysWorld,
     pub header: physworld::shape::ShapeHeader,
     pub bounds: [[f32; 4]; 2],
     pub is_mutable: bool,
     pub query_shapes: std::sync::Arc<physworld::query_geometry::QueryShapes>,
+    cached_mass: Option<Result<Option<physworld::mass::PrincipalMassProperties>, String>>,
     pub(crate) signals: crate::gameplay::shape_registry::ShapeSignals,
 }
 
@@ -52,7 +55,7 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
     }
     fn cached_mass(&self,shape:usize)->Result<Option<physworld::mass::PrincipalMassProperties>,String>{
         let shape=self.shapes.get(shape).ok_or("trigger mass shape is missing")?;
-        shape.physics.shape_mass_properties(&shape.bytes,1)
+        shape.root_mass()
     }
     fn calculate_mass(&self,shape:usize,config:[u32;3])->Result<physworld::mass::PrincipalMassProperties,String>{
         let shape=self.shapes.get(shape).ok_or("trigger calculated-mass shape is missing")?;
@@ -61,6 +64,9 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
 }
 
 impl TriggerShapeAsset {
+    fn root_mass(&self) -> Result<Option<physworld::mass::PrincipalMassProperties>, String> {
+        self.cached_mass.clone().unwrap_or_else(|| self.physics.shape_mass_properties(&self.bytes, 1))
+    }
     /// Prepare the motion from this retained compound resource's real cached
     /// mass or its original mode-zero calculation. World activation owns IDs.
     pub fn prepare_motion(
@@ -68,7 +74,7 @@ impl TriggerShapeAsset {
         body: &physworld::body::BodyInfo,
         distribution: Option<physworld::body::MassDistribution>,
     ) -> Result<crate::gameplay::motion_info::MotionInfo, String> {
-        let cached = self.physics.shape_mass_properties(&self.bytes, 1)?;
+        let cached = self.root_mass()?;
         crate::gameplay::motion_info::MotionInfo::from_compound_body(
             body,
             cached,
@@ -102,6 +108,54 @@ impl crate::gameplay::physics_world::PublicationGeometry for TriggerAssets {
 }
 
 impl TriggerAssets {
+    /// Release immutable serialized shapes after their typed query data and
+    /// root mass result have been prepared. Mutable shapes keep their source.
+    pub(crate) fn release_immutable_sources(&mut self) {
+        let retain = std::env::var("DH2_DEBUG_RETAIN_TRIGGER_SOURCES").as_deref() == Ok("1");
+        let trace = std::env::var("DH2_DEBUG_TRIGGER_SIGNATURES").as_deref() == Ok("1");
+        let timing = std::env::var("DH2_DEBUG_TRIGGER_SOURCE_CPU").as_deref() == Ok("1");
+        let start = if timing { crate::loading::thread_cycles() } else { None };
+        let mut released = 0usize;
+        let mut source_capacity = 0usize;
+        let mut schema_capacity = 0usize;
+        let mut crc = flate2::Crc::new();
+        for shape in &mut self.shapes {
+            if shape.is_mutable || shape.cached_mass.is_some() { continue; }
+            if retain && !trace { continue; }
+            let mass = shape.physics.shape_mass_properties(&shape.bytes, 1);
+            if trace {
+                crc.update(shape.path.as_bytes());
+                crc.update(format!("{mass:?}{:?}", shape.query_shapes).as_bytes());
+                crc.update(&[0]);
+            }
+            if retain { continue; }
+            shape.cached_mass = Some(mass);
+            if trace {
+                source_capacity += shape.bytes.capacity();
+                let physics = &shape.physics;
+                schema_capacity += physics.sdk_version.capacity()
+                    + physics.materials.capacity() * std::mem::size_of::<String>()
+                    + physics.materials.iter().map(String::capacity).sum::<usize>()
+                    + physics.material_map.capacity() * std::mem::size_of::<u32>()
+                    + physics.items.capacity() * std::mem::size_of::<physworld::TagItem>()
+                    + physics.types.capacity() * std::mem::size_of::<physworld::TagType>()
+                    + physics.types.iter().map(|ty| ty.name.capacity()
+                        + ty.fields.capacity() * std::mem::size_of::<physworld::TagField>()
+                        + ty.fields.iter().map(|field| field.name.capacity()).sum::<usize>()).sum::<usize>();
+            }
+            shape.bytes = Vec::new();
+            shape.physics = PhysWorld { materials: Vec::new(), material_map: Vec::new(),
+                sdk_version: String::new(), types: Vec::new(), items: Vec::new(), data_start: 0, data_size: 0 };
+            released += 1;
+        }
+        if let (Some(start), Some(end)) = (start, if timing { crate::loading::thread_cycles() } else { None }) {
+            eprintln!("MEMORY trigger source CPU: retained={retain} shapes={released} cycles={}", end.saturating_sub(start));
+        }
+        if trace {
+            eprintln!("MEMORY trigger source retirement: retained={retain} shapes={released} source_capacity={source_capacity} schema_capacity={schema_capacity} signature={:08x}", crc.sum());
+        }
+    }
+
     /// Reads installed files without flattening compound instances, transforms,
     /// shape tags or tree order into movement triangles or volume planes.
     pub fn load(document: &Document, map: &str, catalog: &Catalog) -> Result<Self, String> {
@@ -160,6 +214,7 @@ impl TriggerAssets {
                         bounds,
                         is_mutable,
                         query_shapes: std::sync::Arc::new(query_shapes),
+                        cached_mass: None,
                         signals: Default::default(),
                     });
                     indices.insert(path, index);

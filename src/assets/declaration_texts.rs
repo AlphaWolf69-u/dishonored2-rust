@@ -65,9 +65,9 @@ impl PhysicsSeed {
     pub(crate) fn read(&mut self, catalog: &Catalog, path: &str, role: PhysicsUse) -> Result<Option<String>, String> {
         static CPU_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let trace = *CPU_TRACE.get_or_init(|| std::env::var("DH2_DEBUG_PHYSICS_CPU").as_deref() == Ok("1"));
-        let start = if trace { crate::loading::history_thread_cycles() } else { None };
+        let start = if trace { crate::loading::thread_cycles() } else { None };
         let result = self.read_inner(catalog, path, role);
-        if let (Some(start), Some(end)) = (start, if trace { crate::loading::history_thread_cycles() } else { None }) {
+        if let (Some(start), Some(end)) = (start, if trace { crate::loading::thread_cycles() } else { None }) {
             let stats = &mut self.stats[role as usize];
             stats.cycle_reads += 1;
             stats.cycles = stats.cycles.saturating_add(end.saturating_sub(start));
@@ -117,7 +117,8 @@ impl PhysicsSeed {
     }
 
     fn report(&self, map: &str) {
-        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1")
+            && std::env::var("DH2_DEBUG_PHYSICS_CPU").as_deref() != Ok("1") { return; }
         for (role, stats) in ["world", "model", "machinery", "runtime"].into_iter().zip(&self.stats) {
             eprintln!("MEMORY physics text source: map={map} role={role} enabled={} requests={} reads={} decoded_bytes={} common_hits={} local_hits={}",
                 self.enabled, stats.requests, stats.reads, stats.bytes, stats.common_hits, stats.local_hits);

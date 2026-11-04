@@ -55,7 +55,7 @@ fn history_modes() -> (bool, bool) {
 
 /// Diagnostic only: CPU cycles consumed by this thread in the affected code.
 #[cfg(windows)]
-pub(crate) fn history_thread_cycles() -> Option<u64> {
+pub(crate) fn thread_cycles() -> Option<u64> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetCurrentThread() -> isize;
@@ -66,7 +66,7 @@ pub(crate) fn history_thread_cycles() -> Option<u64> {
     (unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } != 0).then_some(cycles)
 }
 #[cfg(not(windows))]
-pub(crate) fn history_thread_cycles() -> Option<u64> { None }
+pub(crate) fn thread_cycles() -> Option<u64> { None }
 
 fn resource_key(kind: &str, path: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -86,7 +86,7 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
 pub fn read(kind: &str, path: &str) {
     use std::borrow::Cow;
     let (separate, trace) = history_modes();
-    let cycle_start = if trace { history_thread_cycles() } else { None };
+    let cycle_start = if trace { thread_cycles() } else { None };
     let borrowed_path = !separate && path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase());
     let path: Cow<'_, str> = if !borrowed_path {
         Cow::Owned(path.to_ascii_lowercase().replace('\\', "/"))
@@ -134,7 +134,7 @@ pub fn read(kind: &str, path: &str) {
                 index = s.required_next[index];
             }
         }
-        if let (Some(start), Some(end)) = (cycle_start, if trace { history_thread_cycles() } else { None }) {
+        if let (Some(start), Some(end)) = (cycle_start, if trace { thread_cycles() } else { None }) {
             s.history_metrics.cycle_reads += 1;
             s.history_metrics.cycles = s.history_metrics.cycles.saturating_add(end.saturating_sub(start));
         }

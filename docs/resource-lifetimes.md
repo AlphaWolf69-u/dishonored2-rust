@@ -78,6 +78,14 @@ physical GPU heap reservation is not the same measurement. CPU payload sharing
 removes another 5.79 MiB of duplication. No whole-frame performance improvement
 or exact UI byte saving is inferred from these owner measurements.
 
+Immutable trigger sources and their parsed schemas now release after physics
+scene initialization; query geometry and the resolved root mass result stay
+live. EotW / Dust release 1,516,972 / 1,658,543 source-buffer capacity bytes
+and 5,573,212 / 4,594,951 schema capacity bytes, with matching shape and mass
+fingerprints. The replacement mass field adds per-shape storage; these are
+owner allocation capacities, not process RSS. Mutable shapes retain their
+source. Targeted release startup CPU measurement remains pending.
+
 Area-environment acquisition now resolves one profile list for its area and
 physics consumers. The EotW / Dust / EotW production comparison reduced
 resolutions 1,000 -> 500 and inherited reads 2,636 -> 1,318 with matching

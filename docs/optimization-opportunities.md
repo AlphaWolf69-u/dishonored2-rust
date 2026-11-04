@@ -478,21 +478,11 @@ and cycles are not elapsed time. No process-RSS or gameplay-frame gain is
 assumed from allocation counts.
 
 
-Physics-material acquisition overlap under investigation: the world physics
-loader resolves each material with a fresh inheritance cache, static model
-collision has another resolver, and contact audio later acquires the same
-listed declaration family. Original `1406798b0` requests the listed material
-identities through the resource manager. A level-scoped shared declaration
-owner may remove repeated reads and parses of the same parent and child
-resources, but it must preserve mutable-overlay semantics, share data without
-retaining a second full text tree, and release map-only entries. The observed
-312 unique physics-material history names bound distinct identities, not the
-number of duplicate reads or a byte saving. Prediction: inherited parents
-will cause at least one repeated world-physics read, and at least one world
-input will overlap the contact list in the sampled maps. Count exact path
-overlap and cumulative bytes first; if either prediction fails, revise the
-model before changing ownership. Then compare resolved collision properties and
-contact behavior; no saving is claimed yet.
+Physics-material source overlap is resolved: the three-map production route
+reduced physics source reads 749 -> 62 and initial contact reads by 45, with
+matching resolved material and contact signatures. World, collision, machinery
+and startup still resolve typed values separately; a shared parsed-value owner
+would need its own memory and affected-CPU measurements before it is justified.
 
 Animation, Iggy, UI bitmap, localization and render-parameter caches return
 resident resources for the same catalog. The original registry lookup
@@ -501,15 +491,13 @@ edits alone do not establish a reload boundary; do not bypass those caches
 without evidence for one. Mutable load-list and map-info acquisition have
 separate handling because they are descriptors rather than resident payloads.
 
-Trigger-shape ownership investigation: `TriggerShapeAsset` retains the HKX
-source and parsed schema as well as its owned query geometry. The remaining
-runtime read of the source/schema is `shape_mass_properties`; geometry queries
-use `query_shapes`. If the root mass result can be captured once without
-changing deferred error behavior, source and schema storage might be released
-after acquisition. First measure their retained capacities and the affected
-mass-resolution work on real maps; preserve mutable-shape and body-creation
-behavior. No saving is claimed until those measurements and ownership checks
-are complete.
+Trigger-shape source ownership: immutable HKX source and parsed schema now
+release after physics scene initialization, once the root mass result is
+retained. Query geometry, bounds and headers remain; mutable shapes retain
+their source. The EotW / Dust clients released 7,090,184 / 6,253,494 bytes of
+source and schema capacities, with matching geometry and mass fingerprints.
+The cached mass field has its own per-shape cost; these are not net RSS
+measurements. Targeted release startup CPU measurement remains pending.
 
 Trigger source-retirement prediction: the prior installed-data audit found
 5,576 trigger shape assets across 36 worlds and no mutable ones. After scene
@@ -521,6 +509,15 @@ and mass values; one additional mass-property lookup per immutable shape is
 startup work. Compare actual released capacities and affected acquisition CPU
 in same-build retained/released clients. Counts across all installed worlds do
 not represent simultaneous residency or a process-RSS saving.
+
+Trigger acquisition overlap prediction: area/wind preparation reads shape
+files through `TriggerVolume::load`, while the physics scene separately reads
+trigger shape files into `TriggerAssets`. At least one path is expected to
+overlap in EotW because both are derived from authored trigger placements.
+Record successful paths and source-byte fingerprints in a production route
+before proposing a shared owner; different trigger recipes or geometry needs
+may mean the apparent overlap does not exist. No saving is assumed until
+the path overlap and output requirements are measured.
 
 Area-environment acquisition prediction: `level_prepare` resolves every
 authored environment volume once for the area selection and again for the
@@ -539,6 +536,34 @@ all ordered geometry and profile signatures; resolutions fell 1,000 -> 500,
 inherited reads 2,636 -> 1,318 and cumulative decoded bytes 19,793,854 ->
 9,896,927. This is load I/O, not an RSS or frame-time measurement. A targeted
 release CPU comparison remains pending.
+
+Environment-volume residency prediction: after area preparation, the live
+`EnvironmentVolumes` consumers read only placement identity/position, water
+classification and surface material. Full placement strings and resolved
+parameter layers remain duplicated alongside `AreaEnvironment` without a
+runtime reader in those consumers. Move the parameters into the area owner,
+publish only the fields used by physics, setup and water, and release the
+remaining preparation data. Ordinary areas should avoid one parameter clone;
+water profiles' unconsumed parameter layers should release entirely. Compare
+the retained field capacities, resolved area/profile fingerprints and water
+selection in real map transitions. This predicts lower live owner storage,
+not an exact RSS or frame-time change; count actual data before reporting it.
+
+Water selection allocation: `app::water_scene` converts the selected
+volume's `surface_material` from `&str` to a new `Arc<str>` on each query
+publication. A volume-owned Arc could replace that allocation with a reference
+clone, preserving the material string and selection order. The gain is one
+allocation per completed publication with a selected material; the actual
+publication frequency and affected CPU have not yet been measured. Verify
+selection and measure the affected function over a moving underwater workload
+before changing this per-frame path.
+
+Area containment work: environment tracks independently traverse the same
+area list and call `contains` for their current point. Reusing one ordered
+selection per view/update could remove repeated geometry queries, but the
+affected CPU time and the number of genuinely shared points are unmeasured.
+Track timing and positions first; preserve query timing, area precedence and
+independent camera/body views before changing this gameplay-frame path.
 
 Physics-material targeted CPU prediction: the shared path eliminates 687 of
 749 observed source reads over the three-map route, while adding source-map

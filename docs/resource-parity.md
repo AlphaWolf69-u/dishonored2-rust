@@ -127,7 +127,7 @@ trailing `*` covers a family of kinds.
 | `particledt` | `rendering::particles::definition::ParticleResources` | partial: one level-scoped host acquisition cache for declarations, PMODELs, field images and material references across player/world FX; emitters retain independent mutable simulation. Full original resource lifecycle not ported |
 | `pauseMenuSectionOptions` | `gameplay::options` | partial: reads its resources; lifecycle not ported (see its class) |
 | `pblock` | `rendering::render_program` | partial: reads its resources; lifecycle not ported (see its class) |
-| `physhape` | `assets::physworld` | partial: reads its resources; lifecycle not ported (see its class) |
+| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Other shape consumers and the full resource registry lifecycle remain partial |
 | `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
 | `physSystem` | none | none: no owner yet |
 | `physworld` | `assets::physworld`, `gameplay::body_storage`, `gameplay::navigation` | partial: reads its resources; lifecycle not ported (see its class). Host navigation broad phase keeps decoded full-precision triangles for query speed; immutable cell lists pack u32 shape keys into one allocation, retaining their order and releasing construction capacity. This replaces the Havok compressed-mesh tree (`141262020`); no per-query mesh decoding or reduced precision |
@@ -3204,3 +3204,17 @@ For the physics-source change, the development comparison also instrumented
 only the changed reader: 749 calls used 23,570,179 -> 5,843,521 thread
 cycles. This is not an elapsed-time or release-performance measurement; the
 release comparison is still required.
+
+### Immutable trigger source retirement
+
+The retained/released EotW / Dust / EotW clients exited 0 with identical
+trigger geometry and root-mass fingerprints and matching area, collision,
+contact and recorded rendering-resource fingerprints. The physics scene
+retired 332 / 259 / 332 immutable source files after initialization. Their
+source-buffer capacities were 1,516,972 / 1,658,543 / 1,516,972 bytes and
+the parsed schema capacities were 5,573,212 / 4,594,951 / 5,573,212 bytes.
+The typed query geometry, shape headers, bounds and mass results remain;
+mutable shapes retain their source. Cached mass fields add per-shape storage,
+and allocator overhead and process RSS are not measured by these counters.
+Release-profile startup CPU measurement is pending. Local evidence:
+`artifacts/trigger-sharing-comparison.json`.

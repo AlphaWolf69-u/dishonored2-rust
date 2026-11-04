@@ -461,6 +461,7 @@ impl PhysicsScene {
         }
         registry.initialize_and_start(&mut scene)?;
         scene.registry = Some(registry);
+        scene.geometry.release_immutable_sources();
         Ok(scene)
     }
 
