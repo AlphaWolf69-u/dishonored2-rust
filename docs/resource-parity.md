@@ -2530,3 +2530,36 @@ zero table inserts or diagnostic DIDX scans, versus one insert per streamed
 source before; debug timing keeps the existing reporting behavior. Measure
 source and table counters in the production client, without a whole-frame CPU
 benchmark or a claim about physical RAM saved from entry counts alone.
+
+
+Layered staging first production comparison (source `3ff5959`): both copy and
+in-place clients completed the same four-level sequence with exit 0. Six water
+cube/array acquisitions carried 44,913,760 cumulative payload bytes and used
+6 -> 0 separate full-payload allocations. Reflection preparation processed 343
+cube requests / 179,819,808 cumulative payload bytes and used 343 -> 0
+intermediate full-cube allocations. All recorded preparation identities,
+reflection descriptors and per-cube fingerprints, and layered GPU-upload
+fingerprints match. The final reflection-array requested capacities changed
+from 67,108,864 / 16,777,216 / 67,108,864 / 67,108,864 bytes to 54,522,624 /
+12,582,144 / 58,192,416 / 54,522,624 respectively. These are buffer-capacity
+and cumulative allocation measurements, not RSS or CPU-time measurements.
+The initial instrumentation counted growth per probe, not every reallocation;
+the later source corrects the counter and still needs its own production run.
+Evidence: `artifacts/layered-inplace-first-comparison.json` and paired logs.
+
+
+Environment image handoff production acceptance (source `3ff5959`): all three
+clients completed four levels with exit 0. In default mode, Edge of the World
+reused the registered 256x256 BC4 inline image on both visits (43,688-byte
+payload, CRC `30063ac6`); no finer request was injected. A separate targeted
+diagnostic submitted demand only to environment slots. In that run the
+streamer requested, uploaded and committed the 512x512 mip for Edge of the
+World BC4 (131,072 new bytes) and the Curator boat BC7 (262,144 new bytes).
+The ocean owner recorded the committed asset IDs and new GPU views. Its old
+inline registry leases were retired (43,688 and 87,376 logical bytes,
+respectively); these are released references, not physical-heap measurements.
+The EotW return repeated the same transition. World and area sources use the
+same indexed-resource rule; only these two formats/maps were exercised in this
+runtime comparison. The diagnostic demand is not present in ordinary play.
+Evidence: `artifacts/ocean-stream-targeted-comparison.json`, paired logs and
+client results. No tests or visual inspection were performed.
