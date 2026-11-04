@@ -247,17 +247,17 @@ are zero, and retained bootstrap/common/EotW records are 1774/27040/21713.
 Removed work is whole patch-index discovery parsing and retention/decoding
 of unrelated IndexEntry records; no walking-frame gain is claimed.
 
-Two adjacent archive-reader costs remain for the next cohesive IO-owner change:
-- Catalog::read resolves its entry twice (kind reporting, then payload lookup).
-  Reuse that lookup: one normalization/allocation and binary search removed per
-  archived read. This belongs with the container reader so instrumentation and
-  errors share the selected entry; no CPU-time saving is assigned yet.
-- read_location/read_prefix open an archive for each request and repeatedly
-  query immutable archive extents. A bounded pool of independently positioned
-  handles can reduce opens/extent queries from request count to peak concurrent
-  readers per container. Trace the original container reader before choosing
-  its synchronization: one shared synchronous file handle can serialize reads
-  and must not replace the current parallel acquisition. Payload decompression
-  already streams directly into its final output allocation; do not restore a
-  whole compressed-input copy. Handle caching is deliberately not added without
-  resolving that concurrency/lifetime mechanism.
+The adjacent reader changes are implemented: Catalog::read reuses the selected
+entry for kind reporting and payload access; catalogue-owned exclusive readers
+reuse physical container handles and cached immutable extents. Native container
+ownership is 140068720 / 14006a680 / 14006a310. Locks cover checkout/return only,
+with independent cursors for concurrent IO/decode. The production three-map
+route reported 95,232 acquisitions, 16 opens and 95,216 reuses; no extra payload
+cache. This establishes removed operations, not CPU-time or RAM savings.
+
+Shadow target sweep: source-absent atlas wrappers and auxiliary arrays now
+retire before revision reuse. Actual three-map loading retired no target within
+one map; no GPU-memory reduction is assigned. Resource bindings, mesh allocator
+entries and alpha materials already have invalidation/pruning. A live quality
+or resolution replacement still needs residency coverage; do not infer it from
+map teardown or add a second cleanup for caches already pruned.

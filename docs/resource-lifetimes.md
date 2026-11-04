@@ -93,7 +93,7 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 
 | Family | Acquisition / representation | Residency, reuse and release | Audit finding |
 |---|---|---|---|
-| Archive catalog and aliases | `assets/archive`: one shared index per installation, packed sorted names; archive members read by offset; zlib only for compressed members | Process owner; no extracted-file prerequisite or whole-archive resident payload | Intentional resident metadata; archive decompression is required by the stored format |
+| Archive catalog and aliases | `assets/archive`: one shared index per installation, packed sorted names; archive members read by offset; zlib only for compressed members | Process owner; lazy exclusive container-reader leases, closed with catalogue; no extracted-file prerequisite or whole-archive resident payload | Intentional resident metadata; 95,232 production acquisitions reused 16 file opens across three maps (95,216 reuses). Required zlib decoding streams into final output; no payload cache or CPU-time saving claim |
 | Load manifests | `assets/map_resources`: session init/common lists, temporary per-map assembly, weak combined-table lookup | `loading` releases progress tables at play; diagnostic coverage takes and drops its report reference | Original `1400661e0` frees request tables separately from registered payloads. Host cache retains only init/common metadata; map descriptors no longer accumulate across visits |
 | Mapinfo/localization/config | `gameplay/map_info`, `assets/lang`, `platform/rewrite_settings` | Parsed mapinfo cached per installation/map; loading-info cache holds current map; session settings retained | Intentional small metadata, but mapinfo cache is not an eviction policy; mission text remains a localization key; translation tables are keyed by the startup language. Runtime language switching is explicitly absent (`gameplay/options/audio::after_change`), so it is not a hidden live-language invalidation path |
 | Compiled world | `app/level_prepare`, `assets/world_mesh`: current BWM only, parsed once | Scene holds instance/spatial metadata; `app/setup` empties vertex/index vectors after upload; world teardown drops metadata | CPU geometry release exists; shared receiver tree survives upload because shadows/decals still query it |
@@ -139,8 +139,8 @@ bytes have actual runtime consumers and are intentionally retained.
 
 The audit does **not** certify full lifecycle parity. The main open areas are
 image identity shared across renderer domains,
-particle finer-mip streaming, shared metadata/image policy, and original
-texture pressure/priority rules. Live UI collection is implemented; automatic scheduling is a host difference.
+particle finer-mip streaming, shared metadata/image policy, and device-cache accounting. Scene texture pressure/priority rules are implemented;
+particle/UI policy remains separate. Live UI collection is implemented; automatic scheduling is a host difference.
 The sustained release pause-menu run measured 29 collections per mode: mean
 4.862 -> 3.238 ms in the collector, with 172 objects reclaimed in both runs.
 These differ from a verified memory leak: several are deliberate caches or

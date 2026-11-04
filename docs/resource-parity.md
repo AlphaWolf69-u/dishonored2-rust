@@ -1309,3 +1309,64 @@ is the same known input omission as before. Localization variants remain,
 unrelated ids do not enter the retained table, and request order is unchanged.
 No loading/decoder/GPU/fatal errors. This establishes removed discovery reads
 and metadata retention, not a CPU-time or FPS improvement. No tests run.
+
+
+Backend shadow-target retirement prediction (before implementation):
+ShadowSceneGpu::targets keeps each source Image's wrapped atlas and auxiliary
+static-cache arrays until map teardown. It never removes an entry when that
+Image leaves RenderAssets within the map. Follow the source owner's release,
+as the generic 140060180 destructor path does, rather than add an age/size
+heuristic: retain only ids still in RenderAssets<GpuImage>, before any repeated
+revision early return. Expected stale-cache invariant: zero cached target ids
+absent from the live image store after that pass. Preserve every live target's
+texels, valid bits, cache generations and draw records. An unchanged revision
+may skip submission only if its target cache still exists. This adds one live
+id lookup per cached target, no allocation, copy, GPU pass or wait. No CPU
+speedup or predetermined byte saving is claimed; retirement counters show
+whether the actual client exercises dead target replacement. Resource bindings
+already retain only the current submission, mesh allocation caches invalidate
+on frees/slab epochs, and alpha bindings prune unused entries; those do not
+need a second cleanup mechanism.
+
+Catalogue lookup sweep prediction (before implementation): Catalog::read
+currently resolves the same installed entry once for kind reporting and again
+for payload access. Reuse the first immutable entry reference. Expected entry
+lookups there: two to one per read, with identical overlay precedence, loading
+reporting, bounds/decompression and returned bytes. No payload or IO scheduling
+change, no new cache/lock, and no absolute CPU timing claim.
+
+
+Archive container owner evidence/prediction (before implementation): 140068720
+retains the index file at container+0x68; 14006a680 opens an active payload
+container only when +0x70 is null and stores that reader; 14006a310 closes both
+at container release. Current archive::read_location/read_prefix instead open
+and query a container on every acquisition. Keep a catalogue-owned pool of
+exclusive file readers per physical container, opened lazily. Host: independent
+file cursors preserve the rewrite's concurrent readers; a shared synchronous
+cursor or mutex held through IO/decompression would serialize them.
+
+Expected work: file opens and extent queries approach peak simultaneous readers
+per used container instead of resource request count. After reaching that peak,
+repeated requests open no additional handles. Canonicalize game2/game3's shared
+8192 container to the same physical pool key. No payload cache, format change,
+extra compressed copy or per-frame work. Pool locks cover only checkout/return;
+IO and inflation hold no pool lock. Reader leases borrow their catalogue owner,
+and cached readers close when that owner drops. Loose mod files retain the
+current direct-read path. Verify actual request/open/reuse counts on production
+loading; do not assign CPU milliseconds or MB savings from handle counts.
+
+
+Archive reader acceptance (production client, no tests): library/game-bin checks,
+dev build and EotW -> Dust District -> EotW client all exited 0. At the final
+reported checkpoint, 95,232 acquisitions used 16 opens/extent queries and
+95,216 reused readers; the open count remained 16 throughout the late requests.
+The same catalogue served all three maps. IO/decompression does not hold the
+pool mutex, loose overlays keep their direct-read behavior, and no decoded
+payload cache was introduced. These counts establish eliminated filesystem
+operations, not measured CPU milliseconds or resident MB savings.
+
+Shadow retirement acceptance: the same production client exited 0 without
+shadow-target retirement events. Source-absent entries are now pruned before
+revision reuse, but this route did not replace an atlas within one map. No
+measured GPU memory saving or live quality/resolution coverage is claimed;
+that broader coverage remains open. Existing map-boundary cleanup is unchanged.

@@ -1,5 +1,6 @@
 //! Read-only access to the installed game's resource indices and archives.
 pub mod index;
+mod containers;
 use flate2::read::ZlibDecoder;
 use std::error::Error;
 use std::fs::File;
@@ -83,6 +84,7 @@ pub struct Catalog {
     // expressions and option suffixes. Values index the final override table.
     image_sources: (Names, Vec<u32>),
     image_programs: (Names, Vec<u32>),
+    containers: containers::Containers,
 }
 
 // Native image programs are tokenized before their source alias is emitted.
@@ -239,6 +241,7 @@ impl Catalog {
             (Names::new(pairs.iter().map(|(name, _)| name.as_str())), pairs.iter().map(|&(_, i)| i as u32).collect())
         };
         Ok(Self {
+            containers: Default::default(),
             kinds,
             base: base.to_path_buf(),
             paths: Names::new(entries.iter().map(|(path, _)| path.as_str())),
@@ -337,14 +340,19 @@ impl Catalog {
     }
 
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        if let Some(kind) = self.kind(path) {
-            crate::loading::read(kind, path);
+        let entry = self.entry(path);
+        if let Some(entry) = entry {
+            crate::loading::read(&self.kinds[entry.kind as usize], path);
         }
         if let Some(file) = self.overlay_file(path) {
             return Ok(Some(std::fs::read(file)?));
         }
-        self.entry(path)
-            .map(|entry| read_location(&self.base, path, entry))
+        entry
+            .map(|entry| {
+                let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
+                let length = reader.length;
+                read_file(&mut reader.file, length, path, entry)
+            })
             .transpose()
     }
 
@@ -359,8 +367,9 @@ impl Catalog {
         let Some(entry) = self.entry(path) else {
             return Ok(None);
         };
-        let archive = archive_path(&self.base, entry.group, entry.slot)?;
-        let mut file = File::open(archive)?;
+        let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
+        validate_extent(path, entry, reader.length)?;
+        let file = &mut reader.file;
         file.seek(SeekFrom::Start(entry.offset))?;
         let mut output = Vec::with_capacity((entry.size as usize).min(limit));
         if entry.size == entry.stored_size {
@@ -379,6 +388,10 @@ fn read_location(base: &Path, path: &str, entry: &Entry) -> Result<Vec<u8>> {
     let archive = archive_path(base, entry.group, entry.slot)?;
     let mut file = File::open(&archive)?;
     let archive_size = file.metadata()?.len();
+    read_file(&mut file, archive_size, path, entry)
+}
+
+fn validate_extent(path: &str, entry: &Entry, archive_size: u64) -> Result<()> {
     if entry
         .offset
         .checked_add(u64::from(entry.stored_size))
@@ -386,6 +399,11 @@ fn read_location(base: &Path, path: &str, entry: &Entry) -> Result<Vec<u8>> {
     {
         return Err(invalid(format!("{path}: indexed resource exceeds archive extent")).into());
     }
+    Ok(())
+}
+
+fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> Result<Vec<u8>> {
+    validate_extent(path, entry, archive_size)?;
     file.seek(SeekFrom::Start(entry.offset))?;
     // Native worlds exceed 128 MiB. Bound reads by the indexed archive
     // extent and decoded size, rather than an unrelated texture-size cap.

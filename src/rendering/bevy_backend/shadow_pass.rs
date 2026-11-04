@@ -611,6 +611,18 @@ pub(crate) struct ShadowSceneGpu {
 }
 
 impl ShadowSceneGpu {
+    fn retire_targets(&mut self, images: &RenderAssets<GpuImage>) {
+        // Host side of resource destruction (140060180): auxiliary surfaces
+        // must not keep an unloaded source atlas alive until the next map.
+        let before = self.targets.len();
+        self.targets.retain(|id, _| images.get(*id).is_some());
+        if before != self.targets.len()
+            && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY shadow target retirement: released={} retained={}",
+                before - self.targets.len(), self.targets.len());
+        }
+    }
+
     fn release_level(&mut self) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("LOAD shadow world release: targets={} pipelines_retained={}", self.targets.len(), self.pipelines.len());
@@ -941,6 +953,7 @@ fn render_shadow_scene(
     profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(27));
+    gpu.retire_targets(&images);
     let sampling = sampling_handle
         .as_ref()
         .and_then(|handle| sampling_buffers.get(handle.buffer.id()));
@@ -997,7 +1010,7 @@ fn render_shadow_scene(
             eprintln!("Shadow valid layers: {:?}", target.layer_valid);
         }
     }
-    if gpu.last_revision == Some(frame.revision) {
+    if gpu.last_revision == Some(frame.revision) && gpu.targets.contains_key(&target_image.id()) {
         return;
     }
     // No new receiver rows may sample an incomplete or failed atlas submission.
