@@ -218,3 +218,26 @@ unused MAIN-name/options fields. These are small owner-cleanup counts, not a
 large RAM or CPU-performance claim. Existing fixture initializers were adapted
 to the production type; no test or expected value was added or run. Local
 numeric evidence: artifacts/lifecycles-water-scopes-comparison.json.
+
+
+2026-11-04 fixed ocean-image owner acceptance (0c9e97b): library/game-bin checks,
+dev build, and both production three-map separate/shared clients completed
+successfully. All seven requested source identities match image format,
+extent, mip count and exact content CRC. The source table now contains handles;
+OceanScene binds prepared views and performs no image IO/parsing/upload. Ready
+snapshots report 6 / 5 / 6 ocean references with zero CPU image-payload bytes.
+The class owner releases two map-specific views at EotW retirement and one at
+Dust retirement, retaining common foam and three builtins. Inline acquisitions
+fall 17 -> 6, 14,252,368 -> 5,854,544 cumulative payload bytes. These are
+acquisition/ownership counts, not RSS or frame-time savings. Common foam uploads
+once; map shore/amplitude views reacquire on return. Equivalent base-chain scene
+views reuse the registered identity through the existing preparation path.
+
+Installed headers confirm that the EotW amplitude mask has a separate 512x512
+level above its 256x256 inline chain. That is why the new owner explicitly
+preserves the previous inline selection instead of routing masks through the
+UI loader's finer request. The shore fields and foam have no separate levels.
+Native demand/priority for environment-only finer levels still requires its
+own evidence; this ownership change does not claim a new mip-streaming policy.
+Local evidence: artifacts/lifecycles-ocean-image-owner-comparison.json and
+artifacts/lifecycles-ocean-image-headers.json. No tests or visual inspection.

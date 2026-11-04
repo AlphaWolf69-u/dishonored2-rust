@@ -373,3 +373,15 @@ defaults remain separate. Three-map same-binary construction count 12 -> 4,
 match. The temporary acquisition map drops before play; no runtime hashing,
 locks or reference-count operation was added to view evaluation. This is a
 small correctness/ownership cleanup, with no CPU-time or process-RAM claim.
+
+
+Fixed ocean-mask ownership resolved (0c9e97b): removed OceanScene's private image
+uploader and the retained compressed-chain table. ResidentImages supplies fixed
+inline handles through normal render-only asset extraction. Three-map shared
+acquisitions 17 -> 6 / 14,252,368 -> 5,854,544 cumulative bytes, all seven source
+descriptors/content fingerprints match; ocean CPU payload backing is zero at
+all three ready snapshots. Native environment-image finer demand remains a
+separate policy question: the amplitude mask really has a finer indexed level,
+and the owner must not silently substitute the UI loader's mip choice. The
+previous warning about that choice remains relevant; duplicated upload/staging
+ownership itself is fixed.
