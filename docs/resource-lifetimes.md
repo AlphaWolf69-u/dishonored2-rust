@@ -279,3 +279,10 @@ In the four-level production comparison, 1,437 completed-read path copies and
 568,960 cumulative bytes of temporary completion-vector capacity were avoided;
 upload scratch was empty and released on every observed map change. Image
 packing signatures matched. These are allocation counts, not RSS savings.
+
+
+Fog curve resources use the shared image owner. The original constructs a
+4,096-sample lookup transiently; the rewrite reads the installed compiled
+R16F lookup. One original EotW capture matches all 4,096 installed samples;
+16 declared curves have indexed matching image descriptors. This evidence
+does not certify every curve's sampled values or scripted curve producers.

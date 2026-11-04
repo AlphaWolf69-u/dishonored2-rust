@@ -78,7 +78,7 @@ trailing `*` covers a family of kinds.
 | `climb` | none | none: no owner yet |
 | `contactSystem` | none | none: no owner yet |
 | `ContactSystemDB` | `app::audio::contacts` | partial: reads its resources; lifecycle not ported (see its class) |
-| `curvefloat` | `rendering::fog::settings`, `app::resident_images` | partial: reads its resources; lifecycle not ported (see its class) |
+| `curvefloat` | `app::fog_scene`, `app::resident_images` | host: registered fog curves use installed compiled R16F images, shared through the image owner and purged by image scope; `1402edb60`/`1402ade20`/`1402add00`/`1402adf20` generate and upload the original lookup. All 16 indexed curve declarations have matching 4096x1 R16F compiled image names. An original EotW GPU capture matches its installed image in all 4,096 samples; other curves have descriptor/index coverage, not original-output comparisons. Scripted curve producers remain separate |
 | `damage` | none | none: no owner yet |
 | `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Renderer residency/unload lifecycle remains partial. |
 | `DevGui_Menu` | none | none: no owner yet |
@@ -2725,3 +2725,27 @@ three logs per run reported dropped events, so this is not a complete event
 ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
+
+
+### Fog curve resource ownership
+
+The original `1402edb60` constructs a temporary curve-image builder on the
+stack; `1402ade20` acquires the `.curvefloat` declaration and calls
+`1402add00`, which fills 4,096 float samples, and `1402adf20` creates and
+uploads the image. The existing original EotW RenderDoc capture records the
+result as a 4096x1 `R16_FLOAT` texture. Its complete 8,192-byte payload is
+identical to the installed EotW `colorlut.bimage7` payload used by the rewrite.
+The captured image descriptor's original format word also maps to DXGI 54
+through `1402c2f50`. All three existing captures contain that same payload;
+they are not independent map coverage.
+
+The installed index contains 16 `curvefloat` declarations; every one has a
+same-stem compiled image, and all 16 images specify the same 4096x1 R16F
+descriptor. Their payloads were not individually compared with the original
+runtime. Using the installed compiled image avoids running the original's
+curve-sampling/conversion step and lets the shared image owner handle reuse and
+map purge; this is a host representation change, not a claim about CPU time or
+all scripted curve behavior. Evidence: original decompilation and local
+`artifacts/fog-curve-capture-comparison.json`,
+`artifacts/fog-curve-index-mapping.json` in the feature checkout and
+`analysis/fog-runtime-inputs.json` in the main checkout.
