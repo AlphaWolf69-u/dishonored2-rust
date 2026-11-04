@@ -1771,6 +1771,8 @@ pub(super) fn prepare(
     commands.insert_resource(shadow_updates::ModelShadowSources(model_shadow_sources));
     commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
     commands.insert_resource(std::mem::take(&mut resolver.vegetation));
+    let mut ocean_image_slots = Vec::new();
+    let mut ocean_inline_slots = std::collections::HashSet::new();
     let mut particle_resources = crate::rendering::particles::definition::ParticleResources::default();
     if std::env::var("DH2_DEBUG_SEPARATE_PARTICLE_IMAGES").as_deref() != Ok("1") {
         particle_resources.use_scene_images();
@@ -1778,6 +1780,14 @@ pub(super) fn prepare(
     if let (Some(catalog),Some(parameters))=(catalog,scene.environment_render_parameters.as_ref()) {
         let (water,sources)=super::water_scene::WaterScene::load_with_model_colours(catalog,parameters,&scene.area_environments,&resolver.water_materials,&resolver.water_model_colours, resident_images, images)
             .unwrap_or_else(|error|panic!("water scene preparation failed: {error}"));
+        for path in sources.ocean.keys() {
+            // 1402e9ff0 registers images whose authored finer mips exist.
+            if !(0..=15).any(|mip| catalog.contains(&format!("{path}_mip{mip}"))) { continue; }
+            let previous_count = resolver.diffuse_image_paths.len();
+            let slot = resolver.register_image(path).expect("prepared ocean image must resolve");
+            if slot == previous_count { ocean_inline_slots.insert(slot); }
+            ocean_image_slots.push((path.clone(), slot));
+        }
         commands.insert_resource(water);
         commands.insert_resource(sources);
         let programs=resolver.programs.as_deref_mut().expect("ocean program library").as_mut()
@@ -1807,6 +1817,7 @@ pub(super) fn prepare(
             &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
+    commands.insert_resource(super::texture_streaming::environment_images::OceanImageSlots(ocean_image_slots));
     particle_resources.retire_unused();
     let mut particle_image_slots = Vec::new();
     for image in particle_resources.images().filter(|image| image.scene_owned) {
@@ -1918,7 +1929,7 @@ pub(super) fn prepare(
         super::load_timing::keep_load_list(catalog);
     }
     if let (Some(catalog), Some(shared)) = (catalog, shared_images) {
-        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images)
+        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images, &ocean_inline_slots)
             .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
     }
     let image_catalog = catalog_storage.clone();

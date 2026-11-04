@@ -2418,3 +2418,62 @@ This confirms that retaining the inline view matches the observed default path,
 while general streamer registration and demand/view handoff remain open.
 Evidence: `artifacts/resource-eotw-mask-moving.json` and
 `artifacts/resource-residency-eotw-after-movement.json` in the main checkout.
+
+
+Environment image handoff prediction (before implementation): registering
+streamable environment images in the existing scene image owner should reuse
+one initial GPU image identity, preserve the inline chain where it is the only
+consumer, and allow the ordinary budget/eviction machinery to publish later
+committed views. Ocean rendering must replace its cached view after a new asset
+is GPU-ready, keeping the old view until then; the existing head-query binding
+already compares texture view IDs. The default captured walk has no demand,
+so it should produce no added finer upload and the same 256x256 mask/format.
+Measure image identity, descriptors, upload counts and release with actual
+levels; do not claim a frame-time gain. Demand must come from evidenced native
+producers, not a fabricated per-frame ocean visibility value.
+
+
+Installed world-environment audit: the existing `material-audit` reader
+resolved world environment declarations for all 36 indexed worlds. Across
+those world-level declarations it found 28 distinct ocean image names, all
+resolved; seven have an indexed `_mip0`: five boat variants, Dunwall escape
+streets, and Edge of the World (the latter referenced by both chaos variants).
+Each of those seven has an inline 256x256 seven-mip chain; six use BC7 sRGB and
+one uses BC4. Area-specific environment overrides were not part of this
+world-declaration scan. The implementation discovers sources from prepared
+world and area environments and checks the installed index, rather than using
+this list as an allowlist. Evidence: local `ocean-environment-worlds.json` and
+`ocean-environment-images.json` in the feature checkout's artifacts directory.
+
+
+The follow-up installed-declaration scan read all 121 indexed environment
+files directly, covering declarations available to both world and area
+selection. Nineteen contain explicit ocean image values; their 29 distinct
+names differ from the world-only set by one additional source,
+`models/rendering/water/vc_ocean_m.tga`. Its installed compiled image is a
+complete 256x256 seven-mip BC4 chain with no indexed separate mip. Therefore
+the seven streamed image names above cover these explicit declaration values;
+this static scan does not claim every declaration is reachable or cover images
+introduced by systems outside ocean environment parameters. Evidence:
+`ocean-environment-all-decls.json` and the installed index lookup.
+
+
+A live Edge of the World cross-check of all matching ocean image names in the
+121 declarations confirms that the indexed-finer-mip distinction matters:
+`vc_ocean_m.tga` has seven resident mips but no streamer entry, while the
+amplitude mask has seven resident mips and a finer indexed mip and is
+registered. One-mip shore, foam and intrinsic textures have no streamer entry.
+This supports registering by available finer data rather than mip count alone.
+Evidence: `artifacts/resource-eotw-environment-streamer.json`.
+
+
+Before retiring replaced inline leases: once a scene-owned stream commits a
+new handle for an environment image, its old inline registry entry otherwise
+keeps an extra GPU asset alive for the rest of the level. Remove only that
+registry lease when the published scene handle differs. Existing snapshots and
+in-flight commands keep their own handles; the current scene handle remains
+owned by the streamer. Prediction: a forced finer-mip transition releases one
+obsolete inline registry lease per changed image, without changing payload,
+frame work when no image changes, or rendering order. The release does not
+claim immediate physical heap reduction; renderer and in-flight users can hold
+the old view until they finish.

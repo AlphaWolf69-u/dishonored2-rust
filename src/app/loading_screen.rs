@@ -305,7 +305,8 @@ pub(super) fn install(
         super::resident_images::publish_ui_images.before(bevy::asset::AssetEventSystems),
     )
     .add_systems(Last, (initial_render_ready, finish_loading).chain())
-    .add_systems(PostUpdate, super::texture_streaming::particle_images::publish
+    .add_systems(PostUpdate, (super::texture_streaming::particle_images::publish,
+        super::texture_streaming::environment_images::publish_ocean)
         .before(bevy::asset::AssetEventSystems))
     .add_systems(PostUpdate, super::loading_fade::advance_fade);
     Ok(())

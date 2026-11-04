@@ -140,6 +140,7 @@ pub struct OceanScene {
     mesh: OceanMeshBuffers,
     noise: Arc<super::noise_textures::NoiseTextures>,
     images: HashMap<String, TextureView>,
+    image_ids: HashMap<String, bevy::asset::AssetId<Image>>,
     wrap: Sampler,
     clamp: Sampler,
     depth: HashMap<crate::render_state::RenderState, DepthProgram>,
@@ -197,6 +198,7 @@ impl OceanScene {
             mesh: OceanMeshBuffers::new(device, build_ocean_geometry(16)?),
             noise,
             images: default(),
+            image_ids: default(),
             wrap: sampler(AddressMode::Repeat),
             clamp: sampler(AddressMode::ClampToEdge),
             depth: default(),
@@ -245,14 +247,21 @@ impl OceanScene {
             &settings.surface.foam_image,
             &settings.projected_shadow.image,
         ] {
-            // These are immutable fixed-view handles. Keep the existing hot
-            // path: resolve the asset only once when this source is admitted.
-            if self.images.contains_key(name) { continue; }
             let handle = sources.ocean.get(name)
                 .ok_or_else(|| format!("ocean image not prepared: {name}"))?;
-            let image = images.get(handle)
-                .ok_or_else(|| format!("ocean image awaits GPU preparation: {name}"))?;
+            if self.image_ids.get(name) == Some(&handle.id()) { continue; }
+            // Host: preserve the previous GPU view until the replacement asset
+            // is prepared. Native image replacement commits a ready view in
+            // 1402f4060/1402f5530; draw bindings then use that view.
+            let Some(image) = images.get(handle) else {
+                if self.images.contains_key(name) { continue; }
+                return Err(format!("ocean image awaits GPU preparation: {name}"));
+            };
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("MEMORY ocean image view: path={name} image={:?} view={:?}", handle.id(), image.texture_view.id());
+            }
             self.images.insert(name.clone(), image.texture_view.clone());
+            self.image_ids.insert(name.clone(), handle.id());
         }
         Ok(())
     }

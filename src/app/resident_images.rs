@@ -129,16 +129,28 @@ impl ResidentImages {
     /// 14005feb0 returns the registered resource, not a new upload per caller.
     /// Only equivalent base views qualify; the scene's mip minimum stays intact.
     pub(super) fn scene_views(&self, catalog: &archive::Catalog, paths: &[String],
-        preferred: Option<u8>) -> HashMap<usize, Arc<ResidentImage>> {
+        preferred: Option<u8>, inline_slots: &std::collections::HashSet<usize>) -> HashMap<usize, Arc<ResidentImage>> {
         if separate_scene_views() { return HashMap::new(); }
         let registry = self.registry.lock().unwrap();
         paths.iter().enumerate().filter_map(|(slot, path)| {
-            let selected = preferred.and_then(|mip| (0..=mip).rev()
+            let selected = (!inline_slots.contains(&slot)).then_some(preferred).flatten().and_then(|mip| (0..=mip).rev()
                 .find(|mip| catalog.contains(&format!("{path}_mip{mip}"))));
             let image = registry.resident.get(path).into_iter().chain(registry.inline.get(path))
                 .find(|image| image.initial_view && image.level.resource_mip == selected)?;
             Some((slot, image.clone()))
         }).collect()
+    }
+
+    /// Drop the old fixed-view cache lease once a streamed replacement is
+    /// published. Other users keep their own asset handles until finished.
+    pub(super) fn retire_replaced_inline(&self, path: &str, current: &Handle<Image>) {
+        let mut registry = self.registry.lock().unwrap();
+        if registry.inline.get(path).is_some_and(|image| image.handle.id() != current.id()) {
+            let old = registry.inline.remove(path).unwrap();
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("MEMORY replaced inline image lease: path={path} old={:?} current={:?} bytes={}", old.handle.id(), current.id(), old.bytes);
+            }
+        }
     }
 
     /// 1402f5530 replaces the resource's current view. Existing named wrappers

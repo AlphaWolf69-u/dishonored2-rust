@@ -2,6 +2,7 @@
 mod settings;
 mod residency;
 pub(super) mod particle_images;
+pub(super) mod environment_images;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use super::ImageAccess;
 use super::{
@@ -273,9 +274,9 @@ pub(super) struct PreparedBaseImages {
 }
 
 pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages,
-    resident: &super::resident_images::ResidentImages) -> Result<PreparedBaseImages, String> {
+    resident: &super::resident_images::ResidentImages, inline_slots: &std::collections::HashSet<usize>) -> Result<PreparedBaseImages, String> {
     let mut result = PreparedBaseImages { payloads: Default::default(),
-        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip) };
+        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip, inline_slots) };
     let mut reused_bytes = 0usize;
     let mut reused = 0;
     for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
@@ -289,7 +290,8 @@ pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRende
                 (view.level.width >> mip).max(1), (view.level.height >> mip).max(1))).sum::<usize>();
             continue;
         }
-        let mut streamed = read_resident_diffuse_image(catalog, path, queue.preferred_mip)?
+        let preferred = if inline_slots.contains(&slot) { None } else { queue.preferred_mip };
+        let mut streamed = read_resident_diffuse_image(catalog, path, preferred)?
             .ok_or_else(|| format!("resident image is absent: {path}"))?;
         if !streamed.uploads.is_empty() {
             streamed.image.data = Some(std::mem::take(&mut streamed.uploads).into_iter().flat_map(|mip| mip.payload).collect());
