@@ -2489,3 +2489,13 @@ formats, layer and mip ordering. A small metadata range list replaces no large
 buffer. Verify actual production descriptors, payload fingerprints and
 allocation counts with the old copy path selected by a diagnostic control; do
 not infer RSS or CPU timing gains from payload sizes.
+
+
+Reflection-array preparation prediction (before implementation): its owner
+reads a cube into a source buffer, creates a second full cube payload, then
+copies that payload again into the required layer-major combined image. Reuse
+the validated record ranges to append directly from the source into the final
+combined array in the same face/level order. This removes one full cube staging
+allocation per probe; the final combined GPU upload payload and its ordering
+remain necessary. Compare the real copy and direct paths by per-cube output
+checksums, descriptors and allocation counts, not whole-frame CPU timing.

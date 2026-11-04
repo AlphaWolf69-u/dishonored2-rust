@@ -475,6 +475,12 @@ fn installed_water_caustics_array_keeps_all_authored_frames() {
     assert_eq!(bytes.len(), 62 + 224 * 20 + expected);
 }
 
+/// Validated mip-major cube payload ranges over an installed archive member.
+pub(crate) fn compressed_cube_records(bytes: &[u8]) -> Result<(BimageInfo, Vec<std::ops::Range<usize>>), String> {
+    let (info, _, ranges) = layered_records(bytes, true)?;
+    Ok((info, ranges))
+}
+
 pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
     let (info, _, ranges) = layered_records(bytes, true)?;
     Ok(InlineCubeChain { info, payload: copy_layered(bytes, &ranges) })

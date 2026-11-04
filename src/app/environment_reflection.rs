@@ -83,36 +83,44 @@ pub(super) fn load(
                 .read(&path)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("reflection cube missing: {path}"))?;
-            let cube =
-                texture::compressed_inline_cube(&bytes).map_err(|e| format!("{path}: {e}"))?;
-            if cube.info.format != texture::ImageFormat::Bc6Unsigned {
+            let (info, ranges) = texture::compressed_cube_records(&bytes)
+                .map_err(|e| format!("{path}: {e}"))?;
+            if info.format != texture::ImageFormat::Bc6Unsigned {
                 return Err(format!("{path}: expected BC6H unsigned reflection cube"));
             }
             if let Some(previous) = spec {
-                if previous != cube.info {
+                if previous != info {
                     return Err(format!("reflection cube descriptors disagree: {path}"));
                 }
             }
-            spec = Some(cube.info);
-            // Cubes are appended in secondary-probe order. Record that upload
-            // association explicitly rather than treating IDs as GPU slots.
-            cube_indices.push(
-                cube_indices
-                    .len()
-                    .try_into()
-                    .map_err(|_| "too many reflection cubes")?,
-            );
-            // Bevy's default upload order is layer-major. The archive is mip-major.
-            for face in 0..6 {
-                let mut offset = 0;
-                for level in 0..cube.info.mip_count {
-                    let width = (cube.info.width >> level).max(1);
-                    let size = cube.info.format.mip_bytes(width, width);
-                    data.extend_from_slice(
-                        &cube.payload[offset + face * size..offset + (face + 1) * size],
-                    );
-                    offset += 6 * size;
+            spec = Some(info);
+            cube_indices.push(cube_indices.len().try_into().map_err(|_| "too many reflection cubes")?);
+            let start = data.len();
+            let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");
+            if copy {
+                let cube = texture::compressed_inline_cube(&bytes).map_err(|e| format!("{path}: {e}"))?;
+                // Bevy consumes layer-major; installed records are mip-major.
+                for face in 0..6 {
+                    let mut offset = 0;
+                    for level in 0..info.mip_count {
+                        let width = (info.width >> level).max(1);
+                        let size = info.format.mip_bytes(width, width);
+                        data.extend_from_slice(&cube.payload[offset + face * size..offset + (face + 1) * size]);
+                        offset += 6 * size;
+                    }
                 }
+            } else {
+                for face in 0..6usize {
+                    for level in 0..info.mip_count as usize {
+                        data.extend_from_slice(&bytes[ranges[level * 6 + face].clone()]);
+                    }
+                }
+            }
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                let mut crc = flate2::Crc::new();
+                crc.update(&data[start..]);
+                eprintln!("MEMORY reflection preparation: path={path} copy={copy} extent={}x{} mips={} format={:?} payload_bytes={} full_payload_allocations={} signature={:08x}",
+                    info.width, info.height, info.mip_count, info.format, data.len()-start, usize::from(copy), crc.sum());
             }
             words.extend(crate::rendering::environment_reflection::probe_words(probe));
         }
