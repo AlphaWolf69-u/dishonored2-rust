@@ -57,6 +57,7 @@ mod model_motion;
 mod particle_view;
 mod machinery;
 mod load_timing;
+mod resource_diagnostics;
 mod level_lifetime;
 mod setup_commands;
 mod scene_preparation;

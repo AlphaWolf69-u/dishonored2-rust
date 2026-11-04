@@ -593,6 +593,10 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         app.insert_resource(prepared_images);
     }
+    if env::var("DH2_DEBUG_RESIZE_RESIDENCY").as_deref() == Ok("1") {
+        app.add_systems(PostUpdate, super::resource_diagnostics::observe_resize
+            .run_if(super::loading_screen::is_playing));
+    }
     super::loading_screen::install(
         &mut app,
         loading_schedules,

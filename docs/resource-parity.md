@@ -2185,3 +2185,22 @@ artifacts/lifecycles-image-ownership-comparison.json and the two completed clien
 outputs. Remaining 2D ocean masks still have a separate upload/CPU-staging path;
 that is not claimed fixed by the cube/array result. A loaded-map native named
 image capture remains needed before changing their mip/streaming policy.
+
+
+### Resolution replacement: investigation before changes
+
+Source inspection finds replacement Options for ocean colour/underwater targets,
+one current camera configuration, and a host texture-cache retirement age of
+three frames (`vendor/bevy_render-0.19.1/src/texture/texture_cache.rs`). This
+predicts bounded live targets when revisiting the same window sizes. Reserved
+allocator blocks can retain a high-water mark; they are not live textures.
+
+Use a diagnostic-only production resize sequence, with no config writes, CPU
+profiling or benchmark timer. Resize the ordinary Window resolution, then record
+exact live GPU allocation counts/bytes by label after the actual camera viewport
+matches and 120 gameplay frames have run at each size. Return to the starting
+size twice. This is observation, not a pass/fail test or an optimization claim.
+A rising live count for a repeated size requires tracing retained references;
+a rising reserved heap alone does not establish a leak. Record image streaming
+counts alongside target snapshots so texture-demand changes are not mislabeled
+as target retention. No production resource policy changes are justified yet.
