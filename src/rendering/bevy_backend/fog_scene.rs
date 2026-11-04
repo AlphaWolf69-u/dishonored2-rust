@@ -733,7 +733,7 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                 }
                 let ocean=current.ocean.as_mut().unwrap();
                 ocean.prepare_with_selection(&resources.device,&resources.queue,context.command_encoder(),water_frame,
-                    resources.water_images.as_ref().ok_or("ocean image sources unavailable")?,full.to_array(),
+                    resources.water_images.as_ref().ok_or("ocean image sources unavailable")?,&resources.images,full.to_array(),
                     resources.water_selection.as_ref().and_then(|s|s.0.as_ref()))?;
                 let programs=resources.ocean_sources.as_ref().and_then(|s|s.0.as_deref())
                     .ok_or("ocean programs unavailable")?;

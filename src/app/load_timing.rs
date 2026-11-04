@@ -96,6 +96,7 @@ pub(super) fn level_ready(
     images: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Image>>,
     buffers: bevy::prelude::Res<bevy::prelude::Assets<bevy::render::storage::ShaderBuffer>>,
     shaders: bevy::prelude::Res<bevy::prelude::Assets<bevy::shader::Shader>>,
+    water: Option<bevy::prelude::Res<crate::rendering::bevy_backend::water_scene::WaterImageSources>>,
 ) {
     use bevy::prelude::DetectChanges;
     if scene.is_added() { *done = false; }
@@ -106,6 +107,13 @@ pub(super) fn level_ready(
     mark("level resources ready");
     asset_bytes(&meshes, &images);
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        if let Some(water) = water {
+            let handles: std::collections::HashSet<_> = water.ocean.values().map(|handle| handle.id()).collect();
+            let cpu_payload_bytes: usize = handles.iter().filter_map(|handle| images.get(*handle))
+                .map(|image| image.data.as_ref().map_or(0, Vec::len)).sum();
+            eprintln!("MEMORY ocean image backing: references={} unique_handles={} cpu_payload_bytes={cpu_payload_bytes}",
+                water.ocean.len(), handles.len());
+        }
         eprintln!("LOAD shader assets: {}", shaders.len());
         let bytes: usize = buffers.iter().map(|(_, b)| b.data.as_ref().map_or(0, Vec::len)).sum();
         eprintln!("LOAD shader buffers: {} with {} MB CPU", buffers.len(), bytes >> 20);

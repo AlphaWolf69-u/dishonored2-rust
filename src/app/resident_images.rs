@@ -17,12 +17,30 @@ pub(super) struct ResidentImage {
 #[derive(Default)]
 struct Registry {
     resident: HashMap<String, Arc<ResidentImage>>,
+    inline: HashMap<String, Arc<ResidentImage>>,
     layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
     noise: Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource>,
     leases: HashMap<String, Weak<ResidentImage>>,
     requests: usize,
     loads: usize,
     bytes: usize,
+}
+
+impl Registry {
+    fn acquire_view(&mut self, path: &str, preferred: Option<u8>, inline_equivalent: bool) -> Option<Arc<ResidentImage>> {
+        let (requested, other) = if preferred.is_none() {
+            (&self.inline, &self.resident)
+        } else { (&self.resident, &self.inline) };
+        if let Some(image) = requested.get(path) { return Some(image.clone()); }
+        if !inline_equivalent { return None; }
+        let image = other.get(path).filter(|image| image.level.resource_mip.is_none())?.clone();
+        if preferred.is_none() { self.inline.insert(path.to_owned(), image.clone()); }
+        else {
+            self.resident.insert(path.to_owned(), image.clone());
+            self.leases.insert(path.to_owned(), Arc::downgrade(&image));
+        }
+        Some(image)
+    }
 }
 
 /// Host counterpart of image lookup 14005feb0 / map purge 140060180.
@@ -47,24 +65,36 @@ impl ResidentImages {
     }
     fn acquire(&self, catalog: &archive::Catalog, name: &str,
         images: &mut dyn AssetWrite<Image>) -> Result<Arc<ResidentImage>, String> {
+        self.acquire_at(catalog, name, images, Some(0))
+    }
+    fn acquire_at(&self, catalog: &archive::Catalog, name: &str,
+        images: &mut dyn AssetWrite<Image>, preferred: Option<u8>) -> Result<Arc<ResidentImage>, String> {
         let path = crate::material::image_load_resource(catalog, name)
             .ok_or_else(|| format!("unresolved resident image source {name}"))?;
         if path == "_default" && !name.eq_ignore_ascii_case("_default") {
             warn!("Resident image {name}: resource missing; using the image loader's default texture");
         }
+        // Fixed inline masks must not inherit a finer UI view. Conversely, a
+        // full-image request can reuse inline data only if mip0 does not exist.
+        let inline_equivalent = preferred.is_none() || !catalog.contains(&format!("{path}_mip0"));
         {
             let mut registry = self.registry.lock().unwrap();
             registry.requests += 1;
-            if let Some(image) = registry.resident.get(&path) { return Ok(image.clone()); }
-            // An outgoing movie/frame can keep an identity alive through purge.
-            if let Some(image) = registry.leases.get(&path).and_then(Weak::upgrade) {
-                registry.resident.insert(path, image.clone());
+            if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) {
                 return Ok(image);
+            }
+            // Named UI wrappers can outlive purge. Fixed inline sources are
+            // held by their scope owner and ordinary frame/asset handles.
+            if preferred.is_some() {
+                if let Some(image) = registry.leases.get(&path).and_then(Weak::upgrade) {
+                    registry.resident.insert(path, image.clone());
+                    return Ok(image);
+                }
             }
         }
         // Never hold the registry lock during archive IO/decompression. A race
         // can prepare two chains, but only one becomes an asset/GPU identity.
-        let mut loaded = read_resident_diffuse_image(catalog, &path, Some(0))?
+        let mut loaded = read_resident_diffuse_image(catalog, &path, preferred)?
             .ok_or_else(|| format!("missing resident image {path}"))?;
         if !loaded.uploads.is_empty() {
             loaded.image.data = Some(loaded.uploads.into_iter().flat_map(|mip| mip.payload).collect());
@@ -74,16 +104,23 @@ impl ResidentImages {
         let extent = [loaded.image.width() as f64, loaded.image.height() as f64];
         let bytes = loaded.image.data.as_ref().map_or(0, Vec::len);
         let mut registry = self.registry.lock().unwrap();
-        if let Some(image) = registry.resident.get(&path) { return Ok(image.clone()); }
+        if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) { return Ok(image); }
         let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes, level, mip_count, initial_view: true});
         registry.loads += 1;
         registry.bytes += bytes;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("MEMORY resident image load: path={path} bytes={bytes} separate={}", self.separate);
+            eprintln!("MEMORY resident image load: path={path} bytes={bytes} separate={} preferred={preferred:?}", self.separate);
         }
-        registry.leases.insert(path.clone(), Arc::downgrade(&image));
-        registry.resident.insert(path, image.clone());
+        if preferred.is_none() { registry.inline.insert(path, image.clone()); }
+        else {
+            registry.leases.insert(path.clone(), Arc::downgrade(&image));
+            registry.resident.insert(path, image.clone());
+        }
         Ok(image)
+    }
+    pub(super) fn load_inline(&self, catalog: &archive::Catalog, name: &str,
+        images: &mut dyn AssetWrite<Image>) -> Result<Handle<Image>, String> {
+        Ok(self.acquire_at(catalog, name, images, None)?.handle.clone())
     }
     pub(super) fn load(&self, catalog: &archive::Catalog, name: &str,
         images: &mut dyn AssetWrite<Image>) -> Result<Handle<Image>, String> {
@@ -96,11 +133,11 @@ impl ResidentImages {
         if separate_scene_views() { return HashMap::new(); }
         let registry = self.registry.lock().unwrap();
         paths.iter().enumerate().filter_map(|(slot, path)| {
-            let image = registry.resident.get(path)?;
-            if !image.initial_view { return None; }
             let selected = preferred.and_then(|mip| (0..=mip).rev()
                 .find(|mip| catalog.contains(&format!("{path}_mip{mip}"))));
-            (image.level.resource_mip == selected).then(|| (slot, image.clone()))
+            let image = registry.resident.get(path).into_iter().chain(registry.inline.get(path))
+                .find(|image| image.initial_view && image.level.resource_mip == selected)?;
+            Some((slot, image.clone()))
         }).collect()
     }
 
@@ -147,15 +184,20 @@ impl ResidentImages {
         let mut registry = self.registry.lock().unwrap();
         let before = registry.resident.len();
         let layered_before = registry.layered.len();
+        let inline_before = registry.inline.len();
         // 14005fde0's builtins are class 2 even without archive manifest entries.
         let persistent = |path: &String| shared.contains(path) || crate::material::intrinsic_image_kind(path).is_some();
         registry.resident.retain(|path, _| persistent(path));
+        registry.inline.retain(|path, _| persistent(path));
         registry.layered.retain(|path, _| persistent(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY resident image registry purge: requests={} loads={} uploaded_bytes={} released={} retained_persistent={} retained_bytes={} live_leases={}",
                 registry.requests, registry.loads, registry.bytes, before-registry.resident.len(),
                 registry.resident.len(), registry.resident.values().map(|image|image.bytes).sum::<usize>(), registry.leases.len());
+            eprintln!("MEMORY inline image registry purge: released={} retained_persistent={} retained_bytes={}",
+                inline_before - registry.inline.len(), registry.inline.len(),
+                registry.inline.values().map(|image| image.bytes).sum::<usize>());
             eprintln!("MEMORY layered image registry purge: released={} retained_persistent={}",
                 layered_before - registry.layered.len(), registry.layered.len());
             eprintln!("MEMORY intrinsic image registry: retained_2d={} retained_layered={}",

@@ -39,8 +39,36 @@ fn installed_ocean_submits_depth_and_colour() {
     )
     .unwrap();
     let areas = crate::rendering::environment::load_area_environments(&document, &catalog).unwrap();
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(bevy::render::RenderPlugin {
+                render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
+                    bevy::render::settings::WgpuSettings {
+                        features: bevy::render::settings::WgpuSettings::default().features
+                            | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8,
+                        ..default()
+                    },
+                )),
+                ..default()
+            })
+            .set(bevy::window::WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+    );
+    app.finish();
+    app.cleanup();
+    app.sub_app_mut(RenderApp)
+        .init_resource::<crate::tiled_lighting_gpu::TlfPipelines>();
+    // MeshAllocator is installed during the first render extraction, as in
+    // gameplay; finish/cleanup alone does not initialize that schedule.
+    app.update();
     let materials = WaterMaterials::default();
-    let (mut scene, images) = WaterScene::load(&catalog, &parameters, &areas, &materials).unwrap();
+    let (mut scene, images) = WaterScene::load(&catalog, &parameters, &areas, &materials, &mut *app.world_mut().resource_mut::<Assets<Image>>()).unwrap();
     let mut library =
         shader_cache::ProgramLibrary::open(&base, shader_cache::ShaderCacheBackend::Pc, &catalog)
             .unwrap();
@@ -79,35 +107,9 @@ fn installed_ocean_submits_depth_and_colour() {
         frame.ocean_environment.view.enabled,
         "selected installed level must enable ocean"
     );
-    let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(bevy::render::RenderPlugin {
-                render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
-                    bevy::render::settings::WgpuSettings {
-                        features: bevy::render::settings::WgpuSettings::default().features
-                            | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8,
-                        ..default()
-                    },
-                )),
-                ..default()
-            })
-            .set(bevy::window::WindowPlugin {
-                primary_window: None,
-                exit_condition: bevy::window::ExitCondition::DontExit,
-                ..default()
-            })
-            .disable::<bevy::winit::WinitPlugin>()
-            .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
-    );
-    app.finish();
-    app.cleanup();
-    app.sub_app_mut(RenderApp)
-        .init_resource::<crate::tiled_lighting_gpu::TlfPipelines>();
-    // MeshAllocator is installed during the first render extraction, as in
-    // gameplay; finish/cleanup alone does not initialize that schedule.
     app.update();
     let world = app.sub_app(RenderApp).world();
+    let gpu_images = world.resource::<RenderAssets<bevy::render::texture::GpuImage>>();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
     let pipelines = world.resource::<crate::tiled_lighting_gpu::TlfPipelines>();
@@ -194,7 +196,7 @@ fn installed_ocean_submits_depth_and_colour() {
         });
     }
     ocean
-        .prepare(device, queue, &mut encoder, &frame, &images, extent)
+        .prepare(device, queue, &mut encoder, &frame, &images, gpu_images, extent)
         .unwrap();
     assert!(
         ocean.draw_count() > 0,
@@ -356,7 +358,7 @@ fn installed_ocean_submits_depth_and_colour() {
         let mut encoder = device.create_command_encoder(&default());
         depths.request_ocean_depth(true);
         depths.record_with_main(device, &mut encoder, &opaque, None).unwrap();
-        ocean.prepare(device, queue, &mut encoder, &frame, &images, extent).unwrap();
+        ocean.prepare(device, queue, &mut encoder, &frame, &images, gpu_images, extent).unwrap();
         // The opaque target stands in for the view's main depth/stencil.
         let main = bevy::render::view::ViewDepthTexture::new(
             bevy::render::texture::CachedTexture { texture: opaque.clone(), default_view: opaque.create_view(&default()) },
@@ -499,7 +501,7 @@ fn installed_water_view_inputs_prepare_for_every_level() {
         };
         let areas =
             crate::rendering::environment::load_area_environments(&document, &catalog).unwrap();
-        let (mut scene, sources) = WaterScene::load(&catalog, &parameters, &areas, &materials)
+        let (mut scene, sources) = WaterScene::load(&catalog, &parameters, &areas, &materials, &mut fog_test_images)
             .unwrap_or_else(|e| panic!("{path}: {e}"));
         let camera = Entity::from_raw_u32(7).unwrap();
         let other_camera = Entity::from_raw_u32(8).unwrap();

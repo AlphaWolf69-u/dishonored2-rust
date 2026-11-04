@@ -2249,3 +2249,24 @@ of up to three for an equal selected program, unchanged block fingerprints,
 no runtime lookup/lock and no change to per-view evaluated water settings.
 Count actual constructed vs reused scopes and their owned capacity, and the
 removed unused source bytes. No CPU-time or large-RAM saving is presumed.
+
+
+### Fixed inline ocean images: prediction before consolidation
+
+OceanScene currently uploads four authored 2D masks itself while the main-world
+WaterImageSources retains their compressed chains. Move those acquisitions to
+ResidentImages and its existing Bevy asset/upload path. Preserve Initial(None):
+the inline base chain remains the ocean's requested view, rather than silently
+using the UI loader's Initial(Some(0)) finer levels. Registry reuse requires an
+equivalent view; different selected source mips retain distinct snapshot handles.
+The existing image owner must retain/purge those inline views with the same
+common/builtin/map scope, and equivalent base-chain scene views may reuse them.
+
+Prediction: the ocean source table contains handles, not compressed pixel
+vectors; preparation bytes retire through the already established render-only
+asset extraction path. OceanScene only borrows prepared GPU views and performs
+no image IO, parsing or uploads. Equal fixed-view requests reuse identity;
+common/builtin masks survive map changes. No samplers, formats, source mip
+selection, FFT inputs or draw passes change. Measure acquired image identities,
+inline image descriptors/content CRC and map purge counts. No CPU timing gain
+is predicted, and retained view snapshots must not force finer texture residency.

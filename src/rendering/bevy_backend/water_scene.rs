@@ -160,7 +160,7 @@ pub struct WaterImageSources {
     pub noise: Arc<super::noise_textures::NoiseTextureSource>,
     pub skies: Arc<HashMap<String, Arc<super::layered_images::LayeredImageSource>>>,
     pub caustics: Arc<HashMap<String, Arc<super::layered_images::LayeredImageSource>>>,
-    pub ocean: Arc<HashMap<String, Arc<crate::texture::InlineCompressedChain>>>,
+    pub ocean: Arc<HashMap<String, Handle<Image>>>,
 }
 #[derive(Clone)]
 pub struct WaterFrame {

@@ -35,14 +35,16 @@ impl WaterScene {
         world: &EnvironmentRenderParameters,
         areas: &[AreaEnvironment],
         materials: &WaterMaterials,
+        images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
     ) -> Result<(Self, WaterImageSources), String> {
-        Self::load_with_model_colours(catalog,world,areas,materials,&crate::rendering::bevy_backend::water_scene::WaterModelColours::default(),&super::resident_images::ResidentImages::default())
+        Self::load_with_model_colours(catalog,world,areas,materials,&crate::rendering::bevy_backend::water_scene::WaterModelColours::default(),&super::resident_images::ResidentImages::default(), images)
     }
 
     pub(super) fn load_with_model_colours(
         catalog:&archive::Catalog,world:&EnvironmentRenderParameters,areas:&[AreaEnvironment],
         materials:&WaterMaterials,models:&crate::rendering::bevy_backend::water_scene::WaterModelColours,
         resident: &super::resident_images::ResidentImages,
+        images: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Image>,
     )->Result<(Self,WaterImageSources),String> {
         let (_, ocean_render_settings) =
             crate::platform::game_settings::read_ocean_render_settings()?;
@@ -170,29 +172,17 @@ impl WaterScene {
                 }
             }
         }
-        // The ocean owns additional authored masks which placed water does not
-        // reference. Preserve the same archive identities as OceanEnvironment.
+        // Fixed inline views use the same image owner and render-only asset
+        // extraction as other game images, with their selected base preserved.
+        let ocean_resident = if std::env::var("DH2_DEBUG_SEPARATE_OCEAN_IMAGES").as_deref() == Ok("1") {
+            super::resident_images::ResidentImages::default()
+        } else { resident.clone() };
         for name in ocean_environment.image_sources() {
             if sources.skies.contains_key(name) || sources.caustics.contains_key(name) {
                 continue;
             }
-            let image = if let Some(payload) = crate::material::intrinsic_image_pixels(name) {
-                let mut packed_format = 0x54a;
-                crate::texture::normalize_image_format(&mut packed_format)?;
-                crate::texture::InlineCompressedChain {
-                    info: crate::texture::BimageInfo {
-                        width: 16, height: 16, mip_count: 1, packed_format,
-                        format: crate::texture::ImageFormat::Rgba8,
-                    },
-                    payload,
-                }
-            } else {
-                let bytes = catalog.read(name).map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("missing ocean image {name}"))?;
-                crate::texture::compressed_inline_chain(&bytes)
-                    .map_err(|e| format!("{name}: {e}"))?
-            };
-            Arc::make_mut(&mut sources.ocean).insert(name.clone(), Arc::new(image));
+            let handle = ocean_resident.load_inline(catalog, name, images)?;
+            Arc::make_mut(&mut sources.ocean).insert(name.clone(), handle);
         }
         Ok((
             Self {

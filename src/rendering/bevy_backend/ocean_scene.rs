@@ -11,7 +11,9 @@ use crate::rendering::ocean::*;
 use bevy::{
     prelude::*,
     render::{
+        render_asset::RenderAssets,
         render_resource::*,
+        texture::GpuImage,
         renderer::{RenderDevice, RenderQueue},
     },
 };
@@ -111,10 +113,6 @@ impl OceanSources {
     }
 }
 
-struct Image2d {
-    _texture: Texture,
-    view: TextureView,
-}
 struct DepthProgram {
     program: OceanDepthProgram,
     binding: BindGroup,
@@ -141,7 +139,7 @@ pub struct OceanScene {
     waves: OceanWaves,
     mesh: OceanMeshBuffers,
     noise: Arc<super::noise_textures::NoiseTextures>,
-    images: HashMap<String, Image2d>,
+    images: HashMap<String, TextureView>,
     wrap: Sampler,
     clamp: Sampler,
     depth: HashMap<crate::render_state::RenderState, DepthProgram>,
@@ -238,10 +236,7 @@ impl OceanScene {
     }
 
     fn admit_images(
-        &mut self,
-        device: &RenderDevice,
-        queue: &RenderQueue,
-        sources: &WaterImageSources,
+        &mut self, sources: &WaterImageSources, images: &RenderAssets<GpuImage>,
         settings: &OceanSettings,
     ) -> Result<(), String> {
         for name in [
@@ -250,43 +245,14 @@ impl OceanScene {
             &settings.surface.foam_image,
             &settings.projected_shadow.image,
         ] {
-            if self.images.contains_key(name) {
-                continue;
-            }
-            let image = sources
-                .ocean
-                .get(name)
+            // These are immutable fixed-view handles. Keep the existing hot
+            // path: resolve the asset only once when this source is admitted.
+            if self.images.contains_key(name) { continue; }
+            let handle = sources.ocean.get(name)
                 .ok_or_else(|| format!("ocean image not prepared: {name}"))?;
-            let format = super::image_formats::gpu_image_format(image.info.format);
-            if !device.features().contains(format.required_features()) {
-                return Err(format!("ocean image needs unsupported {format:?}"));
-            }
-            let texture = device.create_texture_with_data(
-                queue,
-                &TextureDescriptor {
-                    label: Some("ocean authored mask"),
-                    size: Extent3d {
-                        width: image.info.width,
-                        height: image.info.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: image.info.mip_count,
-                    sample_count: 1,
-                    dimension: TextureDimension::D2,
-                    format,
-                    usage: TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                },
-                TextureDataOrder::LayerMajor,
-                &image.payload,
-            );
-            self.images.insert(
-                name.clone(),
-                Image2d {
-                    view: texture.create_view(&default()),
-                    _texture: texture,
-                },
-            );
+            let image = images.get(handle)
+                .ok_or_else(|| format!("ocean image awaits GPU preparation: {name}"))?;
+            self.images.insert(name.clone(), image.texture_view.clone());
         }
         Ok(())
     }
@@ -300,9 +266,10 @@ impl OceanScene {
         encoder: &mut CommandEncoder,
         frame: &WaterFrame,
         images: &WaterImageSources,
+        gpu_images: &RenderAssets<GpuImage>,
         extent: [u32; 2],
     ) -> Result<(), String> {
-        self.prepare_with_selection(device,queue,encoder,frame,images,extent,None)
+        self.prepare_with_selection(device,queue,encoder,frame,images,gpu_images,extent,None)
     }
 
     pub fn prepare_with_selection(
@@ -312,6 +279,7 @@ impl OceanScene {
         encoder: &mut CommandEncoder,
         frame: &WaterFrame,
         images: &WaterImageSources,
+        gpu_images: &RenderAssets<GpuImage>,
         extent: [u32;2],
         selection: Option<&crate::rendering::environment_contacts::WaterViewPublication>,
     ) -> Result<(), String> {
@@ -331,7 +299,7 @@ impl OceanScene {
         if !self.state.view.enabled || frame.ocean_render_settings.skip {
             return Ok(());
         }
-        self.admit_images(device, queue, images, settings)?;
+        self.admit_images(images, gpu_images, settings)?;
         let matrices = frame.matrices.current;
         let clip = Mat4::from_cols_array_2d(&matrices.view_projection)
             .transpose()
@@ -543,12 +511,12 @@ impl OceanScene {
             [
                 self.noise.permutation(),
                 self.noise.gradients(),
-                &self.images[&settings.surface.shore_distance_image].view,
+                &self.images[&settings.surface.shore_distance_image],
                 self.waves.displacement_view(),
                 self.waves.previous_displacement_view(),
                 self.waves.collision_height_view(),
                 self.waves.foam_view(),
-                &self.images[&settings.surface.wave_amplitude_image].view,
+                &self.images[&settings.surface.wave_amplitude_image],
             ],
             [self.noise.point_wrap(), &self.wrap, &self.clamp],
         );
@@ -651,8 +619,8 @@ impl OceanScene {
                 .as_ref()
                 .ok_or("underwater ocean surface was not prepared")?,
             WaterLineInputs {
-                amplitude_mask: &self.images[&settings.surface.wave_amplitude_image].view,
-                shore_distance: &self.images[&settings.surface.shore_distance_image].view,
+                amplitude_mask: &self.images[&settings.surface.wave_amplitude_image],
+                shore_distance: &self.images[&settings.surface.shore_distance_image],
                 collision_height: self.waves.collision_height_view(),
             },
             [
@@ -851,12 +819,12 @@ impl OceanScene {
             [
                 self.noise.permutation(),
                 self.noise.gradients(),
-                &self.images[&settings.surface.shore_distance_image].view,
+                &self.images[&settings.surface.shore_distance_image],
                 self.waves.displacement_view(),
                 self.waves.previous_displacement_view(),
                 self.waves.collision_height_view(),
                 self.waves.foam_view(),
-                &self.images[&settings.surface.wave_amplitude_image].view,
+                &self.images[&settings.surface.wave_amplitude_image],
             ],
             [self.noise.point_wrap(), &self.wrap, &self.clamp],
         );
@@ -923,8 +891,8 @@ impl OceanScene {
         let scene = program.scene_binding(
             r.device,
             [
-                &self.images[&settings.projected_shadow.image].view,
-                &self.images[&settings.surface.foam_image].view,
+                &self.images[&settings.projected_shadow.image],
+                &self.images[&settings.surface.foam_image],
                 targets.foam.view(),
                 &opaque,
                 &reduced,
