@@ -41,7 +41,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 | `FUN_1400bd480` arkWwiseBankLoader::LoadBanksAndPackages | loads the `common`, `init` and map packages (`FUN_1400bd510`; loose banks `FUN_1400bca10`) | ported: `app::audio::level_banks` reads `wwisedescription.txt` (`FUN_1400c0cb0`, path `FUN_1400c1480`) and loads the `common`, `init` and current-map entries' packages (prefix + language / `sfx.pck`, plus `main-init.pck`) and banks (FNV-1 ids, verified on `main-common-sfx.pck`). Loose-bank mode (`FUN_1400bca10`) not ported |
 | Wwise codecs | media stay encoded; Vorbis and IMA ADPCM decode per voice; Vorbis packets are decoded as installed | ported: `assets::wwise::VorbisCursor`, `AdpcmCursor`; installed Wwise Vorbis packets decoded in place through vendored `lewton` (window flags from the neighbouring packets' modes), with the decoder setup rebuilt once per distinct Wwise setup. Verified: all 132,518 installed Vorbis media give the samples of their ww2ogg conversion |
 | `141122400`, `1411284e0`, `1410f1910` | a source references its loaded Sound/bank media rather than copying it | ported: prepared media shared by Wwise sound id; owned bank DATA ranges share their encoded backing through ADPCM/Vorbis preparation and playback. Borrowed diagnostic banks copy because they do not own their source lifetime. Parallel preparation publishes one cached source identity. `host:` Arc-backed byte ranges retain their bank until its last user releases it; complete map unload remains partial |
-| stream manager (stream type != 0 sources) | streamed sources (type 2, no bank prefix) are read from their package while they play; prefetched sources (type 1) start at once from a bank prefix while the rest streams | partial: type 2 format is read at load and media on the IO pool when an event plays it, held by that playback and released after; a request waits for its read, as the original starts a non-prefetch stream once its first buffer arrives. `approximate_`: type 1 media (eotw: 13, 1 MB; ~4 KB prefixes) stay resident whole, which starts them at once as the prefix does |
+| stream manager (stream type != 0 sources) | streamed sources (type 2, no bank prefix) are read from their package while they play; prefetched sources (type 1) start at once from a bank prefix while the rest streams | host: required format metadata is prepared for graph construction; selected voices stream installed Vorbis/IMA packets through a shared 2 MiB, 16 KiB-granularity reader. Type 1 borrows its authored bank prefix and streams continuation. Packed seek tables stay packed; metadata/setup and decoder workspaces are separate from that device budget. Three-map default playback, the final walking PCM/CPU comparison and installed byte-prefix comparisons are recorded below. The legacy full-reader path is diagnostic-only |
 | listed `soundevent` decls | loaded with the map | ported: prepared at startup |
 | `1400c93c0`, `1400c93f0`, `1400c97e0` -> `1400c0360` / `1400c0620` | startup and map bank/package acquisitions have separate unload lists | partial: common/init banks and their media stay resident; map banks, map-only cached media and world playback/actions release on transition. Host: one Arc package index per path, a stable startup-bank prefix and one persistent audio output; verified in repeated-map client acquisition (three retained startup bank identities). Prepared event graphs are rebuilt against the current bank registry rather than retaining references to unloaded map actors |
 
@@ -275,7 +275,7 @@ systems run, and unload clears it without synchronously rereading declarations.
 The synchronous Startup entry remains for diagnostic callers and skips an
 already acquired state. Resource paths, lookup caches and error handling are
 unchanged; this is host thread scheduling. The production client verifies
-837–866 ms of acquisition on the worker and 117–130 ms transition intervals,
+837вЂ“866 ms of acquisition on the worker and 117вЂ“130 ms transition intervals,
 with successful initial/return map handoffs and one persistent audio output.
 Bulk event decoding retains its existing task pool: an alternative background
 pool doubled decoding cost without improving observed loading gaps, so that
@@ -583,7 +583,7 @@ confuse serialized index bytes or descriptor-capacity estimates with that tag's
 entire live allocation.
 
 Production release collector measurement (`lifecycles-owner-performance-*`):
-29 sustained pause-menu collections per mode, visiting 13,686–13,695 objects.
+29 sustained pause-menu collections per mode, visiting 13,686вЂ“13,695 objects.
 Nested vectors/standard hash averaged 4.862 ms (median 4.982); contiguous
 edges/pointer hasher averaged 3.238 ms (median 3.221), a 33.4% reduction in the
 changed collection function. Both modes reclaimed 172 objects over the run
@@ -653,7 +653,7 @@ cross-domain duplicates. Canonical ownership and particle mip demand remain
 separate work.
 
 Original automatic image-budget initialization is in the disassembled tail
-`140369eed`–`140369f8f` (the prior decompilation stopped at logging calls).
+`140369eed`вЂ“`140369f8f` (the prior decompilation stopped at logging calls).
 For a negative configured budget it uses inspected dedicated video memory in
 MiB minus `r_vramMiscSizeEstimationMB`, limits the result to 4096 MiB and falls
 back to 256 MiB if memory detection fails or leaves less than 256 MiB. The
@@ -948,3 +948,194 @@ confirm float constants 1.0 (141f697b0), 4.0 (141ac8fdc) and 0.5
 (141ab3764). Existing area-only demand and unconditional idle reductions
 cannot establish parity. This identifies the required accounting/order/gate
 change; enabling budget-only eviction without those inputs would be incomplete.
+
+CPU trace readiness correction prediction (before implementation): the prior
+helper fallback was wrong: BENCHMARK_INPUT is emitted inside elapsed >= target,
+not on initial readiness. The paired production client matched 69,000,183
+samples across 27 voices with zero differences, but its trace recorded after
+exit and contains zero client samples. It provides no CPU comparison. Emit
+the existing starting-warmup message once when the ready benchmark path is
+first entered, even if no waiting frame preceded it. Expected result: one
+initial readiness marker before measurement, no gameplay rendering/audio
+change; the helper waits only for that marker and rejects early exit. Reject
+zero-client-sample parses instead of publishing a successful empty trace.
+
+Texture request scratch prediction (before implementation): the host adapter
+currently allocates request flags and a sorted request list every active
+streaming frame. Reuse those two vectors per level; reset on SceneRenderQueue
+replacement. Expected allocation count after first capacity growth: zero for
+these vectors, versus at least two allocation/free pairs per nonempty baseline
+frame. Reserve the full request domain once so first fill does not grow
+repeatedly; report capacity-growth frames, not allocator call counts.
+Do not predict a CPU percentage from allocation count. Keep exactly the same
+area/tie comparator and use in-place unstable sorting (the slot tie-breaker
+makes the ordering total). No request, mip eligibility, IO budget, output or
+GPU work change. Diagnostic baseline clears storage before the same algorithm,
+and production counters record capacity growth per 600 frames. Original
+14030f3d0 also reuses its job/priority lists; this corrects host scratch lifetime,
+not the outstanding original priority/pressure policy.
+
+Final-owner production comparison (`lifecycles-sound-retire-compare`): current
+library/game-bin checks and dev build exited 0; EotW -> Dust -> EotW client
+exited 0. Thirty-six decoders matched 8,064,999 actual played samples, zero
+differences, maximum error 0; no decoder/residency/fatal errors. Both reader
+map-retirement acknowledgements reported open_handles=0 with three startup
+packages retained. Particle upload count/bytes remained 59/16,046,296,
+54/30,148,760, 59/16,046,296; cpu_released_bytes exactly matched those byte
+counts. EotW's 16,046,296-byte prediction therefore matched exactly. GPU image
+storage was not reduced, recompressed or uploaded again per state variant.
+The normal non-comparison run and retained/released particle control remain
+separate queued results; no CPU acceptance is claimed from these dev upload
+wall spans. Runtime target-format/pass replacement remains distinct from the
+verified map transitions.
+
+Render submission budget prediction (before implementation):
+report_prepared_diffuse_images currently drains every queued GPU mip job,
+although main-world staging alone uses MipUploadBudget. Main/render scheduling
+can accumulate several staging frames before one render frame. Apply the
+already ported 14030d1e0 budget at actual compressed upload submission, using
+the same registered setting. Expected bytes per render frame: check the KB
+threshold before each job, then charge successful upload bytes / 1000; one
+oversized final job may exceed it. Preserve FIFO among deferred and newly
+arrived jobs. No extra GPU pass/copy/upload bytes, format changes or premature
+readiness/handle commit; old committed images remain until GPU completion.
+Only an accumulated over-budget backlog gains deferred frames, matching the
+original budget rather than an invented latency policy. Empty-frame work is
+one cached settings read and budget initialization, with no new heap allocation.
+Record actual render upload totals, peak per-frame/job bytes and deferrals;
+do not infer GPU cost from main-world staging counts.
+
+Particle retained/released A/B (`lifecycles-particle-retire-*`): both three-map
+clients exited 0 with no residency/decoder/fatal errors. Both modes retained
+59/54/59 unique GPU images and uploaded 16,046,296 / 30,148,760 / 16,046,296
+bytes. Retained-data mode released zero CPU payload bytes after upload;
+retirement mode released exactly those totals. Dev acquire/upload wall spans
+were 20.281/28.933/22.470 ms versus 21.653/30.268/32.513 ms. These are not
+per-function CPU time, so neither hide the higher spans nor declare a CPU
+regression/improvement from them. The change adds no payload lock to an
+already prepared draw; loading/unload CPU cost remains a separate measurement.
+Normal sound streaming also completed the three-map run without errors; its
+observed encoded-device peak was 559,653 bytes. Zero-read device-release logs
+come from temporary default WwiseRegistry values used by AudioPreparation::take,
+not the actual active reader: active reader reports contain 83 reads / 1,332,298
+bytes. Do not interpret placeholder-owner release as device accounting.
+
+Submission-budget current-source validation (`lifecycles-texture-submit-*`):
+library check, game-bin check, dev build and both clients exited 0. Raw source
+patch snapshots before/after build are byte-identical, SHA-256
+393d1d2e5b7fabb0ceda64cb388e38df253f48ab40e383ca98e0bc4c24cc2b4d.
+The runner's hash variable was empty, so that guard alone is not acceptance;
+the retained raw snapshots independently establish unchanged build inputs.
+Default render submission processed 367 uploads / 169,213,952 bytes, deferred
+166 queued-job visits, peak frame 5,767,168 bytes, largest job 2,097,152 bytes.
+The native 4,096,000-byte pre-job threshold plus one final job allows this peak.
+Across 1,200 frames, request flag/order storage each grew on one frame only;
+no additional capacity growth occurred after initial fill. The 32 KB config
+trial remained 4096 because non-retail cvars reject unforced config sets;
+repeat both values using existing DH2_DEBUG_DEVELOPER, without changing retail
+configuration policy or the user's config. No CPU gain is inferred from counts.
+
+Priority source refinement: 1402d4e20 raises image +0x118 through 1402eab10;
+14031a510 reads it through 140416b50. The specularMap role requests 16, reduced
+to 4 for material +0x4b alpha-test bit 4; the explicit role whitelist requests
+4 and other image roles 1. Registration 14030dbf0 obtains nine packed bits
+through 14030cdb0, which classifies installed image paths (skiff_engine_01,
+skiff_, vista plus suffix rules). These are original authored path rules,
+not permission to invent exceptions. Instruction capture at 14030f471/479
+shows the sort key uses the scaled area's raw float bits shifted by 32;
+it is not numeric float-to-integer conversion despite the old decompilation's
+cast. Preserve this distinction when connecting the full packed scheduler.
+
+Controlled submission-budget runs (`lifecycles-texture-submit-developer-*`)
+completed at the actual 4096 KB and 32 KB settings with the same current dev
+binary. Both processed exactly 367 jobs / 169,213,952 upload bytes. At 4096 KB,
+peak frame upload was 5,767,168 bytes and peak job 2,097,152; at 32 KB, both
+peaks were 2,097,152 bytes. Thus the smaller threshold schedules at most the
+single oversized job in the observed worst frame, and total submitted data is
+unchanged. Queue deferral visits were 193 and 43 respectively; differing
+producer timing means these are not an independent performance metric.
+Both clients exited 0. Source/game-bin compilation and default-mode 1,200-frame
+scratch counters are verified; baseline scratch control and valid paired CPU
+trace still await the corrected profiling build.
+
+Pressure-counter scope correction from original data references: streamer
+base 1432f0210 + 0x3310 is global 1432f3520. It is increased inside 14030f3d0
+when finer-mip work is queued and decreased by 14030d7a0/14030d8d0 when dropping
+mips; it does not simply sum every base image's descriptor size. Charging all
+base chains against this counter would port the wrong budget model. Track
+streaming increments/reservations and corresponding releases, including reused
+shared images, when connecting pressure eviction. Native registration's
+nine-bit path priority comes from 14030cdb0; it is distinct from per-image
+sampling-role priority read at +0x118.
+
+Valid paired CPU result (`lifecycles-paired-sound-v3`): 47.219 traced seconds,
+175,561 client CPU samples; 48 voice comparisons matched 69,024,812 actual
+samples, zero differences / maximum error 0. Thin LTO inlines FileCursor into
+EncodedCursor::sample. Resolve the outermost caller PC against the matching
+PDB with source lines (return PCs minus one; leaf PCs unchanged), rather than
+report its absent symbol as zero. Graph line 169 (bounded cursor work):
+794 samples / 16.815 CPU ms/s; line 172 (reference on those same played inputs):
+812 / 17.197 ms/s. Other resident voices (line 165) are excluded; comparison
+bookkeeping and shared enum entry/return instructions remain separate. The
+2.2% difference is within sampling uncertainty: no detected regression, not a
+claim of a 2.2% speedup. Windows symbol lookup must eagerly load line data;
+deferred symbol loading returned unresolved lines. Evidence: audio-lines.json
+plus affected.json beside that trace.
+
+Scratch A/B (`lifecycles-texture-scratch-v3-*`), same profiling binary: both
+clients exited 0. At 1,800 streaming frames the allocation control recorded
+1,800 flag-growth frames and 1,800 order-growth frames; reuse recorded 1 and 1.
+Both capacities were 4,094 slots. This matches the two-vector allocation
+prediction; do not turn growth-frame counts into an unmeasured CPU percentage.
+
+Final stream-owner sweep prediction (before implementation/default change):
+141161240 releases its consumed input through stream +0x80 before obtaining
+the next buffer. A host Window must not pin historical blocks or unrelated
+read-ahead while its required block waits: 128 one-block cursors can otherwise
+pin the entire 2 MiB device and prevent their next reads. On a pending miss,
+release old local blocks and non-target pending leases, keeping only the needed
+request. Preserve a packet whose required next-mode lookahead crosses a block
+in spill storage before releasing that block (lewton host requirement).
+Expected invariant: waiting windows pin no historical/non-target buffers;
+maximum encoded-device bytes stay 2,097,152. Cached sample and cached-block
+hit paths gain no ownership work. Ordinary packet payload remains zero-copy
+when payload and required lookahead fit its block; only a boundary packet or
+lookahead spills. Borrow immutable headers for packet decoding instead of two
+Arc clone/drop pairs per packet; expected header reference-count traffic there
+falls to zero with identical PCM. Bounded streaming becomes the normal owner;
+DH2_DEBUG_BOUNDED_SOUND_STREAMS=0 retains the diagnostic legacy-reader control.
+Default must produce the already compared opt-in samples and bounded residency;
+verify the final sweep on the existing production walking route before main.
+
+Walking validation uses the already established ten-metre EotW player route
+(-30.81336,192.69846,2.94306 to -30.81336,182.69846,2.94306), with
+DH2_BENCHMARK_WALK=1, not a stationary frame or camera-only substitute.
+record_cpu_trace now accepts structured EnvironmentValues, preserving the
+semicolon in waypoint lists through elevated CLIXML; the older flat delimiter
+cannot represent that value. No new synthetic/oracle executable or tests are
+used. Compilation is one cohesive final audio-owner batch, followed by actual
+paired playback and targeted CPU capture; default bounded mode has no opt-in.
+
+
+Final default-owner acceptance (`lifecycles-walking-sound`,
+`lifecycles-default-streams`): library check, game-bin check, profiling build,
+walking client and normal three-map client all exited 0. The recorded player
+route reached both waypoints repeatedly; 47.199 traced seconds contain 188,645
+client CPU samples. Eighty-one voice decoders compared 82,699,258 actual played
+frame/channel samples with the existing reader: zero differences, maximum
+error 0. Matching-PDB source attribution puts 920 samples / 19.492 CPU ms/s in
+the bounded decoder call and 932 / 19.746 ms/s in the reference call on those
+same samples. The 1.3% difference is within sampling uncertainty, not a speedup
+claim. The comparison run's encoded device peaked at 2,095,324 bytes, below the
+2,097,152-byte bound. It includes the final pending-buffer release and borrowed
+header changes, with bounded streaming enabled by default.
+
+Normal playback (comparison disabled, no bounded-stream opt-in) completed
+EotW -> Dust -> EotW with one catalog/device/window/audio output, no decoder,
+GPU upload or fatal errors, and an encoded-device peak of 552,547 bytes.
+Outgoing map reads release their cached bytes before destination playback.
+The map particle owners still report 59/54/59 uploads and release exactly
+16,046,296 / 30,148,760 / 16,046,296 CPU payload bytes. Counts establish
+retirement without extra image uploads; no additional loading-CPU improvement
+is claimed. The earlier dev selected-source wall spans remain inconclusive
+for CPU and cannot be retrospectively called a fulfilled prediction.

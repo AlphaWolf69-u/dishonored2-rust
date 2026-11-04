@@ -48,7 +48,7 @@ impl WwiseRegistry {
                 size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
                 pool: self.stream_io.clone(),
             });
-            if stream_type == 1 && std::env::var("DH2_DEBUG_BOUNDED_SOUND_STREAMS").as_deref() == Ok("1") {
+            if stream_type == 1 && crate::assets::wwise::stream_io::enabled() {
                 // The bank owns the prefetch bytes. Publish the package extent
                 // without reading the full file or duplicating that prefix.
                 return Ok(Some(crate::assets::wwise::MediaBytes::stream_header(Vec::new(), media.size as usize)));

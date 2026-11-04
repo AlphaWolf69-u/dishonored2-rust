@@ -219,7 +219,11 @@ impl Packet {
             .ok_or_else(|| invalid("Vorbis packet exceeds source"))?;
         self.payload = offset + header;
         self.length = size;
-        self.inline = window.contiguous(self.payload, size);
+        // Lewton also needs the next mode before consuming this packet.
+        // Spill across that boundary so a pending lookahead can release the
+        // old IO block without losing this packet's bytes.
+        let lookahead = if self.next < end { header + 1 } else { 0 };
+        self.inline = window.contiguous(self.payload, size + lookahead);
         if self.inline {
             if window.slice(self.payload, size)?.is_none() { return Ok(false); }
         } else {
@@ -265,13 +269,14 @@ impl VorbisCursor {
         if !self.priming && frame >= self.start && frame < end {
             return Ok(self.samples.get((frame - self.start) * channels + channel).copied());
         }
-        let Codec::Vorbis { ident, setup, first, modified, packet_header, leading, .. } = &self.media.codec else { unreachable!() };
-        let (ident, setup, first, modified, header, leading) = (ident.clone(), setup.clone(), *first, *modified, *packet_header, *leading);
-        if (!self.priming && (frame < self.start || frame >= end + (1usize << ident.blocksize_1)))
-            || (self.priming && self.target != frame && frame >= end + (1usize << ident.blocksize_1)) {
+        let Codec::Vorbis { ident, first, modified, packet_header, leading, .. } = &self.media.codec else { unreachable!() };
+        let (first, modified, header, leading, block_frames) = (*first, *modified, *packet_header, *leading, 1usize << ident.blocksize_1);
+        if (!self.priming && (frame < self.start || frame >= end + block_frames))
+            || (self.priming && self.target != frame && frame >= end + block_frames) {
             self.seek(frame)?;
         }
         while self.priming || frame >= self.start + self.samples.len() / channels {
+            let Codec::Vorbis { ident, setup, .. } = &self.media.codec else { unreachable!() };
             if self.next >= self.media.format.data.end { return Err(invalid("Vorbis stream ended before its authored frame count")); }
             if !self.packet.prepare(&mut self.window, self.next, self.media.format.data.end, header)? {
                 self.waiting = true; return Ok(None);
@@ -282,12 +287,12 @@ impl VorbisCursor {
                 };
                 payload
             } else { &self.packet.data };
-            let long = packet_long(&setup, payload[0], modified)?;
+            let long = packet_long(setup, payload[0], modified)?;
             let next_long = if self.packet.next == self.media.format.data.end { false }
-                else { packet_long(&setup, self.packet.following[header], modified)? };
+                else { packet_long(setup, self.packet.following[header], modified)? };
             if self.priming {
                 let origin = if self.next == first { 0 } else {
-                    self.nominal.checked_add(tail_bias(&ident, long, next_long)).and_then(|frame| frame.checked_sub(leading))
+                    self.nominal.checked_add(tail_bias(ident, long, next_long)).and_then(|frame| frame.checked_sub(leading))
                         .ok_or_else(|| invalid("Vorbis priming frame outside source"))?
                 };
                 if origin > self.target {
@@ -301,9 +306,9 @@ impl VorbisCursor {
                 self.start = origin;
             }
             let mut decoded = if modified {
-                read_wwise_audio_packet_generic::<InterleavedSamples<f32>>(&ident, &setup, payload,
+                read_wwise_audio_packet_generic::<InterleavedSamples<f32>>(ident, setup, payload,
                     self.previous_long, next_long, &mut self.right)
-            } else { read_audio_packet_generic::<InterleavedSamples<f32>>(&ident, &setup, payload, &mut self.right) }
+            } else { read_audio_packet_generic::<InterleavedSamples<f32>>(ident, setup, payload, &mut self.right) }
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("Vorbis file packet: {error:?}")))?.samples;
             if !self.priming {
                 let previous = 1usize << if self.previous_long { ident.blocksize_1 } else { ident.blocksize_0 };

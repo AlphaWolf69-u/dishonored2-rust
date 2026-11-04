@@ -187,7 +187,7 @@ pub(super) fn benchmark_frames(
         Res<super::shadow_pass::LocalShadowCompletion>,
         Res<super::ViewSettings>,
     ),
-    mut readiness: Local<(f32, bool, Option<bevy::math::UVec2>)>,
+    mut readiness: Local<(f32, bool, Option<bevy::math::UVec2>, bool)>,
     mut cpu_metrics: Local<CpuBenchmarkMetrics>,
     (mut exit, mut commands): (MessageWriter<AppExit>, Commands),
 ) {
@@ -230,13 +230,14 @@ pub(super) fn benchmark_frames(
         }
         return;
     }
-    if readiness.1 {
+    if readiness.1 || !readiness.3 {
         println!(
             "BENCHMARK complete rendering ready after {:.2}s; starting warmup",
             readiness.0
         );
         crate::rendering::bevy_backend::debug_graphics_capture::mark_rendering_ready();
         readiness.1 = false;
+        readiness.3 = true;
     }
     let previous_elapsed = *elapsed;
     *elapsed += time.delta_secs();

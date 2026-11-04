@@ -745,21 +745,37 @@ pub fn projected_area_request_order(
     requested: &[bool],
     demands: &[ProjectedAreaDemand],
 ) -> Result<Vec<usize>, String> {
+    let mut slots = Vec::new();
+    projected_area_request_order_into(requested, demands, &mut slots)?;
+    Ok(slots)
+}
+
+/// Host scratch reuse; the slot tie-breaker preserves the complete ordering
+/// while in-place sorting avoids a temporary sort allocation.
+pub fn projected_area_request_order_into(
+    requested: &[bool],
+    demands: &[ProjectedAreaDemand],
+    slots: &mut Vec<usize>,
+) -> Result<(), String> {
     if requested.len() != demands.len() {
         return Err("texture request flags and area demands have different lengths".into());
     }
-    let mut slots = requested
+    slots.clear();
+    // One growth at most for the full request domain; filter_map's zero
+    // lower size hint must not cause repeated growth during first fill.
+    slots.reserve(requested.len());
+    slots.extend(requested
         .iter()
         .enumerate()
         .filter_map(|(slot, &needed)| needed.then_some(slot))
-        .collect::<Vec<_>>();
-    slots.sort_by(|&left, &right| {
+    );
+    slots.sort_unstable_by(|&left, &right| {
         demands[right]
             .area()
             .total_cmp(&demands[left].area())
             .then_with(|| left.cmp(&right))
     });
-    Ok(slots)
+    Ok(())
 }
 
 /// The 64-bit area/metadata word updated by FUN_14031a410 at streamer-record

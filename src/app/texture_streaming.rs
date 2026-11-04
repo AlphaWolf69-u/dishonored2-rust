@@ -306,12 +306,29 @@ pub(super) enum GpuMipCopy {
 #[derive(Resource, Clone, Default)]
 pub(super) struct PreparedImageMailbox(pub(super) Arc<Mutex<PreparedImageState>>);
 
+#[derive(Default)]
+pub(super) struct UploadStats {
+    frames: u64,
+    uploads: u64,
+    bytes: u64,
+    deferred: u64,
+    peak_frame_bytes: u64,
+    peak_job_bytes: u64,
+}
+
 pub(super) fn report_prepared_diffuse_images(
     gpu_images: Res<RenderAssets<GpuImage>>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     mailbox: Res<PreparedImageMailbox>,
+    mut settings: Local<settings::SettingsCache>,
+    adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
+    mut stats: Local<UploadStats>,
 ) {
+    let settings = settings.get(adapter.as_deref());
+    // 14030d1e0 limits actual uploads, not only game-thread staging.
+    let mut budget = texture::MipUploadBudget::new(settings.upload_kb);
+    let mut frame_bytes = 0u64;
     let pending = {
         let mut state = mailbox.0.lock().unwrap();
         std::mem::take(&mut state.pending)
@@ -320,6 +337,11 @@ pub(super) fn report_prepared_diffuse_images(
     let mut completed = Vec::new();
     let mut failed = Vec::new();
     for job in pending {
+        if !budget.allows_next_upload() {
+            stats.deferred += 1;
+            waiting.push(job);
+            continue;
+        }
         let Some(image) = gpu_images.get(job.id) else {
             waiting.push(job);
             continue;
@@ -342,14 +364,31 @@ pub(super) fn report_prepared_diffuse_images(
             job.copy,
             &job.uploads,
         ) {
-            Ok(()) => completed.push(job.id),
+            Ok(()) => {
+                let bytes = job.uploads.iter().map(|mip| mip.payload.len() as u64).sum::<u64>();
+                budget.record_upload(bytes as i32);
+                stats.uploads += 1;
+                stats.bytes += bytes;
+                stats.peak_job_bytes = stats.peak_job_bytes.max(bytes);
+                frame_bytes += bytes;
+                completed.push(job.id);
+            },
             Err(error) => failed.push((job.id, error)),
         }
     }
     let mut state = mailbox.0.lock().unwrap();
-    state.pending.extend(waiting);
+    // Older deferred jobs precede jobs staged while this batch ran.
+    waiting.append(&mut state.pending);
+    state.pending = waiting;
     state.completed.extend(completed);
     state.failed.extend(failed);
+    drop(state);
+    stats.frames += 1;
+    stats.peak_frame_bytes = stats.peak_frame_bytes.max(frame_bytes);
+    if stats.frames % 600 == 0 && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY texture GPU uploads: frames={} jobs={} upload_bytes={} deferred_jobs={} peak_frame_bytes={} peak_job_bytes={} budget_kb={}",
+            stats.frames, stats.uploads, stats.bytes, stats.deferred, stats.peak_frame_bytes, stats.peak_job_bytes, settings.upload_kb);
+    }
 }
 
 /// FUN_1402f4990 copies resident levels to the newly sized texture; the
@@ -976,6 +1015,23 @@ pub(super) fn commit_prepared_diffuse_level(
     queue.diffuse_mip_states[slot].pending_reduction = false;
 }
 
+/// Host scratch belongs to the loaded world's streaming jobs, not one frame.
+pub(super) struct FrameRequests {
+    flags: Vec<bool>,
+    order: Vec<usize>,
+    allocate_each_frame: bool,
+    timing: bool,
+    flag_growth_frames: usize,
+    order_growth_frames: usize,
+}
+impl Default for FrameRequests {
+    fn default() -> Self {
+        Self { flags: Vec::new(), order: Vec::new(), flag_growth_frames: 0, order_growth_frames: 0,
+            allocate_each_frame: std::env::var("DH2_DEBUG_ALLOCATE_TEXTURE_REQUESTS").as_deref() == Ok("1"),
+            timing: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") }
+    }
+}
+
 /// Resolve authored diffuse resources after a render instance has been shown
 /// by the current visibility system. Archive reads run on a separate worker.
 pub(super) fn stream_visible_textures(
@@ -990,6 +1046,7 @@ pub(super) fn stream_visible_textures(
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     arms: Option<Res<super::player_arms::PlayerArms>>,
     mut instance_slots: Local<InstanceImageSlots>,
+    mut scratch: Local<FrameRequests>,
     mut initial_view_ready: Local<bool>,
     mut settings: Local<settings::SettingsCache>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
@@ -1001,10 +1058,18 @@ pub(super) fn stream_visible_textures(
     if queue.is_added() {
         *initial_view_ready = false;
         *instance_slots = Default::default();
+        *scratch = Default::default();
     }
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
-    let mut requested = vec![false; queue.diffuse_image_paths.len()];
+    let FrameRequests { flags: requested, order: request_order, allocate_each_frame, timing,
+        flag_growth_frames, order_growth_frames } = &mut *scratch;
+    if *allocate_each_frame { *requested = Vec::new(); *request_order = Vec::new(); }
+    let flag_capacity = requested.capacity();
+    let order_capacity = request_order.capacity();
+    requested.resize(queue.diffuse_image_paths.len(), false);
+    requested.fill(false);
+    *flag_growth_frames += usize::from(requested.capacity() > flag_capacity);
     instance_slots.update(&queue);
     let slots = &*instance_slots;
     super::scene_queue::for_each_visible_instance_index(
@@ -1371,12 +1436,18 @@ pub(super) fn stream_visible_textures(
             }
         }
     }
-    let request_order = if settings.frozen { Vec::new() } else {
-        texture::projected_area_request_order(&requested, &queue.diffuse_image_demands)
-            .expect("diffuse request flags align with image demands")
-    };
+    request_order.clear();
+    if !settings.frozen {
+        texture::projected_area_request_order_into(requested, &queue.diffuse_image_demands, request_order)
+            .expect("diffuse request flags align with image demands");
+    }
+    *order_growth_frames += usize::from(request_order.capacity() > order_capacity);
+    if *timing && frame % 600 == 0 {
+        eprintln!("MEMORY texture request scratch: frames={frame} allocate_each_frame={allocate_each_frame} flag_growth_frames={flag_growth_frames} order_growth_frames={order_growth_frames} flags_capacity={} order_capacity={}",
+            requested.capacity(), request_order.capacity());
+    }
     let request_count = request_order.len();
-    for slot in request_order {
+    for &slot in request_order.iter() {
         if worker.inflight[slot] || queue.diffuse_image_pending[slot].is_some() {
             if frame % 60 == 0 {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {

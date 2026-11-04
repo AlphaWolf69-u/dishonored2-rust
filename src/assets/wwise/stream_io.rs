@@ -9,6 +9,11 @@ use std::{collections::{HashMap, HashSet, VecDeque}, fs::File, io::{self, Read, 
 pub(crate) const BLOCK_BYTES: usize = 0x4000;
 const DEVICE_BYTES: usize = 0x200000;
 
+pub(crate) fn enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("DH2_DEBUG_BOUNDED_SOUND_STREAMS").as_deref() != Ok("0"))
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key { path: Arc<PathBuf>, offset: u64, length: usize }
 
@@ -208,12 +213,18 @@ impl Window {
         let block = (offset - self.prefix_bytes()) / BLOCK_BYTES;
         let mut index = self.blocks.iter().position(|(index, _)| *index == block);
         if index.is_none() {
-            // Release an old local lease before requesting replacement.
-            if self.blocks.len() == 2 { self.blocks.remove(0); }
             self.request(block)?;
             let pending = self.pending.iter().position(|(index, _)| *index == block).unwrap();
-            let Some(bytes) = self.pending[pending].1.ready()? else { return Ok(None) };
+            let Some(bytes) = self.pending[pending].1.ready()? else {
+                // 141161240 releases consumed input before waiting for more.
+                // Historical/read-ahead leases must not exhaust the shared
+                // device and prevent this cursor's required read progressing.
+                self.blocks.clear();
+                self.pending.retain(|(index, _)| *index == block);
+                return Ok(None);
+            };
             self.pending.remove(pending);
+            if self.blocks.len() == 2 { self.blocks.remove(0); }
             self.blocks.push((block, bytes));
             index = Some(self.blocks.len() - 1);
         }

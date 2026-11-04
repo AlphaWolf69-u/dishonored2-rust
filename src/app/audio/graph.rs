@@ -114,7 +114,7 @@ impl StreamedSource {
 fn read_streamed(locator: &StreamLocator, prefix: Option<crate::assets::wwise::MediaBytes>) -> io::Result<Samples> {
     use std::io::{Read, Seek, SeekFrom};
     let started = (std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")).then(std::time::Instant::now);
-    let bounded = if std::env::var("DH2_DEBUG_BOUNDED_SOUND_STREAMS").as_deref() == Ok("1") {
+    let bounded = if crate::assets::wwise::stream_io::enabled() {
         crate::assets::wwise::file_source::FileMedia::open(locator.pool.clone(), Arc::new(locator.path.clone()), locator.offset, locator.size, prefix)?
     } else { None };
     if let Some(media) = bounded.as_ref() {
