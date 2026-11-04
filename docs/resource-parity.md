@@ -1699,3 +1699,21 @@ bytes per acquisition: exactly the sum of inline mip payload sizes. GPU upload
 count/bytes, mip shape, selection and validation errors remain unchanged. Use
 the same production executable's copy control and acquisition checksums/counts;
 no walking CPU timing or total RAM delta is predicted.
+
+
+Particle device-program lifetime prediction (before implementation): global
+program cache construction 140064e00 -> 1402c8d50 is session-owned, with prepared
+program lookup 1402c9f00/1402ca440 independent of image/material residency. The
+current ParticlePass caches pipeline specializations within a level, but map
+release drops its shader module, layouts and pipelines. Keep only those immutable
+objects in CameraGpu's device-scoped cache, keyed by colour/depth formats, and
+transfer their handles into the next pass. Existing specialization keys remain
+unchanged. Material/image bindings, geometry, buffers and mutable simulation
+continue to retire with the outgoing map. No new per-draw lookup or mutex.
+Expected same-format return EotW: zero new shader modules/pipelines for already
+seen states instead of 18 pipelines; Dust only compiles states absent from the
+existing cache. Record actual creations and hits under a same-binary recreate
+control. Counts establish removed compilation operations, not total driver RAM
+or CPU timings. This explicitly increases residency of useful compiled GPU
+objects to avoid recompilation, following the original session cache boundary.
+Prepared source is local-only until the current inline staging snapshot completes.
