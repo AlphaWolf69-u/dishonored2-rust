@@ -1756,3 +1756,16 @@ artifacts/lifecycles-particle-programs-comparison.json. No tests/visuals run.
 
 Delivery: main source 596c051 release completed with exit 0 before integrating
 the accepted inline staging and particle program changes.
+
+
+Whole-image buffer prediction (before implementation): full-mip and base-image
+preparation still copies each validated record into CompressedMipUpload buffers,
+then joins those buffers into the final contiguous Image data. Streamed jobs
+need per-mip backing across threads, but whole-image consumers do not. Use the
+same reader/validator and select direct packed output for those consumers,
+reserving the final authored chain size at its first mip. Expected temporary
+per-mip payload buffers for whole-image preparation: N -> 0, with one final
+image buffer in both modes. Initial/separate mip selection, descriptors and
+final bytes must remain identical. A split-output diagnostic restores the old
+assembly in the same binary; record final payload CRC/descriptor equality and
+intermediate buffer counts/bytes. No whole-frame CPU or RSS gain is predicted.

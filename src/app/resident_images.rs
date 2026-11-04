@@ -1,6 +1,6 @@
 //! Session ownership of full-mip images. Streamed consumers use the scene owner.
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
-use super::{archive, texture_streaming::{TextureReadTarget, read_streamed_diffuse_at_target}};
+use super::{archive, texture_streaming::read_resident_diffuse_image};
 use bevy::prelude::*;
 use std::{collections::HashMap, sync::{Arc, Mutex, Weak}};
 
@@ -58,10 +58,11 @@ impl ResidentImages {
         }
         // Never hold the registry lock during archive IO/decompression. A race
         // can prepare two chains, but only one becomes an asset/GPU identity.
-        let mut loaded = read_streamed_diffuse_at_target(catalog, &path,
-            TextureReadTarget::Initial(Some(0)))?
+        let mut loaded = read_resident_diffuse_image(catalog, &path, Some(0))?
             .ok_or_else(|| format!("missing resident image {path}"))?;
-        loaded.image.data = Some(loaded.uploads.into_iter().flat_map(|mip| mip.payload).collect());
+        if !loaded.uploads.is_empty() {
+            loaded.image.data = Some(loaded.uploads.into_iter().flat_map(|mip| mip.payload).collect());
+        }
         let extent = [loaded.image.width() as f64, loaded.image.height() as f64];
         let bytes = loaded.image.data.as_ref().map_or(0, Vec::len);
         let mut registry = self.registry.lock().unwrap();
