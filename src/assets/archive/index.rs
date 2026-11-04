@@ -1,5 +1,6 @@
 //! Original resource-index records shared by loading and diagnostic tools.
 use std::{
+    collections::HashSet,
     error::Error,
     fs::{self, File},
     io::{self, BufReader, Read, Seek},
@@ -60,8 +61,21 @@ fn name(input: &mut impl Read) -> io::Result<String> {
 }
 
 fn parse_index(
-    input: &mut impl Read,
+    input: &mut (impl Read + Seek),
     group: u8,
+    visit: impl FnMut(IndexEntry),
+) -> io::Result<u32> {
+    parse_selected_index(input, group, None, visit)
+}
+
+fn skip_name(input: &mut (impl Read + Seek)) -> io::Result<()> {
+    let length = le_u32(input)?;
+    if length > 65_536 { return Err(invalid(format!("unreasonable string length: {length}"))); }
+    input.seek_relative(i64::from(length))
+}
+
+fn parse_selected_index(
+    input: &mut (impl Read + Seek), group: u8, ids: Option<&HashSet<u32>>,
     mut visit: impl FnMut(IndexEntry),
 ) -> io::Result<u32> {
     if number::<4>(input)? != *b"\x05SER" {
@@ -75,6 +89,13 @@ fn parse_index(
     }
     for _ in 0..count {
         let id = be_u32(input)?;
+        if ids.is_some_and(|ids| !ids.contains(&id)) {
+            skip_name(input)?;
+            skip_name(input)?;
+            skip_name(input)?;
+            input.seek_relative(26)?;
+            continue;
+        }
         let kind = name(input)?;
         let source = name(input)?;
         let path = name(input)?;
@@ -128,8 +149,21 @@ pub fn slot_index_path(base: &Path, group: u8, slot: u16) -> Result<PathBuf> {
 }
 
 pub fn visit_file(path: &Path, group: u8, visit: impl FnMut(IndexEntry)) -> Result<()> {
+    visit_selected_file(path, group, None, visit)
+}
+
+/// Read only the requested id namespace without retaining or decoding names
+/// for unrelated resources. Duplicate ids retain all localization variants.
+pub fn visit_file_ids(path: &Path, group: u8, ids: &HashSet<u32>, visit: impl FnMut(IndexEntry)) -> Result<()> {
+    visit_selected_file(path, group, Some(ids), visit)
+}
+
+fn visit_selected_file(path: &Path, group: u8, ids: Option<&HashSet<u32>>, visit: impl FnMut(IndexEntry)) -> Result<()> {
     let mut input = BufReader::new(File::open(path)?);
-    let payload_size = parse_index(&mut input, group, visit)?;
+    let payload_size = match ids {
+        Some(ids) => parse_selected_index(&mut input, group, Some(ids), visit)?,
+        None => parse_index(&mut input, group, visit)?,
+    };
     let consumed = input.stream_position()?;
     let actual = fs::metadata(path)?.len();
     if consumed != actual || actual.checked_sub(32) != Some(payload_size as u64) {

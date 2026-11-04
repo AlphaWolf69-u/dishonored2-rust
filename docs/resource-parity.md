@@ -1277,3 +1277,35 @@ priority. Compile-only checks and actual clients were used; no tests or visual
 inspection. The map run proves successful lifecycle execution; it does not
 claim pixel equivalence or measure a new CPU improvement. The standalone
 budget runs provide the direct pressure/work-count evidence above.
+
+
+Manifest acquisition prediction (before implementation): 140064590 searches
+registered container metadata; it does not reopen every archive index to find
+a manifest. Use the existing catalogue's selected-entry location instead of
+load_list's whole patch-index discovery scans. Discovery index scans/read bytes
+become zero per cold manifest, rather than scanning one or more complete patch
+indices; the selected container's id table still needs one parse because the
+compact catalogue intentionally does not retain a second full id namespace.
+All 38 installed manifest paths have a single indexed container, so selecting
+the catalogue entry preserves their container selection.
+
+Read manifest ids before that selected index. Keep only records for requested
+ids, including all language variants needed by the existing locale selection.
+Expected retained IndexEntry count: exactly matching-id records, zero unrelated
+records, versus the entire container before. Skip unrelated name payloads
+without allocating Strings; retain header/length/extent validation and request
+ordering. This removes redundant startup parsing/temporary allocations in
+map_resources::load_list and archive::index; no gameplay-frame work changes.
+Do not claim an absolute CPU improvement from this structural prediction or
+from IO wall spans. Record actual selected/total metadata counts and run the
+production loading path, with no tests or visual inspection.
+
+
+Manifest acquisition result (`lifecycles-manifest`): library/game-bin checks,
+dev build and actual EotW loading/playback exit 0. Reported discovery scans
+are zero for init/common/EotW. Requested/retained ids and retained records:
+1739/1739/1774, 21170/21169/27040, 15774/15774/21713. Common's missing id 2789
+is the same known input omission as before. Localization variants remain,
+unrelated ids do not enter the retained table, and request order is unchanged.
+No loading/decoder/GPU/fatal errors. This establishes removed discovery reads
+and metadata retention, not a CPU-time or FPS improvement. No tests run.

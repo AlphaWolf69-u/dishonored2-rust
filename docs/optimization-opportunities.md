@@ -236,3 +236,28 @@ read from the registered cvars via a generation cache. Preserve initial
 loading gates and committed image handles while correcting the outstanding
 pressure/priority and submission scheduling; quantify changed-function cost
 before replacing existing temporary storage.
+
+
+## Archive acquisition owner sweep
+
+Manifest lookup now has an implementation batch that uses the retained
+catalogue container location and filters selected-index metadata by requested
+ids before allocating record names. Production loading/count validation completed with exit 0: discovery scans
+are zero, and retained bootstrap/common/EotW records are 1774/27040/21713.
+Removed work is whole patch-index discovery parsing and retention/decoding
+of unrelated IndexEntry records; no walking-frame gain is claimed.
+
+Two adjacent archive-reader costs remain for the next cohesive IO-owner change:
+- Catalog::read resolves its entry twice (kind reporting, then payload lookup).
+  Reuse that lookup: one normalization/allocation and binary search removed per
+  archived read. This belongs with the container reader so instrumentation and
+  errors share the selected entry; no CPU-time saving is assigned yet.
+- read_location/read_prefix open an archive for each request and repeatedly
+  query immutable archive extents. A bounded pool of independently positioned
+  handles can reduce opens/extent queries from request count to peak concurrent
+  readers per container. Trace the original container reader before choosing
+  its synchronization: one shared synchronous file handle can serialize reads
+  and must not replace the current parallel acquisition. Payload decompression
+  already streams directly into its final output allocation; do not restore a
+  whole compressed-input copy. Handle caching is deliberately not added without
+  resolving that concurrency/lifetime mechanism.

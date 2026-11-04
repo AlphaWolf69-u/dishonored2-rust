@@ -289,6 +289,12 @@ impl Catalog {
         self.entry(path).map(|entry| entry.size as usize)
     }
 
+    /// Registered container lookup (140064590). This uses the same selected
+    /// entry as payload acquisition, without reopening archive indices.
+    pub(super) fn resource_container(&self, path: &str) -> Option<(u8, u16)> {
+        self.entry(path).map(|entry| (entry.group, entry.slot))
+    }
+
     /// Resolve the source->compiled resource mapping stored by the game itself.
     pub fn image_resource(&self, source: &str) -> Option<&str> {
         // Native idStr slash normalization140140da0/140140de0 treats both

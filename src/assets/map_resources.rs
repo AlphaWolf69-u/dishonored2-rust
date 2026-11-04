@@ -10,7 +10,7 @@
 //! has one record per language under the same id.
 use super::archive::index::{self, IndexEntry};
 use super::archive::Catalog;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
@@ -47,27 +47,22 @@ pub fn load_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> 
     // The manifest's record in the patched index names the archive holding
     // its bytes; the ids are that archive's index numbering (an unchanged
     // manifest keeps the base numbering, which the patch index renumbers).
-    let mut location = None;
-    for group in 1..=4 {
-        index::visit_group(base, group, |r| {
-            if location.is_none() && r.path.eq_ignore_ascii_case(&manifest) {
-                location = Some((r.group, r.archive_slot));
-            }
-        })
-        .map_err(|e| e.to_string())?;
-        if location.is_some() {
-            break;
-        }
-    }
-    let (group, slot) = location.ok_or_else(|| format!("{manifest} is not indexed"))?;
+    let (group, slot) = catalog.resource_container(&manifest)
+        .ok_or_else(|| format!("{manifest} is not indexed"))?;
+    let bytes = catalog.read(&manifest).map_err(|e| e.to_string())?.ok_or_else(|| format!("{manifest} is missing"))?;
+    let requested = ids(&bytes)?;
+    let wanted: HashSet<_> = requested.iter().copied().collect();
     let mut records: HashMap<u32, Vec<IndexEntry>> = HashMap::new();
     let path = index::slot_index_path(base, group, slot).map_err(|e| e.to_string())?;
-    index::visit_file(&path, group, |r| records.entry(r.id).or_default().push(r)).map_err(|e| e.to_string())?;
-    let bytes = catalog.read(&manifest).map_err(|e| e.to_string())?.ok_or_else(|| format!("{manifest} is missing"))?;
+    index::visit_file_ids(&path, group, &wanted, |r| records.entry(r.id).or_default().push(r)).map_err(|e| e.to_string())?;
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY manifest metadata: manifest={manifest} discovery_scans=0 requested_ids={} retained_ids={} retained_records={}",
+            wanted.len(), records.len(), records.values().map(Vec::len).sum::<usize>());
+    }
     let localized = format!("/localized/{language}/");
     let mut list = Vec::new();
     let mut missing = Vec::new();
-    for id in ids(&bytes)? {
+    for id in requested {
         // The patched `common` list names one id (2789) its index lacks.
         let Some(entries) = records.get(&id) else {
             missing.push(id);
