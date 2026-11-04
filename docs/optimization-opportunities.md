@@ -282,3 +282,14 @@ allocator/header overhead). Expected benefit is a lower overlapping loading
 peak, not lower gameplay CPU or necessarily lower steady-state memory. No extra
 cache, parallel copy or source conversion is needed. Native model input closes
 at 14025aa00's exit; runtime geometry lifetime is a separate owner.
+
+
+Particle owner sweep for shared image streaming: material image-view changes must
+refresh bindings while preserving uniforms and pipelines. ParticlePass now keys
+pipelines by draw state, accumulation, distortion and effective lighting mode;
+this pass's formats/layout/shader stay fixed. Sampler-driven material rebuilding
+reuses those pipeline identities. Request/unique/reuse counters provide the
+actual creation count; no CPU-time claim follows from them. Binding-only refresh
+and replacing the custom 2D image acquisition/upload with the scene streamer are
+still being connected together; do not claim shared ownership from a path table
+alone. 3D volume images need their own dimension-aware owner treatment.

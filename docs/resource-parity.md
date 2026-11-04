@@ -1443,3 +1443,20 @@ zero live wrapper entries at purge. Background bindings and all three loading
 gates completed; one device/window/catalogue/audio output was retained. No
 reported runtime errors, CPU benchmark, test or visual inspection. UI source
 commit c1c8760 is integrated into main; its release build was started separately.
+
+
+Particle binding/streaming prerequisite prediction (before implementation):
+ParticlePass::material creates a new render pipeline for every material/state
+binding, including sampler-driven recreation. The backend pipeline depends on
+this pass's fixed shader/layout/formats and the tuple (draw state, accumulation,
+distortion, effective lighting mode); material uniforms, names, textures and
+samplers do not specialize it. Reuse pipelines by that exact tuple within the
+pass, leaving image/material bindings independent. This is a host wgpu pipeline
+cache, not an original API-level port: original prepared-program identities are
+retained separately from material bindings (1402c9f00/1402ca440 stage/variant
+acquisition). Expected creation calls equal distinct specialization tuples,
+not material binding count; sampler changes create zero additional pipelines
+when those tuples already exist. No extra GPU pass, altered shader constants,
+format, state, draw or descriptor binding. Report request/unique/reuse counts at
+pass release; no CPU-time claim from counts. This prerequisite prevents future
+streamed-image binding refresh from recompiling shaders per texture change.

@@ -367,6 +367,10 @@ pub struct ParticlePass {
     _unused_cube: Texture,
     unused_cube_view: TextureView,
     materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
+    // Host: pipeline specialization is independent of image/material binding
+    // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
+    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, i32), RenderPipeline>,
+    pipeline_requests: usize,
     material_sampler: Option<SamplerId>,
     view_bindings: Option<(BufferId, Vec<BindGroup>)>,
     fog_binding: Option<((BufferId, [TextureViewId; 4]), BindGroup)>,
@@ -798,6 +802,8 @@ impl ParticlePass {
             _unused_cube: unused_cube,
             unused_cube_view,
             materials: HashMap::new(),
+            pipelines: HashMap::new(),
+            pipeline_requests: 0,
             material_sampler: None,
             view_bindings: None,
             fog_binding: None,
@@ -1030,71 +1036,80 @@ impl ParticlePass {
                 },
             ],
         );
-        let blends = crate::render_state::blend_state(&state);
-        let formats = [
-            if accumulation || source.distortion {
-                TextureFormat::Rgba16Float
-            } else {
-                self.colour_format
-            },
-            TextureFormat::Rg16Float,
-        ];
-        let targets = (0..if accumulation { 2 } else { 1 })
-            .map(|index| {
-                let blend = blends.targets[index].ok_or("particle colour target absent")?;
-                Ok(Some(ColorTargetState {
-                    format: formats[index],
-                    blend: super::pipeline_state::blend_target(blend)?,
-                    write_mask: ColorWrites::from_bits_truncate(blend.write_mask as u32),
-                }))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let depth = crate::render_state::depth_stencil_state(&state);
-        if depth.depth_write {
-            return Err("particle alpha colour state must disable depth writes".into());
-        }
-        if depth.stencil_enabled && !self.depth_format.has_stencil_aspect() {
-            return Err(
-                "particle alpha colour state requires the gameplay stencil attachment".into(),
-            );
-        }
-        let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
-        let constants = [("particle_lighting_mode", f64::from(if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? })),
-            ("particle_distortion_mode", f64::from(u32::from(source.distortion)))];
-        let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
-            label: Some("particle sprite colour"),
-            layout: Some(&self.pipeline_layout),
-            vertex: RawVertexState {
-                module: &self.shader,
-                entry_point: Some("particle_vertex"),
-                compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
-                buffers: &[],
-            },
-            fragment: Some(RawFragmentState {
-                module: &self.shader,
-                entry_point: Some(if source.distortion {
-                    "particle_distortion_fragment"
-                } else if accumulation {
-                    "particle_accumulation_fragment"
+        let lighting_mode = if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? };
+        let pipeline_key = (state, accumulation, source.distortion, lighting_mode);
+        self.pipeline_requests += 1;
+        let pipeline = if let Some(pipeline) = self.pipelines.get(&pipeline_key) {
+            pipeline.clone()
+        } else {
+            let blends = crate::render_state::blend_state(&state);
+            let formats = [
+                if accumulation || source.distortion {
+                    TextureFormat::Rgba16Float
                 } else {
-                    "particle_fragment"
+                    self.colour_format
+                },
+                TextureFormat::Rg16Float,
+            ];
+            let targets = (0..if accumulation { 2 } else { 1 })
+                .map(|index| {
+                    let blend = blends.targets[index].ok_or("particle colour target absent")?;
+                    Ok(Some(ColorTargetState {
+                        format: formats[index],
+                        blend: super::pipeline_state::blend_target(blend)?,
+                        write_mask: ColorWrites::from_bits_truncate(blend.write_mask as u32),
+                    }))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let depth = crate::render_state::depth_stencil_state(&state);
+            if depth.depth_write {
+                return Err("particle alpha colour state must disable depth writes".into());
+            }
+            if depth.stencil_enabled && !self.depth_format.has_stencil_aspect() {
+                return Err(
+                    "particle alpha colour state requires the gameplay stencil attachment".into(),
+                );
+            }
+            let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
+            let constants = [("particle_lighting_mode", f64::from(lighting_mode)),
+                ("particle_distortion_mode", f64::from(u32::from(source.distortion)))];
+            let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
+                label: Some("particle sprite colour"),
+                layout: Some(&self.pipeline_layout),
+                vertex: RawVertexState {
+                    module: &self.shader,
+                    entry_point: Some("particle_vertex"),
+                    compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
+                    buffers: &[],
+                },
+                fragment: Some(RawFragmentState {
+                    module: &self.shader,
+                    entry_point: Some(if source.distortion {
+                        "particle_distortion_fragment"
+                    } else if accumulation {
+                        "particle_accumulation_fragment"
+                    } else {
+                        "particle_fragment"
+                    }),
+                    compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
+                    targets: &targets,
                 }),
-                compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
-                targets: &targets,
-            }),
-            primitive: PrimitiveState {
-                front_face,
-                cull_mode,
-                ..default()
-            },
-            depth_stencil: Some(super::pipeline_state::depth_stencil_gpu(
-                &state,
-                self.depth_format,
-            )?),
-            multisample: default(),
-            multiview_mask: None,
-            cache: None,
-        });
+                primitive: PrimitiveState {
+                    front_face,
+                    cull_mode,
+                    ..default()
+                },
+                depth_stencil: Some(super::pipeline_state::depth_stencil_gpu(
+                    &state,
+                    self.depth_format,
+                )?),
+                multisample: default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            self.pipelines.insert(pipeline_key, pipeline.clone());
+            pipeline
+        };
         Ok(MaterialGpu {
             _source: source,
             _parameters: parameters,
@@ -1719,4 +1734,15 @@ fn mesh_geometry(device:&RenderDevice,model:&crate::assets::particle_model::Part
     let count=indices.len() as u32/2;
     let indices=device.create_buffer_with_data(&BufferInitDescriptor{label:Some("particle mesh indices"),contents:&indices,usage:BufferUsages::INDEX});
     Ok(GeometryGpu{vertices,indices,count})
+}
+
+impl Drop for ParticlePass {
+    fn drop(&mut self) {
+        if self.pipeline_requests != 0
+            && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY particle pipeline release: requests={} unique={} reused={}",
+                self.pipeline_requests, self.pipelines.len(),
+                self.pipeline_requests.saturating_sub(self.pipelines.len()));
+        }
+    }
 }
