@@ -205,3 +205,16 @@ admission remain unchanged; only incompatible viewport allocations retire.
 No CPU benchmarks, tests or visual inspection were performed. Numeric evidence:
 artifacts/lifecycles-ocean-viewport-comparison.json. The earlier main release
 at f4bb382 completed successfully before this source was integrated.
+
+
+2026-11-04 water material scope acceptance (d8c086f): production three-map
+separate/shared acquisition exits 0 in both modes. All 12 (material, selected
+program, owned bytes, content CRC) request fingerprints match. The four actual
+material constructions now create four scope backings instead of twelve:
+24,237 -> 8,079 cumulative owned structure/vector bytes. The construction cache
+drops before publication and adds no per-frame lookup. In the same route,
+7,093 bytes of unused declaration copies are no longer retained, alongside the
+unused MAIN-name/options fields. These are small owner-cleanup counts, not a
+large RAM or CPU-performance claim. Existing fixture initializers were adapted
+to the production type; no test or expected value was added or run. Local
+numeric evidence: artifacts/lifecycles-water-scopes-comparison.json.

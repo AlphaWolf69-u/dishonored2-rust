@@ -363,3 +363,13 @@ bytes and mip upgrades match at every snapshot. Unchanged-size frames only
 compare the cached extent; wave simulation/history, images and size-independent
 program/buffer capacity remain. No extra passes or CPU-time claim. This covers
 resolution replacement for the observed owners, not unmeasured quality changes.
+
+
+Water material sweep (d8c086f): removed unread declaration/MAIN-name/options
+storage after bank preparation. Root, world and model consumers share parameter
+scopes only for the same material/selected program; differing alpha-program
+defaults remain separate. Three-map same-binary construction count 12 -> 4,
+24,237 -> 8,079 cumulative owned structure/vector bytes, all 12 fingerprints
+match. The temporary acquisition map drops before play; no runtime hashing,
+locks or reference-count operation was added to view evaluation. This is a
+small correctness/ownership cleanup, with no CPU-time or process-RAM claim.
