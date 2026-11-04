@@ -2323,3 +2323,24 @@ direct replacement retire movie-owned entries even after partial preparation.
 Prediction: successful existing movies keep the same acquisition/submission;
 partial preparation cannot leave bitmap/glyph/named-image entries behind after
 close. Shared bounded ramps/white and reusable viewport/buffer capacity remain.
+
+
+UI owner production acceptance (2026-11-04, source `9df316a`): game-bin
+compilation and both actual EotW -> Dust -> EotW client sequences exit 0. The
+sequence opens the real pause movie after loading; no synthetic workload or
+CPU benchmark was run. Legacy mode records 2,992 stage submissions, 2,992
+uploads / 47,872 bytes / 2,992 temporary allocations. Owned mode records 2,998
+submissions, one upload / 16 bytes / zero temporary allocations. Both submit
+identical logical stage-size bits and identical four float words. Submission
+counts differ with asynchronous loading duration; the accepted metric is work
+per submission and per stage change, not a frame-time comparison.
+
+Both modes peak at 44 entries / 8,495,572 nominal payload bytes, below the
+installed budget, and every movie close and final release leaves only the
+4-byte white builtin. Pressure evictions are zero in both modes, as predicted
+for this real content; no measured pressure saving is claimed. Source inspection
+establishes that partial preparation now has its own generation owner; these
+successful runs do not reproduce cancellation during partial preparation.
+The backend lease/epoch eviction remains `host`, not an exact native fence
+implementation. Evidence: local `lifecycles-ui-texture-owner-comparison.json`
+and the paired production logs. No tests or visual inspection performed.
