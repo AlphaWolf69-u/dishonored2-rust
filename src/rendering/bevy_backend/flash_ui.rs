@@ -22,6 +22,7 @@ use bevy::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+mod textures;
 
 pub const SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash.wgsl");
 pub const FILTER_SHADER_SOURCE: &str = include_str!("../../../assets/shaders/dh2_flash_filters.wgsl");
@@ -86,15 +87,31 @@ struct FlashUiGpu {
     programs: Option<Programs>,
     /// The scene-to-canvas and canvas-to-scene passes, by display format.
     transfer: Option<TransferPrograms>,
+    /// Movie ownership begins before its first successful vertex upload.
+    movie: Option<u64>,
     /// The draw list whose vertices are in `vertices` (its serial).
     uploaded: Option<(u64, u64)>,
     /// The gamma-space canvas the UI is drawn on, and its size.
     canvas: Option<(Texture, TextureView, (u32, u32))>,
-    textures: HashMap<TextureKey, (Texture, TextureView)>,
+    textures: textures::UiTextures,
     vertices: Option<(Buffer, u64)>,
     stage: Option<Buffer>,
+    stage_value: Option<[u32; 2]>,
+    stage_submissions: u64,
+    stage_uploads: u64,
+    stage_temporary_allocations: u64,
     /// The stencil attachment and its size.
     stencil: Option<(Texture, TextureView, (u32, u32))>,
+}
+
+impl Drop for FlashUiGpu {
+    fn drop(&mut self) {
+        if self.textures.tracing() {
+            eprintln!("MEMORY UI stage uploads: submissions={} uploads={} upload_bytes={} temporary_allocations={}",
+                self.stage_submissions, self.stage_uploads, self.stage_uploads * 16,
+                self.stage_temporary_allocations);
+        }
+    }
 }
 
 /// What selects a pipeline: additive blend, stencil test, set and clear bits.
@@ -441,7 +458,8 @@ fn render_flash_ui(
     view: ViewQuery<&ViewTarget>,
 ) {
     let Some(frame) = &frame.0 else {
-        if gpu.uploaded.take().is_some() {
+        if gpu.movie.take().is_some() {
+            gpu.uploaded = None;
             // Closing the movie drops its player (m_cacheResources = 0).
             // A new open has a new generation and globally unique glyph-page
             // IDs, so these textures cannot be reused. Previously old glyph
@@ -449,24 +467,30 @@ fn render_flash_ui(
             // bitmap generations were already re-uploaded on every new open.
             let before = gpu.textures.len();
             gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
+            gpu.textures.begin_frame();
+            gpu.textures.trim();
+            gpu.textures.report("closed");
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 println!("MEMORY UI closed: released_textures={} retained_shared={}", before - gpu.textures.len(), gpu.textures.len());
             }
         }
         return;
     };
+    gpu.textures.begin_frame();
     // Loading can replace one movie directly with another without publishing
     // an empty frame. 1410298b0 still destroys the old player's cache then;
     // glyph IDs from that player must not survive until a later UI close.
-    if gpu.uploaded.is_some_and(|(generation, _)| generation != frame.generation) {
+    if gpu.movie.is_some_and(|generation| generation != frame.generation) {
         let before = gpu.textures.len();
-        gpu.textures.retain(|key, _| !matches!(key, TextureKey::Bitmap(_, _) | TextureKey::Glyphs(_, _)));
+        gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
         gpu.uploaded = None;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             println!("MEMORY UI replaced: released_textures={}", before - gpu.textures.len());
         }
     }
+    gpu.movie = Some(frame.generation);
     if frame.list.batches.is_empty() {
+        gpu.textures.trim();
         return;
     }
     let _timing = debug_timing::Scope::new(frame.list.batches.len(), frame.list.layers.len());
@@ -502,6 +526,7 @@ fn render_flash_ui(
     for key in &keys {
         if let TextureKey::Game(name) = key {
             let Some(image) = frame.game_images.get(name).and_then(|handle| images.get(handle.id())) else {
+                gpu.textures.trim();
                 return; // Keep the movie covered until its image is prepared.
             };
             if gpu.textures.get(key).is_none_or(|(_, view)| view.id() != image.texture_view.id()) {
@@ -510,9 +535,10 @@ fn render_flash_ui(
                     println!("MEMORY UI named image binding: name={name} view={:?}", image.texture_view.id());
                 }
             }
+            gpu.textures.touch(key);
             continue;
         }
-        if gpu.textures.contains_key(key) {
+        if gpu.textures.touch(key) {
             continue;
         }
         let uploaded = match key {
@@ -521,7 +547,7 @@ fn render_flash_ui(
             // 1410150f0 binds the existing idImage, not a second UI copy.
             TextureKey::Game(name) => match frame.game_images.get(name).and_then(|handle| images.get(handle.id())) {
                 Some(image) => (image.texture.clone(), image.texture_view.clone()),
-                None => return, // The image owner has not uploaded it yet.
+                None => { gpu.textures.trim(); return; }, // The image owner has not uploaded it yet.
             },
             TextureKey::Bitmap(_, c) => match frame.images.get(c) {
                 Some(image) => upload_mips(&device, &queue, image.width, image.height, image.mip_count,
@@ -579,14 +605,33 @@ fn render_flash_ui(
         TextureKey::Glyphs(id, version) => frame.list.glyph_pages.iter().any(|page| page.id == *id && page.version == *version),
         _ => true,
     });
+    gpu.textures.trim();
     if gpu.stage.is_none() {
         gpu.stage = Some(device.create_buffer(&BufferDescriptor { label: Some("flash stage"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false }));
+        gpu.stage_value = None;
     }
-    let mut stage_bytes = Vec::with_capacity(16);
-    for f in [2.0 / frame.list.stage.0, -2.0 / frame.list.stage.1, -1.0, 1.0] {
-        stage_bytes.extend_from_slice(&f.to_le_bytes());
+    let value = [frame.list.stage.0.to_bits(), frame.list.stage.1.to_bits()];
+    static COPY_STAGE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let copied = *COPY_STAGE.get_or_init(|| std::env::var("DH2_DEBUG_COPY_UI_STAGE").as_deref() == Ok("1"));
+    if gpu.textures.tracing() { gpu.stage_submissions += 1; }
+    if copied || gpu.stage_value != Some(value) {
+        let words = [2.0 / frame.list.stage.0, -2.0 / frame.list.stage.1, -1.0, 1.0];
+        let mut bytes = [0; 16];
+        for (slot, word) in bytes.chunks_exact_mut(4).zip(words) {
+            slot.copy_from_slice(&word.to_le_bytes());
+        }
+        let upload: std::borrow::Cow<'_, [u8]> = if copied { std::borrow::Cow::Owned(bytes.to_vec()) }
+            else { std::borrow::Cow::Borrowed(&bytes) };
+        queue.write_buffer(gpu.stage.as_ref().unwrap(), 0, &upload);
+        if gpu.textures.tracing() {
+            gpu.stage_uploads += 1;
+            gpu.stage_temporary_allocations += u64::from(copied);
+            if gpu.stage_value != Some(value) {
+                eprintln!("MEMORY UI stage value: size_bits={value:?} words={:?}", words.map(f32::to_bits));
+            }
+        }
+        gpu.stage_value = Some(value);
     }
-    queue.write_buffer(gpu.stage.as_ref().unwrap(), 0, &stage_bytes);
     let size = target.main_texture().size();
     if gpu.stencil.as_ref().is_none_or(|s| s.2 != (size.width, size.height)) {
         let texture = device.create_texture(&TextureDescriptor {

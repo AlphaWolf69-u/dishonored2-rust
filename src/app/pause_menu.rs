@@ -630,7 +630,7 @@ pub fn update_pause_menu(
     let menu = &mut *menu;
     // Diagnostic: DH2_DEBUG_OPEN_PAUSE_AFTER=<seconds> opens the pause state
     // once, that long after start (captures without keyboard input).
-    let debug_open = !menu.debug_opened
+    let debug_open = !super::loading_screen::is_loading(&loading) && !menu.debug_opened
         && std::env::var("DH2_DEBUG_OPEN_PAUSE_AFTER").ok().and_then(|v| v.parse::<f64>().ok()).is_some_and(|after| time.elapsed_secs_f64() >= after);
     if debug_open && !menu.open {
         menu.debug_opened = true;

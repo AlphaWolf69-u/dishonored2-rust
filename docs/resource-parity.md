@@ -2270,3 +2270,56 @@ common/builtin masks survive map changes. No samplers, formats, source mip
 selection, FFT inputs or draw passes change. Measure acquired image identities,
 inline image descriptors/content CRC and map purge counts. No CPU timing gain
 is predicted, and retained view snapshots must not force finer texture residency.
+
+
+### UI image-cache bounds: prediction before implementation
+
+Native fill submission `141089760` validates static gradient handles through
+`14107cf80` (+0x78 callback), but invalidates morph-gradient associations through
+`14107cea0` (+0x90) before generation. `1410947c0`/`141095740` regenerate the
+64x1 ramp. Game initialization `140034ba0` configures texture-cache kind 1 with
+2,048 slots and 0x1428000 nominal bytes through `1402df160`/`1402e3460`.
+`1402e5350` charges image bytes to renderer+0x1008; `1402e38f0` uses a zero-byte
+slot for an external image. `1402e6540` calls `1402e67e0` to retire old entries
+when bytes or slots run out. Callback +0x50 advances upload row blocks; it must
+not be mistaken for GPU texture destruction.
+
+The rewrite already retires outgoing movie bitmaps/glyphs/named bindings, but
+its content-keyed gradients have no bound. Add an owner for cached texture
+entries using those installed slot/byte limits and least-recently-used inactive
+entries. Current draw-list textures remain pinned. Host difference: wgpu command
+buffers hold in-flight references, so eviction drops the cache lease without
+forcing a GPU wait; a simultaneously active working set may exceed the cache
+budget until it becomes inactive. White stays a persistent builtin. External
+game-image views consume a slot but no duplicated image-payload charge.
+
+Prediction: stable authored UI below the installed budgets uploads/evicts
+nothing extra, and ordinary gameplay without a movie does no cache maintenance.
+Inactive cache residency is bounded under dynamic content. No saving is
+predicted for the already observed one-ramp pause view. Use real loading/pause
+movies and existing diagnostics for acquisition/eviction counts and unchanged
+content/draw submission; no synthetic test, invented lower limit or broad CPU
+benchmark is required.
+
+
+UI owner sweep also finds that the 16-byte stage transform is allocated and
+uploaded on every UI submission although it depends only on the movie's logical
+stage dimensions. Preserve its four exact float words, borrow a stack array,
+and upload only when the dimension bit patterns change. Prediction: one
+16-byte temporary allocation per UI submission -> zero, and uploads reduce from
+one per submission to one per stage-size change. The binding/passes stay the
+same. The diagnostic copy mode restores allocation and unconditional upload;
+record submitted stage words and operation counts, not whole-frame CPU time.
+Cache-pressure selection reuses a scratch vector of numeric age/ordinal/charge
+records and removes entries in one pass; it does not clone every gradient key or
+allocate one temporary vector per entry while trimming.
+
+
+The UI sweep also finds that movie image retirement was gated by the first
+successful vertex upload. A movie closed while an image was still awaiting GPU
+preparation could already own cache entries without having that upload marker.
+Track movie generation independently of vertex-upload identity, so close and
+direct replacement retire movie-owned entries even after partial preparation.
+Prediction: successful existing movies keep the same acquisition/submission;
+partial preparation cannot leave bitmap/glyph/named-image entries behind after
+close. Shared bounded ramps/white and reusable viewport/buffer capacity remain.
