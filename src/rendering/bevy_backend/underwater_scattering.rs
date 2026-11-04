@@ -130,7 +130,7 @@ pub struct UnderwaterScatteringPass {
     depth: Option<(TextureId, DepthPyramid, TextureView)>,
     opaque: Option<(TextureId, TextureView)>,
     stencil: Option<(TextureId, TextureView)>,
-    caustics: HashMap<usize, (Arc<crate::texture::InlineArrayChain>, LayeredImage)>,
+    caustics: HashMap<usize, (Arc<super::layered_images::LayeredImageSource>, Arc<LayeredImage>)>,
     binding: Option<([TextureViewId; 6], BufferId, BindGroup)>,
     clamp: Sampler,
     wrap: Sampler,
@@ -452,7 +452,7 @@ impl UnderwaterScatteringPass {
         if !self.caustics.contains_key(&id) {
             self.caustics.insert(
                 id,
-                (chain.clone(), LayeredImage::array(device, queue, chain)?),
+                (chain.clone(), chain.acquire(device, queue)?),
             );
         }
         let snapshot = self.hdr.prepare(

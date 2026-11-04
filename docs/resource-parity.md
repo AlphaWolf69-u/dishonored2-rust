@@ -2082,3 +2082,37 @@ snapshot for map residency. Native first-view mip zero refers to the current
 GPU allocation and does not imply the highest source-file resolution (for
 example, an authored 512x512 source can have a 256x256 allocation). Local
 evidence: artifacts/lifecycles-initial-image-descriptors.json.
+
+
+### Cube/array image identity and staging: prediction before implementation
+
+WaterImageSources already canonicalizes authored aliases to one Arc chain per
+resource. Its three consumers nevertheless upload separate immutable textures
+via LayeredImage::cube/array (placed water, ocean, underwater scattering). That
+violates the existing-image lookup boundary `1400607f0`/`14005feb0`; typed SRVs
+are cached by `1402bd380`, not separate pixel allocations per consumer.
+
+Give each acquired backend source one immutable GPU result and transfer its
+compressed staging into that upload. Keep only descriptor/identity afterward;
+consumer leases hold the same GPU image. Cube and CubeArray views share its
+texture; samplers and material bindings stay consumer-owned. Source acquisition
+and all parser/format/mip/layer checks remain unchanged. Consumers only sample/copy from these images; they do not issue texture updates
+or use them as storage/render attachments.
+
+Prediction: N consumers of one source create one texture/upload instead of N,
+removing (N-1)*payload bytes of duplicate uploads/storage. Used source staging
+capacity retires once after upload rather than persisting for the whole map;
+unused prefetched source staging still belongs to map acquisition. GPU images
+and source identity release with the map and outstanding frame leases. Resize
+or quality changes must not upload an unchanged source again. The diagnostic
+separate mode retains the former uploads and source staging in the same client.
+Validate production source fingerprints, dimensions/mips/layers, upload counts
+and source retirement; no GPU-time or physical-driver-memory claim is inferred
+from payload bytes.
+
+The same ResidentImages acquisition registry owns these typed sources. It
+retains init/common source identities and purges map entries at the existing
+class boundary, so per-pass sharing also survives map changes for explicitly
+common images. The source's cached GPU result survives view resizing; its CPU
+payload does not. Standalone borrowed-chain upload helpers remain available,
+but production consumers request the acquired source.

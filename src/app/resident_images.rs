@@ -17,6 +17,7 @@ pub(super) struct ResidentImage {
 #[derive(Default)]
 struct Registry {
     resident: HashMap<String, Arc<ResidentImage>>,
+    layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
     leases: HashMap<String, Weak<ResidentImage>>,
     requests: usize,
     loads: usize,
@@ -118,15 +119,37 @@ impl ResidentImages {
         registry.resident.insert(path.to_owned(), image);
     }
 
+    /// The same registry boundary also owns cube/array identities. Their
+    /// backend source retires upload staging and leases one immutable GPU image.
+    pub(super) fn layered(&self, path: &str, cube: bool,
+        load: impl FnOnce() -> Result<crate::rendering::bevy_backend::layered_images::LayeredImageSource, String>,
+    ) -> Result<Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>, String> {
+        use crate::rendering::bevy_backend::layered_images::LayeredImageSource;
+        if LayeredImageSource::separate() { return load().map(Arc::new); }
+        if let Some(source) = self.registry.lock().unwrap().layered.get(path).cloned() {
+            if source.is_cube() != cube { return Err(format!("image {path} acquired with an incompatible cube/array type")); }
+            return Ok(source);
+        }
+        let prepared = Arc::new(load()?);
+        let mut registry = self.registry.lock().unwrap();
+        let source = registry.layered.entry(path.to_owned()).or_insert(prepared).clone();
+        if source.is_cube() != cube { return Err(format!("image {path} acquired with an incompatible cube/array type")); }
+        Ok(source)
+    }
+
     fn release_level(&self, shared: &super::texture_streaming::SharedImages) {
         let mut registry = self.registry.lock().unwrap();
         let before = registry.resident.len();
+        let layered_before = registry.layered.len();
         registry.resident.retain(|path, _| shared.contains(path));
+        registry.layered.retain(|path, _| shared.contains(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY resident image registry purge: requests={} loads={} uploaded_bytes={} released={} retained_common={} retained_bytes={} live_leases={}",
                 registry.requests, registry.loads, registry.bytes, before-registry.resident.len(),
                 registry.resident.len(), registry.resident.values().map(|image|image.bytes).sum::<usize>(), registry.leases.len());
+            eprintln!("MEMORY layered image registry purge: released={} retained_common={}",
+                layered_before - registry.layered.len(), registry.layered.len());
         }
     }
 }

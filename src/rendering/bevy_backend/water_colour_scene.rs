@@ -99,12 +99,12 @@ pub struct WaterColourScene {
     skies: HashMap<
         usize,
         (
-            Arc<crate::texture::InlineCubeChain>,
-            LayeredImage,
+            Arc<super::layered_images::LayeredImageSource>,
+            Arc<LayeredImage>,
             TextureView,
         ),
     >,
-    caustics: HashMap<usize, (Arc<crate::texture::InlineArrayChain>, LayeredImage)>,
+    caustics: HashMap<usize, (Arc<super::layered_images::LayeredImageSource>, Arc<LayeredImage>)>,
     bindings: HashMap<(usize, Arc<str>), MaterialBinding>,
     opaque: Option<(TextureId, TextureView)>,
     pyramid: Option<(TextureId, DepthPyramid, TextureView)>,
@@ -378,13 +378,10 @@ impl WaterColourScene {
                 .ok_or("water sky cube source unavailable")?;
             let sky_id = Arc::as_ptr(sky) as usize;
             if !self.skies.contains_key(&sky_id) {
-                let image = LayeredImage::cube(r.device, r.queue, sky)?;
+                let image = sky.acquire(r.device, r.queue)?;
                 // The non-probe specialization never samples the IBL binding.
                 // Reuse its real sky allocation for the fixed host layout.
-                let array = image.texture().create_view(&TextureViewDescriptor {
-                    dimension: Some(TextureViewDimension::CubeArray),
-                    ..default()
-                });
+                let array = image.cube_array_view().clone();
                 self.skies.insert(sky_id, (sky.clone(), image, array));
             }
             let caustics = r
@@ -398,7 +395,7 @@ impl WaterColourScene {
                     caustic_id,
                     (
                         caustics.clone(),
-                        LayeredImage::array(r.device, r.queue, caustics)?,
+                        caustics.acquire(r.device, r.queue)?,
                     ),
                 );
             }

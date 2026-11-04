@@ -154,8 +154,8 @@ pub struct OceanScene {
     colour_programs:
         HashMap<(usize, TextureFormat, crate::render_state::RenderState), ColourProgram>,
     colour_uniform: Option<Buffer>,
-    skies: HashMap<String, (super::layered_images::LayeredImage, TextureView)>,
-    caustics: HashMap<String, super::layered_images::LayeredImage>,
+    skies: HashMap<String, (Arc<super::layered_images::LayeredImage>, TextureView)>,
+    caustics: HashMap<String, Arc<super::layered_images::LayeredImage>>,
     comparison: Sampler,
     underwater: Option<UnderwaterTargets>,
     head_queries: Option<head_queries::HeadQueries>,
@@ -687,11 +687,8 @@ impl OceanScene {
                 .skies
                 .get(&settings.water.sky_cube)
                 .ok_or("ocean sky source unavailable")?;
-            let image = super::layered_images::LayeredImage::cube(r.device, r.queue, source)?;
-            let array = image.texture().create_view(&TextureViewDescriptor {
-                dimension: Some(TextureViewDimension::CubeArray),
-                ..default()
-            });
+            let image = source.acquire(r.device, r.queue)?;
+            let array = image.cube_array_view().clone();
             self.skies
                 .insert(settings.water.sky_cube.clone(), (image, array));
         }
@@ -703,7 +700,7 @@ impl OceanScene {
                 .ok_or("ocean caustics source unavailable")?;
             self.caustics.insert(
                 settings.water.caustics.image.clone(),
-                super::layered_images::LayeredImage::array(r.device, r.queue, source)?,
+                source.acquire(r.device, r.queue)?,
             );
         }
         let console = crate::platform::console::shared().read();

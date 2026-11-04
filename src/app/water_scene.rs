@@ -36,12 +36,13 @@ impl WaterScene {
         areas: &[AreaEnvironment],
         materials: &WaterMaterials,
     ) -> Result<(Self, WaterImageSources), String> {
-        Self::load_with_model_colours(catalog,world,areas,materials,&crate::rendering::bevy_backend::water_scene::WaterModelColours::default())
+        Self::load_with_model_colours(catalog,world,areas,materials,&crate::rendering::bevy_backend::water_scene::WaterModelColours::default(),&super::resident_images::ResidentImages::default())
     }
 
     pub(super) fn load_with_model_colours(
         catalog:&archive::Catalog,world:&EnvironmentRenderParameters,areas:&[AreaEnvironment],
         materials:&WaterMaterials,models:&crate::rendering::bevy_backend::water_scene::WaterModelColours,
+        resident: &super::resident_images::ResidentImages,
     )->Result<(Self,WaterImageSources),String> {
         let (_, ocean_render_settings) =
             crate::platform::game_settings::read_ocean_render_settings()?;
@@ -90,8 +91,10 @@ impl WaterScene {
                 let chain = if let Some(chain) = cubes.get(&key) {
                     Arc::clone(chain)
                 } else {
-                    let loaded = crate::material::load_cube_image(catalog, name)?;
-                    let chain = Arc::new(loaded.image);
+                    let chain = resident.layered(&key, true, || {
+                        let loaded = crate::material::load_cube_image(catalog, name)?;
+                        Ok(crate::rendering::bevy_backend::layered_images::LayeredImageSource::cube(key.clone(), loaded.image))
+                    })?;
                     cubes.insert(key.clone(), chain.clone());
                     chain
                 };
@@ -107,14 +110,13 @@ impl WaterScene {
                 let chain = if let Some(chain) = arrays.get(&key) {
                     Arc::clone(chain)
                 } else {
-                    let bytes = catalog
-                        .read(&key)
-                        .map_err(|e| e.to_string())?
-                        .ok_or_else(|| format!("missing water caustics {key}"))?;
-                    let chain = Arc::new(
-                        crate::texture::compressed_inline_array(&bytes)
-                            .map_err(|e| format!("{key}: {e}"))?,
-                    );
+                    let chain = resident.layered(&key, false, || {
+                        let bytes = catalog.read(&key).map_err(|e| e.to_string())?
+                            .ok_or_else(|| format!("missing water caustics {key}"))?;
+                        let chain = crate::texture::compressed_inline_array(&bytes)
+                            .map_err(|e| format!("{key}: {e}"))?;
+                        Ok(crate::rendering::bevy_backend::layered_images::LayeredImageSource::array(key.clone(), chain))
+                    })?;
                     arrays.insert(key.clone(), chain.clone());
                     chain
                 };
