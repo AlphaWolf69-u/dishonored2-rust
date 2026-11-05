@@ -19,6 +19,9 @@ pub(super) struct DynamicWorldMaterials {
     pub generation: u64,
     pub retirement: u64,
     pub sources: Arc<Sources>,
+    /// Per-request sources are also retained by the render-side FX entity and
+    /// its instance until every particle, sound and decal tail has retired.
+    pub leases: Arc<Vec<Weak<Sources>>>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
     pub failed: Arc<std::sync::atomic::AtomicU64>,
     /// Ordered world-material dependencies, retained for live proxies and tails.
@@ -28,7 +31,7 @@ pub(super) struct DynamicWorldMaterials {
 }
 impl Default for DynamicWorldMaterials {
     fn default() -> Self {
-        Self { generation: 0, retirement: 0, sources: Arc::default(),
+        Self { generation: 0, retirement: 0, sources: Arc::default(), leases: Arc::default(),
             completed: Arc::default(), failed: Arc::default(), images: HashMap::new(),
             image_revision: 0, images_ready: 0 }
     }
@@ -42,6 +45,7 @@ pub(super) struct DynamicDecalMaterials {
     pub generation: u64,
     pub retirement: u64,
     pub sources: Arc<Sources>,
+    pub leases: Arc<Vec<Weak<Sources>>>,
     pub prepared_generation: u64,
     pub prepared: Arc<Vec<super::runtime_materials::PreparedDecal>>,
     pub gpu_completed: Arc<std::sync::atomic::AtomicU64>,
@@ -341,15 +345,18 @@ pub(super) fn publish(
         let needs_decals = !dynamic.decal_materials().is_empty();
         world.0 = Arc::new(combined);
         let dynamic = Arc::new(dynamic);
+        let leases = Arc::new(owner.ready.values().map(Arc::downgrade).collect());
         prewarm.sources = dynamic.clone();
         prewarm.generation = owner.revision;
         prewarm.retirement = owner.retirement;
         if !needs_materials { prewarm.completed.store(prewarm.generation, Ordering::Release); }
         world_materials.sources = dynamic.clone();
+        world_materials.leases = leases.clone();
         world_materials.generation = owner.revision;
         world_materials.retirement = owner.retirement;
         if !needs_world_materials { world_materials.completed.store(world_materials.generation, Ordering::Release); }
         decal_materials.sources = dynamic;
+        decal_materials.leases = leases;
         decal_materials.generation = owner.revision;
         decal_materials.retirement = owner.retirement;
         if !needs_decals { decal_materials.completed.store(decal_materials.generation, Ordering::Release); }
