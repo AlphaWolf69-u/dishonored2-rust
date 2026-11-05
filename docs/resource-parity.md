@@ -71,7 +71,7 @@ trailing `*` covers a family of kinds.
 | `areaTagCollection` | none | none: no owner yet |
 | `arkCloth` | none | none: no owner yet |
 | `arkTree` | none | none: no owner yet |
-| `baseModel` | `assets::bmd6`, `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
+| `baseModel` | `assets::bmd6`, `assets::entities` | partial: physics-system skin sources share immutable decoded models during level preparation and scene setup reuses those inputs; level-scoped read history is released after teardown (host equivalent of `140060180`). Other consumers and full resource residency remain to be audited |
 | `blueprint` | `assets::entities`, `app::view_geometry` | partial: reads its resources; lifecycle not ported (see its class) |
 | `boneCharmCollection` | none | none: no owner yet |
 | `boneCharmLoadout` | none | none: no owner yet |
@@ -115,7 +115,7 @@ trailing `*` covers a family of kinds.
 | `mapInfo` | `gameplay::map_info` | host: session declaration index follows `1400607f0` / `14005feb0`; only requested parsed declarations are retained and aliases share the same immutable identity. A five-level production comparison reduced reads 50 -> 19 and decoded bytes 200,076 -> 77,776 with matching declaration fingerprints. Overlay and read-failure paths retain the existing scan; whole resource-class purge remains partial |
 | `massprops` | `assets::physworld::mass` | host: machinery preparation acquires through the physics mass owner, which reuses decoded immutable mass properties per path and copies them before body-specific mass/axis overrides; the cache is released after preparation. Four map loads reduced reads 287 to 53 and cumulative decoded bytes 163,016 to 30,104; body fingerprints matched. This is not a resident-memory measurement. The broader registry and original persistent-scope behavior remain partial |
 | `material` | `app::material_loading` (material class) | partial: reads its resources; lifecycle not ported (see its class) |
-| `md6Def` | `assets::bmd6`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
+| `md6Def` | `assets::bmd6`, `app::player` | partial: physics-system skin acquisition resolves declarations once per successful source; level-scoped read history is released after teardown (host equivalent of `140060180`). Other consumers and full declaration residency remain to be audited |
 | `midnightScene` | `assets::entities::scene_motion`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); UVs stay f32 (Bevy has no half-float vertex values); world shadow programs read the shared mesh's own position, NORMAL and COLOR (axis swap undone in the shader), so only vegetation (forward wind) and water meshes keep game-space copies; sheared baked instances keep float vertices. Lifecycle not ported (see its class) |
 | `musicManager` | none | none: no owner yet |
@@ -140,7 +140,7 @@ trailing `*` covers a family of kinds.
 | `renderParm` | `assets::environment`, `app::material_loading` | partial: reads its resources; lifecycle not ported (see its class) |
 | `renderProg` | `assets::shader_cache` | partial: reads its resources; lifecycle not ported (see its class) |
 | `ruleHandler` | none | none: no owner yet |
-| `skeleton` | `assets::bmd6` | partial: reads its resources; lifecycle not ported (see its class) |
+| `skeleton` | `assets::edge_skeleton` | partial: physics-system skin instances share immutable rest rigs while retaining independent poses; level-scoped read history is released after teardown (host equivalent of `140060180`). Other consumers and full resource residency remain to be audited |
 | `soundauxbus` | `gameplay::sound::auxiliary` (sound class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `soundengineinternals` | `app::audio` (sound class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `soundevent` | `app::audio`, `assets::wwise` (sound class) | partial: reads its resources; lifecycle not ported (see its class) |

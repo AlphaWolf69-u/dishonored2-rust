@@ -22,6 +22,21 @@ pub(super) struct ModelHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::bm
 #[derive(Resource)]
 pub(super) struct MaterialHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::material::MaterialHistoryLease>);
 
+/// Keep skeletal acquisitions through preparation and render-world retirement.
+#[derive(Resource)]
+pub(super) struct SkeletalHistoryScope {
+    _models: std::sync::Arc<crate::bmd6::HistoryLease>,
+    _skeletons: std::sync::Arc<crate::edge_skeleton::HistoryLease>,
+}
+impl SkeletalHistoryScope {
+    fn new() -> Self {
+        Self {
+            _models: crate::bmd6::HistoryLease::acquire(),
+            _skeletons: crate::edge_skeleton::HistoryLease::acquire(),
+        }
+    }
+}
+
 #[derive(Resource)]
 pub(super) struct PreparedPhysicsTexts(pub(crate) crate::assets::declaration_texts::PhysicsSeed);
 
@@ -38,6 +53,7 @@ pub(super) fn prepare_level(
     let mut app = super::loading_screen::PreparedLevel::default();
     app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire()));
     app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire()));
+    app.insert_resource(SkeletalHistoryScope::new());
     let map = level
         .entities
         .trim_start_matches("maps/")

@@ -4,8 +4,7 @@
 //! installed cinfo poses against the skeleton rest pose. The other joints
 //! keep their rest offsets from their parents.
 use super::{
-    apply_rest_pose, render_bounds, shadow_updates::ModelShadowSources, shadow_updates::RestSkinning,
-    RenderModelSurface, RenderSourcePlacements, SceneRenderQueue, ShaderBuffer,
+    shadow_updates::ModelShadowSources, RenderSourcePlacements, SceneRenderQueue, ShaderBuffer,
 };
 use crate::{archive::Catalog, assets::edge_skeleton, bmd6, gameplay::machinery_world::MachineryWorld};
 use bevy::prelude::*;
@@ -16,16 +15,11 @@ type Affine = [[f32; 4]; 3];
 pub(super) struct SystemSkin {
     system: usize,
     placement: usize,
-    parents: Vec<Option<usize>>,
-    rest: Vec<Affine>,
-    inverse_bind: Vec<Affine>,
-    model: bmd6::ModelInfo,
-    /// The placement's skinned instances and palette, bound on first use.
-    bound: Option<(std::ops::Range<usize>, Handle<ShaderBuffer>)>,
-    /// The palette last applied: an identical pose (resting bodies) leaves
-    /// the meshes, bounds and published palette as they are, so Bevy does not
-    /// re-extract and re-upload four meshes every frame.
-    posed: Option<Vec<Affine>>,
+    parents: edge_skeleton::SharedSlice<Option<usize>>,
+    rest: edge_skeleton::SharedSlice<Affine>,
+    inverse_bind: edge_skeleton::SharedSlice<Affine>,
+    model: Arc<bmd6::ModelInfo>,
+    publication: super::skin_publication::SkinPublication,
 }
 
 fn multiply(a: &Affine, b: &Affine) -> Affine {
@@ -61,37 +55,21 @@ pub(super) fn load_skins(
     placements: &[crate::entities::PlacedModel],
 ) -> Vec<SystemSkin> {
     let mut skins = Vec::new();
+    let mut rigs = edge_skeleton::RestRigSources::new(catalog);
+    let mut models = bmd6::ModelSources::new(catalog);
     for (index, system) in world.systems.iter().enumerate() {
-        let load = || -> Result<SystemSkin, String> {
-            let stem = system
-                .skeleton
-                .strip_suffix(".md6skl")
-                .ok_or("unsupported skeleton resource suffix")?;
-            let path = format!("generated/skeleton/{stem}.edgeskl");
-            let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
-            let skeleton = edge_skeleton::parse(&bytes)?;
-            let root = edge_skeleton::JointRestPose {
-                rotation: [0., 0., 0., 1.],
-                translation: [0.; 3],
-                scale: [1.; 3],
-            };
-            let rest = edge_skeleton::pose_matrices(&skeleton.rest, &skeleton.hierarchy, &root)?;
+        let mut load = || -> Result<SystemSkin, String> {
+            let rig = rigs.acquire(catalog, &system.skeleton)?;
             let placement = placements.get(system.placement).ok_or("missing system placement")?;
-            let read = |decl: &str| {
-                catalog.read(decl).ok().flatten().map(|b| String::from_utf8_lossy(&b).into_owned())
-            };
-            let path = bmd6::resolve_compiled_mesh(&placement.resource_path, read)?;
-            let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
-            let model = bmd6::inspect(&bytes)?;
+            let model = models.acquire(catalog, &placement.resource_path)?;
             Ok(SystemSkin {
                 system: index,
                 placement: system.placement,
-                parents: skeleton.parents.clone(),
-                inverse_bind: skeleton.inverse_bind[..rest.len()].to_vec(),
-                rest,
+                parents: rig.parents,
+                inverse_bind: rig.inverse_bind,
+                rest: rig.rest,
                 model,
-                bound: None,
-                posed: None,
+                publication: Default::default(),
             })
         };
         match load() {
@@ -105,6 +83,10 @@ pub(super) fn load_skins(
 impl SystemSkin {
     pub(super) fn placement(&self) -> usize {
         self.placement
+    }
+
+    pub(super) fn model(&self) -> &Arc<bmd6::ModelInfo> {
+        &self.model
     }
 
     fn current(&self, world: &MachineryWorld) -> Vec<Affine> {
@@ -125,7 +107,7 @@ impl SystemSkin {
             }
         }
         // Rest-relative offsets for unmapped joints, parents first.
-        let mut out = self.rest.clone();
+        let mut out = self.rest.to_vec();
         let mut done = vec![false; out.len()];
         for _ in 0..out.len() {
             for j in 0..out.len() {
@@ -173,54 +155,9 @@ pub(super) fn pose_physics_systems(
         let Ok(palette) = edge_skeleton::skin_palette(&current, &skin.inverse_bind) else {
             continue;
         };
-        if skin.bound.is_some() && source.skinning.is_some() && skin.posed.as_deref() == Some(&palette[..]) {
-            continue;
-        }
-        skin.posed = Some(palette.clone());
-        // Setup gives deformed placements their own meshes that keep their
-        // main-world data (AmbientMachinery::deformed_placements).
-        let (instances, buffer) = skin.bound.get_or_insert_with(|| {
-            let gpu: Vec<[Vec4; 3]> = palette.iter().map(|m| m.map(Vec4::from_array)).collect();
-            (source.instances.clone(), buffers.add(ShaderBuffer::from(gpu)))
-        });
-        let mut points = Vec::new();
-        for index in instances.clone() {
-            let instance = &mut queue.instances[index];
-            let handle = instance.mesh.clone();
-            let Some(RenderModelSurface::Bmd6 { surface, .. }) = instance.source.map(|s| s.surface) else {
-                continue;
-            };
-            let Some(info) = skin.model.surfaces.get(surface) else { continue };
-            if info.skin_influences == 0 {
-                continue;
-            }
-            let baked = instance.source.is_some_and(|s| s.world_baked);
-            if let Some(mut mesh) = meshes.get_mut(&handle) {
-                if apply_rest_pose(&mut mesh, info, &palette, info.skin_influences, placement, baked).is_ok() {
-                    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-                        let local: Vec<Vec3> = p.iter().map(|v| Vec3::from_array(*v)).collect();
-                        let world: Vec<Vec3> = if baked {
-                            local
-                        } else {
-                            local.iter().map(|v| instance.transform.transform_point(*v)).collect()
-                        };
-                        instance.bounds = render_bounds(&world);
-                        points.extend(world);
-                    }
-                }
-            }
-        }
-        if let Some(mut gpu) = buffers.get_mut(&*buffer) {
-            *gpu = ShaderBuffer::from(palette.iter().map(|m| m.map(Vec4::from_array)).collect::<Vec<_>>());
-        }
-        source.skinning = Some(Ok(Arc::new(RestSkinning { palette: buffer.clone(), matrices: palette })));
-        if !points.is_empty() {
-            let bounds = render_bounds(&points);
-            let (min, max) = (Vec3::from(bounds.min()), Vec3::from(bounds.max()));
-            let a = super::view_to_game(min);
-            let b = super::view_to_game(max);
-            source.bounds = [std::array::from_fn(|i| a[i].min(b[i])), std::array::from_fn(|i| a[i].max(b[i]))];
-        }
+        super::skin_publication::publish_target(
+            placement, source, &skin.model, palette, &mut skin.publication, meshes, buffers, queue,
+        );
     }
 }
 

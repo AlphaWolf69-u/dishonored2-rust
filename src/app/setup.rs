@@ -24,6 +24,17 @@ use super::{
 use bevy::prelude::*;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 
+enum SceneSkeletalModel {
+    Prepared(bmd6::ModelInfo),
+    Shared(Arc<bmd6::ModelInfo>),
+}
+impl std::ops::Deref for SceneSkeletalModel {
+    type Target = bmd6::ModelInfo;
+    fn deref(&self) -> &Self::Target {
+        match self { Self::Prepared(model) => model, Self::Shared(model) => model }
+    }
+}
+
 // Model vtable+88 (1bd8b0): the center of the current world bounds,
 // shared by every material surface, rather than its vertex-density centroid.
 fn model_probe_position(placement: &entities::PlacedModel, local: [[f32; 3]; 2]) -> [f32; 3] {
@@ -645,7 +656,7 @@ pub(super) fn prepare(
         .map(|catalog| expanded_model_placements(&scene.placed_models, catalog))
         .unwrap_or_else(|| scene.placed_models.clone());
     let mut model_cache = HashMap::<String, Option<bmodel::Model>>::new();
-    let mut md6_cache = HashMap::<String, Option<bmd6::ModelInfo>>::new();
+    let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
     let mut md6_rest_pose_instances = 0usize;
     let mut model_mesh_handles = HashMap::<(String, usize, bool, u8), Handle<Mesh>>::new();
     let mut model_instances = 0usize;
@@ -666,6 +677,13 @@ pub(super) fn prepare(
             }
         }
     }
+    // Scene preparation can borrow already acquired physics sources. Editable
+    // layers use fresh reads so changes between preparation phases remain visible.
+    let physics_models: HashMap<&str, &Arc<bmd6::ModelInfo>> = if catalog.is_some_and(|c| !c.has_overlays()) {
+        machinery.into_iter().flat_map(|m| m.skin_models()).filter_map(|(index, model)| {
+            expanded_placements.get(index).map(|placement| (placement.resource_path.as_str(), model))
+        }).collect()
+    } else { HashMap::new() };
     for (number, placement) in expanded_placements.iter().enumerate() {
         if trace_startup {
             eprintln!(
@@ -683,6 +701,9 @@ pub(super) fn prepare(
             let model = md6_cache
                 .entry(placement.resource_path.clone())
                 .or_insert_with(|| {
+                    if let Some(model) = physics_models.get(placement.resource_path.as_str()) {
+                        return model.has_decoded_geometry.then(|| SceneSkeletalModel::Shared(Arc::clone(model)));
+                    }
                     let catalog = catalog.as_ref()?;
                     let mesh_path =
                         match bmd6::resolve_compiled_mesh(&placement.resource_path, |decl| {
@@ -703,7 +724,7 @@ pub(super) fn prepare(
                         };
                     let bytes = catalog.read(&mesh_path).ok()??;
                     match bmd6::inspect(&bytes) {
-                        Ok(model) if model.has_decoded_geometry => Some(model),
+                        Ok(model) if model.has_decoded_geometry => Some(SceneSkeletalModel::Prepared(model)),
                         Ok(_) => None,
                         Err(error) => {
                             eprintln!("MD6 parse failed {}: {error}", placement.resource_path);
@@ -1177,7 +1198,9 @@ pub(super) fn prepare(
         let static_bytes: usize = model_cache.values().flatten().flat_map(|model| &model.surfaces)
             .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
                 + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)).sum();
-        let skeletal_bytes: usize = md6_cache.values().flatten().flat_map(|model| &model.surfaces)
+        let skeletal_bytes: usize = md6_cache.values().flatten()
+            .filter(|model| matches!(model, SceneSkeletalModel::Prepared(_)))
+            .flat_map(|model| &model.surfaces)
             .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
                 + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)
                 + capacity_bytes(&s.skin_weights) + capacity_bytes(&s.skin_indices)).sum();
@@ -1186,6 +1209,7 @@ pub(super) fn prepare(
     }
     drop(model_cache);
     drop(md6_cache);
+    drop(physics_models);
     println!(
         "Materials: {} unique, {} registered texture resources, {} without diffuse ({} transparent surfaces suppressed); initial mip {}",
         resolver.cache.len(),

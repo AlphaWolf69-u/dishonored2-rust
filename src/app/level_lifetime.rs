@@ -41,6 +41,7 @@ impl LevelLifetime {
         // level consumers have been dropped after the render acknowledgement.
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
         let material_history = world.remove_resource::<super::level_prepare::MaterialHistoryScope>();
+        let skeletal_history = world.remove_resource::<super::level_prepare::SkeletalHistoryScope>();
         if let Some(mut patches) = world.get_resource_mut::<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>() {
             patches.release_level();
         }
@@ -96,6 +97,7 @@ impl LevelLifetime {
         }
         drop(model_history);
         drop(material_history);
+        drop(skeletal_history);
     }
 }
 

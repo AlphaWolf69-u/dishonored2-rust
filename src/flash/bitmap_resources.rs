@@ -143,6 +143,13 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
 type LibraryImages = std::sync::Arc<Vec<(u16, std::sync::Arc<Image>)>>;
 static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(u64, String), LibraryImages>>> = std::sync::Mutex::new(None);
 
+/// Diagnostic lookup only; does not acquire or extend the image lifetime.
+pub(crate) fn debug_resident(catalog: u64, resource: &str) -> bool {
+    let key = (catalog, resource.replace('\\', "/").to_ascii_lowercase());
+    RESIDENT.lock().unwrap_or_else(|error| error.into_inner())
+        .as_ref().is_some_and(|resident| resident.contains_key(&key))
+}
+
 pub fn acquire(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<LibraryImages, String> {
     let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
     let mut resident = RESIDENT.lock().unwrap();

@@ -1871,3 +1871,65 @@ allocation per entry in this sample. Preparation spans varied between runs,
 including a slower Dust sample, so no general CPU speedup is assigned to
 normalization. Loose manifests still use fresh reads; overlap and nonstandard
 paths retain the same handling.
+
+### Physics-system skin sources: prediction before implementation
+
+`physics_skinning::load_skins` currently reads and parses a skeleton and an
+MD6 mesh for every simulated system, then keeps a separate copy of immutable
+rest data and decoded model geometry in each `SystemSkin`. The original MD6
+loader (`14025aa00`) and resource registry (`1400607f0`) acquire shared
+resource identities; `14076abc0` constructs each system's own runtime bodies.
+Reuse successful immutable rig and model preparations by their resource paths
+within the level, with separate per-instance transforms, palettes and physics
+state. Editable overlays retain fresh acquisitions and errors stay visible.
+
+Predict one source read/decode per distinct repeated skeleton or model path,
+lower retained immutable data where systems share a source, and no added
+per-frame reference-count operations. Measure repeated paths, retained data
+capacities, skin inputs and the affected skinning loop; no map-specific names,
+RSS savings or frame-time improvement are assumed. If a source has only one
+consumer, the shared representation's overhead must also be accounted for.
+
+Scene setup independently resolves and decodes the same MD6 sources after
+physics-system preparation, despite the physics owners already retaining them.
+Predict that borrowing those successful model identities for scene setup will
+avoid one resolve/read/decode for each distinct shared placement path and
+avoid the transient second decoded model. Non-physics models and editable
+overlays keep their existing acquisition path. No change to frame work is
+expected; count actual reused paths and compare prepared mesh inputs.
+For scene models without a physics owner, keep the decoded value directly in
+the temporary cache: allocating an `Arc` for every unrelated model would add
+one allocation per resource without sharing or improving runtime ownership.
+
+The history scopes for `skeleton`, `baseModel`, and `md6Def` are predicted to
+release the corresponding level-only path strings after the last overlapping
+level retires. The existing EotW/Dust/EotW trace retained 79 names for each
+class (7,644, 7,880, and 7,988 bytes of string capacity respectively), but that
+is not a prediction of process RSS. Acquisition and release happen at level
+transitions, not in the walking loop.
+
+The existing `SystemSkin::current` also allocates pose and bookkeeping vectors
+on every update, including when its resulting palette is unchanged. Its cost
+and the potential savings from reusable per-instance scratch space are not yet
+measured; that independent hot-loop change must be predicted and measured
+before altering the pose path. Moving animated physics meshes to GPU skinning
+is already tracked in the table above.
+
+The generic animated-object path and physics skinning need the same mesh,
+palette and shadow publication. Extract the existing publication without
+changing its allocations, lookup order or unchanged-palette early return;
+predict no change to physics per-frame work, and compare the affected pose
+and publication spans rather than whole-frame CPU.
+
+In a same-build EotW moving-player comparison, four physics instances shared
+one rig and one model; all four input fingerprints matched the separate-source
+mode. Rig payload fell from 6,272 to 1,568 bytes and model payload from 52,032
+to 13,008 bytes, excluding allocation headers and hash-table overhead. One
+scene source reused the physics model; its measured acquisition was 218,820
+versus 2,905 thread cycles in this single pair. Physics acquisition totals
+were 2,061,185 versus 1,174,810 cycles across four calls. Per-call pose costs
+were 6,326 versus 6,028 cycles and palette costs 1,898 versus 1,568 cycles;
+the diagnostic retained both input representations, and these are not
+whole-frame timings. At exit each run released 58 entries in each history
+class. A separate multi-level comparison is in progress; these results do
+not establish process RSS savings or cover editable overlays.
