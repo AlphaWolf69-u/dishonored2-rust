@@ -700,7 +700,9 @@ pub(crate) fn simulate_effects(
         *simulation = FxSimulation::default();
         simulation.screen_sources = Some(sources.clone());
     }
-    let started = super::world_effects::trace_lifecycle().then(std::time::Instant::now);
+    let trace = super::world_effects::trace_lifecycle();
+    let started = trace.then(std::time::Instant::now);
+    let cycles = if trace { crate::loading::thread_cycles() } else { None };
     let (surface, prepared_ocean) = fx.swimming_surface.fx_inputs();
     let surface = surface.filter(|surface| surface.plane == water.head_water_surface);
     let head = surface.and_then(|surface| surface.head).or(water.head_water_surface);
@@ -784,7 +786,9 @@ pub(crate) fn simulate_effects(
         screen_draws, particles, decals,
     }));
     if let Some(started) = started {
-        eprintln!("FX_LIFECYCLE gameplay_simulation frame={} cpu_ms={:.3}",
+        let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
+            .map(|(start, end)| end.saturating_sub(start));
+        eprintln!("FX_LIFECYCLE gameplay_simulation frame={} elapsed_ms={:.3} cpu_cycles={cpu_cycles:?}",
             water.matrices.frame, started.elapsed().as_secs_f64() * 1000.0);
     }
 }
