@@ -4082,3 +4082,14 @@ resident as before. Prediction: no ordinary walking CPU/GPU change and no
 claimed gameplay RAM saving. The source compiled in a85088d. The process-shared
 catalog does not retire during ordinary map changes; that route cannot prove
 the independent-catalog retirement branch was executed.
+
+### Acquisition-batch production transitions (2026-11-05)
+
+The a85088d game build completed EotW -> Dust District -> Dust Return -> EotW
+in one production client, exit 0, with no panic/ERROR/client failure. Catalog,
+device, window and single audio-output identities stayed unchanged across all
+four acquisitions. Evidence: `artifacts/music-resource-lifecycle.{out,err,exit}`.
+This exercises the refactored common sound-node prefix reader during ordinary
+level acquisition/reuse, not music playback or the new component pool release
+callbacks (those callers remain on the interactions branch). No appearance,
+frame-time or new UI-cache-residency claim is made from these diagnostics.
