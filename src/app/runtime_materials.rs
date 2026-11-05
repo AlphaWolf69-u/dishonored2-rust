@@ -506,6 +506,25 @@ fn release_bindings(world: &mut World, state: &mut RuntimeMaterialCoordinator) {
 }
 
 
+/// Do not enter the exclusive publication system on settled frames.
+pub(super) fn needs_update(
+    state: Option<Res<RuntimeMaterialCoordinator>>,
+    request: Option<Res<super::usable_effects::DynamicWorldMaterials>>,
+    decal: Option<Res<super::usable_effects::DynamicDecalMaterials>>,
+    prewarm: Res<crate::rendering::bevy_backend::world_effects::DynamicMaterialPrewarm>,
+) -> bool {
+    let (Some(state), Some(request), Some(decal)) = (state, request, decal) else { return false };
+    let generation = request.generation;
+    if generation != decal.generation { return false; }
+    if !state.initialized || state.revision != Some(generation)
+        || state.seen_retired != prewarm.retired_signal.load(Ordering::Acquire)
+        || (state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0))
+        || state.task.is_some() || state.waiting.is_some() || state.published_generation != Some(generation) { return true; }
+    if request.images_ready != request.image_revision { return false; }
+    (request.completed.load(Ordering::Acquire) != generation && request.gpu_completed.load(Ordering::Acquire) == generation)
+        || (decal.completed.load(Ordering::Acquire) != generation && decal.gpu_completed.load(Ordering::Acquire) == generation)
+}
+
 /// Advance a single level-owned material preparation batch. All archive and
 /// program decoding is on IO workers; only asset/slot publication runs here.
 pub(super) fn coordinate(world: &mut World) {

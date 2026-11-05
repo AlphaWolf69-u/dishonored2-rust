@@ -388,7 +388,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .before(shadow_updates::collect_model_casters)
             .run_if(super::loading_screen::is_playing))
         .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
-            super::runtime_fx_images::synchronize, super::runtime_materials::coordinate,
+            super::runtime_fx_images::synchronize,
+            super::runtime_materials::coordinate.run_if(super::runtime_materials::needs_update),
             super::projected_decals::publish_runtime,
             super::usable_effects::publish).chain()
             .after(super::usable_animation::advance)
