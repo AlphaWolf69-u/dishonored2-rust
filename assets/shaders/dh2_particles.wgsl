@@ -2,6 +2,8 @@
 override particle_lighting_mode:u32=0u;
 override particle_distortion_mode:u32=0u;
 override particle_scrolling_water:u32=0u;
+override particle_water_alpha_mask_spec:u32=0u;
+override particle_water_mesh:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -255,7 +257,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         let diffuse_uv=coordinates.xy*material.layers[2].tiling_pan.xy+
             (scrolling_normal.xy+distortion)*material.distortion_fog.w+pan;
         let diffuse=textureSample(particle_diffuse,particle_trilinear,diffuse_uv);
-        let legacy=select(input.colour,vec4(1.0),(material.normal_options.w&2u)!=0u);
+        let legacy=select(input.colour,vec4(1.0),particle_water_mesh!=0u);
         let alpha=textureSample(particle_opacity,particle_trilinear,opacity_uv).x*legacy.a;
         colour=vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,alpha);
     } else {
@@ -451,7 +453,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
         lit_colour*=exposure;
     }
-    if particle_scrolling_water!=0u && (material.normal_options.w&1u)!=0u {
+    if particle_scrolling_water!=0u && particle_water_alpha_mask_spec!=0u {
         lit_colour=mix(colour.rgb,lit_colour,colour.a);
     }
     var rgb=lit_colour*particle_view.exposure_extent.x;
