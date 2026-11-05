@@ -227,11 +227,14 @@ pub(crate) fn retire_catalog(catalog: u64) {
         if state.catalog == Some(catalog) {
             retired = Some(std::mem::take(&mut state.history));
             state.catalog = None;
+            // Host accounting must not carry a retired world's play phase
+            // into the first acquisition of an independent catalog.
+            state.playing = false;
             state.acquired = 0;
             state.requested = 0;
             state.required = Default::default();
-            state.required_heads.clear();
-            state.required_next.clear();
+            state.required_heads = Default::default();
+            state.required_next = Default::default();
         }
         (retired, state.other_histories.len() + usize::from(state.catalog.is_some()))
     };

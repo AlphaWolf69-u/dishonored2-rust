@@ -4059,3 +4059,14 @@ plus contextual parse failures. Each bank drops before the next acquisition;
 it does not turn format diagnostics into an all-banks resident cache. This
 command has been implemented but not compiled/run yet. It is an acquisition
 diagnostic, not a test, audible-music check or original RAM-budget comparison.
+
+### Retired catalog accounting (2026-11-05)
+
+Host read accounting now clears the retired active catalog's play flag and
+releases both manifest lookup buffers, alongside its existing history and
+manifest release. A subsequently opened independent namespace no longer
+inherits late-load classification from the retired world. Inactive-catalog
+retirement leaves the current world's phase intact. This is diagnostic-owner
+cleanup corresponding to 140060180; the process-shared gameplay catalog stays
+resident as before. Prediction: no ordinary walking CPU/GPU change and no
+claimed gameplay RAM saving. Final verification joins the acquisition batch.
