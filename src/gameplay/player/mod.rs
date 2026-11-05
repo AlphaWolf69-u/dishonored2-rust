@@ -116,6 +116,8 @@ pub struct Player {
     pub adrenaline_in_combat: bool,
     pub bloodthirsty_active: bool,
     game_over_requested: bool,
+    game_over_fallback: Option<f64>,
+    entity_event_time: f64,
     drowning_fx_requested: Option<String>,
     /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
     random: u32,
@@ -240,6 +242,8 @@ impl Player {
         std::mem::take(&mut self.game_over_requested)
     }
     pub fn game_over_requested(&self) -> bool { self.game_over_requested }
+    /// Game-clock group 2, used by the engine's delayed entity events.
+    pub fn set_entity_event_time(&mut self, time: f64) { self.entity_event_time = time; }
     pub fn drowning_fx_requested(&self) -> bool { self.drowning_fx_requested.is_some() }
     pub fn take_drowning_fx_request(&mut self) -> Option<String> { self.drowning_fx_requested.take() }
 
@@ -337,6 +341,8 @@ impl Player {
             adrenaline_in_combat: false,
             bloodthirsty_active: false,
             game_over_requested: false,
+            game_over_fallback: None,
+            entity_event_time: 0.0,
             drowning_fx_requested: None,
             random: 0,
             arm_render: Vec::new(),
@@ -488,6 +494,13 @@ impl Player {
         }
         if !self.health.is_dead() { self.controller.apply_mapping(&mut self.machine); }
         self.machine.think(&mut frame!());
+        // 1407f8e70 posts the player's forceGameOver event after 7 seconds.
+        // Its handler 140784590 requests game-over when the player is dead.
+        if self.health.is_dead()
+            && self.game_over_fallback.is_some_and(|deadline| deadline <= self.entity_event_time) {
+            self.game_over_requested = true;
+            self.game_over_fallback = None;
+        }
         if self.swimming_active && swim_mantle_exit {
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
@@ -546,6 +559,7 @@ impl Player {
                         // controller, so input cannot replace that state.
                         self.controller.input_move = Vec3::ZERO;
                         self.controller.input_look = Vec3::ZERO;
+                        self.game_over_fallback = Some(self.entity_event_time + 7.0);
                         self.machine.request(StateId::DEAD);
                     }
                 }

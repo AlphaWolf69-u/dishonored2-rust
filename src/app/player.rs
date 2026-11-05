@@ -662,6 +662,7 @@ pub(super) fn update_player(
         if clock.advanced() {
             let dt = game_clock.delta(3).unwrap_or(0.0);
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
+            player.set_entity_event_time(game_clock.time(2).unwrap_or(0.0));
             let mut events = std::mem::take(&mut input.events);
             if walking { events.extend(walk.steer(player, dt)); }
             let (body_settings, current) = body_settings(difficulty.as_ref());
