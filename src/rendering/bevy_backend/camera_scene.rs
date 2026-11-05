@@ -65,13 +65,12 @@ pub(super) struct ParticlePublicationFrame {
 /// 1ffff0 publishes every visible system's renderers after its simulation;
 /// all of this frame's consumers read the same publication.
 fn publish_particles(
-    gpu: &mut CameraGpu,
+    systems: &mut super::particle_systems::ParticleSystems,
     water: &super::water_scene::WaterFrame,
     queries: &super::particle_systems::ParticleQueryFrame,
     fog_frame: &FogSceneFrame,
     image_sources: &super::particle_images::SceneParticleImages,
-) -> Result<(), String> {
-    gpu.particle_publication = None;
+) -> Result<ParticlePublicationFrame, String> {
     let frame = fog_frame
         .0
         .as_ref()
@@ -93,8 +92,7 @@ fn publish_particles(
         };
         let console = crate::platform::console::shared().read();
         let transparency = crate::rendering::particles::transparency::ParticleTransparency::new(&console.cvars);
-        let (draws, world_meshes) = gpu
-            .simulation.particle_systems
+        let (draws, world_meshes) = systems
             .publish_draws(water.matrices.frame, |pose| {
                 Ok(super::screen_effects::ParticleDrawContext {
                     view: &sprite_view,
@@ -120,13 +118,12 @@ fn publish_particles(
                 })
             })?;
         drop(console);
-    gpu.particle_publication = Some(ParticlePublicationFrame {
+    Ok(ParticlePublicationFrame {
         camera: water.camera,
         frame: water.matrices.frame,
         draws,
         world_meshes,
-    });
-    Ok(())
+    })
 }
 
 struct ParticleGpu {
@@ -802,7 +799,11 @@ fn prepare_screen_effects(
                 });
             // Publication does not depend on this frame's simulation result:
             // systems publish only for the frame they were made visible in.
-            let simulation = simulation.and(publish_particles(&mut gpu, water, &particle_view, &fog_frame, &fx.scene_images));
+            gpu.particle_publication = None;
+            let publication = publish_particles(
+                &mut gpu.simulation.particle_systems, water, &particle_view, &fog_frame, &fx.scene_images,
+            ).map(|publication| { gpu.particle_publication = Some(publication); });
+            let simulation = simulation.and(publication);
             match simulation {
                 Ok(()) => *particle_error = None,
                 Err(error) if particle_error.as_ref() != Some(&error) => {
