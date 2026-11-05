@@ -35,7 +35,8 @@ pub fn resolve_fields(catalog: &Catalog, item: &str, fields: &[(String, Value)])
     let can_be_picked_up = boolean(fields, "m_readableCanBePickedUp", true);
     let thumbnail = atom(&fields, "m_journalImage").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned);
     let description = atom(&fields, "m_description").unwrap_or("").to_owned();
-    let info = atom(&fields, "m_levelMapInfo").ok_or_else(|| format!("map item {item} has no map info"))?;
+    // 1408450b0 falls through to the note presentation when map metadata is absent.
+    let Some(info) = atom(&fields, "m_levelMapInfo").filter(|info| !info.is_empty() && *info != "NULL") else { return Ok(None) };
     let image = atom(&fields, "m_journalImageLarge").filter(|name| !name.is_empty() && *name != "NULL")
         .ok_or_else(|| format!("map item {item} has no large image"))?.to_owned();
     let fields = entities::player::resolved_decl("cpntinteractivemap", info, read)?;
