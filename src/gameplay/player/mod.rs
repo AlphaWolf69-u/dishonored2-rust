@@ -85,6 +85,7 @@ pub struct Player {
     pub attributes: Attributes,
     active_modifiers: Vec<ActiveModifier>,
     timed_modifiers: usize,
+    attribute_modifier_events: Vec<(String, bool)>,
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
@@ -175,6 +176,11 @@ impl Player {
         if tag == "ARK_ATTRIBUTE_BLOODTHIRSTY_ENABLED" {
             if added { self.adrenaline.start(); } else { self.adrenaline.stop(); }
         }
+        self.attribute_modifier_events.push((tag.to_owned(), added));
+    }
+    /// Drain the 0xd6 notifications for other attached component owners.
+    pub fn take_attribute_modifier_events(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.attribute_modifier_events)
     }
     /// Apply an inventory/power modifier and deliver the matching 0xd6 event.
     pub fn apply_attribute_modifier(&mut self, owner: &str, index: usize, tag: &str, increase: f32, percentage: f32, duration: f32, added: bool, now: f64) -> bool {
@@ -287,6 +293,7 @@ impl Player {
             attributes: setup.attributes,
             active_modifiers: Vec::new(),
             timed_modifiers: 0,
+            attribute_modifier_events: Vec::new(),
             body: setup.body,
             pose,
             autocrouch,
