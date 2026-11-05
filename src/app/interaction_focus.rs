@@ -7,7 +7,12 @@ pub(super) struct InteractionPrompt {
     /// Authored string-table keys, resolved by the HUD's language owner.
     pub name: String,
     pub usage_text: String,
-    pub icon: String,
+    /// arkUIInteractions_t, registered by 141a1b710.
+    pub interaction_type: i32,
+    pub binding: String,
+    pub name_postfix: String,
+    pub hold: bool,
+    pub locked: bool,
     pub player_state: String,
 }
 
