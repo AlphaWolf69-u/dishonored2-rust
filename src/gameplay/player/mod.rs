@@ -84,7 +84,7 @@ pub struct Player {
     pub stances: LocoStances,
     pub attributes: Attributes,
     active_modifiers: Vec<ActiveModifier>,
-    timed_modifiers: usize,
+    next_modifier_expiration: Option<f64>,
     attribute_modifier_events: Vec<(String, bool)>,
     pub body: Body,
     /// The last body pose sampled for the view.
@@ -185,18 +185,24 @@ impl Player {
     pub fn attribute_differs_from_base(&self, tag: &str) -> bool {
         self.attributes.1.get(tag).is_some_and(|value| self.attributes.get(tag) != value.base)
     }
+    fn refresh_modifier_deadline(&mut self) {
+        self.next_modifier_expiration = self.active_modifiers.iter().filter_map(|value| value.expires_at)
+            .min_by(f64::total_cmp);
+    }
     /// Apply an inventory/power modifier and deliver the matching 0xd6 event.
     pub fn apply_attribute_modifier(&mut self, owner: &str, index: usize, tag: &str, increase: f32, percentage: f32, duration: f32, added: bool, now: f64) -> bool {
         if added {
             if !self.attributes.modifier(tag, increase, percentage, true) { return false; }
-            self.active_modifiers.push(ActiveModifier { owner: owner.to_owned(), index, tag: tag.to_owned(), increase, percentage,
-                expires_at: (duration > 0.0).then_some(now + f64::from(duration)) });
-            if duration > 0.0 { self.timed_modifiers += 1; }
+            let expires_at = (duration > 0.0).then_some(now + f64::from(duration));
+            self.active_modifiers.push(ActiveModifier { owner: owner.to_owned(), index, tag: tag.to_owned(), increase, percentage, expires_at });
+            if let Some(deadline) = expires_at {
+                self.next_modifier_expiration = Some(self.next_modifier_expiration.map_or(deadline, |next| next.min(deadline)));
+            }
             self.attribute_modifier_changed(tag, true);
             true
         } else if let Some(position) = self.active_modifiers.iter().position(|value| value.owner == owner && value.index == index) {
             let value = self.active_modifiers.remove(position);
-            if value.expires_at.is_some() { self.timed_modifiers -= 1; }
+            if value.expires_at.is_some() && value.expires_at == self.next_modifier_expiration { self.refresh_modifier_deadline(); }
             self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
             self.attribute_modifier_changed(&value.tag, false);
             true
@@ -300,7 +306,7 @@ impl Player {
             stances,
             attributes: setup.attributes,
             active_modifiers: Vec::new(),
-            timed_modifiers: 0,
+            next_modifier_expiration: None,
             attribute_modifier_events: Vec::new(),
             body: setup.body,
             pose,
@@ -337,13 +343,13 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
-        while self.timed_modifiers != 0 {
+        while self.next_modifier_expiration.is_some_and(|deadline| deadline <= now) {
             let next = self.active_modifiers.iter().enumerate().filter_map(|(index, value)| {
                 value.expires_at.filter(|deadline| *deadline <= now).map(|deadline| (index, deadline))
             }).min_by(|a, b| a.1.total_cmp(&b.1));
             let Some((index, _)) = next else { break };
             let value = self.active_modifiers.remove(index);
-            self.timed_modifiers -= 1;
+            self.refresh_modifier_deadline();
             self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
             self.attribute_modifier_changed(&value.tag, false);
         }
