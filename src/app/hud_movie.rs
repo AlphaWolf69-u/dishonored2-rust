@@ -199,30 +199,8 @@ impl HudMovie {
             .map_err(|e| player.describe(&e))?;
         Self::settings(&mut player)?;
         let settings_generation = crate::platform::console::shared().generation();
-        // 140674230 initializes the gauge before the health owner publishes
-        // its first snapshot.
-        player
-            .call_path_method(
-                "_masterHUD",
-                "_C_FillHealthGauge",
-                &[1.0.into(), 0.into(), false.into(), 1.0.into()],
-            )
-            .map_err(|e| player.describe(&e))?;
-        // 140674d30's absent mana-component branch.
-        player
-            .call_path_method(
-                "_masterHUD",
-                "_C_FillManaGauge",
-                &[
-                    0.0.into(),
-                    0.into(),
-                    false.into(),
-                    (-1.0).into(),
-                    (-1.0).into(),
-                    0.into(),
-                ],
-            )
-            .map_err(|e| player.describe(&e))?;
+        // The first gauge values come from the live player/component owner.
+        // The movie retains its authored initial state until that data exists.
         let image_map = super::pause_menu::library_images(catalog, &player, &resources)?;
         let residency =
             super::pause_menu::MovieResidency::new("hud", catalog, &resources, &image_map);
