@@ -64,6 +64,7 @@ enum Event {
     HudFrame(u64, FlashFrame),
     HudReady(u64, f64, Option<Vec<String>>),
     HudFailed(u64, String),
+    HudSound(u64, u32),
     TexturePending,
     Frame(FlashFrame),
     Sound(u32),
@@ -419,15 +420,11 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
     let mut out: Vec<Command> = Vec::new();
     let mut tick: Option<(f64, std::time::Instant)> = None;
     let mut loading_tick: Option<(f64, f64, bool)> = None;
-    let mut hud_tick: Option<(f64, bool)> = None;
     for command in std::iter::once(first).chain(inbox.try_iter()) {
         match command {
-            Command::HudTick(dt, force) => {
-                let (elapsed, forced) = hud_tick.unwrap_or((0.0, false));
-                hud_tick = Some((elapsed + dt, forced || force));
-            }
             Command::StartHud { .. } | Command::EndHud => {
-                hud_tick = None;
+                // Discard stale pending HUD frames at a movie lifetime boundary.
+                out.retain(|queued| !matches!(queued, Command::HudTick(_, _)));
                 out.push(command);
             }
             Command::Tick(dt, sent) => {
@@ -451,7 +448,6 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
     }
     out.extend(tick.map(|(dt, sent)| Command::Tick(dt, sent)));
     out.extend(loading_tick.map(|(dt, progress, ready)| Command::LoadingTick { dt, progress, ready }));
-    out.extend(hud_tick.map(|(dt, force)| Command::HudTick(dt, force)));
     Some(out)
 }
 
@@ -491,7 +487,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             Command::HudTick(dt, force) => if let Some(movie) = hud.as_mut() {
                 match movie.frame(dt, force) {
                     Ok((frame, sounds)) => {
-                        for sound in sounds { let _ = outbox.send(Event::Sound(sound)); }
+                        for sound in sounds { let _ = outbox.send(Event::HudSound(hud_epoch, sound)); }
                         if let Some(frame) = frame { let _ = outbox.send(Event::HudFrame(hud_epoch, frame)); }
                     }
                     Err(error) => { hud = None; let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
@@ -984,6 +980,12 @@ pub fn update_pause_menu(
                 if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
             },
             Event::HudFailed(_, _) => {},
+            Event::HudSound(epoch, id) if epoch == menu.hud_epoch && !super::loading_screen::is_loading(&loading) => {
+                sound_events.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
+                    event: id, emitter: crate::gameplay::sound::Emitter::Menu,
+                }));
+            }
+            Event::HudSound(_, _) => {},
             Event::Frame(f) if menu.open => {
                 framed = true;
                 menu.ready = true;

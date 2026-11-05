@@ -16,6 +16,7 @@ pub(super) struct HudMovie {
     generation: u64,
     serial: u64,
     accumulated: f64,
+    timer_elapsed: f64,
     interval: f64,
     last: Option<FlashFrame>,
     settings_generation: u64,
@@ -224,6 +225,7 @@ impl HudMovie {
             generation,
             serial: 0,
             accumulated: 0.0,
+            timer_elapsed: 0.0,
             interval,
             last: None,
             settings_generation,
@@ -426,11 +428,15 @@ impl HudMovie {
             self.last = None;
         }
         self.accumulated += dt;
+        self.timer_elapsed += dt;
         let mut sounds = Vec::new();
         let tick = self.accumulated >= self.interval;
         let changed = self.last.is_none() || tick;
         if tick {
-            let step = self.accumulated.min(self.interval);
+            // The host schedules at most one movie frame per engine update
+            // (14002cc90). Preserve elapsed clock time for timers separately
+            // from the frame-phase debt, including delayed worker commands.
+            let step = std::mem::take(&mut self.timer_elapsed);
             self.accumulated = (self.accumulated - self.interval).max(0.0);
             let started = self.timing_since.map(|_| std::time::Instant::now());
             self.player
