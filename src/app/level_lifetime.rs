@@ -131,6 +131,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::water_scene::WaterWorldMeshes,
         backend::water_scene::WaterImageSources,
         backend::water_scene::WaterSceneFrame,
+        backend::water_scene::SwimmingSurfaceMailbox,
         backend::water_scene::WaterViewSelection,
         backend::ocean_scene::OceanSources,
         backend::boat_scene::BoatMaterials,

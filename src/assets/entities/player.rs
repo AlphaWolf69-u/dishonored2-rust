@@ -18,6 +18,8 @@ pub struct PlayerDeclarations {
     pub lean_sensor: Vec<(String, Value)>,
     pub mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
+    pub mana: Vec<(String, Value)>,
+    pub breath: Vec<(String, Value)>,
     pub body: Vec<(String, Value)>,
     /// The character's inherited player FX manager, including swimming FX.
     pub fx: Vec<(String, Value)>,
@@ -25,6 +27,9 @@ pub struct PlayerDeclarations {
     pub mode: Vec<(String, Value)>,
     /// The mode's `m_states`: (decl kind, resolved fields).
     pub states: Vec<(String, Vec<(String, Value)>)>,
+    /// Swimming is a separate authored player mode, with its own state decls.
+    pub swimming_mode: Vec<(String, Value)>,
+    pub swimming_states: Vec<(String, Vec<(String, Value)>)>,
     /// The body model's `locomotionDecl`.
     pub locomotion: Vec<(String, Value)>,
     /// The body model's `animBasicDecl` (the additives node's list).
@@ -115,7 +120,7 @@ pub fn entity_component(entity: &str, kind: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 12] = [
+const PLAYER_COMPONENTS: [&str; 14] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -127,6 +132,8 @@ const PLAYER_COMPONENTS: [&str; 12] = [
     "cpntplayerbody",
     "cpntplayersensormantle",
     "cpnthealthevolved",
+    "cpntmana",
+    "cpntplayerbreath",
     "cpntplayerfxmanager",
 ];
 
@@ -213,15 +220,23 @@ pub fn player_declarations(
     let lean_sensor = take("cpntplayersensorlean")?;
     let mantle_sensor = take("cpntplayersensormantle")?;
     let health = take("cpnthealthevolved")?;
+    let mana = take("cpntmana")?;
+    let breath = take("cpntplayerbreath")?;
     let body = take("cpntplayerbody")?;
     let fx = take("cpntplayerfxmanager")?;
     let machine = take("cpntplayerstatemachine")?;
     let startup = atom(&machine, "m_startupModeId").unwrap_or("PLAYER_MODE_DEFAULT").to_owned();
     let mut mode = None;
+    let mut swimming_mode = None;
     for name in list_items(&machine, "m_modes") {
         let fields = component_fields("playermode", &name, 0, &mut cache, &mut read)?;
         if atom(&fields, "m_id") == Some(startup.as_str()) {
-            mode = Some(fields);
+            mode = Some(fields.clone());
+        }
+        if atom(&fields, "m_id") == Some("PLAYER_MODE_SWIM") {
+            swimming_mode = Some(fields);
+        }
+        if mode.is_some() && swimming_mode.is_some() {
             break;
         }
     }
@@ -231,6 +246,14 @@ pub fn player_declarations(
         let Some(kind) = kind_of(&name) else { continue };
         states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
     }
+    let swimming_mode = swimming_mode.unwrap_or_default();
+    let mut swimming_states = Vec::new();
+    for name in list_items(&swimming_mode, "m_states") {
+        let Some(kind) = kind_of(&name) else { continue };
+        if kind == "playerstateswimming" || kind == "playerstateswimmantle" {
+            swimming_states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
+        }
+    }
     let locomotion = match md6_decl(&body_model, "locomotionDecl", &mut read)? {
         Some(name) => component_fields("playerlocomotion", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
@@ -239,8 +262,8 @@ pub fn player_declarations(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, body, fx, mode,
- states, locomotion, additives, body_model })
+    Ok(PlayerDeclarations { physics, audio, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, breath, body, fx, mode,
+ states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }
 

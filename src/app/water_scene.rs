@@ -30,6 +30,9 @@ pub(super) struct WaterScene {
     swimming_contacts:crate::rendering::environment_contacts::EnvironmentViewContacts,
 }
 impl WaterScene {
+    pub(super) fn swimming_current(&self) -> Option<[f32; 3]> {
+        self.swimming_contacts.head_water_current
+    }
     pub(super) fn load(
         catalog: &archive::Catalog,
         world: &EnvironmentRenderParameters,

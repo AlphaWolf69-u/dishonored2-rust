@@ -118,15 +118,15 @@ impl FogGpu {
         device: &RenderDevice,
         frame: &super::water_scene::WaterFrame,
         selection: Option<&crate::rendering::environment_contacts::WaterViewPublication>,
-    ) -> Result<(Option<f32>, Option<f32>), String> {
+    ) -> Result<(Option<f32>, Option<f32>, Option<f32>, Option<[[f32; 4]; 5]>), String> {
         let Some(ocean) = self.current.as_mut().and_then(|view| view.ocean.as_mut()) else {
-            return Ok((None, frame.head_water_surface));
+            return Ok((None, frame.head_water_surface, frame.head_water_surface, None));
         };
         ocean.prepare_head_snapshot(device, frame)?;
-        let head = ocean
-            .head_water_snapshot(frame.matrices.frame)
-            .map_or(frame.head_water_surface, |snapshot| snapshot.surface);
-        Ok((ocean.upcoming_water_level(frame, selection), head))
+        let snapshot = ocean.head_water_snapshot(frame.matrices.frame);
+        let head = snapshot.map_or(frame.head_water_surface, |value| value.surface);
+        let body = snapshot.and_then(|value| value.body_surface).or(frame.head_water_surface);
+        Ok((ocean.upcoming_water_level(frame, selection), head, body, snapshot.and_then(|value| value.samples)))
     }
     pub(super) fn ocean_capture(&self, camera: Entity, frame: u32) -> Option<&super::ocean_scene::OceanScene> {
         if self.completed != Some((camera, frame)) { return None; }

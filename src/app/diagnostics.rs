@@ -425,6 +425,22 @@ pub(super) fn collision_report(
         tome_text,
         screenshot_path.display()
     );
+    if let Some(player) = walker {
+        report.push_str(&format!(
+            "\nPlayer arm state: shown={:?}, mantle hands=[{}, {}], mantle destination={:?}, catfall sensor enabled={} hits=[{}, {}]\n",
+            player.body.arms_shown,
+            player.mantle_sensor.use_left_hand,
+            player.mantle_sensor.use_right_hand,
+            player.mantle_sensor.destination,
+            player.catfall_sensor.enabled,
+            player.catfall_sensor.left_hit,
+            player.catfall_sensor.right_hit,
+        ));
+        for arm in player.arms() {
+            report.push_str(&format!("  model={} visible={} joints={}\n", arm.model, arm.visible, arm.joints.len()));
+        }
+        report.push_str(&format!("  pose errors={:?}\n", player.arm_pose_errors()));
+    }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
     report.push_str("\nLens CPU publication (not proof of GPU submission):\n");

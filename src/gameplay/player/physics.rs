@@ -133,6 +133,8 @@ pub struct PlayerPhysics {
     pub ground: Ground,
     /// +0x48, gravity / vertical velocity accumulator.
     pub gravity_velocity: Vec3,
+    /// arkPhysicsPlayer +0x54: swimming current and wave velocity.
+    water_velocity: Vec3,
     /// +0x60.
     max_z: f32,
     /// +0x7c.
@@ -257,6 +259,7 @@ impl PlayerPhysics {
             posture: first_posture,
             ground: Ground::default(),
             gravity_velocity: Vec3::ZERO,
+            water_velocity: Vec3::ZERO,
             max_z: UNSET,
             gravity_override: UNSET,
             vertical: None,
@@ -401,6 +404,15 @@ impl PlayerPhysics {
     pub fn set_gravity_velocity(&mut self, velocity: Vec3) {
         self.gravity_velocity = velocity;
     }
+
+    /// Swimming state 140846450 updates these each frame; 140846270 clears
+    /// both when that state exits.
+    pub fn set_water_motion(&mut self, velocity: Vec3, max_z: Option<f32>) {
+        self.water_velocity = velocity;
+        self.max_z = max_z.unwrap_or(UNSET);
+    }
+
+    pub fn speed_scale(&self) -> f32 { self.speed_scale }
 
     /// FUN_1407fd830 / FUN_1407fd970: counted gravity-strength disable.
     pub fn disable_gravity(&mut self, disable: bool) {
@@ -692,7 +704,7 @@ impl PlayerPhysics {
         }
         self.gravity_velocity = gravity;
         // 9. Compose.
-        let composed = if vertical_mode {
+        let composed = self.water_velocity + if vertical_mode {
             Vec3::new(velocity.x + gravity.x, velocity.y + gravity.y, gravity.z)
         } else {
             velocity + gravity

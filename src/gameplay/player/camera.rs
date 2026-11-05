@@ -85,7 +85,7 @@ pub struct BodyPose {
 }
 
 impl BodyPose {
-    fn descends_from(&self, mut joint: usize, ancestor: usize) -> bool {
+    pub(super) fn descends_from(&self, mut joint: usize, ancestor: usize) -> bool {
         loop {
             if joint == ancestor {
                 return true;

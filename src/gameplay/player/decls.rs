@@ -135,8 +135,14 @@ fn collision_layer(fields: &Fields, key: &str, default: u32) -> Result<u32, Stri
 }
 
 /// The health component's m_health (installed for the player).
-pub fn health(fields: &Fields) -> Result<f32, String> {
-    number(fields, "m_health", f32::NAN).and_then(|h| if h.is_nan() { Err("player health decl has no m_health".into()) } else { Ok(h) })
+pub fn health(fields: &Fields) -> Result<super::health::Settings, String> {
+    let maximum = number(fields, "m_health", f32::NAN)?;
+    if maximum.is_nan() { return Err("player health decl has no m_health".into()); }
+    Ok(super::health::Settings { maximum,
+        regen_amount: number(fields, "m_regenAmount", 0.0)?,
+        regen_delay: number(fields, "m_regenDelay", 0.0)?,
+        regen_rate: number(fields, "m_regenRate", 0.0)?,
+    })
 }
 
 /// arkDeclCpntPlayerSensorMantle (ctor FUN_1403baf00).
@@ -424,6 +430,60 @@ fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, 
         camera_mode_blend_duration: seconds(fields, "m_cameraModeBlendDuration", d.camera_mode_blend_duration)?,
         ..d
     })
+}
+
+/// Swimming state declarations (constructor 140845e50; field table
+/// 14178b540). Preserve the distinct running and sprinting settings.
+pub fn swimming_states(declarations: &PlayerDeclarations) -> Result<Vec<super::swimming::SwimmingStateDecl>, String> {
+    let mut result = Vec::new();
+    for (kind, fields) in &declarations.swimming_states {
+        if kind != "playerstateswimming" { continue; }
+        let id = atom(fields, "m_id").and_then(state_id).unwrap_or(StateId::RUNNING);
+        result.push(super::swimming::SwimmingStateDecl {
+            id,
+            navigation: navigation(fields, NavigationDecl::default())?,
+            up_action: action(fields, "m_upButton", super::controller::ACTION_JUMP)?,
+            down_action: action(fields, "m_downButton", super::controller::ACTION_CROUCH)?,
+            up_speed: number(fields, "m_upSpeed", 0.5)?,
+            down_speed: number(fields, "m_downSpeed", 0.5)?,
+            diving_speed_ratio: number(fields, "m_divingSpeedRatio", 0.5)?,
+            diving_deceleration: number(fields, "m_divingDeceleration", 20.0)?,
+            minimum_stick: number(fields, "m_minimumStick", 0.5)?,
+            minimum_speed: number(fields, "m_minimumSpeed", 1.0)?,
+        });
+    }
+    Ok(result)
+}
+
+pub fn breath(fields: &Fields) -> Result<super::swimming::Breath, String> {
+    Ok(super::swimming::Breath::new(
+        number(fields, "m_breathRegen", 20.0)?,
+        number(fields, "m_breathRegenDelay", 1.0)?,
+    ))
+}
+
+pub fn drowning_damage_decl(fields: &Fields) -> Option<&str> {
+    atom(fields, "m_drowningDamage").filter(|value| !value.is_empty())
+}
+
+/// Base health filters (140717800/140717dc0) for the downward-origin water
+/// damage dispatched by 1404c0cf0. An allowed mask takes precedence.
+pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, String> {
+    if atom(damage, "m_damageType") != Some("DAMAGETYPE_WATER") {
+        return Err("drowning damage uses an unsupported damage type".into());
+    }
+    let contains_water = |value: &str| value.split(|c: char| c.is_ascii_whitespace() || c == '|' || c == ',')
+        .any(|name| name == "DAMAGETYPE_WATER");
+    let allowed = atom(health, "m_allowedDamageTypes").filter(|value| !value.is_empty() && *value != "0");
+    let accepted = match allowed {
+        Some(mask) => contains_water(mask),
+        None => !atom(health, "m_ignoredDamageTypes").is_some_and(contains_water),
+    };
+    let direction = atom(health, "m_allowDamageDirection").unwrap_or("");
+    if !direction.is_empty() && direction != "0" {
+        return Err(format!("health damage-direction enum is not decoded: {direction}"));
+    }
+    Ok(accepted)
 }
 
 /// The mode's locomotion state decls; other state kinds are not ported.
