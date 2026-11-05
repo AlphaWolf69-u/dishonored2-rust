@@ -396,7 +396,7 @@ impl HudMovie {
         &mut self,
         dt: f64,
         force: bool,
-    ) -> Result<(Option<FlashFrame>, Vec<u32>), String> {
+    ) -> Result<(Option<FlashFrame>, Vec<u32>, bool), String> {
         let settings_generation = crate::platform::console::shared().generation();
         if self.settings_generation != settings_generation {
             Self::settings(&mut self.player)?;
@@ -487,6 +487,7 @@ impl HudMovie {
                 None
             },
             sounds,
+            tick,
         ))
     }
 }

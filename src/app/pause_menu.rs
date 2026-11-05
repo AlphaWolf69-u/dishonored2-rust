@@ -61,7 +61,7 @@ enum Command {
 }
 
 enum Event {
-    HudFrame(u64, Option<FlashFrame>),
+    HudFrame(u64, Option<FlashFrame>, bool),
     HudReady(u64, f64, Option<Vec<String>>),
     HudFailed(u64, String),
     HudSound(u64, u32),
@@ -238,6 +238,7 @@ pub struct PauseMenu {
     hud_epoch: u64,
     hud_in_flight: bool,
     hud_in_flight_force: bool,
+    hud_in_flight_before_ready: bool,
     hud_failed: bool,
     hud_interaction: Option<super::hud_movie::Interaction>,
     hud_oxygen: Option<super::hud_movie::Oxygen>,
@@ -280,7 +281,7 @@ impl Default for PauseMenu {
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
@@ -291,6 +292,7 @@ impl PauseMenu {
         self.hud_started = false;
         self.hud_in_flight = false;
         self.hud_in_flight_force = false;
+        self.hud_in_flight_before_ready = false;
         self.hud_failed = false;
         self.hud_interaction = None;
         self.hud_oxygen = None;
@@ -498,9 +500,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             }
             Command::HudTick(dt, force) => if let Some(movie) = hud.as_mut() {
                 match movie.frame(dt, force) {
-                    Ok((frame, sounds)) => {
+                    Ok((frame, sounds, ticked)) => {
                         for sound in sounds { let _ = outbox.send(Event::HudSound(hud_epoch, sound)); }
-                        let _ = outbox.send(Event::HudFrame(hud_epoch, frame));
+                        let _ = outbox.send(Event::HudFrame(hud_epoch, frame, ticked));
                     }
                     Err(error) => { hud = None; let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
                 }
@@ -857,6 +859,7 @@ pub fn update_pause_menu(
                 Ok(()) => {
                     menu.hud_in_flight = true;
                     menu.hud_in_flight_force = force;
+                    menu.hud_in_flight_before_ready = menu.hud_interval <= 0.0;
                     if menu.hud_timing_since.is_some() { menu.hud_dispatches += 1; }
                 }
                 Err(error) => { menu.hud_failed = true; warn!("HUD worker unavailable: {error}"); }
@@ -1005,16 +1008,21 @@ pub fn update_pause_menu(
         };
         match event {
             Event::TexturePending => image_service.service(menu, &loading.catalog),
-            Event::HudFrame(epoch, f) if epoch == menu.hud_epoch => {
+            Event::HudFrame(epoch, f, ticked) if epoch == menu.hud_epoch => {
                 menu.hud_in_flight = false;
                 let forced = std::mem::take(&mut menu.hud_in_flight_force);
+                if std::mem::take(&mut menu.hud_in_flight_before_ready) && ticked && menu.hud_interval > 0.0 {
+                    // The first forced frame may tick before the host learns
+                    // the authored rate. Account for that consumed phase once.
+                    menu.hud_phase = (menu.hud_phase - menu.hud_interval).max(0.0);
+                }
                 if menu.hud_timing_since.is_some() { menu.hud_acks += 1; }
                 if f.is_none() && forced { menu.hud_force = true; }
                 if !menu.open && !super::loading_screen::is_loading(&loading) {
                     if let Some(f) = f { frame.0 = Some(f); }
                 } else if f.is_some() { menu.hud_force = true; }
             }
-            Event::HudFrame(_, _) => {},
+            Event::HudFrame(_, _, _) => {},
             Event::HudReady(epoch, interval, powers) if epoch == menu.hud_epoch && menu.hud_started && !super::loading_screen::is_loading(&loading) && interval.is_finite() && interval > 0.0 => {
                 menu.hud_interval = interval;
                 menu.hud_starting_powers = powers;
@@ -1024,6 +1032,7 @@ pub fn update_pause_menu(
             Event::HudFailed(epoch, error) if epoch == menu.hud_epoch => {
                 menu.hud_in_flight = false;
                 menu.hud_in_flight_force = false;
+                menu.hud_in_flight_before_ready = false;
                 menu.hud_failed = true;
                 warn!("HUD movie unavailable: {error}");
                 if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
