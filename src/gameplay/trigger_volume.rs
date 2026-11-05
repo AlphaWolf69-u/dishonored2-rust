@@ -188,20 +188,21 @@ impl TriggerVolume {
         position: [f32; 3],
         rotation: [[f32; 3]; 3],
     ) -> Result<Self, String> {
+        Self::load_with_sources(catalog, id, model, position, rotation,
+            &mut Default::default(), physworld::source::ShapeUse::Area)
+    }
+
+    pub(crate) fn load_with_sources(
+        catalog: &archive::Catalog, id: &str, model: &str, position: [f32; 3],
+        rotation: [[f32; 3]; 3], sources: &mut physworld::source::ShapeSources,
+        role: physworld::source::ShapeUse,
+    ) -> Result<Self, String> {
         let key = physworld::physics_shape_key(model, 4, [1.0; 3], 0.0, false)
             .ok_or("invalid trigger shape key")?;
         let path = physworld::physics_shape_asset_path(&key);
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
+        let source = sources.acquire(catalog, &path, role).map_err(|e| e.message())?
             .ok_or_else(|| format!("{id}: missing trigger {path}"))?;
-        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1")) {
-            let mut crc = flate2::Crc::new(); crc.update(&bytes);
-            eprintln!("MEMORY trigger source acquisition: owner=volume path={path} bytes={} signature={:08x}", bytes.len(), crc.sum());
-        }
-        let physics = physworld::parse_hkx(&bytes)?;
-        let geometry = physics.standalone_shapes(&bytes)?;
+        let geometry = source.physics.standalone_shapes(&source.bytes)?;
         if !geometry.unknown_shapes.is_empty()
             || !geometry.compressed_decode_failures.is_empty()
             || geometry.convex.is_empty()

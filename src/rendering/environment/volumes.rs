@@ -25,11 +25,19 @@ pub(super) fn resolve(
     placement: entities::PlacedEnvironmentVolume,
     catalog: &archive::Catalog,
 ) -> Result<EnvironmentVolume, String> {
+    resolve_with_cache(placement, catalog, None)
+}
+
+fn resolve_with_cache(
+    placement: entities::PlacedEnvironmentVolume,
+    catalog: &archive::Catalog,
+    cache: Option<&mut entities::EnvironmentParentCache>,
+) -> Result<EnvironmentVolume, String> {
     static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let trace = *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() == Ok("1"));
     let mut reads = 0usize;
     let mut decoded_bytes = 0usize;
-    let parameters = entities::environment_render_parameters_with_inheritance(
+    let parameters = entities::environment_parameters_with_parent_cache(
         &placement.id,
         &placement.environment_decl,
         |parent| {
@@ -38,7 +46,7 @@ pub(super) fn resolve(
                 .map_err(|e| e.to_string())?;
             if trace { reads += 1; decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
             Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
-        },
+        }, cache,
     )?;
     // 342ce0's default argument is false in 88d060. Use the same parameter
     // decoder as the existing ordinary-area path, independently of containment.
@@ -58,6 +66,15 @@ pub(super) fn resolve(
         let mut crc = flate2::Crc::new();
         crc.update(format!("{parameters:?}{is_water_volume:?}{surface_material:?}").as_bytes());
         eprintln!("MEMORY environment acquisition: id={} reads={reads} decoded_bytes={decoded_bytes} signature={:08x}", placement.id, crc.sum());
+        if std::env::var("DH2_DEBUG_ENVIRONMENT_LAYERS").as_deref() == Ok("1") {
+            for layer in &parameters.layers {
+                let mut crc = flate2::Crc::new();
+                crc.update(format!("{:?}", layer.parameters).as_bytes());
+                let capacity = layer.resource.capacity() + layer.parameters.capacity() * std::mem::size_of::<(String, String)>()
+                    + layer.parameters.iter().map(|(key, value)| key.capacity() + value.capacity()).sum::<usize>();
+                eprintln!("MEMORY environment layer: resource={} capacity={capacity} signature={:08x}", layer.resource, crc.sum());
+            }
+        }
     }
     Ok(EnvironmentVolume {
         surface_material,
@@ -73,10 +90,16 @@ pub fn load_environment_volumes(
     document: &entities::Document,
     catalog: &archive::Catalog,
 ) -> Result<Vec<EnvironmentVolume>, String> {
-    entities::placed_environment_volumes(document)
+    let shared = !catalog.has_overlays()
+        && std::env::var("DH2_DEBUG_SEPARATE_ENVIRONMENT_PROFILES").as_deref() != Ok("1")
+        && std::env::var("DH2_DEBUG_SEPARATE_ENVIRONMENT_PARENTS").as_deref() != Ok("1");
+    let mut cache = entities::EnvironmentParentCache::default();
+    let result = entities::placed_environment_volumes(document)
         .into_iter()
-        .map(|volume| resolve(volume, catalog))
-        .collect()
+        .map(|volume| resolve_with_cache(volume, catalog, shared.then_some(&mut cache)))
+        .collect();
+    if shared { cache.report(); }
+    result
 }
 
 #[cfg(test)]

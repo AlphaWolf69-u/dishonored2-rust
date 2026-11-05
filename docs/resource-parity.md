@@ -86,7 +86,7 @@ trailing `*` covers a family of kinds.
 | `difficultyPreset` | `gameplay::options::gameplay` | partial: reads its resources; lifecycle not ported (see its class) |
 | `drop` | none | none: no owner yet |
 | `entityDef` | `assets::entities` | partial: reads its resources; lifecycle not ported (see its class) |
-| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation; runtime physics/water records retain only needed fields and ordinary area parameters move to the area owner. Editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318. Four-map comparisons, including Dust return water, match ordered area and compact-volume fingerprints. Full declaration registry lifecycle remains partial |
+| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation; runtime physics/water records retain only needed fields and ordinary area parameters move to the area owner. Editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318. Four-map comparisons, including Dust return water, match ordered area and compact-volume fingerprints. A level-scoped parsed-parent cache avoids 1,351 inherited reads on the four-map route, with 516 matching profile signatures; it drops after preparation. Full declaration registry lifecycle remains partial |
 | `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
@@ -127,7 +127,7 @@ trailing `*` covers a family of kinds.
 | `particledt` | `rendering::particles::definition::ParticleResources` | partial: one level-scoped host acquisition cache for declarations, PMODELs, field images and material references across player/world FX; emitters retain independent mutable simulation. Full original resource lifecycle not ported |
 | `pauseMenuSectionOptions` | `gameplay::options` | partial: reads its resources; lifecycle not ported (see its class) |
 | `pblock` | `rendering::render_program` | partial: reads its resources; lifecycle not ported (see its class) |
-| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Other shape consumers and the full resource registry lifecycle remain partial |
+| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Other shape consumers and the full resource registry lifecycle remain partial |
 | `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
 | `physSystem` | none | none: no owner yet |
 | `physworld` | `assets::physworld`, `gameplay::body_storage`, `gameplay::navigation` | partial: reads its resources; lifecycle not ported (see its class). Host navigation broad phase keeps decoded full-precision triangles for query speed; immutable cell lists pack u32 shape keys into one allocation, retaining their order and releasing construction capacity. This replaces the Havok compressed-mesh tree (`141262020`); no per-query mesh decoding or reduced precision |
@@ -2836,10 +2836,11 @@ logs. No tests or visual inspection performed.
 ### Loading read-history ownership investigation
 
 The original load loop at `1400661e0` advances its request cursor after
-`1400607f0` acquires the indexed resource identity. The rewrite currently
-records a `Catalog::read` before the archive or overlay read succeeds, and
-keeps that record across world teardown. `begin_level` treats every historical
-read as already acquired, including map-scoped data that the owner released.
+`1400607f0` acquires the indexed resource identity. The rewrite records a
+`Catalog::read` after a successful archive or overlay acquisition, and
+keeps the record across world teardown unless its owner retires it.
+`begin_level` treats every remaining historical read as already acquired,
+including map-scoped data that its owner released without retiring the record.
 Consequently this is a read-history approximation, not an accurate resident
 registry or original request cursor; readiness gates remain independent.
 

@@ -4,22 +4,26 @@ use super::{trigger_placements, Document, TriggerPlacement};
 use crate::assets::{
     archive::Catalog,
     entities::declaration_text,
-    physworld::{self, PhysWorld},
+    physworld,
 };
 use std::collections::HashMap;
 
 pub struct TriggerShapeAsset {
     pub path: String,
-    // Source is retired only after cached_mass has been filled. Runtime users
-    // obtain mass through the methods below and geometry through query_shapes.
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) physics: PhysWorld,
+    // The shared source is retired only after cached_mass has been filled.
+    // Runtime geometry queries use query_shapes.
+    source: std::sync::Arc<physworld::source::ShapeSource>,
     pub header: physworld::shape::ShapeHeader,
     pub bounds: [[f32; 4]; 2],
     pub is_mutable: bool,
     pub query_shapes: std::sync::Arc<physworld::query_geometry::QueryShapes>,
     cached_mass: Option<Result<Option<physworld::mass::PrincipalMassProperties>, String>>,
     pub(crate) signals: crate::gameplay::shape_registry::ShapeSignals,
+}
+
+impl std::ops::Deref for TriggerShapeAsset {
+    type Target = physworld::source::ShapeSource;
+    fn deref(&self) -> &Self::Target { &self.source }
 }
 
 impl crate::gameplay::shape_registry::ShapeSignalStore for TriggerAssets {
@@ -119,6 +123,8 @@ impl TriggerAssets {
         let mut source_capacity = 0usize;
         let mut schema_capacity = 0usize;
         let mut mass_errors = 0usize;
+        let mut held_source_capacity = 0usize;
+        let mut held_schema_capacity = 0usize;
         let mut crc = flate2::Crc::new();
         for shape in &mut self.shapes {
             if shape.is_mutable || shape.cached_mass.is_some() { continue; }
@@ -134,33 +140,31 @@ impl TriggerAssets {
             shape.cached_mass = Some(mass);
             if trace {
                 source_capacity += shape.bytes.capacity();
-                let physics = &shape.physics;
-                schema_capacity += physics.sdk_version.capacity()
-                    + physics.materials.capacity() * std::mem::size_of::<String>()
-                    + physics.materials.iter().map(String::capacity).sum::<usize>()
-                    + physics.material_map.capacity() * std::mem::size_of::<u32>()
-                    + physics.items.capacity() * std::mem::size_of::<physworld::TagItem>()
-                    + physics.types.capacity() * std::mem::size_of::<physworld::TagType>()
-                    + physics.types.iter().map(|ty| ty.name.capacity()
-                        + ty.fields.capacity() * std::mem::size_of::<physworld::TagField>()
-                        + ty.fields.iter().map(|field| field.name.capacity()).sum::<usize>()).sum::<usize>();
+                schema_capacity += physworld::source::schema_capacity(&shape.physics);
+                if std::sync::Arc::strong_count(&shape.source) > 1 {
+                    held_source_capacity += shape.bytes.capacity();
+                    held_schema_capacity += physworld::source::schema_capacity(&shape.physics);
+                }
             }
-            shape.bytes = Vec::new();
-            shape.physics = PhysWorld { materials: Vec::new(), material_map: Vec::new(),
-                sdk_version: String::new(), types: Vec::new(), items: Vec::new(), data_start: 0, data_size: 0 };
+            shape.source = physworld::source::empty_source();
             released += 1;
         }
         if let (Some(start), Some(end)) = (start, if timing { crate::loading::thread_cycles() } else { None }) {
             eprintln!("MEMORY trigger source CPU: retained={retain} shapes={released} cycles={}", end.saturating_sub(start));
         }
         if trace {
-            eprintln!("MEMORY trigger source retirement: retained={retain} shapes={released} source_capacity={source_capacity} schema_capacity={schema_capacity} signature={:08x} cache_field_capacity={} mass_errors={mass_errors}", crc.sum(), self.shapes.capacity() * std::mem::size_of::<Option<Result<Option<physworld::mass::PrincipalMassProperties>, String>>>());
+            eprintln!("MEMORY trigger source retirement: retained={retain} shapes={released} source_capacity={source_capacity} schema_capacity={schema_capacity} signature={:08x} cache_field_capacity={} mass_errors={mass_errors} held_source_capacity={held_source_capacity} held_schema_capacity={held_schema_capacity}", crc.sum(), self.shapes.capacity() * std::mem::size_of::<Option<Result<Option<physworld::mass::PrincipalMassProperties>, String>>>());
         }
     }
 
     /// Reads installed files without flattening compound instances, transforms,
     /// shape tags or tree order into movement triangles or volume planes.
     pub fn load(document: &Document, map: &str, catalog: &Catalog) -> Result<Self, String> {
+        Self::load_with_sources(document, map, catalog, &mut Default::default())
+    }
+
+    pub(crate) fn load_with_sources(document: &Document, map: &str, catalog: &Catalog,
+        sources: &mut physworld::source::ShapeSources) -> Result<Self, String> {
         let placements = trigger_placements(document, map, |name| {
             catalog
                 .read(name)
@@ -175,23 +179,17 @@ impl TriggerAssets {
             let index = match indices.get(&path) {
                 Some(&index) => index,
                 None => {
-                    let bytes =
-                        catalog
-                            .read(&path)
-                            .map_err(|e| e.to_string())?
+                    let source = sources.acquire(catalog, &path, physworld::source::ShapeUse::Physics)
+                            .map_err(|e| match e { physworld::source::ShapeSourceError::Read(e) => e,
+                                physworld::source::ShapeSourceError::Parse(e) => format!("{path}: {e}") })?
                             .ok_or_else(|| {
                                 format!(
                                     "{}: missing trigger shape {path}",
                                     placement.binding.entity_id
                                 )
                             })?;
-                    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                    if *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1")) {
-                        let mut crc = flate2::Crc::new(); crc.update(&bytes);
-                        eprintln!("MEMORY trigger source acquisition: owner=physics path={path} bytes={} signature={:08x}", bytes.len(), crc.sum());
-                    }
-                    let physics =
-                        physworld::parse_hkx(&bytes).map_err(|e| format!("{path}: {e}"))?;
+                    let bytes = &source.bytes;
+                    let physics = &source.physics;
                     let root = physics
                         .items
                         .get(1)
@@ -215,8 +213,7 @@ impl TriggerAssets {
                         .map_err(|e| format!("{path}: {e}"))?;
                     shapes.push(TriggerShapeAsset {
                         path: path.clone(),
-                        bytes,
-                        physics,
+                        source,
                         header,
                         bounds,
                         is_mutable,

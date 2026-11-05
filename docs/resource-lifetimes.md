@@ -84,7 +84,9 @@ live. EotW / Dust release 1,516,972 / 1,658,543 source-buffer capacity bytes
 and 5,573,212 / 4,594,951 schema capacity bytes, with matching shape and mass
 fingerprints. The replacement mass field adds per-shape storage; these are
 owner allocation capacities, not process RSS. Mutable shapes retain their
-source. Targeted release startup CPU measurement remains pending.
+source. A same-binary release comparison over EotW / Dust return / EotW
+recorded 205,954,140 -> 229,400,255 thread cycles for trigger acquisition
+plus retirement (11.4% more); this is preparation cost, not frame time.
 
 Area-environment acquisition now resolves one profile list for its area and
 physics consumers. The EotW / Dust / EotW production comparison reduced
@@ -93,6 +95,33 @@ ordered area geometry and profile signatures. The compact volume handoff
 subsequently removed 11,403,356 / 5,441,286 / 936,718 counted capacity bytes
 from EotW / Dust / Dust return live owners, with matching area, compact-volume
 and trigger fingerprints. These are allocation capacities, not process RSS.
+In the same release route, environment preparation used 879,152,155 ->
+438,251,625 thread cycles; the physics-material source reader used
+12,191,035 -> 2,414,630 cycles. These are affected-function measurements,
+not elapsed loading time or whole-frame CPU. Local evidence:
+`artifacts/resource-perf-comparison.json`.
+
+The level-preparation shape owner now shares matching immutable area, physics
+and wind HKX inputs, then drops after wind preparation. On EotW / Dust / Dust
+return / EotW this removed 1,013 of 1,971 acquisitions; source checksums,
+area and wind geometry, physics and mass signatures matched. Two wind inputs
+were absent from the area cache and were acquired independently, accounting
+for the difference from the 1,015-read prediction. Cached source/schema
+storage remains live until the wind preparation finishes; the measured cache
+entries were solely owned and released at that point. This is an acquisition
+and lifetime result, not a claim about steady-state memory or frame rate.
+
+Resolved environment profiles now reuse parsed parent layers during level
+preparation, preserving per-profile owned values and releasing the temporary
+parent cache afterward. The four-map comparison reduced inherited reads from
+1,374 to 23, with 516 matching profile signatures and unchanged area/water
+values. The initial estimate covered only immediate parents; shared ancestors
+account for the larger reduction. A same-binary release comparison over EotW /
+Dust return / EotW measured 424,459,699 -> 171,343,830 thread cycles in the
+affected environment-preparation function, with shape sharing disabled in
+both modes. Counted live profile capacity also fell,
+which is being investigated separately; no RSS or CPU conclusion follows from
+these counts. Local evidence: `artifacts/shape-parent-comparison.json`.
 
 Normal release transition runs EotW -> Dust -> EotW both exit 0. With cleanup
 disabled, each closed loading movie retains 3,722 / 3,723 / 3,722 objects. With

@@ -182,6 +182,7 @@ impl PhysicsScene {
         map: &str,
         volumes: &[crate::rendering::environment::RuntimeEnvironmentVolume],
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+        shape_sources: &mut crate::physworld::source::ShapeSources,
     ) -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
         let installed = crate::assets::class_metadata::ClassDeclarations::load(&base)?;
@@ -230,7 +231,7 @@ impl PhysicsScene {
         ];
         let trace_shape_cpu = std::env::var("DH2_DEBUG_TRIGGER_SOURCE_CPU").as_deref() == Ok("1");
         let shape_cpu_start = if trace_shape_cpu { crate::loading::thread_cycles() } else { None };
-        let geometry = TriggerAssets::load(document, map, catalog)?;
+        let geometry = TriggerAssets::load_with_sources(document, map, catalog, shape_sources)?;
         if let (Some(start), Some(end)) = (shape_cpu_start, if trace_shape_cpu { crate::loading::thread_cycles() } else { None }) {
             eprintln!("MEMORY trigger acquisition CPU: shapes={} cycles={}", geometry.shapes.len(), end.saturating_sub(start));
         }

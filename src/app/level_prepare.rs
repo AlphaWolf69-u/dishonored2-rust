@@ -297,6 +297,7 @@ pub(super) fn prepare_level(
         environment_data
             .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
             .unwrap_or((None, None, 1.0));
+    let mut shape_sources = crate::physworld::source::ShapeSources::new(catalog.as_ref().unwrap());
     let trace_environment_cpu = env::var("DH2_DEBUG_ENVIRONMENT_CPU").as_deref() == Ok("1");
     let environment_cpu_start = if trace_environment_cpu { crate::loading::thread_cycles() } else { None };
     let (area_environments, environment_volumes) = match (entity_document.as_ref(), catalog.as_ref()) {
@@ -304,21 +305,22 @@ pub(super) fn prepare_level(
             let separate = catalog.has_overlays()
                 || env::var("DH2_DEBUG_SEPARATE_ENVIRONMENT_PROFILES").as_deref() == Ok("1");
             if separate {
-                let areas = crate::rendering::environment::load_area_environments(document, catalog)
+                let areas = crate::rendering::environment::load_area_environments_with_sources(document, catalog, &mut shape_sources)
                     .map_err(std::io::Error::other)?;
                 let volumes = crate::rendering::environment::load_environment_volumes(document, catalog)
                     .map_err(std::io::Error::other)?;
-                crate::rendering::environment::prepare_volume_owners(volumes, catalog, Some(areas))
+                crate::rendering::environment::prepare_volume_owners(volumes, catalog, Some(areas), &mut shape_sources)
                     .map_err(std::io::Error::other)?
             } else {
                 let volumes = crate::rendering::environment::load_environment_volumes(document, catalog)
                     .map_err(std::io::Error::other)?;
-                crate::rendering::environment::prepare_volume_owners(volumes, catalog, None)
+                crate::rendering::environment::prepare_volume_owners(volumes, catalog, None, &mut shape_sources)
                     .map_err(std::io::Error::other)?
             }
         }
         _ => (Vec::new(), Vec::new()),
     };
+    shape_sources.finish_areas();
     if let (Some(start), Some(end)) = (environment_cpu_start, if trace_environment_cpu { crate::loading::thread_cycles() } else { None }) {
         eprintln!("MEMORY environment preparation CPU: areas={} volumes={} cycles={}", area_environments.len(), environment_volumes.len(), end.saturating_sub(start));
     }
@@ -822,7 +824,7 @@ pub(super) fn prepare_level(
             .unwrap_or(&level.entities)
             .strip_suffix(".entities")
             .ok_or("physics entity resource has no map name")?;
-        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts)
+        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources)
         {
             Ok(physics) => {
                 app.insert_resource(physics);
@@ -841,7 +843,9 @@ pub(super) fn prepare_level(
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(
         catalog.as_ref().unwrap(),
         entity_document.as_ref(),
+        &mut shape_sources,
     ));
+    drop(shape_sources);
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     super::load_timing::mark("machinery and wind");
     app.insert_resource(ProgramCacheSource(program_cache))

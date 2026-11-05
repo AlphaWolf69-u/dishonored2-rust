@@ -189,13 +189,20 @@ pub fn trigger_wind_sources(
     catalog: &crate::archive::Catalog,
     document: &crate::entities::Document,
 ) -> Result<Vec<TriggerWindSource>, String> {
+    trigger_wind_sources_with_sources(catalog, document, &mut Default::default())
+}
+
+pub(crate) fn trigger_wind_sources_with_sources(
+    catalog: &crate::archive::Catalog, document: &crate::entities::Document,
+    sources: &mut crate::physworld::source::ShapeSources,
+) -> Result<Vec<TriggerWindSource>, String> {
     let read = |name: &str| {
         catalog
             .read(name)
             .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
             .map_err(|error| error.to_string())
     };
-    crate::entities::wind::trigger_winds(document, read)?
+    let result: Vec<_> = crate::entities::wind::trigger_winds(document, read)?
         .into_iter()
         .map(|trigger| {
             let model = trigger.model.as_deref().ok_or_else(|| {
@@ -205,17 +212,29 @@ pub fn trigger_wind_sources(
                 entity: trigger.entity.clone(),
                 settings: trigger.wind.settings,
                 priority: trigger.wind.priority,
-                volume: super::trigger_volume::TriggerVolume::load(
+                volume: super::trigger_volume::TriggerVolume::load_with_sources(
                     catalog,
                     &trigger.entity,
                     model,
                     trigger.position,
                     trigger.rotation,
+                    sources,
+                    crate::physworld::source::ShapeUse::Wind,
                 )?,
                 started: true,
             })
         })
-        .collect()
+        .collect::<Result<_, String>>()?;
+    if std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1") {
+        let mut crc = flate2::Crc::new();
+        for source in &result {
+            crc.update(source.entity.as_bytes());
+            crc.update(format!("{:?}{:?}{:?}", source.priority, source.started, source.volume).as_bytes());
+            crc.update(&[0]);
+        }
+        eprintln!("MEMORY wind trigger geometry: count={} signature={:08x}", result.len(), crc.sum());
+    }
+    Ok(result)
 }
 
 impl WindManager {

@@ -133,10 +133,17 @@ pub fn load_area_environments(
     document: &entities::Document,
     catalog: &archive::Catalog,
 ) -> Result<Vec<AreaEnvironment>, String> {
+    load_area_environments_with_sources(document, catalog, &mut Default::default())
+}
+
+pub(crate) fn load_area_environments_with_sources(
+    document: &entities::Document, catalog: &archive::Catalog,
+    sources: &mut crate::physworld::source::ShapeSources,
+) -> Result<Vec<AreaEnvironment>, String> {
     let mut result = Vec::new();
     for volume in entities::placed_environment_volumes(document) {
         let resolved = volumes::resolve(volume, catalog)?;
-        if let Some(area) = area_from_volume(resolved.placement, resolved.parameters, resolved.is_water_volume, catalog)? { result.push(area); }
+        if let Some(area) = area_from_volume(resolved.placement, resolved.parameters, resolved.is_water_volume, catalog, sources)? { result.push(area); }
     }
     // 88d060 inserts larger physics AABB diagonals first. Later parameter
     // assignments win in 88e220, so smaller containing volumes take priority.
@@ -149,7 +156,7 @@ pub fn load_area_environments(
 /// declaration parameters into the area owner when both use this acquisition.
 pub(crate) fn prepare_volume_owners(
     volumes: Vec<EnvironmentVolume>, catalog: &archive::Catalog,
-    separate_areas: Option<Vec<AreaEnvironment>>,
+    separate_areas: Option<Vec<AreaEnvironment>>, sources: &mut crate::physworld::source::ShapeSources,
 ) -> Result<(Vec<AreaEnvironment>, Vec<RuntimeEnvironmentVolume>), String> {
     let make_areas = separate_areas.is_none();
     let mut areas = separate_areas.unwrap_or_default();
@@ -168,7 +175,7 @@ pub(crate) fn prepare_volume_owners(
         }
         if retain {
             if make_areas && !volume.is_water_volume {
-                if let Some(area) = area_from_volume(volume.placement.clone(), volume.parameters.clone(), false, catalog)? { areas.push(area); }
+                if let Some(area) = area_from_volume(volume.placement.clone(), volume.parameters.clone(), false, catalog, sources)? { areas.push(area); }
             }
             live.push(RuntimeEnvironmentVolume { id: volume.placement.id.clone(), position: volume.placement.position,
                 is_water_volume: volume.is_water_volume, surface_material: volume.surface_material.clone(), _retained: Some(Box::new(volume)) });
@@ -177,7 +184,7 @@ pub(crate) fn prepare_volume_owners(
             live.push(RuntimeEnvironmentVolume { id: placement.id.clone(), position: placement.position,
                 is_water_volume, surface_material, _retained: None });
             if make_areas {
-                if let Some(area) = area_from_volume(placement, parameters, is_water_volume, catalog)? { areas.push(area); }
+                if let Some(area) = area_from_volume(placement, parameters, is_water_volume, catalog, sources)? { areas.push(area); }
             }
         }
     }
@@ -214,11 +221,12 @@ fn profile_capacity(parameters: &entities::EnvironmentRenderParameters) -> usize
 }
 
 fn area_from_volume(volume: entities::PlacedEnvironmentVolume, parameters: entities::EnvironmentRenderParameters,
-    is_water_volume: bool, catalog: &archive::Catalog) -> Result<Option<AreaEnvironment>, String> {
+    is_water_volume: bool, catalog: &archive::Catalog, sources: &mut crate::physworld::source::ShapeSources) -> Result<Option<AreaEnvironment>, String> {
     // 88d060 keeps water volumes in a separate query result.
     if is_water_volume { return Ok(None); }
     let model = volume.model.as_deref().ok_or_else(|| format!("{}: area trigger has no model", volume.id))?;
-    let shape = TriggerVolume::load(catalog, &volume.id, model, volume.position, volume.rotation)?;
+    let shape = TriggerVolume::load_with_sources(catalog, &volume.id, model, volume.position, volume.rotation,
+        sources, crate::physworld::source::ShapeUse::Area)?;
     Ok(Some(AreaEnvironment {
         id: volume.id, parameters,
         blend_duration: entities::environment_blend_duration(&volume.environment_decl)?,

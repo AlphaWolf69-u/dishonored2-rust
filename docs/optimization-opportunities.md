@@ -497,7 +497,11 @@ retained. Query geometry, bounds and headers remain; mutable shapes retain
 their source. The EotW / Dust clients released 7,090,184 / 6,253,494 bytes of
 source and schema capacities, with matching geometry and mass fingerprints.
 The cached mass field has its own per-shape cost; these are not net RSS
-measurements. Targeted release startup CPU measurement remains pending.
+measurements. The release comparison subsequently measured 205,954,140 ->
+229,400,255 thread cycles (11.4% more) for trigger acquisition plus source
+retirement over EotW / Dust return / EotW. This preparation cost is separate
+from gameplay-frame CPU. The shape-sharing work below addresses repeated reads
+and parsing; measure its net cost before claiming that it offsets this increase.
 
 Trigger source-retirement prediction: the prior installed-data audit found
 5,576 trigger shape assets across 36 worlds and no mutable ones. After scene
@@ -538,6 +542,33 @@ retain sources until all consumers have finished, and avoid adding unbounded
 or cross-map source residency. Measure peak source/schema capacity and the
 affected acquisition CPU as well as matching shape output fingerprints.
 Evidence: local `artifacts/trigger-overlap-comparison.json`.
+
+Trigger shared-source prediction before implementation: retain one immutable
+HKX source and parsed schema for each shape first requested by area loading,
+share it with matching physics and wind preparation, and drop the preparation
+owner after wind preparation. Do not retain new physics-only or late-wind
+shapes in that owner; mutable overlays retain separate acquisitions. The
+measured route should avoid exactly 1,015 reads and 5,983,276 cumulative
+decoded bytes, with unchanged area, wind and physics shape data. In the four
+sampled maps every volume source also appears in physics, so the shared source
+and physics leases should refer to the same allocation rather than duplicate
+it. Count cache capacity, final sole-owner releases, per-consumer source
+fingerprints and changed acquisition CPU; other maps can have unmatched
+sources, so a universal peak-memory reduction is not assumed.
+
+The production comparison avoided 1,013 reads and 5,973,956 decoded bytes.
+The difference from the prediction is two wind-only inputs: water-volume
+shapes are excluded from ordinary area preparation, so those inputs were not
+available in the early-area cache. Source CRCs and the ordered area, wind and
+physics results matched. The final cache releases were 204 / 92 / 15 / 204
+sole-owned sources for EotW / Dust / Dust return / EotW. A same-binary release
+comparison for EotW / Dust return / EotW, including source retirement, measured
+trigger acquisition plus retirement at 193,581,570 -> 147,945,420 thread
+cycles. The adjacent area-preparation totals were 171,343,830 -> 177,449,860
+cycles. Together these affected preparation spans fell about 10.8%; neither
+measurement is gameplay-frame time. Parent-layer sharing was enabled in both
+modes and is measured separately. Evidence: local
+`artifacts/shape-parent-perf-comparison.json`.
 
 Area-environment acquisition prediction: `level_prepare` resolves every
 authored environment volume once for the area selection and again for the
@@ -587,6 +618,23 @@ publication frequency and affected CPU have not yet been measured. Verify
 selection and measure the affected function over a moving underwater workload
 before changing this per-frame path.
 
+Localization values: `assets::lang::StringTable` stores a separate owned copy
+of each translated value in both the key and numeric-ID maps. Sharing one
+immutable value between the two indexes could remove approximately one value
+allocation per entry, offset by the shared-owner header and representation
+cost. The original's ID lookup is `1401653e0`. Count actual translated value
+bytes and profile both lookup paths before choosing a representation; keeping
+borrowed `&str` results and lookup behavior is required, and no memory or CPU
+saving is yet measured.
+An installed-data scan counted 6,226 uncomplicated Russian entries containing
+1,026,738 UTF-8 value bytes; escaped or otherwise complex entries are excluded.
+Those values are duplicated by the current two-map parser. This is a lower
+bound on logical duplicated text, not the net saving after shared-owner and
+allocator overhead. Evidence: local `artifacts/language-value-inventory.json`.
+The existing original EotW capture reports 547,888 bytes under LANGDICT; its
+fixture does not identify the active language, so it is not a comparable
+Russian-table budget.
+
 Area containment work: environment tracks independently traverse the same
 area list and call `contains` for their current point. Reusing one ordered
 selection per view/update could remove repeated geometry queries, but the
@@ -616,6 +664,13 @@ signatures and changed loading CPU; temporary cache capacity and persistent
 profile memory are separate measurements. Evidence: local
 `artifacts/environment-parent-scan.json`.
 
+A subsequent installed-data scan found 2,853 environment strings across all
+36 map entity files, with at least 2,738 repeated immediate-parent occurrences
+within their respective maps (the report retains at most 20 parent names per
+map). This establishes a broad candidate, not a measured saving or proof of
+runtime equivalence for all maps. Evidence: local
+`artifacts/environment-parent-all-maps.json`.
+
 Map-info fallback ownership prediction: when an indexed declaration cannot
 be read, `disable_index` permanently switches this registry to reference scans
 and clears its index and declaration table. Its `resolved` table is then
@@ -623,6 +678,9 @@ never read again but still pins prior declaration Arcs. Clearing that table at
 the same transition should release only cache-owned references; existing
 callers keep their leases. The normal indexed path gains no work. This is an
 error/fallback lifetime correction, not a predicted gameplay CPU improvement.
+Replacing the unused resolved map with an empty map, instead of only clearing
+its entries, also releases its bucket allocation at that transition. The size
+depends on the number of earlier lookups and has not been measured.
 
 Physics-material targeted CPU prediction: the shared path eliminates 687 of
 749 observed source reads over the three-map route, while adding source-map

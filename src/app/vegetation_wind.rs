@@ -12,7 +12,7 @@ use crate::{
     game_clock,
     gameplay::{
         game_clock_runtime::{ClockRuntime, GameplayViewClock},
-        wind::{trigger_wind_sources, TriggerWindSource, WindManager},
+        wind::{trigger_wind_sources_with_sources, TriggerWindSource, WindManager},
     },
     render_model,
     rendering::bevy_backend::vegetation_wind::{instance_words, INSTANCE_WORDS, NO_SLOT},
@@ -48,8 +48,9 @@ impl LevelTriggerWinds {
     pub(super) fn load(
         catalog: &archive::Catalog,
         document: Option<&crate::entities::Document>,
+        sources: &mut crate::physworld::source::ShapeSources,
     ) -> Self {
-        Self(document.map_or_else(|| Ok(Vec::new()), |d| trigger_wind_sources(catalog, d)))
+        Self(document.map_or_else(|| Ok(Vec::new()), |d| trigger_wind_sources_with_sources(catalog, d, sources)))
     }
 }
 

@@ -968,53 +968,70 @@ where
 pub fn environment_render_parameters_with_inheritance<F>(
     resource: &str,
     source: &str,
-    mut resolve: F,
+    resolve: F,
 ) -> Result<EnvironmentRenderParameters, String>
 where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
-    fn visit<F>(
-        resource: &str,
-        source: &str,
-        resolve: &mut F,
-        visited: &mut Vec<String>,
-        depth: usize,
-        layers: &mut Vec<EnvironmentRenderParameterLayer>,
-    ) -> Result<(), String>
-    where
-        F: FnMut(&str) -> Result<Option<String>, String>,
-    {
-        layers.push(EnvironmentRenderParameterLayer {
-            resource: resource.to_owned(),
-            parameters: parse_environment_render_parameters(source),
-        });
-        if depth >= 16 {
-            return Ok(());
-        }
-        let Some(parent) = environment_parent(source) else {
-            return Ok(());
-        };
-        if visited.iter().any(|existing| existing == &parent) {
-            return Ok(());
-        }
-        let Some(parent_source) = resolve(&parent)? else {
-            return Ok(());
-        };
-        visited.push(parent.clone());
-        let result = visit(&parent, &parent_source, resolve, visited, depth + 1, layers);
-        visited.pop();
-        result
-    }
+    environment_parameters_with_parent_cache(resource, source, resolve, None)
+}
 
-    let mut layers = Vec::new();
-    visit(
-        resource,
-        source,
-        &mut resolve,
-        &mut Vec::new(),
-        0,
-        &mut layers,
-    )?;
+#[derive(Clone)]
+struct CachedEnvironmentParent {
+    layer: EnvironmentRenderParameterLayer,
+    parent: Option<String>,
+}
+
+/// Preparation-only cache; published profiles keep their existing owned layers.
+#[derive(Default)]
+pub(crate) struct EnvironmentParentCache {
+    parents: HashMap<String, CachedEnvironmentParent>,
+    hits: usize,
+    misses: usize,
+}
+
+impl EnvironmentParentCache {
+    pub(crate) fn report(&self) {
+        if std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() != Ok("1") { return; }
+        let bytes = self.parents.iter().map(|(key, value)| key.capacity() + value.layer.resource.capacity()
+            + value.parent.as_ref().map_or(0, String::capacity)
+            + value.layer.parameters.capacity() * std::mem::size_of::<(String, String)>()
+            + value.layer.parameters.iter().map(|(name, value)| name.capacity() + value.capacity()).sum::<usize>()).sum::<usize>();
+        eprintln!("MEMORY environment parent cache: entries={} hits={} misses={} string_vector_capacity={bytes}", self.parents.len(), self.hits, self.misses);
+    }
+}
+
+pub(crate) fn environment_parameters_with_parent_cache<F>(
+    resource: &str, source: &str, mut resolve: F, mut cache: Option<&mut EnvironmentParentCache>,
+) -> Result<EnvironmentRenderParameters, String>
+where F: FnMut(&str) -> Result<Option<String>, String> {
+    let mut layers = vec![EnvironmentRenderParameterLayer {
+        resource: resource.to_owned(), parameters: parse_environment_render_parameters(source),
+    }];
+    let mut next = environment_parent(source);
+    let mut visited = Vec::<String>::new();
+    // The source pushes depth 0 through depth 16, then stops.
+    while layers.len() <= 16 {
+        let Some(parent) = next else { break; };
+        if visited.iter().any(|existing| existing == &parent) { break; }
+        let cached = cache.as_deref().and_then(|owner| owner.parents.get(&parent)).cloned();
+        let entry = if let Some(entry) = cached {
+            if let Some(owner) = cache.as_deref_mut() { owner.hits += 1; }
+            entry
+        } else {
+            if let Some(owner) = cache.as_deref_mut() { owner.misses += 1; }
+            let Some(source) = resolve(&parent)? else { break; };
+            let entry = CachedEnvironmentParent {
+                layer: EnvironmentRenderParameterLayer { resource: parent.clone(), parameters: parse_environment_render_parameters(&source) },
+                parent: if layers.len() < 16 || cache.is_some() { environment_parent(&source) } else { None },
+            };
+            if let Some(owner) = cache.as_deref_mut() { owner.parents.insert(parent.clone(), entry.clone()); }
+            entry
+        };
+        visited.push(parent);
+        layers.push(entry.layer);
+        next = entry.parent;
+    }
     Ok(EnvironmentRenderParameters { layers })
 }
 

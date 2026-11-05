@@ -81,7 +81,7 @@ impl MapInfoRegistry {
         self.reference = true;
         self.targets = Default::default();
         self.declarations = Default::default();
-        self.resolved.clear();
+        self.resolved = Default::default();
     }
 
     fn lookup(&mut self, catalog: &Catalog, map: &str, counts: &mut LookupCounts) -> Option<std::sync::Arc<Fields>> {
