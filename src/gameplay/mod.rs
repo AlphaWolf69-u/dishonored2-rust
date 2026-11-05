@@ -4,6 +4,7 @@ pub mod event_gate;
 pub mod event_graph;
 pub mod particles;
 pub mod sound;
+pub mod music;
 #[cfg(feature = "game")]
 pub mod game_clock_runtime;
 pub mod navigation;
