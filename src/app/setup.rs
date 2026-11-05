@@ -25,7 +25,7 @@ use bevy::prelude::*;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 
 enum SceneSkeletalModel {
-    Prepared(bmd6::ModelInfo),
+    Prepared(Arc<bmd6::ModelInfo>),
     Shared(Arc<bmd6::ModelInfo>),
 }
 impl std::ops::Deref for SceneSkeletalModel {
@@ -662,6 +662,7 @@ pub(super) fn prepare(
         .unwrap_or_else(|| scene.placed_models.clone());
     let mut model_cache = HashMap::<String, Option<bmodel::Model>>::new();
     let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
+    let mut model_sources = catalog.map(bmd6::ModelSources::new);
     let mut md6_rest_pose_instances = 0usize;
     let mut model_mesh_handles = HashMap::<(String, usize, bool, u8), Handle<Mesh>>::new();
     let mut model_instances = 0usize;
@@ -710,26 +711,8 @@ pub(super) fn prepare(
                     if let Some(model) = physics_models.get(placement.resource_path.as_str()) {
                         return model.has_decoded_geometry.then(|| SceneSkeletalModel::Shared(Arc::clone(model)));
                     }
-                    let catalog = catalog.as_ref()?;
-                    let mesh_path =
-                        match bmd6::resolve_compiled_mesh(&placement.resource_path, |decl| {
-                            catalog
-                                .read(decl)
-                                .ok()
-                                .flatten()
-                                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                        }) {
-                            Ok(path) => path,
-                            Err(error) => {
-                                eprintln!(
-                                    "MD6 declaration failed {}: {error}",
-                                    placement.resource_path
-                                );
-                                return None;
-                            }
-                        };
-                    let bytes = catalog.read(&mesh_path).ok()??;
-                    match bmd6::inspect(&bytes) {
+                    let catalog = catalog?;
+                    match model_sources.as_mut()?.acquire(catalog, &placement.resource_path) {
                         Ok(model) if model.has_decoded_geometry => Some(SceneSkeletalModel::Prepared(model)),
                         Ok(_) => None,
                         Err(error) => {
@@ -1215,6 +1198,7 @@ pub(super) fn prepare(
     }
     drop(model_cache);
     drop(md6_cache);
+    drop(model_sources);
     drop(physics_models);
     println!(
         "Materials: {} unique, {} registered texture resources, {} without diffuse ({} transparent surfaces suppressed); initial mip {}",

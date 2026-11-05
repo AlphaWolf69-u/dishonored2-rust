@@ -475,8 +475,106 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
     })
 }
 
-/// Preparation-scoped immutable MD6 models. 14025aa00 loads each registered
-/// model identity once; instances retain separate pose and physics state.
+/// Shared immutable decoded models. 1400607f0 resolves one registered resource
+/// identity and 14025aa00 loads its BMD6 contents; instances keep their own
+/// poses. The host registry holds only weak model identities and coalesces
+/// concurrent worker acquisitions of the same immutable catalog resource.
+mod residency {
+    use super::ModelInfo;
+    use std::{collections::HashMap, sync::{Arc, Condvar, Mutex, OnceLock, Weak}, time::Instant};
+
+    enum State {
+        Empty,
+        Loading { waiters: usize },
+        Ready { weak: Weak<ModelInfo>, handoff: Option<Arc<ModelInfo>>, pending: usize },
+        Failed { error: String, pending: usize },
+    }
+    struct Entry { state: Mutex<State>, ready: Condvar }
+    type Key = (u64, String);
+    struct Registry { entries: HashMap<Key, Arc<Entry>>, requests: usize }
+    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    pub(super) fn tracing() -> bool {
+        *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_MODEL_ACQUISITION").is_some_and(|v| v == "1"))
+    }
+
+    fn retain_live(entry: &Arc<Entry>) -> bool {
+        Arc::strong_count(entry) > 1 || match entry.state.try_lock() {
+            Ok(state) => match &*state { State::Loading { .. } => true, State::Ready { weak, .. } => weak.strong_count() != 0, _ => false },
+            Err(_) => true,
+        }
+    }
+
+    pub(super) fn release_unused() {
+        if let Some(registry) = REGISTRY.get() {
+            registry.lock().unwrap_or_else(|e| e.into_inner()).entries.retain(|_, entry| retain_live(entry));
+        }
+    }
+
+    pub(super) fn acquire(catalog: &crate::archive::Catalog, path: &str, normalized: &str) -> Result<Arc<ModelInfo>, String> {
+        let trace = tracing();
+        let started = trace.then(Instant::now);
+        let entry = {
+            let mut registry = REGISTRY.get_or_init(|| Mutex::new(Registry { entries: HashMap::new(), requests: 0 }))
+                .lock().unwrap_or_else(|e| e.into_inner());
+            registry.requests = registry.requests.wrapping_add(1);
+            if registry.entries.len() > 1024 && registry.requests % 256 == 0 {
+                registry.entries.retain(|_, entry| retain_live(entry));
+            }
+            registry.entries.entry((catalog.identity(), normalized.to_owned()))
+                .or_insert_with(|| Arc::new(Entry { state: Mutex::new(State::Empty), ready: Condvar::new() })).clone()
+        };
+        let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waited = false;
+        loop {
+            match &mut *state {
+                State::Ready { weak, handoff, pending } => if let Some(model) = weak.upgrade() {
+                    if waited && *pending > 0 {
+                        *pending -= 1;
+                        if *pending == 0 { handoff.take(); }
+                    }
+                    if let Some(started) = started { eprintln!("MODEL_ACQUIRE path={normalized} result={} us={}", if waited { "wait" } else { "reuse" }, started.elapsed().as_micros()); }
+                    return Ok(model);
+                },
+                State::Failed { error, pending } => {
+                    let result = error.clone();
+                    if waited && *pending > 0 { *pending -= 1; }
+                    if *pending == 0 { *state = State::Empty; }
+                    return Err(result);
+                }
+                State::Loading { waiters } => {
+                    if !waited { *waiters += 1; }
+                    waited = true;
+                    state = entry.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
+                State::Empty => {}
+            }
+            *state = State::Loading { waiters: 0 };
+            drop(state);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let bytes = catalog.read(path).map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("{path} is absent"))?;
+                super::inspect(&bytes).map(Arc::new)
+            })).unwrap_or_else(|_| Err(format!("model acquisition panicked for {path}")));
+            let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
+            let waiters = match &*state { State::Loading { waiters } => *waiters, _ => 0 };
+            *state = match &result {
+                Ok(model) => State::Ready { weak: Arc::downgrade(model), handoff: (waiters > 0).then(|| model.clone()), pending: waiters },
+                Err(error) if waiters > 0 => State::Failed { error: error.clone(), pending: waiters },
+                Err(_) => State::Empty,
+            };
+            entry.ready.notify_all();
+            if let Some(started) = started { eprintln!("MODEL_ACQUIRE path={normalized} result=decode us={}", started.elapsed().as_micros()); }
+            return result;
+        }
+    }
+}
+
+/// Discard expired model identity metadata after level consumers are dropped.
+pub(crate) fn release_unused() { residency::release_unused(); }
+
+/// Preparation-scoped references to shared immutable MD6 models.
 pub(crate) struct ModelSources {
     catalog: u64,
     share: bool,
@@ -492,6 +590,7 @@ impl ModelSources {
     pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, resource: &str)
         -> Result<std::sync::Arc<ModelInfo>, String>
     {
+        let started = residency::tracing().then(std::time::Instant::now);
         if self.catalog != catalog.identity() {
             self.models.clear();
             self.paths.clear();
@@ -500,6 +599,7 @@ impl ModelSources {
         }
         if self.share {
             if let Some(model) = self.paths.get(resource).and_then(|path| self.models.get(path)) {
+                if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result=local us={}", started.elapsed().as_micros()); }
                 return Ok(model.clone());
             }
         }
@@ -520,17 +620,23 @@ impl ModelSources {
             if let Some(model) = self.models.get(key.as_ref()) {
                 let model = model.clone();
                 self.paths.insert(resource.to_owned(), key.into_owned());
+                if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result=alias us={}", started.elapsed().as_micros()); }
                 return Ok(model);
             }
         }
-        let bytes = catalog.read(&path).map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("{path} is absent"))?;
-        let model = std::sync::Arc::new(inspect(&bytes)?);
+        let model = if self.share {
+            residency::acquire(catalog, &path, &key)?
+        } else {
+            let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("{path} is absent"))?;
+            std::sync::Arc::new(inspect(&bytes)?)
+        };
         if self.share {
             let key = key.into_owned();
             self.models.insert(key.clone(), model.clone());
             self.paths.insert(resource.to_owned(), key);
         }
+        if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result={} us={}", if self.share { "shared" } else { "overlay" }, started.elapsed().as_micros()); }
         Ok(model)
     }
 }

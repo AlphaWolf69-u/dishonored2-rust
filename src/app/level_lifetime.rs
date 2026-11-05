@@ -98,6 +98,7 @@ impl LevelLifetime {
         drop(model_history);
         drop(material_history);
         drop(skeletal_history);
+        crate::bmd6::release_unused();
     }
 }
 
