@@ -49,6 +49,8 @@ pub struct ArmActionDiagnostic {
     pub published: [bool; 2],
     pub visible: [bool; 2],
     pub ever_in_front: [bool; 2],
+    /// Min/max horizontal and vertical camera slopes while in front.
+    pub camera_slopes: [[f32; 4]; 2],
     pub pose_error: [bool; 2],
 }
 
@@ -573,7 +575,7 @@ impl Player {
                 if !self.arm_action_active[slot] {
                     self.arm_action_history[slot] = Some(ArmActionDiagnostic {
                         frames: 0, tree_drove: [false; 3], published: [false; 2], visible: [false; 2],
-                        ever_in_front: [false; 2], pose_error: [false; 2],
+                        ever_in_front: [false; 2], camera_slopes: [[f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY]; 2], pose_error: [false; 2],
                     });
                 }
                 if let Some(history) = &mut self.arm_action_history[slot] {
@@ -584,10 +586,19 @@ impl Player {
                         if let Some(arm) = self.body.arms.get(side).and_then(|source| self.arm_render.iter().find(|arm| arm.model == source.model)) {
                             history.published[side] = true;
                             history.visible[side] |= arm.visible;
-                            history.ever_in_front[side] |= arm.joints.iter().any(|joint| {
+                            for joint in &arm.joints {
                                 let p = Vec3::new(joint[0][3], joint[1][3], joint[2][3]);
-                                (p - view.origin).dot(view.axis.x_axis) > 0.0
-                            });
+                                let relative = p - view.origin;
+                                let forward = relative.dot(view.axis.x_axis);
+                                if forward > 0.0 {
+                                    history.ever_in_front[side] = true;
+                                    let horizontal = relative.dot(view.axis.y_axis) / forward;
+                                    let vertical = relative.dot(view.axis.z_axis) / forward;
+                                    let bounds = &mut history.camera_slopes[side];
+                                    bounds[0] = bounds[0].min(horizontal); bounds[1] = bounds[1].max(horizontal);
+                                    bounds[2] = bounds[2].min(vertical); bounds[3] = bounds[3].max(vertical);
+                                }
+                            }
                         }
                     }
                 }
