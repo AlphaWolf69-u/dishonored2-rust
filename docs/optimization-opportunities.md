@@ -2146,3 +2146,14 @@ integrated caller: body/arms use distinct model paths and usable instances
 already share the containing BasicRig asset. It had no established additional
 overlap to optimize. The common typed loader remains; skeleton resource
 sharing is measured separately because those consumers do overlap.
+
+Initial runtime image failure prediction: preserve successful-path IO,
+uploads and output, with no failure-map allocation for successful resident
+images. A failed base read/upload should stop the currently published effect
+generation once, drop its waiting batch and release only that generation's
+source leases through existing retirement. Failure storage is sparse and
+bounded by actual scene slots, clearing on dynamic slot retirement/reuse.
+Finer-mip failures keep the existing resident texture. This fixes unbounded
+waiting/retention on the demonstrated source error path; it is not a claimed
+steady-state CPU improvement. Measure the affected coordinator/image-owner
+paths and exercise the actual failure route after compilation.

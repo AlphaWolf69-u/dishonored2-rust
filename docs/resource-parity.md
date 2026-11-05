@@ -3654,3 +3654,25 @@ the host GPU wait onto the gameplay thread. Exact game-to-render scheduling
 and the complete publication/retirement handoff still require integration
 and affected-path measurements; this trace does not certify those unfinished
 paths.
+
+### Runtime initial-image failure retirement
+
+Original `1402ea140` reports an invalid binary base image through
+`14005f790` with code `0x0d`; that path is fatal (`140166830`), rather than a
+successful acquisition or an invented white/default image. The host runtime
+material path previously left an initial missing/read failure with
+`attempted = true`, no handle and no outstanding IO. The waiting effect could
+therefore retain its source/batch indefinitely without a readiness or failure
+acknowledgement.
+
+`TextureReadWorker` now records sparse, slot-owned initial read/upload failures.
+`RuntimeFxImages` attributes them to the currently published request generation;
+the existing failure signals and material-coordinator error path cancel/drop
+that waiting batch, and the effect owner removes failed pending requests so
+normal revision/retirement releases their sources. Retiring/reusing a dynamic
+slot clears its failure entry. Finer-mip failure retains the resident chain.
+The host's existing startup GPU retry behavior is unchanged; this runtime
+recovery is explicitly a host error mechanism, not a claim to reproduce the
+original fatal-error UI. Successful resident slots allocate no failure records.
+Source integration is complete; production failure/cancellation execution and
+changed-path costs remain to be verified before full lifecycle acceptance.
