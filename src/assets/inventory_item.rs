@@ -4,11 +4,16 @@ use crate::assets::{archive::Catalog, entities::{self, Value}};
 
 #[derive(Clone, Debug)]
 pub struct Readable {
+    pub kind: ReadableKind,
     pub title: String,
     pub text: String,
     pub note_type: i32,
     pub can_be_picked_up: bool,
+    pub journal_image: Option<String>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadableKind { Document, Book }
 
 fn atom<'a>(fields: &'a [(String, Value)], name: &str) -> Option<&'a str> {
     fields.iter().find(|(key, _)| key == name).and_then(|(_, value)| match value {
@@ -66,6 +71,7 @@ pub fn readable(catalog: &Catalog, item: &str) -> Result<Option<Readable>, Strin
     let mut text = None;
     let mut style = None;
     let mut can_pick_up = None;
+    let mut journal_image = None;
     for (_, fields) in &chain {
         let Some(Value::Scope(edit)) = fields.iter().find(|(k, _)| k == "edit").map(|(_, v)| v) else { continue };
         kind = kind.or_else(|| atom(edit, "m_type"));
@@ -73,19 +79,24 @@ pub fn readable(catalog: &Catalog, item: &str) -> Result<Option<Readable>, Strin
         text = text.or_else(|| atom(edit, "m_description"));
         style = style.or_else(|| atom(edit, "m_noteType"));
         can_pick_up = can_pick_up.or_else(|| atom(edit, "m_readableCanBePickedUp"));
+        journal_image = journal_image.or_else(|| atom(edit, "m_journalImage"));
     }
-    if !matches!(kind, Some("TYPE_NOTE_DOCUMENT" | "TYPE_BOOK")) {
-        return Ok(None);
-    }
+    let kind = match kind {
+        Some("TYPE_NOTE_DOCUMENT") => ReadableKind::Document,
+        Some("TYPE_BOOK") => ReadableKind::Book,
+        _ => return Ok(None),
+    };
     let can_be_picked_up = match can_pick_up.unwrap_or("true") {
         "true" => true,
         "false" => false,
         other => return Err(format!("invalid m_readableCanBePickedUp {other}")),
     };
     Ok(Some(Readable {
+        kind,
         title: title.unwrap_or("").to_owned(),
         text: text.unwrap_or("").to_owned(),
         note_type: style.map(note_type).transpose()?.unwrap_or(-1),
         can_be_picked_up,
+        journal_image: journal_image.filter(|image| !image.is_empty()).map(str::to_owned),
     }))
 }
