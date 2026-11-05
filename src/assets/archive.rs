@@ -281,6 +281,11 @@ impl Catalog {
         self.overlay_file(path).is_some()
     }
 
+    /// Whether an editable layer can replace a declaration in this namespace.
+    pub(crate) fn has_overlay_declaration(&self, prefix: &str) -> bool {
+        self.overlay.iter().any(|(path, _)| path.starts_with(prefix) && path.ends_with(".decl"))
+    }
+
     /// Resource paths of the archives and the overlay, sorted and unique.
     fn all_paths<'a>(&'a self, keep: impl Fn(&str) -> bool + 'a) -> Vec<String> {
         let mut paths: Vec<String> = self

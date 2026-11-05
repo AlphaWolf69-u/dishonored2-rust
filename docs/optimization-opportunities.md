@@ -1780,3 +1780,29 @@ the relevant source or companion is editable, keeping already-open movies'
 leases intact and allowing later openings to observe current data and errors.
 The normal installed-archive path should retain its existing reads, sharing,
 and GPU uploads; the extra checks occur on movie/library acquisition only.
+
+The installed no-overlay production comparison loaded Edge of the World then
+Dust District in both modes. All 430 recorded UI bitmap fingerprints and both
+recorded collision-material fingerprints matched. The animation acquisition
+span had 400 calls in each mode: medians were 33,232 versus 34,230 thread
+cycles. Cached Iggy calls below 100,000 cycles had medians 10,045 versus 9,625
+cycles (nine each). These spans include the temporary timing instrumentation.
+The one cached shader-parameter call per run measured 16,555 versus 29,295
+cycles, too few samples to establish its overhead. Cold acquisition times also
+varied across owners, and bitmap signature logging occurs within bitmap spans;
+no general loading or frame-time claim is made. The edited-file and concurrent
+generation branches were source-reviewed; this comparison had no active
+editable layers.
+
+### Editable streamed images: investigation and prediction
+
+Scene, fixed-view and UI image owners can currently retain a path across
+levels even when an editable base image or one of its separate mip files can
+change. Before changing that, trace all owners and GPU-view handoffs together.
+The expected correction is to keep the existing upload-phase classification
+and active view leases, while re-acquiring affected identities at the next
+appropriate boundary. Unedited resources should keep their existing reuse,
+uploaded bytes and frame-loop behavior. Any additional checks belong to
+acquisition or level transitions, not every streaming frame. Measure actual
+acquisition counts, uploads, input fingerprints and only the affected CPU
+spans before keeping a change.

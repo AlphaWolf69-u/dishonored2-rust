@@ -17,17 +17,27 @@ struct Registry {
     lists: [Arc<Vec<Resource>>; 2],
     shared: Vec<(u8, u32)>,
     entries: HashMap<String, Entry>,
+    /// Generations from editable clips can coexist while actors release them.
+    editable: HashMap<String, Vec<Weak<AnimationData>>>,
 }
 impl Registry {
     fn new(catalog: &Catalog) -> Result<Self, String> {
         let language = crate::assets::lang::read_text_language(catalog.base())?;
         let lists = [map_resources::acquire_list(catalog.base(), catalog, "init", language)?,
             map_resources::acquire_list(catalog.base(), catalog, "common", language)?];
-        let mut shared: Vec<_> = lists.iter().enumerate().flat_map(|(list, entries)|
-            entries.iter().enumerate().filter(|(_, entry)| entry.kind == "anim")
-                .map(move |(index, _)| (list as u8, index as u32))).collect();
+        // An editable bootstrap manifest can change its session-pinning list
+        // without a new catalog. Keep weak per-clip reuse but do not pin from
+        // that mutable snapshot.
+        let mutable_lists = catalog.has_overlays() &&
+            (catalog.has_overlay_file("generated/buildgame/init.mapresources")
+                || catalog.has_overlay_file("generated/buildgame/common.mapresources"));
+        let mut shared: Vec<_> = if mutable_lists { Vec::new() } else {
+            lists.iter().enumerate().flat_map(|(list, entries)|
+                entries.iter().enumerate().filter(|(_, entry)| entry.kind == "anim")
+                    .map(move |(index, _)| (list as u8, index as u32))).collect()
+        };
         shared.sort_unstable_by(|&(a, i), &(b, j)| lists[a as usize][i as usize].path.cmp(&lists[b as usize][j as usize].path));
-        Ok(Self { base: catalog.base().to_owned(), catalog_identity: catalog.identity(), lists, shared, entries: Default::default() })
+        Ok(Self { base: catalog.base().to_owned(), catalog_identity: catalog.identity(), lists, shared, entries: Default::default(), editable: Default::default() })
     }
     fn is_shared(&self, path: &str) -> bool {
         self.shared.binary_search_by(|&(list, index)|
@@ -55,6 +65,33 @@ fn record(path: &str, animation: &EdgeAnimation, signature: u32, source_bytes: u
 /// with each caller, while the serialized clip allocation remains immutable.
 pub fn acquire(catalog: &Catalog, name: &str) -> Result<EdgeAnimation, String> {
     let path = name.replace('\\', "/").to_ascii_lowercase();
+    // Editable layer files may change without a new catalog identity. Existing
+    // actors keep their lease; a new acquisition must read the current clip.
+    let mutable = catalog.has_overlay_file(&path);
+    if mutable {
+        let needs_owner = REGISTRY.lock().unwrap().as_ref().is_none_or(|owner|
+            owner.base != catalog.base() || owner.catalog_identity != catalog.identity());
+        if needs_owner {
+            let owner = Registry::new(catalog)?;
+            let mut current = REGISTRY.lock().unwrap();
+            if current.as_ref().is_none_or(|owner| owner.base != catalog.base() || owner.catalog_identity != catalog.identity()) {
+                *current = Some(owner);
+            }
+        }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("{path} is absent"))?;
+        let source_bytes = bytes.len();
+        let signature = if tracing() { let mut crc = flate2::Crc::new(); crc.update(&bytes); crc.sum() } else { 0 };
+        let animation = EdgeAnimation::parse_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+        let mut current = REGISTRY.lock().unwrap();
+        let owner = current.as_mut().filter(|owner| owner.base == catalog.base() && owner.catalog_identity == catalog.identity())
+            .ok_or("animation installation changed during acquisition")?;
+        let generations = owner.editable.entry(path.clone()).or_default();
+        generations.retain(|generation| generation.strong_count() != 0);
+        generations.push(Arc::downgrade(&animation.0));
+        record(&path, &animation, signature, source_bytes, false);
+        return Ok(animation);
+    }
     if !separate() {
         let needs_owner = REGISTRY.lock().unwrap().as_ref().is_none_or(|owner| owner.base != catalog.base() || owner.catalog_identity != catalog.identity());
         if needs_owner {
@@ -113,6 +150,18 @@ pub(crate) fn release_level() {
             }
         }
         keep
+    });
+    let stable = &owner.entries;
+    owner.editable.retain(|path, generations| {
+        generations.retain(|generation| generation.strong_count() != 0);
+        if !generations.is_empty() { return true; }
+        if !stable.contains_key(path) {
+            if let Some(bytes) = crate::loading::forget("anim", path) {
+                forgotten += 1;
+                forgotten_bytes += bytes;
+            }
+        }
+        false
     });
     if tracing() {
         eprintln!("MEMORY animation history release: entries={forgotten} path_capacity_bytes={forgotten_bytes}");

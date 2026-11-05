@@ -540,7 +540,8 @@ pub fn acquire(catalog: &super::archive::Catalog, resource: &str) -> std::result
         files.retain(|(identity, _), _| *identity == catalog.identity());
         files.get(&key).cloned()
     });
-    if let Some(file) = existing {
+    let mutable = catalog.has_overlay_file(resource);
+    if let Some(file) = existing.filter(|_| !mutable) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("LOAD Iggy reuse: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
         }
@@ -548,7 +549,7 @@ pub fn acquire(catalog: &super::archive::Catalog, resource: &str) -> std::result
     }
     let bytes = catalog.read(resource).map_err(|e| e.to_string())?.ok_or_else(|| format!("{resource} not indexed"))?;
     let file = std::rc::Rc::new(IggyFile::parse(bytes).map_err(|e| format!("{resource}: {e}"))?);
-    FILES.with(|files| files.borrow_mut().insert(key, file.clone()));
+    if !mutable { FILES.with(|files| files.borrow_mut().insert(key, file.clone())); }
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!("LOAD Iggy acquire: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
     }

@@ -3475,3 +3475,21 @@ matched for Corvo and Emily. Each level resolved the tree three times before
 and once afterward; Corvo's source reads fell 357 to 119 and Emily's 354 to
 118 per level. Targeted cycle and capacity figures, including their limits,
 are in `optimization-opportunities.md` under player declaration preparation.
+
+### Editable declaration, animation and UI resources
+
+The host catalog's editable layers can change their file contents without a
+new catalog identity. Shader-parameter metadata bypasses session reuse when a
+relevant declaration is editable. Editable animation clips are acquired anew;
+weak generation references keep their history accurate while older actors own
+their clips. Editable bootstrap manifests do not pin clips according to a
+stale snapshot, while weak per-clip sharing remains available. Iggy files and
+their library bitmaps bypass reuse when either relevant file is editable;
+open movies retain their existing leases. The original registry lookup/purge
+boundary is `1400607f0` / `140060180`; editable-layer handling is host behavior.
+
+An installed no-overlay Edge of the World / Dust District production comparison
+matched 430 UI bitmap and two collision-material fingerprints. Acquisition
+measurements and their limitations are recorded in `optimization-opportunities.md`.
+Editable branches and overlapping generations were source-reviewed; that
+production comparison had no active editable layers.

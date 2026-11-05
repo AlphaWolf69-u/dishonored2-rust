@@ -15,7 +15,12 @@ static RESIDENT: LazyLock<Mutex<Option<(u64, std::path::PathBuf, Parameters)>>> 
 pub(super) fn acquire(base: &Path, catalog: &Catalog) -> Result<Parameters> {
     let started = std::time::Instant::now();
     let mut resident = RESIDENT.lock().unwrap_or_else(|error| error.into_inner());
-    let shared = std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
+    // A loose declaration can change while the catalog identity remains the same.
+    let shared = !catalog.has_overlay_declaration("generated/decls/renderparm/")
+        && std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
+    if resident.as_ref().is_some_and(|(identity, path, _)| *identity != catalog.identity() || path != base) {
+        *resident = None;
+    }
     let (parameters, reused) = if let Some((_, _, parameters)) = resident.as_ref().filter(|(identity, path, _)| *identity == catalog.identity() && path == base && shared) {
         (parameters.clone(), true)
     } else {

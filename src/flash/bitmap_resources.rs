@@ -149,9 +149,15 @@ pub fn acquire(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Lib
     let resident = resident.get_or_insert_with(Default::default);
     // Movie/image leases keep their data if another catalog becomes active.
     resident.retain(|(identity, _), _| *identity == catalog.identity());
-    if let Some(images) = resident.get(&key) { return Ok(images.clone()); }
+    // Both the library's texture table and its companion image member can
+    // come from an editable layer while this catalog identity remains stable.
+    let mutable = catalog.has_overlays() && (catalog.has_overlay_file(resource)
+        || catalog.has_overlay_file(&resource.replace(".iggy", ".raw.iggytex")));
+    if !mutable {
+        if let Some(images) = resident.get(&key) { return Ok(images.clone()); }
+    }
     let images: LibraryImages = std::sync::Arc::new(load(catalog, resource, file)?.into_iter()
         .map(|(id, image)| (id, std::sync::Arc::new(image))).collect());
-    resident.insert(key, images.clone());
+    if !mutable { resident.insert(key, images.clone()); }
     Ok(images)
 }
