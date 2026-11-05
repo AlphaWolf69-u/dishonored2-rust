@@ -150,7 +150,10 @@ impl UiTextures {
             keep
         });
         self.bytes -= removed;
-        if self.trace { self.unowned_retirements += count; }
+        if self.trace {
+            self.unowned_retirements += count;
+            if count != 0 { eprintln!("MEMORY UI unowned textures retired: count={count} bytes={removed}"); }
+        }
         if let Some(started) = started { self.owner_scans += 1; self.owner_scan_time += started.elapsed(); }
     }
     pub fn record_key_build(&mut self, duration: std::time::Duration) {
