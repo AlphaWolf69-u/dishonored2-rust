@@ -4,6 +4,77 @@ use std::{collections::{BTreeMap, HashMap}, env, error::Error, fs::File, path::P
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let first = arguments.next().ok_or("Usage: wwise-audit [--summary | --object ID | --resolve-events] <Wwise package.pck>")?;
+    if first.to_string_lossy() == "--music-resources" {
+        // Production bank-owner diagnostics. Each bank retires after its
+        // metadata has been inspected; this is not an all-banks resident load.
+        use dishonored2_rust::assets::{installation, wwise::PlaybackBanks};
+        let path = arguments.next().map(PathBuf::from).unwrap_or(installation::game_base()?.join("pck"));
+        let mut paths = if path.is_dir() {
+            std::fs::read_dir(path)?.map(|entry| entry.map(|entry| entry.path()))
+                .collect::<Result<Vec<_>, _>>()?.into_iter()
+                .filter(|path| path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pck")))
+                .collect::<Vec<_>>()
+        } else { vec![path] };
+        paths.sort();
+        let mut totals = [0usize; 4];
+        let mut banks = 0usize;
+        let mut failures = 0usize;
+        for path in paths {
+            let package = Package::open(&path)?;
+            let mut file = File::open(&path)?;
+            // Cover every installed language/definition here, rather than
+            // mistake a selected-language subset for format-wide coverage.
+            for entry in &package.banks {
+                let mut library = PlaybackBanks::default();
+                library.insert(package.read_entry(&mut file, *entry)?.into())?;
+                banks += 1;
+                let mut ids = library.music_actor_ids().collect::<Vec<_>>();
+                ids.sort_unstable();
+                for (id, kind) in ids {
+                    let result = (|| -> Result<String, Box<dyn Error>> {
+                        Ok(match kind {
+                            10 => {
+                                let segment = library.music_segment(id)?.ok_or("music segment disappeared")?;
+                                for cue in segment.cues() { let _ = cue?; }
+                                format!("children={} cues={} duration_ms={}", segment.node.children().count(), segment.cue_count, segment.duration_ms)
+                            },
+                            11 => {
+                                let track = library.music_track(id)?.ok_or("music track disappeared")?;
+                                for source in track.prelude.sources() { let _ = source?; }
+                                for automation in track.prelude.automations() { let _ = automation?.points().count(); }
+                                format!("sources={} clips={} automation={} playback={}", track.prelude.source_count,
+                                    track.prelude.clips().count(), track.prelude.automation_count, track.playback_type)
+                            },
+                            12 => {
+                                let switch = library.music_switch(id)?.ok_or("music switch disappeared")?;
+                                for rule in switch.rules.iter() { let _ = rule?; }
+                                format!("groups={} rules={} tree_bytes={} mode={}", switch.groups().count(), switch.rules.count, switch.tree.len(), switch.tree_mode)
+                            },
+                            13 => {
+                                let playlist = library.music_playlist(id)?.ok_or("music playlist disappeared")?;
+                                for rule in playlist.rules.iter() { let _ = rule?; }
+                                format!("items={} rules={}", playlist.items().count(), playlist.rules.count)
+                            },
+                            _ => unreachable!(),
+                        })
+                    })();
+                    match result {
+                        Ok(details) => {
+                            totals[(kind-10) as usize] += 1;
+                            println!("music package={} bank={:#010x} language={} kind={kind} actor={id:#010x} {details}", path.display(), entry.id, entry.language_id);
+                        },
+                        Err(error) => {
+                            failures += 1;
+                            eprintln!("music_error package={} bank={:#010x} language={} kind={kind} actor={id:#010x}: {error}", path.display(), entry.id, entry.language_id);
+                        },
+                    }
+                }
+            }
+        }
+        println!("music_resources banks={banks} segments={} tracks={} switches={} playlists={} failures={failures}", totals[0], totals[1], totals[2], totals[3]);
+        if failures != 0 { return Err("installed music resource acquisition failed; see per-object diagnostics".into()); }
+        return Ok(());
+    }
     if first.to_string_lossy() == "--virtual-voices" {
         // Resolved below-threshold settings of every installed sound, bus HDR
         // flags and bank feedback data: the inputs of the virtual-voice path.

@@ -3983,3 +3983,79 @@ walking CPU improvement or process-RAM reduction is predicted; inactive chunks
 remain resident by design. Source implementation is present; integration with
 typed release callbacks and production-client unload evidence are still
 required. No tests or compiler were run for this isolated source change.
+
+### Music-track clip timing (source implementation, 2026-11-05)
+
+`gameplay::sound::music_clip` ports 141159840 / 141159fd0 / 1411588a0's
+40-byte serialized clip to six-word sample timing conversion. It uses the
+actual engine rate, preserves double arithmetic and operand order, skips
+nonpositive trimmed durations, applies signed half rounding and CVTTSD2SI's
+invalid-input result, and wraps negative source offsets as the original does.
+Constants .001 and +/- .5 were read from the installed image. The host reports
+an invalid integer divisor rather than substituting a duration.
+
+This record retains no media/decoder and allocates nothing on success.
+Prediction: new music scheduling support, no walking CPU or resident-memory
+gain. Full track/segment/container playback remains unimplemented; this is
+not a claim of audible music. No compiler, tests or production comparison
+have been run for the new source. Existing bank/media owners stay authoritative.
+
+The bank owner now exposes `music_track_prelude`: borrowed source descriptors,
+40-byte clip records and automation-point ranges over its existing bank bytes.
+The ordinary HIRC property reader uses this same prefix reader instead of a
+second skip-only implementation. Source plugin parameter blocks and curve
+points are neither cloned nor eagerly decoded into resident arrays. Bounds
+checks cover variable source parameters and counted clip/point records.
+Track mode/switch settings and scheduled playback still require implementation;
+the prefix is explicitly not treated as a complete music track.
+
+`music_track` additionally reads the common node properties, playback byte,
+type-3 selector (14115a0a0), eight serialized transition words and lookahead
+input passed to 141159280. Selector arrays stay borrowed. Transition words
+and lookahead remain serialized inputs, not guessed scheduling rules; the
+engine's additional lookahead factor and transition behavior still need their
+actual scheduler implementation. This does not enable a generic Sound actor
+fallback for music. The ordinary property-only path does not decode or retain
+these extra fields when they are not requested.
+
+`PlaybackBanks::music_track(id)` requests that view through the existing bank
+namespace, using its actual feedback flag and retained actor record. No track
+decoder/index/media cache is created beside it. Borrowing prevents the view
+from surviving bank unload. The wrong actor kind is an explicit error rather
+than an ordinary sound fallback. A future prepared track must own its runtime
+clip records and use the existing bank/source lease for scheduled media.
+
+Segment metadata is now acquired through the same bank namespace:
+141154620's common fields/child IDs/meter/stinger records and 141155700's
+duration plus variable-length cue records. Cue labels, children and stinger
+arrays borrow bank storage; no temporary label String or secondary encoded
+buffer is retained. Bounds checks cover counted arrays and variable labels.
+Music-node meter/stinger interpretation, marker sample conversion, transitions
+and scheduled playback remain separate work; serialized fields are not used
+as guessed runtime settings. No compilation or production acceptance yet.
+
+Music switch-container acquisition now follows 141151320's transition rules
+and 1411583d0's group/type arrays, continuation flag, mode and decision-tree
+bytes (1411582e0 / 1410ee910). Source/destination selectors and tree storage
+borrow the bank. Fade/rule/bridge fields follow installed reads and masks;
+field names are cross-referenced against wwiser's version-113 format reader.
+No extra tree copy, selector Vec or transition-array cache is introduced.
+Decision-tree evaluation, transition scheduling and playback remain pending;
+ordinary sound-switch behavior is not substituted for music switching.
+
+Music random/sequence-container acquisition follows 1411576a0's 30-byte
+serialized preorder playlist and the same transition-rule reader. Entry
+loops/modifiers/weights/repeat and selection flags retain their original
+widths; no runtime cursor or random state enters the shared definition.
+Playlist entries borrow the bank and decode on demand. This completes source
+metadata access for HIRC music kinds 10–13, not their playback implementation.
+Integration, compiled acquisition diagnostics over installed banks and runtime
+streaming/voice scheduling remain required; no output/timing result is claimed.
+
+`wwise-audit --music-resources [package-or-directory]` exercises these actual
+bank-owner APIs over all installed bank/language entries without opening
+media/voices. It reports per-kind objects, clips, cues, rules and selectors
+plus contextual parse failures. Each bank drops before the next acquisition;
+it does not turn format diagnostics into an all-banks resident cache. This
+command has been implemented but not compiled/run yet. It is an acquisition
+diagnostic, not a test, audible-music check or original RAM-budget comparison.

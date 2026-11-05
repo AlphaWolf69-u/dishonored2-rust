@@ -138,6 +138,41 @@ impl<'a> PlaybackBanks<'a> {
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
     pub fn actor_ids(&self) -> impl Iterator<Item = u32> + '_ { self.actors.keys().copied() }
+    pub fn music_actor_ids(&self) -> impl Iterator<Item = (u32, u8)> + '_ {
+        self.actors.iter().filter_map(|(&id, object)|
+            matches!(object.kind, 10..=13).then_some((id, object.kind)))
+    }
+    /// Acquire track metadata from this same loaded bank namespace. The
+    /// returned view borrows encoded descriptors/clip/automation arrays;
+    /// it cannot survive unloading the bank or create a second media owner.
+    pub fn music_track(&self, id: u32) -> io::Result<Option<super::MusicTrack<'_>>> {
+        let Some(&object) = self.actors.get(&id) else { return Ok(None) };
+        if object.kind != 11 {
+            return Err(invalid_owned(format!("Wwise actor {id:#010x} is not a music track")));
+        }
+        bank::music_track(self.bytes(object), self.banks[object.bank].feedback).map(Some)
+    }
+    pub fn music_segment(&self, id: u32) -> io::Result<Option<super::MusicSegment<'_>>> {
+        let Some(&object) = self.actors.get(&id) else { return Ok(None) };
+        if object.kind != 10 {
+            return Err(invalid_owned(format!("Wwise actor {id:#010x} is not a music segment")));
+        }
+        bank::music_segment(self.bytes(object), self.banks[object.bank].feedback).map(Some)
+    }
+    pub fn music_switch(&self, id: u32) -> io::Result<Option<super::MusicSwitchContainer<'_>>> {
+        let Some(&object) = self.actors.get(&id) else { return Ok(None) };
+        if object.kind != 12 {
+            return Err(invalid_owned(format!("Wwise actor {id:#010x} is not a music switch container")));
+        }
+        bank::music_switch(self.bytes(object), self.banks[object.bank].feedback).map(Some)
+    }
+    pub fn music_playlist(&self, id: u32) -> io::Result<Option<super::MusicPlaylistContainer<'_>>> {
+        let Some(&object) = self.actors.get(&id) else { return Ok(None) };
+        if object.kind != 13 {
+            return Err(invalid_owned(format!("Wwise actor {id:#010x} is not a music playlist container")));
+        }
+        bank::music_playlist(self.bytes(object), self.banks[object.bank].feedback).map(Some)
+    }
     /// Sources still owned by the banks after a map-bank unload.
     pub fn sound_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.actors.iter().filter_map(|(&id, object)| (object.kind == 2).then_some(id))

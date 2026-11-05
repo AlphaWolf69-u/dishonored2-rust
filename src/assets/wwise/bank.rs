@@ -3,6 +3,11 @@
 //! https://github.com/bnnm/wwiser/blob/master/wwiser/parser/wparser.py
 use super::{invalid, invalid_owned, SelectionMode};
 use std::io;
+mod music;
+pub use music::{music_track, music_track_prelude, MusicSource, MusicTrack, MusicTrackPrelude, TrackAutomation, TrackSwitch};
+pub use music::{music_segment, MusicCue, MusicNodePrelude, MusicSegment};
+pub use music::{music_switch, DestinationTransition, MusicFade, MusicSwitchContainer, MusicTransitionRule, MusicTransitionRules, SourceTransition, TransitionSegment};
+pub use music::{music_playlist, MusicPlaylistContainer, MusicPlaylistItem};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ActionTransition {
@@ -609,12 +614,7 @@ impl<'a> Reader<'a> {
 
     /// Serialized source descriptor (1410f3fe0), shared by sounds and tracks.
     fn source_info(&mut self) -> io::Result<()> {
-        let plugin = self.u32()?;
-        self.take(10)?; // Stream type, media ID, memory size and source flags.
-        if matches!(plugin & 0xf, 2 | 5) {
-            let size = self.u32()? as usize;
-            self.take(size)?;
-        }
+        self.source_descriptor()?;
         Ok(())
     }
 }
@@ -627,18 +627,7 @@ pub(super) fn node_properties(object: &[u8], kind: u8, feedback: bool) -> io::Re
     } else if kind == 11 {
         // 141159840 precedes the common node base with track flags,
         // sources, 40-byte clip records and automation curves.
-        reader.u8()?;
-        let sources = reader.u32()?;
-        for _ in 0..sources { reader.source_info()?; }
-        let clips = reader.u32()? as usize;
-        reader.records(clips, 40)?;
-        if clips != 0 { reader.u32()?; } // Subtrack count.
-        let curves = reader.u32()?;
-        for _ in 0..curves {
-            reader.take(8)?; // Clip index and automation type.
-            let points = reader.u32()? as usize;
-            reader.records(points, 12)?;
-        }
+        reader.track_prelude()?;
     } else if matches!(kind, 10 | 12 | 13) {
         // Segment/switch/sequence loaders share 141154620, which consumes
         // the music flags before 141114c50's ordinary node base.

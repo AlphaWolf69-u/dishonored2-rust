@@ -22,6 +22,10 @@ pub use stream::{read_stream_header, stream_format, StreamFormat};
 pub use media_bytes::MediaBytes;
 pub use playback::{Controls, PlaybackBanks, References};
 pub use declaration::SoundEventDeclaration;
+pub use bank::{music_track, music_track_prelude, MusicSource, MusicTrack, MusicTrackPrelude, TrackAutomation, TrackSwitch};
+pub use bank::{music_segment, MusicCue, MusicNodePrelude, MusicSegment};
+pub use bank::{music_switch, DestinationTransition, MusicFade, MusicSwitchContainer, MusicTransitionRule, MusicTransitionRules, SourceTransition, TransitionSegment};
+pub use bank::{music_playlist, MusicPlaylistContainer, MusicPlaylistItem};
 pub use bank::{ActionDelay, ActionTransition, AdvancedSettings, PlaySettings, Attenuation, AttenuationCone, AttenuationCurve, ContainerPlayback,
     BusDuck, BusSettings, CurvePoint, EffectChain, EffectDefinition, EffectReference, EnvironmentCurve, EnvironmentSettings, NodeProperties, Positioning3d, PropertyRange, RtpcCurve, StateAction, StateGroup, StateTransition, StopAction, SwitchCase, SwitchParameters, SwitchPlayback, TransitionMode};
 
