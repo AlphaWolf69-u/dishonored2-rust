@@ -153,6 +153,13 @@ impl Player {
             self.mana.has_extension(&self.attributes), self.mana.magic_suppressed(&self.attributes), self.mana.lock_flags())
     }
     pub fn set_mana_lock_flags(&mut self, flags: u8) { self.mana.set_lock_flags(flags); }
+    /// Attribute modifier lifecycle notification (0xd6). The adrenaline
+    /// component remains attached when stopped, so it can receive this event.
+    pub fn attribute_modifier_changed(&mut self, tag: &str, added: bool) {
+        if tag == "ARK_ATTRIBUTE_BLOODTHIRSTY_ENABLED" {
+            if added { self.adrenaline.start(); } else { self.adrenaline.stop(); }
+        }
+    }
 
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
