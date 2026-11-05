@@ -91,7 +91,10 @@ impl Clone for WorldEffectFrames {
         if trace {
             let elapsed = cycles.zip(crate::loading::thread_cycles())
                 .map(|(start, end)| end.saturating_sub(start));
-            eprintln!("FX_LIFECYCLE frame_clone poses={} cpu_cycles={elapsed:?}", self.published.len());
+            let names_bytes: usize = self.published.keys().map(String::len).sum();
+            let entries_bytes = self.published.len() * std::mem::size_of::<(String, ReferenceFrame)>();
+            eprintln!("FX_LIFECYCLE frame_clone poses={} entry_payload_bytes={entries_bytes} name_bytes={names_bytes} cpu_cycles={elapsed:?} pose_signature={:016x}",
+                self.published.len(), self.debug_pose_signature());
         }
         copy
     }
@@ -107,6 +110,18 @@ pub struct WorldFxClock {
 }
 
 impl WorldEffectFrames {
+    /// Order-independent diagnostic of the published moving-entity poses.
+    pub(crate) fn debug_pose_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        self.published.iter().fold(0, |signature, (name, pose)| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            name.hash(&mut hasher);
+            for value in pose.position.iter().chain(pose.basis.iter().flatten()) {
+                value.to_bits().hash(&mut hasher);
+            }
+            signature ^ hasher.finish()
+        })
+    }
     pub fn load(document: Option<&crate::assets::entities::Document>) -> Result<Self, String> {
         let Some(document) = document else {
             return Ok(Self::default());

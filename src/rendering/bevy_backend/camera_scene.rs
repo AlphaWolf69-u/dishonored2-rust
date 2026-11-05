@@ -222,6 +222,13 @@ pub(super) fn register(app: &mut App) {
     app.init_resource::<super::world_effects::DynamicEffects>();
     app.init_resource::<super::world_effects::DynamicMaterialPrewarm>();
     app.init_resource::<super::world_sounds::WorldSounds>();
+    // Opt-in comparison with the former extraction only. The gameplay owner
+    // remains the sole simulator in either mode.
+    if std::env::var("DH2_DEBUG_EFFECT_FRAME_EXTRACTION").as_deref() == Ok("1") {
+        app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+            super::world_effects::WorldEffectFrames,
+        >::default());
+    }
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::WorldEffectSources,
     >::default());
@@ -773,8 +780,8 @@ pub(crate) fn simulate_effects(
     if let Some(started) = started {
         let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
             .map(|(start, end)| end.saturating_sub(start));
-        eprintln!("FX_LIFECYCLE gameplay_simulation frame={} elapsed_ms={:.3} cpu_cycles={cpu_cycles:?}",
-            water.matrices.frame, started.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("FX_LIFECYCLE gameplay_simulation frame={} elapsed_ms={:.3} cpu_cycles={cpu_cycles:?} pose_signature={:016x}",
+            water.matrices.frame, started.elapsed().as_secs_f64() * 1000.0, fx.world_frames.debug_pose_signature());
     }
 }
 
