@@ -3,6 +3,8 @@ use crate::archive::Catalog;
 use crate::gameplay::player::decls;
 use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
+mod residency;
+pub(crate) fn release_unused() { residency::release_unused(); }
 
 pub struct Rig {
     pub skeleton: crate::edge_skeleton::EdgeSkeleton,
@@ -12,14 +14,26 @@ pub struct Rig {
     animsets: Vec<String>,
     pub tokens: Vec<String>,
     pub path: String,
+    residency: Option<residency::Retire>,
+    audit: Option<(u32, usize)>,
 }
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
     Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
 }
 
+fn track_crc(crc: &mut flate2::Crc, bytes: &[u8], cycles: &mut u64, measure: bool) {
+    let start = measure.then(crate::loading::thread_cycles).flatten();
+    crc.update(bytes);
+    if let Some((a, b)) = start.zip(if measure { crate::loading::thread_cycles() } else { None }) {
+        *cycles = cycles.saturating_add(b.saturating_sub(a));
+    }
+}
+
 fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
-    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    let audit_cycles = residency::tracing().then(crate::loading::thread_cycles).flatten();
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") || residency::tracing();
+    let mut checksum_cycles = 0;
     let mut source_crc = flate2::Crc::new();
     let mut animset_count = 0usize;
     let mut animset_bytes = 0usize;
@@ -41,7 +55,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let skeleton_stem = binding.name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
     let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
     let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
-    if trace { source_crc.update(&bytes); }
+    if trace { track_crc(&mut source_crc, &bytes, &mut checksum_cycles, audit_cycles.is_some()); }
     let skeleton_bytes = bytes.len();
     let skeleton = crate::edge_skeleton::parse(&bytes)?;
     let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
@@ -61,7 +75,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
             None => text_of(catalog, &md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?,
         };
         md6_bytes += md6.len();
-        if trace { source_crc.update(md6.as_bytes()); }
+        if trace { track_crc(&mut source_crc, md6.as_bytes(), &mut checksum_cycles, audit_cycles.is_some()); }
         let tokens: Vec<String> = crate::entities::declaration_lexemes(&md6)?.into_iter().map(str::to_owned).collect();
         let mut depth = 0usize;
         let mut parent = None;
@@ -84,7 +98,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
             for token in tokens[start + 2..].iter().take_while(|token| *token != "}") {
                 let path = format!("generated/decls/animset/{}.decl", token.trim_matches('"'));
                 let source = text_of(catalog, &path)?.ok_or_else(|| format!("{path} is absent"))?;
-                if trace { animset_count += 1; animset_bytes += source.len(); source_crc.update(source.as_bytes()); }
+                if trace { animset_count += 1; animset_bytes += source.len(); track_crc(&mut source_crc, source.as_bytes(), &mut checksum_cycles, audit_cycles.is_some()); }
                 crate::edge_animation::animset_aliases(&source, &mut aliases)?;
                 animsets.push(path);
             }
@@ -92,15 +106,22 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     }
     animsets.reverse();
     let tokens = layers.into_iter().flatten().collect();
+    if let Some((start, end)) = audit_cycles.zip(if audit_cycles.is_some() { crate::loading::thread_cycles() } else { None }) {
+        eprintln!("RIG_DECODE model={model} read_parse_cycles={} checksum_cycles={checksum_cycles}", end.saturating_sub(start).saturating_sub(checksum_cycles));
+    }
     if trace {
         eprintln!("MEMORY player rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
     }
-    Ok(Rig { skeleton, root, aliases, animsets, tokens, path })
+    let audit = trace.then(|| (source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
+    Ok(Rig { skeleton, root, aliases, animsets, tokens, path, residency: None, audit })
 }
 
 impl Rig {
     pub fn load(catalog: &Catalog, model: &str) -> Result<Self, String> {
         load_rig(catalog, model)
+    }
+    pub fn acquire(catalog: &Catalog, model: &str) -> Result<std::sync::Arc<Self>, String> {
+        residency::acquire(catalog, model)
     }
     pub fn joint(&self, name: &str) -> Result<usize, String> {
         self.skeleton.joint_names.iter().position(|n| n == name).ok_or_else(|| format!("{} has no joint {name}", self.path))
@@ -215,15 +236,19 @@ pub fn anim_basic(clips: &mut Clips, fields: &[(String, crate::entities::Value)]
 /// actors own their playback node and time; compressed clips already use the
 /// animation resource owner's shared residency.
 pub struct BasicRig {
-    pub skeleton: crate::edge_skeleton::EdgeSkeleton,
-    pub root: crate::edge_skeleton::JointRestPose,
+    pub rig: std::sync::Arc<Rig>,
     pub animations: Vec<crate::edge_animation::EdgeAnimation>,
     pub template: crate::gameplay::player::animation::AnimBasicNode,
 }
 
+impl std::ops::Deref for BasicRig {
+    type Target = Rig;
+    fn deref(&self) -> &Rig { &self.rig }
+}
+
 impl BasicRig {
     pub fn load(catalog: &Catalog, model: &str) -> Result<Self, String> {
-        let rig = Rig::load(catalog, model)?;
+        let rig = Rig::acquire(catalog, model)?;
         let declaration = rig.decl("animBasicDecl").ok_or_else(|| format!("{model} has no animBasicDecl"))?;
         let fields = crate::entities::player::resolved_decl("animbasic", &declaration, |path| text_of(catalog, path))?;
         let (template, animations) = {
@@ -232,7 +257,7 @@ impl BasicRig {
             let template = anim_basic(&mut clips, &fields)?;
             (template, clips.animations)
         };
-        Ok(Self { skeleton: rig.skeleton, root: rig.root, animations, template })
+        Ok(Self { rig, animations, template })
     }
 }
 

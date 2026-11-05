@@ -99,6 +99,7 @@ impl LevelLifetime {
         drop(material_history);
         drop(skeletal_history);
         crate::bmd6::release_unused();
+        crate::assets::animation_rig::release_unused();
     }
 }
 

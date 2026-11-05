@@ -108,15 +108,7 @@ pub(super) fn character_name(character: Character) -> &'static str {
 }
 
 /// Only these rig fields remain necessary when resolving arm scene clips.
-struct ArmSceneRig {
-    aliases: HashMap<String, String>,
-    rest: Vec<crate::edge_skeleton::JointRestPose>,
-}
-impl From<Rig> for ArmSceneRig {
-    fn from(rig: Rig) -> Self {
-        Self { aliases: rig.aliases, rest: rig.skeleton.rest }
-    }
-}
+type ArmSceneRig = std::sync::Arc<Rig>;
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
     Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
@@ -143,7 +135,7 @@ fn load_arm(
     let model = crate::entities::scene_motion::atom(crate::entities::scene_motion::child(&entity, "renderModelInfo"), "model")
         .ok_or_else(|| format!("{def} has no render model"))?
         .to_owned();
-    let rig = Rig::load(catalog, &model)?;
+    let rig = Rig::acquire(catalog, &model)?;
     let (bind_joint, bind_t, bind_r) = body.tag(tag)?;
     let mut clips = Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
     let mut data = LocoData::default();
@@ -177,7 +169,7 @@ fn load_arm(
     let mut arm = Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items);
     arm.sound_settings = crate::entities::player::entity_component(def, "cpntaudio", read)?
         .map(|fields| crate::gameplay::sound::component::Settings::read(&fields)).transpose()?;
-    Ok((arm, rig.into()))
+    Ok((arm, rig))
 }
 
 /// The body skeleton, its animsets' aliases and the stance clips
@@ -193,7 +185,7 @@ fn load_body(
     listener: Option<crate::gameplay::sound::listener::Settings>,
 ) -> Result<(Body, Scenes), String> {
     let text = |path: &str| text_of(catalog, path);
-    let rig = Rig::load(catalog, body_model)?;
+    let rig = Rig::acquire(catalog, body_model)?;
     let body_skeleton = BodySkeleton {
         rest: rig.skeleton.rest.clone(),
         hierarchy: rig.skeleton.hierarchy.clone(),
@@ -255,7 +247,7 @@ fn load_body(
     // Mutable overlays and the diagnostic retain the former read order.
     if separate_rigs {
         arm_rigs.clear();
-        for arm in &arms { arm_rigs.push(Rig::load(catalog, &arm.model)?.into()); }
+        for arm in &arms { arm_rigs.push(std::sync::Arc::new(Rig::load(catalog, &arm.model)?)); }
     }
     use crate::gameplay::sound::Emitter;
     let arm_models: Vec<String> = arms.iter().map(|arm| arm.model.clone()).collect();
@@ -272,7 +264,7 @@ fn load_body(
     let mut arm_clips: Vec<Clips> = arms
         .iter_mut()
         .zip(&arm_rigs)
-        .map(|(arm, rig)| Clips { catalog, aliases: &rig.aliases, rest: &rig.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
+        .map(|(arm, rig)| Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
         .collect();
     for path in scene_paths {
         let resource = format!("generated/decls/midnightscene/{path}.decl");
