@@ -259,6 +259,7 @@ impl MaterialParameters {
 
 pub struct ParticleDraw {
     pub material: Arc<ParticleMaterial>,
+    pub masking_factor: f32,
     /// Shared per-object SH/IBL record selected at the particle root's origin.
     pub lighting: Option<[[f32; 4]; 9]>,
     /// The selected colour-pass state, after the owning cache's overrides.
@@ -1410,7 +1411,7 @@ impl ParticlePass {
                         .flat_map(f32::to_le_bytes),
                 );
                 self.instance_bytes.extend(
-                    [draw.clip_fade_distance, if draw.mesh.is_some() {1.} else {0.}, 0., 0.]
+                    [draw.clip_fade_distance, if draw.mesh.is_some() {1.} else {0.}, draw.masking_factor, 0.]
                         .into_iter()
                         .flat_map(f32::to_le_bytes),
                 );

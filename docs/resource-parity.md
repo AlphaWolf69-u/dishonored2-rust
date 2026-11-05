@@ -3542,3 +3542,17 @@ after that difference is approximately 3,177,148 capacity bytes during loading,
 excluding allocator and Arc overhead. Targeted read-history spans were nearly
 identical in the recorded run. Details and timing limits are in
 `optimization-opportunities.md`.
+
+### Particle parameter-block publication under integration
+
+`assets::parm_block` now exposes the last authored numeric assignment without
+copying its declaration. `bevy_backend::particle_system` initializes a
+per-instance bend-time factor with the original zero fallback and retains the
+shared declaration through particle tails. `particle_pass` transports the
+factor in existing instance padding; the mask shader specialization performs
+opacity clipping before alpha*factor output. Status: unbuilt and inactive;
+the target, pass pipeline selection, dynamic owner overrides, world-material
+mesh handling and grading activation are still required before FX admission
+can be enabled. Original sources: 140227cd0, 140228110, 140226930, 14033b350,
+1403222f0 and the installed particle/add_default and postfx/colorgrading
+programs. This is no claim of verified rendering or memory/CPU improvement.

@@ -2076,3 +2076,17 @@ owner. No runtime owner or producer calls the pass yet, so this is unbuilt
 integration work and has no verified output or timing claim. The formula uses
 max(R,G,B), unsaturated mask*greyAmount, original invert semantics, and the
 existing HDR range conversion functions; it preserves source alpha.
+
+### Per-instance particle masking transport: prediction before implementation
+
+Carry the authored bend-time scalar in the existing instance clip_fade.z
+padding and extend the existing flat fade/radius varying within its location.
+This adds no instance buffer bytes, allocation or texture acquisition. The
+normal shader specialization keeps masking disabled, allowing its unused
+factor/branch to be eliminated. The mask specialization must return after
+original opacity/ClipAlpha and before lighting. Expected additional CPU work
+is one declaration lookup at system construction and one scalar copy into
+existing padding per published particle. This is incomplete integration;
+shader output and affected upload/vertex costs require later production GPU
+capture, and world FX rejection must remain until target/pass/consumer and
+dynamic per-instance overrides are all connected.

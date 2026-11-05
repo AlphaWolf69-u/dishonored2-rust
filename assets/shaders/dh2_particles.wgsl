@@ -4,6 +4,7 @@ override particle_distortion_mode:u32=0u;
 override particle_scrolling_water:u32=0u;
 override particle_water_alpha_mask_spec:u32=0u;
 override particle_water_mesh:u32=0u;
+override particle_masking:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -106,7 +107,7 @@ struct ParticleFragment {
     @location(2) world_position:vec3<f32>,
     @location(3) fog:vec4<f32>,
     @location(4) @interpolate(flat) clip_plane:vec4<f32>,
-    @location(5) @interpolate(flat) fade_radius:vec2<f32>,
+    @location(5) @interpolate(flat) fade_radius:vec3<f32>,
     @location(6) @interpolate(flat) transparency_weights:vec4<f32>,
     @location(7) @interpolate(flat) transparency_parameters:vec4<f32>,
     @location(8) @interpolate(flat) transparency_mode:u32,
@@ -195,7 +196,7 @@ struct ParticleFragment {
     }
     output.fog=material_fog_vertex(clip,vec3(position.x,position.z,-position.y),false,instance.parameters.w);
     output.clip_plane=instance.clip_plane;
-    output.fade_radius=vec2(instance.clip_fade.x,unpack2x16float(instance.parameters.z).x);
+    output.fade_radius=vec3(instance.clip_fade.x,unpack2x16float(instance.parameters.z).x,instance.clip_fade.z);
     let transparency=particle_transparency[instance.parameters.w];
     output.transparency_weights=transparency.weights;
     output.transparency_parameters=transparency.parameters;
@@ -366,6 +367,10 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     if plane_dot<0.0 {discard;}
     if particle_scrolling_water==0u && input.fade_radius.x>0.0 {
         colour.a*=smoothstep(0.0,input.fade_radius.x,plane_dot);
+    }
+    if particle_masking!=0u {
+        if colour.a<max(material.alpha_test,0.0001) {discard;}
+        return ParticleColour(vec4(colour.a*input.fade_radius.z),vec3(0.0));
     }
     var lit_colour=colour.rgb;
     var albedo=colour.rgb;

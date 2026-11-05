@@ -56,6 +56,17 @@ pub(crate) struct ParmBlock {
 }
 
 impl ParmBlock {
+    /// The declaration preserves authored duplicates; the last assignment is
+    /// the value retained by 140343670. Return raw lanes without conversion.
+    pub(crate) fn numeric_parameter(&self, name: &str) -> Result<Option<[u32; 4]>, String> {
+        let Some(assignment) = self.assignments.iter().rev()
+            .find(|assignment| assignment.name.eq_ignore_ascii_case(name)) else { return Ok(None) };
+        match &assignment.value {
+            ParmValue::Words(words) => Ok(Some(*words)),
+            ParmValue::Name(_) => Err(format!("render parameter {name} has a resource payload")),
+        }
+    }
+
     /// Prepare an immutable block for the existing ordered parameter scopes.
     /// The image owner resolves authored references and the registered default
     /// for null or missing images, as in 14098cdd0. Resolving them here would

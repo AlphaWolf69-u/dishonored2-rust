@@ -46,6 +46,9 @@ pub(crate) struct ParticleSystem {
     /// The immutable declaration remains leased while render-world particles
     /// outlive their initiating FX. Mutable overrides are not connected yet.
     pub parameter_block: Option<Arc<crate::assets::parm_block::ParmBlock>>,
+    /// Per-instance value; automatic owner overrides must update this alongside
+    /// the instance block before masked submission is enabled.
+    pub masking_factor: f32,
     pub stages: Vec<StageSimulation>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
     /// World-program mesh materials, drawn as material surfaces (1401fbad0).
@@ -276,6 +279,7 @@ impl ParticleSystem {
                 }
                 output.push(super::particle_pass::ParticleDraw {
                     material: material.clone(),
+                    masking_factor: self.masking_factor,
                     lighting: if material.option("fx/opt/use_lighting")? != 0 {
                         lighting
                     } else {
@@ -325,6 +329,7 @@ impl ParticleSystem {
                 let (state,stencil_reference)=crate::render_state::alpha_surface_draw_state(material.state,
                     transparency.mode!=0,self.water_flags&8!=0);
                 output.push(super::particle_pass::ParticleDraw {
+                    masking_factor:self.masking_factor,
                     material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
                     transparency,state,stencil_reference,grid_level:0,
                     mesh:Some((source.clone(),model.clone())),instances,
@@ -387,6 +392,9 @@ impl ParticleSystem {
         Ok(Self {
             effect,
             parameter_block: definition.parameter_block.clone(),
+            masking_factor: definition.parameter_block.as_ref().map(|block|
+                block.numeric_parameter("rendering/masking/bendtimefactor"))
+                .transpose()?.flatten().map_or(0.0, |words| f32::from_bits(words[0])),
             stages,
             materials: definition.materials.clone(),
             world_mesh_materials: Arc::new(definition.world_mesh_materials.clone()),
