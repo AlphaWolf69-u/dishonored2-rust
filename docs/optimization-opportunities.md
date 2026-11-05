@@ -810,3 +810,973 @@ recorded input/effect fingerprints matched. The affected lookup averaged about
 The roughly 3.7% difference is too small to establish a useful gain in these
 unequal runs, so the in-place lowercase candidate was discarded. No frame-time
 claim is made. Evidence: local `artifacts/contact-walk-*.err`.
+
+Initial probe-buffer staging prediction: `app::setup` creates a ShaderBuffer
+from `records.clone()`, but `MaterialResolver::upload_probe_records` replaces
+that data after all per-instance records are appended and before the setup
+asset batch is published. No production code reads that initial buffer in
+between. Bevy's `ShaderBuffer::from` serializes into a temporary buffer and
+copies it into the asset; the EotW initial 3,312 records are 476,928 bytes.
+Reserve the same handle with an empty descriptor and fill it once at the
+existing final handoff. Predict removal of the initial record clone and two
+serialized 476,928-byte buffers, while final buffer bytes, descriptor and GPU
+upload stay unchanged. Validate both direct and worker setup publication,
+final buffer fingerprints and counts, and affected setup CPU; this is a
+transient allocation result, not the separate 14.9 MB live-buffer question.
+The existing vertex-probe asset uses render-world ownership as a host mapping
+of original probe GPU preparation (1402b15e0).
+
+Probe-buffer residency investigation: EotW reports 103,489 per-instance SH
+records; including the sentinel, its CPU ShaderBuffer contains 14,902,560
+bytes. Dust's 151,633 records correspond to 21,835,296 bytes. The existing
+`ShaderBufferPatches` needs those bytes to compare and apply 144-byte updates
+for moving models and arms; simply marking this buffer render-only would make
+those updates fail. The original `14035bca0` destroys both backing pointers of
+its indirect-lighting structured buffer; the EotW INDIRECT_LIGHTING tag is
+61,751,560 bytes for the wider subsystem, not a direct budget for this buffer.
+A possible host representation would upload the full initial buffer once, then
+retain exact previous values only for offsets that actually receive dynamic
+updates. First use of an uncached offset may require one redundant GPU write;
+capacity checks, writes before GPU preparation, overlapping updates, map teardown
+and eventual GPU asset loss must remain correct. Measure actual moving offsets,
+unchanged/changed writes and affected CPU/GPU work before deciding whether this
+saves memory without a performance or fidelity regression. Do not discard the
+full backing until those lifecycle paths are handled and measured.
+The existing render-side pending-patch queue retains an entry while its GPU
+asset is absent, with no outgoing-level cancellation. The existing render-world level-release acknowledgement runs after outgoing
+producers stop, and can clear this level-owned queue there. The main-world
+queue must also be cleared at teardown: its usual First-schedule reset is
+gated during loading. Predict zero retained pending or extracted patches for
+an abandoned old buffer and no change to current-level writes. Verify the
+transition ordering and exercise the production route; do not rely on a
+one-frame cancellation message while rendering is gated.
+
+World matrix upload prediction: `WorldMatrices::get_or_upload` creates one
+immutable 48-byte-per-instance GPU stream shared by world shadow and water
+consumers; those consumers only retain its handle. The level's independently
+owned source matrices remain available to CPU queries. Bevy currently retains
+a second full serialized CPU ShaderBuffer after upload. Moving this one-shot
+buffer to render-world ownership should release precisely 48 times the uploaded
+matrix count in CPU buffer length after extraction, with the same uploaded bytes,
+one GPU buffer and no gameplay-frame work. This is a host resource-lifetime
+optimization, not a claim about the original's internal matrix layout.
+Original metadata 14150e060 names a world-matrix buffer view, 14155b100
+identifies arkMat3x4 as 48 bytes, and world teardown is 1400410f0; compare buffer identities and upload
+fingerprints and measure actual retained capacities before keeping the change.
+
+Initial probe-buffer staging result: on EotW / Dust / Dust return / EotW,
+final probe buffer byte lengths and CRCs matched (14,902,560 / 089f05a5,
+21,835,296 / d496779e, 7,066,368 / 62ff7f7f, 14,902,560 / 089f05a5);
+upload counts for these byte lengths and the recorded resource fingerprints
+matched. In a three-load release comparison, initialization of the discarded
+staging buffer used 1,713,495 -> 4,935 loading-thread cycles. The ordinary
+worker-based production setup was exercised; the direct setup handoff was
+source-reviewed. These numbers describe staging work, not gameplay frame
+time or process RSS. Local evidence: `artifacts/probe-staging-comparison.json`
+and `artifacts/probe-staging-perf-*.err`.
+
+Reflection buffer sweep: `app::environment_reflection` also creates
+immutable plane, cube-index and water-probe-info ShaderBuffers. Production
+consumers appear to retain GPU handles only; the probe set keeps independent
+CPU query data. If confirmed through acquisition and transition, the same
+render-world handoff can retire their serialized CPU payloads without changing
+GPU bytes or frame work. From the existing EotW trace (104 reflection cubes and 3,312 primary probes),
+the encoded plane, cube-index and water-probe-info buffers are expected to be
+6,672, 416 and 26,496 bytes respectively if the water consumer is present.
+Verify those counts and output fingerprints in the production acquisition
+before keeping the change; these are much smaller than the world-matrix and
+per-instance lighting buffers.
+
+Physics-shape loading-history prediction: the three-map production trace
+retains 685 physhape path identities (75,998 String-capacity bytes) before
+the first transition and 1,152 (122,949 bytes) by the third. The temporary
+HKX source owner, scene collision data, environment volumes, machinery and
+physics world are all level-owned; decoded collision geometry can outlive its
+source, so retire the path identities only after all outgoing level resources
+and publications are released. Original resource class purge is 140060180.
+The installed common list contains 116 physics-shape names; preserve that
+scope while checking whether those shapes have a session owner. Prediction:
+the first outgoing level releases its map-only shape names, returning to a
+map no longer precredits those released names, and later acquisitions
+re-register them. Common resources stay untouched. Compare count/capacity, acquisition progress,
+shape/physics fingerprints and live owner scope across the four-map route.
+This changes loading progress/history memory, not physics geometry or per-frame
+CPU. Verify no session-scoped shape owner survives before keeping the change.
+
+Loading-history path storage investigation: the four-level trace reaches
+22,515 recorded paths with 1,889,380 bytes of String capacities, excluding
+hash tables. The catalog already owns a normalized archive path table and
+resolves an index during each successful read. A history representation keyed
+by catalog identity and existing archive entry index may avoid retaining a
+second String per indexed path; loose overlay-only entries still need stable
+names. Predict no change to actual resource ownership or GPU work, and lower
+history allocation only for paths proven present in that catalog. Before any
+change, measure indexed versus overlay-only reads, preserve kind and catalog
+isolation, and account for the index lookup cost in manifest progress and
+owner-driven forget. Loading read-history CPU must be measured at the changed
+functions; do not claim that all 1.89 MB can be removed.
+
+The archive index contains about one million names in packed storage, so a
+one-bit-per-entry residency map would have a roughly 125 KB bit payload at
+that scale, versus the 1.89 MB path capacities observed in history alone.
+This is only a design bound: counts by kind, coverage reports, the bootstrap
+reads before level selection, catalog replacement and owner-driven single-path
+and whole-kind retirement all need exact handling. `Catalog::read` currently
+records overlay reads only when an indexed entry also exists, and
+`read_prefix` follows a different reporting path; preserve or explicitly
+resolve those semantics. No implementation or CPU saving is claimed yet.
+
+Archive lookup normalization prediction: `Catalog::entry` currently calls
+`replace` and `to_ascii_lowercase` for every lookup, even when the input
+already contains no backslashes or ASCII uppercase. A borrowed fast path for
+those canonical paths should remove both temporary String operations while
+keeping the existing normalization for other inputs and the same binary
+search and resource identity. Prior loading-history diagnostics counted
+68,326 canonical path reads out of 68,608 in one three-level run, though
+Catalog::entry has additional callers and its actual mix must be measured.
+Measure only the affected lookup's thread cycles and canonical/noncanonical
+counts with both paths in one production build, compare acquisition
+fingerprints and overlay behavior, and check no gameplay-frame regression on
+streaming call sites. This predicts transient allocation and lookup CPU
+reduction, not a resident-memory or GPU saving.
+
+Installed-manifest scope check: `common.mapResources` names 116 physhape
+and 108 massprops records. EotW's and Dust's map-specific lists name 1,431
+and 1,293 physhape records respectively; those lists share 384 names with
+each other and none with the common list. The 622 unique paths observed in
+the four-level area/physics/wind ShapeSources trace include no common-list
+physhape. Other HKX consumers read through different code, so this does not
+prove that common shapes are unused by those consumers or other maps. Do not
+discard all shape history at a map transition; measure complete shape paths
+and implement ownership according to scope.
+
+World matrix staging prediction: `ShaderBuffer::from(matrices.to_vec())`
+clones all matrix rows, encodes them into a temporary Vec, and copies that Vec
+again into the asset. The dependency's `ShaderBuffer::set_data` can encode a
+borrowed slice into the asset's final Vec directly. Predict removal of two
+temporary full-buffer allocations and copies while preserving every encoded
+byte, final GPU upload and source matrix ownership. Compare per-map byte
+fingerprints, upload counts and affected loading-thread cycles. This is
+transient memory/loading CPU, distinct from the retained CPU-copy reduction.
+
+Reflection staging sweep: each of the three small immutable reflection
+buffers also uses `ShaderBuffer::from`, which copies the encoded Vec once
+before upload. The predicted EotW temporary copy is 33,584 bytes in total
+when the water consumer is present. This is much smaller than the matrix
+stream; keep the straightforward code until production byte counts and
+affected loading cost establish whether an additional shared serializer
+helper is worthwhile.
+
+Original scope qualification: the conditional 36-type promotion table at
+`142280ee0`, used by `1400661e0` for eligible map loads, includes
+`massprops` but not `physhape`. Common/init loads take a different branch;
+constructor `14005e740` also derives lifetime from the active allocation
+scope. Therefore list membership alone does not establish a resource's
+lifetime. Use the actual owner/scope evidence when implementing retirement,
+and do not apply the same rule to shapes and mass properties.
+
+`14006a910` confirms the distinction: it pushes heap 2 around
+`1400661e0` for a named map, but does not push that heap for init or common.
+A map-listed physhape is absent from the conditional promotion table; the
+common/init entries inherit their caller's active scope. This supports
+separating map and common shape identities, while leaving the inherited
+common scope to be traced instead of assuming it.
+
+All installed manifest scopes: 36 map lists contain 12,457 distinct
+physhape paths (24,660 distinct per-map name occurrences; 4,316 paths
+occur in at least two maps) and 6,377 distinct massprops paths (18,106
+per-map name occurrences; 4,127 recur).
+No map list repeats a common-list path of either kind; init names neither
+kind. This is installed-list coverage, not evidence that every listed
+resource is actually acquired or held simultaneously. Local inventory:
+`artifacts/shape-manifest-scopes.json`.
+
+Actual four-level ShapeSources requests were narrower than the manifests:
+EotW / Dust / Dust return / EotW used 332 / 259 / 33 / 332 distinct paths.
+Dust and Dust return each requested just one path seen in a previous map
+(18,612 decoded source bytes); returning to EotW reread its 332 paths,
+1,516,640 decoded bytes, after its previous map owner was released. Keeping
+all former EotW parsed sources just for return would retain their source and
+schema between maps; the prior EotW trace counted approximately 1.5 MB source
+capacity and 5.6 MB schema capacity. This is a workload-specific tradeoff,
+not evidence that the original holds these map-class shapes across teardown.
+
+Particle-image name normalization sweep: both `ParticleImages::image` and
+`volume` own the String returned by `image_load_resource`, then call
+`replace` and `to_ascii_lowercase` before storing the shared key. In-place
+ASCII lowercasing and conditional slash replacement could avoid temporary
+Strings while preserving intrinsic image names and exact normalization.
+The four-level client recorded only 108 / 148 / 67 / 108 image requests;
+the likely impact is loading-only and small. Measure the affected path and
+all resolved image identities before adding a separate normalization helper;
+the higher-volume archive lookup is being addressed first.
+
+Image resolver duplicate lookup: when `image_load_resource` is passed an
+already indexed name, it calls `Catalog::contains(name)` and then checks the
+same name again before returning it. On an immutable catalog, returning the
+already confirmed name can remove the second lookup without changing the
+fallback decision. Mutable overlays may change between checks and need their
+existing behavior unless a coherent snapshot is established. Request frequency
+and affected lookup CPU are unmeasured; compare resolved identities and
+fallbacks on installed data before retaining any change.
+
+Physics-shape cross-owner audit: `ShapeSources` shares immutable area,
+trigger and wind HKX sources during level preparation, but static model
+collision in `app::view_geometry::load_model_havok` separately reads and
+parses its own paths, including aliases. Original trigger acquisition `140779530` and model-body acquisition
+`140808ea0` both call `14008c840 -> 1400607f0` on the same physhape
+registry at `142bf8670`. Compare
+actual per-level model-source and machinery wind-source names, bytes and
+fingerprints against the existing ShapeSources trace before considering a
+common acquisition owner;
+preserve alias transforms and the derived triangle lifetime. No overlap or
+saving is assumed before that inventory.
+
+Sparse probe-buffer result: the four-level development comparison produced
+matching initial buffer CRCs and no missed changed records in the instrumented
+control. At the EotW checkpoint the sparse pages plus directory used 141,180
+counted bytes instead of the 14,902,560-byte full CPU data buffer; Dust used
+199,332 instead of 21,835,296 bytes. These are allocation payload capacities,
+not RSS. In the same-binary 75-second walking comparison, the backed control
+recorded 341,342 updates and 279,582,567 targeted thread cycles (819 per call);
+the sparse version recorded 345,565 updates and 346,604,744 cycles (1,003 per
+call). This timer excluded part of the sparse wrapper and included sampling
+overhead, so it does not establish the complete per-call cost. The two runs had 103 first-record writes and no observed
+redundant first write; the control audit found no missed changes. The savings
+do not meet the no-performance-regression requirement, so the sparse-buffer
+change is discarded. Initial staging elimination and outgoing queue cleanup
+are independent. Local evidence: `artifacts/probe-sparse-walk-*.err` and
+`artifacts/probe-sparse-comparison.json`.
+
+Machinery wind-shape reuse prediction: in the real Dust level the machinery
+recipe loader reads ten wind-shape sources but only two distinct paths; all ten
+have identical length and checksum for their respective paths. The same
+per-body loop also reads mass properties using that same shape key, so those
+ten requests necessarily include at least eight repeated mass-property reads.
+The original `14008be50` checks for an existing property on a physics shape
+and constructs `14008b830` only when absent. A level-preparation cache
+keyed by the authored shape path should reduce those ten wind reads/parses
+to two and avoid 17,056 cumulative decoded source bytes; cache the immutable
+principal mass value before per-body overrides. Share the immutable aero-face
+and hull arrays between recipes and runtime bodies, while keeping mass,
+speed, motion, activation and trigger state per body. Do not cache mutable
+overlay data. Predict no per-frame refcount operations and identical per-body
+geometry, masses and wind outputs. Measure per-map requests/read counts,
+affected acquisition CPU, retained capacities and output fingerprints in
+paired production clients before keeping this change.
+
+Archive lookup first release result: four-level clients made 336,410
+lookups, 335,946 already canonical, in each mode. Of sampled canonical
+lookups, the control used 11,164,472 cycles / 5,253 samples and the borrowed
+path used 10,249,009 / 5,254 (about 8% lower per sample). The 464 sampled
+noncanonical lookups used 1,380,153 -> 1,555,992 cycles, about 13% higher.
+Those are affected-function thread cycles including instrumentation, not
+frame time; this first candidate failed the no-regression requirement. The
+fallback now replaces backslashes into one owned String and lowercases it
+in place, rather than allocating a second String after the initial scan.
+Predict identical normalized bytes and no fallback slowdown; repeat both
+canonical and noncanonical measurements before keeping it. Local evidence:
+`artifacts/immutable-perf-separate.err` and `artifacts/immutable-perf-shared.err`.
+
+World-matrix production result: EotW / Dust / Dust return / EotW encoded
+4,507,776 / 6,887,376 / 2,301,360 / 4,507,776 bytes, respectively. CRCs
+matched across old and new encoders (02e24cfb / 7c1f69fd / 16df2b5d /
+02e24cfb), and the matching buffer-size GPU upload counts were unchanged.
+The retained CPU data payload is removed after extraction, while the
+independent source matrices remain for queries. Four loading-thread
+serialization samples totaled 34,816,810 -> 11,531,730 cycles, with two
+full-size staging allocations/copies eliminated. This is not a gameplay
+frame-time or process-RSS result. Reflection buffer CRCs and exact expected
+sizes also matched; their combined EotW CPU data length was 33,584 bytes.
+Production output signatures for physics, contact, material, animation,
+UI bitmap and probes matched in the development comparison. Local evidence:
+`artifacts/immutable-buffer-results.json` and `artifacts/immutable-perf-*.err`.
+
+Image resolver inventory: on EotW / Dust / Dust return / EotW the real
+client made 25,310 image-resolution requests, of which 216 (0.85%) were
+already direct resource names. Both runs recorded the same counts. Removing
+the second existence check would affect only those 216 calls on an immutable
+catalog, so it is not being retained without evidence of a meaningful gain.
+The fallback and mutable-overlay behavior remain unchanged. Evidence: local
+`artifacts/immutable-buffers-*.err`.
+
+Cross-owner shape inventory: the four-level production trace recorded
+370 / 309 / 49 / 370 model-shape reads; none of their paths overlapped that
+level's area/physics/wind ShapeSources requests. Dust additionally made ten
+machinery wind-shape reads for two distinct paths, also with no overlap
+against the area cache. One common-list coin shape appeared in the complete
+history and was read by the model path three times across the sequence
+(2,132 decoded bytes each). Do not add a broad cross-owner cache solely on
+the area/model hypothesis; the repeated machinery inputs have their own
+measured same-owner reuse, and common-shape retention needs its own CPU and
+memory accounting. Evidence: local `artifacts/immutable-buffers-shared.err`.
+
+Model shape alias prediction: production tracing found 17 repeated
+static-model shape-source reads in Edge of the World (146,596 decoded bytes),
+17 in Dust (85,188 bytes), and none in Dust return. Repeated path/byte CRCs
+matched within each level. The per-level model cache stores root shapes but
+the recursive alias loader bypasses it. `140808ea0 -> 14008c840 ->
+1400607f0` requests shape identities from the shared resource registry.
+Routing alias targets through one level-owned shape cache should eliminate
+those repeated reads and parses, while retaining independent scaled
+triangle results and the existing maximum alias depth. Mutable overlays
+must preserve their current read behavior. Measure source identities,
+transformed collision output fingerprints, peak cache capacities, and the
+affected preparation CPU before retaining the change.
+
+Model alias development comparison: EotW / Dust / Dust return / EotW
+read 370 / 309 / 49 / 370 sources before sharing and 353 / 292 / 49 / 353
+afterward, matching the predicted 17 / 17 / 0 / 17 reduction. Source identity
+and CRC sets, transformed collision geometry CRCs and body/triangle counts
+matched; the other recorded physics, material, animation, image and probe
+fingerprints matched as well. Extra cached triangle capacity was 8,208 /
+31,896 / 25,056 / 8,208 bytes respectively, plus keys and hash buckets,
+and is temporary. Even a level with no avoided source reads can require
+extra alias entries. An installed-index inventory identified 1,138 alias
+headers, all one link to indexed targets with no observed cycles or missing
+targets; this is not evidence about modded resources. Release measurements
+of the affected loading path have since been taken. The measured Dust return
+span rose from 6,367,863 to 8,216,457 thread cycles while it saved no reads;
+the other three spans fell. These are single-run loading measurements and do
+not establish a gameplay-frame change. The speculative alias-target cache
+and its extra temporary triangle storage were removed; the existing root cache
+and the central physics-shape ownership remain. No area/model source overlap
+was observed, so that speculative sharing was also removed.
+Local evidence: `artifacts/model-alias-*.err` and
+`artifacts/model-alias-comparison.json`.
+
+Archive lookup follow-up: with every affected lookup sampled during the same
+75-second player walk, 111 canonical calls used 959,525 -> 782,565 thread
+cycles. No noncanonical calls occurred during the walk. A separate loading
+comparison of 61 noncanonical calls fluctuated between a small gain and a
+small loss across runs, so it does not establish a fallback speedup. This is
+the changed lookup's thread time with diagnostics, not whole-frame CPU.
+Local evidence: `artifacts/archive-entry-walk-*.err`.
+
+Machinery cache development result: EotW / Dust / Dust return / EotW
+requested 87 / 93 / 20 / 87 mass-property resources. The control performed
+287 reads (163,016 decoded bytes); the shared preparation owner performed 53
+(30,104 bytes), avoiding 234 reads and 132,912 cumulative decoded bytes.
+This is much more reuse than the initial lower bound of eight: the trace
+shows that many additional bodies share the same mass-property paths, not
+just the ten wind bodies. Dust's wind shape requests fell from ten reads
+(21,320 bytes) to two (4,264 bytes), as predicted. Per-body mass, position,
+orientation, wind-face/hull and speed fingerprints matched in each level:
+c90d7b68 / e3773255 / 198e2cb7 / c90d7b68. Recorded physics, contact,
+material, animation, bitmap and probe signatures also matched. These are
+loading input bytes, not resident-memory or gameplay-frame savings; the
+temporary cache and affected loading CPU are being measured in release.
+Local evidence: `artifacts/machinery-cache-*.err`.
+
+Release measurements of the same affected preparation spans totaled
+14,579,244 -> 3,367,609 thread cycles for mass acquisition over four loads;
+the Dust wind acquisition span was 853,020 -> 236,983 cycles. The Dust
+temporary caches had 18 mass entries and two wind entries; key capacities
+were 3,852 and 430 bytes, plus 1,008 bytes of wind-vector payload. These
+exclude hash-table and allocator overhead. Neither result measures gameplay
+frame time or process RSS. Local evidence: `artifacts/machinery-perf-*.err`.
+
+Machinery resource ownership prediction: moving the existing preparation-only
+mass cache to the physics mass owner and acquiring wind HKX through the shared
+shape owner should preserve the measured 53 mass reads and two Dust wind reads
+on the four-map route. A wind shape already held by an area owner can avoid one
+additional read; no such overlap was observed on the sampled route. Cached mass
+values remain copied before body-specific overrides, and all preparation caches
+retire after their consumers. This changes no per-frame code, draw or GPU work.
+Compare body fingerprints and the affected loading spans; do not infer a frame
+time improvement or a physical-memory saving from avoided decoded bytes.
+
+Physics-system acquisition investigation: the MD6 parser in the executable
+(`1401c9630`) requests its ragdoll system via the `physSystem` registry and
+`14076abc0` builds independent runtime bodies from it. Machinery currently
+reads and parses one system for each eligible placement, then consumes those
+recipes in preparation. Before adding a cache, count distinct paths and
+matching source fingerprints in production levels. If requests are all
+unique there is no demonstrated duplicate acquisition to remove; a cache
+would add retained preparation memory. This is loading-only, not an assumed
+per-frame improvement.
+The saved original EotW allocation snapshot reports HAVOK 103,479,168 bytes
+and PHYSICS 38,820,534 bytes; these tags include many physics structures and
+do not isolate these systems or justify attributing their totals to a cache.
+Moving the existing system and ragdoll reads plus parsing into their physics
+resource owner is expected to keep the same read count, error behavior and
+decoded data. It changes preparation only and should have no gameplay-frame
+cost. The caller will still construct independent bodies; any actual sharing
+must be justified by the per-level duplicate-source inventory first.
+The production inventory has now found 4 / 3 / 1 / 4 system requests over
+EotW / Dust / Dust return / EotW, but only 1 / 2 / 1 / 1 distinct paths per
+level; ragdoll maps show the same counts. Repeated inputs match by size and
+CRC. Prediction: a preparation-scoped owner sharing immutable decoded system
+and ragdoll definitions reduces both classes from 12 to 5 reads, avoiding
+147,840 and 4,256 cumulative decoded bytes respectively. Independent body,
+constraint and animation state must remain per instance. The ragdoll mapping
+can remain shared and immutable in runtime skinning; only setup clones its Arc,
+and iteration must not acquire locks or refcounts per frame. Compare source,
+body/constraint/map fingerprints, retained capacities and affected loading
+CPU, including maps with no repeated inputs. Mutable overlays stay uncached.
+
+Sound identity audit to perform: prepared media caches use `(sound ID, source
+length)` across banks. The original sound registry owns a source by sound
+identity, but the key alone does not prove that same-ID, same-length sources
+from different installed banks have identical bytes. Inventory actual reused
+keys and their encoded fingerprints before changing the key or its lifetime.
+Prediction: if the installed bank registry guarantees one payload per sound
+identity, there is no affected-content change to make; if it does not, a
+collision needs an owner/source identity rather than a speculative cache flush.
+Four-map acquisition tracing recorded 100,343 resident requests across 9,281
+keys without differing same-size payload CRCs. Streamed requests used 2,798
+keys; 401 keys pointed into more than one installed package location. Comparing
+the complete contents at those locations read 197,348,728 bytes and found no
+different payloads. This covers requested resources on the sampled route, not
+every installed sound or mod. No cache-key change is justified by this result.
+Local evidence: `artifacts/audio-package-identity-comparison.json`.
+
+Image read-history investigation: before the fourth load on the sampled
+route, the progress registry retained 6,185 image names with 567,748 bytes
+of String capacity. This is bookkeeping, not image payload or RSS. Scene
+images live in `SceneRenderQueue`; common images can move into `SharedImages`,
+and named UI bindings can retain `ResidentImages` weak leases across a purge.
+Do not clear the entire image kind or treat a path merely present in the common
+manifest as a live image. Predict that retiring only identities whose last
+reusable image owner has released them will remove stale precredits at the
+next map, with no per-frame work. Measure removed/retained names and compare
+actual scene/loaded UI identities and acquisition on repeated map transitions;
+loading-only pruning work and temporary path storage must also be counted.
+
+
+The four-map development machinery-owner comparison matched all 292 body
+records and their mass/pose/wind fingerprints, plus the other recorded resource
+signatures. Its Dust wind acquisition span is not a valid timing comparison:
+the new owner logged and checksummed each source while the control did not.
+Disable that source tracing in the release comparison before deciding its cost.
+
+Shape read-history prediction: the rewrite retains no session physhape source
+registry; its temporary preparation owner and the published world are the
+current scopes, while scene geometry and mutable trigger sources are level
+owned. Give preparation and its published level one shared scope lease and
+forget physhape read identities only after the last such scope is gone. This
+is a host bookkeeping correction; original 140060180 purges resource classes
+according to scope and the original may retain common identities that this
+rewrite does not currently cache. On the measured route, 685 shape names were
+present before the second map and 1,152 before the fourth; predict those stale
+names are removed at scope release, not an RSS or GPU-memory reduction. Measure
+actual name/string/table counts, cleanup cycles, loading precredits and physics
+geometry signatures across map transitions. The guard changes no gameplay
+frame work. Massprops is not included in this change: its original conditional
+promotion and owner lifetime must be handled separately.
+
+Ragdoll mapping representation follow-up: the first sharing candidate uses
+`Arc<Vec<RagdollEntry>>`, adding an extra pointer dereference in skinning. Use
+`Arc<[RagdollEntry]>` instead so the per-instance view carries its data pointer
+and length directly; this also avoids a separate Vec allocation per definition.
+Constructing the shared slice copies once per distinct map during preparation.
+Predict identical mapping entries and no additional per-frame reference-count
+operations; compare the affected skinning function during a moving-player run
+before claiming that gameplay CPU is unchanged.
+
+Contact declaration history prediction: the session `COMMON_TEXTS` retains
+common contact FX, physics-material and sound-event texts; `DeclarationTexts`
+contains a separate level map (382 / 389 / 99 entries in the sampled levels).
+When `audio::begin_level` resets ContactSounds after world FX publications are
+removed, forget only the level map's indexed identities, leaving all common
+entries and unrelated FX owners alone. Predict at most one removed history
+name per released level entry, unchanged declaration contents and future
+acquisition, no gameplay-frame work, and one short batch of indexed lookups
+at transition. Count removals, String/table capacity and affected transition
+cycles; do not infer that the entries are all distinct sound events or that
+this measures payload RSS.
+
+Image-history development comparison: the three transitions removed 4,603 /
+4,157 / 2,324 stale image names and 424,658 / 380,021 / 213,370 bytes of
+String capacity. The hash-set capacity changed 7,168 -> 448, 7,168 -> 448,
+and 3,584 -> 448 slots. These are bookkeeping capacities, not image payload,
+physical memory or GPU savings. Named resident-image load records and scene
+registered-view reuse matched; all recorded physics, contact, material,
+animation, UI bitmap and probe signatures matched. Precredits decreased as
+expected. Transition CPU still needs release-profile measurement; the existing
+UI and shared image leases remained in their owners. Local evidence:
+`artifacts/image-history-*.err` and `artifacts/image-history-comparison.json`.
+
+Machinery definition development comparison: the system and ragdoll source
+reads both fell 12 -> 5 over four loads, with all twelve per-instance definition
+fingerprints matching and independent runtime body creation unchanged. The
+first version used Arc<Vec>; the follow-up uses Arc slices and its moving-player
+skinning timing must be measured separately. Local evidence:
+`artifacts/image-history-*.err`.
+
+Mass-property history prediction: no rewrite session owner retains massprops
+resources after machinery setup; body instances hold copied mass values. Keep a
+separate mass-history lease in the mass source and published machinery owner,
+then retire read identities after the last scope closes. The original can
+conditionally promote massprops, so this is explicitly the host's current
+ownership and does not infer that its native scope equals physhape. The route
+has 13 / 18 / 9 / 13 unique machinery mass paths; predict those names can be
+released after the corresponding map without changing body values or adding
+per-frame work. Measure actual history removals, same-view output fingerprints
+and transition-only cost; do not present discarded path strings as a reduction
+of the native PHYSICS tag.
+
+Installed common manifests list seven physSystem and twelve ragdoll names.
+They cover characters, animals and the music box; the speaker cable sources
+actually requested on the four-map route are not in those lists. The current
+preparation-scoped sharing therefore does not demonstrate a missed reusable
+common cable identity. A future session cache for those nineteen names should
+be admitted lazily only after an active consumer and measured across maps;
+preloading them or claiming a cross-map saving from this route would be
+unsupported. Original per-resource registry behavior is still the baseline.
+
+FX acquisition inventory prediction: contact declarations have a shared
+common text table, while world and screen FX still resolve declarations through
+`Catalog::read`. The original resource registry can return the same FX identity
+for repeated requests. Count path, length and source CRC in the real four-map
+client, grouped by load, before introducing another shared cache. Duplicate
+input reads alone predict acquisition work; they do not prove equal parsed
+semantics, current residency savings or a gameplay-frame CPU gain. Mutable
+overlays must preserve their existing live read behavior.
+
+Image history table-capacity correction: the measured candidate shrank the
+hash table at every map change, but the next map immediately adds thousands of
+image identities again. Retain the table's bounded peak capacity for reuse and
+still free removed path strings. This deliberately forgoes the measured slot
+reduction to avoid repeated table growth and rehashing; do not report those
+slots as freed in the final implementation. The history now represents live
+identities, and no per-frame work is added.
+The same capacity-reuse rule applies to shape and mass-property history:
+clear stale names under their own last-owner scopes but keep the hash-table
+allocation for the next level. This retains bounded bookkeeping space rather
+than forcing a fresh table allocation on every transition; scope cleanup is
+still separate for the two original resource classes.
+At normal transition `play_started` has already released the loading request
+index. Skip recomputing request hashes while pruning when that index is empty;
+this avoids one pointless hash per retired name. The fallback still updates
+credits if cleanup occurs while an acquisition index exists. Predict fewer
+transition-thread cycles, identical removed identities and no frame-path work.
+
+Physics-system skinning scratch sweep: `SystemSkin::current` allocates a
+joint-option vector, a copy of the rest-pose vector and a completion bitmap
+on each invocation before it can decide that a pose is unchanged. At most
+three vector allocations per active skin call are candidates for reuse; the
+actual frame-time and allocation-size impact has not been measured. Preserve
+joint order and full pose precision. This is separate from shared ragdoll
+ownership, whose moving-player measurement is currently running; changing the
+scratch in the same comparison would conceal its effect. Measure and address
+it after the mapping comparison rather than claiming an FPS gain now.
+
+Image-history normalization correction: `Catalog::read` records lowercase,
+forward-slash identities, but a successful direct `image_load_resource`
+request may retain the caller's case and slashes in a live image-owner key.
+An exact-key-only pruning predicate could therefore discard a live image's
+credit on another map or with an overlay. At level teardown, gather normalized
+aliases only for noncanonical live owner keys; preserve the allocation-free
+fast path when all keys are canonical. Predict identical behavior for the
+sampled canonical route and correct retention for noncanonical aliases. Count
+noncanonical owners and transition-only cost; this adds no per-frame work.
+Direct indexed image names can also enter `ResidentImages` or scene slots in
+noncanonical form, so equivalent spellings might miss shared-owner lookups.
+Inventory such resolved names on the four-map route before changing acquisition.
+If they occur, canonicalize at the common image resolver without introducing a
+new per-frame operation; verify descriptors, GPU identities, overlays and the
+affected loading cost. An alias used only by an untested overlay remains a
+possible correctness case even when this installed-data sample contains none.
+
+Release-profile results before the capacity-reuse follow-up: the scoped shape
+owner released 685 / 553 / 82 names at the first three transitions, with
+75,998 / 56,119 / 8,466 bytes of String capacity, while the matching collision
+geometry signatures remained unchanged. The scoped system owner again reduced
+both system and ragdoll reads 12 -> 5 with all twelve definition signatures
+matching. In the 75-second moving-player comparison, the affected ragdoll
+mapping loop recorded 40,010,561 cycles / 13,832 calls for the independent
+vector and 37,908,848 / 13,796 for the shared slice. These are diagnostic
+thread cycles for that loop, not total frame time; the sample found no CPU
+regression there. Local evidence: `artifacts/image-history-perf-*.err` and
+`artifacts/ragdoll-walk-*.err`.
+The earlier release-profile image-history candidate used 4,469,850 /
+3,988,075 / 2,492,350 thread cycles at the three transitions and removed
+4,520 / 4,140 / 2,346 names. That candidate still shrank its table and hashed
+every removed name against an already-empty request index. Those costs are not
+claimed for the revised capacity-reusing implementation; measure it directly.
+
+Machinery wind-source cost investigation: unlike the prior direct reader,
+`ShapeSources::acquire` wraps every uncached HKX in an Arc even though the
+machinery caller immediately derives faces/hulls and releases that source.
+If the repeated release measurement confirms a regression, keep the single
+physics-shape owner and its cached-hit behavior, but offer a scoped borrowed
+consumer on cache misses so the temporary source needs no Arc allocation.
+Predict identical source bytes and per-body wind geometry, lower affected
+loading CPU, and no additional frame-time work. Compare the same-binary Dust
+sequence before retaining the change; the original game shares shape resources
+via 14008c840/1400607f0.
+
+The repeated Dust comparison (four loads per mode, same release binary)
+measured mass acquisition spans of 4,923,790 -> 5,385,335 thread cycles and
+wind source/geometry spans of 872,375 -> 1,051,820 cycles; all body signatures
+matched. The proposed owner thus added about 9% and 21% respectively on these
+short loading spans, despite the earlier overall cache still avoiding repeated
+reads. Keep the centralized owner, remove temporary Arc construction from
+one-shot wind geometry, and remeasure the exact spans. Per-frame CPU is not
+involved. Local evidence: `artifacts/machinery-owner-repeat-*.err`.
+The mass owner call has also been marked for inlining because the earlier
+caller performed the same lookup directly in its body-construction loop.
+The hypothesis is that avoiding a call boundary recovers the small observed
+loading overhead; the compiler may already inline it, so no gain is assumed.
+Recompare the same affected Dust spans and remove the hint if it does not help.
+
+Mass cache ownership correction to investigate next: the original direct
+recipe cache moved its newly formatted path into the cache, whereas the
+centralized owner accepts `&str` and allocates a second path on every miss.
+The first diagnostic control also cloned the key, so it did not measure this
+extra allocation against the true old implementation. Transfer the owned path
+to the owner on a successful miss, preserving the complete path for missing
+resource errors, and remeasure the exact loading span against a control that
+also moves its key. Expected change: one fewer path allocation per unique mass
+resource, with unchanged body data and no gameplay-frame work.
+Because the inlining hint was not isolated from the key-allocation difference,
+its effect is unknown; the final key-transfer candidate removes that hint and
+compares the actual old and new ownership paths directly.
+
+The one-shot wind change factors the common HKX read/parse into `read_source`,
+which also affects area and physics preparation. Predict identical inputs and
+outputs, no gameplay-frame work and no meaningful change to those existing
+acquisition spans. The final same-binary Dust comparison will time those
+specific source-owner calls as well as the mass and wind spans; it must use the
+true old key-moving control, not the earlier cloning control.
+
+FX acquisition inventory result: the four-map production route read
+7,509 / 120 / 45 / 102 distinct FX source records, with zero repeated
+path/length/CRC records within a map. The large first-map count is common
+contact data; the later maps reuse it. No additional FX source cache is
+justified by this route. The image resolver reported seven noncanonical names,
+all the intrinsic `_defaultCube`; no noncanonical indexed image name was
+observed, so the acquisition path remains unchanged. The owner-alias cleanup
+still handles indexed names supplied with different case/slashes. Evidence:
+`artifacts/remaining-history-shared.err`.
+
+Declaration-history scope correction: the owner audit found, before the first
+transition, 7,407 FX names and 1,296 sound-event names in the common cache,
+382 map-listed sound events, and 102 FX plus 33 sound-event names outside
+those tables; six physics-material names were likewise outside the common
+cache. World FX, screen/pause FX, map physics and contact owners have stopped
+before audio teardown, while COMMON_TEXTS is the reusable session source.
+Therefore retain only actual common-cache names in these three classes at that
+boundary, including unlisted map declarations, rather than clearing just the
+listed contact table. Predict all common identities survive, map-only history
+is retired, actual source/scene outputs are unchanged, and the cost is confined
+to three bounded transition scans. Measure removals and transition cycles; do
+not treat path-string capacity as native allocation or RSS.
+
+The revised capacity-reusing release comparison removed 4,520 / 4,140 /
+2,346 stale image names (416,800 / 378,152 / 215,524 String-capacity bytes)
+at transitions; no live owner had a noncanonical key in that route. Cleanup
+used 3,670,940 / 3,216,570 / 1,981,315 thread cycles, compared with the
+previous shrinking candidate's 4,469,850 / 3,988,075 / 2,492,350 in separate
+runs. These are indicative transition-only spans, not a controlled claim about
+frame time or an exact allocator saving. Hash-table allocations now stay
+available for later maps. The scope also preserved matching image loads and
+shared-view records. Independent mass scopes retired 13 / 18 / 9 names and
+the selective contact owner retired 382 / 389 / 99 names. The latter cleanup
+is being extended to all three declaration classes after the audit found map
+FX and other sound/material names outside the listed contact table. Evidence:
+`artifacts/remaining-history-*.err`.
+
+Read-history reinsertion prediction: after a map-owned identity is retired, a
+later actual read inserts its name again instead of finding the old entry.
+This is necessary for accurate progress but adds loading-only bookkeeping;
+keep hash-table capacity to avoid repeated growth. Profile `loading::read`
+separately by affected resource class in the paired real-level sequence,
+including calls, new insertions and thread cycles. Do not use total CPU or a
+stationary-frame benchmark to infer the cost, and do not claim the extra work
+is free if the measurement detects it.
+
+Image identity acquisition correction: `Catalog::contains` resolves case and
+slash variants to the same normalized archive/overlay entry, while direct
+`image_load_resource` returns the caller spelling. Two equivalent direct names
+can therefore create two owner keys and duplicate image resources. Return the
+catalog's canonical indexed/overlay key from the same lookup, preserving the
+actual overlay file selection and intrinsic names. The sampled four-map route
+had no noncanonical indexed image requests, so predict unchanged game-data
+image identities and uploads there; equivalent case/slash aliases should now
+share one identity. Reuse the existing lookup rather than adding another index
+search, measure the affected resolver cost, and keep this as a resource identity
+fix rather than claiming a sampled VRAM reduction.
+
+### Particle declaration read-history scope: prediction before implementation
+
+The installed resource manager's lookup/purge boundary is 1400607f0 /
+140060180. The host already keeps decoded particledt declarations in Arc
+objects shared by screen/world effects; CameraGpu particle simulations can hold
+those declarations after the main-world scene begins teardown. The temporary
+ParticleResources acquisition cache alone is therefore not the last owner.
+
+Attach one shared host history lease to each successfully acquired declaration,
+with the acquisition owner holding it while it works. Clear stale particledt
+read names when the last such scope is dropped, including render-world users;
+concurrent acquisitions keep independent scopes and cannot clear each other.
+No common particle declaration is currently held by a session owner in the
+rewrite, so this retires bookkeeping without introducing a resource reread.
+The sampled map sequence left 89, then 166, then 169 names in history; the
+prediction is that map-owned names cease accumulating after the last owner
+releases. One Arc reference per acquired declaration adds setup/teardown work,
+with no new per-particle or per-frame operations. Measure the affected loading
+read/teardown spans and compare particle identity/output signatures; include the
+extra small lease references when describing memory and do not claim RSS gains.
+
+### Particle model read-history scope: prediction before implementation
+
+The original's resource manager lookup/purge boundary is 1400607f0 /
+140060180, and 232220 supplies PMODEL geometry. ParticleResources acquires
+PMODEL sources only during level preparation, but declarations and queued
+particle draws retain independent Arc<ParticleModel> references. Track the
+host read-history scope through those model objects, not just their acquisition
+cache or their parent particle declarations. As with declaration history,
+overlapping scopes must keep the shared read identities until the last owner
+releases. There is no reusable session PMODEL owner in the current rewrite.
+
+Expected effect: transition-retired map names stop accumulating; sampled
+production coverage lists 14, then 9, then 5 listed identities and additional
+unlisted identities. One Arc reference per acquired model adds setup/teardown
+work and a small resident pointer, with no per-frame operation. Measure the
+model-class history release and affected loading::read work, and compare
+particle fingerprints. Original bootstrap/EotW snapshots count 150/327
+staticParticleModel identities, without naming scopes or measuring bytes; they
+are not evidence that the original discards all of those models at transition.
+
+### Static model read-history scope: prediction before implementation
+
+Original model acquisition and purge use 14025aa00 / 140259960 and
+1400607f0 / 140060180. In the rewrite, placed models and area-fog models are
+acquired for a level; their CPU source caches end after preparation, while scene
+meshes and fog geometry live until renderer teardown and main-world release.
+There is no session owner from which the next level can reacquire those prepared
+model meshes. A host level scope beginning before preparation and ending after
+the render-world release acknowledgement should retire stale model read
+identities without adding reads, per-frame work, or suppressing live objects.
+Concurrent/prepared scopes must protect each other, including cancellation.
+
+The sampled history grew from 417 to 535 to 539 model names during transitions,
+with 37,586 to 48,198 to 48,532 bytes of String capacity. These totals include
+active names and are not a prediction of exactly how many entries will drop.
+Measure per-transition release and later model read insertion cost, comparing
+model geometry/material/visibility fingerprints; do not claim process-RSS
+savings. Original bootstrap/EotW registry counts 163/965 do not identify their
+lifetimes or allocation bytes.
+
+### Camera blur metadata reuse: prediction before implementation
+
+The original resource lookup 1400607f0 returns an already acquired declaration
+identity. CameraScene currently rebuilds BlurResources on every level even
+though its six blur kernels and the 63 material variants depend only on the
+installed catalog, not the map. Their runtime consumer already receives an
+immutable Arc. Share one catalog-scoped Arc for the session; a different
+catalog or any editable overlay takes a fresh acquisition. Per-view parameters
+and GPU passes stay level-owned. This is host reuse, not a claim about the
+original's exact parsed-object layout.
+
+Prediction for four level loads: 4 -> 1 BlurResources constructions and
+260 -> 65 catalog reads (63 materials and two render-program declarations),
+with matching kernel/variant fingerprints. The retained metadata adds one small
+session allocation between levels; measure its owned capacities and the changed
+acquisition function in a same-executable comparison. No frame-time or RSS
+saving is predicted, and no tests or visual inspection are needed.
+
+### Declaration-history membership lookup: prediction before implementation
+
+The first complete scope scan retired 536 map names / 55,498 String-capacity
+bytes per Dust transition while preserving the common 9,009-text owner. Its
+scan used 3,232,355 to 4,489,520 thread cycles; the older contact-only scan
+was faster but left real FX and sound names stale. Most complete-scan lookups
+probe the same common text map. The project already uses hashbrown's foldhash
+for other immutable name maps. Using it for DeclarationTexts should reduce the
+membership cost without an additional index or duplicated strings; map values,
+common/level scope and paths stay unchanged.
+
+Prediction: fewer CPU cycles in the three declaration release scans and no
+regression in PhysicsSeed source lookup/acquisition; no per-frame work or
+change in retained text bytes. Compare a standard-hasher control and foldhash
+in the same executable, including the affected physics source lookups, and
+compare contact, sound, FX and scene fingerprints. If the result does not
+justify the change, retain the previous implementation and report its measured
+transition cost rather than claiming a speedup.
+
+Six-load declaration and machinery comparison: both clients completed, and
+all six machinery-body, model-collision, probe, contact and material signatures
+matched. The four Dust loads gave machinery mass medians 1,188,562 ->
+1,337,522 cycles and wind medians 227,710 -> 217,490; one shared run rose to
+2,352,385 mass and 515,865 wind cycles. The paired spike affects both measured
+spans, so the source of that outlier is not established by these measurements;
+a further same-binary repeat is in progress before accepting a performance
+claim. Full declaration cleanup removed 536 names / 55,498 String-capacity
+bytes at each repeated Dust transition, and the full scan took 3,232,355 to
+4,489,520 cycles. The added reinsertions consumed cycles on the following load;
+these are changed loading/bookkeeping spans, not gameplay frame timings or RSS.
+Evidence: artifacts/final-mass-cost-{separate,shared}.err.
+
+### Material read-history scope: prediction before implementation
+
+Original material lookup/purge is 1400607f0 / 140060180. The host's scene,
+world and particle material data are retired with the level after render-world
+release. The prepared camera-blur metadata cache is a session owner of its
+63 concrete material variants; compiled reusable pipelines alone do not
+retain a material declaration identity. At the last level material scope,
+retain names represented by the actual camera-blur session cache and retire
+other material read identities. Editable-overlay mode has no blur session cache.
+The retained names must be generated from the stored variants, not from common
+manifest membership. Concurrent preparations keep independent scopes.
+
+Prediction: the 1,507 -> 1,960 -> 1,964 accumulating names in the sampled
+sequence stop accumulating, while the 63 cached camera names remain credited
+if that cache is active. This is progress-history bookkeeping; it does not
+change material loads, GPU resources or any frame work. The temporary name set
+adds 63 short-lived paths at teardown. Measure the release and following-load
+read cost and compare material-source and scene signatures. Original registry
+counts 1,174 at bootstrap and 2,993 in EotW do not identify lifetimes or bytes.
+
+### Common declaration history sharing: prediction before implementation
+
+Original 1400607f0 precredits an acquired identity and 140060180 releases its
+scope. The host already retains one common DeclarationTexts map containing
+7,407 FX, 1,296 sound-event and 306 physics-material source texts, but loading
+history separately owns the same 9,009 path strings. Every transition then
+scans those names and hashes them back into the common table to find a few
+hundred map-only entries. This duplicates live keys and caused the measured
+3.23-4.49 million-cycle Dust transition scans above.
+
+Expose the already-owned immutable common map to loading history by Arc; after
+it is published, remove its duplicate history keys once. Check that shared map
+when a resource is precredited, read or reported, while keeping map-only names
+in the existing history sets. Dropping a level can then retire just those map
+sets, and the common map remains owned for precisely the cache lifetime.
+Handle the no-common/overlay path and catalog changes without keeping stale
+credits; preserve required counts, late-read detection and coverage reports.
+
+Prediction: the duplicate 9,009 common path strings and their excess history
+hash-table capacity retire once per session; transition scans process only
+map-owned entries rather than all common entries. Actual String capacity,
+index capacity, scoped teardown cycles, per-kind read and manifest precredit
+costs must be measured. Ordered progress/coverage and source/scene signatures
+must match a same-executable control. A walking trace must check any affected
+late-read path if it is exercised. No GPU work or player-visible difference is
+predicted. If accounting or acquisition cost regresses, find and correct the
+cause before retaining the change.
+
+### Machinery mass cache miss: prediction before implementation
+
+The centralized MassSources owner currently looks up a path and then hashes it
+again when inserting a newly parsed value. The former local cache did the same,
+but moving ownership measured a 12.5% higher median in the affected short Dust
+loading span, with one much larger outlier; the repeat is still pending. Use a
+single occupied/vacant entry lookup for the shared cache, moving the same owned
+path into a miss and preserving missing/read/parse errors and the overlay path.
+
+Prediction: each successful cache miss hashes its path once rather than twice;
+hits, overlay reads, outputs, scope and gameplay updates stay unchanged. The
+sampled four-map route had 53 reads and 234 repeated requests. Measure the mass
+acquisition span against the real former key-moving control and compare body
+fingerprints; reject or investigate if it does not improve the targeted span.
+
+Six-load follow-up: the original key-moving machinery control and shared owner
+matched all six body fingerprints. Dust medians in this run were 1,751,504 ->
+1,061,929 mass cycles and 282,713 -> 207,007 wind cycles; pooled with the prior
+four-load repeat, medians were 1,273,208 -> 1,087,973 and 255,378 -> 209,405.
+The separate client was also slower on unrelated image and shape acquisition
+spans in the follow-up, so these changes are not evidence of an equivalent
+steady-state speedup. The earlier isolated shared-run spike likewise cannot be
+attributed to a specific code path from these totals. No frame-time claim is
+made; the repeated sources and body output remain identical.
+
+Each repeated Dust transition retired 429 model names / 38,362 String-capacity
+bytes, 103 particle names / 10,586 bytes, and 12 PMODEL names / 999 bytes. The
+next Dust load then reinserted those names. For the second Dust load, the model
+read-history span was 1,213,170 -> 2,180,814 cycles, including this expected
+bookkeeping cost; scope releases cost 143,325 / 39,235 / 6,615 cycles in the
+first transition. These are loading spans, not per-frame work. The following
+common-history comparison isolates whether eliminating duplicate common names
+and scans offsets that work, and includes the moving-player read path.
+
+The session camera-blur owner constructed six -> one immutable metadata sets;
+the six inputs had matching `f2bb4981` fingerprints. Its acquisition spans
+totaled 21,300,056 -> 4,434,045 cycles; the retained counted lower bound was
+6,536 bytes plus Arc/allocator overhead. Both modes rendered from the same
+variant data; no visual inspection or test was performed. Source-path aliasing
+was not observed in those six maps, so no saved texture allocations are claimed.
+
+The later repeat did not establish a stable regression in the existing mass
+owner: pooled medians were lower for the shared mode and several unrelated
+acquisition spans moved in the same direction as the outlying run. The
+single-entry cache proposal therefore remains unapplied; it is not claimed as
+an improvement. The current owner keeps its already verified error behavior.
+
+### Player declaration preparation: prediction before implementation
+
+Original declaration identity lookup uses 1400607f0. During a normal rewrite
+level setup, first-person arms, the player, and underwater screen effects each
+call player_declarations for the same character and catalog. Each call rereads
+and reparses the full inherited entity/component/mode/state tree even though
+each consumer only borrows it. Reuse a single successful immutable preparation
+within that setup, keyed by catalog and character; active overlays and failed
+reads retain their current fresh-acquisition behavior. Once the player and arms
+are prepared, keep only the FX and controller fields needed by the later screen-effect setup,
+then drop that temporary data before gameplay. Other player runtime state stays
+independent; no session-wide generic tree is retained.
+
+Prediction for a normal successful setup: three full player declaration
+resolutions -> one (two -> one when replay mode omits player setup), with the
+same consumer values and no per-frame work. The shared tree lives longer than
+one individual resolution but is compacted to those screen-effect inputs before later rendering
+preparation; measure its temporary owned capacities and affected acquisition
+cycles as well as actual archive reads. Compare all player/arm/screen-effect
+input fingerprints in a same-executable production run. Character changes,
+overlays, missing components and failed reads must keep their existing behavior;
+no unsourced memory or frame-time saving is assumed.
+
+Production comparison: for each of Corvo and Emily in Edge of the World and
+Dust District, the three consumers' recorded inputs matched. Resolutions fell
+from three to one per level, and reads from 357 to 119 for Corvo and 354 to 118
+for Emily. The shared tree's counted capacity was 673,502 / 672,874 bytes and
+fell to 42,947 / 42,491 after compaction; these are capacity counts, not process
+RSS or a peak-memory comparison. Measured acquisition spans for the player and
+screen consumers fell from roughly 18–22 million cycles each to 17–23 thousand
+cycles each; compaction cost 1.26–1.49 million cycles. The first consumer still
+performs the full acquisition. These are instrumented setup spans, not frame
+timings. Editable overlays and failed acquisitions retain fresh reads.
+
+The reordered common-history comparison recorded nine image reads during one
+moving-camera interval and five in the other, so the intervals do not establish
+a comparable per-read gameplay cost. The earlier moving-player interval had no
+calls to that read path. The two modes recorded the same 3,717 image reads
+before play in the Institute run, with 21.43 million versus 17.15 million
+instrumented cycles; this single startup comparison does not establish a
+steady-state speedup or regression.
+
+### Editable render-parameter declarations: prediction before correction
+
+The session shader metadata currently keys its shared declaration snapshot by
+catalog identity. A loose render-parameter declaration can change while that
+catalog remains open, so a later program library can receive stale parameter
+types or option defaults. Limit reuse when an active overlay contains a
+`generated/decls/renderparm/` declaration; unrelated overlays must retain the
+existing shared path. Expect the normal no-overlay acquisition and gameplay
+paths to be unchanged. A relevant overlay intentionally repeats declaration
+acquisition when a program library opens; the cost is confined to that setup,
+and errors must remain visible instead of returning a previous snapshot.
+
+### Editable animation clips: prediction before correction
+
+The animation registry currently also reuses a clip when its own loose overlay
+can change during the catalog's lifetime. Bypass identity reuse for that exact
+overlaid path, while retaining the existing shared registry for all other clips.
+Expect an inexpensive empty-overlay check on clip acquisition, no per-frame
+work, and a fresh read/decode only for the editable clip. Existing actors keep
+their acquired data until released; a subsequent acquisition should see the
+updated bytes or its read/decode error. Do not invalidate unrelated clips.
+If either editable bootstrap manifest changes, the set of clips eligible for
+session retention can change too; bypass the old classification in that case.
+
+### Editable UI libraries: prediction before correction
+
+The session Iggy file and library-bitmap registries currently key by catalog
+and resource name. A loose `.iggy` file can change independently of the
+catalog; its companion `.raw.iggytex` can change too. Bypass reuse only when
+the relevant source or companion is editable, keeping already-open movies'
+leases intact and allowing later openings to observe current data and errors.
+The normal installed-archive path should retain its existing reads, sharing,
+and GPU uploads; the extra checks occur on movie/library acquisition only.

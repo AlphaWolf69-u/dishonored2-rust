@@ -230,6 +230,9 @@ pub(super) fn begin_level(world: &mut World) {
     world.insert_resource(PendingSounds::default());
     world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
+    if let Some(contacts) = world.get_resource::<contacts::ContactSounds>() {
+        contacts.release_level_history();
+    }
     world.insert_resource(contacts::ContactSounds::default());
     world.resource_mut::<Messages<SoundEvent>>().clear();
     world.resource_mut::<Messages<ContactSound>>().clear();

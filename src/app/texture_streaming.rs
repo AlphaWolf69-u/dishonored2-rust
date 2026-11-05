@@ -61,6 +61,12 @@ pub(super) struct SharedImages {
 impl SharedImages {
     pub(super) fn contains(&self, path: &str) -> bool { self.paths.contains(path) }
 
+    pub(super) fn is_resident(&self, path: &str) -> bool { self.resident.contains_key(path) }
+
+    pub(super) fn resident_paths(&self) -> impl Iterator<Item = &str> {
+        self.resident.keys().map(String::as_str)
+    }
+
     pub(super) fn can_reuse(&self, path: &str, preferred: Option<u8>) -> bool {
         self.resident.get(path).is_some_and(|(mip, _, _)| *mip == preferred)
     }

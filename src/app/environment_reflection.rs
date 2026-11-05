@@ -10,6 +10,14 @@ use bevy::{
     },
 };
 
+// Host: immutable reflection metadata is uploaded once; CPU query state is
+// retained separately by the probe owner.
+fn reflection_buffer(mut buffer: ShaderBuffer) -> ShaderBuffer {
+    buffer.buffer_description.size = buffer.data.as_ref().map_or(0, Vec::len) as u64;
+    buffer.asset_usage = RenderAssetUsages::RENDER_WORLD;
+    buffer
+}
+
 pub(super) struct LoadedReflections {
     pub image: Handle<Image>,
     pub planes: Handle<ShaderBuffer>,
@@ -48,7 +56,7 @@ impl LoadedReflections {
         Ok(Some(
             crate::rendering::bevy_backend::water_scene::WaterProbeResources {
                 vertex_references,
-                probe_info: buffers.add(ShaderBuffer::from(records)),
+                probe_info: buffers.add(reflection_buffer(ShaderBuffer::from(records))),
                 cube_indices,
                 cubes: self.image.clone(),
                 planes: self.planes.clone(),
@@ -198,10 +206,10 @@ pub(super) fn load(
     };
     Ok(LoadedReflections {
         image: images.add(image),
-        planes: buffers.add(ShaderBuffer::from(words)),
+        planes: buffers.add(reflection_buffer(ShaderBuffer::from(words))),
         brdf_lookup: lookup,
         cube_count: count.try_into().map_err(|_| "too many reflection cubes")?,
         cube_indices: (!cube_indices.is_empty())
-            .then(|| buffers.add(ShaderBuffer::from(cube_indices))),
+            .then(|| buffers.add(reflection_buffer(ShaderBuffer::from(cube_indices)))),
     })
 }

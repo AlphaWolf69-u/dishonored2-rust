@@ -100,6 +100,12 @@ pub(super) struct ContactSounds {
     reported: HashSet<String>,
 }
 impl ContactSounds {
+    pub(super) fn release_level_history(&self) {
+        if let Some(Ok(definitions)) = &self.definitions {
+            definitions.texts.release_level_history();
+        }
+    }
+
     pub(super) fn declarations(&self) -> Option<&declaration_texts::DeclarationTexts> {
         self.definitions.as_ref()?.as_ref().ok().map(|definitions| &definitions.texts)
     }

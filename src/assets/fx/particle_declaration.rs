@@ -214,8 +214,36 @@ impl ParticleVelocityInheritance {
     }
 }
 
+// The renderer can retain declarations after the main-world level stops.
+// Host equivalent of 140060180: keep read-history credit until the last
+// acquired declaration drops.
+static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+pub(crate) struct HistoryLease(());
+impl HistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        std::sync::Arc::new(Self(()))
+    }
+}
+impl Drop for HistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let (count, bytes, slots, _) = crate::loading::retain_kind("particledt", |_| false);
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
+            eprintln!("MEMORY particle history release: entries={count} path_capacity_bytes={bytes} slots={slots} cycles={cycles}");
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
+    pub(crate) history: Option<std::sync::Arc<HistoryLease>>,
     pub visibility: ParticleVisibility,
     pub underwater: bool,
     pub handle_seen_from_underwater: bool,

@@ -19,6 +19,7 @@ pub mod camera_scene;
 /// acquired. Global programs and viewport-only reusable storage remain.
 #[cfg(feature = "game")]
 pub(crate) fn release_level(world: &mut bevy::prelude::World) {
+    shader_buffer_patches::release_level(world);
     shadow_pass::release_level(world);
     camera_scene::release_level(world);
     fog_scene::FogGpu::release_level(world);

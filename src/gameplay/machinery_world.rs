@@ -354,7 +354,7 @@ pub struct SystemState {
     pub skeleton: String,
     /// Machinery body index per physics-system body, in cinfo order.
     pub bodies: Vec<usize>,
-    pub ragdoll: Vec<physworld::physics_system::RagdollEntry>,
+    pub ragdoll: std::sync::Arc<[physworld::physics_system::RagdollEntry]>,
     /// Entity spawn transform (position, orientation).
     pub position: [f32; 3],
     pub orientation: [f32; 4],

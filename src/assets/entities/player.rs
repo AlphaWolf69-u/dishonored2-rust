@@ -32,6 +32,56 @@ pub struct PlayerDeclarations {
     pub body_model: String,
 }
 
+/// Temporary setup owner for the same immutable player declaration tree.
+/// Original resource lookup 1400607f0 reuses acquired declaration identities.
+#[derive(Default)]
+pub(crate) struct DeclarationSource {
+    cached: Option<(u64, String, bool, PlayerDeclarations)>,
+}
+impl DeclarationSource {
+    fn can_share(catalog: &crate::archive::Catalog) -> bool {
+        !catalog.has_overlays()
+    }
+    fn matches(&self, catalog: &crate::archive::Catalog, character: &str, require_full: bool) -> bool {
+        Self::can_share(catalog) && self.cached.as_ref().is_some_and(|(id, name, full, _)|
+            *id == catalog.identity() && name == character && (!require_full || *full))
+    }
+    pub(crate) fn full<'a>(&'a mut self, catalog: &crate::archive::Catalog, character: &str)
+        -> Result<std::borrow::Cow<'a, PlayerDeclarations>, String>
+    {
+        if !self.matches(catalog, character, true) {
+            let value = player_declarations(character, |path| {
+                Ok(catalog.read(path).map_err(|error| error.to_string())?
+                    .map(|bytes| super::declaration_text(&bytes).into_owned()))
+            })?;
+            if Self::can_share(catalog) {
+                self.cached = Some((catalog.identity(), character.to_owned(), true, value));
+            } else {
+                self.cached = None;
+                return Ok(std::borrow::Cow::Owned(value));
+            }
+        }
+        Ok(std::borrow::Cow::Borrowed(&self.cached.as_ref().unwrap().3))
+    }
+    pub(crate) fn screen<'a>(&'a mut self, catalog: &crate::archive::Catalog, character: &str)
+        -> Result<std::borrow::Cow<'a, PlayerDeclarations>, String>
+    {
+        if !self.matches(catalog, character, false) { return self.full(catalog, character); }
+        Ok(std::borrow::Cow::Borrowed(&self.cached.as_ref().unwrap().3))
+    }
+    /// After the player/arms consumers finish, the later screen effect only
+    /// needs FX and controller fields. Drop every other generic subtree.
+    pub(crate) fn keep_screen_inputs(&mut self) {
+        let Some((id, name, full, mut value)) = self.cached.take() else { return; };
+        if full {
+            let fx = std::mem::take(&mut value.fx);
+            let controller = std::mem::take(&mut value.controller);
+            value = PlayerDeclarations { fx, controller, ..Default::default() };
+        }
+        self.cached = Some((id, name, false, value));
+    }
+}
+
 fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
     let mut entries: Vec<(String, Fields)> = Vec::new();
     for fields in chain {

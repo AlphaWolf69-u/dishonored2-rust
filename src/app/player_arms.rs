@@ -147,6 +147,7 @@ pub(super) fn load_player_arms(
     resolver: &mut MaterialResolver,
     meshes: &mut dyn AssetWrite<Mesh>,
     commands: &mut super::setup_commands::SetupCommands,
+    declarations_source: &mut entities::player::DeclarationSource,
 ) -> Result<PlayerArms, String> {
     let text = |path: &str| -> Result<Option<String>, String> {
         Ok(catalog
@@ -155,7 +156,7 @@ pub(super) fn load_player_arms(
             .map(|bytes| entities::declaration_text(&bytes).into_owned()))
     };
     let character = character_name(super::pause_menu::debug_character());
-    let declarations = entities::player::player_declarations(character, text)?;
+    let declarations = declarations_source.full(catalog, character)?;
     let view = entities::player::player_view_models(&declarations.body, text)?;
     // The arm entities and the body entity's own model (drawn only while
     // the legs are visible).

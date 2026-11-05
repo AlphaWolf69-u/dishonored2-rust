@@ -29,6 +29,53 @@ pub struct PhysicsSystem {
     pub constraints: Vec<SystemConstraint>,
 }
 
+/// Acquisition errors retain the caller's distinction between archive failures
+/// and malformed resources. 1401c9630 requests physSystem from the shared
+/// resource registry; 14009a3c0 resolves the related ragdoll map.
+pub(crate) enum AcquireError { Read(String), Parse(String) }
+
+/// The original registry shares immutable resources; the host holds these
+/// definitions only during preparation, with ragdoll leases retained by the
+/// live skinning instances. Mutable overlay files are acquired separately.
+pub(crate) struct SystemSources {
+    shared: bool,
+    systems: std::collections::HashMap<String, std::sync::Arc<PhysicsSystem>>,
+    ragdolls: std::collections::HashMap<String, std::sync::Arc<[RagdollEntry]>>,
+}
+impl SystemSources {
+    pub(crate) fn new(catalog: &crate::archive::Catalog) -> Self {
+        Self { shared: !catalog.has_overlays(), systems: Default::default(), ragdolls: Default::default() }
+    }
+
+    pub(crate) fn system(&mut self, catalog: &crate::archive::Catalog, path: &str)
+        -> Result<Option<std::sync::Arc<PhysicsSystem>>, AcquireError>
+    {
+        if self.shared {
+            if let Some(value) = self.systems.get(path) { return Ok(Some(value.clone())); }
+        }
+        let Some(bytes) = catalog.read(path).map_err(|error| AcquireError::Read(error.to_string()))? else {
+            return Ok(None);
+        };
+        let value = std::sync::Arc::new(parse(&bytes).map_err(AcquireError::Parse)?);
+        if self.shared { self.systems.insert(path.to_owned(), value.clone()); }
+        Ok(Some(value))
+    }
+
+    pub(crate) fn ragdoll(&mut self, catalog: &crate::archive::Catalog, path: &str)
+        -> Result<Option<std::sync::Arc<[RagdollEntry]>>, AcquireError>
+    {
+        if self.shared {
+            if let Some(value) = self.ragdolls.get(path) { return Ok(Some(value.clone())); }
+        }
+        let Some(bytes) = catalog.read(path).map_err(|error| AcquireError::Read(error.to_string()))? else {
+            return Ok(None);
+        };
+        let value: std::sync::Arc<[RagdollEntry]> = parse_ragdoll(&bytes).map_err(AcquireError::Parse)?.into();
+        if self.shared { self.ragdolls.insert(path.to_owned(), value.clone()); }
+        Ok(Some(value))
+    }
+}
+
 fn string(world: &PhysWorld, bytes: &[u8], reference: u32) -> Result<String, String> {
     if reference == 0 {
         return Ok(String::new());

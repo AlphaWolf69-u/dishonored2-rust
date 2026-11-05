@@ -690,6 +690,32 @@ pub fn constant_color_pixels(color: [f32; 4]) -> Option<[u8; 64]> {
     Some(std::array::from_fn(|i| pixel[i % 4]))
 }
 
+// Host scope for the 140060180 material purge. Session material metadata is
+// retained by its own owner and reported separately at level release.
+static MATERIAL_HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+pub(crate) struct MaterialHistoryLease(());
+impl MaterialHistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        *MATERIAL_HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        std::sync::Arc::new(Self(()))
+    }
+}
+impl Drop for MaterialHistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = MATERIAL_HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let retained = crate::assets::camera_blur::retained_material_paths();
+        let (count, bytes, slots, _) = crate::loading::retain_kind("material", |path| retained.contains(path));
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
+            eprintln!("MEMORY material history release: entries={count} path_capacity_bytes={bytes} slots={slots} retained={} cycles={cycles}", retained.len());
+        }
+    }
+}
+
 /// Prefer the source->compiled mapping stored by the game itself.
 pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Option<String> {
     if name.trim().eq_ignore_ascii_case("_defaultCube") {
@@ -727,7 +753,15 @@ pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Opt
     let declaration = format!("diffusemap {name}");
     diffuse_image(declaration.as_bytes())?
         .strip_suffix("_mip0")
-        .map(|path| path.replace('\\', "/"))
+        .map(canonical_image_key)
+}
+
+/// Match the catalog's case and separator normalization for indexed image
+/// identities (idStr 140140da0/140140de0). Intrinsic names use their own path.
+fn canonical_image_key(path: &str) -> String {
+    let mut key = path.replace('\\', "/");
+    key.make_ascii_lowercase();
+    key
 }
 
 /// Resource misses use the image type's actual default generator. 05ede0
@@ -736,7 +770,7 @@ pub fn compiled_image_stem(catalog: &crate::archive::Catalog, name: &str) -> Opt
 /// remain unresolved, and malformed existing BIMs still report their errors.
 pub fn image_load_resource(catalog: &crate::archive::Catalog, name: &str) -> Option<String> {
     let resource = if catalog.contains(name) {
-        name.to_owned()
+        if name.eq_ignore_ascii_case("_defaultCube") { "_defaultCube".into() } else { canonical_image_key(name) }
     } else {
         compiled_image_stem(catalog, name)?
     };
@@ -778,7 +812,7 @@ pub struct CubeImage {
 /// Direct cube resources retain their dimensional fallback. The named
 /// _defaultCube intrinsic differs from 2f5fc0's failed-image checker cube.
 pub fn load_cube_image(catalog: &crate::archive::Catalog, name: &str) -> Result<CubeImage, String> {
-    let resource = if catalog.contains(name) {name.to_owned()} else {
+    let resource = if catalog.contains(name) {if name.eq_ignore_ascii_case("_defaultCube") {"_defaultCube".into()} else {canonical_image_key(name)}} else {
         compiled_image_stem(catalog, name).ok_or_else(||format!("unresolved cube image source {name}"))?
     };
     if let Some(image) = intrinsic_cube_image(&resource) {

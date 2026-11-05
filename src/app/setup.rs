@@ -297,7 +297,8 @@ pub(super) fn prepare(
     let mut vertex_probe_buffer = ShaderBuffer::from(words);
     vertex_probe_buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
     let vertex_probe_buffer = probe_sh_buffers.add(vertex_probe_buffer);
-    let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::from(records.clone()));
+    // Only the handle is consumed before the completed probe data is uploaded.
+    let probe_sh_buffer = probe_sh_buffers.add(ShaderBuffer::default());
     let shadow_buffer = probe_sh_buffers.add(ShaderBuffer::from(
         shadow_sampling::ParallelSamplingUniform::default(),
     ));
@@ -1137,8 +1138,9 @@ pub(super) fn prepare(
             resolver.diffuse_image_paths.len()
         );
     }
+    let mut player_declarations = crate::entities::player::DeclarationSource::default();
     if let Some(catalog) = catalog {
-        match super::player_arms::load_player_arms(catalog, &mut resolver, meshes, commands) {
+        match super::player_arms::load_player_arms(catalog, &mut resolver, meshes, commands, &mut player_declarations) {
             Ok(arms) => commands.insert_resource(arms),
             Err(error) => eprintln!("First-person arms unavailable: {error}"),
         }
@@ -1252,7 +1254,7 @@ pub(super) fn prepare(
     // not move the saved camera while comparing rendering at that same pose.
     let player = match (navigation.as_ref(), scene.player_start, catalog) {
         (Some(_), Some(start), Some(catalog)) if env::var_os("DH2_REPLAY_F8").is_none() => {
-            match super::player::load_player_setup(catalog, super::pause_menu::debug_character()) {
+            match super::player::load_player_setup_with_source(catalog, super::pause_menu::debug_character(), &mut player_declarations) {
                 Ok(setup) => {
                     let yaw = start.forward_xy[1].atan2(start.forward_xy[0]);
                     crate::gameplay::player::Player::new(setup, Vec3::from(start.position), yaw, reference_horizontal_fov)
@@ -1267,6 +1269,7 @@ pub(super) fn prepare(
         }
         _ => None,
     };
+    player_declarations.keep_screen_inputs();
     if let Some(probes) = &scene.environment_probes {
         let camera_game = view_to_game(camera.translation);
         if let Some(interpolated) = probes.interpolate_static_sh(camera_game) {
@@ -1795,8 +1798,8 @@ pub(super) fn prepare(
         commands.insert_resource(crate::rendering::bevy_backend::ocean_scene::OceanSources::load(catalog,programs)
             .unwrap_or_else(|error|panic!("ocean programs: {error}")));
         commands.insert_resource(crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials(Some(Arc::new(
-            crate::rendering::bevy_backend::screen_effects::ScreenEffectSources::load_shared(catalog,programs,
-                super::player::character_name(super::pause_menu::debug_character()), &mut particle_resources)
+            crate::rendering::bevy_backend::screen_effects::ScreenEffectSources::load_shared_with_player(catalog,programs,
+                super::player::character_name(super::pause_menu::debug_character()), &mut particle_resources, &mut player_declarations)
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
     }

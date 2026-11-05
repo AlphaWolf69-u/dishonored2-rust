@@ -58,7 +58,7 @@ impl CameraScene {
         let mut state = CameraSettings::from_words([0; 41]);
         state.reset();
         Ok(Self {
-            blur_resources: std::sync::Arc::new(BlurResources::load(catalog)?),
+            blur_resources: BlurResources::acquire(catalog)?,
             world: prepare(world)?,
             areas: areas
                 .iter()

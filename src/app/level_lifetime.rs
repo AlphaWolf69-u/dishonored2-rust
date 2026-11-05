@@ -37,6 +37,13 @@ impl LevelLifetime {
     }
 
     pub fn clear(&mut self, world: &mut World) {
+        // Resource removal order is arbitrary; hold the model scope until all
+        // level consumers have been dropped after the render acknowledgement.
+        let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
+        let material_history = world.remove_resource::<super::level_prepare::MaterialHistoryScope>();
+        if let Some(mut patches) = world.get_resource_mut::<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>() {
+            patches.release_level();
+        }
         let timing = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
         let entities_started = timing.then(std::time::Instant::now);
         world.resource_scope(
@@ -81,6 +88,14 @@ impl LevelLifetime {
         crate::edge_animation::release_level();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
+        if let (Some(images), Some(shared)) = (
+            world.get_resource::<super::resident_images::UiImages>(),
+            world.get_resource::<super::texture_streaming::SharedImages>(),
+        ) {
+            images.release_read_history(shared);
+        }
+        drop(model_history);
+        drop(material_history);
     }
 }
 

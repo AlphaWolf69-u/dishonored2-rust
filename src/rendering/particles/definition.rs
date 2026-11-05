@@ -31,6 +31,8 @@ pub struct ParticleResources {
     pub field_image_reads: usize,
     pub material_reads: usize,
     shared: bool,
+    history: Option<Arc<particle_declaration::HistoryLease>>,
+    model_history: Option<Arc<crate::assets::particle_model::HistoryLease>>,
 }
 impl Default for ParticleResources {
     fn default() -> Self {
@@ -47,6 +49,8 @@ impl Default for ParticleResources {
             field_image_reads: 0,
             material_reads: 0,
             shared: true,
+            history: None,
+            model_history: None,
         }
     }
 }
@@ -93,6 +97,7 @@ impl ParticleResources {
                 return loaded.clone();
             }
         }
+        let history = self.history.get_or_insert_with(particle_declaration::HistoryLease::acquire).clone();
         self.declaration_reads += 1;
         let _tag = crate::platform::allocation_tags::tag("particle definitions");
         let loaded = (|| {
@@ -100,6 +105,7 @@ impl ParticleResources {
             let fields = read_edit(&mut read, "particledt", path)?;
             let mut declaration = particle_declaration::declaration(&fields)
                 .map_err(|error| format!("{path}: {error}"))?;
+            declaration.history = Some(history);
             // Emission meshes are dedicated PMODEL archive resources,
             // independent of the ordinary rendered-prop mesh loader.
             for stage in &mut declaration.stages {
@@ -140,6 +146,7 @@ impl ParticleResources {
                     let Some(source) = source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
                     if !self.models.contains_key(&resource) {
+                        let history = self.model_history.get_or_insert_with(crate::assets::particle_model::HistoryLease::acquire).clone();
                         self.model_reads += 1;
                         let bytes = catalog
                             .read(&resource)
@@ -147,10 +154,12 @@ impl ParticleResources {
                             .ok_or_else(|| format!("missing particle emission mesh {resource}"))?;
                         self.models.insert(
                             resource.clone(),
-                            Arc::new(
-                                crate::assets::particle_model::parse(&bytes)
-                                    .map_err(|error| format!("{resource}: {error}"))?,
-                            ),
+                            Arc::new({
+                                let mut model = crate::assets::particle_model::parse(&bytes)
+                                    .map_err(|error| format!("{resource}: {error}"))?;
+                                model.history = Some(history);
+                                model
+                            }),
                         );
                     }
                     *model = Some(self.models[&resource].clone());
@@ -159,6 +168,7 @@ impl ParticleResources {
                     let Some(source) = &mesh.source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
                     if !self.models.contains_key(&resource) {
+                        let history = self.model_history.get_or_insert_with(crate::assets::particle_model::HistoryLease::acquire).clone();
                         self.model_reads += 1;
                         let bytes = catalog
                             .read(&resource)
@@ -166,10 +176,12 @@ impl ParticleResources {
                             .ok_or_else(|| format!("missing particle render mesh {resource}"))?;
                         self.models.insert(
                             resource.clone(),
-                            Arc::new(
-                                crate::assets::particle_model::parse(&bytes)
-                                    .map_err(|error| format!("{resource}: {error}"))?,
-                            ),
+                            Arc::new({
+                                let mut model = crate::assets::particle_model::parse(&bytes)
+                                    .map_err(|error| format!("{resource}: {error}"))?;
+                                model.history = Some(history);
+                                model
+                            }),
                         );
                     }
                     mesh.model = Some(self.models[&resource].clone());

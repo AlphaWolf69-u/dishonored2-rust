@@ -9,7 +9,33 @@ pub struct ParticleModelVertex {
     pub attributes: [u8; 20],
 }
 
+// Host equivalent of 140060180: draw publications can retain these models
+// beyond their declaration owner.
+static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+pub(crate) struct HistoryLease(());
+impl HistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        std::sync::Arc::new(Self(()))
+    }
+}
+impl Drop for HistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let (count, bytes, slots, _) = crate::loading::retain_kind("staticParticleModel", |_| false);
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
+            eprintln!("MEMORY particle model history release: entries={count} path_capacity_bytes={bytes} slots={slots} cycles={cycles}");
+        }
+    }
+}
+
 pub struct ParticleModel {
+    pub(crate) history: Option<std::sync::Arc<HistoryLease>>,
     pub vertices: Vec<ParticleModelVertex>,
     pub bytes_after_vertices: usize,
 }
@@ -53,6 +79,7 @@ pub fn parse(bytes: &[u8]) -> Result<ParticleModel, String> {
         })
         .collect();
     Ok(ParticleModel {
+        history: None,
         vertices,
         bytes_after_vertices: bytes.len() - end,
     })

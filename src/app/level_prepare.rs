@@ -10,6 +10,18 @@ use super::{
 };
 use bevy::prelude::*;
 
+/// Hold shape acquisition history until the published world retires.
+#[derive(Resource)]
+struct ShapeHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::physworld::source::ShapeHistoryLease>);
+
+/// Keep static model history until preparation and renderer ownership stop.
+#[derive(Resource)]
+pub(super) struct ModelHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::bmodel::ModelHistoryLease>);
+
+/// Keep material history until preparation and renderer ownership stop.
+#[derive(Resource)]
+pub(super) struct MaterialHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::material::MaterialHistoryLease>);
+
 #[derive(Resource)]
 pub(super) struct PreparedPhysicsTexts(pub(crate) crate::assets::declaration_texts::PhysicsSeed);
 
@@ -24,6 +36,8 @@ pub(super) fn prepare_level(
     let game_base = Some(base);
     let catalog = Some(catalog);
     let mut app = super::loading_screen::PreparedLevel::default();
+    app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire()));
+    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire()));
     let map = level
         .entities
         .trim_start_matches("maps/")
@@ -298,6 +312,7 @@ pub(super) fn prepare_level(
             .map(|(lighting, parameters, duration)| (Some(lighting), Some(parameters), duration))
             .unwrap_or((None, None, 1.0));
     let mut shape_sources = crate::physworld::source::ShapeSources::new(catalog.as_ref().unwrap());
+    app.insert_resource(ShapeHistoryScope(shape_sources.history_lease()));
     let trace_environment_cpu = env::var("DH2_DEBUG_ENVIRONMENT_CPU").as_deref() == Ok("1");
     let environment_cpu_start = if trace_environment_cpu { crate::loading::thread_cycles() } else { None };
     let (area_environments, environment_volumes) = match (entity_document.as_ref(), catalog.as_ref()) {
@@ -804,6 +819,7 @@ pub(super) fn prepare_level(
         entity_document.as_ref(),
         &placed_models,
         &mut physics_texts,
+        &mut shape_sources,
     )
     .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);

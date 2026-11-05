@@ -431,9 +431,12 @@ fn load_body(
 }
 
 pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Result<PlayerSetup, String> {
-    let declarations = crate::entities::player::player_declarations(character_name(character), |path| {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
-    })?;
+    load_player_setup_with_source(catalog, character, &mut Default::default())
+}
+
+pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Character,
+    source: &mut crate::entities::player::DeclarationSource) -> Result<PlayerSetup, String> {
+    let declarations = source.full(catalog, character_name(character))?;
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
     let scene_paths = scene_paths(&states);

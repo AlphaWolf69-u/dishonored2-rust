@@ -261,6 +261,45 @@ impl UiImages {
         self.registry.release_level(shared);
         self.bindings.retain(|_, binding| binding.strong_count() != 0);
     }
+
+    /// Only identities that can actually be acquired from a surviving owner
+    /// retain their loading credit; manifest membership by itself is not a
+    /// resident image. Original 140060180 purges outgoing map resources.
+    pub(super) fn release_read_history(&self, shared: &SharedImages) {
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let registry = self.registry.registry.lock().unwrap();
+        // Catalog read history normalizes case and separators. Most owner
+        // keys are already canonical; only exceptional aliases need copies.
+        let mut aliases = std::collections::HashSet::<String>::new();
+        let paths = shared.resident_paths()
+            .chain(registry.resident.keys().map(String::as_str))
+            .chain(registry.inline.keys().map(String::as_str))
+            .chain(registry.layered.keys().map(String::as_str))
+            .chain(registry.leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
+            .chain(self.bindings.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()));
+        for path in paths {
+            if path.bytes().any(|byte| byte == b'\\' || byte.is_ascii_uppercase()) {
+                let mut key = path.replace('\\', "/");
+                key.make_ascii_lowercase();
+                aliases.insert(key);
+            }
+        }
+        let (removed, bytes, slots_before, slots_after) = crate::loading::retain_kind("image", |path| {
+            (!aliases.is_empty() && aliases.contains(path))
+                || shared.is_resident(path)
+                || registry.resident.contains_key(path)
+                || registry.inline.contains_key(path)
+                || registry.layered.contains_key(path)
+                || registry.leases.get(path).is_some_and(|lease| lease.strong_count() != 0)
+                || self.bindings.get(path).is_some_and(|binding| binding.strong_count() != 0)
+        });
+        if trace {
+            let cycles = started.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("MEMORY image history release: entries={removed} path_capacity_bytes={bytes} slots_before={slots_before} slots_after={slots_after} aliases={} cycles={cycles}", aliases.len());
+        }
+    }
 }
 
 pub(super) fn publish_ui_images(

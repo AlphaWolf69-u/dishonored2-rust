@@ -18,7 +18,7 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 | Original | Behavior | Status |
 |---|---|---|
-| `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` derives approximate progress from a session read history, and readiness uses independent gates; `app::loading_screen` presents bootstrap/map stages in one renderer. Loads are not driven by the lists, and some historical successful reads can still be credited as acquisitions; failed reads no longer advance progress. Owner-driven retirement covers animation clips and probe sets; see the loading read-history investigation below |
+| `FUN_1400661e0` (`ResourceManager.cpp`) | loads every entry of the `init`, `common` and map `.mapResources` lists by (kind, name) before play; `+0xfe24` = loaded/total | partial: `assets::map_resources` reads the lists, `crate::loading` derives approximate progress from a session read history, and readiness uses independent gates; `app::loading_screen` presents bootstrap/map stages in one renderer. Loads are not driven by the lists, and some historical successful reads can still be credited as acquisitions; failed reads no longer advance progress. Owner-driven retirement covers animation clips, probe sets, images and scoped physics sources; see the loading read-history investigation below |
 | `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | host: lookup is `140064590` (vtable `141acc328` + `0xb0`), which normalizes the manifest path and searches registered container name tables; `assets::map_resources::load_list` resolves the manifest's owning archive, then interprets ids against that archive's index. Installed input audit: 38 manifest paths, no cross-container duplicates. Redundant index rescans are separate acquisition work, not an unresolved virtual call |
 | "%i streamed" entries (`140066ac0`-`140066b8c`) | the map preloader skips index flag `0x20` and `.sbcm`/`.tbcm`/`.bwm` records | partial: classification traced in installed instructions; `140068800` reads the index flags into record+`0x4a0`. In installed `game1_001.index`, 6,952 flagged records are image mips (6,476), Iggy (350) and generic files (126). This does not imply that every ordinary placed mesh is spatially streamed. Typed rewrite owners request these payloads themselves; unified registry-driven loading remains partial |
 
@@ -103,7 +103,7 @@ trailing `*` covers a family of kinds.
 | `gameVideoClip` | none | none: no owner yet |
 | `greatestMomentsManager` | none | none: no owner yet |
 | `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners) |
-| `image` | `app::texture_streaming`, `assets::texture` (image class) | partial: reads its resources; lifecycle not ported (see its class) |
+| `image` | `app::texture_streaming`, `app::resident_images`, `assets::texture`, `rendering::bevy_backend` | host: indexed compiled images are acquired through shared scene and resident-view owners; scene mips stream on demand, GPU upload staging is retired, and map images release while reusable common/UI views remain leased. Original acquisition `1402e9ff0` and streamer `14030dbf0` are mapped to the host backend. Scoped loading-history cleanup now removes stale names after level release while preserving reusable image and UI bindings. Full backend fence and device-allocation parity remain partial; see the image sections below |
 | `inventoryitem` | none | none: no owner yet |
 | `inventoryItemCollection` | none | none: no owner yet |
 | `inventoryLoadout` | none | none: no owner yet |
@@ -113,7 +113,7 @@ trailing `*` covers a family of kinds.
 | `layer` | none | none: no owner yet |
 | `loco` | none | none: no owner yet |
 | `mapInfo` | `gameplay::map_info` | host: session declaration index follows `1400607f0` / `14005feb0`; only requested parsed declarations are retained and aliases share the same immutable identity. A five-level production comparison reduced reads 50 -> 19 and decoded bytes 200,076 -> 77,776 with matching declaration fingerprints. Overlay and read-failure paths retain the existing scan; whole resource-class purge remains partial |
-| `massprops` | `assets::physworld::mass`, `assets::entities::machinery` | partial: reads its resources; lifecycle not ported (see its class) |
+| `massprops` | `assets::physworld::mass` | host: machinery preparation acquires through the physics mass owner, which reuses decoded immutable mass properties per path and copies them before body-specific mass/axis overrides; the cache is released after preparation. Four map loads reduced reads 287 to 53 and cumulative decoded bytes 163,016 to 30,104; body fingerprints matched. This is not a resident-memory measurement. The broader registry and original persistent-scope behavior remain partial |
 | `material` | `app::material_loading` (material class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `md6Def` | `assets::bmd6`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `midnightScene` | `assets::entities::scene_motion`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -127,15 +127,15 @@ trailing `*` covers a family of kinds.
 | `particledt` | `rendering::particles::definition::ParticleResources` | partial: one level-scoped host acquisition cache for declarations, PMODELs, field images and material references across player/world FX; emitters retain independent mutable simulation. Full original resource lifecycle not ported |
 | `pauseMenuSectionOptions` | `gameplay::options` | partial: reads its resources; lifecycle not ported (see its class) |
 | `pblock` | `rendering::render_program` | partial: reads its resources; lifecycle not ported (see its class) |
-| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Other shape consumers and the full resource registry lifecycle remain partial |
+| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Model collision and machinery requests now route through the physics source owner. The candidate cache of alias targets was removed after the Dust return comparison showed extra temporary storage and slower acquisition with no saved reads. Full resource registry lifetime remains partial. Original 14006a910 pushes the map heap for named maps; physhape is absent from 1400661e0's conditional persistent-type promotion table at 142280ee0. Init/common inherit their caller's scope |
 | `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
-| `physSystem` | none | none: no owner yet |
+| `physSystem` | `assets::physworld::physics_system` | host: machinery acquires immutable decoded systems through the physics owner; repeated paths share during level preparation and each instance constructs independent bodies and constraints. Four sampled loads required 5 reads instead of 12 with matching per-instance definition fingerprints. The original MD6 definition parser `1401c9630` acquires the ragdoll's physics-system identity through `1400607f0` on registry `142bf86f0`; `14076abc0` constructs its live bodies from that resource, and `14008d7b0` releases the resource's owned Havok object at destruction. Session/common residency and full registry purge remain partial |
 | `physworld` | `assets::physworld`, `gameplay::body_storage`, `gameplay::navigation` | partial: reads its resources; lifecycle not ported (see its class). Host navigation broad phase keeps decoded full-precision triangles for query speed; immutable cell lists pack u32 shape keys into one allocation, retaining their order and releasing construction capacity. This replaces the Havok compressed-mesh tree (`141262020`); no per-query mesh decoding or reduced precision |
 | `playerLocomotion` | `assets::entities::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `playerMode` | `assets::entities::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `playerStatisticsManager` | none | none: no owner yet |
 | `proceduralLookAt` | none | none: no owner yet |
-| `ragdoll` | `assets::bmd6`, `assets::entities::machinery` | partial: reads its resources; lifecycle not ported (see its class) |
+| `ragdoll` | `assets::physworld::physics_system` | host: machinery resolves a skeleton/system pair and shares the immutable decoded ragdoll mapping, with independent runtime bodies and skinning state. Four sampled loads required 5 reads instead of 12 and matched the per-instance definitions. Original `14009a3c0` acquires the associated physics-system and skeleton identities before constructing the generated ragdoll path. Session/common residency and full registry purge remain partial |
 | `ratLocomotion` | none | none: no owner yet |
 | `renderParm` | `assets::environment`, `app::material_loading` | partial: reads its resources; lifecycle not ported (see its class) |
 | `renderProg` | `assets::shader_cache` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -3286,3 +3286,192 @@ this does not independently verify displayed translated text. The diagnostic
 code was removed from normal source after measurement. Evidence: local
 `artifacts/language-value-inventory.json`, `language-key-perf-shared.err` and
 `language-repeat-shared.err`.
+
+
+### Physics-shape scope evidence
+
+The saved original bootstrap registry snapshot contains 128 `physhape`
+and 118 `massprops` resources before a map is loaded; the saved Edge of
+the World snapshot contains 1,723 and 1,309 respectively. These are
+resource counts across the registry, not named scope lists, memory bytes, or
+proof that every bootstrap item survives a map transition. The installed
+common manifest separately names 116 physhape and 108 massprops entries.
+Across the 36 installed map manifests, common-list names of those kinds do
+not recur in the map lists. `14006a910` pushes the map heap for named maps,
+while init/common inherit their caller's scope. `1400661e0`'s conditional
+promotion table `142280ee0` includes massprops but not physhape. Map
+teardown and shared/common retirement therefore need separate owners and
+cannot be implemented by clearing all recorded names of either kind.
+Original snapshots: local `artifacts/resource-residency-initial.json` and
+`artifacts/resource-residency-eotw-verified.json` in the main checkout;
+installed-manifest count inventory: local
+`artifacts/shape-manifest-scopes.json`.
+
+
+The conditional promotion list at `142280ee0` contains 36 type strings:
+`anim`, `animBasic`, `animSet`, `animTree`, `curvefloat`, `damage`,
+`decal`, `entityDef`, `env`, `EnvProbe`, `explosion`, `fade`, `File`,
+`fx`, `fxanimset`, `gamesoundproperties`, `image`, `kiscule`, `loco`,
+`massprops`, `material`, `midnightScene`, `musicManager`, `Navmesh`,
+`particledt`, `pblock`, `physicsMaterial`, `skeleton`, `soundauxbus`,
+`soundevent`, `soundrtpc`, `speechBarks`, `speechCharacter`,
+`speechScene`, `speechVoice`, and `staticParticleModel`. The list is
+consulted only when the corresponding original loading condition is enabled
+and the request is neither init nor common. It is not a statement that every
+resource of those types is always persistent.
+
+
+### Immutable world and reflection buffer ownership
+
+Host: `app::world_instances::WorldMatrices` owns one immutable GPU matrix
+buffer per level, shared by world shadow and water consumers; CPU world-query
+matrices remain in the scene. Original metadata `14150e060` names the
+world-matrix buffer view and `14155b100` identifies a 48-byte
+`arkMat3x4`. The host encodes the existing rows directly from a borrowed
+slice and transfers the buffer bytes to Bevy's render world; it releases the
+serialized CPU upload copy after extraction. EotW / Dust / Dust return /
+EotW encoded 4,507,776 / 6,887,376 / 2,301,360 / 4,507,776 bytes with
+matching CRCs and matching GPU upload counts in paired production clients.
+Four targeted release serialization spans totaled 34,816,810 -> 11,531,730
+thread cycles; this is loading work, not gameplay frame time or RSS.
+
+
+Host: immutable reflection-plane, cube-index and water-probe buffers follow
+the same transfer, while the separately owned CPU probe data remains available.
+Their EotW lengths were 6,672 / 416 / 26,496 bytes; paired four-level
+production fingerprints and upload counts matched. This host ownership rule
+does not claim an original per-buffer allocation match.
+
+
+The per-instance lighting buffer retains its full CPU backing because its
+moving-object updates need exact previous values. A sparse alternative was
+rejected after its affected update function measured slower during walking.
+Its initial, overwritten staging buffer was removed independently; the final
+bytes and upload counts matched across the same levels. The renderer and
+main world clear level-owned pending buffer patches at the existing render
+teardown acknowledgement so stale outgoing updates cannot survive into the
+next level; normal per-frame patch behavior is unchanged. Both queues were
+empty at the three observed release points, so the cleanup's handling of a
+nonempty pending queue is source-reviewed rather than claimed as exercised.
+
+A rewrite history snapshot contained one common-list physhape: a coin
+collider read by the static-model path three times across the level sequence.
+The rewrite currently has no reusable session owner for that decoded shape, so
+its last level lease retires the read-history identity even when the name is
+listed as common. The next request already rereads it; clearing the stale
+history does not introduce that read. This is a host bookkeeping boundary, not
+a claim that the original discards its common shape.
+
+### Model, particle and camera-metadata scopes
+
+The host keeps static model read-history credits through preparation, render
+release and the end of level teardown. Particle declaration and PMODEL credits
+follow independent shared leases on the actual immutable objects, including
+render-world simulations and queued draws. These are bookkeeping scopes; they
+do not retain source payloads or skip an archive read. Concurrent preparations
+keep their own leases. The original lookup/purge boundary is
+`1400607f0` / `140060180`; the original snapshots count 163 / 965 models,
+339 / 605 particle declarations and 150 / 327 particle models at bootstrap /
+EotW respectively, without identifying their per-name scope or bytes.
+
+In the six-load same-client comparison (Dust four times, EotW, Dust return),
+body, collision, environment, contact, sound, material, probe, animation and
+UI fingerprints matched. On each Dust transition, the host released 429 model
+names (38,362 String-capacity bytes), 103 particle declarations (10,586 bytes)
+and 12 particle models (999 bytes), after their last scopes. The subsequent
+load re-records those identities: this is measurable loading CPU work, not a
+claimed frame-time gain. The common-history ownership comparison below includes
+that cost. String capacities are not process RSS.
+
+Camera blur metadata is an immutable catalog-scoped session resource. The
+original registry returns an acquired declaration identity at `1400607f0`;
+this host cache shares the six parsed kernels and 63 material variants while
+keeping view state and render passes per level. Editable overlays retain fresh
+reads. Six production loads made six -> one constructions; their 63 material
+and two program reads per construction imply 390 -> 65 source reads. All six
+kernel/variant signatures were `f2bb4981`. Counted retained
+metadata is at least 6,536 bytes, excluding allocator bookkeeping and the Arc
+header. The targeted acquisition spans totaled 21,300,056 -> 4,434,045 thread
+cycles, not whole-frame timing. Local evidence: `artifacts/image-particle-cost-*`.
+
+Indexed image resource identities now use the same ASCII case and slash
+normalization as the catalog (`140140da0` / `140140de0`) before shared cache
+acquisition, including loose overlay lookup. Named intrinsics keep their own
+identity. The sampled routes already used canonical indexed image names, so
+this fixes equivalent-name aliasing without a measured duplicate-image saving;
+all 568 compared reflection-image fingerprints and 430 UI bitmap fingerprints
+matched. No visual inspection was performed.
+
+Particle-model source identity audit: the selected installed indices contain
+1,390 `particledt` declarations. Reading their payloads produced 3,140 LWO
+references, all lowercase with forward slashes; none had multiple spellings
+for the same normalized name and none failed to read. This is an installed-data
+inventory, not coverage of arbitrary mods or a claim that every reference is
+activated in a level. No extra PMODEL alias cache or normalization work was
+added without an observed duplicate. Local analysis:
+`artifacts/audit-particle-source-aliases.py`.
+
+The selected installed index also contains 6,191 material declarations, all
+readable in the inventory. A text scan found 18,537 TGA/DDS/PNG path references;
+436 use uppercase or backslashes and seven normalized names have multiple
+spellings. `Catalog::image_resource` normalizes these authored source names
+before selecting an indexed compiled image, so this route already converges on
+one indexed identity. The scan is not a parser for every image program and does
+not prove each reference is used at runtime. No image-count saving is assigned
+to the new direct-resource normalization from this inventory. Local analysis:
+`artifacts/audit-material-source-image-aliases.py`.
+
+### Common declarations and level material history
+
+Host loading history now borrows the already retained common declaration text
+owner rather than allocating a second copy of each name. On EotW the one-time
+handoff removed 9,009 duplicate names and 656,573 bytes of String capacity;
+effective history-table slots fell from 16,576 to 119. The acquired count stayed
+17,900 across the handoff. Across EotW / Dust / Dust return / EotW, FX,
+sound-event and physics-material coverage and precredits matched the control;
+model-collision, probe, contact and material fingerprints matched as well.
+The actual common owner is catalog-scoped, and a changed catalog or disabled
+shared table removes its borrowed credits. Recorded catalog kinds handle
+nonstandard path names; common-manifest membership alone does not grant credit.
+This is host bookkeeping around the original `1400607f0` / `140060180`
+registry boundary, not a count of original memory or process RSS.
+
+Full declaration cleanup used 407,365 / 425,915 / 252,385 thread cycles on
+those transitions with shared common names, versus 5,701,325 / 5,474,945 /
+5,713,155 in the otherwise equivalent no-sharing control. The one-time common
+handoff cost 7,369,320 cycles in this run. Manifest-precredit spans varied
+between runs and are recorded in `artifacts/common-material-cost-*.err`; no
+whole-load or frame-time speedup is inferred.
+
+Across the four-map comparison, the affected read-history and transition
+spans totaled 81.77 million cycles in the legacy mode and 83.91 million in
+the shared mode, approximately 2.6% higher in this run. Re-recording retired
+map names contributes work, while common-name cleanup costs less. Unrelated
+startup spans also varied, so these numbers do not establish a whole-load
+regression or improvement.
+
+Material history has a separate level scope. It releases only after renderer
+and scene teardown, preserving the 63 names represented by the live session
+camera-blur metadata owner. EotW / Dust / Dust return released 1,444 / 1,475 /
+685 names and 152,046 / 155,186 / 71,836 bytes of String capacity; retained
+camera names account for 3,951 String-capacity bytes in the recorded history.
+Returning levels re-record their material names, so this reduces stale history
+at a measured loading-CPU cost. The associated material and scene fingerprints
+matched. A moving-player run made zero calls to the affected `loading::read`
+path during its measured interval; it therefore establishes no per-call
+performance result for streaming reads. The original purge is `140060180`;
+this explicit owner and its camera cache are host mechanisms.
+
+### Player declaration setup ownership
+
+The host shares a successful immutable player declaration preparation among
+arms, player setup and underwater effects during one level setup. After the
+first two consumers, only FX and controller fields remain until screen-effect
+preparation completes; no declaration tree is kept for gameplay. Original
+declaration identity lookup is `1400607f0`; this temporary borrowed owner is a
+host optimization. Editable overlays and read failures use fresh acquisitions.
+In both Edge of the World and Dust District, recorded consumer fingerprints
+matched for Corvo and Emily. Each level resolved the tree three times before
+and once afterward; Corvo's source reads fell 357 to 119 and Emily's 354 to
+118 per level. Targeted cycle and capacity figures, including their limits,
+are in `optimization-opportunities.md` under player declaration preparation.

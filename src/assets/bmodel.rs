@@ -1,5 +1,37 @@
 //! Read-only decoder for static BML1/BTRI model geometry.
 
+// Host equivalent of 140060180: retain model read identities for the level
+// that owns the prepared meshes, including pending preparation.
+static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+pub(crate) struct ModelHistoryLease(());
+impl ModelHistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        let lease = std::sync::Arc::new(Self(()));
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
+            eprintln!("MEMORY model history scope acquisition: cycles={cycles}");
+        }
+        lease
+    }
+}
+impl Drop for ModelHistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let (count, bytes, slots, _) = crate::loading::retain_kind("model", |_| false);
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
+            eprintln!("MEMORY model history release: entries={count} path_capacity_bytes={bytes} slots={slots} cycles={cycles}");
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Model {
     pub surfaces: Vec<Surface>,

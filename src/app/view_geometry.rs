@@ -568,43 +568,6 @@ pub(super) fn placed_collision_vertex(placement: &entities::PlacedModel, vertex:
     }))
 }
 
-pub(super) fn load_model_havok(
-    catalog: &archive::Catalog,
-    path: &str,
-    depth: usize,
-) -> Result<Vec<[[f32; 3]; 3]>, String> {
-    if depth > 4 {
-        return Err("HKX alias chain exceeds four links".into());
-    }
-    let bytes = catalog
-        .read(path)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("HKX target not indexed: {path}"))?;
-    if let Some((target, factor)) = physworld::standalone_hkx_alias(&bytes) {
-        let mut triangles = load_model_havok(catalog, &target, depth + 1)?;
-        for triangle in &mut triangles {
-            for vertex in triangle {
-                for axis in 0..3 {
-                    vertex[axis] *= factor;
-                }
-            }
-        }
-        return Ok(triangles);
-    }
-    let physics = physworld::parse_hkx(&bytes)?;
-    let geometry = physics.standalone_shapes(&bytes)?;
-    if !geometry.compressed_decode_failures.is_empty() || !geometry.unknown_shapes.is_empty() {
-        return Err(format!(
-            "incomplete HKX geometry: {:?}, {:?}",
-            geometry.compressed_decode_failures, geometry.unknown_shapes
-        ));
-    }
-    Ok(geometry
-        .triangles
-        .into_iter()
-        .map(|triangle| triangle.vertices)
-        .collect())
-}
 
 fn collision_material_slot(
     catalog: &archive::Catalog,
@@ -703,7 +666,7 @@ pub(super) fn acquire_static_model_collision_with_texts(
             continue;
         };
         let local = cached.entry(path.clone()).or_insert_with(|| {
-            let parsed = load_model_havok(catalog, &path, 0);
+            let parsed = physworld::source::load_model_havok(catalog, &path, 0);
             match parsed {
                 Ok(triangles) => Some(triangles),
                 Err(error) => {
@@ -754,7 +717,7 @@ pub(super) fn acquire_static_model_collision_with_texts(
             continue;
         };
         let hd = cached.entry(hd_path.clone()).or_insert_with(|| {
-            match load_model_havok(catalog, &hd_path, 0) {
+            match physworld::source::load_model_havok(catalog, &hd_path, 0) {
                 Ok(triangles) => Some(triangles),
                 Err(error) => {
                     eprintln!("Model collision {hd_path}: {error}");

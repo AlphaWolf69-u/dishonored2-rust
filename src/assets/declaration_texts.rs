@@ -3,7 +3,7 @@
 use crate::assets::archive::Catalog;
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
-type TextMap = HashMap<String, String>;
+pub(crate) type TextMap = HashMap<String, String>;
 #[derive(Default)]
 pub(crate) struct DeclarationTexts {
     common: Option<Arc<TextMap>>,
@@ -51,6 +51,7 @@ pub(crate) struct PhysicsSeed {
 
 impl PhysicsSeed {
     pub(crate) fn new(catalog: &Catalog, language: &str) -> Self {
+        crate::loading::check_common_catalog(catalog.identity());
         let enabled = !catalog.has_overlays()
             && std::env::var("DH2_DEBUG_SEPARATE_PHYSICS_TEXTS").as_deref() != Ok("1")
             && std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() != Ok("1");
@@ -191,6 +192,27 @@ impl Drop for DeclarationTexts {
 }
 
 impl DeclarationTexts {
+    /// Called after world FX and audio owners stop. The separately retained
+    /// common table remains available to subsequent levels.
+    pub(crate) fn release_level_history(&self) {
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let mut removed = 0usize;
+        let mut bytes = 0usize;
+        for kind in ["fx", "soundevent", "physicsMaterial"] {
+            let (count, capacity, _, _) = crate::loading::retain_kind(kind, |path| {
+                self.common.as_deref().is_some_and(|values| values.contains_key(path))
+            });
+            removed += count;
+            bytes += capacity;
+            if trace { eprintln!("MEMORY declaration history release: kind={kind} entries={count} path_capacity_bytes={capacity}"); }
+        }
+        if trace {
+            let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("MEMORY contact history release: entries={removed} path_capacity_bytes={bytes} cycles={cycles}");
+        }
+    }
+
     pub(crate) fn get(&self, path: &str) -> Option<&str> {
         let key = path.to_ascii_lowercase();
         self.common
@@ -226,6 +248,7 @@ fn shared_texts(
         && (catalog.has_overlay_file("generated/buildgame/init.mapresources")
             || catalog.has_overlay_file("generated/buildgame/common.mapresources"))
     {
+        crate::loading::set_common_texts(catalog.identity(), None);
         *owner = Some(SharedTexts {
             catalog: catalog.identity(),
             language: language.to_owned(),
@@ -240,6 +263,7 @@ fn shared_texts(
         return Ok(entry.common.clone());
     }
     // A different catalog/language cannot keep the old session's table pinned.
+    crate::loading::set_common_texts(catalog.identity(), None);
     *owner = None;
     let lists = [
         crate::assets::map_resources::acquire_list(base, catalog, "init", language)?,
@@ -260,6 +284,7 @@ fn shared_texts(
             .filter(|r| contact_resource(r))
             .any(|r| catalog.has_overlay_file(&r.path))
     {
+        crate::loading::set_common_texts(catalog.identity(), None);
         *owner = Some(SharedTexts {
             catalog: catalog.identity(),
             language: language.to_owned(),
@@ -304,7 +329,9 @@ pub(crate) fn acquire(
     let map = map.trim_start_matches("maps/").trim_end_matches(".map");
     let list = crate::assets::map_resources::acquire_level_list(base, catalog, map, language)?;
     let mut stats = TextLoads::default();
+    crate::loading::check_common_catalog(catalog.identity());
     let common = shared_texts(base, catalog, language, &mut stats, &mut seed)?;
+    crate::loading::set_common_texts(catalog.identity(), common.clone());
     let mut level = TextMap::new();
     for resource in list.iter().filter(|r| contact_resource(r)) {
         if level.contains_key(&resource.path)

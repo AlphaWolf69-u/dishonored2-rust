@@ -49,9 +49,9 @@ pub struct SystemRecipe {
     /// Entity spawn transform; 14008e560 places each body cinfo pose by it.
     pub position: [f32; 3],
     pub orientation: [f32; 4],
-    pub system: physworld::physics_system::PhysicsSystem,
+    pub system: std::sync::Arc<physworld::physics_system::PhysicsSystem>,
     pub skeleton: String,
-    pub ragdoll: Vec<physworld::physics_system::RagdollEntry>,
+    pub ragdoll: std::sync::Arc<[physworld::physics_system::RagdollEntry]>,
     pub collision_layer: Option<String>,
 }
 
@@ -94,6 +94,7 @@ fn physics_systems(
             .map(|bytes| entities::declaration_text(&bytes).into_owned())
     };
     let mut systems = Vec::new();
+    let mut sources = physworld::physics_system::SystemSources::new(catalog);
     for binding in entities::component_bindings(document) {
         if binding.class != "cpntPhysicsSystem" {
             continue;
@@ -111,7 +112,7 @@ fn physics_systems(
             unsupported.push(format!("{id}: physics system on layer {layer:?} needs contacts"));
             continue;
         }
-        let load = || -> Result<Option<SystemRecipe>, String> {
+        let mut load = || -> Result<Option<SystemRecipe>, String> {
             let Some((index, p)) = placements
                 .iter()
                 .enumerate()
@@ -127,17 +128,19 @@ fn physics_systems(
                 .strip_suffix(".hkt")
                 .ok_or_else(|| format!("{id}: unsupported ragdoll {ragdoll}"))?;
             let path = format!("generated/physsystem/{stem}.hkx");
-            let bytes = catalog
-                .read(&path)
-                .map_err(|e| e.to_string())?
+            let system = sources.system(catalog, &path)
+                .map_err(|error| match error {
+                    physworld::physics_system::AcquireError::Read(error) => error,
+                    physworld::physics_system::AcquireError::Parse(error) => format!("{id}: {error}"),
+                })?
                 .ok_or_else(|| format!("{id}: missing {path}"))?;
-            let system = physworld::physics_system::parse(&bytes).map_err(|e| format!("{id}: {e}"))?;
             let map = physworld::physics_system::ragdoll_path(&binding.name, &ragdoll);
-            let bytes = catalog
-                .read(&map)
-                .map_err(|e| e.to_string())?
+            let ragdoll = sources.ragdoll(catalog, &map)
+                .map_err(|error| match error {
+                    physworld::physics_system::AcquireError::Read(error)
+                    | physworld::physics_system::AcquireError::Parse(error) => error,
+                })?
                 .ok_or_else(|| format!("{id}: missing {map}"))?;
-            let ragdoll = physworld::physics_system::parse_ragdoll(&bytes)?;
             if ragdoll.len() != system.bodies.len() {
                 return Err(format!("{id}: ragdoll map does not cover every body"));
             }
@@ -167,14 +170,16 @@ pub fn load(
     document: &Document,
     placements: &[PlacedModel],
 ) -> Result<MachineryRecipes, String> {
-    load_with_texts(catalog, document, placements, &mut Default::default())
+    let mut sources = physworld::source::ShapeSources::new(catalog);
+    load_with_sources(catalog, document, placements, &mut Default::default(), &mut sources)
 }
 
-pub(crate) fn load_with_texts(
+pub(crate) fn load_with_sources(
     catalog: &Catalog,
     document: &Document,
     placements: &[PlacedModel],
     texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+    shape_sources: &mut physworld::source::ShapeSources,
 ) -> Result<MachineryRecipes, String> {
     let read = |path: &str| {
         catalog
@@ -226,6 +231,11 @@ pub(crate) fn load_with_texts(
         systems: Vec::new(),
         unsupported,
     };
+    // 14008be50 attaches the aerodynamic property to the shared shape.
+    // Keep this cache within preparation; mutable overlays retain the old reads.
+    let share_shapes = !catalog.has_overlays();
+    let mut mass_sources = physworld::mass::MassSources::new(catalog);
+    let mut wind_cache = HashMap::<String, (Vec<crate::gameplay::aerodynamics::AeroFace>, Vec<BodyHull>)>::new();
     // Assemblies a force drives: motors, or a dynamic body that the wind
     // manager pushes (809d80 registers positive m_windSpeedFactor).
     let windy = |id: &str| {
@@ -339,11 +349,10 @@ pub(crate) fn load_with_texts(
                         )
                         .ok_or_else(|| format!("{id}: invalid shape scale"))?;
                         let path = format!("generated/{key}.massProps");
-                        let bytes = catalog
-                            .read(&path)
-                            .map_err(|e| e.to_string())?
-                            .ok_or_else(|| format!("{id}: missing {path}"))?;
-                        let mut mass = physworld::mass::parse_principal(&bytes)?;
+                        let mut mass = mass_sources.acquire(catalog, path).map_err(|error| match error {
+                            physworld::mass::MassSourceError::Missing(path) => format!("{id}: missing {path}"),
+                            physworld::mass::MassSourceError::Failed(error) => error,
+                        })?;
                         let target = if let Some(m) = body.descriptor_mass_override {
                             m
                         } else {
@@ -371,29 +380,33 @@ pub(crate) fn load_with_texts(
                             body.wind_speed_factor.filter(|factor| *factor > 0.)
                         {
                             let path = physworld::physics_shape_asset_path(&key);
-                            let bytes = catalog
-                                .read(&path)
-                                .map_err(|e| e.to_string())?
-                                .ok_or_else(|| format!("{id}: missing {path}"))?;
-                            let geometry = physworld::parse_hkx(&bytes)?.standalone_shapes(&bytes)?;
-                            if !geometry.unknown_shapes.is_empty()
-                                || !geometry.compressed_decode_failures.is_empty()
-                            {
-                                return Err(format!(
-                                    "{id}: unsupported wind shape geometry {:?}",
-                                    geometry.unknown_shapes
-                                ));
-                            }
-                            let faces = crate::gameplay::aerodynamics::aero_faces(
-                                geometry.triangles.iter().map(|t| t.vertices),
-                            );
-                            let hulls = geometry
-                                .convex
-                                .iter()
-                                .map(|hull| BodyHull {
-                                    vertices: hull.vertices.clone(),
-                                })
-                                .collect();
+                            let cached = share_shapes.then(|| wind_cache.get(&path).cloned()).flatten();
+                            let (faces, hulls) = if let Some(cached) = cached {
+                                cached
+                            } else {
+                                let geometry = shape_sources.geometry(catalog, &path, physworld::source::ShapeUse::Machinery)?
+                                    .ok_or_else(|| format!("{id}: missing {path}"))?;
+                                if !geometry.unknown_shapes.is_empty()
+                                    || !geometry.compressed_decode_failures.is_empty()
+                                {
+                                    return Err(format!(
+                                        "{id}: unsupported wind shape geometry {:?}",
+                                        geometry.unknown_shapes
+                                    ));
+                                }
+                                let faces = crate::gameplay::aerodynamics::aero_faces(
+                                    geometry.triangles.iter().map(|t| t.vertices),
+                                );
+                                let hulls: Vec<BodyHull> = geometry
+                                    .convex
+                                    .iter()
+                                    .map(|hull| BodyHull {
+                                        vertices: hull.vertices.clone(),
+                                    })
+                                    .collect();
+                                if share_shapes { wind_cache.insert(path, (faces.clone(), hulls.clone())); }
+                                (faces, hulls)
+                            };
                             wind = Some(BodyWind {
                                 speed_factor,
                                 faces,

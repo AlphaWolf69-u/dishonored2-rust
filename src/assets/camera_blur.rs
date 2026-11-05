@@ -9,7 +9,28 @@ pub struct BlurResources {
     pub kernels: KernelBank,
     pub materials: MaterialBank,
 }
+// 1400607f0 returns already acquired declaration identities. This host
+// owner shares their immutable prepared camera metadata between levels.
+static RESIDENT: std::sync::Mutex<Option<(u64, std::sync::Arc<BlurResources>)>> = std::sync::Mutex::new(None);
+/// Names whose parsed material metadata is still owned by the session cache.
+pub(crate) fn retained_material_paths() -> std::collections::HashSet<String> {
+    let resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());
+    resident.as_ref().into_iter().flat_map(|(_, resources)| resources.materials.materials.keys())
+        .map(|variant| format!("generated/decls/material/{}.decl", variant.material_name().to_ascii_lowercase()))
+        .collect()
+}
 impl BlurResources {
+    pub(crate) fn acquire(catalog: &Catalog) -> Result<std::sync::Arc<Self>, String> {
+        let shared = !catalog.has_overlays();
+        let mut resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, value)) = resident.as_ref().filter(|(id, _)| shared && *id == catalog.identity()) {
+            return Ok(value.clone());
+        }
+        *resident = None;
+        let value = std::sync::Arc::new(Self::load(catalog)?);
+        if shared { *resident = Some((catalog.identity(), value.clone())); }
+        Ok(value)
+    }
     pub fn load(catalog: &Catalog) -> Result<Self, String> {
         Ok(Self {
             kernels: KernelBank::load(catalog)?,

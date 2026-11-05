@@ -185,6 +185,67 @@ pub fn decode_compressed(bytes: &[u8]) -> Result<MassProperties, String> {
     })
 }
 
+// The original may promote this resource class under 1400661e0; this host
+// scope instead follows its actual preparation and live machinery owners.
+static MASS_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+pub(crate) struct MassHistoryLease;
+impl MassHistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        *MASS_SCOPES.lock().unwrap_or_else(|error| error.into_inner()) += 1;
+        std::sync::Arc::new(Self)
+    }
+}
+impl Drop for MassHistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = MASS_SCOPES.lock().unwrap_or_else(|error| error.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let (entries, bytes, slots, _) = crate::loading::retain_kind("massprops", |_| false);
+        if trace {
+            let cycles = started.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("MEMORY mass history release: entries={entries} path_capacity_bytes={bytes} slots={slots} cycles={cycles}");
+        }
+    }
+}
+
+pub(crate) enum MassSourceError {
+    Missing(String),
+    Failed(String),
+}
+
+/// Preparation-scoped owner of immutable shape mass resources. The original
+/// body-creation path (140caf5c0) consumes a cached shape mass value; callers
+/// apply body-specific overrides to their copy. Loose overlays stay uncached.
+pub(crate) struct MassSources {
+    _history: std::sync::Arc<MassHistoryLease>,
+    share: bool,
+    values: std::collections::HashMap<String, PrincipalMassProperties>,
+}
+
+impl MassSources {
+    pub(crate) fn new(catalog: &crate::archive::Catalog) -> Self {
+        Self { _history: MassHistoryLease::acquire(), share: !catalog.has_overlays(), values: Default::default() }
+    }
+
+    pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, path: String)
+        -> Result<PrincipalMassProperties, MassSourceError>
+    {
+        if self.share {
+            if let Some(value) = self.values.get(&path) { return Ok(*value); }
+        }
+        let bytes = match catalog.read(&path).map_err(|error| MassSourceError::Failed(error.to_string()))? {
+            Some(bytes) => bytes,
+            None => return Err(MassSourceError::Missing(path)),
+        };
+        let value = parse_principal(&bytes).map_err(MassSourceError::Failed)?;
+        if self.share { self.values.insert(path, value); }
+        Ok(value)
+    }
+}
+
 /// Read the installed `.massProps` TAG0 resource through its own type metadata.
 pub fn parse(bytes: &[u8]) -> Result<MassProperties, String> {
     decode_compressed(compressed_payload(bytes)?)

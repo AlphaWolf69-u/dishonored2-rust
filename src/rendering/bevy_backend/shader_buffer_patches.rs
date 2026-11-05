@@ -23,6 +23,11 @@ type Patch = (AssetId<ShaderBuffer>, u64, Vec<u8>);
 pub struct ShaderBufferPatches(Vec<Patch>);
 
 impl ShaderBufferPatches {
+    /// Drop updates from the outgoing scene while normal producers are gated.
+    pub(crate) fn release_level(&mut self) {
+        self.0.clear();
+    }
+
     /// Write `bytes` at `offset` of the asset's data. Unchanged bytes produce
     /// no GPU write. Returns false when the asset or range is absent.
     pub fn write(
@@ -61,6 +66,13 @@ impl ShaderBufferPatches {
 /// the full upload that already carries older bytes.
 #[derive(Resource, Default)]
 struct PendingPatches(Vec<Patch>);
+
+/// The render acknowledgement stops outgoing producers before this runs.
+/// All current patch targets belong to the outgoing level.
+pub(super) fn release_level(world: &mut World) {
+    let mut pending = world.resource_mut::<PendingPatches>();
+    pending.0.clear();
+}
 
 pub(super) fn register(app: &mut App) {
     app.init_resource::<ShaderBufferPatches>()

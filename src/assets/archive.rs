@@ -128,7 +128,14 @@ impl Catalog {
     }
 
     fn entry(&self, path: &str) -> Option<&Entry> {
-        let normalized = path.replace('\\', "/").to_ascii_lowercase();
+        use std::borrow::Cow;
+        let normalized: Cow<'_, str> = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
+            Cow::Borrowed(path)
+        } else {
+            let mut normalized = path.replace('\\', "/");
+            normalized.make_ascii_lowercase();
+            Cow::Owned(normalized)
+        };
         self.paths.search(&normalized).ok().map(|index| &self.entries[index])
     }
 }

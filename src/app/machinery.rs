@@ -9,6 +9,7 @@ use bevy::prelude::*;
 #[derive(Resource, Default)]
 pub(super) struct AmbientMachinery {
     physics: MachineryWorld,
+    _mass_history: Option<std::sync::Arc<crate::physworld::mass::MassHistoryLease>>,
     scenes: crate::gameplay::scene_motion::SceneMotion,
     /// Per body: its owner's render source, resolved once sources exist.
     sources: Option<Vec<Option<usize>>>,
@@ -27,7 +28,8 @@ impl AmbientMachinery {
         document: Option<&Document>,
         placements: &[PlacedModel],
     ) -> Result<Self, String> {
-        Self::load_with_texts(catalog, document, placements, &mut Default::default())
+        let mut sources = crate::physworld::source::ShapeSources::new(catalog);
+        Self::load_with_texts(catalog, document, placements, &mut Default::default(), &mut sources)
     }
 
     pub(super) fn load_with_texts(
@@ -35,12 +37,14 @@ impl AmbientMachinery {
         document: Option<&Document>,
         placements: &[PlacedModel],
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+        shape_sources: &mut crate::physworld::source::ShapeSources,
     ) -> Result<Self, String> {
         let Some(document) = document else {
             return Ok(Self::default());
         };
+        let mass_history = crate::physworld::mass::MassHistoryLease::acquire();
         let placements = super::expanded_model_placements(placements, catalog);
-        let recipes = crate::entities::machinery::recipes::load_with_texts(catalog, document, &placements, texts)?;
+        let recipes = crate::entities::machinery::recipes::load_with_sources(catalog, document, &placements, texts, shape_sources)?;
         for diagnostic in &recipes.unsupported {
             warn!("Ambient machinery assembly unsupported: {diagnostic}");
         }
@@ -72,6 +76,7 @@ impl AmbientMachinery {
         info!("Physics systems: {} simulated, {} skinned", world.systems.len(), skins.len());
         Ok(Self {
             physics: world,
+            _mass_history: Some(mass_history),
             scenes,
             sources: None,
             visible_previous,

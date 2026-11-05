@@ -16,7 +16,11 @@ impl WorldMatrices {
         if self.0.is_none() && !matrices.is_empty() {
             // The world shaders index original 48-byte affine rows. No host
             // coordinate conversion, decomposition, or per-pass copy belongs here.
-            self.0 = Some(buffers.add(ShaderBuffer::from(matrices.to_vec())));
+            let mut buffer = ShaderBuffer::default();
+            buffer.set_data(matrices);
+            buffer.buffer_description.size = buffer.data.as_ref().map_or(0, Vec::len) as u64;
+            buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
+            self.0 = Some(buffers.add(buffer));
         }
         self.0.clone()
     }

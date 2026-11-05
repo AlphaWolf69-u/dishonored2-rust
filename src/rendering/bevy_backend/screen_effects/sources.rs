@@ -55,12 +55,17 @@ impl ScreenEffectSources {
         character: &str,
         resources: &mut crate::rendering::particles::definition::ParticleResources,
     ) -> Result<Self, String> {
-        let declarations = crate::entities::player::player_declarations(character, |path| {
-            catalog
-                .read(path)
-                .map(|b| b.map(|b| crate::entities::declaration_text(&b).into_owned()))
-                .map_err(|e| e.to_string())
-        })?;
+        Self::load_shared_with_player(catalog, library, character, resources, &mut Default::default())
+    }
+
+    pub(crate) fn load_shared_with_player(
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        character: &str,
+        resources: &mut crate::rendering::particles::definition::ParticleResources,
+        declarations_source: &mut crate::entities::player::DeclarationSource,
+    ) -> Result<Self, String> {
+        let declarations = declarations_source.screen(catalog, character)?;
         let swimming = scope(&declarations.fx, "m_swimming")
             .ok_or("player FX manager swimming descriptor absent")?;
         let underwater = atom(swimming, "m_underWaterFX").ok_or("player underwater FX absent")?;

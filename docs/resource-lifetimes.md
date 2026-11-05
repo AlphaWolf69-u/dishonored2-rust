@@ -57,6 +57,13 @@ cleanup enabled/disabled in the same client, and record remaining identities
 and teardown/acquisition cost. Original IGGY baseline is 86,057,717 CPU bytes;
 that includes systems beyond the runtime heap and is not a per-movie budget.
 
+Camera blur preparation reuses one immutable catalog-scoped metadata owner
+across levels, while editable overlays still read fresh inputs. Six production
+loads constructed six -> one copies, with matching kernel/material signatures;
+the affected acquisition spans totaled 21,300,056 -> 4,434,045 thread cycles.
+The retained owner accounts for at least 6,536 bytes excluding allocator and
+Arc overhead. This is a load-time reuse result, not a gameplay FPS claim.
+
 ## Owner inventory
 
 ### Completed measurements
@@ -87,6 +94,9 @@ owner allocation capacities, not process RSS. Mutable shapes retain their
 source. A same-binary release comparison over EotW / Dust return / EotW
 recorded 205,954,140 -> 229,400,255 thread cycles for trigger acquisition
 plus retirement (11.4% more); this is preparation cost, not frame time.
+The later shared-source change reduced the combined trigger and adjacent
+area-preparation spans by about 10.8% in its own same-binary comparison; the
+two comparisons are separate measurements and should not be added together.
 
 Area-environment acquisition now resolves one profile list for its area and
 physics consumers. The EotW / Dust / EotW production comparison reduced
@@ -157,7 +167,7 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 | FX graphs/curves | `gameplay/effects/instances`, typed `assets/fx` readers | Arc graph definitions; per-instance variables, queues, bindings; level resources and instances drop on teardown | Deep graph copies were already removed; unsupported families retain compact admission errors rather than generic entity trees |
 | Particle definitions/models/fields | `rendering/particles/definition::ParticleResources` | Level acquisition cache shares declarations, PMODEL and decoded field pixels across world/screen consumers | Both world_sources and screen_effects/sources use ParticleDefinition::load with the single setup ParticleResources owner; runtime emitters retain prepared definitions and do not parse declarations or reacquire PMODEL/field images. CPU field pixels and PMODEL simulation geometry have real consumers |
 | Particle images/materials | `rendering/particles/image_resources`, scene `texture_streaming`, `bevy_backend/particle_images` | Particle 2D definitions retain metadata and request the scene image identity; visible system bounds publish projected-area demand for all prepared materials. The remaining 3D owner retains authored chains, retires upload staging and releases on level teardown | Source 3dd8a11 completed EotW/Dust/EotW: 57/48/57 shared 2D identities; custom uploads 9/10/9, all volumes, releasing 13,729,792 / 28,311,552 / 13,729,792 staging bytes. This is ownership consolidation, not equivalent total VRAM savings. Header-only inspection of all 14,885 selected installed bimage7 images found 102 volumes: every volume has one authored mip, full XY equals inline XY, and none has indexed separate levels (zero read/header errors) |
-| Projected decals | `assets/decal`, `bevy_backend/projected_decals` | Typed definitions plus per-instance state; lazy receiver geometry upload; level publication reset | Residency is separate from authored animation fidelity; do not classify a missing effect implementation as memory saving |
+| Projected decals | `assets/decal`, `assets/fx/decal`, `rendering/decals/systems`, `bevy_backend/projected_decals` | Typed definitions plus per-instance state; lazy receiver geometry upload; level publication reset | World FX loads decal definitions and starts animated decal effects through the decal-system pool. This establishes the connected path, not full fidelity for every decal family or lifecycle parity |
 | Sound packages/banks/events | `app/audio`, `assets/wwise` | Shared package indices/startup banks; map sources/actions/banks removed by `audio::begin_level`; DATA byte ranges share Arc backing | Existing measurements confirm encoded backing sharing; startup audio output is intentionally persistent. Contact and sound-event declaration texts share one session common table and a level table: EotW / Dust / EotW contact reads 28,180 -> 10,162, sound-event reads 5,040 -> 0, with matching fingerprints; level texts release at transition. Physics preparation transfers matching acquired texts into that owner: 45 additional initial contact reads avoided, and 749 -> 62 physics source reads across the route; maximum temporary string capacity 6,748 bytes. The common parsed contact database is now shared across maps: four loads require one read/parse instead of four, with matching 7,407-entry fingerprints; the three-load release acquisition span fell from 26,196,065 to 9,042,530 thread cycles |
 | Sound media/streams | `app/audio/graph`, `assets/wwise/vorbis` | Encoded media shared per sound; per-voice bounded decoded blocks; file sources use a shared 2 MiB encoded IO device during selected playback | Incremental Vorbis/IMA file playback is now the default; type-1 sources borrow authored bank prefixes. Acquisition reads required format metadata (232,514 vs 530,033,360 logical bytes in the measured dev run), without whole-file conversion/indexing. Final default three-map encoded-device peak 552,547 bytes; walking compared 82,699,258 samples with zero differences and no detected affected-decoder CPU regression (19.492 vs 19.746 CPU ms/s) |
 | Sound actor property chains | `assets::wwise::PlaybackBanks`, `wwise::property_chains` | Immutable flat Arc slices; per-bank weak actor lookup, live definitions hold the data; map truncation prunes removed actor dependencies | Same-binary three-map comparison removes 26,280,144 EotW / 26,479,152 Dust live chain bytes, excluding weak-map metadata. All six property request/content fingerprints match; EotW return has identical retained counts. Mutable voice/mixer state remains separate; no extra hot-loop locks or altered property iteration |
@@ -224,7 +234,8 @@ actors. Keeping bank DATA through encoded-source Arc ranges is intentional
 justify a new duplicate-bank cache. A separate demonstrated cost remains in
 `PlaybackBanks::node_hierarchy`: inherited properties are decoded into each
 prepared graph; quantify repeated actor/property ownership before changing
-that representation.
+that representation. The later shared property-chain implementation and its
+measured results are recorded in the sound actor property chains row above.
 
 
 UI bitmap backing review: `flash::bitmap_resources::load` reads the separate
@@ -318,6 +329,14 @@ matching formats, dimensions and CRCs while 430 copies totalling 34,556,544
 bytes were avoided. Source capacity was 34,556,556 bytes. This measures copies
 and allocations, not process RSS or CPU timings.
 
+Player arms, player setup and underwater effects now borrow one temporary
+declaration preparation per successful level setup, then keep only FX and
+controller fields until screen effects are prepared. Both characters' recorded
+consumer inputs matched on Edge of the World and Dust District; resolutions
+fell from three to one per level. Editable overlays still read fresh data. The
+capacity and targeted setup-cost measurements are in the parity ledger and
+optimization notes; they do not measure peak process memory or frame time.
+
 
 Texture streaming now transfers completed reads directly into its map-owned
 queue and reuses upload bookkeeping only within the current mailbox generation.
@@ -357,3 +376,13 @@ I/O onto that path and could stall a new material pairing. No declaration was
 removed based solely on whether a particular walk happened to use it. The
 buffer handoff change is measured separately. Local evidence:
 `artifacts/inspect-contact-database.py` and `artifacts/shape-parent-shared.err`.
+
+Machinery preparation shares decoded shape mass values and aerodynamic shape
+templates only during preparation. Each body receives its own mass value and
+wind simulation data; the temporary caches are dropped before gameplay. On
+the four-map route, mass reads fell from 287 to 53 and Dust wind-shape reads
+from 10 to 2, with matching body fingerprints. In Dust the temporary caches
+held 18 mass entries and two wind entries; their key capacity was 3,852 and
+430 bytes respectively, and the wind templates held 1,008 bytes of vector
+payload. These capacities exclude hash-table and allocator overhead. Targeted
+release measurements covered preparation, not gameplay frame time.
