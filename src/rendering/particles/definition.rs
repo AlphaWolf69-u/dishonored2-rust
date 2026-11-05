@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 /// Level-scoped acquisition owner, shared by player and world effects. The
@@ -23,7 +23,9 @@ pub struct ParticleResources {
     declarations: HashMap<String, Result<Arc<particle_declaration::ParticleDeclaration>, String>>,
     models: HashMap<String, Arc<crate::assets::particle_model::ParticleModel>>,
     field_images: HashMap<String, Arc<crate::assets::fx::particle_field::FieldPixels>>,
-    materials: HashMap<String, Arc<ParticleMaterial>>,
+    // The render cache may keep a material alive independently of its FX.
+    // Two strong cache entries would each appear to have another consumer.
+    materials: HashMap<String, Weak<ParticleMaterial>>,
     world_materials: HashMap<String, Result<bool, String>>,
     pub declaration_requests: usize,
     pub declaration_reads: usize,
@@ -68,9 +70,14 @@ impl ParticleResources {
     pub fn retire_unused(&mut self) {
         let before = (self.declarations.len(), self.materials.len(), self.models.len(), self.field_images.len());
         self.declarations.retain(|_, value| value.as_ref().is_ok_and(|value| Arc::strong_count(value) > 1));
-        self.materials.retain(|_, value| Arc::strong_count(value) > 1);
+        self.materials.retain(|_, value| value.strong_count() != 0);
         self.models.retain(|_, value| Arc::strong_count(value) > 1);
         self.field_images.retain(|_, value| Arc::strong_count(value) > 1);
+        // The declarations and models carry their own history leases. Once
+        // no acquisition entries remain, this owner must not pin those scopes
+        // after the last live runtime resource has gone away.
+        if self.declarations.is_empty() { self.history = None; }
+        if self.models.is_empty() { self.model_history = None; }
         let (images, payload_bytes) = self.images.retire_unused();
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY particle cache retirement: declarations={} materials={} models={} fields={} images={} acquisition_payload_bytes={}",
@@ -264,14 +271,18 @@ impl ParticleDefinition {
                         continue;
                     }
                     let key = name.replace('\\', "/").to_ascii_lowercase();
-                    if !resources.materials.contains_key(&key) {
+                    let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+                    let material = if let Some(material) = cached {
+                        material
+                    } else {
                         resources.material_reads += 1;
-                        resources.materials.insert(
-                            key.clone(),
-                            Arc::new(ParticleMaterial::load_shared(catalog, library, name, &mut resources.images)?),
-                        );
-                    }
-                    materials.insert(name.clone(), resources.materials[&key].clone());
+                        let material = Arc::new(ParticleMaterial::load_shared(
+                            catalog, library, name, &mut resources.images,
+                        )?);
+                        resources.materials.insert(key, Arc::downgrade(&material));
+                        material
+                    };
+                    materials.insert(name.clone(), material);
                 }
             }
         }
