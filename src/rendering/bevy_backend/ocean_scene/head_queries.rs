@@ -92,6 +92,7 @@ impl HeadQueries {
     }
     fn record(
         &mut self,
+        device: &RenderDevice,
         queue: &RenderQueue,
         encoder: &mut CommandEncoder,
         frame: &WaterFrame,
@@ -115,6 +116,8 @@ impl HeadQueries {
         )?;
         self.ring = (self.ring + 1) & 3;
         self.recorded = Some(frame.matrices.frame);
+        // Publish only after the frame's CPU simulation has consumed its ring.
+        self.readbacks.read_current_mapped(device, self.ring, &self.requests)?;
         Ok(())
     }
 }
@@ -154,6 +157,7 @@ impl OceanScene {
         }
         if let Some(queries) = self.head_queries.as_mut() {
             queries.record(
+                device,
                 queue,
                 encoder,
                 frame,
@@ -178,13 +182,6 @@ impl OceanScene {
             Some(queries) => queries.take_snapshot(frame),
             None => Ok(()),
         }
-    }
-    /// The renderer publishes the ring that the following update will consume.
-    pub(crate) fn publish_next_head_ring(&mut self, device: &RenderDevice) -> Result<(), String> {
-        if let Some(queries) = self.head_queries.as_mut() {
-            queries.readbacks.read_current_mapped(device, (queries.ring + 1) & 3, &queries.requests)?;
-        }
-        Ok(())
     }
     pub(crate) fn head_water_snapshot(&self, frame: u32) -> Option<&HeadWaterSnapshot> {
         self.head_queries

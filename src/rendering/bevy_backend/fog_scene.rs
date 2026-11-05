@@ -127,12 +127,6 @@ impl FogGpu {
         let body = snapshot.and_then(|value| value.body_surface).or(frame.head_water_surface);
         Ok((ocean.upcoming_water_level(frame, selection), head, body, snapshot.and_then(|value| value.samples)))
     }
-    pub(super) fn publish_next_head_ring(&mut self, device: &RenderDevice) -> Result<(), String> {
-        if let Some(ocean) = self.current.as_mut().and_then(|view| view.ocean.as_mut()) {
-            ocean.publish_next_head_ring(device)?;
-        }
-        Ok(())
-    }
     pub(super) fn ocean_capture(&self, camera: Entity, frame: u32) -> Option<&super::ocean_scene::OceanScene> {
         if self.completed != Some((camera, frame)) { return None; }
         self.current.as_ref()?.ocean.as_ref()

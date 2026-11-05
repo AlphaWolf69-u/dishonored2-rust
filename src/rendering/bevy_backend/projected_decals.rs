@@ -297,7 +297,7 @@ fn prepare(
             .cvars
             .int("r_maxDynamicDecals")
             .ok_or("decal budget absent")?;
-        let decals = camera.world_particles.snapshot_decals(tree, limit as usize)?;
+        let decals = camera.simulation.world_particles.snapshot_decals(tree, limit as usize)?;
         gpu.lighting
             .retain(|slot, _| decals.iter().any(|(live, _, _)| live == slot));
         if decals.is_empty() {

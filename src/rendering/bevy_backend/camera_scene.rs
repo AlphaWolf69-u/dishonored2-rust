@@ -30,15 +30,22 @@ pub(super) struct CameraPass;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct CameraAlphaPass;
 
+/// CPU simulation shares one particle pool across player and world effects.
+/// Its ownership can move independently of render-only GPU state.
+#[derive(Default)]
+pub(super) struct FxSimulation {
+    screen_state: super::screen_effects::ScreenEffectState,
+    particle_systems: super::particle_systems::ParticleSystems,
+    pub(super) world_particles: super::world_particle_state::WorldParticleState,
+}
+
 #[derive(Resource, Default)]
 pub(super) struct CameraGpu {
     current: Option<(Entity, CameraView)>,
     completed: Option<(Entity, u32)>,
     alpha_completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
-    screen_state: super::screen_effects::ScreenEffectState,
-    particle_systems: super::particle_systems::ParticleSystems,
-    pub(super) world_particles: super::world_particle_state::WorldParticleState,
+    pub(super) simulation: FxSimulation,
     screen_draws: Option<(Entity, u32, Vec<super::screen_effects::QuadDraw>)>,
     /// The FX update's draws for this frame: FX-pass sprites/meshes, and
     /// world-material meshes drawn as model surfaces.
@@ -87,7 +94,7 @@ fn publish_particles(
         let console = crate::platform::console::shared().read();
         let transparency = crate::rendering::particles::transparency::ParticleTransparency::new(&console.cvars);
         let (draws, world_meshes) = gpu
-            .particle_systems
+            .simulation.particle_systems
             .publish_draws(water.matrices.frame, |pose| {
                 Ok(super::screen_effects::ParticleDrawContext {
                     view: &sprite_view,
@@ -142,9 +149,9 @@ pub(super) fn release_level(world: &mut World) {
     gpu.current = None;
     gpu.completed = None;
     gpu.alpha_completed = None;
-    gpu.screen_state = Default::default();
-    gpu.particle_systems = Default::default();
-    gpu.world_particles = Default::default();
+    gpu.simulation.screen_state = Default::default();
+    gpu.simulation.particle_systems = Default::default();
+    gpu.simulation.world_particles = Default::default();
     gpu.screen_draws = None;
     gpu.particle_publication = None;
     if let Some(particles) = gpu.particles.take() {
@@ -343,7 +350,7 @@ fn render_particles(
         gpu.particles = None;
     }
     let result = (|| -> Result<(), String> {
-        let (mut instances, mut draw_capacity) = gpu.particle_systems.capacity();
+        let (mut instances, mut draw_capacity) = gpu.simulation.particle_systems.capacity();
         let mut prewarm_only = false;
         if instances == 0 || draw_capacity == 0 {
             // A runtime request may be the level's first particle system.
@@ -647,7 +654,6 @@ struct FxUpdateInputs<'w> {
     decals: Res<'w, super::projected_decals::DecalScene>,
     water_selection: Option<Res<'w, super::water_scene::WaterViewSelection>>,
     swimming_surface: Res<'w, super::water_scene::SwimmingSurfaceMailbox>,
-    device: Res<'w, RenderDevice>,
 }
 
 fn prepare_screen_effects(
@@ -672,9 +678,9 @@ fn prepare_screen_effects(
             *swimming_published = false;
         }
         gpu.screen_draws = None;
-        gpu.screen_state = Default::default();
-        gpu.particle_systems = Default::default();
-        gpu.world_particles = Default::default();
+        gpu.simulation.screen_state = Default::default();
+        gpu.simulation.particle_systems = Default::default();
+        gpu.simulation.world_particles = Default::default();
         gpu.screen_sources = None;
         gpu.particles = None;
         return;
@@ -717,9 +723,9 @@ fn prepare_screen_effects(
         *swimming_published = false;
     }
     let Some(sources) = sources.0.as_ref() else {
-        gpu.screen_state = Default::default();
-        gpu.particle_systems = Default::default();
-        gpu.world_particles = Default::default();
+        gpu.simulation.screen_state = Default::default();
+        gpu.simulation.particle_systems = Default::default();
+        gpu.simulation.world_particles = Default::default();
         gpu.screen_sources = None;
         gpu.particles = None;
         return;
@@ -729,9 +735,9 @@ fn prepare_screen_effects(
         .as_ref()
         .is_none_or(|previous| !std::sync::Arc::ptr_eq(previous, sources))
     {
-        gpu.screen_state = Default::default();
-        gpu.particle_systems = Default::default();
-        gpu.world_particles = Default::default();
+        gpu.simulation.screen_state = Default::default();
+        gpu.simulation.particle_systems = Default::default();
+        gpu.simulation.world_particles = Default::default();
         gpu.particles = None;
         gpu.screen_sources = Some(sources.clone());
     }
@@ -745,7 +751,7 @@ fn prepare_screen_effects(
             std::array::from_fn(|i| water.matrices.current.view[1][i]),
         ],
     };
-    let CameraGpu { screen_state, particle_systems, .. } = &mut *gpu;
+    let FxSimulation { screen_state, particle_systems, .. } = &mut gpu.simulation;
     let result = screen_state.advance(
         sources,
         particle_systems,
@@ -755,7 +761,7 @@ fn prepare_screen_effects(
         camera_frame,
     );
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
-        let CameraGpu { world_particles, particle_systems, .. } = &mut *gpu;
+        let FxSimulation { world_particles, particle_systems, .. } = &mut gpu.simulation;
         let retired_before = world_particles.dynamic_retired();
         match world_particles.advance(&fx.world_graphs,&fx.world_sources.0,&fx.dynamic,&fx.world_frames,
             particle_systems,&fx.world_sounds,&fx.decals,water.matrices.frame,camera_frame,underwater,&inputs.world) {
@@ -785,7 +791,7 @@ fn prepare_screen_effects(
                     let particle_view = particle_view.0.as_ref()
                         .filter(|query| query.camera == water.camera && query.frame == water.matrices.frame)
                         .ok_or("particle visibility awaits the current camera frame")?;
-                    gpu.particle_systems.simulate(
+                    gpu.simulation.particle_systems.simulate(
                         water.matrices.frame,
                         &q.world,
                         ocean_height,
@@ -813,12 +819,6 @@ fn prepare_screen_effects(
                 warn!("Player FX preparation pending: {error}");
                 *last_error = Some(error);
             }
-        }
-    }
-    if let Err(error) = fog.publish_next_head_ring(&fx.device) {
-        if ocean_error.as_ref() != Some(&error) {
-            warn!("Ocean query publication pending: {error}");
-            *ocean_error = Some(error);
         }
     }
 }
