@@ -2189,3 +2189,12 @@ at session teardown without changing its per-call fast path, and include
 map-info metadata in the namespace retirement. Predict no change to menu CPU
 or map acquisition and a final catalog-destruction record after the last
 consumer releases; do not infer retirement from an exit-code-zero client.
+
+The second shutdown run still reported one consumer. The concrete owner is
+an unjoined movie worker, not the main thread's TLS. Join that owned worker
+and wake any pending image reply before main image resources are destroyed.
+Predict actual worker/TLS/stack retirement before the catalog root ends;
+normal movie frames add no work. Named-image acquisition requires two short
+mutex operations and one cancellation-sender clone. This correctness cost
+belongs to that callback, not whole-frame CPU, and carries no performance
+improvement claim. Remove the ineffective main-thread TLS cleanup.

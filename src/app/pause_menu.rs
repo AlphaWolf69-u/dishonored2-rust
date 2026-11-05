@@ -19,13 +19,14 @@ use bevy::input::{
 use bevy::window::{CursorGrabMode, CursorOptions};
 use bevy::prelude::*;
 use std::collections::HashMap;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 
 /// `GBA_PAUSE`.
 const PAUSE_ACTION: i32 = 43;
 
 enum Command {
+    Shutdown,
     StartHud { screen: (i32, i32), epoch: u64 },
     HudTick(f64, bool),
     HudInteraction(Option<super::hud_movie::Interaction>),
@@ -103,16 +104,6 @@ thread_local! {
     // the game runs). Every open still builds a new player, as the game does
     // (`m_cacheResources` 0).
     static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// The movie-thread cache is a session lease, not a process-lifetime root.
-/// Keep the existing acquisition fast path and release it only after App has
-/// dropped its movies. Other active sessions must retain their own identity.
-pub(super) fn release_catalog(identity: u64) {
-    let retired = CATALOG.with(|slot| {
-        slot.borrow_mut().take_if(|catalog| catalog.identity() == identity)
-    });
-    drop(retired);
 }
 
 fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
@@ -232,6 +223,8 @@ pub struct PauseMenu {
     commands: Sender<Command>,
     events: Receiver<Event>,
     textures: Receiver<super::resident_images::UiTextureRequest>,
+    texture_wait: Arc<Mutex<TextureWait>>,
+    worker: Option<std::thread::JoinHandle<()>>,
     open: bool,
     /// The screen size the next player was last prepared for.
     prepared_for: Option<(i32, i32)>,
@@ -267,6 +260,39 @@ pub struct PauseMenu {
     hud_wait_time: std::time::Duration,
 }
 
+type TextureReply = SyncSender<Result<crate::flash::iggy_functions::BoundTexture, String>>;
+
+/// The movie thread performs one synchronous image request at a time. Retain
+/// only its cancellation reply, without copying the requested image payload.
+#[derive(Default)]
+struct TextureWait {
+    closing: bool,
+    pending: Option<TextureReply>,
+}
+
+impl Drop for PauseMenu {
+    fn drop(&mut self) {
+        // A reply can be retained by the main world's image owner, whose drop
+        // order relative to this non-send resource is unspecified. Wake that
+        // wait before joining instead of depending on the other owner dropping.
+        let reply = {
+            let mut state = self.texture_wait.lock().unwrap_or_else(|e| e.into_inner());
+            state.closing = true;
+            state.pending.take()
+        };
+        if let Some(reply) = reply {
+            // A full slot already contains the real result and needs no wake.
+            let _ = reply.try_send(Err("movie session ended".into()));
+        }
+        let _ = self.commands.send(Command::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            if worker.join().is_err() {
+                eprintln!("Pause movie worker panicked during session teardown");
+            }
+        }
+    }
+}
+
 /// The longest a frame waits for the movie's draw list (a slow tick is
 /// shown on a later frame instead).
 const FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
@@ -276,22 +302,33 @@ impl Default for PauseMenu {
         let (commands, inbox) = channel();
         let (outbox, events) = channel();
         let (texture_sender, textures) = channel();
-        std::thread::Builder::new()
+        let texture_wait = Arc::new(Mutex::new(TextureWait::default()));
+        let worker_wait = texture_wait.clone();
+        let worker = std::thread::Builder::new()
             .name("pause movie".into())
             .stack_size(256 << 20)
             .spawn(move || {
                 let notify = outbox.clone();
                 crate::flash::iggy_functions::set_texture_resolver(Box::new(move |name| {
                     let (reply, response) = std::sync::mpsc::sync_channel(1);
-                    texture_sender.send(super::resident_images::UiTextureRequest { name: name.to_owned(), reply }).map_err(|e| e.to_string())?;
-                    notify.send(Event::TexturePending).map_err(|e| e.to_string())?;
-                    response.recv().map_err(|e| e.to_string())?
+                    {
+                        let mut state = worker_wait.lock().unwrap_or_else(|e| e.into_inner());
+                        if state.closing { return Err("movie session ended".into()); }
+                        state.pending = Some(reply.clone());
+                    }
+                    let result = (|| {
+                        texture_sender.send(super::resident_images::UiTextureRequest { name: name.to_owned(), reply }).map_err(|e| e.to_string())?;
+                        notify.send(Event::TexturePending).map_err(|e| e.to_string())?;
+                        response.recv().map_err(|e| e.to_string())?
+                    })();
+                    worker_wait.lock().unwrap_or_else(|e| e.into_inner()).pending = None;
+                    result
                 }));
                 run(inbox, outbox);
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
@@ -495,6 +532,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       let mut changed = false;
       for command in commands {
         match command {
+            Command::Shutdown => return,
             Command::StartHud { screen, epoch } => {
                 hud_epoch = epoch;
                 generation += 1;

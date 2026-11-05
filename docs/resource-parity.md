@@ -4145,3 +4145,26 @@ final drop cannot be mistaken for success. The map-info registry and selected
 loading-info cache likewise retire only their matching catalog identity.
 These follow-ups require a new build and actual retirement evidence; the
 successful transition alone did not verify the first retirement prediction.
+
+
+The 6c8d409 follow-up still exited zero with one catalog consumer remaining.
+Source tracing identifies the dedicated `pause movie` thread: its JoinHandle
+was discarded, and its thread-local catalog outlived the App while main
+returned. Releasing the same TLS name from the main thread cannot release
+that worker's cache, so that ineffective helper has been removed.
+
+The PauseMenu owner now sends shutdown and joins its actual worker on Drop.
+The worker exits before session-root retirement, releasing its movies, VM,
+thread-local catalog and stack. To avoid a destructor-order deadlock, the
+owner can cancel its single outstanding synchronous named-image reply before
+joining, even when a pending reply is held by the main image owner. The
+normal image payload/channel and movie update protocol remain the same; no
+polling timer or additional render pass is added. Normal named-image binding
+adds two short mutex operations and a reply-handle clone, with at most one
+cancellation record. This is host thread ownership around Iggy's existing
+movie close (1410298b0); it is not a second movie resource cache.
+
+Prediction: a completed production session now logs zero remaining catalog
+consumers and the actual cache-destruction record. Movie cancellation and
+shutdown acceptance remain required; an exit-zero process is insufficient.
+No CPU improvement or RSS saving is claimed. No tests were written or run.
