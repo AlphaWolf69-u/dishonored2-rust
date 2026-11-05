@@ -17,7 +17,10 @@ use std::{
 
 type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>;
 #[derive(Resource, Default)]
-struct GeometryLayouts(HashMap<AssetId<Mesh>, u32>);
+struct GeometryLayouts {
+    ids: HashMap<AssetId<Mesh>, u32>,
+    samples: Vec<(u32, bool, Handle<Mesh>, bool)>,
+}
 
 struct RuntimeDecalProxySet {
     _prepared: super::runtime_materials::PreparedDecal,
@@ -27,7 +30,6 @@ struct RuntimeDecalProxySet {
 pub(super) struct RuntimeDecalProxies {
     generation: u64,
     owned: HashMap<(String, bool), RuntimeDecalProxySet>,
-    samples: Vec<(u32, bool, Handle<Mesh>)>,
     cube: Option<Handle<Mesh>>,
     owns_scene_geometry: bool,
 }
@@ -54,20 +56,18 @@ pub(super) fn register(app: &mut App) {
     }
 }
 
-/// Discover the same receiver layouts for both level setup and a later FX
-/// request. It runs only when a level first needs projected decals.
+/// Preserve compact receiver layouts while the setup meshes are available.
 fn receiver_layouts(
     instances: &[RenderInstance],
     meshes: &dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
-) -> (GeometryLayouts, Vec<(u32, bool, Handle<Mesh>)>) {
+) -> GeometryLayouts {
     let mut keys = HashMap::new();
     let mut layouts = GeometryLayouts::default();
-    let mut samples = Vec::new();
     for instance in instances {
         let Some(source) = instance.source else {
             continue;
         };
-        if layouts.0.contains_key(&instance.mesh.id()) {
+        if layouts.ids.contains_key(&instance.mesh.id()) {
             continue;
         }
         let Some(mesh) = meshes.get(&instance.mesh) else {
@@ -80,17 +80,18 @@ fn receiver_layouts(
         let next = keys.len() as u32;
         let id = *keys.entry(key).or_insert(next);
         let is_world = matches!(source.surface, RenderModelSurface::World { .. });
-        layouts.0.insert(instance.mesh.id(), id);
-        if !samples
+        layouts.ids.insert(instance.mesh.id(), id);
+        if !layouts.samples
             .iter()
-            .any(|&(layout, world, _): &(u32, bool, Handle<Mesh>)| {
-                layout == id && world == is_world
+            .any(|(layout, world, _, _)| {
+                *layout == id && *world == is_world
             })
         {
-            samples.push((id, is_world, instance.mesh.clone()));
+            layouts.samples.push((id, is_world, instance.mesh.clone(),
+                mesh.contains_attribute(Mesh::ATTRIBUTE_JOINT_INDEX)));
         }
     }
-    (layouts, samples)
+    layouts
 }
 
 pub(super) fn prepare(
@@ -102,12 +103,12 @@ pub(super) fn prepare(
     commands: &mut super::setup_commands::SetupCommands,
 ) -> Images {
     let names = sources.decal_materials();
+    let layouts = receiver_layouts(instances, meshes);
     if names.is_empty() {
         commands.insert_resource(DecalScene::default());
-        commands.insert_resource(GeometryLayouts::default());
+        commands.insert_resource(layouts);
         return Vec::new();
     }
-    let (layouts, samples) = receiver_layouts(instances, meshes);
     // Native projection local bounds [-1,-1,-1]..[1,1,0], converted to view axes.
     let mut cube_mesh = Cuboid::new(2., 1., 2.)
         .mesh()
@@ -161,7 +162,7 @@ pub(super) fn prepare(
             if depth_box {
                 proxy(commands, cube.clone(), u32::MAX);
             } else {
-                for (layout, is_world, mesh) in &samples {
+                for (layout, is_world, mesh, _) in &layouts.samples {
                     if *is_world == world {
                         proxy(commands, mesh.clone(), *layout);
                     }
@@ -211,7 +212,7 @@ pub(super) fn publish_runtime(
     queue: Option<Res<SceneRenderQueue>>,
     materials: Option<Res<ShadowMaterials>>,
     mut scene: ResMut<DecalScene>,
-    mut layouts: ResMut<GeometryLayouts>,
+    layouts: Res<GeometryLayouts>,
     mut meshes: ResMut<Assets<Mesh>>,
     existing: Query<(Entity, &ProjectedDecalProxy)>,
     mut commands: Commands,
@@ -219,11 +220,7 @@ pub(super) fn publish_runtime(
     let (Some(request), Some(mut state), Some(scene_data), Some(queue), Some(materials)) =
         (request, state, scene_data, queue, materials) else { return };
     if request.prepared_generation != request.generation || state.generation == request.generation { return; }
-    if !request.prepared.is_empty() && state.samples.is_empty() {
-        let (new_layouts, samples) = receiver_layouts(&queue.instances, &*meshes);
-        *layouts = new_layouts;
-        state.samples = samples;
-        if scene.tree.is_none() {
+    if !request.prepared.is_empty() && scene.tree.is_none() {
             scene.tree = Some(scene_data.world.spatial_query());
             state.owns_scene_geometry = true;
             let mut ends = [0; 2];
@@ -236,7 +233,6 @@ pub(super) fn publish_runtime(
                 }
             }
             scene.receiver_range_ends = ends;
-        }
     }
     let wanted: std::collections::HashSet<_> = request.prepared.iter().map(|item| (item.name.clone(), item.world)).collect();
     let obsolete: Vec<_> = state.owned.iter().filter(|(key, current)| {
@@ -256,8 +252,6 @@ pub(super) fn publish_runtime(
     if request.prepared.is_empty() && state.owned.is_empty() && state.owns_scene_geometry {
         scene.tree = None;
         scene.receiver_range_ends = [0; 2];
-        *layouts = GeometryLayouts::default();
-        state.samples.clear();
         if let Some(cube) = state.cube.take() { meshes.remove(cube.id()); }
         state.owns_scene_geometry = false;
     }
@@ -280,14 +274,13 @@ pub(super) fn publish_runtime(
             state.cube = Some(meshes.add(cube));
         }
         let candidates: Vec<_> = if depth_box {
-            vec![(u32::MAX, state.cube.as_ref().unwrap().clone())]
+            vec![(u32::MAX, state.cube.as_ref().unwrap().clone(), false)]
         } else {
-            state.samples.iter().filter(|(_, world, _)| *world == item.world)
-                .map(|(layout, _, mesh)| (*layout, mesh.clone())).collect()
+            layouts.samples.iter().filter(|(_, world, _, _)| *world == item.world)
+                .map(|(layout, _, mesh, skinned)| (*layout, mesh.clone(), *skinned)).collect()
         };
         let mut entities = Vec::with_capacity(candidates.len());
-        for (layout, mesh) in candidates {
-            let skinned = meshes.get(&mesh).is_some_and(|mesh| mesh.contains_attribute(Mesh::ATTRIBUTE_JOINT_INDEX));
+        for (layout, mesh, skinned) in candidates {
             let mut entity = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(item.handle.clone()),
                 Transform::IDENTITY, GlobalTransform::IDENTITY, Visibility::Visible,
                 bevy::camera::visibility::NoFrustumCulling, bevy::render::batching::NoAutomaticBatching,
@@ -319,7 +312,7 @@ fn extract_receivers(
     mut bounds_owners: Local<BoundsOwners>,
 ) {
     receivers.0.clear();
-    if layouts.0.is_empty() {
+    if layouts.ids.is_empty() {
         return;
     }
     let (Some(queue), Some(materials)) = (queue.as_ref(), materials.as_ref()) else {
@@ -344,7 +337,7 @@ fn extract_receivers(
         let (Some(entity), Some(source), Some(&layout)) = (
             instance.entity,
             instance.source,
-            layouts.0.get(&instance.mesh.id()),
+            layouts.ids.get(&instance.mesh.id()),
         ) else {
             return;
         };
