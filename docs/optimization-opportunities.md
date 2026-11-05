@@ -2182,3 +2182,10 @@ is zero cache entries for that retired identity, not a claimed RSS reduction
 or CPU speedup. The diagnostic records removed owner entries on actual
 catalog destruction. Immutable installation-keyed shader indices and live
 weak skeleton identities retain their separate existing owners.
+
+The first catalog-shutdown run invalidated the assumed final-owner model:
+the pause movie thread also kept a strong catalog lease. Release that lease
+at session teardown without changing its per-call fast path, and include
+map-info metadata in the namespace retirement. Predict no change to menu CPU
+or map acquisition and a final catalog-destruction record after the last
+consumer releases; do not infer retirement from an exit-code-zero client.

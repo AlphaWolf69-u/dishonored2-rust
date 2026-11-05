@@ -105,6 +105,16 @@ thread_local! {
     static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// The movie-thread cache is a session lease, not a process-lifetime root.
+/// Keep the existing acquisition fast path and release it only after App has
+/// dropped its movies. Other active sessions must retain their own identity.
+pub(super) fn release_catalog(identity: u64) {
+    let retired = CATALOG.with(|slot| {
+        slot.borrow_mut().take_if(|catalog| catalog.identity() == identity)
+    });
+    drop(retired);
+}
+
 fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
     if let Some(c) = CATALOG.with(|c| c.borrow().clone()) {
         return Ok(c);

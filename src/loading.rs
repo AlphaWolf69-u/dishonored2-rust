@@ -232,8 +232,9 @@ pub(crate) fn retire_catalog(catalog: u64) {
     let parameters = crate::assets::shader_cache::retire_catalog(catalog);
     let bitmaps = crate::flash::bitmap_resources::retire_catalog(catalog);
     let manifests = crate::assets::map_resources::retire_catalog(catalog);
+    let map_info = crate::gameplay::map_info::retire_catalog(catalog);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-        eprintln!("MEMORY catalog cache retirement: catalog={catalog} animations={animations} blur={blur} contacts={contacts} declarations={declarations} parameters={parameters} bitmap_libraries={bitmaps} manifests={manifests}");
+        eprintln!("MEMORY catalog cache retirement: catalog={catalog} animations={animations} blur={blur} contacts={contacts} declarations={declarations} parameters={parameters} bitmap_libraries={bitmaps} manifests={manifests} map_info={map_info}");
     }
     let (retired, remaining) = {
         let mut current = STATE.lock().unwrap();

@@ -6,6 +6,19 @@ use std::sync::RwLock;
 
 /// The map the client loaded (`maps/....map`).
 static CURRENT_MAP: RwLock<Option<String>> = RwLock::new(None);
+static RESIDENT: std::sync::Mutex<Option<MapInfoRegistry>> = std::sync::Mutex::new(None);
+type LoadingInfoKey = (std::path::PathBuf, String, u64);
+static LOADING_INFO: RwLock<Option<(LoadingInfoKey, Option<LoadingInfo>)>> = RwLock::new(None);
+
+/// Remove only the ending namespace's cache leases. Loading and pause movies
+/// may still hold independent immutable declaration/label values.
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let declarations = RESIDENT.lock().unwrap_or_else(|e| e.into_inner())
+        .take_if(|registry| registry.catalog_identity == catalog);
+    let info = LOADING_INFO.write().unwrap_or_else(|e| e.into_inner())
+        .take_if(|((_, _, identity), _)| *identity == catalog);
+    usize::from(declarations.is_some()) + usize::from(info.is_some())
+}
 
 pub fn set_current_map(map: &str) {
     *CURRENT_MAP.write().unwrap() = Some(map.to_ascii_lowercase());
@@ -134,7 +147,6 @@ impl MapInfoRegistry {
 
 /// The mapinfo decl whose low- or high-chaos map is `map`.
 pub fn find(catalog: &Catalog, map: &str) -> Option<std::sync::Arc<Fields>> {
-    static RESIDENT: std::sync::Mutex<Option<MapInfoRegistry>> = std::sync::Mutex::new(None);
     let map = map.to_ascii_lowercase();
     let mut resident = RESIDENT.lock().unwrap();
     if resident.as_ref().is_none_or(|registry| registry.base != catalog.base() || registry.catalog_identity != catalog.identity()) {
@@ -166,21 +178,19 @@ pub fn find(catalog: &Catalog, map: &str) -> Option<std::sync::Arc<Fields>> {
 /// The loaded map's loading info, looked up once per map (the game holds
 /// the decl as `m_mapInfo` from the map load).
 pub fn current_loading_info(catalog: &Catalog) -> Option<LoadingInfo> {
-    type Key = (std::path::PathBuf, String, u64);
-    static CACHE: RwLock<Option<(Key, Option<LoadingInfo>)>> = RwLock::new(None);
     let map = current_map()?;
     let key = (catalog.base().to_owned(), map, catalog.identity());
     // A loose mapinfo declaration may be edited while this catalog is live.
     let mutable_mapinfo = catalog.has_overlays()
         && catalog.paths_containing("generated/decls/mapinfo/").iter()
             .any(|path| catalog.has_overlay_file(path));
-    if let Some((cached, info)) = CACHE.read().unwrap().as_ref() {
+    if let Some((cached, info)) = LOADING_INFO.read().unwrap().as_ref() {
         if !mutable_mapinfo && *cached == key {
             return info.clone();
         }
     }
     let info = find(catalog, &key.1).and_then(|edit| loading_info(&edit));
-    *CACHE.write().unwrap() = Some((key, info.clone()));
+    *LOADING_INFO.write().unwrap() = Some((key, info.clone()));
     info
 }
 

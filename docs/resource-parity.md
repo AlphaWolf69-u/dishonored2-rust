@@ -4132,3 +4132,16 @@ Status: host implementation; production shutdown/error-path acceptance is
 pending the cohesive build. Prediction and exact scope are recorded in
 optimization-opportunities.md. No RSS, timing or behavior benefit is claimed
 without that acceptance, and no tests were written or run.
+
+
+Session teardown acceptance found an additional lease: the three-level
+EotW/Dust/EotW production client built from dfdcc0b exited successfully, but
+emitted no final catalog-destruction record. The movie-thread catalog cache
+still held a strong reference outside the application. Session teardown now
+releases that exact-identity cache after the application drops and before
+releasing the shared root. This changes no menu acquisition hot path. Root
+release diagnostics now report outstanding consumer references so a missing
+final drop cannot be mistaken for success. The map-info registry and selected
+loading-info cache likewise retire only their matching catalog identity.
+These follow-ups require a new build and actual retirement evidence; the
+successful transition alone did not verify the first retirement prediction.

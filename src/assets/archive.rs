@@ -164,6 +164,11 @@ impl Catalog {
     pub(crate) fn release_shared(identity: u64) {
         let retired = SHARED.lock().unwrap_or_else(|e| e.into_inner())
             .take_if(|(_, catalog)| catalog.identity() == identity);
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            if let Some((_, catalog)) = &retired {
+                eprintln!("MEMORY catalog session release: catalog={identity} remaining_consumers={}", std::sync::Arc::strong_count(catalog) - 1);
+            }
+        }
         // Drop outside SHARED: Catalog retirement invokes its resource owners.
         drop(retired);
     }

@@ -20,6 +20,7 @@ use bevy::prelude::*;
 struct CatalogSession(u64);
 impl Drop for CatalogSession {
     fn drop(&mut self) {
+        super::pause_menu::release_catalog(self.0);
         archive::Catalog::release_shared(self.0);
     }
 }
