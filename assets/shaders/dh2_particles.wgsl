@@ -1,6 +1,7 @@
 // Installed fx/opt/use_lighting is a material specialization, not a per-pixel branch.
 override particle_lighting_mode:u32=0u;
 override particle_distortion_mode:u32=0u;
+override particle_scrolling_water:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -233,6 +234,31 @@ fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:
 fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     let material=particle_material;
     let coordinates=input.texture_coordinates;
+    let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u &&
+        (particle_scrolling_water==0u || particle_lighting_mode!=0u));
+    let normal=face*normalize(input.world_normal);
+    let tangent=face*normalize(input.world_tangent);
+    let bitangent=face*normalize(input.world_bitangent);
+    var colour=vec4(1.0);
+    var scrolling_normal=vec3(0.0,0.0,1.0);
+    if particle_scrolling_water!=0u {
+        // particle/scrolling_water samples both distortion layers regardless
+        // of add_default's UV-distortion options.
+        let one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
+        let two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(-coordinates,material.layers[1])).xy;
+        let distortion=one*material.layers[0].strength.xy+two*material.layers[1].strength.xy;
+        let pan=material.layers[2].tiling_pan.zw*particle_view.camera_time.w;
+        let opacity_uv=coordinates.xy+pan+distortion*material.distortion_fog.w;
+        let normal_uv=coordinates.xy+pan+distortion;
+        let normal_xy=textureSample(particle_bump,particle_trilinear,normal_uv).xy;
+        scrolling_normal=normalize(vec3(normal_xy,1.001-clamp(dot(normal_xy,normal_xy),0.0,1.0)));
+        let diffuse_uv=coordinates.xy*material.layers[2].tiling_pan.xy+
+            (scrolling_normal.xy+distortion)*material.distortion_fog.w+pan;
+        let diffuse=textureSample(particle_diffuse,particle_trilinear,diffuse_uv);
+        let legacy=select(input.colour,vec4(1.0),(material.normal_options.w&2u)!=0u);
+        let alpha=textureSample(particle_opacity,particle_trilinear,opacity_uv).x*legacy.a;
+        colour=vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,alpha);
+    } else {
     var distorted=vec3(0.0);
     if material.distort_options.x!=0u {
         var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
@@ -249,10 +275,6 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         }
     }
     distorted=vec3(distorted.xy+coordinates.xy,clamp(distorted.z,0.0,1.0));
-    let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u);
-    let normal=face*normalize(input.world_normal);
-    let tangent=face*normalize(input.world_tangent);
-    let bitangent=face*normalize(input.world_bitangent);
     if material.surface_options.x!=0u {
         let tile=material.macro_fresnel.y;
         let a=textureSample(particle_macro_uv,particle_bilinear,input.world_position.yz*tile).xy*2.0-1.0;
@@ -266,7 +288,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     let opacity_uv=vec2((distorted.x-0.5)*c+(distorted.y-0.5)*s+0.5,
         -(distorted.x-0.5)*s+(distorted.y-0.5)*c+0.5)*opacity_layer.tiling_pan.xy+
         opacity_layer.tiling_pan.zw*particle_view.camera_time.w;
-    var colour=vec4(1.0);
+    colour=vec4(1.0);
     if material.colour_options.w!=0u {
         let delta=coordinates.xy+distorted.xy-vec2(1.0);
         colour=vec4(pow(clamp(1.0-dot(delta,delta),0.0,1.0),material.radial_exposure_fog.x));
@@ -297,6 +319,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         }
     }
     colour=vec4(colour.rgb*input.colour.rgb*material.colour_adjust.rgb*material.colour_adjust.a,colour.a*input.colour.a);
+    }
     let distance=1.0/input.position.w;
     if material.fade_options.y!=0u {
         colour.a*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
@@ -321,7 +344,9 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         }
     }
     var lighting_normal=normal;
-    if material.normal_options.x!=0u {
+    if particle_scrolling_water!=0u && particle_lighting_mode!=0u {
+        lighting_normal=normalize(scrolling_normal.x*tangent+scrolling_normal.y*bitangent+scrolling_normal.z*normal);
+    } else if material.normal_options.x!=0u {
         let uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
         var xy=textureSample(particle_bump,particle_surface_anisotropic,uv).xy;
         if material.normal_options.y!=0u {
@@ -337,7 +362,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     colour.a*=particle_fresnel_opacity(input,coordinates,lighting_normal,tangent,bitangent,normal);
     let plane_dot=dot(input.clip_plane,vec4(input.world_position,1.0));
     if plane_dot<0.0 {discard;}
-    if input.fade_radius.x>0.0 {
+    if particle_scrolling_water==0u && input.fade_radius.x>0.0 {
         colour.a*=smoothstep(0.0,input.fade_radius.x,plane_dot);
     }
     var lit_colour=colour.rgb;
@@ -425,6 +450,9 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     } else {
         let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
         lit_colour*=exposure;
+    }
+    if particle_scrolling_water!=0u && (material.normal_options.w&1u)!=0u {
+        lit_colour=mix(colour.rgb,lit_colour,colour.a);
     }
     var rgb=lit_colour*particle_view.exposure_extent.x;
     let fogged=material_fog_composite(rgb,input.fog);
