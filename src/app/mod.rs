@@ -139,6 +139,7 @@ use view_geometry::{
 #[cfg(test)]
 use view_geometry::static_model_collision;
 mod material_loading;
+mod runtime_materials;
 use material_loading::{material_option_overrides, MaterialResolver};
 mod setup;
 use setup::setup;
