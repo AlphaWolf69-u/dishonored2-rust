@@ -121,9 +121,10 @@ impl BodyPose {
     }
 
     fn prepare_controls(&self, mut controls: Vec<JointControl>) -> Vec<JointControl> {
-        // The animator processes joint modifications in skeleton order. Keep
-        // the submission order of multiple modifications to the same joint.
-        controls.sort_by_key(|control| control.joint);
+        // 14053bcd0 uses idSort_Quick on joint, stage and type. These
+        // camera controls all use stage 4 and type 2 (14053f5f0), so joint
+        // is the only varying key. Equal keys retain idLib's tie behavior.
+        crate::sorting::quick_sort(&mut controls, |a, b| a.joint as i32 - b.joint as i32);
         for index in 0..controls.len() {
             let joint = controls[index].joint;
             let mut pivot = self.positions[joint];
