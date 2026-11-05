@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod animation_rig;
 pub mod bmd6;
 pub mod bmodel;
 pub mod bprobe;
