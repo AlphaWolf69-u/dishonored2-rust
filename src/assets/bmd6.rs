@@ -45,6 +45,16 @@ struct ModelAudit {
     source_crc: u32,
     source_bytes: usize,
     decoded_crc: std::sync::OnceLock<u32>,
+    identity: usize,
+    logical_bytes: usize,
+}
+impl Drop for ModelAudit {
+    fn drop(&mut self) {
+        if self.identity != 0 {
+            eprintln!("MODEL_RELEASE identity={:#x} logical_bytes={} tick={:?}", self.identity, self.logical_bytes,
+                crate::platform::performance_counter::counter().ok());
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -525,12 +535,34 @@ mod residency {
             // The diagnostic checksum scan follows the measured read/decode.
             let mut crc = flate2::Crc::new();
             crc.update(&bytes);
-            model.audit = Some(super::ModelAudit { source_crc: crc.sum(), source_bytes: bytes.len(), decoded_crc: OnceLock::new() });
+            model.audit = Some(super::ModelAudit { source_crc: crc.sum(), source_bytes: bytes.len(), decoded_crc: OnceLock::new(), identity: 0, logical_bytes: 0 });
             eprintln!("MODEL_DECODE path={path} read_decode_cycles={decode_cycles:?}");
         }
         Ok(model)
     }
 
+    fn logical_bytes(model: &ModelInfo) -> usize {
+        std::mem::size_of::<ModelInfo>() + model.skeleton_name.len()
+            + model.surfaces.len() * std::mem::size_of::<super::SurfaceInfo>()
+            + model.surfaces.iter().map(|surface| surface.name.len() + surface.material_path.len()
+                + surface.positions.len() * std::mem::size_of::<[f32; 3]>()
+                + surface.uvs.len() * std::mem::size_of::<[f32; 2]>()
+                + surface.packed_channels.len() * std::mem::size_of::<[u8; 12]>()
+                + surface.skin_weights.len() * std::mem::size_of::<[u8; 8]>()
+                + surface.skin_indices.len() * std::mem::size_of::<[u8; 8]>()
+                + surface.indices.len() * std::mem::size_of::<u16>()).sum::<usize>()
+    }
+    pub(super) fn wrap(model: ModelInfo) -> Arc<ModelInfo> {
+        let mut model = Arc::new(model);
+        if model.audit.is_some() {
+            let identity = Arc::as_ptr(&model) as usize;
+            let bytes = logical_bytes(&model);
+            if let Some(audit) = Arc::get_mut(&mut model).and_then(|model| model.audit.as_mut()) {
+                audit.identity = identity; audit.logical_bytes = bytes;
+            }
+        }
+        model
+    }
     pub(super) fn report(resource: &str, mode: &str, start: Option<Instant>, cycles: Option<u64>, model: &Arc<ModelInfo>) {
         let Some(start) = start else { return };
         let elapsed = start.elapsed().as_micros();
@@ -557,17 +589,9 @@ mod residency {
             }
             crc.sum()
         }));
-        let logical_bytes = std::mem::size_of::<ModelInfo>() + model.skeleton_name.len()
-            + model.surfaces.len() * std::mem::size_of::<super::SurfaceInfo>()
-            + model.surfaces.iter().map(|surface| surface.name.len() + surface.material_path.len()
-                + surface.positions.len() * std::mem::size_of::<[f32; 3]>()
-                + surface.uvs.len() * std::mem::size_of::<[f32; 2]>()
-                + surface.packed_channels.len() * std::mem::size_of::<[u8; 12]>()
-                + surface.skin_weights.len() * std::mem::size_of::<[u8; 8]>()
-                + surface.skin_indices.len() * std::mem::size_of::<[u8; 8]>()
-                + surface.indices.len() * std::mem::size_of::<u16>()).sum::<usize>();
-        eprintln!("MODEL_SOURCE path={resource} result={mode} us={elapsed} thread_cycles={cpu:?} identity={:p} source_crc={:?} source_bytes={:?} decoded_crc={decoded_crc:?} logical_bytes={logical_bytes}",
-            Arc::as_ptr(model), audit.map(|audit| audit.source_crc), audit.map(|audit| audit.source_bytes));
+        let logical_bytes = logical_bytes(model);
+        eprintln!("MODEL_SOURCE path={resource} result={mode} us={elapsed} thread_cycles={cpu:?} identity={:p} source_crc={:?} source_bytes={:?} decoded_crc={decoded_crc:?} logical_bytes={logical_bytes} tick={:?}",
+            Arc::as_ptr(model), audit.map(|audit| audit.source_crc), audit.map(|audit| audit.source_bytes), crate::platform::performance_counter::counter().ok());
     }
 
     /// Token lives inside the decoded model; its final drop removes the weak
@@ -659,7 +683,7 @@ mod residency {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut model = decoded(catalog, path)?;
                 model.residency = Some(Retire { key: key.clone(), entry: Arc::downgrade(&entry) });
-                Ok(Arc::new(model))
+                Ok(wrap(model))
             })).unwrap_or_else(|_| Err(format!("model acquisition panicked for {path}")));
             let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
             let waiters = match &*state { State::Loading { waiters } => *waiters, _ => 0 };
@@ -734,7 +758,7 @@ impl ModelSources {
         let model = if self.share && !residency::separate() {
             residency::acquire(catalog, &path, &key)?
         } else {
-            std::sync::Arc::new(residency::decoded(catalog, &path)?)
+            residency::wrap(residency::decoded(catalog, &path)?)
         };
         if self.share {
             let key = key.into_owned();
