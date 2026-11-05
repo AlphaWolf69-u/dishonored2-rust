@@ -17,6 +17,7 @@ struct Entry {
     used: u64,
     ordinal: u64,
     bitmap_owners: Vec<Weak<BitmapMap>>,
+    bitmap_image: Option<Weak<crate::flash::bitmap_resources::Image>>,
     glyph_owner: Option<Weak<crate::flash::glyph_cache::Page>>,
 }
 
@@ -112,6 +113,7 @@ impl UiTextures {
                 used: self.frame,
                 ordinal,
                 bitmap_owners: Vec::new(),
+                bitmap_image: None,
                 glyph_owner: None,
             },
         ) {
@@ -124,8 +126,16 @@ impl UiTextures {
     }
     /// A GPU bitmap is shared by every live movie that references the same
     /// immutable image. Weak maps do not retain the movie or its assets.
-    pub fn track_bitmap(&mut self, key: &TextureKey, images: &Arc<BitmapMap>) {
+    pub fn track_bitmap(&mut self, key: &TextureKey, images: &Arc<BitmapMap>, image: &Arc<crate::flash::bitmap_resources::Image>) {
+        let identity = Arc::downgrade(image);
+        // Keep a weak allocation reference as well as the movie-map leases:
+        // this prevents an address from being recycled before pruning and
+        // lets us reject an unexpected identity mismatch safely.
+        let mismatch = self.entries.get(key).and_then(|entry| entry.bitmap_image.as_ref())
+            .is_some_and(|existing| !existing.ptr_eq(&identity));
+        if mismatch { self.remove(key); return; }
         let Some(entry) = self.entries.get_mut(key) else { return };
+        entry.bitmap_image = Some(identity);
         entry.bitmap_owners.retain(|owner| owner.strong_count() != 0);
         let owner = Arc::downgrade(images);
         if !entry.bitmap_owners.iter().any(|existing| existing.ptr_eq(&owner)) {

@@ -516,8 +516,10 @@ fn render_flash_ui(
     // The outgoing map may have died after this incoming movie acquired the
     // same image. Register its live lease before retiring obsolete owners.
     let track_started = gpu.textures.tracing().then(std::time::Instant::now);
-    for key in &keys {
-        if matches!(key, TextureKey::Bitmap(_)) { gpu.textures.track_bitmap(key, &frame.images); }
+    for (key, batch) in keys.iter().zip(&frame.list.batches) {
+        if let FillTexture::Bitmap(character) = &batch.texture {
+            if let Some(image) = frame.images.get(character) { gpu.textures.track_bitmap(key, &frame.images, image); }
+        }
         if let TextureKey::Glyphs(id, version) = key {
             if let Some(page) = frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
                 gpu.textures.track_glyph(key, page);
@@ -532,7 +534,7 @@ fn render_flash_ui(
         TextureKey::Game(name) => frame.game_images.contains_key(name),
         _ => true,
     });
-    for key in &keys {
+    for (key, batch) in keys.iter().zip(&frame.list.batches) {
         if let TextureKey::Game(name) = key {
             let Some(image) = frame.game_images.get(name).and_then(|handle| images.get(handle.id())) else {
                 gpu.textures.trim();
@@ -558,7 +560,10 @@ fn render_flash_ui(
                 Some(image) => (image.texture.clone(), image.texture_view.clone()),
                 None => { gpu.textures.trim(); return; }, // The image owner has not uploaded it yet.
             },
-            TextureKey::Bitmap(identity) => match frame.images.values().find(|image| Arc::as_ptr(image) as usize == *identity) {
+            TextureKey::Bitmap(identity) => match (match &batch.texture {
+                FillTexture::Bitmap(character) => frame.images.get(character),
+                _ => None,
+            }) {
                 Some(image) => {
                     if gpu.textures.tracing() {
                         eprintln!("MEMORY UI bitmap upload: image={identity:x} bytes={}", image.bytes.len());
@@ -614,7 +619,9 @@ fn render_flash_ui(
             },
         };
         gpu.textures.insert(key.clone(), uploaded);
-        if matches!(key, TextureKey::Bitmap(_)) { gpu.textures.track_bitmap(key, &frame.images); }
+        if let FillTexture::Bitmap(character) = &batch.texture {
+            if let Some(image) = frame.images.get(character) { gpu.textures.track_bitmap(key, &frame.images, image); }
+        }
         if let TextureKey::Glyphs(id, version) = key {
             if let Some(page) = frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
                 gpu.textures.track_glyph(key, page);
