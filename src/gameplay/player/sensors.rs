@@ -650,15 +650,16 @@ impl MantleSensor {
         (self.decl.forward_cast_height_max - self.decl.forward_cast_height_min) / 12.0
     }
 
-    /// One frame: the previous frame's results, then this frame's queries.
+    /// Issue from the prior stage's state, then consume this frame's resolved
+    /// queries, matching QUERY_PHYSICS → wait → DEFAULT.
     /// `velocity_z` is the entity's vertical velocity.
     pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, dt: f32, velocity_z: f32) {
         if !self.enabled {
             return;
         }
+        self.issue(world, physics);
         let q = self.pending.take().unwrap_or_default();
         self.results(world, physics, q, dt, velocity_z);
-        self.issue(world, physics);
     }
 
     fn results(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, q: MantleQueries, dt: f32, velocity_z: f32) {
@@ -876,48 +877,25 @@ pub struct CatfallSensor {
     pub right_hit: bool,
     /// Hand selection latched when the catfall state consumes its query.
     pub last_selected_hands: Option<[bool; 2]>,
-    /// The queries of the previous frame: hand ray origins and the three hits.
-    pending: Option<([Vec3; 2], [Option<RayHit>; 3])>,
 }
 
 impl CatfallSensor {
     pub fn new(decl: CatfallDecl) -> Self {
-        Self { decl, enabled: false, left_hit: false, right_hit: false, last_selected_hands: None, pending: None }
+        Self { decl, enabled: false, left_hit: false, right_hit: false, last_selected_hands: None }
     }
 
     /// FUN_1403a5980: disabling clears the hits and drops the queries.
     pub fn enable(&mut self, enabled: bool) {
-        if !enabled {
-            self.pending = None;
-        }
         self.left_hit = false;
         self.right_hit = false;
         self.enabled = enabled;
     }
 
-    /// The previous frame's results, then this frame's queries.
+    /// Query and consume the same frame's results. The original frame routine
+    /// resolves and waits for QUERY_PHYSICS before the DEFAULT sensor stage.
     pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics) {
         if !self.enabled {
             return;
-        }
-        if let Some((origins, [body, left, right])) = self.pending.take() {
-            self.left_hit = false;
-            self.right_hit = false;
-            if let Some(body) = body {
-                let normal = physics.ground_ray_normal_average;
-                let d = -body.position.dot(normal);
-                // The hand ray's distance to that plane along (0, 0, -1).
-                let along = normal.dot(-Vec3::Z);
-                let plane = |origin: Vec3| if along != 0.0 { -(normal.dot(origin) + d) / along } else { 0.0 };
-                let within = |hit: Option<RayHit>, origin: Vec3| {
-                    hit.is_some_and(|h| {
-                        let delta = h.distance - plane(origin);
-                        delta >= -self.decl.max_bump_size && delta <= self.decl.max_hole_size
-                    })
-                };
-                self.left_hit = within(left, origins[0]);
-                self.right_hit = within(right, origins[1]);
-            }
         }
         let d = self.decl;
         let origin = physics.position();
@@ -929,6 +907,23 @@ impl CatfallSensor {
         let left = start + forward + axis.y_axis * d.left_offset;
         let right = start + forward - axis.y_axis * d.right_offset;
         let ray = |from: Vec3| world.cast_ray(filter, from, -Vec3::Z, length);
-        self.pending = Some(([left, right], [ray(start), ray(left), ray(right)]));
+        let [body, left_hit, right_hit] = [ray(start), ray(left), ray(right)];
+        self.left_hit = false;
+        self.right_hit = false;
+        if let Some(body) = body {
+            let normal = physics.ground_ray_normal_average;
+            let d = -body.position.dot(normal);
+            // The hand ray's distance to that plane along (0, 0, -1).
+            let along = normal.dot(-Vec3::Z);
+            let plane = |origin: Vec3| if along != 0.0 { -(normal.dot(origin) + d) / along } else { 0.0 };
+            let within = |hit: Option<RayHit>, origin: Vec3| {
+                hit.is_some_and(|h| {
+                    let delta = h.distance - plane(origin);
+                    delta >= -self.decl.max_bump_size && delta <= self.decl.max_hole_size
+                })
+            };
+            self.left_hit = within(left_hit, left);
+            self.right_hit = within(right_hit, right);
+        }
     }
 }
