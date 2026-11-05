@@ -333,12 +333,7 @@ pub(super) fn publish(
             .filter(|source| !Arc::ptr_eq(source, &base)).map(Arc::as_ref));
         let needs_materials = dynamic.particle_materials().next().is_some();
         let needs_world_materials = !dynamic.world_meshes().is_empty();
-        let needs_decals = dynamic.effects.values().filter_map(|effect| effect.as_ref().ok())
-            .flat_map(|effect| &effect.groups).flat_map(|group| &group.decals)
-            .filter_map(|decal| decal.as_ref().ok()).any(|decal| decal.asset.enabled
-                && decal.declarations.iter().flatten().any(|refs|
-                    refs.opaque.is_some() || refs.alpha.is_some()
-                        || refs.opaque_instanced.is_some() || refs.alpha_instanced.is_some()));
+        let needs_decals = !dynamic.decal_materials().is_empty();
         world.0 = Arc::new(combined);
         let dynamic = Arc::new(dynamic);
         prewarm.sources = dynamic.clone();

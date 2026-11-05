@@ -11,7 +11,7 @@ use bevy::{
     render::{sync_world::MainEntity, Extract, ExtractSchedule, RenderApp},
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::Arc,
 };
 
@@ -88,28 +88,7 @@ pub(super) fn prepare(
     meshes: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
     commands: &mut super::setup_commands::SetupCommands,
 ) -> Images {
-    let mut names = BTreeSet::new();
-    for decal in sources
-        .effects
-        .values()
-        .filter_map(|effect| effect.as_ref().ok())
-        .flat_map(|effect| &effect.groups)
-        .flat_map(|group| &group.decals)
-        .filter_map(|decal| decal.as_ref().ok())
-    {
-        for references in decal.declarations.iter().flatten() {
-            for (name, instanced) in [
-                (&references.opaque, false),
-                (&references.opaque_instanced, true),
-                (&references.alpha, false),
-                (&references.alpha_instanced, true),
-            ] {
-                if let Some(name) = name {
-                    names.insert((name.clone(), instanced));
-                }
-            }
-        }
-    }
+    let names = sources.decal_materials();
     if names.is_empty() {
         commands.insert_resource(DecalScene::default());
         commands.insert_resource(GeometryLayouts::default());

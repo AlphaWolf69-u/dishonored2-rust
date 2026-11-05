@@ -176,6 +176,24 @@ impl WorldFxSources {
         pairs.into_iter().map(|((source, material), model)| (source, material, model)).collect()
     }
 
+    /// Material variants required by enabled projected decals, deduplicated
+    /// in the same order-independent form used by scene preparation.
+    pub fn decal_materials(&self) -> Vec<(String, bool)> {
+        let mut names = std::collections::BTreeSet::new();
+        for decal in self.effects.values().filter_map(|effect| effect.as_ref().ok())
+            .flat_map(|effect| &effect.groups).flat_map(|group| &group.decals)
+            .filter_map(|decal| decal.as_ref().ok()).filter(|decal| decal.asset.enabled)
+        {
+            for references in decal.declarations.iter().flatten() {
+                for (name, world) in [(&references.opaque, false), (&references.alpha, false),
+                    (&references.opaque_instanced, true), (&references.alpha_instanced, true)] {
+                    if let Some(name) = name { names.insert((name.clone(), world)); }
+                }
+            }
+        }
+        names.into_iter().collect()
+    }
+
     /// Every sound event the level's world FX post.
     pub fn sound_events(&self) -> impl Iterator<Item = u32> + '_ {
         self.effects.values().filter_map(|e| e.as_ref().ok())
