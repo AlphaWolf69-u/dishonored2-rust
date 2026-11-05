@@ -135,8 +135,34 @@ fn collision_layer(fields: &Fields, key: &str, default: u32) -> Result<u32, Stri
 }
 
 /// The health component's m_health (installed for the player).
-pub fn health(fields: &Fields) -> Result<f32, String> {
-    number(fields, "m_health", f32::NAN).and_then(|h| if h.is_nan() { Err("player health decl has no m_health".into()) } else { Ok(h) })
+pub fn health(fields: &Fields) -> Result<super::health::Settings, String> {
+    let maximum = number(fields, "m_health", f32::NAN)?;
+    if maximum.is_nan() { return Err("player health decl has no m_health".into()); }
+    Ok(super::health::Settings { maximum,
+        regen_amount: number(fields, "m_regenAmount", 0.0)?,
+        regen_delay: number(fields, "m_regenDelay", 0.0)?,
+        regen_rate: number(fields, "m_regenRate", 0.0)?,
+    })
+}
+
+pub fn mana(fields: &Fields) -> Result<super::mana::Settings, String> {
+    let maximum = number(fields, "m_mana", f32::NAN)?;
+    if maximum.is_nan() { return Err("player mana decl has no m_mana".into()); }
+    Ok(super::mana::Settings { maximum,
+        regen_amount: number(fields, "m_regenAmount", 0.0)?,
+        regen_delay: number(fields, "m_regenDelay", 0.0)?,
+        regen_rate: number(fields, "m_regenRate", 0.0)?,
+    })
+}
+
+pub fn adrenaline(fields: &Fields) -> Result<super::adrenaline::Settings, String> {
+    Ok(super::adrenaline::Settings {
+        start_on_spawn: boolean(fields, "m_startOnEntitySpawn", true)?,
+        maximum: number(fields, "m_maximumAdrenaline", 100.0)?,
+        reduce_delay: number(fields, "m_reduceDelay", 5.0)?,
+        reduce_rate: number(fields, "m_reduceRate", 5.0)?,
+        burst_rate: number(fields, "m_burstRate", 5.0)?,
+    })
 }
 
 /// arkDeclCpntPlayerSensorMantle (ctor FUN_1403baf00).
@@ -221,6 +247,7 @@ pub fn state_id(name: &str) -> Option<StateId> {
         "AUTOCROUCH" => 10,
         "WALLCROUCH" => 11,
         "BLINKING" => 12,
+        "DEAD" => 15,
         "LEANING" => 18,
         "IDLE" => 22,
         "CINEMATIC" => 23,
@@ -426,11 +453,82 @@ fn navigation(fields: &Fields, mut d: NavigationDecl) -> Result<NavigationDecl, 
     })
 }
 
+/// Swimming state declarations (constructor 140845e50; field table
+/// 14178b540). Preserve the distinct running and sprinting settings.
+pub fn swimming_states(declarations: &PlayerDeclarations) -> Result<Vec<super::swimming::SwimmingStateDecl>, String> {
+    let mut result = Vec::new();
+    for (kind, fields) in &declarations.swimming_states {
+        if kind != "playerstateswimming" { continue; }
+        let id = atom(fields, "m_id").and_then(state_id).unwrap_or(StateId::RUNNING);
+        result.push(super::swimming::SwimmingStateDecl {
+            id,
+            navigation: navigation(fields, NavigationDecl::default())?,
+            up_action: action(fields, "m_upButton", super::controller::ACTION_JUMP)?,
+            down_action: action(fields, "m_downButton", super::controller::ACTION_CROUCH)?,
+            up_speed: number(fields, "m_upSpeed", 0.5)?,
+            down_speed: number(fields, "m_downSpeed", 0.5)?,
+            diving_speed_ratio: number(fields, "m_divingSpeedRatio", 0.5)?,
+            diving_deceleration: number(fields, "m_divingDeceleration", 20.0)?,
+            minimum_stick: number(fields, "m_minimumStick", 0.5)?,
+            minimum_speed: number(fields, "m_minimumSpeed", 1.0)?,
+        });
+    }
+    Ok(result)
+}
+
+pub fn swimming_death(declarations: &PlayerDeclarations) -> Result<Option<super::states::DrowningDeathDecl>, String> {
+    let Some((_, fields)) = declarations.swimming_states.iter().find(|(kind, _)| kind == "playerstatedead") else { return Ok(None) };
+    Ok(Some(drowning_death(fields)?))
+}
+
+fn drowning_death(fields: &Fields) -> Result<super::states::DrowningDeathDecl, String> {
+    Ok(super::states::DrowningDeathDecl {
+        duration: seconds(fields, "m_drowningDuration", 6.0)?,
+        vertical_speed: number(fields, "m_drowningVerticalSpeed", -1.0)?,
+        yaw_speed: number(fields, "m_drowningYawSpeed", 15.0)?,
+        look_duration: seconds(fields, "m_drowningLookDuration", 4.0)?,
+        fx_delay: seconds(fields, "m_drowningScreenFXDelay", 3.0)?,
+        fx: atom(fields, "m_drowningScreenFX").filter(|value| !value.is_empty()).map(str::to_owned),
+    })
+}
+
+pub fn breath(fields: &Fields) -> Result<super::swimming::Breath, String> {
+    Ok(super::swimming::Breath::new(
+        number(fields, "m_breathRegen", 20.0)?,
+        number(fields, "m_breathRegenDelay", 1.0)?,
+    ))
+}
+
+pub fn drowning_damage_decl(fields: &Fields) -> Option<&str> {
+    atom(fields, "m_drowningDamage").filter(|value| !value.is_empty())
+}
+
+/// Base health filters (140717800/140717dc0) for the downward-origin water
+/// damage dispatched by 1404c0cf0. An allowed mask takes precedence.
+pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, String> {
+    if atom(damage, "m_damageType") != Some("DAMAGETYPE_WATER") {
+        return Err("drowning damage uses an unsupported damage type".into());
+    }
+    let contains_water = |value: &str| value.split(|c: char| c.is_ascii_whitespace() || c == '|' || c == ',')
+        .any(|name| name == "DAMAGETYPE_WATER");
+    let allowed = atom(health, "m_allowedDamageTypes").filter(|value| !value.is_empty() && *value != "0");
+    let accepted = match allowed {
+        Some(mask) => contains_water(mask),
+        None => !atom(health, "m_ignoredDamageTypes").is_some_and(contains_water),
+    };
+    let direction = atom(health, "m_allowDamageDirection").unwrap_or("");
+    if !direction.is_empty() && direction != "0" {
+        return Err(format!("health damage-direction enum is not decoded: {direction}"));
+    }
+    Ok(accepted)
+}
+
 /// The mode's locomotion state decls; other state kinds are not ported.
 pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
     let mut result = Vec::new();
     for (kind, fields) in &declarations.states {
         let kind = match kind.as_str() {
+            "playerstatedead" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             "playerstaterunning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             "playerstatesneaking" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
             "playerstatesprinting" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
@@ -593,14 +691,20 @@ fn sound_event_id(fields: &Fields, key: &str) -> Option<u32> {
 
 pub fn attributes(fields: &Fields) -> Result<Attributes, String> {
     let mut values = HashMap::new();
-    let Some(list) = scope(fields, "m_attributes") else { return Ok(Attributes(values)) };
+    let mut records = HashMap::new();
+    let Some(list) = scope(fields, "m_attributes") else { return Ok(Attributes(values, records)) };
     for (_, value) in list {
         let Value::Scope(item) = value else { continue };
         if let Some(tag) = atom(item, "m_tag") {
-            values.insert(tag.to_owned(), number(item, "m_baseValue", 0.0)?);
+            let base = number(item, "m_baseValue", 0.0)?;
+            let limits = if boolean(item, "m_hasLimits", false)? {
+                Some((number(item, "m_minValue", 0.0)?, number(item, "m_maxValue", 0.0)?))
+            } else { None };
+            values.insert(tag.to_owned(), base);
+            records.insert(tag.to_owned(), super::states::AttributeValue { base, increase: 0.0, percentage: 0.0, limits });
         }
     }
-    Ok(Attributes(values))
+    Ok(Attributes(values, records))
 }
 
 /// `m_stanceTransitions`: (from, to, body animation).

@@ -185,6 +185,8 @@ struct Node {
 /// nodes (body, left arm, right arm).
 #[derive(Default)]
 pub struct Midnight {
+    /// Most recent scene-start failure, retained for the F8 report.
+    pub last_start_error: Option<String>,
     /// The playing scene instances (catfall plays its arm scenes beside the
     /// body scene).
     instances: Vec<Instance>,

@@ -61,6 +61,13 @@ pub(super) struct PlayerArms {
 }
 
 impl PlayerArms {
+    /// F8-only snapshot of the render owner's published arm state.
+    pub(super) fn diagnostic(&self) -> String {
+        self.arms.iter().map(|arm| format!(
+            "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
+            arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
+        )).collect()
+    }
     /// Materials of the arms on screen, whose textures stream like those of
     /// visible scene instances.
     pub(super) fn shown_materials(&self) -> impl Iterator<Item = &MaterialHandle> {

@@ -646,6 +646,7 @@ struct FxUpdateInputs<'w> {
     world_sounds: Res<'w, super::world_sounds::WorldSounds>,
     decals: Res<'w, super::projected_decals::DecalScene>,
     water_selection: Option<Res<'w, super::water_scene::WaterViewSelection>>,
+    swimming_surface: Res<'w, super::water_scene::SwimmingSurfaceMailbox>,
     device: Res<'w, RenderDevice>,
 }
 
@@ -663,8 +664,13 @@ fn prepare_screen_effects(
     mut ocean_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
+    mut swimming_published: Local<bool>,
 ) {
     let Some(water) = water.0.as_ref() else {
+        if *swimming_published {
+            fx.swimming_surface.publish(None);
+            *swimming_published = false;
+        }
         gpu.screen_draws = None;
         gpu.screen_state = Default::default();
         gpu.particle_systems = Default::default();
@@ -680,7 +686,7 @@ fn prepare_screen_effects(
     // The original advances FX on the game thread before the frame renders;
     // its water inputs are this frame's CPU view state and the completed
     // head-query readbacks, both available before any GPU pass.
-    let (ocean_height, head_water_surface) = match fog.upcoming_ocean_inputs(
+    let (ocean_height, head_water_surface, body_water_surface, samples) = match fog.upcoming_ocean_inputs(
         &fx.device,
         water,
         fx.water_selection.as_ref().and_then(|selection| selection.0.as_ref()),
@@ -697,6 +703,20 @@ fn prepare_screen_effects(
             return;
         }
     };
+    if water.head_water_surface.is_some() {
+        fx.swimming_surface.publish(Some(super::water_scene::SwimmingSurface {
+            frame: water.matrices.frame,
+            plane: water.head_water_surface,
+            ocean_level: ocean_height,
+            head: head_water_surface,
+            body: body_water_surface,
+            samples,
+        }));
+        *swimming_published = true;
+    } else if *swimming_published {
+        fx.swimming_surface.publish(None);
+        *swimming_published = false;
+    }
     let Some(sources) = sources.0.as_ref() else {
         gpu.screen_state = Default::default();
         gpu.particle_systems = Default::default();

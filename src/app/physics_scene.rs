@@ -518,6 +518,7 @@ impl PhysicsScene {
         let hierarchy = self.types.classes().hierarchy();
         let mut head_water_surface: Option<f32> = None;
         let mut head_water_is_ocean = false;
+        let mut head_water_current = None;
         let completed = view.resolve(
             &self.world,
             &mut self.executor,
@@ -572,7 +573,10 @@ impl PhysicsScene {
                         let declaration=component.owner.declaration.ok_or("head water declaration absent")?;
                         head_water_is_ocean |= self.water_declarations.get(declaration).ok_or("head water declaration out of range")?.is_ocean;
                         let height=0.-component.plane().ok_or("head water component has no plane")?[3];
-                        head_water_surface=Some(head_water_surface.map_or(height,|prior|if prior<=height {height} else {prior}));
+                        if head_water_surface.is_none_or(|prior| height > prior) {
+                            head_water_surface = Some(height);
+                            head_water_current = component.flow_and_density().map(|value| [value[0], value[1], value[2]]);
+                        }
                     }
                 }
                 Ok(ContactEntity {
@@ -591,6 +595,7 @@ impl PhysicsScene {
         )?;
         view.head_water_surface=completed.then_some(head_water_surface).flatten();
         view.head_water_is_ocean=completed && head_water_is_ocean;
+        view.head_water_current=if completed { head_water_current } else { None };
         Ok(completed)
     }
 

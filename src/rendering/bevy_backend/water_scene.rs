@@ -192,6 +192,29 @@ pub struct WaterFrame {
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct WaterSceneFrame(pub Option<WaterFrame>);
 
+/// Completed existing ocean-height readbacks, shared back to gameplay. This
+/// carries no GPU resources; level teardown clears the publication.
+#[derive(Clone, Copy, Debug)]
+pub struct SwimmingSurface {
+    pub frame: u32,
+    pub plane: Option<f32>,
+    pub ocean_level: Option<f32>,
+    pub head: Option<f32>,
+    pub body: Option<f32>,
+    pub samples: Option<[[f32; 4]; 5]>,
+}
+
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct SwimmingSurfaceMailbox(Arc<std::sync::Mutex<Option<SwimmingSurface>>>);
+impl SwimmingSurfaceMailbox {
+    pub fn latest(&self) -> Option<SwimmingSurface> {
+        self.0.lock().ok().and_then(|value| *value)
+    }
+    pub(super) fn publish(&self, value: Option<SwimmingSurface>) {
+        if let Ok(mut current) = self.0.lock() { *current = value; }
+    }
+}
+
 /// Selected by the view's completed environment contact query. Absence is a
 /// pending/invalid query, rather than a fabricated completed empty hit list.
 #[derive(Resource,Clone,Default,bevy::render::extract_resource::ExtractResource)]
@@ -208,6 +231,7 @@ impl Plugin for WaterPlugin {
         app.init_resource::<WaterWorldMeshes>();
         app.init_resource::<WaterImageSources>();
         app.init_resource::<WaterSceneFrame>();
+        app.init_resource::<SwimmingSurfaceMailbox>();
         app.init_resource::<WaterViewSelection>();
         app.init_resource::<super::ocean_scene::OceanSources>();
         app.init_resource::<super::boat_scene::BoatMaterials>();
@@ -231,6 +255,7 @@ impl Plugin for WaterPlugin {
                 bevy::render::extract_resource::ExtractResourcePlugin::<WaterImageSources>::default(
                 ),
                 bevy::render::extract_resource::ExtractResourcePlugin::<WaterSceneFrame>::default(),
+                bevy::render::extract_resource::ExtractResourcePlugin::<SwimmingSurfaceMailbox>::default(),
                 bevy::render::extract_resource::ExtractResourcePlugin::<WaterViewSelection>::default(),
                 bevy::render::extract_resource::ExtractResourcePlugin::<
                     super::ocean_scene::OceanSources,

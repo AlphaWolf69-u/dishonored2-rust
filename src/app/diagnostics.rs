@@ -299,7 +299,7 @@ pub(super) fn collision_report(
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
     (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
-    display_capture: Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>,
+    (display_capture, rendered_arms): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>),
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -425,6 +425,43 @@ pub(super) fn collision_report(
         tome_text,
         screenshot_path.display()
     );
+    if let Some(player) = walker {
+        report.push_str(&format!(
+            "\nPlayer arm state: shown={:?}, mantle hands=[{}, {}] last_selection={:?}, mantle destination={:?}, catfall sensor enabled={} hits=[{}, {}] last_selection={:?}\n",
+            player.body.arms_shown,
+            player.mantle_sensor.use_left_hand,
+            player.mantle_sensor.use_right_hand,
+            player.mantle_sensor.last_selected_hands,
+            player.mantle_sensor.destination,
+            player.catfall_sensor.enabled,
+            player.catfall_sensor.left_hit,
+            player.catfall_sensor.right_hit,
+            player.catfall_sensor.last_selected_hands,
+        ));
+        let eye = Vec3::from_array(view_to_game(camera.translation));
+        let forward = Vec3::from_array(view_to_game(direction));
+        let up = Vec3::from_array(view_to_game(camera.up().as_vec3()));
+        let right = forward.cross(up).normalize_or_zero();
+        for arm in player.arms() {
+            let mut min = Vec3::splat(f32::INFINITY);
+            let mut max = Vec3::splat(f32::NEG_INFINITY);
+            let mut in_front = 0;
+            for joint in &arm.joints {
+                let delta = Vec3::new(joint[0][3], joint[1][3], joint[2][3]) - eye;
+                let position = Vec3::new(delta.dot(right), delta.dot(up), delta.dot(forward));
+                min = min.min(position);
+                max = max.max(position);
+                in_front += usize::from(position.z > 0.0);
+            }
+            report.push_str(&format!("  model={} visible={} joints={} in_front={} camera_bounds={:?}..{:?}\n", arm.model, arm.visible, arm.joints.len(), in_front, min, max));
+        }
+        report.push_str(&format!("  pose errors={:?} midnight_handle={:?} midnight_drives=[{}, {}, {}]\n",
+            player.arm_pose_errors(), player.body.midnight.playing(), player.body.midnight.drives(0),
+            player.body.midnight.drives(1), player.body.midnight.drives(2)));
+        report.push_str(&format!("  action history [mantle, catfall]={:?}\n", player.arm_action_history()));
+        report.push_str(&format!("  latest midnight start error={:?}\n", player.body.midnight.last_start_error));
+        if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic()); }
+    }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
     report.push_str("\nLens CPU publication (not proof of GPU submission):\n");

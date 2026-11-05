@@ -4,6 +4,7 @@
 //! input dispatch → QUERY_PHYSICS (physics queries) → DEFAULT (physics query
 //! results, controller, state machine, camera) → PRE_PHYSICS (physics step).
 pub mod animation;
+pub mod adrenaline;
 pub mod arms;
 pub mod body;
 pub mod camera;
@@ -11,6 +12,8 @@ pub mod character_proxy;
 pub mod controller;
 pub mod decls;
 pub mod footsteps;
+pub mod health;
+pub mod mana;
 pub mod midnight;
 pub mod physics;
 pub mod swimming;
@@ -38,13 +41,58 @@ pub struct ArmRender {
     pub visible: bool,
 }
 
+/// Numeric action history retained so F8 need not land on a short animation.
+#[derive(Clone, Copy, Debug)]
+pub struct ArmActionDiagnostic {
+    pub frames: u32,
+    pub tree_drove: [bool; 3],
+    pub published: [bool; 2],
+    pub visible: [bool; 2],
+    pub ever_in_front: [bool; 2],
+    /// Min/max horizontal and vertical camera slopes while in front.
+    pub camera_slopes: [[f32; 4]; 2],
+    pub pose_error: [bool; 2],
+    pub tree_frames: [u32; 3],
+    pub visible_frames: [u32; 2],
+    pub in_front_frames: [u32; 2],
+}
+
+struct ActiveModifier {
+    owner: String,
+    index: usize,
+    tag: String,
+    increase: f32,
+    percentage: f32,
+    expires_at: Option<f64>,
+}
+
+/// Entity notifications published to attached component owners. The original
+/// incapacitation message carries damage parameters; this records the damage
+/// type needed by the connected drowning consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityEvent { Incapacitated { damage_type: u64 } }
+
 pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
     pub machine: StateMachine,
+    swimming_machine: StateMachine,
+    swimming_active: bool,
+    swimming_eye_height: f32,
+    swimming_current: swimming::WaterCurrent,
+    swimming_waves: swimming::WaveFilters,
+    swimming_wave_pose: (f32, Vec3),
+    breath: swimming::Breath,
+    pub incoming_damage_factor: f32,
+    pub health_regen_factor: f32,
+    pub mana_replenishes: bool,
     pub camera: PlayerCamera,
     pub stances: LocoStances,
     pub attributes: Attributes,
+    active_modifiers: Vec<ActiveModifier>,
+    next_modifier_expiration: Option<f64>,
+    attribute_modifier_events: Vec<(String, bool)>,
+    entity_events: Vec<EntityEvent>,
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
@@ -53,11 +101,24 @@ pub struct Player {
     pub catfall_sensor: sensors::CatfallSensor,
     pub mantle_sensor: MantleSensor,
     pub vault_sensor: VaultSensor,
+    pub swimming_settings: swimming::SwimmingSettings,
+    swimming_available: bool,
+    pub swimming_contact: Option<swimming::SwimmingContact>,
     /// The mantle dummy's arkCpntRetargeting while it drives the player.
     pub retargeting: Option<Retargeting>,
     scenes: Scenes,
     md6: String,
-    health: f32,
+    health: health::Health,
+    drowning_damage_enabled: bool,
+    mana: mana::Mana,
+    pub adrenaline: adrenaline::Adrenaline,
+    /// Populated by the combat and bloodthirsty owners when they exist.
+    pub adrenaline_in_combat: bool,
+    pub bloodthirsty_active: bool,
+    game_over_requested: bool,
+    game_over_fallback: Option<f64>,
+    entity_event_time: f64,
+    drowning_fx_requested: Option<String>,
     /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
     random: u32,
     /// `ark_playerSmoothedLoco` / `ark_playerBobAmount` and the difficulty's
@@ -66,6 +127,9 @@ pub struct Player {
     requests: MotionRequests,
     /// The arms as of the last view (PRE_RENDER).
     arm_render: Vec<ArmRender>,
+    arm_pose_errors: [Option<String>; 2],
+    arm_action_history: [Option<ArmActionDiagnostic>; 2],
+    arm_action_active: [bool; 2],
 }
 
 /// Everything `Player::new` reads from the installed declarations.
@@ -86,16 +150,129 @@ pub struct PlayerSetup {
     pub scenes: Scenes,
     /// The body md6 the scenes' CONDMD6 nodes match.
     pub md6: String,
-    /// Health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX.
-    pub health: f32,
+    /// Health decl m_health before attributes.
+    pub health: health::Settings,
+    pub mana: mana::Settings,
+    pub adrenaline: adrenaline::Settings,
+    pub swimming_settings: swimming::SwimmingSettings,
+    pub swimming_states: Vec<swimming::SwimmingStateDecl>,
+    pub swimming_rules: Vec<states::RuleDecl>,
+    pub swimming_default_state: StateId,
+    pub swimming_has_mantle: bool,
+    pub swimming_death: Option<states::DrowningDeathDecl>,
+    pub breath: swimming::Breath,
+    pub accepts_water_damage: bool,
+    pub drowning_damage_enabled: bool,
 }
 
 impl Player {
+    /// The current health owned by the player; HUD consumers do not mutate it.
+    pub fn health(&self) -> f32 {
+        self.health.current()
+    }
+    pub fn mana(&self) -> f32 { self.mana.current() }
+    pub fn max_mana(&self) -> f32 { self.mana.maximum(&self.attributes) }
+    pub fn mana_hud_values(&self) -> (f32, f32, f32, bool, bool, u8) {
+        (self.mana(), self.max_mana(), self.mana.regen_target(&self.attributes, self.mana_replenishes),
+            self.mana.has_extension(&self.attributes), self.mana.magic_suppressed(&self.attributes), self.mana.lock_flags())
+    }
+    pub fn set_mana_lock_flags(&mut self, flags: u8) { self.mana.set_lock_flags(flags); }
+    /// Attribute modifier lifecycle notification (0xd6). The adrenaline
+    /// component remains attached when stopped, so it can receive this event.
+    pub fn attribute_modifier_changed(&mut self, tag: &str, added: bool) {
+        self.health.attribute_changed(tag, added, &self.attributes, self.health_regen_factor);
+        if tag == "ARK_ATTRIBUTE_MANA_MAX" { self.mana.maximum_changed(added, &self.attributes); }
+        if tag == "ARK_ATTRIBUTE_BLOODTHIRSTY_ENABLED" {
+            if added { self.adrenaline.start(); } else { self.adrenaline.stop(); }
+        }
+        self.attribute_modifier_events.push((tag.to_owned(), added));
+    }
+    /// Drain the 0xd6 notifications for other attached component owners.
+    pub fn take_attribute_modifier_events(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.attribute_modifier_events)
+    }
+    pub fn take_entity_events(&mut self) -> Vec<EntityEvent> { std::mem::take(&mut self.entity_events) }
+    pub fn attribute_differs_from_base(&self, tag: &str) -> bool {
+        self.attributes.1.get(tag).is_some_and(|value| self.attributes.get(tag) != value.base)
+    }
+    fn refresh_modifier_deadline(&mut self) {
+        self.next_modifier_expiration = self.active_modifiers.iter().filter_map(|value| value.expires_at)
+            .min_by(f64::total_cmp);
+    }
+    /// Apply an inventory/power modifier and deliver the matching 0xd6 event.
+    pub fn apply_attribute_modifier(&mut self, owner: &str, index: usize, tag: &str, increase: f32, percentage: f32, duration: f32, added: bool, now: f64) -> bool {
+        if added {
+            if !self.attributes.modifier(tag, increase, percentage, true) { return false; }
+            let expires_at = (duration > 0.0).then_some(now + f64::from(duration));
+            self.active_modifiers.push(ActiveModifier { owner: owner.to_owned(), index, tag: tag.to_owned(), increase, percentage, expires_at });
+            if let Some(deadline) = expires_at {
+                self.next_modifier_expiration = Some(self.next_modifier_expiration.map_or(deadline, |next| next.min(deadline)));
+            }
+            self.attribute_modifier_changed(tag, true);
+            true
+        } else if let Some(position) = self.active_modifiers.iter().position(|value| value.owner == owner && value.index == index) {
+            let value = self.active_modifiers.remove(position);
+            if value.expires_at.is_some() && value.expires_at == self.next_modifier_expiration { self.refresh_modifier_deadline(); }
+            self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
+            self.attribute_modifier_changed(&value.tag, false);
+            true
+        } else if duration > 0.0 && self.attributes.1.contains_key(tag) {
+            // 14060c9b0 still publishes the remove event after a timed
+            // record has expired, without subtracting its value twice.
+            self.attribute_modifier_changed(tag, false);
+            true
+        } else { false }
+    }
+
+    pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
+    pub fn is_dead(&self) -> bool { self.health.is_dead() }
+    pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
+    pub fn health_hud(&self) -> Option<(f32, f32, f32, bool, i32)> {
+        let extensions = self.health.extensions(&self.attributes);
+        Some((self.health(), self.max_health(), self.projected_health(), self.health() < 20.0, extensions))
+    }
+    /// Advance the same game-local LCG already used by player scene picks.
+    pub fn choose_random(&mut self, count: usize) -> Option<usize> {
+        if count == 0 { return None; }
+        if count == 1 { return Some(0); }
+        self.random = self.random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f);
+        Some(((self.random >> 10) & 0x7fff) as usize % count)
+    }
+    pub fn take_game_over_request(&mut self) -> bool {
+        std::mem::take(&mut self.game_over_requested)
+    }
+    pub fn game_over_requested(&self) -> bool { self.game_over_requested }
+    /// Game-clock group 2, used by the engine's delayed entity events.
+    pub fn set_entity_event_time(&mut self, time: f64) { self.entity_event_time = time; }
+    pub fn drowning_fx_requested(&self) -> bool { self.drowning_fx_requested.is_some() }
+    pub fn take_drowning_fx_request(&mut self) -> Option<String> { self.drowning_fx_requested.take() }
+
+    /// 14088a8c0 compares the gameplay eye with the completed head sample.
+    pub fn is_underwater(&self) -> bool {
+        self.swimming_contact.is_some_and(|water| self.camera.eye.z <= water.head)
+    }
+
+    pub fn is_swimming(&self) -> bool { self.swimming_active }
+    /// The active mode's states, including when the swimming mode owns them.
+    pub fn active_player_states(&self) -> &[StateId] { self.machine.active_states() }
+    /// No possession component is hosted by this player yet.
+    pub fn possession_state(&self) -> Option<i32> { None }
+
+    /// Breath is a percentage in the original component (0..100).
+    pub fn breath(&self) -> f32 { self.breath.remaining }
+
+    pub fn arm_pose_errors(&self) -> &[Option<String>; 2] {
+        &self.arm_pose_errors
+    }
+    pub fn arm_action_history(&self) -> &[Option<ArmActionDiagnostic>; 2] { &self.arm_action_history }
+
     /// Spawn with the feet at `position` (idPlayerStart.spawnPosition) facing
     /// `yaw` radians.
     pub fn new(mut setup: PlayerSetup, position: Vec3, yaw: f32, base_fov: f32) -> Result<Self, String> {
         let stances = LocoStances { transitions: setup.body.stance_transition_durations(), ..Default::default() };
         let pose = setup.body.pose()?;
+        // 140888f10 reads the camera joint's bind-pose Z from the body rig.
+        let swimming_eye_height = pose.positions[pose.camera].z;
         let physics = PlayerPhysics::new(&setup.physics, position, yaw);
         let autocrouch = AutoCrouchSensor::new(setup.autocrouch, &physics);
         let mantle_sensor = MantleSensor::new(setup.mantle, &physics);
@@ -108,13 +285,42 @@ impl Player {
         let vault_sensor = VaultSensor::new(limits, radius, physics.ground_ray_normal_average);
         let mut controller = Controller::new(setup.mapping);
         controller.slipping = setup.slipping;
+        let swimming_available = !setup.swimming_states.is_empty();
+        let mut swimming_decls: Vec<_> = setup.swimming_states.into_iter().map(|swimming| {
+            let mut state = states::StateDecl::class_default(Kind::Swimming(swimming.clone()));
+            state.navigation = swimming.navigation.clone();
+            state
+        }).collect();
+        if setup.swimming_has_mantle {
+            swimming_decls.push(states::StateDecl::class_default(Kind::SwimMantle));
+        }
+        if let Some(dead) = setup.swimming_death {
+            swimming_decls.push(states::StateDecl::class_default(Kind::Dead(dead)));
+        }
+        let health = health::Health::new(setup.health, setup.accepts_water_damage, &setup.attributes);
+        let mana = mana::Mana::new(setup.mana, &setup.attributes);
+        let adrenaline = adrenaline::Adrenaline::new(setup.adrenaline, &setup.attributes);
         Ok(Self {
             physics,
             controller,
             machine: StateMachine::new(setup.states, &setup.rules, setup.default_state),
+            swimming_machine: StateMachine::new(swimming_decls, &setup.swimming_rules, setup.swimming_default_state),
+            swimming_active: false,
+            swimming_eye_height,
+            swimming_current: swimming::WaterCurrent::default(),
+            swimming_waves: swimming::WaveFilters::default(),
+            swimming_wave_pose: (0.0, Vec3::Z),
+            breath: setup.breath,
+            incoming_damage_factor: 1.0,
+            health_regen_factor: 1.0,
+            mana_replenishes: true,
             camera: PlayerCamera::new(setup.camera, base_fov),
             stances,
             attributes: setup.attributes,
+            active_modifiers: Vec::new(),
+            next_modifier_expiration: None,
+            attribute_modifier_events: Vec::new(),
+            entity_events: Vec::new(),
             body: setup.body,
             pose,
             autocrouch,
@@ -122,12 +328,27 @@ impl Player {
             catfall_sensor: sensors::CatfallSensor::new(Default::default()),
             mantle_sensor,
             vault_sensor,
+            swimming_settings: setup.swimming_settings,
+            swimming_available,
+            swimming_contact: None,
             retargeting: None,
             scenes: setup.scenes,
             md6: setup.md6,
-            health: setup.health,
+            health,
+            drowning_damage_enabled: setup.drowning_damage_enabled,
+            mana,
+            adrenaline,
+            adrenaline_in_combat: false,
+            bloodthirsty_active: false,
+            game_over_requested: false,
+            game_over_fallback: None,
+            entity_event_time: 0.0,
+            drowning_fx_requested: None,
             random: 0,
             arm_render: Vec::new(),
+            arm_pose_errors: [None, None],
+            arm_action_history: [None, None],
+            arm_action_active: [false; 2],
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -137,6 +358,16 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
+        while self.next_modifier_expiration.is_some_and(|deadline| deadline <= now) {
+            let next = self.active_modifiers.iter().enumerate().filter_map(|(index, value)| {
+                value.expires_at.filter(|deadline| *deadline <= now).map(|deadline| (index, deadline))
+            }).min_by(|a, b| a.1.total_cmp(&b.1));
+            let Some((index, _)) = next else { break };
+            let value = self.active_modifiers.remove(index);
+            self.refresh_modifier_deadline();
+            self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
+            self.attribute_modifier_changed(&value.tag, false);
+        }
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
         let cast = body::cast(&self.body.animations, &self.body.arms);
@@ -148,7 +379,7 @@ impl Player {
             }
             Err(error) => eprintln!("Midnight playback: {error}"),
         }
-        self.controller.process_input(events, settings);
+        if !self.health.is_dead() { self.controller.process_input(events, settings); }
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
         // before the controller (it depends on both), then the states.
         self.physics.update_queries(world);
@@ -158,11 +389,23 @@ impl Player {
         self.mantle_sensor.update(world, &self.physics, dt, self.physics.velocity.z);
         self.vault_sensor.update(world, &self.physics, dt);
         self.catfall_sensor.update(world, &self.physics);
-        self.controller.think(settings, frame_delta);
+        if !self.health.is_dead() { self.controller.think(settings, frame_delta); }
         self.requests = MotionRequests::default();
-        let origin = self.physics.position();
+        let mut origin = self.physics.position();
         let axis = self.physics.axis();
         let velocity = self.physics.velocity;
+        let underwater = self.is_underwater();
+        let mut swim_mantle_exit = false;
+        if let Some(water) = self.swimming_contact {
+            let (height, normal) = self.swimming_settings.wave_target(
+                water.plane, water.ocean_level.unwrap_or(water.plane),
+                origin.z + self.swimming_eye_height, water.samples.as_ref(),
+            );
+            self.swimming_wave_pose = self.swimming_waves.update(height, normal, dt);
+        } else {
+            self.swimming_waves = swimming::WaveFilters::default();
+            self.swimming_wave_pose = (0.0, Vec3::Z);
+        }
         macro_rules! frame {
             () => {
                 Frame {
@@ -197,7 +440,11 @@ impl Player {
                     mantle_sensor: &mut self.mantle_sensor,
                     vault_sensor: &mut self.vault_sensor,
                     retargeting: &mut self.retargeting,
-                    health: self.health,
+                    health: self.health.current(),
+                    underwater,
+                    swim_mantle_exit: &mut swim_mantle_exit,
+                    game_over_requested: &mut self.game_over_requested,
+                    drowning_fx_requested: &mut self.drowning_fx_requested,
                     random: &mut self.random,
                     small_fall_cooldown: self.body_settings.small_fall_cooldown,
                     lean_toggle: settings.lean_toggle,
@@ -206,9 +453,118 @@ impl Player {
                 }
             };
         }
-        self.machine.controller_support(&mut frame!());
-        self.controller.apply_mapping(&mut self.machine);
+        let in_water = if self.health.is_dead() { self.swimming_active } else { (!self.machine.is_active(StateId::MANTLE) || self.swimming_active) && self.swimming_contact.is_some_and(|water| {
+            let depth = water.plane - origin.z + self.physics.ground_ray_distance_min;
+            let head_underwater = self.camera.eye.z <= water.head;
+            let surface = water.plane + self.swimming_settings.distance_above_surface;
+            if self.swimming_active {
+                let has_ground = self.physics.ground_distance < f32::MAX
+                    || self.physics.ground.state != SupportState::Unsupported;
+                let above_surface = !head_underwater && surface + 0.1 < origin.z + self.swimming_eye_height;
+                let too_shallow = depth < self.swimming_settings.minimum_depth;
+                !(has_ground && (above_surface || too_shallow)
+                    && self.controller.slipping.slope_cos < self.physics.shortest_ground_ray_normal().z)
+            } else {
+                depth >= self.swimming_settings.minimum_depth
+                    && (head_underwater || origin.z + self.swimming_eye_height <= surface)
+            }
+        }) };
+        if in_water != self.swimming_active && self.swimming_available {
+            self.machine.leave_mode(&mut frame!());
+            std::mem::swap(&mut self.machine, &mut self.swimming_machine);
+            self.swimming_active = in_water;
+            if in_water {
+                self.swimming_current = swimming::WaterCurrent::default();
+                self.breath.reset_for_water_entry();
+                let swim_height = self.physics.posture_settings(shape::POSTURE_SWIMMING).height;
+                let old_height = self.physics.posture_settings(self.physics.posture).height;
+                self.physics.proxy.position.z -= swim_height - old_height;
+                self.physics.set_posture(shape::POSTURE_SWIMMING, 0.0);
+                origin = self.physics.position();
+            }
+        }
+        if !self.swimming_active {
+            if !self.health.is_dead() { self.machine.controller_support(&mut frame!()); }
+        } else if !self.health.is_dead() {
+            if let Some(water) = self.swimming_contact {
+                let current = self.swimming_current.update(water.current, dt, &self.swimming_settings);
+                self.physics.set_water_motion(current,
+                    Some(water.plane + self.swimming_settings.distance_above_surface - self.swimming_eye_height));
+            }
+        }
+        if !self.health.is_dead() { self.controller.apply_mapping(&mut self.machine); }
         self.machine.think(&mut frame!());
+        // 1407f8e70 posts the player's forceGameOver event after 7 seconds.
+        // Its handler 140784590 requests game-over when the player is dead.
+        if self.health.is_dead()
+            && self.game_over_fallback.is_some_and(|deadline| deadline <= self.entity_event_time) {
+            self.game_over_requested = true;
+            self.game_over_fallback = None;
+        }
+        if self.swimming_active && swim_mantle_exit {
+            self.machine.leave_mode(&mut frame!());
+            std::mem::swap(&mut self.machine, &mut self.swimming_machine);
+            self.swimming_active = false;
+            self.machine.request(StateId::MANTLE);
+            self.machine.think(&mut frame!());
+        }
+        if self.swimming_active && self.is_underwater() {
+            let cost = self.attributes.get("ARK_ATTRIBUTE_SWIMMING_BREATH_COST_PER_SECOND");
+            if cost != 0.0 { self.breath.consume(dt * cost); }
+        }
+        self.breath.update(dt);
+        self.mana.update(dt, &self.attributes, self.mana_replenishes);
+        self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
+        self.health.update(dt, &self.attributes, self.health_regen_factor);
+        // 1404c0cf0 spends the mana-first share before dispatching the
+        // remaining authored water damage to health.
+        if self.is_underwater() {
+            let adrenaline_gain = dt * self.attributes.get("ARK_ATTRIBUTE_PLAYER_ADRENALINE_GAIN_UNDERWATER");
+            self.adrenaline.gain(adrenaline_gain, &self.attributes, self.bloodthirsty_active);
+            let mana_factor = self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGES_MANA_FIRST_FACTOR");
+            {
+                let mut mana_delta = dt * self.attributes.get("ARK_ATTRIBUTE_PLAYER_MANA_GAIN_UNDERWATER");
+                let mut raw_damage = if self.breath.remaining <= 0.0 && self.drowning_damage_enabled {
+                    dt * self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGE_PER_SECOND")
+                } else { 0.0 };
+                if mana_factor > 0.0 && raw_damage > 0.0 {
+                    mana_delta -= raw_damage * mana_factor;
+                    if -mana_delta < self.mana.current() {
+                        raw_damage = 0.0;
+                    } else {
+                        mana_delta = -self.mana.current();
+                        raw_damage -= self.mana.current() / mana_factor;
+                    }
+                }
+                if mana_delta < 0.0 { self.mana.consume(-mana_delta, &self.attributes, self.mana_replenishes); }
+                if mana_delta > 0.0 { self.mana.gain(mana_delta, &self.attributes); }
+                if !self.health.accepts_water() { raw_damage = 0.0; }
+                let scale = self.attributes.0.get("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE").copied().unwrap_or(1.0);
+                let mut damage = raw_damage * self.incoming_damage_factor * scale;
+                // 140718fe0 applies the player's health-to-mana damage
+                // attribute after the breath component's mana-first split.
+                let transfer = self.attributes.get("ARK_ATTRIBUTE_MALUS_HEALTH_TO_MANA_DAMAGES");
+                if transfer > 0.0 && damage > 0.0 {
+                    let absorbed = (damage * transfer).min(self.mana.current());
+                    self.mana.consume(absorbed, &self.attributes, self.mana_replenishes);
+                    damage -= absorbed;
+                }
+                if damage > 0.0 && !self.health.is_dead() {
+                    self.health.damage(damage, &self.attributes);
+                    if self.health.is_dead() {
+                        // Entity incapacitation message 0xa5; water is bit 20.
+                        self.entity_events.push(EntityEvent::Incapacitated { damage_type: 0x10_0000 });
+                        self.adrenaline.stop();
+                        // 1407f8e70 requests DEAD then stops the player
+                        // controller, so input cannot replace that state.
+                        self.controller.input_move = Vec3::ZERO;
+                        self.controller.input_look = Vec3::ZERO;
+                        self.game_over_fallback = Some(self.entity_event_time + 7.0);
+                        self.machine.request(StateId::DEAD);
+                    }
+                }
+            }
+        }
         // Camera DEFAULT (FUN_1407f6140): modes, look integration, FOV.
         if dt != 0.0 {
             let yaw_offset = &mut self.body.follow_slope.yaw_offset;
@@ -289,13 +645,78 @@ impl Player {
     pub fn view(&mut self) -> View {
         // A pose that fails to sample keeps the previous one (sampling of
         // every clip is validated when the body loads).
-        if let Ok(pose) = self.body.pose() {
+        let sampled = if let Ok(pose) = self.body.pose() {
             self.pose = pose;
+            true
+        } else { false };
+        if sampled && self.swimming_active {
+            // 140846450 applies the wave height at the root and rotates the
+            // arms joint to the smoothed water normal before camera controls.
+            let (height, normal) = self.swimming_wave_pose;
+            for position in &mut self.pose.positions { position.z += height; }
+            let axis = self.physics.axis();
+            let left = normal.cross(axis.x_axis).normalize_or_zero();
+            let forward = left.cross(normal).normalize_or_zero();
+            let rotation = axis.transpose() * Mat3::from_cols(forward, left, normal);
+            let joint = self.pose.controls[2];
+            let pivot = self.pose.positions[joint];
+            for i in 0..self.pose.positions.len() {
+                if self.pose.descends_from(i, joint) {
+                    self.pose.positions[i] = pivot + rotation * (self.pose.positions[i] - pivot);
+                    self.pose.rotations[i] = rotation * self.pose.rotations[i];
+                }
+            }
         }
         let allow = self.machine.allow_camera_out_of_shape();
         let body_yaw = self.body.follow_slope.yaw_offset;
         self.update_arms(body_yaw);
-        self.camera.view(&self.pose, &self.physics, allow, body_yaw)
+        let view = self.camera.view(&self.pose, &self.physics, allow, body_yaw);
+        for (slot, id) in [StateId::MANTLE, StateId::CATFALL].into_iter().enumerate() {
+            let active = self.machine.is_active(id);
+            if active {
+                if !self.arm_action_active[slot] {
+                    self.arm_action_history[slot] = Some(ArmActionDiagnostic {
+                        frames: 0, tree_drove: [false; 3], published: [false; 2], visible: [false; 2],
+                        ever_in_front: [false; 2], camera_slopes: [[f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY]; 2], pose_error: [false; 2],
+                        tree_frames: [0; 3], visible_frames: [0; 2], in_front_frames: [0; 2],
+                    });
+                }
+                if let Some(history) = &mut self.arm_action_history[slot] {
+                    history.frames = history.frames.saturating_add(1);
+                    for target in 0..3 {
+                        let driven = self.body.midnight.drives(target);
+                        history.tree_drove[target] |= driven;
+                        history.tree_frames[target] = history.tree_frames[target].saturating_add(u32::from(driven));
+                    }
+                    for side in 0..2 {
+                        history.pose_error[side] |= self.arm_pose_errors[side].is_some();
+                        if let Some(arm) = self.body.arms.get(side).and_then(|source| self.arm_render.iter().find(|arm| arm.model == source.model)) {
+                            history.published[side] = true;
+                            history.visible[side] |= arm.visible;
+                            history.visible_frames[side] = history.visible_frames[side].saturating_add(u32::from(arm.visible));
+                            let mut in_front = false;
+                            for joint in &arm.joints {
+                                let p = Vec3::new(joint[0][3], joint[1][3], joint[2][3]);
+                                let relative = p - view.origin;
+                                let forward = relative.dot(view.axis.x_axis);
+                                if forward > 0.0 {
+                                    history.ever_in_front[side] = true;
+                                    in_front = true;
+                                    let horizontal = relative.dot(view.axis.y_axis) / forward;
+                                    let vertical = relative.dot(view.axis.z_axis) / forward;
+                                    let bounds = &mut history.camera_slopes[side];
+                                    bounds[0] = bounds[0].min(horizontal); bounds[1] = bounds[1].max(horizontal);
+                                    bounds[2] = bounds[2].min(vertical); bounds[3] = bounds[3].max(vertical);
+                                }
+                            }
+                            history.in_front_frames[side] = history.in_front_frames[side].saturating_add(u32::from(in_front));
+                        }
+                    }
+                }
+            }
+            self.arm_action_active[slot] = active;
+        }
+        view
     }
 
     /// The arm entities' joints: each arm bound to its body tag (spine03 of
@@ -312,7 +733,20 @@ impl Player {
             arms.iter().enumerate().map(|(side, arm)| arm.pose(midnight, side + 1)).collect()
         };
         for ((side, arm), joints) in self.body.arms.iter().enumerate().zip(poses) {
-            let Ok(joints) = joints else { continue };
+            let joints = match joints {
+                Ok(joints) => {
+                    self.arm_pose_errors[side.min(1)] = None;
+                    joints
+                }
+                Err(error) => {
+                    let previous = &mut self.arm_pose_errors[side.min(1)];
+                    if previous.as_deref() != Some(error.as_str()) {
+                        eprintln!("Player arm {} pose: {error}", arm.model);
+                    }
+                    *previous = Some(error);
+                    continue;
+                }
+            };
             let (frame_p, frame_r) = self.arm_frame(arm, &body_controls);
             let shoulder = arm.skeleton.shoulder;
             let pivot = frame_p + frame_r * joints[shoulder].0;

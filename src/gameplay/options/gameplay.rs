@@ -171,6 +171,9 @@ pub struct Manager {
     /// tweakParameters_t `m_limitedMaxHorzLeanFactor` / `m_limitedMaxVertLeanFactor`
     /// (decl +0x25c / +0x260, ctor FUN_1406472a0: 0.5).
     pub limited_lean_factors: [f32; 2],
+    /// m_damageAmountFront (140647ff0), indexed by enemy-damage level.
+    pub incoming_damage_factors: [f32; 3],
+    pub health_regen_amount_scale: f32,
 }
 
 fn slot(fields: &[(String, DeclValue)]) -> Slot {
@@ -222,6 +225,12 @@ impl Manager {
         let parameters = decl::scope(&edit, "m_parameters").unwrap_or(&[]);
         let limited_lean_factors =
             [decl::float(parameters, "m_limitedMaxHorzLeanFactor", 0.5), decl::float(parameters, "m_limitedMaxVertLeanFactor", 0.5)];
+        let damage = decl::scope(parameters, "m_damageAmountFront").unwrap_or(&[]);
+        let incoming_damage_factors = [
+            decl::float(damage, "m_multiplierLvl1", 0.75),
+            decl::float(damage, "m_multiplierLvl2", 1.0),
+            decl::float(damage, "m_multiplierLvl3", 1.5),
+        ];
         let ui = decl::scope(&edit, "m_uiInformation").unwrap_or(&[]);
         let slots = SLOT_FIELDS[..ROWS + 1]
             .iter()
@@ -235,6 +244,8 @@ impl Manager {
             custom: PRESET_DEFAULTS,
             current: 0,
             limited_lean_factors,
+            incoming_damage_factors,
+            health_regen_amount_scale: decl::float(parameters, "m_healthRegenAmountScale", 1.0),
         })
     }
 
@@ -300,6 +311,16 @@ impl Manager {
             [1.0; 2]
         }
     }
+
+    pub fn incoming_damage_factor(&self, difficulty: i32) -> f32 {
+        let level = self.preset(difficulty)[0];
+        self.incoming_damage_factors.get(level as usize).copied().unwrap_or(1.0)
+    }
+
+    pub fn health_regen_factor(&self, difficulty: i32) -> f32 {
+        if self.preset(difficulty)[16] != 0 { self.health_regen_amount_scale } else { 1.0 }
+    }
+    pub fn mana_replenishes(&self, difficulty: i32) -> bool { self.preset(difficulty)[15] == 0 }
 
     /// `FUN_140648300`: the name of a preset, the custom name otherwise.
     pub fn name(&self, index: i32) -> u32 {
