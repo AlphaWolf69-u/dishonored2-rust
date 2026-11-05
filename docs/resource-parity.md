@@ -71,7 +71,7 @@ trailing `*` covers a family of kinds.
 | `areaTagCollection` | none | none: no owner yet |
 | `arkCloth` | none | none: no owner yet |
 | `arkTree` | none | none: no owner yet |
-| `baseModel` | `assets::bmd6`, `assets::entities` | partial: physics-system skin sources share immutable decoded models during level preparation and scene setup reuses those inputs; level-scoped read history is released after teardown (host equivalent of `140060180`). Other consumers and full resource residency remain to be audited |
+| `baseModel` | `assets::bmd6`, `assets::entities` | partial: the host shared BMD6 owner now coalesces concurrent immutable-catalog acquisition and reuses live decoded model identities across setup, usable and scene workers; it holds weak entries, with a strong handoff only for waiting acquisitions. Final model drop removes its registry metadata, failed acquisitions retire after their callers, and level teardown prunes expired metadata without acquisition-time full scans. Editable overlays retain independent reads. Alias resolution and separate skeleton binding remain unchanged. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. This new sharing is unbuilt and has no verified memory/timing claim; compare changed acquisition functions using `DH2_DEBUG_MODEL_ACQUISITION` and `DH2_DEBUG_SEPARATE_MODEL_RESOURCES`. GPU mesh residency remains with its existing owner. |
 | `blueprint` | `assets::entities`, `app::view_geometry` | partial: reads its resources; lifecycle not ported (see its class) |
 | `boneCharmCollection` | none | none: no owner yet |
 | `boneCharmLoadout` | none | none: no owner yet |
