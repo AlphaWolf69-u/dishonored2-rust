@@ -2011,24 +2011,13 @@ fn spawn_particle_surfaces(
             Ok(_) => {}
             Err(error) => eprintln!("Particle surface {source} {material}: {error}"),
         }
-        // 2320b0's shared quad indices over 232480's PMODEL vertices.
-        if model.vertices.is_empty() || model.vertices.len() % 4 != 0 || model.vertices.len() > 65536 {
-            eprintln!("Particle surface {source} must contain complete u16-indexed quads");
-            continue;
-        }
-        let positions: Vec<[f32; 3]> = model.vertices.iter().map(|v| v.position).collect();
-        let half = |v: &crate::assets::particle_model::ParticleModelVertex, at: usize| {
-            half::f16::from_bits(u16::from_le_bytes([v.attributes[at], v.attributes[at + 1]])).to_f32()
+        let prepared_mesh = match super::particle_surface::prepare_mesh(&model) {
+            Ok(mesh) => mesh,
+            Err(error) => { eprintln!("Particle surface {source} {error}"); continue; }
         };
-        let uvs: Vec<[f32; 2]> = model.vertices.iter().map(|v| [half(v, 0), half(v, 2)]).collect();
-        // UV1, packed normal/tangent and colour: the authored 16-byte channels.
-        let packed: Vec<[u8; 16]> = model.vertices.iter()
-            .map(|v| v.attributes[4..20].try_into().unwrap()).collect();
-        let indices: Vec<u16> = (0..model.vertices.len()).step_by(4)
-            .flat_map(|base| [0, 2, 3, 0, 3, 1].map(|i| (base + i) as u16)).collect();
         instanced.extension.surface.particle_instances.x = 1;
         let images = resolver.model_images(&material);
-        let mesh = meshes.add(source_mesh(&positions, &uvs, &indices, &packed, false));
+        let mesh = meshes.add(prepared_mesh);
         let instanced = resolver.probe_materials.add(instanced);
         let mut bindings = Vec::new();
         if let Some(catalog) = resolver.catalog {

@@ -55,6 +55,7 @@ mod resident_images;
 mod environment_reflection;
 mod model_motion;
 mod particle_view;
+mod particle_surface;
 mod machinery;
 mod load_timing;
 mod resource_diagnostics;
