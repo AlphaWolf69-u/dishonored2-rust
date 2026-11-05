@@ -127,8 +127,10 @@ pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(u
 /// Resolve the movie selected by a game-logic state declaration, honoring
 /// the installed archive/overlay owner instead of duplicating its asset path.
 pub(super) fn state_movie(catalog: &Catalog, kind: &str, state: &str) -> Result<String, String> {
-    let mut read = |path: &str| catalog.read(path).ok().flatten();
-    let edit = crate::gameplay::options::decl::read_edit(&mut read, kind, state)?;
+    let edit = crate::assets::entities::player::resolved_decl(kind, state, |path| {
+        Ok(catalog.read(path).map_err(|error| error.to_string())?
+            .map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
+    })?;
     let reference = crate::gameplay::options::decl::atom(&edit, "m_iggyInfo")
         .ok_or_else(|| format!("{state} has no m_iggyInfo"))?;
     let movie = reference.strip_suffix(".iggyfile").ok_or_else(|| format!("{state} has invalid Iggy reference {reference}"))?;

@@ -78,10 +78,12 @@ pub(super) struct Mana {
 }
 
 fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
-    use crate::gameplay::options::decl::{atom, list_items, read_edit, scope, unquote};
+    use crate::gameplay::options::decl::{atom, list_items, scope, unquote};
     use crate::assets::entities::Value;
-    let mut read = |path: &str| catalog.read(path).ok().flatten();
-    let state = read_edit(&mut read, "gamelogicstateingame", "ui/gamelogic/state_ingame.gamelogicstateingame")?;
+    let state = crate::assets::entities::player::resolved_decl("gamelogicstateingame", "ui/gamelogic/state_ingame.gamelogicstateingame", |path| {
+        Ok(catalog.read(path).map_err(|error| error.to_string())?
+            .map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
+    })?;
     let inactivity = scope(&state, "m_masterHUDInactivityDelay")
         .and_then(|duration| atom(duration, "m_seconds"))
         .ok_or("in-game state has no HUD inactivity delay")?.parse::<f64>()
