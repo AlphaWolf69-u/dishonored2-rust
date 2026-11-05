@@ -634,6 +634,46 @@ allocator overhead. Evidence: local `artifacts/language-value-inventory.json`.
 The existing original EotW capture reports 547,888 bytes under LANGDICT; its
 fixture does not identify the active language, so it is not a comparable
 Russian-table budget.
+Before the ownership change, predict that sharing each immutable value will
+remove roughly one full translated-value allocation per entry, offset by the
+shared allocation header and different hash-map slot widths. Lookup remains
+one hash-map search followed by a borrowed string view, with no runtime lock or
+reference-count change; compare the two lookup paths on installed values and
+measure table capacity before claiming net savings.
+The first same-binary release diagnostic on the Russian table measured 6,226
+entries, 2,530,346 bytes of former value-string capacity, and 1,026,738
+shared UTF-8 payload bytes. The current toolchain lays out the corresponding
+Arc allocations at 1,148,208 bytes including headers and alignment; the
+value allocations therefore request 1,382,138 fewer bytes, excluding
+allocator bookkeeping and process RSS. Both map value slots also shrink
+from String to Arc<str>; their physical bucket sizes are not included here.
+In one 16-sweep diagnostic over installed keys, key lookups measured
+29,449,350 -> 22,949,640 thread cycles and ID lookups 6,306,265 ->
+5,395,635. A repeat measured 31,738,731 -> 23,562,945 for keys and
+5,440,890 -> 3,539,725 for IDs; another run was 30,447,374 -> 23,042,880
+and 9,642,675 -> 6,033,265. Numeric-ID differences vary, and smaller map
+slots and different hash-table seeds can affect cache behavior; the runs
+show no detected lookup regression but do not establish a fixed speedup.
+These are affected lookup spans, not frame time. Original
+LANGDICT capture language is not identified and cannot be used as a
+same-language memory comparison. Evidence: local language-perf logs.
+The same parser also clones every original key into a temporary collision map
+and computes its ID twice. Moving the key into the map through its entry API
+should remove one key allocation and one key-hash computation per parsed
+non-colliding entry, while retaining the original key in collision errors.
+That changes startup parsing only, not lookup. Count entries and verify the
+collision behavior and output against installed data before accepting it.
+The follow-up diagnostic on the 6,226 installed Russian keys removed 6,226
+temporary key clones; isolated index preparation measured 3,726,310 ->
+2,902,970 thread cycles, and a repeat 5,781,860 -> 3,577,770. These are
+short startup spans rather than frame timings. The same error message uses
+the retained original key for collisions; that error path was reviewed in
+source, not exercised by the successful installed-table run.
+Localization key lookup also allocates a lowercase String even for keys
+that are already lowercase. Borrowing such keys could avoid one allocation
+per qualifying call, but would add a byte scan; the actual key mix, call
+frequency and affected CPU are not measured. Profile those before changing
+this hot lookup, preserving ASCII-only case semantics and missing-key behavior.
 
 Area containment work: environment tracks independently traverse the same
 area list and call `contains` for their current point. Reusing one ordered

@@ -152,9 +152,9 @@ pub fn read_audio_language(base: &Path) -> Result<&'static str, String> {
 
 #[derive(Clone, Debug, Default)]
 pub struct StringTable {
-    entries: HashMap<String, String>,
+    entries: HashMap<String, std::sync::Arc<str>>,
     /// Text by string id (the key hash), for `FUN_1401653e0`.
-    ids: HashMap<u32, String>,
+    ids: HashMap<u32, std::sync::Arc<str>>,
 }
 
 /// `FUN_140145e50`: one UTF-8 sequence, lead-byte length table at
@@ -284,10 +284,20 @@ impl StringTable {
                         return Err(format!("File ended while reading value at line {line}"));
                     }
                     let lower = key.to_ascii_lowercase();
-                    if let Some(previous) = hashes.insert(key_hash(&lower), key.clone()) {
-                        return Err(format!("Computed a duplicate ID for strings {previous} and {key}"));
+                    let id = key_hash(&lower);
+                    match hashes.entry(id) {
+                        std::collections::hash_map::Entry::Occupied(previous) => {
+                            return Err(format!(
+                                "Computed a duplicate ID for strings {} and {key}", previous.get()
+                            ));
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(key);
+                        }
                     }
-                    ids.insert(key_hash(&lower), value.clone());
+                    // Both original lookup forms resolve the same 0x58-byte entry.
+                    let value: std::sync::Arc<str> = value.into();
+                    ids.insert(id, value.clone());
                     entries.insert(lower, value);
                 }
                 _ => {}
@@ -307,7 +317,7 @@ impl StringTable {
 
     /// `FUN_1401653e0`: the text of a string id.
     pub fn by_id(&self, id: u32) -> Option<&str> {
-        self.ids.get(&id).map(String::as_str)
+        self.ids.get(&id).map(|value| value.as_ref())
     }
 
     /// `FUN_1401653e0` as the UI setters use it: the text of a string id,
@@ -317,7 +327,7 @@ impl StringTable {
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.entries.get(&key.to_ascii_lowercase()).map(String::as_str)
+        self.entries.get(&key.to_ascii_lowercase()).map(|value| value.as_ref())
     }
 
     /// `FUN_140165420`: the entry for `key`, or `key` itself.

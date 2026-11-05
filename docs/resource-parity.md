@@ -3242,14 +3242,47 @@ from these live owners; the retained area-parameter capacities matched in
 both modes. These are counted allocation capacities, not process RSS.
 Physics and water retain compact records in authored order; ordinary area
 profiles keep their parameters, and unused water profile parameters drop.
-Local evidence: `artifacts/compact-volume-comparison.json`. Release CPU
-measurement is still pending.
+Local evidence: `artifacts/compact-volume-comparison.json`. The subsequent
+release comparison measured the affected environment-preparation and trigger
+acquisition/retirement spans; details are in `docs/resource-lifetimes.md`.
 
 Successful source records additionally show 400 / 184 / 31 / 400 redundant
 trigger-shape reads across those loads, with 5,983,276 cumulative decoded
 bytes, assuming one acquisition per identical path per level. The EotW
 area/wind consumers requested 400 files representing 204 identities; physics
 requested all 204 identities again. Matching paths carried matching source
-CRCs. These are I/O counts, not resident savings. Their different derived
-geometry and original registry ownership still need a shared-source design.
-Evidence: `artifacts/trigger-overlap-comparison.json`.
+CRCs. These are I/O counts, not resident savings. The implemented temporary owner shares matching source/schema data while
+retaining the separate derived geometries; four-map source, geometry and
+physics fingerprints matched. It avoided 1,013 reads; two wind-only inputs
+were not area-cache candidates. Evidence: `artifacts/trigger-overlap-comparison.json`
+and `artifacts/shape-parent-comparison.json`.
+
+
+### Localization value ownership
+
+`1401653e0` and `140165420` resolve numeric IDs and text keys to the same
+original language-dictionary entry. `assets::lang::StringTable` retains one
+immutable value shared by both lookup indexes; the session UI worker owns the
+table and catalog changes release its cache lease. The parser moves each
+original key into its temporary collision map and reuses the computed ID,
+while retaining the previous collision message. This is a host ownership
+optimization; language contents, key case rules and fallbacks remain unchanged.
+
+On the installed Russian table, the instrumented client recorded 6,226 entries
+and 2,530,346 bytes of prior value-string capacities. The shared values contain
+1,026,738 UTF-8 bytes; their current-toolchain Arc layouts total 1,148,208 bytes
+including headers/alignment, before allocator bookkeeping. Hash-map value
+slots also shrink, but their physical allocations are not included in this
+value-storage comparison. The original EotW fixture reports LANGDICT 547,888
+bytes without a language identifier and is not a same-language comparison.
+
+A same-binary diagnostic over installed keys found no lookup regression in
+three runs; numeric-ID timing varied enough that a fixed speedup is not
+claimed. Two key-preparation comparisons removed 6,226 temporary key clones
+and measured 3,726,310 -> 2,902,970 and 5,781,860 -> 3,577,770 thread
+cycles. Both measurements cover changed code only, not frame time. Four-map
+prior and three-map later clients recorded the same 430 UI bitmap fingerprints;
+this does not independently verify displayed translated text. The diagnostic
+code was removed from normal source after measurement. Evidence: local
+`artifacts/language-value-inventory.json`, `language-key-perf-shared.err` and
+`language-repeat-shared.err`.
