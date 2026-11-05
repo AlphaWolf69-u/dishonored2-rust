@@ -17,7 +17,6 @@ struct PreparedEvent {
     actions: Arc<Vec<SourceAction>>,
 }
 
-type PendingDecode = bevy::tasks::Task<Result<Vec<SourceAction>, String>>;
 
 #[derive(Resource, Default)]
 pub(super) struct EffectAudio {
@@ -29,7 +28,7 @@ pub(super) struct EffectAudio {
     reported_playback: bool,
     trace_frame: u32,
     pending_media: std::collections::HashMap<crate::gameplay::sound::playing::PlayingId, Vec<super::graph::StreamHold>>,
-    pending_events: std::collections::HashMap<u32, std::sync::Mutex<PendingDecode>>,
+    pending_events: std::collections::HashSet<u32>,
     failed_events: std::collections::HashMap<u32, String>,
 }
 
@@ -41,7 +40,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
     level: Option<ResMut<super::level::LevelAudio>>, mut scene: ResMut<super::spatial::Scene>,
     engine: Res<super::bevy_backend::Engine>, mut commands: Commands,
     playing: Query<(Entity, &super::AudioTarget, &super::graph::Playing)>,
-    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>, mut error: Local<Option<String>>)
+    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>, mut error: Local<Option<String>>,
+    mut decodes: ResMut<super::SoundDecodeQueue>)
 {
     let (Some(sources), Some(sounds), Some(mixer), Some(mut level)) = (sources, sounds, &mix.mixer, level) else { return };
     let mut bridge = sounds.lock();
@@ -52,24 +52,24 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             .filter_map(|effect| effect.as_ref().ok()).flat_map(|effect| &effect.groups)
             .flat_map(|group| &group.sounds).flat_map(|sound| [&sound.start, &sound.stop])
             .flatten().map(|event| event.declaration.id).collect();
-        let mut completed = Vec::new();
-        state.pending_events.retain(|&id, task| {
-            if !needed.contains(&id) { return false; }
-            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
-            if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
-                completed.push((id, result)); false
-            } else { true }
-        });
+        decodes.retain_client(super::DecodeClient::Effects, &needed);
+        decodes.poll();
+        let completed: Vec<_> = state.pending_events.iter().filter_map(|&id| {
+            if !needed.contains(&id) { return Some((id, None)); }
+            decodes.result(id).map(|result| (id, Some(result)))
+        }).collect();
         for (id, result) in completed {
-            if !needed.contains(&id) { continue; }
+            state.pending_events.remove(&id);
+            decodes.release(id, super::DecodeClient::Effects);
             match result {
-                Ok(actions) => {
+                Some(Ok(actions)) => {
                     if let hashbrown::hash_map::Entry::Vacant(entry) = registry.sources.entry(id) {
-                        entry.insert(Arc::new(actions));
+                        entry.insert(actions);
                         state.dynamic_decodes.insert(id);
                     }
                 }
-                Err(error) => { state.failed_events.insert(id, error); }
+                Some(Err(error)) => { state.failed_events.insert(id, error); }
+                None => {}
             }
         }
     }
@@ -109,19 +109,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                             && !state.failed_events.contains_key(&declaration.id)
                             && !declaration.game_defined && declaration.game_properties.is_none() {
                             waiting = true;
-                            state.pending_events.entry(declaration.id).or_insert_with(|| {
-                                let snapshot = registry.decode_snapshot();
-                                let id = declaration.id;
-                                std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-                                    let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
-                                    let result = snapshot.decode_event(id).map_err(|error| error.to_string());
-                                    if let Some(started) = started {
-                                        eprintln!("FX_LIFECYCLE audio={id:#010x} success={} decode_ms={:.3}",
-                                            result.is_ok(), started.elapsed().as_secs_f64() * 1000.0);
-                                    }
-                                    result
-                                }))
-                            });
+                            decodes.request(declaration.id, super::DecodeClient::Effects, &registry);
+                            state.pending_events.insert(declaration.id);
                             continue;
                         }
                         references.insert(event.name.clone(), (|| {

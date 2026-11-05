@@ -17,6 +17,58 @@ pub(super) use contacts::ContactSound;
 #[derive(Message, Clone, Copy)]
 pub struct SoundEvent(pub Request);
 
+/// One in-flight decode per event and level bank generation. Each client has
+/// its own lease, so canceling an FX or UI request does not cancel another.
+#[derive(Clone, Copy)]
+enum DecodeClient { Effects = 1, Watched = 2 }
+struct DecodeJob {
+    clients: u8,
+    task: Option<std::sync::Mutex<bevy::tasks::Task<Result<Vec<SourceAction>, String>>>>,
+    result: Option<Result<Arc<Vec<SourceAction>>, String>>,
+}
+#[derive(Resource, Default)]
+struct SoundDecodeQueue(std::collections::HashMap<u32, DecodeJob>);
+impl SoundDecodeQueue {
+    fn request(&mut self, event: u32, client: DecodeClient, registry: &WwiseRegistry) {
+        let job = self.0.entry(event).or_insert_with(|| {
+            let snapshot = registry.decode_snapshot();
+            DecodeJob { clients: 0, result: None, task: Some(std::sync::Mutex::new(
+                bevy::tasks::IoTaskPool::get().spawn(async move {
+                    let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
+                    let result = snapshot.decode_event(event).map_err(|error| error.to_string());
+                    if let Some(started) = started {
+                        eprintln!("FX_LIFECYCLE audio={event:#010x} success={} decode_ms={:.3}", result.is_ok(), started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    result
+                }))) }
+        });
+        job.clients |= client as u8;
+    }
+    fn poll(&mut self) {
+        for job in self.0.values_mut() {
+            let Some(task) = job.task.as_mut() else { continue };
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+                job.result = Some(result.map(Arc::new));
+                job.task = None;
+            }
+        }
+    }
+    fn result(&self, event: u32) -> Option<Result<Arc<Vec<SourceAction>>, String>> {
+        self.0.get(&event).and_then(|job| job.result.clone())
+    }
+    fn release(&mut self, event: u32, client: DecodeClient) {
+        if let Some(job) = self.0.get_mut(&event) { job.clients &= !(client as u8); }
+        self.0.retain(|_, job| job.clients != 0);
+    }
+    fn retain_client(&mut self, client: DecodeClient, wanted: &std::collections::HashSet<u32>) {
+        self.0.retain(|event, job| {
+            if !wanted.contains(event) { job.clients &= !(client as u8); }
+            job.clients != 0
+        });
+    }
+}
+
 /// Optional completion subscriptions for ordinary Wwise posts. A successful
 /// post is finished only after every submitted voice releases its event ticket.
 #[derive(Resource, Default)]
@@ -26,7 +78,6 @@ pub(super) struct SoundCompletions {
     active: std::collections::HashSet<(u32, Emitter)>,
     playing: crate::gameplay::sound::playing::PlayingEvents,
     started: std::collections::HashSet<crate::gameplay::sound::playing::PlayingId>,
-    decodes: std::collections::HashMap<u32, std::sync::Mutex<bevy::tasks::Task<Result<Vec<SourceAction>, String>>>>,
     decode_failures: std::collections::HashMap<u32, String>,
     dynamic_sources: std::collections::HashSet<u32>,
     retired_sources: Vec<u32>,
@@ -296,9 +347,9 @@ pub(super) fn begin_level(world: &mut World) {
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         let waiting = std::mem::take(&mut completions.waiting);
         for key in waiting { completions.completed.insert(key, false); }
-        completions.decodes.clear();
         completions.decode_failures.clear();
     }
+    world.insert_resource(SoundDecodeQueue::default());
     world.insert_resource(PendingSounds::default());
     world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
@@ -323,6 +374,7 @@ impl Plugin for SoundPlugin {
             .init_resource::<WwiseRegistry>()
             .init_resource::<PendingSounds>()
             .init_resource::<SoundCompletions>()
+            .init_resource::<SoundDecodeQueue>()
             .init_resource::<AudioMix>()
             .init_resource::<bevy_backend::Engine>()
             .init_resource::<spatial::Scene>()
@@ -666,29 +718,25 @@ fn play_events(
     engine: Res<bevy_backend::Engine>,
     mut pending: ResMut<PendingSounds>,
     mut completions: ResMut<SoundCompletions>,
+    mut decodes: ResMut<SoundDecodeQueue>,
 ) {
     completions.pump();
     for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
-    let mut ready = Vec::new();
     let wanted_decodes: std::collections::HashSet<_> = completions.waiting.iter().map(|(event, _)| *event).collect();
-    completions.decodes.retain(|&event, task| {
-        if !wanted_decodes.contains(&event) { return false; }
-        let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
-        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
-            ready.push((event, result)); false
-        } else { true }
-    });
-    for (event, result) in ready {
-        if !completions.waiting.iter().any(|(id, _)| *id == event) { continue; }
+    decodes.retain_client(DecodeClient::Watched, &wanted_decodes);
+    decodes.poll();
+    for event in wanted_decodes {
+        let Some(result) = decodes.result(event) else { continue };
         match result {
             Ok(actions) => {
                 if let hashbrown::hash_map::Entry::Vacant(entry) = registry.sources.entry(event) {
-                    entry.insert(Arc::new(actions));
+                    entry.insert(actions);
                     completions.dynamic_sources.insert(event);
                 }
             }
             Err(error) => { completions.decode_failures.insert(event, error); }
         }
+        decodes.release(event, DecodeClient::Watched);
     }
     let Some(mixer) = &mix.mixer else {
         for message in events.read() {
@@ -736,12 +784,7 @@ fn play_events(
                 completions.failed(event, emitter);
                 continue;
             }
-            if !completions.decodes.contains_key(&event) {
-                let snapshot = registry.decode_snapshot();
-                completions.decodes.insert(event, std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-                    snapshot.decode_event(event).map_err(|error| error.to_string())
-                })));
-            }
+            decodes.request(event, DecodeClient::Watched, &registry);
             waiting.push(emitter);
             pending.0.push(queued);
             continue;
