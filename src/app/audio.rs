@@ -355,6 +355,10 @@ pub(super) fn begin_level(world: &mut World) {
         let waiting = std::mem::take(&mut completions.waiting);
         for key in waiting { completions.completed.insert(key, false); }
         completions.decode_failures.clear();
+        // Active menu voices can outlive a level, but their old acquisition
+        // keys must never evict a new level's event with the same numeric ID.
+        completions.dynamic_sources.clear();
+        completions.retired_sources.clear();
     }
     world.insert_resource(SoundDecodeQueue::default());
     world.insert_resource(PendingSounds::default());
