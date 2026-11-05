@@ -26,6 +26,10 @@ pub(super) struct SoundCompletions {
     active: std::collections::HashSet<(u32, Emitter)>,
     playing: crate::gameplay::sound::playing::PlayingEvents,
     started: std::collections::HashSet<crate::gameplay::sound::playing::PlayingId>,
+    decodes: std::collections::HashMap<u32, std::sync::Mutex<bevy::tasks::Task<Result<Vec<SourceAction>, String>>>>,
+    decode_failures: std::collections::HashMap<u32, String>,
+    dynamic_sources: std::collections::HashSet<u32>,
+    retired_sources: Vec<u32>,
 }
 impl SoundCompletions {
     pub fn watch(&mut self, event: u32, emitter: Emitter) {
@@ -40,7 +44,9 @@ impl SoundCompletions {
     pub fn cancel(&mut self, event: u32, emitter: Emitter) {
         self.waiting.remove(&(event, emitter));
         self.completed.remove(&(event, emitter));
-        self.active.remove(&(event, emitter));
+        if self.active.remove(&(event, emitter)) && self.dynamic_sources.remove(&event) {
+            self.retired_sources.push(event);
+        }
     }
     fn failed(&mut self, event: u32, emitter: Emitter) {
         if self.waiting.remove(&(event, emitter)) { self.completed.insert((event, emitter), false); }
@@ -53,7 +59,10 @@ impl SoundCompletions {
                 NotificationKind::End => {
                     let submitted = self.started.remove(&note.id);
                     let key = (note.event.declaration, note.event.object);
-                    if self.active.remove(&key) { self.completed.insert(key, submitted); }
+                    if self.active.remove(&key) {
+                        self.completed.insert(key, submitted);
+                        if self.dynamic_sources.remove(&key.0) { self.retired_sources.push(key.0); }
+                    }
                 },
                 NotificationKind::EventPlaying => {},
             }
@@ -257,6 +266,7 @@ struct PendingSound {
     // A retry must not release its already completed reads while another
     // source is pending; the source's own resident lookup is deliberately weak.
     media: Vec<graph::StreamHold>,
+    watched: bool,
 }
 
 pub(super) fn begin_level(world: &mut World) {
@@ -283,6 +293,12 @@ pub(super) fn begin_level(world: &mut World) {
     drop(registry);
     world.resource::<bevy_backend::Engine>().retain_nodes(&actors);
     graph::retain_media(&sound_ids);
+    if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
+        let waiting = std::mem::take(&mut completions.waiting);
+        for key in waiting { completions.completed.insert(key, false); }
+        completions.decodes.clear();
+        completions.decode_failures.clear();
+    }
     world.insert_resource(PendingSounds::default());
     world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
@@ -652,6 +668,28 @@ fn play_events(
     mut completions: ResMut<SoundCompletions>,
 ) {
     completions.pump();
+    for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
+    let mut ready = Vec::new();
+    let wanted_decodes: std::collections::HashSet<_> = completions.waiting.iter().map(|(event, _)| *event).collect();
+    completions.decodes.retain(|&event, task| {
+        if !wanted_decodes.contains(&event) { return false; }
+        let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+            ready.push((event, result)); false
+        } else { true }
+    });
+    for (event, result) in ready {
+        if !completions.waiting.iter().any(|(id, _)| *id == event) { continue; }
+        match result {
+            Ok(actions) => {
+                if let hashbrown::hash_map::Entry::Vacant(entry) = registry.sources.entry(event) {
+                    entry.insert(Arc::new(actions));
+                    completions.dynamic_sources.insert(event);
+                }
+            }
+            Err(error) => { completions.decode_failures.insert(event, error); }
+        }
+    }
     let Some(mixer) = &mix.mixer else {
         for message in events.read() {
             match message.0 {
@@ -665,7 +703,14 @@ fn play_events(
     // A request whose streamed media is still being read waits, keeping its
     // place ahead of later requests for the same emitter.
     let requests: Vec<PendingSound> = std::mem::take(&mut pending.0).into_iter()
-        .chain(events.read().map(|message| PendingSound { request: message.0, media: Vec::new() })).collect();
+        .chain(events.read().map(|message| {
+            let watched = match message.0 {
+                Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
+                    | Request::PostAt { event, emitter, .. } => completions.waiting.contains(&(event, emitter)),
+                Request::Stop { .. } => false,
+            };
+            PendingSound { request: message.0, media: Vec::new(), watched }
+        })).collect();
     let mut waiting = Vec::new();
     for queued in requests {
         let request = queued.request;
@@ -681,9 +726,26 @@ fn play_events(
             }
         };
         if waiting.contains(&emitter) { pending.0.push(queued); continue; }
+        if queued.watched && !completions.waiting.contains(&(event, emitter)) { continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
         if scene.frozen(emitter) { completions.failed(event, emitter); continue; }
+        if queued.watched && !registry.sources.contains_key(&event) {
+            if let Some(error) = completions.decode_failures.remove(&event) {
+                warn!("Wwise event {event:#010x} background preparation failed: {error}");
+                completions.failed(event, emitter);
+                continue;
+            }
+            if !completions.decodes.contains_key(&event) {
+                let snapshot = registry.decode_snapshot();
+                completions.decodes.insert(event, std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
+                    snapshot.decode_event(event).map_err(|error| error.to_string())
+                })));
+            }
+            waiting.push(emitter);
+            pending.0.push(queued);
+            continue;
+        }
         if let Err(error) = registry.prepare(event) {
             completions.failed(event, emitter);
             warn!("Wwise event {event:#010x} has no supported route: {error}");
@@ -713,7 +775,7 @@ fn play_events(
             }
             if loading {
                 waiting.push(emitter);
-                pending.0.push(PendingSound { request, media: holds });
+                pending.0.push(PendingSound { request, media: holds, watched: queued.watched });
                 continue;
             }
             let tracked = if completions.waiting.remove(&(event, emitter)) {
