@@ -84,10 +84,13 @@ fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
             .map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
     })?;
-    let inactivity = scope(&state, "m_masterHUDInactivityDelay")
-        .and_then(|duration| atom(duration, "m_seconds"))
-        .ok_or("in-game state has no HUD inactivity delay")?.parse::<f64>()
-        .map_err(|e| format!("invalid HUD inactivity delay: {e}"))?;
+    // arkDeclGameLogicStateInGame constructor 14078abd0 initializes the
+    // duration at +0x130 to zero before the declaration is applied.
+    let inactivity = match scope(&state, "m_masterHUDInactivityDelay")
+        .and_then(|duration| atom(duration, "m_seconds")) {
+        Some(value) => value.parse::<f64>().map_err(|e| format!("invalid HUD inactivity delay: {e}"))?,
+        None => 0.0,
+    };
     let hud_elements = scope(&state, "m_hudElements").ok_or("in-game state has no HUD elements")?;
     let mana_name = atom(hud_elements, "enumItem[ARK_HUD_ELEMENT_MANA]").ok_or("in-game state has no mana HUD")?;
     let mana = crate::assets::entities::player::resolved_decl("ui_hudelementmana", mana_name, |path| {
