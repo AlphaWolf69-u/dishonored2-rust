@@ -61,7 +61,7 @@ enum Command {
 }
 
 enum Event {
-    HudFrame(u64, FlashFrame),
+    HudFrame(u64, Option<FlashFrame>),
     HudReady(u64, f64, Option<Vec<String>>),
     HudFailed(u64, String),
     HudSound(u64, u32),
@@ -236,6 +236,9 @@ pub struct PauseMenu {
     ready: bool,
     hud_started: bool,
     hud_epoch: u64,
+    hud_in_flight: bool,
+    hud_in_flight_force: bool,
+    hud_failed: bool,
     hud_interaction: Option<super::hud_movie::Interaction>,
     hud_oxygen: Option<super::hud_movie::Oxygen>,
     hud_health: Option<super::hud_movie::Health>,
@@ -246,6 +249,11 @@ pub struct PauseMenu {
     hud_elapsed: f64,
     hud_phase: f64,
     hud_force: bool,
+    hud_timing_since: Option<std::time::Instant>,
+    hud_dispatches: u64,
+    hud_acks: u64,
+    hud_waits: u64,
+    hud_wait_time: std::time::Duration,
 }
 
 /// The longest a frame waits for the movie's draw list (a slow tick is
@@ -271,7 +279,8 @@ impl Default for PauseMenu {
                 run(inbox, outbox);
             })
             .expect("pause movie thread");
-        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true }
+        let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
+        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
@@ -280,6 +289,9 @@ impl PauseMenu {
         let _ = self.commands.send(Command::EndHud);
         self.hud_epoch = self.hud_epoch.wrapping_add(1);
         self.hud_started = false;
+        self.hud_in_flight = false;
+        self.hud_in_flight_force = false;
+        self.hud_failed = false;
         self.hud_interaction = None;
         self.hud_oxygen = None;
         self.hud_health = None;
@@ -488,11 +500,11 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 match movie.frame(dt, force) {
                     Ok((frame, sounds)) => {
                         for sound in sounds { let _ = outbox.send(Event::HudSound(hud_epoch, sound)); }
-                        if let Some(frame) = frame { let _ = outbox.send(Event::HudFrame(hud_epoch, frame)); }
+                        let _ = outbox.send(Event::HudFrame(hud_epoch, frame));
                     }
                     Err(error) => { hud = None; let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
                 }
-            },
+            } else { let _ = outbox.send(Event::HudFailed(hud_epoch, "HUD player is unavailable".into())); },
             Command::HudInteraction(value) => if let Some(movie) = hud.as_mut() {
                 if let Err(error) = movie.interaction(value) { warn!("HUD interaction: {error}"); }
             },
@@ -784,7 +796,7 @@ pub fn update_pause_menu(
     }
     let focus_changed = focused.as_ref().is_some_and(|focus| focus.is_changed())
         || (focused.is_none() && menu.hud_interaction.is_some());
-    if menu.hud_started && !super::loading_screen::is_loading(&loading) && (hud_starting || focus_changed) {
+    if menu.hud_started && !menu.hud_failed && !super::loading_screen::is_loading(&loading) && (hud_starting || focus_changed) {
         let interaction = focused.as_ref().and_then(|focus| focus.current.as_ref()).map(|prompt| super::hud_movie::Interaction {
             entity: prompt.entity.clone(), kind: prompt.interaction_type,
             action_label: prompt.usage_text.clone(), game_action: prompt.binding.clone(),
@@ -797,7 +809,7 @@ pub fn update_pause_menu(
             menu.hud_force = true;
         }
     }
-    if menu.hud_started && !menu.open && !super::loading_screen::is_loading(&loading)
+    if menu.hud_started && !menu.hud_failed && !menu.open && !super::loading_screen::is_loading(&loading)
         && (menu.hud_interval > 0.0 || menu.hud_force)
     {
         let player = player_state.as_ref().and_then(|state| state.player.as_ref());
@@ -809,8 +821,8 @@ pub fn update_pause_menu(
         menu.hud_elapsed += time.delta_secs_f64();
         menu.hud_phase += time.delta_secs_f64();
         let due = menu.hud_interval > 0.0 && menu.hud_phase >= menu.hud_interval;
-        if due { menu.hud_phase -= menu.hud_interval; }
-        if menu.hud_force || due {
+        if !menu.hud_in_flight && (menu.hud_force || due) {
+            if due { menu.hud_phase -= menu.hud_interval; }
             if oxygen != menu.hud_oxygen {
                 let _ = menu.commands.send(Command::HudOxygen(oxygen));
                 menu.hud_oxygen = oxygen;
@@ -841,7 +853,14 @@ pub fn update_pause_menu(
             }
             let elapsed = std::mem::take(&mut menu.hud_elapsed);
             let force = std::mem::take(&mut menu.hud_force);
-            let _ = menu.commands.send(Command::HudTick(elapsed, force));
+            match menu.commands.send(Command::HudTick(elapsed, force)) {
+                Ok(()) => {
+                    menu.hud_in_flight = true;
+                    menu.hud_in_flight_force = force;
+                    if menu.hud_timing_since.is_some() { menu.hud_dispatches += 1; }
+                }
+                Err(error) => { menu.hud_failed = true; warn!("HUD worker unavailable: {error}"); }
+            }
         }
     }
     // Diagnostic: DH2_DEBUG_OPEN_PAUSE_AFTER=<seconds> opens the pause state
@@ -954,20 +973,47 @@ pub fn update_pause_menu(
     // The game ticks its Flash players within the frame, so this frame shows
     // this frame's input: once the movie is loaded, wait for the draw list
     // of the tick just sent.
-    let waiting = menu.open && menu.ready;
     let mut framed = false;
     loop {
         let event = match menu.events.try_recv() {
             Ok(e) => e,
-            Err(_) if waiting && !framed => match menu.events.recv_timeout(FRAME_WAIT) {
-                Ok(e) => e,
-                Err(_) => break,
-            },
-            Err(_) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                menu.hud_in_flight = false;
+                menu.hud_failed = true;
+                if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                break;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) if (menu.open && menu.ready && !framed) || menu.hud_in_flight => {
+                // Host handoff: keep the native synchronous tick ordering,
+                // but pump Iggy texture requests and failures while waiting.
+                let started = menu.hud_timing_since.filter(|_| menu.hud_in_flight).map(|_| std::time::Instant::now());
+                let result = menu.events.recv_timeout(FRAME_WAIT);
+                if let Some(started) = started { menu.hud_waits += 1; menu.hud_wait_time += started.elapsed(); }
+                match result {
+                    Ok(e) => e,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) if menu.hud_in_flight => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        menu.hud_in_flight = false;
+                        menu.hud_failed = true;
+                        if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                        break;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
         };
         match event {
             Event::TexturePending => image_service.service(menu, &loading.catalog),
-            Event::HudFrame(epoch, f) if epoch == menu.hud_epoch && !menu.open && !super::loading_screen::is_loading(&loading) => frame.0 = Some(f),
+            Event::HudFrame(epoch, f) if epoch == menu.hud_epoch => {
+                menu.hud_in_flight = false;
+                let forced = std::mem::take(&mut menu.hud_in_flight_force);
+                if menu.hud_timing_since.is_some() { menu.hud_acks += 1; }
+                if f.is_none() && forced { menu.hud_force = true; }
+                if !menu.open && !super::loading_screen::is_loading(&loading) {
+                    if let Some(f) = f { frame.0 = Some(f); }
+                } else if f.is_some() { menu.hud_force = true; }
+            }
             Event::HudFrame(_, _) => {},
             Event::HudReady(epoch, interval, powers) if epoch == menu.hud_epoch && menu.hud_started && !super::loading_screen::is_loading(&loading) && interval.is_finite() && interval > 0.0 => {
                 menu.hud_interval = interval;
@@ -976,6 +1022,9 @@ pub fn update_pause_menu(
             }
             Event::HudReady(_, _, _) => {},
             Event::HudFailed(epoch, error) if epoch == menu.hud_epoch => {
+                menu.hud_in_flight = false;
+                menu.hud_in_flight_force = false;
+                menu.hud_failed = true;
                 warn!("HUD movie unavailable: {error}");
                 if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
             },
@@ -1017,6 +1066,18 @@ pub fn update_pause_menu(
                 menu.open = false;
                 menu.hud_force = true;
             }
+        }
+    }
+    if let Some(since) = menu.hud_timing_since {
+        if since.elapsed().as_secs_f64() >= 5.0 {
+            info!("HUD handoff over {:.1}s: dispatches={} acknowledgements={} in_flight={} waits={} wait_ms={:.2}",
+                since.elapsed().as_secs_f64(), menu.hud_dispatches, menu.hud_acks, menu.hud_in_flight,
+                menu.hud_waits, menu.hud_wait_time.as_secs_f64() * 1000.0);
+            menu.hud_dispatches = 0;
+            menu.hud_acks = 0;
+            menu.hud_waits = 0;
+            menu.hud_wait_time = std::time::Duration::ZERO;
+            menu.hud_timing_since = Some(std::time::Instant::now());
         }
     }
     if !menu.open {
