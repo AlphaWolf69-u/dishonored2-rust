@@ -26,10 +26,15 @@ impl ActionCapture {
             return;
         };
         if frames.len() == MAX_FRAMES {
-            frames.pop_front();
+            let mut frame = frames.pop_front().expect("full capture ring");
             self.dropped[model] = self.dropped[model].saturating_add(1);
+            frame.clip_from_world = clip_from_world;
+            frame.palette.clear();
+            frame.palette.extend_from_slice(palette);
+            frames.push_back(frame);
+        } else {
+            frames.push_back(Frame { clip_from_world, palette: palette.to_vec() });
         }
-        frames.push_back(Frame { clip_from_world, palette: palette.to_vec() });
     }
 
     /// Conservative homogeneous triangle clipping. It does not sample depth,

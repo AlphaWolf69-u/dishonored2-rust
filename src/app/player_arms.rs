@@ -82,6 +82,9 @@ pub(super) struct PlayerArms {
     debug_rest: Option<f32>,
     action_active: [bool; 2],
     action_history: [Option<RenderActionHistory>; 2],
+    /// Opt-in; capture holds at most 64 frames per action/model until the
+    /// next matching action or level teardown.
+    capture_geometry: bool,
     action_capture: [super::player_arm_capture::ActionCapture; 2],
 }
 
@@ -93,12 +96,16 @@ impl PlayerArms {
             arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
         )).collect();
         report.push_str(&format!("  renderer action history [mantle, catfall]={:?}\n", self.action_history));
-        for (action, capture) in ["mantle", "catfall"].into_iter().zip(&self.action_capture) {
-            for (index, arm) in self.arms.iter().enumerate() {
-                let surfaces: Vec<_> = arm.surfaces.iter().map(|surface| surface.source_index).collect();
-                report.push_str(&format!("  {action} geometry {}: {}\n", arm.model,
-                    capture.describe(index, &arm.info, &surfaces, arm.depth_hack)));
+        if self.capture_geometry {
+            for (action, capture) in ["mantle", "catfall"].into_iter().zip(&self.action_capture) {
+                for (index, arm) in self.arms.iter().enumerate() {
+                    let surfaces: Vec<_> = arm.surfaces.iter().map(|surface| surface.source_index).collect();
+                    report.push_str(&format!("  {action} geometry {}: {}\n", arm.model,
+                        capture.describe(index, &arm.info, &surfaces, arm.depth_hack)));
+                }
             }
+        } else {
+            report.push_str("  hand geometry history disabled (DH2_DEBUG_HAND_GEOMETRY=1 enables it)\n");
         }
         report
     }
@@ -327,6 +334,7 @@ pub(super) fn load_player_arms(
         }),
         action_active: [false; 2],
         action_history: [None; 2],
+        capture_geometry: std::env::var("DH2_DEBUG_HAND_GEOMETRY").as_deref() == Ok("1"),
         action_capture: Default::default(),
     })
 }
@@ -482,7 +490,8 @@ pub(super) fn update_player_arms(
         }
         arms.action_active[index] = active;
     }
-    let clip_from_world = if actions.iter().any(|active| *active) {
+    let capture_geometry = arms.capture_geometry;
+    let clip_from_world = if capture_geometry && actions.iter().any(|active| *active) {
         cameras.single().ok().map(|(camera, projection)|
             projection.get_clip_from_view() * camera.to_matrix().inverse())
     } else { None };
@@ -504,7 +513,7 @@ pub(super) fn update_player_arms(
             let palette =
                 edge_skeleton::skin_palette(&render.joints, &arm.skeleton.inverse_bind[..count])?;
             for (index, active) in actions.into_iter().enumerate() {
-                if active { action_capture[index].push(model_index, clip_from_world, &palette); }
+                if active && capture_geometry { action_capture[index].push(model_index, clip_from_world, &palette); }
             }
             if arm.joints.is_empty() {
                 // Bevy's joint matrices are joint transform x inverse bind;
