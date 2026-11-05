@@ -37,6 +37,7 @@ pub(super) struct FxSimulation {
     screen_state: super::screen_effects::ScreenEffectState,
     particle_systems: super::particle_systems::ParticleSystems,
     pub(super) world_particles: super::world_particle_state::WorldParticleState,
+    screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 
 #[derive(Resource, Default)]
@@ -53,7 +54,6 @@ pub(super) struct CameraGpu {
     particles: Option<ParticleGpu>,
     particle_images: super::particle_images::ParticleImagesGpu,
     particle_programs: std::collections::HashMap<(bevy::render::render_resource::TextureFormat, bevy::render::render_resource::TextureFormat), std::sync::Arc<super::particle_pass::ParticlePrograms>>,
-    screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 pub(super) struct ParticlePublicationFrame {
     pub camera: Entity,
@@ -155,7 +155,7 @@ pub(super) fn release_level(world: &mut World) {
         gpu.particle_programs.insert((particles.colour_format, particles.depth_format), particles.pass.reusable_programs());
     }
     gpu.particle_images = Default::default();
-    gpu.screen_sources = None;
+    gpu.simulation.screen_sources = None;
     if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() == Ok("1") {
         gpu.screen_effects.clear_frame();
     } else {
@@ -678,7 +678,7 @@ fn prepare_screen_effects(
         gpu.simulation.screen_state = Default::default();
         gpu.simulation.particle_systems = Default::default();
         gpu.simulation.world_particles = Default::default();
-        gpu.screen_sources = None;
+        gpu.simulation.screen_sources = None;
         gpu.particles = None;
         return;
     };
@@ -723,12 +723,12 @@ fn prepare_screen_effects(
         gpu.simulation.screen_state = Default::default();
         gpu.simulation.particle_systems = Default::default();
         gpu.simulation.world_particles = Default::default();
-        gpu.screen_sources = None;
+        gpu.simulation.screen_sources = None;
         gpu.particles = None;
         return;
     };
     if gpu
-        .screen_sources
+        .simulation.screen_sources
         .as_ref()
         .is_none_or(|previous| !std::sync::Arc::ptr_eq(previous, sources))
     {
@@ -736,7 +736,7 @@ fn prepare_screen_effects(
         gpu.simulation.particle_systems = Default::default();
         gpu.simulation.world_particles = Default::default();
         gpu.particles = None;
-        gpu.screen_sources = Some(sources.clone());
+        gpu.simulation.screen_sources = Some(sources.clone());
     }
     let underwater =
         head_water_surface.is_some_and(|height| water.matrices.current.position[2] <= height);
