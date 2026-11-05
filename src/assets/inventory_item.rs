@@ -250,6 +250,9 @@ pub fn readable_fields(fields: &[(String, Value)]) -> Result<Option<Readable>, S
         Some("TYPE_BOOK") => ReadableKind::Book,
         _ => return Ok(None),
     };
+    let note_type = atom(fields, "m_noteType").map(note_type).transpose()?.unwrap_or(-1);
+    // 140844bf0 rejects an invalid note style except for books and maps.
+    if kind == ReadableKind::Document && note_type == -1 { return Ok(None); }
     let can_be_picked_up = match atom(fields, "m_readableCanBePickedUp").unwrap_or("true") {
         "true" => true,
         "false" => false,
@@ -259,7 +262,7 @@ pub fn readable_fields(fields: &[(String, Value)]) -> Result<Option<Readable>, S
         kind,
         title: atom(fields, "m_name").unwrap_or("").to_owned(),
         text: atom(fields, "m_description").unwrap_or("").to_owned(),
-        note_type: atom(fields, "m_noteType").map(note_type).transpose()?.unwrap_or(-1),
+        note_type,
         can_be_picked_up,
         journal_image: atom(fields, "m_journalImage").filter(|image| !image.is_empty()).map(str::to_owned),
     }))
