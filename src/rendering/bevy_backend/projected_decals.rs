@@ -137,30 +137,29 @@ fn acknowledge_dynamic_proxies(
     request: Res<DynamicProxyReadiness>,
     specialized: Res<bevy::pbr::SpecializedMaterialPipelineCache>,
     pipelines: Res<PipelineCache>,
+    water: Res<super::water_scene::WaterSceneFrame>,
+    view: bevy::render::renderer::ViewQuery<(&bevy::render::sync_world::MainEntity, &bevy::render::view::ExtractedView)>,
 ) {
     use std::sync::atomic::Ordering;
+    let Some(water) = water.0.as_ref() else { return };
+    let (camera, view) = view.into_inner();
+    if camera.id() != water.camera { return; }
+    let Some(view_pipelines) = specialized.get(&view.retained_view_entity) else { return };
     for batch in [&request.decals, &request.world_meshes] {
         if batch.generation == 0 || batch.completed.load(Ordering::Acquire) == batch.generation
             || batch.failed.load(Ordering::Acquire) == batch.generation { continue; }
         let mut failed = false;
         let ready = batch.proxies.iter().all(|entity| {
             let main = bevy::render::sync_world::MainEntity::from(*entity);
-            let mut error = None;
-            let mut waiting = false;
-            for view in specialized.values() {
-                let Some(id) = view.get(&main) else { continue };
-                match pipelines.get_render_pipeline_state(*id) {
-                    CachedPipelineState::Ok(_) => return true,
-                    CachedPipelineState::Err(bevy::shader::ShaderCacheError::ProcessShaderError(_))
-                    | CachedPipelineState::Err(bevy::shader::ShaderCacheError::CreateShaderModule(_)) => error = Some(*id),
-                    _ => waiting = true,
-                }
-            }
-            if !waiting {
-                if let Some(id) = error {
+            let Some(id) = view_pipelines.get(&main) else { return false };
+            match pipelines.get_render_pipeline_state(*id) {
+                CachedPipelineState::Ok(_) => return true,
+                CachedPipelineState::Err(bevy::shader::ShaderCacheError::ProcessShaderError(_))
+                | CachedPipelineState::Err(bevy::shader::ShaderCacheError::CreateShaderModule(_)) => {
                     bevy::log::warn!("Runtime FX proxy pipeline {id:?} failed to compile");
                     failed = true;
                 }
+                _ => {}
             }
             false
         });

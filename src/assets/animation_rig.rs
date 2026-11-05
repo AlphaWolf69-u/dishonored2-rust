@@ -8,6 +8,8 @@ pub struct Rig {
     pub skeleton: crate::edge_skeleton::EdgeSkeleton,
     pub root: crate::edge_skeleton::JointRestPose,
     pub aliases: HashMap<String, String>,
+    /// Search order is child before parent, last authored set first.
+    animsets: Vec<String>,
     pub tokens: Vec<String>,
     pub path: String,
 }
@@ -22,8 +24,20 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let mut animset_count = 0usize;
     let mut animset_bytes = 0usize;
     let stem = model.strip_suffix(".md6").ok_or_else(|| format!("{model} is not an md6"))?;
-    let binding = crate::bmd6::resolve_skeleton_binding(&format!("generated/basemodel/{stem}.bmd6model"), |path| text_of(catalog, path).ok().flatten())?
-        .ok_or_else(|| format!("{model} has no skeleton"))?;
+    // The skeleton resolver and animation inheritance walk the same MD6
+    // declarations. Share their temporary source reads during this load.
+    let mut declarations = HashMap::<String, String>::new();
+    let mut read_error = None;
+    let binding = crate::bmd6::resolve_skeleton_binding(&format!("generated/basemodel/{stem}.bmd6model"), |path| {
+        if let Some(source) = declarations.get(path) { return Some(source.clone()); }
+        match text_of(catalog, path) {
+            Ok(Some(source)) => { declarations.insert(path.to_owned(), source.clone()); Some(source) },
+            Ok(None) => None,
+            Err(error) => { read_error = Some(error); None },
+        }
+    })?;
+    if let Some(error) = read_error { return Err(error); }
+    let binding = binding.ok_or_else(|| format!("{model} has no skeleton"))?;
     let skeleton_stem = binding.name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
     let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
     let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
@@ -31,24 +45,57 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let skeleton_bytes = bytes.len();
     let skeleton = crate::edge_skeleton::parse(&bytes)?;
     let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
-    let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
-    let md6 = text_of(catalog, &md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?;
-    if trace { source_crc.update(md6.as_bytes()); }
-    let tokens: Vec<String> = crate::entities::declaration_lexemes(&md6)?.into_iter().map(str::to_owned).collect();
+    // 1401cab73 inherits animBasicDecl when absent; 1401c7c80 searches
+    // each layer's animsets in reverse, then follows the parent model.
+    let mut layers = Vec::<Vec<String>>::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut name = model.to_owned();
+    let mut md6_bytes = 0usize;
+    loop {
+        if layers.len() >= 16 { return Err("MD6 inheritance exceeds 16 declarations".into()); }
+        if !visited.insert(name.clone()) { return Err("MD6 inheritance cycle".into()); }
+        let stem = name.strip_suffix(".md6").ok_or("invalid MD6 inherit path")?;
+        let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
+        let md6 = match declarations.remove(&md6_path) {
+            Some(source) => source,
+            None => text_of(catalog, &md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?,
+        };
+        md6_bytes += md6.len();
+        if trace { source_crc.update(md6.as_bytes()); }
+        let tokens: Vec<String> = crate::entities::declaration_lexemes(&md6)?.into_iter().map(str::to_owned).collect();
+        let mut depth = 0usize;
+        let mut parent = None;
+        for (index, token) in tokens.iter().enumerate() {
+            match token.as_str() {
+                "{" => depth += 1,
+                "}" => depth = depth.checked_sub(1).ok_or("unbalanced MD6 declaration")?,
+                "inherit" if depth == 1 => parent = tokens.get(index + 1).cloned(),
+                _ => {}
+            }
+        }
+        if depth != 0 { return Err("unbalanced MD6 declaration".into()); }
+        layers.push(tokens);
+        match parent { Some(parent) => name = parent, None => break }
+    }
     let mut aliases = HashMap::new();
-    if let Some(start) = tokens.iter().position(|t| t == "animsets") {
-        for token in tokens[start + 2..].iter().take_while(|t| *t != "}") {
-            let name = token.trim_matches('"');
-            let animset = format!("generated/decls/animset/{name}.decl");
-            let source = text_of(catalog, &animset)?.ok_or_else(|| format!("{animset} is absent"))?;
-            if trace { animset_count += 1; animset_bytes += source.len(); source_crc.update(source.as_bytes()); }
-            crate::edge_animation::animset_aliases(&source, &mut aliases)?;
+    let mut animsets = Vec::new();
+    for tokens in layers.iter().rev() {
+        if let Some(start) = tokens.iter().position(|token| token == "animsets") {
+            for token in tokens[start + 2..].iter().take_while(|token| *token != "}") {
+                let path = format!("generated/decls/animset/{}.decl", token.trim_matches('"'));
+                let source = text_of(catalog, &path)?.ok_or_else(|| format!("{path} is absent"))?;
+                if trace { animset_count += 1; animset_bytes += source.len(); source_crc.update(source.as_bytes()); }
+                crate::edge_animation::animset_aliases(&source, &mut aliases)?;
+                animsets.push(path);
+            }
         }
     }
+    animsets.reverse();
+    let tokens = layers.into_iter().flatten().collect();
     if trace {
-        eprintln!("MEMORY player rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6.len(), source_crc.sum());
+        eprintln!("MEMORY player rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
     }
-    Ok(Rig { skeleton, root, aliases, tokens, path })
+    Ok(Rig { skeleton, root, aliases, animsets, tokens, path })
 }
 
 impl Rig {
@@ -87,10 +134,11 @@ impl Rig {
     pub fn animation_markers(&self, catalog: &Catalog, alias: &str) -> Result<Vec<(String, u32)>, String> {
         let animation = self.aliases.get(alias).ok_or_else(|| format!("no animset alias {alias}"))?;
         let mut markers = Vec::new();
-        let Some(start) = self.tokens.iter().position(|token| token == "animsets") else { return Ok(markers) };
-        for token in self.tokens[start + 2..].iter().take_while(|token| *token != "}") {
-            let path = format!("generated/decls/animset/{}.decl", token.trim_matches('"'));
-            let source = text_of(catalog, &path)?.ok_or_else(|| format!("{path} is absent"))?;
+        for path in &self.animsets {
+            let source = text_of(catalog, path)?.ok_or_else(|| format!("{path} is absent"))?;
+            let mut aliases = HashMap::new();
+            crate::edge_animation::animset_aliases(&source, &mut aliases)?;
+            if !aliases.contains_key(alias) { continue; }
             let tokens = crate::entities::declaration_lexemes(&source)?;
             let mut i = 0;
             while i + 2 < tokens.len() {
@@ -121,8 +169,9 @@ impl Rig {
                 }
                 break;
             }
+            return Ok(markers);
         }
-        Ok(markers)
+        Err(format!("no owning animset for alias {alias}"))
     }
 }
 
