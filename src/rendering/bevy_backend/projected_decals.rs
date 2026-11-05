@@ -254,7 +254,7 @@ fn prepare(
     scene: Res<DecalScene>,
     receivers: Res<DecalReceivers>,
     proxies: Query<(&bevy::render::sync_world::MainEntity, &ProjectedDecalProxy)>,
-    mut camera: ResMut<super::camera_scene::CameraGpu>,
+    publication: Res<super::camera_scene::FxPublication>,
     probes: Res<super::particle_systems::ParticleQueryFrame>,
     water: Res<super::water_scene::WaterSceneFrame>,
     allocator: Res<bevy::render::mesh::allocator::MeshAllocator>,
@@ -289,15 +289,12 @@ fn prepare(
     gpu.receivers.get_mut().clear();
     gpu.remap.get_mut().clear();
     let result = (|| -> Result<(), String> {
-        let Some(tree) = scene.tree.as_deref() else {
+        if scene.tree.is_none() {
             return Ok(());
-        };
-        let limit = crate::platform::console::shared()
-            .read()
-            .cvars
-            .int("r_maxDynamicDecals")
-            .ok_or("decal budget absent")?;
-        let decals = camera.simulation.world_particles.snapshot_decals(tree, limit as usize)?;
+        }
+        let decals = &publication.0.as_ref()
+            .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame)
+            .ok_or("decal publication awaits the FX update")?.decals;
         gpu.lighting
             .retain(|slot, _| decals.iter().any(|(live, _, _)| live == slot));
         if decals.is_empty() {
@@ -305,7 +302,7 @@ fn prepare(
         }
         let bank = probes.0.as_ref().and_then(|frame| frame.probes.as_ref());
         let bank_id = bank.map_or(0, |bank| Arc::as_ptr(bank) as usize);
-        for (slot, owner, decal) in &decals {
+        for (slot, owner, decal) in decals {
             let position = decal.description.position;
             let entry = gpu.lighting.entry(*slot).or_insert((
                 u64::MAX,

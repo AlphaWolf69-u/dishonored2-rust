@@ -213,24 +213,33 @@ pub struct PreparedOceanView {
     pub level: f32,
 }
 
-#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
-pub struct SwimmingSurfaceMailbox {
-    swimming: Arc<std::sync::Mutex<Option<SwimmingSurface>>>,
-    prepared_ocean: Arc<std::sync::Mutex<Option<PreparedOceanView>>>,
+#[derive(Default)]
+struct WaterSamples {
+    swimming: Option<SwimmingSurface>,
+    prepared_ocean: Option<PreparedOceanView>,
 }
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub struct SwimmingSurfaceMailbox(Arc<std::sync::Mutex<WaterSamples>>);
 impl SwimmingSurfaceMailbox {
-    pub(super) fn identity(&self) -> usize { Arc::as_ptr(&self.swimming) as usize }
+    pub(super) fn identity(&self) -> usize { Arc::as_ptr(&self.0) as usize }
     pub fn latest(&self) -> Option<SwimmingSurface> {
-        self.swimming.lock().ok().and_then(|value| *value)
+        self.0.lock().ok().and_then(|value| value.swimming)
     }
     pub fn prepared_ocean(&self) -> Option<PreparedOceanView> {
-        self.prepared_ocean.lock().ok().and_then(|value| *value)
+        self.0.lock().ok().and_then(|value| value.prepared_ocean)
+    }
+    pub(super) fn fx_inputs(&self) -> (Option<SwimmingSurface>, Option<PreparedOceanView>) {
+        self.0.lock().map(|value| (value.swimming, value.prepared_ocean)).unwrap_or((None, None))
     }
     pub(super) fn publish(&self, value: Option<SwimmingSurface>) {
-        if let Ok(mut current) = self.swimming.lock() { *current = value; }
+        if let Ok(mut current) = self.0.lock() { current.swimming = value; }
     }
-    pub(super) fn publish_prepared_ocean(&self, value: Option<PreparedOceanView>) {
-        if let Ok(mut current) = self.prepared_ocean.lock() { *current = value; }
+    pub(super) fn publish_frame(&self, swimming: Option<Option<SwimmingSurface>>, ocean: Option<Option<PreparedOceanView>>) {
+        if swimming.is_none() && ocean.is_none() { return; }
+        if let Ok(mut current) = self.0.lock() {
+            if let Some(value) = swimming { current.swimming = value; }
+            if let Some(value) = ocean { current.prepared_ocean = value; }
+        }
     }
 }
 

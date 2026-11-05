@@ -103,10 +103,11 @@ struct Resources<'w> {
 struct PreparedOceanPublication<'a> {
     mailbox: &'a super::water_scene::SwimmingSurfaceMailbox,
     update: Option<Option<super::water_scene::PreparedOceanView>>,
+    swimming: Option<Option<super::water_scene::SwimmingSurface>>,
 }
 impl Drop for PreparedOceanPublication<'_> {
     fn drop(&mut self) {
-        if let Some(value) = self.update { self.mailbox.publish_prepared_ocean(value); }
+        self.mailbox.publish_frame(self.swimming, self.update);
     }
 }
 
@@ -358,6 +359,7 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
             .is_some_and(|water| water.ocean_render_settings.skip || !water.ocean_environment.view.enabled);
         resources.ocean_mailbox.as_deref().map(|mailbox| PreparedOceanPublication {
             mailbox, update: if !live || disabled { Some(None) } else { None },
+            swimming: if !live || disabled { Some(None) } else { None },
         })
     } else { None };
 
@@ -473,7 +475,10 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                 frame,
                 outputs.map(|(world, canvas, _)| (world, canvas)),
             )?);
-            if let Some(publication) = prepared_ocean.as_mut() { publication.update = Some(None); }
+            if let Some(publication) = prepared_ocean.as_mut() {
+                publication.update = Some(None);
+                publication.swimming = Some(None);
+            }
         }
         let current = gpu.current.as_mut().unwrap();
         if current.depth_id != depth.texture.id() {
@@ -1403,13 +1408,13 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                     }
                     // The next gameplay update consumes the CPU ring copied
                     // by this render update, without waiting on the GPU.
-                    if let (Some(mailbox), Some(water)) = (
-                        resources.ocean_mailbox.as_ref(),
+                    if let (Some(publication), Some(water)) = (
+                        prepared_ocean.as_mut(),
                         resources.water_frame.as_ref().and_then(|value| value.0.as_ref())
                             .filter(|water| water.camera == frame.camera),
                     ) {
                         if water.head_water_surface.is_none() {
-                            mailbox.publish(None);
+                            publication.swimming = Some(None);
                         } else {
                             let surface = match gpu.current.as_ref().and_then(|view| view.ocean.as_ref()) {
                                 Some(ocean) => ocean.next_swimming_surface(water),
@@ -1420,7 +1425,7 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                                 }),
                             };
                             match surface {
-                                Ok(surface) => mailbox.publish(Some(surface)),
+                                Ok(surface) => publication.swimming = Some(Some(surface)),
                                 Err(error) => {
                                     if last_error.as_ref() != Some(&error) {
                                         warn!("Swimming query publication pending: {error}");

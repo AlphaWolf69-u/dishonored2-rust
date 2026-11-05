@@ -6,7 +6,7 @@
 //! shared indirect-lighting record. Each (PMODEL, material) pair has one
 //! proxy entity carrying the world material; its instances come from the
 //! FX update's publication (1eaa40) of this frame.
-use super::camera_scene::CameraGpu;
+use super::camera_scene::FxPublication;
 use bevy::{
     pbr::DirectInstanceDraws,
     prelude::*,
@@ -76,7 +76,7 @@ fn game_to_view() -> Mat4 {
 /// Upload this frame's world-mesh publication and list every proxy's draw.
 /// Runs after the FX update and before any pass that draws the proxies.
 pub(super) fn prepare_particle_meshes(
-    gpu: Res<CameraGpu>,
+    publication: Res<FxPublication>,
     water: Res<super::water_scene::WaterSceneFrame>,
     proxies: Query<(&MainEntity, &ParticleMeshProxy)>,
     device: Res<RenderDevice>,
@@ -103,10 +103,10 @@ pub(super) fn prepare_particle_meshes(
     if view.into_inner().id() != water.camera {
         return;
     }
-    let published = gpu
-        .particle_publication
+    let published = publication.0
         .as_ref()
-        .filter(|published| published.camera == water.camera && published.frame == water.matrices.frame);
+        .filter(|published| published.camera == water.camera && published.frame == water.matrices.frame)
+        .and_then(|published| published.particles.as_ref());
     let mut by_key: HashMap<(&str, &str), Vec<&super::particle_system::WorldMeshDraw>> = HashMap::new();
     for draw in published.iter().flat_map(|published| &published.world_meshes) {
         by_key.entry((draw.source.as_str(), draw.material.as_str())).or_default().push(draw);

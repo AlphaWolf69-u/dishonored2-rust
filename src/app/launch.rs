@@ -524,6 +524,15 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .after(super::water_scene::publish_water_frame)
                 .after(super::visibility_queries::stream_visible_models),
         )
+        .add_systems(
+            PostUpdate,
+            crate::rendering::bevy_backend::camera_scene::simulate_effects
+                .after(super::particle_view::publish)
+                .after(super::model_motion::publish_model_poses)
+                .after(super::fog_scene::publish_fog_frame)
+                .after(super::water_scene::publish_water_frame)
+                .after(super::usable_effects::publish),
+        )
         .insert_non_send_resource(super::pause_menu::PauseMenu::default())
         .add_systems(
             Update,

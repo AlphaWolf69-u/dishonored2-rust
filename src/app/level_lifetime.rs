@@ -148,6 +148,8 @@ fn reset_scene_publications(world: &mut World) {
         backend::particle_pass::ParticleMaterialSampler,
         backend::particle_images::SceneParticleImages,
         backend::particle_systems::ParticleQueryFrame,
+        backend::camera_scene::FxSimulation,
+        backend::camera_scene::FxPublication,
         backend::physics_queries::PhysicsQueryFrame,
         backend::shadow_pass::ShadowSceneFrame,
         backend::shadow_pass::ShadowSceneCompletion,
