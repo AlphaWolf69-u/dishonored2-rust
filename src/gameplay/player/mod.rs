@@ -182,6 +182,9 @@ impl Player {
     pub fn take_attribute_modifier_events(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.attribute_modifier_events)
     }
+    pub fn attribute_differs_from_base(&self, tag: &str) -> bool {
+        self.attributes.1.get(tag).is_some_and(|value| self.attributes.get(tag) != value.base)
+    }
     /// Apply an inventory/power modifier and deliver the matching 0xd6 event.
     pub fn apply_attribute_modifier(&mut self, owner: &str, index: usize, tag: &str, increase: f32, percentage: f32, duration: f32, added: bool, now: f64) -> bool {
         if added {
