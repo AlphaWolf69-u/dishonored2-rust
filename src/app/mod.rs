@@ -71,6 +71,7 @@ mod water_objects;
 mod water_scene;
 mod physics_scene;
 mod state;
+mod interaction_focus;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
     FrameRateOverlay, LocalLightSphereBatch, MaterialHandle, ShadowCasterWorld,
