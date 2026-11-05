@@ -2,7 +2,7 @@
 //!
 //! `arkGameLogicStateReadNote::OnFlashLoaded` (1407905e0) writes these
 //! three fields before calling `_C_ShowNote`. The caller supplies the
-//! localized strings and the authored note type.
+//! string-table keys and the authored note type.
 use std::{collections::{HashMap, VecDeque}, sync::Arc};
 use bevy::prelude::Resource;
 
@@ -48,6 +48,8 @@ impl Movie {
         let (mut player, resources) = Player::load_installed(&catalog, language, resource)?;
         crate::gameplay::pause_state::file_ready(&mut player, screen)?;
         let strings = player.state.borrow().strings.clone().ok_or("notes movie has no string table")?;
+        let title = strings.lookup(&request.title);
+        let text = strings.lookup(&request.text);
         let actions = crate::platform::bindings::bindable_actions(
             &crate::platform::console::shared().read().bindings,
             &strings,
@@ -58,8 +60,8 @@ impl Movie {
         player.call_path_method("controllerTypeHandler", "_C_UpdateControllerType", &[1.into()])
             .map_err(|e| player.describe(&e))?;
         let configure = (|| -> crate::flash::avm2::Result<()> {
-            player.set_value("notesData.title", request.title.as_str().into())?;
-            player.set_value("notesData.text", request.text.as_str().into())?;
+            player.set_value("notesData.title", title.into())?;
+            player.set_value("notesData.text", text.into())?;
             player.set_value("notesData.type", request.note_type.into())?;
             player.call_root_method("_C_ShowNote", &[])?;
             Ok(())
