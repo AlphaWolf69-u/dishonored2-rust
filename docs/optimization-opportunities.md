@@ -1931,5 +1931,102 @@ were 2,061,185 versus 1,174,810 cycles across four calls. Per-call pose costs
 were 6,326 versus 6,028 cycles and palette costs 1,898 versus 1,568 cycles;
 the diagnostic retained both input representations, and these are not
 whole-frame timings. At exit each run released 58 entries in each history
-class. A separate multi-level comparison is in progress; these results do
-not establish process RSS savings or cover editable overlays.
+class. A separate same-build EotW -> Dust -> Dust Return -> EotW comparison
+matched every skin input fingerprint. Its unique rig payloads were
+6,272 -> 1,568, 4,704 -> 3,136, 1,568 -> 1,568, and 6,272 -> 1,568 bytes;
+model payloads were 52,032 -> 13,008, 33,744 -> 20,736, 13,008 -> 13,008,
+and 52,032 -> 13,008 bytes. Scene setup reused 1, 2, 1 and 1 model paths.
+The singleton case still has shared-allocation overhead; the scene source
+also avoids a second decode. Each transition released its level history.
+These payload counts exclude allocator overhead and are not process RSS;
+editable overlays were source-reviewed but not exercised.
+The publication helper itself was moved without changing its operations or
+lookup order, but its targeted CPU cost has not yet been measured; the two
+walking spans above cover pose and palette calculation only. Measure the
+publication path alongside the next already-required animated-object build.
+
+### Particle parameter blocks: prediction before implementation
+
+FX particle descriptors can reference an `arkDeclParmBlock`; the existing
+world FX admission rejects those effects because the original per-instance
+parameter and masking path is absent. The original deserializer `14098cdd0`
+uses each registered renderParm's declared value type; `140227cd0` and
+`140228110` apply static and changing blocks to the individual particle model.
+
+Acquire and share a block only when an active owner needs it, keep existing
+image and shader owners for its dependencies, and release the decoded block
+and GPU bindings with their last users. Predict no new resource acquisition or
+frame work for FX without a block; when a block is used, repeated live
+references should share one read and decode. The original masking/color-grade
+path requires its own conditional GPU work; it must not add a pass when that
+path is inactive. Compare only the affected acquisition, publication and pass
+costs, and verify values and bindings against installed data/original code.
+
+### Dynamic particle retirement: prediction before integration
+
+The acquisition and render caches can both retain the same material, so each
+sees another strong reference after the last effect has released it. The same
+issue affects image acquisitions and GPU residency. Change acquisition entries
+to weak references, and retire render bindings only when a dynamic effect's
+last instance releases them. A live definition, draw, image lease or in-flight
+publication must keep the corresponding resource resident; after the final
+image owner retires, a later request must reread its upload payload.
+
+Predict lower idle CPU/GPU residency after dynamic effects stop, with no
+additional per-frame scan. Weak upgrades and later reacquisition can add work
+to effect start and stop, so measure those affected paths and resource counts
+alongside the completed interactions feature. No saving or performance result
+is claimed before that comparison.
+
+### Compact loading-history paths: prediction before implementation
+
+The successful-read history owns each path as a `String` inside a hash table.
+Those paths never mutate after insertion. Store their immutable text as
+`Box<str>` instead: the UTF-8 allocation and hash/equality semantics stay the
+same, while each table value has a two-word header rather than a three-word
+header. Prediction on 64-bit builds: table storage falls by eight bytes per
+allocated bucket; path payload stays the same size because it is inserted
+from a borrowed string at exact length. Hash-table control bytes, allocator
+rounding and process RSS are excluded. This does not remove paths or change
+owner-driven history retirement and progress accounting.
+
+Predict similar affected read/lookup time, with less table data touched; the
+boxing conversion must not introduce a second allocation. Compare the existing
+opt-in read-history thread-cycle totals, path/entry counts, per-kind table
+capacity and acquisition/progress results on the same moving route and level
+transitions before attributing any speed or physical-memory result.
+
+### Scrolling-water particle program: prediction before verification
+
+The installed `particle/scrolling_water` shader always samples two scrolling
+distortion maps, opacity, normals and diffuse, then uses its authored lighting,
+soft-contact, alpha-mask and fog options. Prepare those maps through the existing
+particle image owner and select the program as a pipeline specialization. Predict
+no extra texture reads or per-pixel branch for other particle programs once the
+specialization is compiled; scrolling-water draws incur the five original samples.
+Dynamic-effect lifetimes and shader inputs must be checked together when the
+complete interaction path is built. These predictions are not measured results.
+
+### Runtime world-material reuse: prediction before implementation
+
+The worker and startup surface preparer now report image-acquisition failures
+as errors before reserving mesh/material assets. Expected effect: unchanged
+successful-path GPU work; failed runtime requests terminate with their source
+error rather than panicking and leaving readiness pending. This is a failure
+handling correction, with no CPU or memory improvement claim. Runtime proxy
+publication uses the same bundle as startup and returns its actual entity ID
+for the existing render-pipeline readiness owner. These changes remain unbuilt
+until the complete dynamic material coordinator is connected.
+
+Startup currently drops its material-name cache after publishing scene assets.
+Runtime world-mesh and decal effects need the same material/program and image
+owners. Transfer the existing cache to a level-scoped runtime owner, rather than
+creating duplicate GPU materials or eagerly decoding additional declarations.
+The scene already retains its published material handles; the transferred map
+will additionally retain path keys, lookup-table capacity and cached metadata
+until level teardown. Predict no extra GPU assets or per-frame lookup work when
+no runtime effect requests one, but a measurable increase in retained CPU cache
+metadata compared with dropping this map. Record its entry count, capacities and
+path bytes, and measure first-use/reuse and retirement paths; do not call it a
+memory saving. If the cost is material, replace the map with a compact shared
+identity index before completing the lifecycle audit.

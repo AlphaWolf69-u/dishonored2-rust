@@ -12,7 +12,7 @@ mod cache;
 mod decal;
 mod water;
 pub(in crate::app) mod alpha;
-use cache::{MaterialCache, MaterialGeometry};
+pub(super) use cache::{MaterialCache, MaterialGeometry};
 
 #[cfg(test)]
 mod pass_tests;
