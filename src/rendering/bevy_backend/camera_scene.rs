@@ -684,10 +684,9 @@ fn prepare_screen_effects(
     }
     gpu.screen_draws = None;
     // The original advances FX on the game thread before the frame renders;
-    // its water inputs are this frame's CPU view state and the completed
-    // head-query readbacks, both available before any GPU pass.
+    // Its water inputs are the CPU view state and the previously published
+    // head-query ring, both available without waiting for GPU work here.
     let (ocean_height, head_water_surface, body_water_surface, samples) = match fog.upcoming_ocean_inputs(
-        &fx.device,
         water,
         fx.water_selection.as_ref().and_then(|selection| selection.0.as_ref()),
     ) {
@@ -814,6 +813,12 @@ fn prepare_screen_effects(
                 warn!("Player FX preparation pending: {error}");
                 *last_error = Some(error);
             }
+        }
+    }
+    if let Err(error) = fog.publish_next_head_ring(&fx.device) {
+        if ocean_error.as_ref() != Some(&error) {
+            warn!("Ocean query publication pending: {error}");
+            *ocean_error = Some(error);
         }
     }
 }

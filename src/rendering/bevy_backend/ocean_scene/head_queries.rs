@@ -41,10 +41,8 @@ impl HeadQueries {
             recorded: None,
         }
     }
-    /// Gameplay's view of the completed readbacks plus this frame's new
-    /// registration. CPU only, so the FX update can read the head surface
-    /// before the frame's GPU work, as the original game thread does.
-    fn take_snapshot(&mut self, device: &RenderDevice, frame: &WaterFrame) -> Result<(), String> {
+    /// Consume the CPU ring published by an earlier renderer update.
+    fn take_snapshot(&mut self, frame: &WaterFrame) -> Result<(), String> {
         if self
             .snapshot
             .as_ref()
@@ -52,8 +50,6 @@ impl HeadQueries {
         {
             return Ok(());
         }
-        self.readbacks
-            .read_current_mapped(device, self.ring, &self.requests)?;
         let mut snapshot = HeadWaterSnapshot {
             frame: frame.matrices.frame,
             plane: frame.head_water_surface,
@@ -96,7 +92,6 @@ impl HeadQueries {
     }
     fn record(
         &mut self,
-        device: &RenderDevice,
         queue: &RenderQueue,
         encoder: &mut CommandEncoder,
         frame: &WaterFrame,
@@ -107,7 +102,7 @@ impl HeadQueries {
         if self.recorded == Some(frame.matrices.frame) {
             return Ok(());
         }
-        self.take_snapshot(device, frame)?;
+        self.take_snapshot(frame)?;
         self.queries.record_pending(
             queue,
             encoder,
@@ -159,7 +154,6 @@ impl OceanScene {
         }
         if let Some(queries) = self.head_queries.as_mut() {
             queries.record(
-                device,
                 queue,
                 encoder,
                 frame,
@@ -179,11 +173,18 @@ impl OceanScene {
         Ok(())
     }
     /// Take this frame's snapshot ahead of the GPU recording (see take_snapshot).
-    pub(crate) fn prepare_head_snapshot(&mut self, device: &RenderDevice, frame: &WaterFrame) -> Result<(), String> {
+    pub(crate) fn prepare_head_snapshot(&mut self, frame: &WaterFrame) -> Result<(), String> {
         match self.head_queries.as_mut() {
-            Some(queries) => queries.take_snapshot(device, frame),
+            Some(queries) => queries.take_snapshot(frame),
             None => Ok(()),
         }
+    }
+    /// The renderer publishes the ring that the following update will consume.
+    pub(crate) fn publish_next_head_ring(&mut self, device: &RenderDevice) -> Result<(), String> {
+        if let Some(queries) = self.head_queries.as_mut() {
+            queries.readbacks.read_current_mapped(device, (queries.ring + 1) & 3, &queries.requests)?;
+        }
+        Ok(())
     }
     pub(crate) fn head_water_snapshot(&self, frame: u32) -> Option<&HeadWaterSnapshot> {
         self.head_queries
