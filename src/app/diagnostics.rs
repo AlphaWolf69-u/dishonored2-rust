@@ -436,8 +436,22 @@ pub(super) fn collision_report(
             player.catfall_sensor.left_hit,
             player.catfall_sensor.right_hit,
         ));
+        let eye = Vec3::from_array(view_to_game(camera.translation));
+        let forward = Vec3::from_array(view_to_game(direction));
+        let up = Vec3::from_array(view_to_game(camera.up().as_vec3()));
+        let right = forward.cross(up).normalize_or_zero();
         for arm in player.arms() {
-            report.push_str(&format!("  model={} visible={} joints={}\n", arm.model, arm.visible, arm.joints.len()));
+            let mut min = Vec3::splat(f32::INFINITY);
+            let mut max = Vec3::splat(f32::NEG_INFINITY);
+            let mut in_front = 0;
+            for joint in &arm.joints {
+                let delta = Vec3::new(joint[0][3], joint[1][3], joint[2][3]) - eye;
+                let position = Vec3::new(delta.dot(right), delta.dot(up), delta.dot(forward));
+                min = min.min(position);
+                max = max.max(position);
+                in_front += usize::from(position.z > 0.0);
+            }
+            report.push_str(&format!("  model={} visible={} joints={} in_front={} camera_bounds={:?}..{:?}\n", arm.model, arm.visible, arm.joints.len(), in_front, min, max));
         }
         report.push_str(&format!("  pose errors={:?}\n", player.arm_pose_errors()));
     }
