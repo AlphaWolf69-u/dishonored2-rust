@@ -118,7 +118,7 @@ trailing `*` covers a family of kinds.
 | `md6Def` | `assets::bmd6`, `app::player` | partial: physics-system skin acquisition resolves declarations once per successful source; level-scoped read history is released after teardown (host equivalent of `140060180`). Other consumers and full declaration residency remain to be audited |
 | `midnightScene` | `assets::entities::scene_motion`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); UVs stay f32 (Bevy has no half-float vertex values); world shadow programs read the shared mesh's own position, NORMAL and COLOR (axis swap undone in the shader), so only vegetation (forward wind) and water meshes keep game-space copies; sheared baked instances keep float vertices. Lifecycle not ported (see its class) |
-| `musicManager` | `gameplay::music` | ported: compact inherited definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger update (1406647d0, 1406649b0, 1406634c0), startup/shutdown including request reset (1406637e0, 1406641e0, 14054ced0); blocked: connect this owner to the single entity dispatcher being implemented in the HUD branch and the actual worldspawn audio component, and resolve the alloc-game feature 0x20 gate before activation. No banks, media or GPU resources are duplicated by this owner; sound acquisition/playback stays with the sound class. Source has not yet been compiled or exercised. |
+| `musicManager` | `gameplay::music` | ported: compact inherited definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger update (1406647d0, 1406649b0, 1406634c0), startup/shutdown including request reset (1406637e0, 1406641e0, 14054ced0); blocked: connect this owner to the single entity dispatcher being implemented in the HUD branch and the actual worldspawn audio component, and resolve the alloc-game feature 0x20 gate before activation. No banks, media or GPU resources are duplicated by this owner; sound acquisition/playback stays with the sound class. Source compiled in f25c019; runtime activation remains blocked. Wwise music actors (HIRC 10/12) also require their actual scheduler, so wiring the manager alone will not produce music. |
 | `navigation` | none | none: no owner yet |
 | `Navmesh` | none | none: no owner yet |
 | `navmeshLayerSettings` | none | none: no owner yet |
@@ -3678,8 +3678,10 @@ Host owner: `app::audio::acquisition::SourceJobs`. Original `1400bc8f0` /
 remain in `assets::wwise::stream_io`, with the same 2 MiB budget and 16 KiB
 granularity. Previously event/source preparation used the generic IO pool,
 also used by the texture worker's drain loop. Source preparation now has one
-lazy, session-owned worker, weak back-links from source locators/snapshots,
-cancelled queued-result leases, and explicit shutdown/join. Level resets keep
+session-owned worker, weak back-links from source locators/snapshots,
+cancelled task leases, and shutdown/join through the same Bevy task-pool owner
+already used by loading-time sound preparation. The worker starts during
+session setup so source activation cannot create a thread on the audio callback. Level resets keep
 the session worker and release outgoing requests; no full streamed media is
 preloaded to conceal cold-start delay.
 
@@ -3690,8 +3692,28 @@ Prediction: sound preparation should no longer queue behind texture-drain
 jobs; preparation work and decoded samples should remain unchanged. No FPS or
 codec-speed gain is predicted. `DH2_DEBUG_SOUND_ACQUISITION=1` records queue
 and work time separately; `DH2_DEBUG_SHARED_SOUND_JOBS=1` selects the former
-generic-pool scheduling for a same-build comparison. Compilation, affected
-queue measurements and the reported first-use audio outcome remain pending.
+generic-pool scheduling for a same-build comparison. Intermediate cfbbba2
+compiled in dev and release; dev EotW/Dust clients completed with no runtime
+errors. They reproduced first-use fly preparation queued for roughly 0.54 s /
+1.52 s on the shared IO pool; the dedicated path's corresponding jobs queued
+for about 0.5–1.1 ms. Work itself was below 0.2 ms in both modes. These dev
+runs identify scheduling contention; release measurements and the final
+standard-task-pool source batch must establish the performance result before
+claiming an audible fix.
+
+Bank-generation admission now travels with each immutable registry snapshot.
+Checks under the prepared-media cache locks reject a retired snapshot before
+lookup/publication. Retirement advances the token before purging the cache,
+so a background decode finishing later cannot restore an outgoing map's cache
+entries (`1410f1910` / `141122400` release bank-owned sources). Session shutdown
+also retires publication before queue join. Active source/voice leases still
+finish using their own data; retained common sound identities are unchanged.
+Prediction: two atomic generation comparisons per cold cache preparation and
+one on cache hits, with no per-sample or warm walking-frame work. Normal cache
+counts should stay unchanged; cancelled work must not create new retained
+entries after retirement. This final source batch is pending compilation and
+production verification; the race is source-identified, not claimed exercised
+by the completed two-map runs.
 
 ### Runtime initial-image failure retirement
 
@@ -3763,3 +3785,40 @@ hand symptoms are resolved. Prediction: one prepared list replaces duplicate
 view/arm control preparation; each entry retains one extra Vec3, with no new
 per-joint allocation or GPU resource. Compilation and production verification
 of this source batch are pending.
+
+
+### Catalog-owned read history
+
+Host owner: `loading::ReadHistory`, selected by immutable `archive::Catalog`
+identity. The original has one registered resource manager (`1400607f0`,
+`140060180`, `1400661e0`); independently opened host catalogs must not share
+its acquisition credits by path alone. Previously only the common-text owner
+checked catalog identity. Ordinary successful `read`/`with_stream` records,
+release, progress and reports could inherit another catalog's read history.
+
+Each catalog now owns a separate history namespace. The active catalog keeps
+the direct history fast path; other live catalogs retain independent records.
+Selecting a level moves its existing bootstrap history into that active slot.
+Common-text publication updates only its own namespace, animation release
+names its actual catalog, and catalog destruction drops its history without
+initializing tracking for an unread catalog. Aggregate family release still
+uses the existing family owner's retained-identity predicate. This changes
+host accounting and its lifetime, not archive payload decoding or GPU work.
+
+Prediction: zero cross-catalog precredits and zero retained history namespaces
+when their catalog owners are gone. Normal single-catalog reads add identity
+comparisons but no new hashing/allocation; repeated publication of the same
+common text Arc does no acquisition-index walk. No FPS or decoded-data RAM
+saving is claimed. Final compilation and production transitions remain to be
+checked; the two-catalog interference is source-identified, not runtime-claimed.
+
+### Action-only arm geometry capture
+
+`app::player_arm_capture` records at most 64 camera/palette snapshots per
+model/action only with `DH2_DEBUG_HAND_GEOMETRY=1`. Normal play performs no new
+palette retention or camera inversion. A ring wrap reuses its old palette
+allocation; capture-time CPU skinning/frustum classification happens only at
+F8. Next matching action or level retirement drops the old history. It checks
+conservative pre-jitter frustum intersection, not rasterization, alpha or
+occlusion. Camera-control f25c019 compiled, but the user's check still found
+intermittently missing hands; this diagnostic does not constitute a hand fix.

@@ -34,14 +34,14 @@ impl SoundDecodeQueue {
         let job = self.0.entry(event).or_insert_with(|| {
             let snapshot = registry.decode_snapshot();
             let task = registry.source_jobs.upgrade().ok_or_else(|| "sound preparation owner is absent".to_owned())
-                .and_then(|pool| pool.submit("event", event, move || {
+                .map(|pool| pool.submit("event", event, move || {
                     let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
                     let result = snapshot.decode_event(event).map_err(|error| error.to_string());
                     if let Some(started) = started {
                         eprintln!("FX_LIFECYCLE audio={event:#010x} success={} decode_ms={:.3}", result.is_ok(), started.elapsed().as_secs_f64() * 1000.0);
                     }
                     result
-                }).map_err(|error| error.to_string()));
+                }));
             match task {
                 Ok(task) => DecodeJob { clients: 0, result: None, task: Some(std::sync::Mutex::new(task)) },
                 Err(error) => DecodeJob { clients: 0, result: Some(Err(error)), task: None },
@@ -155,7 +155,8 @@ struct WwiseRegistry {
     stream_io: Arc<crate::assets::wwise::stream_io::ReadPool>,
     /// The plugin owns the worker. Snapshots/queued inputs use a weak link so
     /// the worker queue cannot form an ownership cycle with its own jobs.
-    source_jobs: std::sync::Weak<acquisition::Pool>,
+    source_jobs: std::sync::Weak<acquisition::PreparationQueue>,
+    media_generation: u64,
 }
 
 impl WwiseRegistry {
@@ -167,6 +168,7 @@ impl WwiseRegistry {
             library: self.library.clone(), locators: Arc::default(),
             stream_acquisition: self.stream_acquisition.clone(), stream_io: self.stream_io.clone(),
             source_jobs: self.source_jobs.clone(),
+            media_generation: self.media_generation,
             ..Default::default() }
     }
     fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
@@ -256,11 +258,17 @@ impl WwiseRegistry {
                     // Diagnostic A/B: DH2_DEBUG_RESIDENT_STREAMS=1 keeps streamed sources resident.
                     if std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1") { return None; }
                     self.locators.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
-                })?) }),
+                }, self.media_generation)?) }),
             } })();
             match decoded {
                 Ok(action) => actions.push(action),
-                Err(error) => warn!("Wwise event {event:#010x} action unavailable: {error}"),
+                Err(error) => {
+                    if graph::media_generation() != self.media_generation {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
+                            "sound bank generation retired").into());
+                    }
+                    warn!("Wwise event {event:#010x} action unavailable: {error}");
+                },
             }
         }
         Ok(actions)
@@ -360,7 +368,7 @@ pub(super) fn begin_level(world: &mut World) {
     registry.level_prepared = false;
     drop(registry);
     world.resource::<bevy_backend::Engine>().retain_nodes(&actors);
-    graph::retain_media(&sound_ids);
+    world.resource_mut::<WwiseRegistry>().media_generation = graph::retain_media(&sound_ids);
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         let waiting = std::mem::take(&mut completions.waiting);
         for key in waiting { completions.completed.insert(key, false); }
@@ -405,7 +413,9 @@ impl Plugin for SoundPlugin {
             .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
         let source_jobs = Arc::downgrade(&app.world().resource::<acquisition::SourceJobs>().0);
-        app.world_mut().resource_mut::<WwiseRegistry>().source_jobs = source_jobs;
+        let mut registry = app.world_mut().resource_mut::<WwiseRegistry>();
+        registry.source_jobs = source_jobs;
+        registry.media_generation = graph::retain_media(&Default::default());
     }
 }
 

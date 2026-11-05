@@ -25,9 +25,9 @@ use std::sync::Mutex;
 struct State {
     // Paths are immutable after acquisition. A boxed slice preserves the
     // string payload while avoiding an unused capacity word in every bucket.
-    loaded: HashMap<String, HashSet<Box<str>>>,
-    common_texts: Option<(u64, std::sync::Arc<crate::assets::declaration_texts::TextMap>)>,
-    common_exceptions: HashMap<String, Option<&'static str>>,
+    history: ReadHistory,
+    other_histories: HashMap<u64, ReadHistory>,
+    catalog: Option<u64>,
     gates: Vec<(&'static str, bool)>,
     playing: bool,
     required: std::sync::Arc<crate::assets::map_resources::LevelList>,
@@ -36,6 +36,15 @@ struct State {
     acquired: usize,
     requested: usize,
     history_metrics: HistoryMetrics,
+}
+
+// Host: independently opened catalogs are distinct resource namespaces. Only
+// the active level's catalog contributes to its progress/late-load accounting.
+#[derive(Default)]
+struct ReadHistory {
+    loaded: HashMap<String, HashSet<Box<str>>>,
+    common_texts: Option<(u64, std::sync::Arc<crate::assets::declaration_texts::TextMap>)>,
+    common_exceptions: HashMap<String, Option<&'static str>>,
 }
 
 // Generated declaration prefixes are a fast path. The recorded catalog kind
@@ -50,40 +59,19 @@ fn common_kind(exceptions: &HashMap<String, Option<&'static str>>, path: &str) -
     if exceptions.is_empty() { inferred_common_kind(path) }
     else { exceptions.get(path).copied().unwrap_or_else(|| inferred_common_kind(path)) }
 }
-impl State {
+impl ReadHistory {
     fn common_kind(&self, path: &str) -> Option<&'static str> { common_kind(&self.common_exceptions, path) }
     fn contains(&self, kind: &str, path: &str) -> bool {
         self.common_texts.as_ref().is_some_and(|(_, texts)|
             matches!(kind, "fx" | "soundevent" | "physicsMaterial") && self.common_kind(path) == Some(kind) && texts.contains_key(path))
             || self.loaded.get(kind).is_some_and(|paths| paths.contains(path))
     }
-    fn adjust_required(&mut self, kind: &str, path: &str, add: bool) {
-        let mut index = self.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
-        while index != usize::MAX {
-            let required = &self.required[index];
-            if required.kind == kind && required.path == path {
-                if add { self.acquired += 1; } else { self.acquired = self.acquired.saturating_sub(1); }
-            }
-            index = self.required_next[index];
-        }
-    }
     fn replace_common(&mut self, catalog: u64, common: Option<std::sync::Arc<crate::assets::declaration_texts::TextMap>>) {
         if let (Some((id, old)), Some(new)) = (&self.common_texts, &common) {
             if *id == catalog && std::sync::Arc::ptr_eq(old, new) { return; }
         }
-        let acquired_before = self.acquired;
-        let old_exceptions = std::mem::take(&mut self.common_exceptions);
-        if let Some((_, old)) = self.common_texts.take() {
-            if !self.required_heads.is_empty() {
-                for path in old.keys() {
-                    if let Some(kind) = common_kind(&old_exceptions, path) {
-                        if !self.loaded.get(kind).is_some_and(|paths| paths.contains(path.as_str())) {
-                            self.adjust_required(kind, path, false);
-                        }
-                    }
-                }
-            }
-        }
+        self.common_exceptions = HashMap::new();
+        self.common_texts = None;
         if let Some(common) = common {
             let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
             let start = trace.then(thread_cycles).flatten();
@@ -106,9 +94,8 @@ impl State {
                     if kind != inferred { self.common_exceptions.insert(path.clone(), kind); }
                     if let Some(kind) = kind { duplicate = self.loaded.get_mut(kind).and_then(|paths| paths.take(path.as_str())); }
                 }
-                let Some(kind) = kind else { continue; };
+                if kind.is_none() { continue; }
                 if let Some(path) = duplicate { removed += 1; bytes += path.len(); }
-                else if !self.required_heads.is_empty() { self.adjust_required(kind, path, true); }
             }
             for kind in ["fx", "soundevent", "physicsMaterial"] {
                 if self.loaded.get(kind).is_some_and(HashSet::is_empty) { self.loaded.remove(kind); }
@@ -118,8 +105,67 @@ impl State {
             self.common_texts = Some((catalog, common));
             if trace {
                 let cycles = start.zip(thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
-                eprintln!("MEMORY common declaration history handoff: duplicate_paths={removed} path_capacity_bytes={bytes} slots_before={slots_before} slots_after={slots_after} acquired_before={acquired_before} acquired_after={} cycles={cycles}", self.acquired);
+                eprintln!("MEMORY common declaration history handoff: duplicate_paths={removed} path_capacity_bytes={bytes} slots_before={slots_before} slots_after={slots_after} cycles={cycles}");
             }
+        }
+    }
+}
+
+impl State {
+    fn active_history(&self) -> Option<&ReadHistory> {
+        self.catalog.map(|_| &self.history)
+    }
+    fn select_catalog(&mut self, catalog: u64) {
+        if self.catalog == Some(catalog) { return; }
+        let next = self.other_histories.remove(&catalog).unwrap_or_default();
+        let old = std::mem::replace(&mut self.history, next);
+        if let Some(previous) = self.catalog.replace(catalog) {
+            self.other_histories.insert(previous, old);
+        }
+    }
+    fn history_mut(&mut self, catalog: u64) -> &mut ReadHistory {
+        if self.catalog.is_none() { self.select_catalog(catalog); }
+        if self.catalog == Some(catalog) { &mut self.history }
+        else { self.other_histories.entry(catalog).or_default() }
+    }
+    fn history_for(&self, catalog: u64) -> Option<&ReadHistory> {
+        if self.catalog == Some(catalog) { Some(&self.history) }
+        else { self.other_histories.get(&catalog) }
+    }
+    fn contains(&self, kind: &str, path: &str) -> bool {
+        self.active_history().is_some_and(|history| history.contains(kind, path))
+    }
+    fn acquired_by(&self, catalog: u64) -> usize {
+        let Some(history) = self.history_for(catalog) else { return 0 };
+        let mut acquired = 0;
+        for &head in self.required_heads.values() {
+            let mut index = head;
+            while index != usize::MAX {
+                let required = &self.required[index];
+                acquired += usize::from(history.contains(&required.kind, &required.path));
+                index = self.required_next[index];
+            }
+        }
+        acquired
+    }
+    fn replace_common(&mut self, catalog: u64, common: Option<std::sync::Arc<crate::assets::declaration_texts::TextMap>>) {
+        let unchanged = match (self.history_for(catalog).and_then(|history| history.common_texts.as_ref()), &common) {
+            (None, None) => true,
+            (Some((id, old)), Some(new)) => *id == catalog && std::sync::Arc::ptr_eq(old, new),
+            _ => false,
+        };
+        if unchanged { return; }
+        self.history_mut(catalog).replace_common(catalog, common);
+        if self.catalog == Some(catalog) { self.acquired = self.acquired_by(catalog); }
+    }
+    fn adjust_required(&mut self, kind: &str, path: &str, add: bool) {
+        let mut index = self.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
+        while index != usize::MAX {
+            let required = &self.required[index];
+            if required.kind == kind && required.path == path {
+                if add { self.acquired += 1; } else { self.acquired = self.acquired.saturating_sub(1); }
+            }
+            index = self.required_next[index];
         }
     }
 }
@@ -172,15 +218,31 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 pub(crate) fn set_common_texts(catalog: u64, common: Option<std::sync::Arc<crate::assets::declaration_texts::TextMap>>) {
     with(|state| state.replace_common(catalog, common));
 }
-/// A different catalog cannot inherit credits from the former text owner.
-pub(crate) fn check_common_catalog(catalog: u64) {
-    with(|state| {
-        if state.common_texts.as_ref().is_some_and(|(id, _)| *id != catalog) {
-            state.replace_common(catalog, None);
+/// Drop this catalog's diagnostic read identities with its actual owner.
+pub(crate) fn retire_catalog(catalog: u64) {
+    let (retired, remaining) = {
+        let mut current = STATE.lock().unwrap();
+        let Some(state) = current.as_mut() else { return; };
+        let mut retired = state.other_histories.remove(&catalog);
+        if state.catalog == Some(catalog) {
+            retired = Some(std::mem::take(&mut state.history));
+            state.catalog = None;
+            state.acquired = 0;
+            state.requested = 0;
+            state.required = Default::default();
+            state.required_heads.clear();
+            state.required_next.clear();
         }
-    });
+        (retired, state.other_histories.len() + usize::from(state.catalog.is_some()))
+    };
+    if let Some(retired) = &retired {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let paths = retired.loaded.values().map(HashSet::len).sum::<usize>();
+            let bytes = retired.loaded.values().flatten().map(|path| path.len()).sum::<usize>();
+            eprintln!("MEMORY catalog read history release: catalog={catalog} paths={paths} string_bytes={bytes} remaining_catalogs={remaining}");
+        }
+    }
 }
-
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     f(STATE.lock().unwrap().get_or_insert_with(State::default))
@@ -188,6 +250,11 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
 
 /// `Catalog::read` read `path`, a resource of index kind `kind`.
 pub fn read(kind: &str, path: &str) {
+    let catalog = with(|state| state.catalog.unwrap_or(0));
+    read_catalog(catalog, kind, path);
+}
+
+pub(crate) fn read_catalog(catalog: u64, kind: &str, path: &str) {
     use std::borrow::Cow;
     let (separate, trace) = history_modes();
     let cycle_start = if trace { thread_cycles() } else { None };
@@ -199,12 +266,15 @@ pub fn read(kind: &str, path: &str) {
     };
     let normalized: &str = path.as_ref();
     let late = with(|s| {
-        let shared = s.common_texts.as_ref().is_some_and(|(_, texts)|
-            matches!(kind, "fx" | "soundevent" | "physicsMaterial") && s.common_kind(normalized) == Some(kind) && texts.contains_key(normalized));
+        if s.catalog.is_none() { s.select_catalog(catalog); }
+        let active = s.catalog == Some(catalog);
+        let history = s.history_mut(catalog);
+        let shared = history.common_texts.as_ref().is_some_and(|(_, texts)|
+            matches!(kind, "fx" | "soundevent" | "physicsMaterial") && history.common_kind(normalized) == Some(kind) && texts.contains_key(normalized));
         let (inserted, new_kind) = if shared { (false, false) } else if separate {
             // Diagnostic control: reproduce the former per-read key allocations.
             use std::collections::hash_map::Entry;
-            match s.loaded.entry(kind.to_owned()) {
+            match history.loaded.entry(kind.to_owned()) {
                 Entry::Occupied(mut entry) => (entry.get_mut().insert(Box::<str>::from(path.as_ref())), false),
                 Entry::Vacant(entry) => {
                     let mut paths = HashSet::new();
@@ -213,16 +283,16 @@ pub fn read(kind: &str, path: &str) {
                     (inserted, true)
                 }
             }
-        } else if let Some(paths) = s.loaded.get_mut(kind) {
+        } else if let Some(paths) = history.loaded.get_mut(kind) {
             if paths.contains(normalized) { (false, false) }
             else { (paths.insert(Box::<str>::from(normalized)), false) }
         } else {
             let mut paths = HashSet::new();
             let inserted = paths.insert(Box::<str>::from(normalized));
-            s.loaded.insert(kind.to_owned(), paths);
+            history.loaded.insert(kind.to_owned(), paths);
             (inserted, true)
         };
-        let late = s.playing && inserted;
+        let late = active && s.playing && inserted;
         if trace {
             let m = &mut s.history_metrics;
             m.reads += 1;
@@ -232,7 +302,7 @@ pub fn read(kind: &str, path: &str) {
             m.normalizations += usize::from(!borrowed_path);
             m.kind_allocations += usize::from(separate || new_kind);
         }
-        if inserted {
+        if active && inserted {
             let mut index = s.required_heads.get(&resource_key(kind, normalized)).copied().unwrap_or(usize::MAX);
             while index != usize::MAX {
                 let required = &s.required[index];
@@ -253,65 +323,52 @@ pub fn read(kind: &str, path: &str) {
 
 /// Forget a resource only when its owning cache releases the last lease.
 /// 140060180 purges registered map resources separately from map requests.
-pub(crate) fn forget(kind: &str, path: &str) -> Option<usize> {
+pub(crate) fn forget(catalog: u64, kind: &str, path: &str) -> Option<usize> {
     with(|s| {
-        let removed = s.loaded.get_mut(kind)?.take(path)?;
-        let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
-        while index != usize::MAX {
-            let required = &s.required[index];
-            if required.kind == kind && required.path == path { s.acquired = s.acquired.saturating_sub(1); }
-            index = s.required_next[index];
-        }
+        let history = if s.catalog == Some(catalog) { &mut s.history }
+            else { s.other_histories.get_mut(&catalog)? };
+        let removed = history.loaded.get_mut(kind)?.take(path)?;
+        if s.catalog == Some(catalog) { s.adjust_required(kind, path, false); }
         Some(removed.len())
     })
 }
 
-/// Release one resource family's read identities after its last owner drops.
+/// Family owners call this after releasing their last scope across catalogs.
 pub(crate) fn forget_kind(kind: &str) -> Option<(usize, usize, usize)> {
     with(|s| {
-        let paths = s.loaded.remove(kind)?;
-        let mut removed_required = 0usize;
-        if !s.required_heads.is_empty() {
-            for path in &paths {
-                let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
-                while index != usize::MAX {
-                    let required = &s.required[index];
-                    if required.kind == kind && required.path.as_str() == &**path { removed_required += 1; }
-                    index = s.required_next[index];
-                }
-            }
+        let mut removed = None;
+        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
+            let Some(paths) = history.loaded.remove(kind) else { continue };
+            let totals = removed.get_or_insert((0, 0, 0));
+            totals.0 += paths.len();
+            totals.1 += paths.iter().map(|path| path.len()).sum::<usize>();
+            totals.2 += paths.capacity();
         }
-        s.acquired = s.acquired.saturating_sub(removed_required);
-        Some((paths.len(), paths.iter().map(|path| path.len()).sum(), paths.capacity()))
+        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
+        removed
     })
 }
 
-/// Prune read identities only when their resource owner reports that no
-/// reusable instance remains. The current acquisition index, if any, is
-/// adjusted just like `forget`; this runs at level boundaries, not per frame.
+/// Family owners aggregate all live resource identities. Keep each catalog's
+/// independent history and adjust only the active level's acquisition count.
 pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (usize, usize, usize, usize) {
     with(|s| {
-        let Some(paths) = s.loaded.get_mut(kind) else { return (0, 0, 0, 0); };
-        let slots_before = paths.capacity();
-        let mut removed = 0usize;
-        let mut bytes = 0usize;
-        let mut removed_required = 0usize;
-        paths.retain(|path| {
-            if keep(path) { return true; }
-            removed += 1;
-            bytes += path.len();
-            if !s.required_heads.is_empty() {
-                let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
-                while index != usize::MAX {
-                    let required = &s.required[index];
-                    if required.kind == kind && required.path.as_str() == &**path { removed_required += 1; }
-                    index = s.required_next[index];
-                }
-            }
-            false
-        });
-        let slots_after = paths.capacity();
-        s.acquired = s.acquired.saturating_sub(removed_required);
+        let mut removed = 0;
+        let mut bytes = 0;
+        let mut slots_before = 0;
+        let mut slots_after = 0;
+        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
+            let Some(paths) = history.loaded.get_mut(kind) else { continue };
+            slots_before += paths.capacity();
+            paths.retain(|path| {
+                if keep(path) { return true; }
+                removed += 1;
+                bytes += path.len();
+                false
+            });
+            slots_after += paths.capacity();
+        }
+        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
         (removed, bytes, slots_before, slots_after)
     })
 }
@@ -360,11 +417,7 @@ pub fn restart_level() {
 pub fn begin_level(list: std::sync::Arc<crate::assets::map_resources::LevelList>, catalog: &crate::assets::archive::Catalog) {
     with(|s| {
         s.playing = false;
-        if s.common_texts.as_ref().is_some_and(|(id, _)| *id != catalog.identity()) {
-            // Drop the borrowed credits before constructing the next request table.
-            s.common_texts = None;
-            s.common_exceptions = HashMap::new();
-        }
+        s.select_catalog(catalog.identity());
         s.required = list;
         s.required_heads.clear();
         s.required_next.clear();
@@ -381,12 +434,13 @@ pub fn begin_level(list: std::sync::Arc<crate::assets::map_resources::LevelList>
             if s.contains(&resource.kind, &resource.path) { s.acquired += 1; }
         }
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            let mut by_kind: Vec<_> = s.loaded.iter().map(|(kind, paths)| {
+            let history = s.active_history().unwrap();
+            let mut by_kind: Vec<_> = history.loaded.iter().map(|(kind, paths)| {
                 let bytes = paths.iter().map(|path| path.len()).sum::<usize>();
                 (kind.as_str(), paths.len(), bytes)
             }).collect();
             by_kind.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
-            let usable_slots: usize = s.loaded.values().map(HashSet::capacity).sum();
+            let usable_slots: usize = history.loaded.values().map(HashSet::capacity).sum();
             eprintln!("MEMORY loading read history: kinds={} entries={} path_capacity_bytes={} precredited={} requested={} largest={:?}",
                 by_kind.len(), by_kind.iter().map(|x| x.1).sum::<usize>(),
                 by_kind.iter().map(|x| x.2).sum::<usize>(), s.acquired, s.requested,
@@ -451,23 +505,25 @@ pub(crate) fn report_iter<'a>(list: impl IntoIterator<Item = &'a crate::assets::
         listed.entry(r.kind.as_str()).or_default().insert(r.path.as_str());
     }
     with(|s| {
+        let empty = ReadHistory::default();
+        let history = s.active_history().unwrap_or(&empty);
         let mut kinds: HashSet<&str> = listed.keys().copied().collect();
-        kinds.extend(s.loaded.keys().map(String::as_str));
-        if let Some((_, common)) = &s.common_texts {
-            kinds.extend(common.keys().filter_map(|path| s.common_kind(path)));
+        kinds.extend(history.loaded.keys().map(String::as_str));
+        if let Some((_, common)) = &history.common_texts {
+            kinds.extend(common.keys().filter_map(|path| history.common_kind(path)));
         }
         let mut out: Vec<Coverage> = kinds
             .into_iter()
             .map(|kind| {
                 let paths = listed.get(kind);
-                let done = s.loaded.get(kind);
-                let loaded = paths.map_or(0, |p| p.iter().filter(|path| s.contains(kind, path)).count());
+                let done = history.loaded.get(kind);
+                let loaded = paths.map_or(0, |p| p.iter().filter(|path| history.contains(kind, path)).count());
                 let mut unlisted = done.map_or(0, |d| d.iter().filter(|x| {
                     let path: &str = x;
                     paths.is_none_or(|p| !p.contains(path))
                 }).count());
-                if let Some((_, common)) = &s.common_texts {
-                    unlisted += common.keys().filter(|path| s.common_kind(path) == Some(kind)
+                if let Some((_, common)) = &history.common_texts {
+                    unlisted += common.keys().filter(|path| history.common_kind(path) == Some(kind)
                         && paths.is_none_or(|p| !p.contains(path.as_str()))).count();
                 }
                 Coverage { kind: kind.to_owned(), listed: paths.map_or(0, HashSet::len), loaded, unlisted }

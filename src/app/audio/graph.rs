@@ -28,7 +28,7 @@ pub(super) struct StreamLocator {
     pub(super) offset: u64,
     pub(super) size: usize,
     pub(super) pool: Arc<crate::assets::wwise::stream_io::ReadPool>,
-    pub(super) source_jobs: std::sync::Weak<super::acquisition::Pool>,
+    pub(super) source_jobs: std::sync::Weak<super::acquisition::PreparationQueue>,
 }
 
 /// A streamed or prefetched Wwise source (stream type != 0). The original
@@ -90,7 +90,7 @@ impl StreamedSource {
             let prefix = self.prefix.clone();
             let pool = self.locator.source_jobs.upgrade()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "sound preparation owner retired"))?;
-            let task = pool.submit("stream", self.sound, move || read_streamed(&locator, prefix))?;
+            let task = pool.submit("stream", self.sound, move || read_streamed(&locator, prefix));
             let read = Arc::new(StreamRead { state: Mutex::new(StreamReadState {
                 task: Some(task),
                 samples: None,
@@ -282,17 +282,29 @@ static STREAMED: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>
 
 /// Bank unload releases only its sound sources; common/init sources keep
 /// their existing encoded/PCM identity (1410f1910 / 141122400).
-pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) {
+// Host admission token: a cancelled old bank snapshot may finish decoding,
+// but cannot repopulate the new level's source cache after 1410f1910 unload.
+static MEDIA_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(super) fn media_generation() -> u64 { MEDIA_GENERATION.load(Ordering::Acquire) }
+fn check_generation(generation: u64) -> io::Result<()> {
+    if generation == media_generation() { Ok(()) }
+    else { Err(io::Error::new(io::ErrorKind::Interrupted, "sound bank generation retired")) }
+}
+pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) -> u64 {
+    let generation = MEDIA_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
     MEDIA.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
     STREAMED.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
     crate::assets::wwise::release_unused_headers();
+    generation
 }
 
 /// A streamed source's format, read once at load; its media is not kept.
 /// Media that decode to PCM stay resident (`prepare_media`).
-fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator) -> io::Result<PreparedMedia> {
-    if let Some(prepared) = STREAMED.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.source_size())) {
-        return Ok(prepared.clone());
+fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator, generation: u64) -> io::Result<PreparedMedia> {
+    {
+        let cache = STREAMED.lock().unwrap_or_else(|e| e.into_inner());
+        check_generation(generation)?;
+        if let Some(prepared) = cache.get(&(sound, media.source_size())) { return Ok(prepared.clone()); }
     }
     let format = if media.is_prefetched() || std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1") {
         crate::assets::wwise::stream_format(media, media.source_size())?
@@ -306,7 +318,7 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
         let (channels, rate, frames, points) = match format {
             crate::assets::wwise::SourceMedia::Vorbis(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
             crate::assets::wwise::SourceMedia::Adpcm(media) => (media.channels, media.sample_rate, media.frames, media.loop_points),
-            crate::assets::wwise::SourceMedia::Decoded(_) => return prepare_media(sound, media),
+            crate::assets::wwise::SourceMedia::Decoded(_) => return prepare_media(sound, media, generation),
         };
         (channels, rate, frames, points)
     };
@@ -322,13 +334,16 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
     let prepared = (Samples::Streamed(Arc::new(source)), channels, rate, frames, points);
     // Parallel event preparation can reach the same source concurrently.
     // Publish one identity; losing preparations must not escape into graphs.
-    Ok(STREAMED.lock().unwrap_or_else(|e| e.into_inner())
-        .entry((sound, media.source_size())).or_insert(prepared).clone())
+    let mut cache = STREAMED.lock().unwrap_or_else(|e| e.into_inner());
+    check_generation(generation)?;
+    Ok(cache.entry((sound, media.source_size())).or_insert(prepared).clone())
 }
 
-fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes) -> io::Result<PreparedMedia> {
-    if let Some(prepared) = MEDIA.lock().unwrap_or_else(|e| e.into_inner()).get(&(sound, media.len())) {
-        return Ok(prepared.clone());
+fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes, generation: u64) -> io::Result<PreparedMedia> {
+    {
+        let cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+        check_generation(generation)?;
+        if let Some(prepared) = cache.get(&(sound, media.len())) { return Ok(prepared.clone()); }
     }
     let _tag = crate::platform::allocation_tags::tag("sound media");
     let source = if std::env::var("DH2_DEBUG_SOUND_COPIED_MEDIA").as_deref() == Ok("1") {
@@ -356,6 +371,7 @@ fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes) -> io::Re
     };
     {
         let mut cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+        check_generation(generation)?;
         if let Some(prepared) = cache.get(&(sound, media.len())) { return Ok(prepared.clone()); }
         cache.insert((sound, media.len()), prepared.clone());
     }
@@ -485,7 +501,7 @@ impl Definition {
     pub fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.channels.get() <= 2) }
     /// `locate` gives the package location of a streamed source's media id.
     pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-        locate: &dyn Fn(u32) -> Option<StreamLocator>) -> io::Result<Self> {
+        locate: &dyn Fn(u32) -> Option<StreamLocator>, generation: u64) -> io::Result<Self> {
         // The Play target owns its properties even when no source is selected
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
         // belong to the target, and empty graphs have no descendant to borrow.
@@ -502,7 +518,7 @@ impl Definition {
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
             sources: &mut HashMap<u32, usize>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-            locate: &dyn Fn(u32) -> Option<StreamLocator>) -> io::Result<usize> {
+            locate: &dyn Fn(u32) -> Option<StreamLocator>, generation: u64) -> io::Result<usize> {
             let properties = match &source {
                 PlaybackNode::Sound { variant, .. } => Some(&variant.properties),
                 PlaybackNode::Generator { properties, .. } | PlaybackNode::NoSource { properties, .. } |
@@ -532,7 +548,7 @@ impl Definition {
                     }
                     let mut children = HashMap::new();
                     for (id, child) in switch.children {
-                        children.insert(id, child.map(|child| node(child, nodes, sounds, sources, attenuations, locate)).transpose()?);
+                        children.insert(id, child.map(|child| node(child, nodes, sounds, sources, attenuations, locate, generation)).transpose()?);
                     }
                     (switch.node, Kind::Switch(Switch { playback: Arc::new(switch.playback), children }))
                 },
@@ -540,8 +556,8 @@ impl Definition {
                 PlaybackNode::NoSource { node, .. } => (node, Kind::NoSource),
                 PlaybackNode::Sound { node, variant } => {
                     let (samples, channels, sample_rate, frames, loop_points) = match variant.streamed.and_then(locate) {
-                        Some(locator) => prepare_streamed(node, &variant.media, locator)?,
-                        None => prepare_media(node, &variant.media)?,
+                        Some(locator) => prepare_streamed(node, &variant.media, locator, generation)?,
+                        None => prepare_media(node, &variant.media, generation)?,
                     };
                     if frames == 0 { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
@@ -571,14 +587,14 @@ impl Definition {
                     (node, Kind::Sound(sound))
                 },
                 PlaybackNode::Layer { node: id, children, .. } => {
-                    let children = children.into_iter().map(|child| node(child, nodes, sounds, sources, attenuations, locate)).collect::<io::Result<_>>()?;
+                    let children = children.into_iter().map(|child| node(child, nodes, sounds, sources, attenuations, locate, generation)).collect::<io::Result<_>>()?;
                     (id, Kind::Layer(children))
                 },
                 PlaybackNode::Container(container) => {
                     let mut children = Vec::new();
                     let mut weights = Vec::new();
                     for (child, weight) in container.children {
-                        children.push(node(child, nodes, sounds, sources, attenuations, locate)?);
+                        children.push(node(child, nodes, sounds, sources, attenuations, locate, generation)?);
                         weights.push(weight);
                     }
                     let properties = container.properties.nodes.first().cloned()
@@ -599,7 +615,7 @@ impl Definition {
         }
         let mut nodes = Vec::new();
         let mut sounds = Vec::new();
-        let root = node(root, &mut nodes, &mut sounds, &mut HashMap::new(), attenuations, locate)?;
+        let root = node(root, &mut nodes, &mut sounds, &mut HashMap::new(), attenuations, locate, generation)?;
         let sample_accurate = nodes.iter().any(|node| matches!(&node.kind, Kind::Container(container)
             if container.playback.continuous && container.playback.transition == TransitionMode::SampleAccurate));
         if sample_accurate && nodes.iter().any(|node| matches!(node.kind, Kind::Switch(_))) {

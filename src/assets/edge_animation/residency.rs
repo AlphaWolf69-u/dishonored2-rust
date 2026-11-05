@@ -138,13 +138,14 @@ pub fn acquire(catalog: &Catalog, name: &str) -> Result<EdgeAnimation, String> {
 pub(crate) fn release_level() {
     let mut current = REGISTRY.lock().unwrap();
     let Some(owner) = current.as_mut() else { return; };
+    let catalog = owner.catalog_identity;
     let before = owner.entries.len();
     let mut forgotten = 0;
     let mut forgotten_bytes = 0;
     owner.entries.retain(|path, entry| {
         let keep = entry.pinned.is_some() || entry.weak.strong_count() != 0;
         if !keep {
-            if let Some(bytes) = crate::loading::forget("anim", path) {
+            if let Some(bytes) = crate::loading::forget(catalog, "anim", path) {
                 forgotten += 1;
                 forgotten_bytes += bytes;
             }
@@ -156,7 +157,7 @@ pub(crate) fn release_level() {
         generations.retain(|generation| generation.strong_count() != 0);
         if !generations.is_empty() { return true; }
         if !stable.contains_key(path) {
-            if let Some(bytes) = crate::loading::forget("anim", path) {
+            if let Some(bytes) = crate::loading::forget(catalog, "anim", path) {
                 forgotten += 1;
                 forgotten_bytes += bytes;
             }

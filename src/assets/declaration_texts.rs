@@ -51,7 +51,6 @@ pub(crate) struct PhysicsSeed {
 
 impl PhysicsSeed {
     pub(crate) fn new(catalog: &Catalog, language: &str) -> Self {
-        crate::loading::check_common_catalog(catalog.identity());
         let enabled = !catalog.has_overlays()
             && std::env::var("DH2_DEBUG_SEPARATE_PHYSICS_TEXTS").as_deref() != Ok("1")
             && std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() != Ok("1");
@@ -329,7 +328,6 @@ pub(crate) fn acquire(
     let map = map.trim_start_matches("maps/").trim_end_matches(".map");
     let list = crate::assets::map_resources::acquire_level_list(base, catalog, map, language)?;
     let mut stats = TextLoads::default();
-    crate::loading::check_common_catalog(catalog.identity());
     let common = shared_texts(base, catalog, language, &mut stats, &mut seed)?;
     crate::loading::set_common_texts(catalog.identity(), common.clone());
     let mut level = TextMap::new();

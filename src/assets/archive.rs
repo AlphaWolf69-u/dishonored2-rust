@@ -89,6 +89,14 @@ pub struct Catalog {
     containers: containers::Containers,
 }
 
+impl Drop for Catalog {
+    fn drop(&mut self) {
+        // Host read accounting belongs to this immutable archive namespace;
+        // releasing it must not leave credits for a later Catalog identity.
+        crate::loading::retire_catalog(self.identity);
+    }
+}
+
 // Native image programs are tokenized before their source alias is emitted.
 // Ignore spacing around punctuation, preserving quoted paths and word breaks.
 fn image_program_key(source: &str) -> String {
@@ -399,7 +407,7 @@ impl Catalog {
         // actual payloads after archive/overlay IO and decompression succeed.
         if matches!(&result, Ok(Some(_))) {
             if let Some(entry) = entry {
-                crate::loading::read(&self.kinds[entry.kind as usize], path);
+                crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
             }
         }
         result
@@ -438,7 +446,7 @@ impl Catalog {
         };
         // Match read(): successful streaming acquisitions count toward loading.
         if let Some(entry) = entry {
-            crate::loading::read(&self.kinds[entry.kind as usize], path);
+            crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
         }
         Ok(Some(value))
     }
