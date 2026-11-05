@@ -17,7 +17,9 @@ impl Default for PreparationQueue {
         Self {
             worker: (!debug_shared).then(|| {
                 TaskPoolBuilder::new()
-                    .num_threads(1)
+                    // Keep the former preparation concurrency: one slow
+                    // metadata read must not serialize all selected sources.
+                    .num_threads(bevy::tasks::IoTaskPool::get().thread_num().max(1))
                     .thread_name("sound acquisition".to_owned())
                     .build()
             }),

@@ -3701,6 +3701,27 @@ runs identify scheduling contention; release measurements and the final
 standard-task-pool source batch must establish the performance result before
 claiming an audible fix.
 
+Release cfbbba2 comparison: four 45-second walking clients completed with no
+runtime errors. Shared-pool queue medians were 3.485 / 5.849 ms; dedicated
+single-worker medians were 0.733 / 0.540 ms. The dedicated-copy run also had a
+20.833 ms header-read wall-time outlier (only 1,062,704 thread cycles) that
+delayed later jobs; thus this is not a universal latency reduction. The final
+private task pool preserves the old IO pool's preparation concurrency instead
+of reducing it to one worker. Prediction: another slow header read no longer
+serializes all preparation when the old pool has multiple workers; the codec
+work, encoded-data budget and GPU work stay unchanged. Extra session worker
+stacks are host overhead, not a claimed RAM saving. The final pool must still
+be verified; cfbbba2's numbers are not assigned to its newer implementation.
+
+The copy controls recorded 301,028 / 256,620 pose entries and 33,136,236 /
+28,247,940 cumulative payload/string bytes copied across 3,514 / 3,033 frames.
+Publication controls made zero extraction copies. Instrumented clone-block
+medians were 61,775 / 60,445 cycles, including timer overhead; these are not
+an isolated before/after CPU subtraction. Stationary loading frames had empty
+pose maps, while the walking route exercised nonempty ones. These are copying
+and allocation-churn results, not process-RAM/FPS savings. Evidence: local
+`artifacts/sound-fx-release-comparison.json` and its source/raw logs.
+
 Bank-generation admission now travels with each immutable registry snapshot.
 Checks under the prepared-media cache locks reject a retired snapshot before
 lookup/publication. Retirement advances the token before purging the cache,
