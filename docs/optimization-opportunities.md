@@ -741,3 +741,72 @@ instrumented thread cycles per read were 7,714 -> 5,541 in one run per
 mode; cycles are not elapsed time. Progress snapshots and all recorded
 resource fingerprints matched. Full values and limits are in the parity
 ledger and local `artifacts/archive-overlay-comparison.json`.
+
+Contact declaration text handoff prediction: all 11,165 installed resources
+in the physics-material, sound-event and contact-FX declaration classes are
+ASCII with no bytes requiring the 140135f70 signed-byte normalization. The
+current reader borrows the decoded archive bytes, then allocates and copies a
+String. Reusing the owned archive buffer for that fast case can avoid that
+copy; non-ASCII/control input must use the existing normalization path.
+Archive buffers reserve an extra probe byte, so shrink the retained text to
+its previous capacity and measure the realloc/copy cost rather than claim all
+allocations disappear. On the recorded first EotW load, contact acquisition
+read 9,346 declarations / 1,472,416 decoded bytes; expect most payloads
+to use the direct path. Compare exact
+ordered declaration fingerprints, text capacities and affected-function CPU
+with the former copy path in the same production executable. No gameplay-frame
+or resident-memory saving is predicted. Installed-data inventory:
+`artifacts/contact-text-inventory.json`.
+
+Contact database reuse prediction: the installed common manifest lists one
+ContactSystemDB and the installed catalog contains one such declaration,
+`default_db.decl`, with 7,407 authored records and 433,879 decoded bytes.
+`ContactSounds::Definitions::load` currently reads and parses it anew per map;
+1400661e0 preloads common resources and 1400607f0 resolves their existing
+identities. One immutable catalog-scoped Arc should reduce EotW / Dust / EotW
+from three reads/parses to one (867,758 cumulative decoded bytes avoided),
+while keeping per-map contact chains/effect state independent. Replacing the
+catalog must release the prior cache lease; an editable database overlay keeps
+the old per-acquisition behavior. Compare database fingerprints and actual
+contact outputs, acquisition CPU and identity/lifetime over real transitions.
+The parsed common database stays resident between maps, so this is a reuse
+and startup-cost prediction, not a claim of lower between-map live bytes.
+
+Contact declaration buffer result: four-map production diagnostics matched
+contact text, physics, sound, material, animation, UI and probe signatures;
+retained text capacities also matched. In the release EotW / Dust return /
+EotW run, the allocator moved 9,826 of 9,827 supposedly reused buffers during
+capacity trimming. Conversion CPU cycles were 15,582,221 -> 14,430,922, but
+this still performs nearly all copies and the small single-run difference does
+not justify the extra path. The change was reverted. Evidence: local
+`artifacts/contact-copy-comparison.json` and `artifacts/contact-copy-perf-*.err`.
+
+Contact lookup temporary allocation prediction: `ContactDatabase::effect`
+constructs a material-pair path with `format!` and then allocates a second
+String to lowercase it for each pair considered. Lowercasing the first String
+in place preserves the exact ASCII case rule and should remove one temporary
+allocation per examined pair. The original uses 140003cd0 for pair-name
+construction. Its gameplay call frequency and affected CPU are unmeasured;
+measure the changed lookup during moving gameplay before claiming a speedup.
+
+Contact database reuse result: on EotW / Dust / Dust return / EotW, the
+baseline read and parsed four times; the shared owner read and parsed once,
+avoiding 1,301,637 cumulative decoded bytes. All four source fingerprints
+were 3c118c31 and parsed 7,407-entry fingerprints were 9c8476f2; the shared
+owner identity remained the same, and recorded physics, contact, sound,
+material, probe, 800 animation and 430 UI bitmap fingerprints matched. The
+308,145 bytes of retained value String capacities exclude hash buckets and
+allocator overhead. A three-load same-binary release comparison measured
+26,196,065 -> 9,042,530 acquisition thread cycles. This is loading-thread
+work, not frame time; the database remains resident between maps. Mutable
+loose database overlays retain separate reads; that branch was source-reviewed,
+not exercised by these installed-data runs. Evidence: local
+`artifacts/contact-db-comparison.json` and `artifacts/contact-db-perf-*.err`.
+
+Contact lookup allocation result: the established moving-player route recorded
+186 baseline and 179 candidate lookups, each examining one material pair; all
+recorded input/effect fingerprints matched. The affected lookup averaged about
+6,847 -> 6,592 thread cycles per call with per-call sampling overhead included.
+The roughly 3.7% difference is too small to establish a useful gain in these
+unequal runs, so the in-place lowercase candidate was discarded. No frame-time
+claim is made. Evidence: local `artifacts/contact-walk-*.err`.

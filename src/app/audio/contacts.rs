@@ -23,7 +23,7 @@ struct Group {
 struct Definitions {
     catalog: std::sync::Arc<Catalog>,
     texts: declaration_texts::DeclarationTexts,
-    database: ContactDatabase,
+    database: Arc<ContactDatabase>,
     chains: HashMap<String, Vec<String>>,
     effects: HashMap<String, Arc<Vec<Group>>>,
 }
@@ -32,8 +32,7 @@ impl Definitions {
     fn load(seed: declaration_texts::PhysicsSeed) -> Result<Self, String> {
         let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
         let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
-        let source = declaration_texts::read(&catalog, &Default::default(), "generated/decls/contactsystemdb/default_db.decl")?.ok_or("contact database is absent")?;
-        let database = ContactDatabase::parse(&source)?;
+        let database = ContactDatabase::acquire(&catalog)?;
         let texts = (|| {
             let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
             let language = crate::assets::lang::read_text_language(&base)?;

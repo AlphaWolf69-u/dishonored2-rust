@@ -9,7 +9,40 @@ pub struct ContactDatabase {
     effects: HashMap<u32, String>,
 }
 
+struct ResidentDatabase {
+    catalog: u64,
+    database: std::sync::Arc<ContactDatabase>,
+}
+static RESIDENT_DATABASE: std::sync::Mutex<Option<ResidentDatabase>> = std::sync::Mutex::new(None);
+
 impl ContactDatabase {
+    /// The installed common ContactSystemDB is a session resource (1400607f0).
+    /// Runtime contact chains and effect instances remain per-level.
+    pub(crate) fn acquire(catalog: &crate::archive::Catalog) -> Result<std::sync::Arc<Self>, String> {
+        const PATH: &str = "generated/decls/contactsystemdb/default_db.decl";
+        let mutable = catalog.has_overlay_file(PATH);
+        let cached = {
+            let mut owner = RESIDENT_DATABASE.lock().unwrap_or_else(|error| error.into_inner());
+            if mutable || owner.as_ref().is_some_and(|entry| entry.catalog != catalog.identity()) {
+                *owner = None;
+            }
+            owner.as_ref().map(|entry| entry.database.clone())
+        };
+        if let Some(database) = cached { return Ok(database); }
+
+        // Archive IO and parsing must not hold the registry mutex.
+        let bytes = catalog.read(PATH).map_err(|error| error.to_string())?
+            .ok_or("contact database is absent")?;
+        let parsed = std::sync::Arc::new(Self::parse(&super::declaration_text(&bytes))?);
+        if mutable { return Ok(parsed); }
+        let mut owner = RESIDENT_DATABASE.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(existing) = owner.as_ref().filter(|entry| entry.catalog == catalog.identity()) {
+            return Ok(existing.database.clone());
+        }
+        *owner = Some(ResidentDatabase { catalog: catalog.identity(), database: parsed.clone() });
+        Ok(parsed)
+    }
+
     /// This table uses `"effect path" signed_hash` records rather than
     /// ordinary declaration fields. Reuse the declaration lexer so comments,
     /// quoted strings and whitespace follow the surrounding asset format.
