@@ -3573,3 +3573,12 @@ surface list (1403222f0). Resize and view release drop cached sampled input
 bindings together with the target; compiled pipeline/uniform capacity may
 remain with the host consumer. COPY_SRC is a host diagnostic permission only;
 normal rendering adds no readback. Status: unbuilt and not activated by a view.
+
+Further grading trace identifies the actual consumer as 1403134e0, called by
+140315450 before its DoF operations. It reads greyAmount and invert from the
+view parameter block, selects the grey/invertedGrey material, and swaps HDR
+source/destination after drawing. It bypasses grading when amount is not
+positive or r_BlackAndWhiteMode is active (registration 1413754e0); this is
+not the similarly named r_skipColorGrading CVar. The host consumer now enforces
+that predicate and releases view bindings/target on deactivation. View
+parameter publication and render-stage activation remain unconnected.

@@ -9,6 +9,15 @@ pub struct MaskGradingParameters {
     pub white_level: f32,
     pub compressed_hdr: bool,
     pub invert: bool,
+    pub black_white_mode: bool,
+}
+
+impl MaskGradingParameters {
+    /// 1403134e0 bypasses this operation when the view amount is not positive
+    /// or r_BlackAndWhiteMode is active (registered at 1413754e0).
+    pub fn active(&self) -> bool {
+        self.grey_amount > 0.0 && !self.black_white_mode
+    }
 }
 
 /// 14036d0c0's full-resolution R8_UNORM mask (minimum eight per axis).
@@ -140,6 +149,7 @@ impl MaskGradingPass {
         encoder: &mut CommandEncoder, parameters: &MaskGradingParameters,
         hdr: &TextureView, adaptation: &Buffer, target: &TextureView,
     ) -> Result<(), String> {
+        if !parameters.active() { self.release_view(); return Ok(()); }
         let mask = self.mask.as_ref().ok_or("mask target was not prepared")?.view.clone();
         self.record(device, queue, encoder, parameters, hdr, &mask, adaptation, target)
     }
@@ -150,6 +160,7 @@ impl MaskGradingPass {
         encoder: &mut CommandEncoder, parameters: &MaskGradingParameters,
         hdr: &TextureView, mask: &TextureView, adaptation: &Buffer, target: &TextureView,
     ) -> Result<(), String> {
+        if !parameters.active() { self.release_view(); return Ok(()); }
         if hdr.id() == target.id() || mask.id() == target.id() {
             return Err("mask grading requires a distinct output attachment".into());
         }
