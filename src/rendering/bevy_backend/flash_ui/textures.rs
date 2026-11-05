@@ -3,6 +3,9 @@
 use super::TextureKey;
 use bevy::render::render_resource::{Texture, TextureView};
 use std::collections::HashMap;
+use std::sync::{Arc, Weak};
+
+type BitmapMap = HashMap<crate::flash::player::CharRef, Arc<crate::flash::bitmap_resources::Image>>;
 
 const MAX_ENTRIES: usize = 0x800;
 const MAX_PAYLOAD_BYTES: u64 = 0x1428000;
@@ -13,6 +16,8 @@ struct Entry {
     bytes: u64,
     used: u64,
     ordinal: u64,
+    bitmap_owners: Vec<Weak<BitmapMap>>,
+    glyph_owner: Option<Weak<crate::flash::glyph_cache::Page>>,
 }
 
 pub(super) struct UiTextures {
@@ -24,6 +29,13 @@ pub(super) struct UiTextures {
     evictions: u64,
     peak_entries: usize,
     peak_bytes: u64,
+    bitmap_uploads: u64,
+    bitmap_reuses: u64,
+    unowned_retirements: u64,
+    key_build_time: std::time::Duration,
+    key_build_frames: u64,
+    owner_scan_time: std::time::Duration,
+    owner_scans: u64,
     trace: bool,
     unbounded: bool,
 }
@@ -38,6 +50,13 @@ impl Default for UiTextures {
             evictions: 0,
             peak_entries: 0,
             peak_bytes: 0,
+            bitmap_uploads: 0,
+            bitmap_reuses: 0,
+            unowned_retirements: 0,
+            key_build_time: std::time::Duration::ZERO,
+            key_build_frames: 0,
+            owner_scan_time: std::time::Duration::ZERO,
+            owner_scans: 0,
             trace: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
             unbounded: std::env::var("DH2_DEBUG_RETAIN_UI_TEXTURES").as_deref() == Ok("1"),
         }
@@ -65,12 +84,14 @@ impl UiTextures {
         }
         if let Some(entry) = self.entries.get_mut(key) {
             entry.used = self.frame;
+            if self.trace && matches!(key, TextureKey::Bitmap(_)) { self.bitmap_reuses += 1; }
             true
         } else {
             false
         }
     }
     pub fn insert(&mut self, key: TextureKey, image: Image) {
+        if self.trace && matches!(key, TextureKey::Bitmap(_)) { self.bitmap_uploads += 1; }
         let bytes = if matches!(key, TextureKey::Game(_)) {
             0
         } else {
@@ -86,6 +107,8 @@ impl UiTextures {
                 bytes,
                 used: self.frame,
                 ordinal,
+                bitmap_owners: Vec::new(),
+                glyph_owner: None,
             },
         ) {
             self.bytes -= previous.bytes;
@@ -94,6 +117,44 @@ impl UiTextures {
             self.peak_entries = self.peak_entries.max(self.entries.len());
             self.peak_bytes = self.peak_bytes.max(self.bytes);
         }
+    }
+    /// A GPU bitmap is shared by every live movie that references the same
+    /// immutable image. Weak maps do not retain the movie or its assets.
+    pub fn track_bitmap(&mut self, key: &TextureKey, images: &Arc<BitmapMap>) {
+        let Some(entry) = self.entries.get_mut(key) else { return };
+        entry.bitmap_owners.retain(|owner| owner.strong_count() != 0);
+        let owner = Arc::downgrade(images);
+        if !entry.bitmap_owners.iter().any(|existing| existing.ptr_eq(&owner)) {
+            entry.bitmap_owners.push(owner);
+        }
+    }
+    pub fn track_glyph(&mut self, key: &TextureKey, page: &Arc<crate::flash::glyph_cache::Page>) {
+        if let Some(entry) = self.entries.get_mut(key) { entry.glyph_owner = Some(Arc::downgrade(page)); }
+    }
+    /// The session bitmap registry may outlive movies, so image Arc counts
+    /// alone do not establish that a GPU copy is still needed.
+    pub fn retire_unowned(&mut self) {
+        let started = self.trace.then(std::time::Instant::now);
+        let mut removed = 0;
+        let mut count = 0;
+        self.entries.retain(|key, entry| {
+            let keep = match key {
+                TextureKey::Bitmap(_) => {
+                    entry.bitmap_owners.retain(|owner| owner.strong_count() != 0);
+                    !entry.bitmap_owners.is_empty()
+                }
+                TextureKey::Glyphs(_, _) => entry.glyph_owner.as_ref().is_some_and(|owner| owner.strong_count() != 0),
+                _ => true,
+            };
+            if !keep { removed += entry.bytes; count += 1; }
+            keep
+        });
+        self.bytes -= removed;
+        if self.trace { self.unowned_retirements += count; }
+        if let Some(started) = started { self.owner_scans += 1; self.owner_scan_time += started.elapsed(); }
+    }
+    pub fn record_key_build(&mut self, duration: std::time::Duration) {
+        if self.trace { self.key_build_frames += 1; self.key_build_time += duration; }
     }
     pub fn remove(&mut self, key: &TextureKey) -> Option<Image> {
         let entry = self.entries.remove(key)?;
@@ -164,9 +225,12 @@ impl UiTextures {
     }
     pub fn report(&self, phase: &str) {
         if self.trace {
-            eprintln!("MEMORY UI texture cache: phase={phase} entries={} payload_bytes={} peak_entries={} peak_payload_bytes={} pressure_evictions={} active_over_budget={} unbounded={}",
+            eprintln!("MEMORY UI texture cache: phase={phase} entries={} payload_bytes={} peak_entries={} peak_payload_bytes={} pressure_evictions={} unowned_retirements={} bitmap_uploads={} bitmap_batch_reuses={} key_build_frames={} key_build_us={:.1} owner_scans={} owner_scan_us={:.1} active_over_budget={} unbounded={}",
                 self.entries.len(), self.bytes, self.peak_entries, self.peak_bytes,
-                self.evictions, self.over_budget(), self.unbounded);
+                self.evictions, self.unowned_retirements, self.bitmap_uploads, self.bitmap_reuses,
+                self.key_build_frames, self.key_build_time.as_secs_f64() * 1e6,
+                self.owner_scans, self.owner_scan_time.as_secs_f64() * 1e6,
+                self.over_budget(), self.unbounded);
         }
     }
 }

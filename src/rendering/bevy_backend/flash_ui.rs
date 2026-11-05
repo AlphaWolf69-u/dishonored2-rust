@@ -65,7 +65,9 @@ impl Plugin for FlashUiPlugin {
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum TextureKey {
     White,
-    Bitmap(u64, CharRef),
+    /// Identity of the shared immutable image, kept unique by its live movie
+    /// map leases until this cache entry is retired.
+    Bitmap(usize),
     Game(String),
     Ramp(Vec<u8>),
     /// A glyph cache page by (id, version).
@@ -458,15 +460,13 @@ fn render_flash_ui(
     view: ViewQuery<&ViewTarget>,
 ) {
     let Some(frame) = &frame.0 else {
+        let before = gpu.textures.len();
+        gpu.textures.retire_unowned();
         if gpu.movie.take().is_some() {
             gpu.uploaded = None;
-            // Closing the movie drops its player (m_cacheResources = 0).
-            // A new open has a new generation and globally unique glyph-page
-            // IDs, so these textures cannot be reused. Previously old glyph
-            // IDs survived every open indefinitely. Keep shared ramps/white;
-            // bitmap generations were already re-uploaded on every new open.
-            let before = gpu.textures.len();
-            gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
+            // A hidden movie may still own its image map and glyph page.
+            // Retire only entries whose real movie/frame leases have ended.
+            gpu.textures.retain(|key, _| !matches!(key, TextureKey::Game(_)));
             gpu.textures.begin_frame();
             gpu.textures.trim();
             gpu.textures.report("closed");
@@ -477,16 +477,11 @@ fn render_flash_ui(
         return;
     };
     gpu.textures.begin_frame();
-    // Loading can replace one movie directly with another without publishing
-    // an empty frame. 1410298b0 still destroys the old player's cache then;
-    // glyph IDs from that player must not survive until a later UI close.
+    gpu.textures.retire_unowned();
+    // Vertex data is movie-specific. Bitmap and glyph ownership is tracked
+    // independently, since another still-live movie may use the same image.
     if gpu.movie.is_some_and(|generation| generation != frame.generation) {
-        let before = gpu.textures.len();
-        gpu.textures.retain(|key, _| matches!(key, TextureKey::White | TextureKey::Ramp(_)));
         gpu.uploaded = None;
-        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            println!("MEMORY UI replaced: released_textures={}", before - gpu.textures.len());
-        }
     }
     gpu.movie = Some(frame.generation);
     if frame.list.batches.is_empty() {
@@ -503,20 +498,21 @@ fn render_flash_ui(
     if gpu.transfer.as_ref().is_none_or(|t| t.display != display) {
         gpu.transfer = Some(TransferPrograms::new(&device, display));
     }
-    // Textures: library bitmaps per player generation, gradient ramps by content.
+    // Library bitmaps use shared immutable image identity; gradient ramps use content.
+    let key_started = gpu.textures.tracing().then(std::time::Instant::now);
     let keys: Vec<TextureKey> = frame
         .list
         .batches
         .iter()
         .map(|b| match &b.texture {
             FillTexture::White => TextureKey::White,
-            FillTexture::Bitmap(c) => TextureKey::Bitmap(frame.generation, *c),
+            FillTexture::Bitmap(c) => TextureKey::Bitmap(frame.images.get(c).map_or(0, |image| Arc::as_ptr(image) as usize)),
             FillTexture::Game(name) => TextureKey::Game(name.clone()),
             FillTexture::Ramp(i) => TextureKey::Ramp(frame.list.ramps[*i].to_vec()),
             FillTexture::Glyphs(i) => TextureKey::Glyphs(frame.list.glyph_pages[*i].id, frame.list.glyph_pages[*i].version),
         })
         .collect();
-    gpu.textures.retain(|k, _| !matches!(k, TextureKey::Bitmap(g, _) if *g != frame.generation));
+    if let Some(started) = key_started { gpu.textures.record_key_build(started.elapsed()); }
     // 1410150f0 binds the image owner, not a permanently captured view. Drop
     // outgoing named bindings even when one movie replaces another directly.
     gpu.textures.retain(|key, _| match key {
@@ -538,6 +534,12 @@ fn render_flash_ui(
             gpu.textures.touch(key);
             continue;
         }
+        if matches!(key, TextureKey::Bitmap(_)) { gpu.textures.track_bitmap(key, &frame.images); }
+        if let TextureKey::Glyphs(id, version) = key {
+            if let Some(page) = frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
+                gpu.textures.track_glyph(key, page);
+            }
+        }
         if gpu.textures.touch(key) {
             continue;
         }
@@ -549,9 +551,14 @@ fn render_flash_ui(
                 Some(image) => (image.texture.clone(), image.texture_view.clone()),
                 None => { gpu.textures.trim(); return; }, // The image owner has not uploaded it yet.
             },
-            TextureKey::Bitmap(_, c) => match frame.images.get(c) {
-                Some(image) => upload_mips(&device, &queue, image.width, image.height, image.mip_count,
-                    super::image_formats::gpu_image_format(image.format).remove_srgb_suffix(), &image.bytes),
+            TextureKey::Bitmap(identity) => match frame.images.values().find(|image| Arc::as_ptr(image) as usize == *identity) {
+                Some(image) => {
+                    if gpu.textures.tracing() {
+                        eprintln!("MEMORY UI bitmap upload: image={identity:x} bytes={}", image.bytes.len());
+                    }
+                    upload_mips(&device, &queue, image.width, image.height, image.mip_count,
+                        super::image_formats::gpu_image_format(image.format).remove_srgb_suffix(), &image.bytes)
+                },
                 None => continue,
             },
             TextureKey::Glyphs(id, version) => match frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
@@ -600,11 +607,13 @@ fn render_flash_ui(
             },
         };
         gpu.textures.insert(key.clone(), uploaded);
+        if matches!(key, TextureKey::Bitmap(_)) { gpu.textures.track_bitmap(key, &frame.images); }
+        if let TextureKey::Glyphs(id, version) = key {
+            if let Some(page) = frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
+                gpu.textures.track_glyph(key, page);
+            }
+        }
     }
-    gpu.textures.retain(|key, _| match key {
-        TextureKey::Glyphs(id, version) => frame.list.glyph_pages.iter().any(|page| page.id == *id && page.version == *version),
-        _ => true,
-    });
     gpu.textures.trim();
     if gpu.stage.is_none() {
         gpu.stage = Some(device.create_buffer(&BufferDescriptor { label: Some("flash stage"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false }));
