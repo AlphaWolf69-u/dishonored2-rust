@@ -36,6 +36,7 @@ pub struct ModelInfo {
     pub skeleton_reference: Option<u16>,
     pub has_decoded_geometry: bool,
     pub authored_bounds: [[f32; 3]; 2],
+    residency: Option<residency::Retire>,
 }
 
 #[derive(Debug)]
@@ -472,6 +473,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
         skeleton_reference,
         has_decoded_geometry,
         authored_bounds,
+        residency: None,
     })
 }
 
@@ -490,8 +492,8 @@ mod residency {
         Failed { error: String, pending: usize },
     }
     struct Entry { state: Mutex<State>, ready: Condvar }
-    type Key = (u64, String);
-    struct Registry { entries: HashMap<Key, Arc<Entry>>, requests: usize }
+    type Key = (u64, Arc<str>);
+    struct Registry { entries: HashMap<Key, Arc<Entry>> }
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     static TRACE: OnceLock<bool> = OnceLock::new();
     static SEPARATE: OnceLock<bool> = OnceLock::new();
@@ -502,6 +504,24 @@ mod residency {
         *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_MODEL_RESOURCES").is_some_and(|v| v == "1"))
     }
 
+    /// Token lives inside the decoded model; its final drop removes the weak
+    /// registry record once no concurrent acquire still holds that record.
+    pub(super) struct Retire { key: Key, entry: Weak<Entry> }
+    impl std::fmt::Debug for Retire {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.debug_tuple("ModelRetire").field(&self.key).finish()
+        }
+    }
+    impl Drop for Retire {
+        fn drop(&mut self) {
+            let (Some(registry), Some(entry)) = (REGISTRY.get(), self.entry.upgrade()) else { return };
+            let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+            if Arc::strong_count(&entry) == 2
+                && registry.entries.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &entry))
+            { registry.entries.remove(&self.key); }
+        }
+    }
+
     fn retain_live(entry: &Arc<Entry>) -> bool {
         Arc::strong_count(entry) > 1 || match entry.state.try_lock() {
             Ok(state) => match &*state { State::Loading { .. } => true, State::Ready { weak, .. } => weak.strong_count() != 0, _ => false },
@@ -509,23 +529,35 @@ mod residency {
         }
     }
 
+    fn discard_empty(key: &Key, entry: &Arc<Entry>) {
+        let Some(registry) = REGISTRY.get() else { return };
+        let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+        if Arc::strong_count(entry) == 2
+            && registry.entries.get(key).is_some_and(|current| Arc::ptr_eq(current, entry))
+            && entry.state.try_lock().is_ok_and(|state| matches!(*state, State::Empty))
+        { registry.entries.remove(key); }
+    }
+
     pub(super) fn release_unused() {
         if let Some(registry) = REGISTRY.get() {
-            registry.lock().unwrap_or_else(|e| e.into_inner()).entries.retain(|_, entry| retain_live(entry));
+            let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+            registry.entries.retain(|_, entry| retain_live(entry));
+            if tracing() {
+                let path_bytes: usize = registry.entries.keys().map(|(_, path)| path.len()).sum();
+                eprintln!("MODEL_REGISTRY entries={} slots={} path_bytes={path_bytes} entry_struct_bytes={}",
+                    registry.entries.len(), registry.entries.capacity(), registry.entries.len() * std::mem::size_of::<Entry>());
+            }
         }
     }
 
     pub(super) fn acquire(catalog: &crate::archive::Catalog, path: &str, normalized: &str) -> Result<Arc<ModelInfo>, String> {
         let trace = tracing();
         let started = trace.then(Instant::now);
+        let key = (catalog.identity(), Arc::<str>::from(normalized));
         let entry = {
-            let mut registry = REGISTRY.get_or_init(|| Mutex::new(Registry { entries: HashMap::new(), requests: 0 }))
+            let mut registry = REGISTRY.get_or_init(|| Mutex::new(Registry { entries: HashMap::new() }))
                 .lock().unwrap_or_else(|e| e.into_inner());
-            registry.requests = registry.requests.wrapping_add(1);
-            if registry.entries.len() > 1024 && registry.requests % 256 == 0 {
-                registry.entries.retain(|_, entry| retain_live(entry));
-            }
-            registry.entries.entry((catalog.identity(), normalized.to_owned()))
+            registry.entries.entry(key.clone())
                 .or_insert_with(|| Arc::new(Entry { state: Mutex::new(State::Empty), ready: Condvar::new() })).clone()
         };
         let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -544,6 +576,8 @@ mod residency {
                     let result = error.clone();
                     if waited && *pending > 0 { *pending -= 1; }
                     if *pending == 0 { *state = State::Empty; }
+                    drop(state);
+                    discard_empty(&key, &entry);
                     return Err(result);
                 }
                 State::Loading { waiters } => {
@@ -559,7 +593,9 @@ mod residency {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let bytes = catalog.read(path).map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("{path} is absent"))?;
-                super::inspect(&bytes).map(Arc::new)
+                let mut model = super::inspect(&bytes)?;
+                model.residency = Some(Retire { key: key.clone(), entry: Arc::downgrade(&entry) });
+                Ok(Arc::new(model))
             })).unwrap_or_else(|_| Err(format!("model acquisition panicked for {path}")));
             let mut state = entry.state.lock().unwrap_or_else(|e| e.into_inner());
             let waiters = match &*state { State::Loading { waiters } => *waiters, _ => 0 };
@@ -570,6 +606,8 @@ mod residency {
             };
             entry.ready.notify_all();
             if let Some(started) = started { eprintln!("MODEL_ACQUIRE path={normalized} result=decode us={}", started.elapsed().as_micros()); }
+            drop(state);
+            if result.is_err() { discard_empty(&key, &entry); }
             return result;
         }
     }
