@@ -17,7 +17,7 @@ use std::{
 
 type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>;
 #[derive(Resource, Default)]
-struct GeometryLayouts {
+pub(super) struct GeometryLayouts {
     ids: HashMap<AssetId<Mesh>, u32>,
     samples: Vec<(u32, bool, Handle<Mesh>, bool)>,
 }
