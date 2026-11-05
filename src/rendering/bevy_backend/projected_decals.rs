@@ -292,20 +292,12 @@ fn prepare(
         let Some(tree) = scene.tree.as_deref() else {
             return Ok(());
         };
-        let pool = camera.world_particles.decal_pool();
         let limit = crate::platform::console::shared()
             .read()
             .cvars
             .int("r_maxDynamicDecals")
             .ok_or("decal budget absent")?;
-        pool.reconfigure_when_empty(limit as usize, |_| {})?;
-        pool.prepare_world(tree)?;
-        let decals = (0..pool.limit() as u32)
-            .filter_map(|slot| {
-                let entry = pool.slot(slot)?;
-                Some((slot, entry.owner()?.get(), entry.renderer.as_ref()?))
-            })
-            .collect::<Vec<_>>();
+        let decals = camera.world_particles.snapshot_decals(tree, limit as usize)?;
         gpu.lighting
             .retain(|slot, _| decals.iter().any(|(live, _, _)| live == slot));
         if decals.is_empty() {

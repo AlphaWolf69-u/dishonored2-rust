@@ -424,6 +424,22 @@ impl Drop for WorldParticleState {
 }
 impl WorldParticleState {
     pub(super) fn dynamic_retired(&self) -> u64 { self.dynamic_retired }
+    /// Prepare the live WORLD projections and publish compact frame records.
+    /// Their target arrays remain shared with the retained committed records.
+    pub(super) fn snapshot_decals(
+        &mut self,
+        tree: &crate::local_caster_query::LocalWorldQuery,
+        limit: usize,
+    ) -> Result<Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>, String> {
+        let pool = self.decal_pool();
+        pool.reconfigure_when_empty(limit, |_| {})?;
+        pool.prepare_world(tree)?;
+        Ok((0..pool.limit() as u32).filter_map(|slot| {
+            let entry = pool.slot(slot)?;
+            Some((slot, entry.owner()?.get(), entry.renderer.as_ref()?.clone()))
+        }).collect())
+    }
+
     pub(super) fn decal_pool(
         &mut self,
     ) -> &mut crate::rendering::decals::DecalPool<

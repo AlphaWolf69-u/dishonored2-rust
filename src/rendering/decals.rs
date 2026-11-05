@@ -1,6 +1,7 @@
 //! Projection geometry and WORLD target selection used by 298ee0.
 //! Material variants, runtime decal ownership and draw submission are separate.
 use super::{bounds::OrientedBox, shadows::local_caster_query::LocalWorldQuery};
+use std::sync::Arc;
 
 mod effect;
 pub mod material;
@@ -72,10 +73,11 @@ pub struct DecalDescription<M> {
     pub material: M,
 }
 
+#[derive(Clone)]
 pub struct CommittedDecal<M> {
     pub description: DecalDescription<M>,
     pub world_to_decal: [[f32; 4]; 4],
-    pub projection: WorldProjection,
+    pub projection: Arc<WorldProjection>,
 }
 impl<M: Clone> CommittedDecal<M> {
     fn new(description: &DecalDescription<M>, tree: &LocalWorldQuery) -> Result<Self, String> {
@@ -95,7 +97,7 @@ impl<M: Clone> CommittedDecal<M> {
         Ok(Self {
             description: description.clone(),
             world_to_decal,
-            projection,
+            projection: Arc::new(projection),
         })
     }
 
@@ -106,13 +108,13 @@ impl<M: Clone> CommittedDecal<M> {
             || self.description.axes != description.axes
             || self.description.scale != description.scale
         {
-            self.projection = refresh_world_projection(
+            self.projection = Arc::new(refresh_world_projection(
                 tree,
                 description.position,
                 description.axes,
                 description.scale,
                 &mut self.world_to_decal,
-            );
+            ));
         }
         self.description = description.clone();
     }
