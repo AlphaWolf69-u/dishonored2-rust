@@ -3512,3 +3512,22 @@ comparison matched all 11,849 recorded image-packing descriptors and checksums,
 Longer preparation timings include diagnostic checksum work and do not show a
 clean CPU result. Editable-image branches and their overlap handling were
 source-reviewed; no active editable layer was present in that comparison.
+
+### Combined manifest lifetime
+
+The combined level request list now leases the existing init and common lists
+and the active map list as three immutable sections in their authored order.
+The map section releases with its final consumer; init and common remain in
+their existing session caches. Editable manifests still bypass the combined
+cache. This is a host storage optimization around the original request-table
+acquisition/release (`1400661e0`), not a change to which resources are loaded.
+
+Edge of the World / Dust / Edge of the World comparisons matched ordered-list
+fingerprints, loading coverage, contact and collision-material signatures in
+flat and segmented modes. The old combined copy duplicated 26,193 init/common
+entries totaling 3,492,748 bytes of descriptor and String capacity. Source
+vectors have different spare capacity; the derived Edge of the World saving
+after that difference is approximately 3,177,148 capacity bytes during loading,
+excluding allocator and Arc overhead. Targeted read-history spans were nearly
+identical in the recorded run. Details and timing limits are in
+`optimization-opportunities.md`.

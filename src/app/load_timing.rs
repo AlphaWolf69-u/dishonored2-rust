@@ -70,7 +70,7 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     }
 }
 
-static LIST: Mutex<Option<std::sync::Arc<Vec<crate::assets::map_resources::Resource>>>> = Mutex::new(None);
+static LIST: Mutex<Option<std::sync::Arc<crate::assets::map_resources::LevelList>>> = Mutex::new(None);
 
 /// Keep the current map's load lists for the coverage report.
 pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
@@ -134,7 +134,7 @@ pub(super) fn level_ready(
     // Coverage is emitted once. A diagnostic must not retain the map's
     // acquisition descriptors throughout gameplay or into the next load.
     if let Some(list) = LIST.lock().unwrap().take() {
-        let report = crate::loading::report(&list);
+        let report = crate::loading::report_iter(list.iter());
         let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
         eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");
         for c in report.iter().filter(|c| c.listed > 0 || c.unlisted > 0) {

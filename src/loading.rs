@@ -28,7 +28,7 @@ struct State {
     common_exceptions: HashMap<String, Option<&'static str>>,
     gates: Vec<(&'static str, bool)>,
     playing: bool,
-    required: std::sync::Arc<Vec<crate::assets::map_resources::Resource>>,
+    required: std::sync::Arc<crate::assets::map_resources::LevelList>,
     required_heads: HashMap<u64, usize>,
     required_next: Vec<usize>,
     acquired: usize,
@@ -328,8 +328,8 @@ pub fn play_started() {
         // Progress is now 1; late-load reporting only needs the read registry.
         if std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() != Ok("1") {
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                eprintln!("MEMORY loading descriptor release: entries={} descriptor_bytes={} owners={} index_capacity={}",
-                    s.required.len(), crate::assets::map_resources::descriptor_bytes(&s.required),
+                eprintln!("MEMORY loading descriptor release: entries={} logical_section_bytes={} owners={} index_capacity={}",
+                    s.required.len(), s.required.logical_descriptor_bytes(),
                     std::sync::Arc::strong_count(&s.required), s.required_heads.capacity() + s.required_next.capacity());
             }
             s.required = Default::default();
@@ -355,7 +355,7 @@ pub fn restart_level() {
 /// Start the map resource phase while keeping registry/resident identities.
 /// 1400661e0 reports resources acquired / resources requested; streaming mips
 /// remain outside this progress count.
-pub fn begin_level(list: std::sync::Arc<Vec<crate::assets::map_resources::Resource>>, catalog: &crate::assets::archive::Catalog) {
+pub fn begin_level(list: std::sync::Arc<crate::assets::map_resources::LevelList>, catalog: &crate::assets::archive::Catalog) {
     with(|s| {
         s.playing = false;
         if s.common_texts.as_ref().is_some_and(|(id, _)| *id != catalog.identity()) {
@@ -437,6 +437,10 @@ pub struct Coverage {
 
 /// Per kind of `list`: how many entries the rewrite loaded, least covered first.
 pub fn report(list: &[crate::assets::map_resources::Resource]) -> Vec<Coverage> {
+    report_iter(list.iter())
+}
+
+pub(crate) fn report_iter<'a>(list: impl IntoIterator<Item = &'a crate::assets::map_resources::Resource>) -> Vec<Coverage> {
     let mut listed: HashMap<&str, HashSet<&str>> = HashMap::new();
     for r in list {
         listed.entry(r.kind.as_str()).or_default().insert(r.path.as_str());

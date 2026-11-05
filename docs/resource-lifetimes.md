@@ -337,6 +337,15 @@ fell from three to one per level. Editable overlays still read fresh data. The
 capacity and targeted setup-cost measurements are in the parity ledger and
 optimization notes; they do not measure peak process memory or frame time.
 
+The combined loading list now leases its init, common and map sections
+instead of copying their descriptors. The map section releases after its last
+loading consumer; the session retains its existing init/common lists. For the
+recorded Edge of the World load, the old combined list duplicated 26,193
+init/common entries. Accounting for different vector spare capacities gives a
+derived reduction of about 3,177,148 capacity bytes while the list is live;
+this is not a measurement of gameplay RSS. Ordered requests and loading
+coverage matched in the recorded three-level comparison.
+
 
 Texture streaming now transfers completed reads directly into its map-owned
 queue and reuses upload bookkeeping only within the current mailbox generation.

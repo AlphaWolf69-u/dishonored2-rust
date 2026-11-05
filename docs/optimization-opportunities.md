@@ -1844,3 +1844,30 @@ Predict one fewer temporary path allocation for each forward-slash-only entry,
 with unchanged ASCII normalization, error handling and request order. Measure
 the actual separator mix and the affected manifest-assembly span independently
 of segmented-list reuse before keeping this change.
+
+Three production modes compared the old flat list, the flat list with the
+normalization change, and the segmented list. Edge of the World / Dust / Edge
+of the World had matching ordered-list fingerprints, coverage totals, contact
+signatures and collision-material fingerprints. Each combined list included
+26,193 init/common entries whose duplicate descriptor and String capacities
+totaled 3,492,748 bytes in the old flat list. The segmented lists instead
+borrow those entries from the cached source sections. The sections' vectors
+have more spare capacity than the flat vector; using the recorded capacities,
+the derived difference for the Edge of the World live lists is approximately
+3,177,148 bytes, excluding Arc headers and allocator overhead. This describes
+loading-time capacities, not process RSS or gameplay residency.
+
+Across the three loads, the recorded manifest-assembly spans totaled
+480,339,335 cycles with the normalized flat list and 412,565,405 with the
+segmented list. The affected read-history instrumentation counted 62,972
+reads in both modes, totaling 200,394,648 versus 200,477,467 cycles. Those
+are instrumented startup spans from one run, not a frame-time result. The
+diagnostic uses a Flat/Segmented variant to compare both paths in one binary;
+the retained implementation has only the segmented layout.
+
+The five source-manifest reads prepared 87,529 entries and recorded no
+backslashes. The new normalization therefore avoids one temporary path
+allocation per entry in this sample. Preparation spans varied between runs,
+including a slower Dust sample, so no general CPU speedup is assigned to
+normalization. Loose manifests still use fresh reads; overlap and nonstandard
+paths retain the same handling.

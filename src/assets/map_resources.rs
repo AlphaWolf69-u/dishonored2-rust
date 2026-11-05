@@ -73,7 +73,12 @@ pub fn load_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> 
         } else {
             entries.iter().collect()
         };
-        list.extend(chosen.into_iter().map(|e| Resource { kind: e.kind.clone(), path: e.path.to_ascii_lowercase().replace('\\', "/") }));
+        list.extend(chosen.into_iter().map(|e| {
+            let mut path = e.path.clone();
+            path.make_ascii_lowercase();
+            if path.contains('\\') { path = path.replace('\\', "/"); }
+            Resource { kind: e.kind.clone(), path }
+        }));
     }
     if !missing.is_empty() {
         eprintln!("{manifest}: ids without an index record: {missing:?}");
@@ -115,21 +120,61 @@ pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) 
     Ok(list)
 }
 
+/// Three immutable request lists in authored load order. Common and init
+/// descriptors remain owned by their session caches; this view owns only the
+/// section leases and the level list, not a second copy of their strings.
+pub struct LevelList {
+    sections: [std::sync::Arc<Vec<Resource>>; 3],
+}
+impl Default for LevelList {
+    fn default() -> Self {
+        let empty = std::sync::Arc::new(Vec::new());
+        Self { sections: [empty.clone(), empty.clone(), empty] }
+    }
+}
+impl LevelList {
+    fn acquire(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<Self> {
+        Ok(Self { sections: [acquire_list(base, catalog, "init", language)?,
+            acquire_list(base, catalog, "common", language)?,
+            acquire_list(base, catalog, map, language)?] })
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Resource> {
+        self.sections[0].iter().chain(self.sections[1].iter()).chain(self.sections[2].iter())
+    }
+    pub fn len(&self) -> usize { self.sections.iter().map(|section| section.len()).sum() }
+    pub fn is_empty(&self) -> bool { self.sections.iter().all(|section| section.is_empty()) }
+    /// Counts section ownership; callers must account for shared Arc leases.
+    pub(crate) fn logical_descriptor_bytes(&self) -> usize {
+        self.sections.iter().map(|section| descriptor_bytes(section)).sum()
+    }
+}
+impl std::ops::Index<usize> for LevelList {
+    type Output = Resource;
+    fn index(&self, index: usize) -> &Self::Output {
+        let init = self.sections[0].len();
+        if index < init { return &self.sections[0][index]; }
+        let index = index - init;
+        let common = self.sections[1].len();
+        if index < common { &self.sections[1][index] }
+        else { &self.sections[2][index - common] }
+    }
+}
+
 /// The resource manager's already prepared map request list (1400661e0).
 /// Share the immutable request descriptors between consumers; the registered
 /// resource owners decide whether each payload is already resident.
-pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
+pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<std::sync::Arc<LevelList>> {
     // A live loose manifest may change while another consumer owns an older
     // combined list. Preserve that old lease but do not reuse it for new reads.
     if catalog.has_overlays() && ["init", "common", map].iter().any(|name|
         catalog.has_overlay_file(&format!("generated/buildgame/{}.mapresources", name.to_ascii_lowercase()))) {
-        return Ok(std::sync::Arc::new(level_load_list(base, catalog, map, language)?));
+        return Ok(std::sync::Arc::new(LevelList::acquire(base, catalog, map, language)?));
     }
     type Key = (u64, std::path::PathBuf, String, String);
     // 1400661e0 releases its assembled request table after acquisition. Source
-    // manifests above remain reusable metadata; a combined copy belongs only
+    // manifests above remain reusable metadata; a combined view belongs only
     // to its active consumers, not every map visited during this session.
-    type Cached = (std::sync::Weak<Vec<Resource>>, Option<std::sync::Arc<Vec<Resource>>>);
+    type Cached = (std::sync::Weak<LevelList>, Option<std::sync::Arc<LevelList>>);
     static LISTS: std::sync::Mutex<Option<HashMap<Key, Cached>>> = std::sync::Mutex::new(None);
     let key = (catalog.identity(), base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
     let mut lists = LISTS.lock().unwrap();
@@ -141,15 +186,15 @@ pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &
         }
         return Ok(list);
     }
-    let list = std::sync::Arc::new(level_load_list(base, catalog, map, language)?);
+    let list = std::sync::Arc::new(LevelList::acquire(base, catalog, map, language)?);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!("LOAD manifest acquire: {map} identity={:p} entries={}", std::sync::Arc::as_ptr(&list), list.len());
     }
     let retained = (std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() == Ok("1")).then(|| list.clone());
     lists.insert(key, (std::sync::Arc::downgrade(&list), retained));
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-        let bytes = lists.values().filter_map(|(list, _)| list.upgrade()).map(|list| descriptor_bytes(&list)).sum::<usize>();
-        eprintln!("MEMORY combined manifests: lists={} capacity_bytes={bytes}", lists.len());
+        let bytes = lists.values().filter_map(|(list, _)| list.upgrade()).map(|list| list.logical_descriptor_bytes()).sum::<usize>();
+        eprintln!("MEMORY combined manifests: lists={} logical_section_bytes={bytes}", lists.len());
     }
     Ok(list)
 }
