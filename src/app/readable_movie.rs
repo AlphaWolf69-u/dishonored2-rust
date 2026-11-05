@@ -18,11 +18,20 @@ pub(super) struct Request {
     pub note_type: i32,
 }
 
+/// Authored map request consumed by the shared notes-movie worker.
+pub(super) struct MapRequest {
+    pub title: String,
+    pub image: String,
+    pub legends: Vec<String>,
+    pub map_type: i32,
+}
+
 /// Requests are drained by the Flash UI owner. `closed` counts completed
 /// presentations, including their authored closing animation.
 #[derive(Resource, Default)]
 pub(super) struct ReadableRequests {
     pub open: VecDeque<Request>,
+    pub map_open: VecDeque<MapRequest>,
     pub closed: u64,
 }
 

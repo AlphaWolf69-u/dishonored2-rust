@@ -15,6 +15,7 @@ pub mod fx;
 pub mod iggy;
 pub mod installation;
 pub mod inventory_item;
+pub mod interactive_map;
 pub mod lang;
 pub mod level;
 pub mod map_resources;
