@@ -3582,3 +3582,18 @@ positive or r_BlackAndWhiteMode is active (registration 1413754e0); this is
 not the similarly named r_skipColorGrading CVar. The host consumer now enforces
 that predicate and releases view bindings/target on deactivation. View
 parameter publication and render-stage activation remain unconnected.
+
+The live producer is now identified: `14081e9d0` constructs
+`arkPlayerFXBendtime`, and its update `14081ef10` publishes `greyAmount` through
+the active view's parameter-block interface. During an active state it uses
+one minus the time-scale query (`14080d060`); after leaving that state it
+fades the saved amount using the authored duration at declaration offset
+`0x178`. State selection is `14081ec80`, with matching FX start/stop in
+`14081eeb0` / `14081ee00`. This is not an ordinary environment-fog setting:
+all 121 unique installed `env` declaration texts were scanned and none names
+`greyAmount` or `invert`. The executable references, rather than that negative
+inventory alone, establish the producer. The rewrite does not yet implement
+that player-power owner, so merely adding environment defaults would not
+activate the missing effect correctly. Its future view publication must use
+this owner and retain the existing per-view target release rule; no perpetual
+mask pass or speculative map-specific activation has been added.
