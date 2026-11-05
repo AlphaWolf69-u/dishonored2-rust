@@ -118,6 +118,37 @@ pub struct DecalScene {
     pub failures: Arc<Vec<String>>,
 }
 
+/// Generation-scoped readiness for the existing Bevy material pipeline.
+/// Both dynamic decal and particle-mesh publishers use the same render check.
+#[derive(Clone, Default)]
+pub(crate) struct ProxyReadinessBatch {
+    pub generation: u64,
+    pub proxies: Arc<Vec<Entity>>,
+    pub completed: Arc<std::sync::atomic::AtomicU64>,
+}
+#[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
+pub(crate) struct DynamicProxyReadiness {
+    pub decals: ProxyReadinessBatch,
+    pub world_meshes: ProxyReadinessBatch,
+}
+
+fn acknowledge_dynamic_proxies(
+    request: Res<DynamicProxyReadiness>,
+    specialized: Res<bevy::pbr::SpecializedMaterialPipelineCache>,
+    pipelines: Res<PipelineCache>,
+) {
+    use std::sync::atomic::Ordering;
+    for batch in [&request.decals, &request.world_meshes] {
+        if batch.generation == 0 || batch.completed.load(Ordering::Acquire) == batch.generation { continue; }
+        let ready = batch.proxies.iter().all(|entity| {
+            let main = bevy::render::sync_world::MainEntity::from(*entity);
+            specialized.values().any(|view| view.get(&main)
+                .is_some_and(|id| pipelines.get_render_pipeline(*id).is_some()))
+        });
+        if ready { batch.completed.store(batch.generation, Ordering::Release); }
+    }
+}
+
 /// Immutable material values belong to the existing material binding, once per
 /// material, rather than being copied into every projection/receiver pair.
 #[derive(Clone, Debug, Default, Reflect, ShaderType)]
@@ -145,7 +176,9 @@ pub fn register(app: &mut App) {
         "../../../assets/shaders/dh2_decal_projection.wgsl",
         Shader::from_wgsl
     );
-    app.init_resource::<DecalScene>()
+    app.init_resource::<DynamicProxyReadiness>()
+        .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<DynamicProxyReadiness>::default())
+        .init_resource::<DecalScene>()
         .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
             DecalScene,
         >::default())
@@ -158,7 +191,8 @@ pub fn register(app: &mut App) {
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.init_resource::<DecalGpu>().add_systems(
             bevy::core_pipeline::Core3d,
-            prepare
+            (prepare, acknowledge_dynamic_proxies)
+                .chain()
                 .after(super::camera_scene::FxUpdate)
                 .before(bevy::core_pipeline::Core3dSystems::Prepass),
         );
