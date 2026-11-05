@@ -342,7 +342,8 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
     body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;
     let attributes = decls::attributes(&declarations.attributes)?;
     let health = decls::health(&declarations.health)?;
-    let accepts_water_damage = match decls::drowning_damage_decl(&declarations.breath) {
+    let drowning_damage = decls::drowning_damage_decl(&declarations.breath);
+    let accepts_water_damage = match drowning_damage {
         Some(name) => {
             let damage = crate::entities::player::resolved_decl("damage", name, |path| text_of(catalog, path))?;
             decls::accepts_water_damage(&declarations.health, &damage)?
@@ -366,6 +367,7 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
         md6: declarations.body_model.clone(),
         health,
         mana: decls::mana(&declarations.mana)?,
+        adrenaline: decls::adrenaline(&declarations.adrenaline)?,
         swimming_settings: crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
         swimming_states: decls::swimming_states(&declarations)?,
         swimming_rules: decls::rules(&declarations.swimming_mode)?,
@@ -374,6 +376,7 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
         swimming_death: decls::swimming_death(&declarations)?,
         breath: decls::breath(&declarations.breath)?,
         accepts_water_damage,
+        drowning_damage_enabled: drowning_damage.is_some(),
     })
 }
 
@@ -663,7 +666,6 @@ pub(super) fn update_player(
             if walking { events.extend(walk.steer(player, dt)); }
             let (body_settings, current) = body_settings(difficulty.as_ref());
             player.body_settings = body_settings;
-            player.health_mana_merged = difficulty.as_ref().is_some_and(|manager| manager.health_mana_merged(current));
             if (player.is_underwater() && player.breath() <= 0.0) || player.health() < player.max_health() || player.mana() < player.max_mana() {
                 player.incoming_damage_factor = difficulty.as_ref().map_or(1.0, |manager| manager.incoming_damage_factor(current));
                 player.health_regen_factor = difficulty.as_ref().map_or(1.0, |manager| manager.health_regen_factor(current));

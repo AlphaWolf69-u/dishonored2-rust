@@ -19,6 +19,7 @@ pub struct PlayerDeclarations {
     pub mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
+    pub adrenaline: Vec<(String, Value)>,
     pub breath: Vec<(String, Value)>,
     pub body: Vec<(String, Value)>,
     /// The character's inherited player FX manager, including swimming FX.
@@ -120,7 +121,7 @@ pub fn entity_component(entity: &str, kind: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 14] = [
+const PLAYER_COMPONENTS: [&str; 15] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -133,6 +134,7 @@ const PLAYER_COMPONENTS: [&str; 14] = [
     "cpntplayersensormantle",
     "cpnthealthevolved",
     "cpntmana",
+    "cpntadrenaline",
     "cpntplayerbreath",
     "cpntplayerfxmanager",
 ];
@@ -221,6 +223,7 @@ pub fn player_declarations(
     let mantle_sensor = take("cpntplayersensormantle")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
+    let adrenaline = take("cpntadrenaline")?;
     let breath = take("cpntplayerbreath")?;
     let body = take("cpntplayerbody")?;
     let fx = take("cpntplayerfxmanager")?;
@@ -262,7 +265,7 @@ pub fn player_declarations(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

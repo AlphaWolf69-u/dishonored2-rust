@@ -155,6 +155,16 @@ pub fn mana(fields: &Fields) -> Result<super::mana::Settings, String> {
     })
 }
 
+pub fn adrenaline(fields: &Fields) -> Result<super::adrenaline::Settings, String> {
+    Ok(super::adrenaline::Settings {
+        start_on_spawn: boolean(fields, "m_startOnEntitySpawn", true)?,
+        maximum: number(fields, "m_maximumAdrenaline", 100.0)?,
+        reduce_delay: number(fields, "m_reduceDelay", 5.0)?,
+        reduce_rate: number(fields, "m_reduceRate", 5.0)?,
+        burst_rate: number(fields, "m_burstRate", 5.0)?,
+    })
+}
+
 /// arkDeclCpntPlayerSensorMantle (ctor FUN_1403baf00).
 pub fn mantle_sensor(fields: &Fields) -> Result<MantleDecl, String> {
     let d = MantleDecl::default();

@@ -4,6 +4,7 @@
 //! input dispatch → QUERY_PHYSICS (physics queries) → DEFAULT (physics query
 //! results, controller, state machine, camera) → PRE_PHYSICS (physics step).
 pub mod animation;
+pub mod adrenaline;
 pub mod arms;
 pub mod body;
 pub mod camera;
@@ -54,7 +55,6 @@ pub struct Player {
     pub incoming_damage_factor: f32,
     pub health_regen_factor: f32,
     pub mana_replenishes: bool,
-    pub health_mana_merged: bool,
     pub camera: PlayerCamera,
     pub stances: LocoStances,
     pub attributes: Attributes,
@@ -74,7 +74,12 @@ pub struct Player {
     scenes: Scenes,
     md6: String,
     health: health::Health,
+    drowning_damage_enabled: bool,
     mana: mana::Mana,
+    pub adrenaline: adrenaline::Adrenaline,
+    /// Populated by the combat and bloodthirsty owners when they exist.
+    pub adrenaline_in_combat: bool,
+    pub bloodthirsty_active: bool,
     game_over_requested: bool,
     drowning_fx_requested: Option<String>,
     /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
@@ -109,6 +114,7 @@ pub struct PlayerSetup {
     /// Health decl m_health before attributes.
     pub health: health::Settings,
     pub mana: mana::Settings,
+    pub adrenaline: adrenaline::Settings,
     pub swimming_settings: swimming::SwimmingSettings,
     pub swimming_states: Vec<swimming::SwimmingStateDecl>,
     pub swimming_rules: Vec<states::RuleDecl>,
@@ -117,6 +123,7 @@ pub struct PlayerSetup {
     pub swimming_death: Option<states::DrowningDeathDecl>,
     pub breath: swimming::Breath,
     pub accepts_water_damage: bool,
+    pub drowning_damage_enabled: bool,
 }
 
 impl Player {
@@ -126,14 +133,18 @@ impl Player {
     }
     pub fn mana(&self) -> f32 { self.mana.current() }
     pub fn max_mana(&self) -> f32 { self.mana.maximum(&self.attributes) }
+    pub fn mana_hud_values(&self) -> (f32, f32, f32, bool, bool, u8) {
+        (self.mana(), self.max_mana(), self.mana.regen_target(&self.attributes, self.mana_replenishes),
+            self.mana.has_extension(&self.attributes), self.mana.magic_suppressed(&self.attributes), self.mana.lock_flags())
+    }
+    pub fn set_mana_lock_flags(&mut self, flags: u8) { self.mana.set_lock_flags(flags); }
 
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
     pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
-    /// Returns no snapshot when the merged-health or attribute-event paths
-    /// needed by the original HUD have not been connected.
+    /// Returns no snapshot when attribute-change events needed by the
+    /// original HUD have not been connected.
     pub fn health_hud(&self) -> Option<(f32, f32, f32, bool, u32)> {
-        if self.health_mana_merged { return None; }
         let extensions = self.health.extensions(&self.attributes)?;
         Some((self.health(), self.max_health(), self.projected_health(), self.health() < 20.0, extensions))
     }
@@ -198,6 +209,7 @@ impl Player {
         }
         let health = health::Health::new(setup.health, setup.accepts_water_damage, &setup.attributes);
         let mana = mana::Mana::new(setup.mana, &setup.attributes);
+        let adrenaline = adrenaline::Adrenaline::new(setup.adrenaline, &setup.attributes);
         Ok(Self {
             physics,
             controller,
@@ -212,7 +224,6 @@ impl Player {
             incoming_damage_factor: 1.0,
             health_regen_factor: 1.0,
             mana_replenishes: true,
-            health_mana_merged: false,
             camera: PlayerCamera::new(setup.camera, base_fov),
             stances,
             attributes: setup.attributes,
@@ -230,7 +241,11 @@ impl Player {
             scenes: setup.scenes,
             md6: setup.md6,
             health,
+            drowning_damage_enabled: setup.drowning_damage_enabled,
             mana,
+            adrenaline,
+            adrenaline_in_combat: false,
+            bloodthirsty_active: false,
             game_over_requested: false,
             drowning_fx_requested: None,
             random: 0,
@@ -383,23 +398,45 @@ impl Player {
         }
         self.breath.update(dt);
         self.mana.update(dt, &self.attributes, self.mana_replenishes);
+        self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
         self.health.update(dt, &self.attributes, self.health_regen_factor);
         // 1404c0cf0 spends the mana-first share before dispatching the
         // remaining authored water damage to health.
-        if self.is_underwater() && self.breath.remaining <= 0.0 && self.health.accepts_water() {
+        if self.is_underwater() {
+            let adrenaline_gain = dt * self.attributes.get("ARK_ATTRIBUTE_PLAYER_ADRENALINE_GAIN_UNDERWATER");
+            self.adrenaline.gain(adrenaline_gain, &self.attributes, self.bloodthirsty_active);
             let mana_factor = self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGES_MANA_FIRST_FACTOR");
             {
-                let mut raw_damage = dt * self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGE_PER_SECOND");
+                let mut mana_delta = dt * self.attributes.get("ARK_ATTRIBUTE_PLAYER_MANA_GAIN_UNDERWATER");
+                let mut raw_damage = if self.breath.remaining <= 0.0 && self.drowning_damage_enabled {
+                    dt * self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGE_PER_SECOND")
+                } else { 0.0 };
                 if mana_factor > 0.0 && raw_damage > 0.0 {
-                    let mana_cost = (raw_damage * mana_factor).min(self.mana.current());
-                    self.mana.consume(mana_cost, &self.attributes, self.mana_replenishes);
-                    raw_damage -= mana_cost / mana_factor;
+                    mana_delta -= raw_damage * mana_factor;
+                    if -mana_delta < self.mana.current() {
+                        raw_damage = 0.0;
+                    } else {
+                        mana_delta = -self.mana.current();
+                        raw_damage -= self.mana.current() / mana_factor;
+                    }
                 }
+                if mana_delta < 0.0 { self.mana.consume(-mana_delta, &self.attributes, self.mana_replenishes); }
+                if mana_delta > 0.0 { self.mana.gain(mana_delta, &self.attributes); }
+                if !self.health.accepts_water() { raw_damage = 0.0; }
                 let scale = self.attributes.0.get("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE").copied().unwrap_or(1.0);
-                let damage = raw_damage * self.incoming_damage_factor * scale;
+                let mut damage = raw_damage * self.incoming_damage_factor * scale;
+                // 140718fe0 applies the player's health-to-mana damage
+                // attribute after the breath component's mana-first split.
+                let transfer = self.attributes.get("ARK_ATTRIBUTE_MALUS_HEALTH_TO_MANA_DAMAGES");
+                if transfer > 0.0 && damage > 0.0 {
+                    let absorbed = (damage * transfer).min(self.mana.current());
+                    self.mana.consume(absorbed, &self.attributes, self.mana_replenishes);
+                    damage -= absorbed;
+                }
                 if damage > 0.0 && !self.health.is_dead() {
                     self.health.damage(damage, &self.attributes);
                     if self.health.is_dead() {
+                        self.adrenaline.stop();
                         self.machine.request(StateId::DEAD);
                     }
                 }
