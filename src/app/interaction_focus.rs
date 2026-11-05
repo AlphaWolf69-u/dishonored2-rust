@@ -26,11 +26,32 @@ pub(super) struct FocusedInteraction {
 /// a separate owner.
 #[derive(Resource, Default)]
 pub(super) struct DiscoveredDocuments {
-    items: Vec<String>,
+    items: Vec<DocumentEntry>,
+}
+#[derive(Clone, Debug)]
+pub(super) struct DocumentEntry {
+    pub path: String,
+    pub item_id: u32,
+    pub kind: crate::assets::inventory_item::ReadableKind,
+    pub is_new: bool,
 }
 impl DiscoveredDocuments {
-    pub fn items(&self) -> &[String] { &self.items }
-    pub fn record(&mut self, item: String) {
-        if !self.items.contains(&item) { self.items.push(item); }
+    pub fn items(&self) -> &[DocumentEntry] { &self.items }
+    /// 1407241c0 inserts inventory additions as new entries. The caller must
+    /// invoke this only after the gameplay inventory admits the item.
+    pub fn record(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind) {
+        if !self.items.iter().any(|item| item.path == path) {
+            self.items.push(DocumentEntry { path, item_id, kind, is_new: true });
+        }
+    }
+    /// 140724bf0 clears the selected item; the journal passes -1 to clear all
+    /// entries of the selected document/book kind.
+    pub fn mark_seen(&mut self, kind: crate::assets::inventory_item::ReadableKind, item_id: Option<u32>) {
+        for item in &mut self.items {
+            if item.kind == kind && item_id.is_none_or(|id| id == item.item_id) {
+                item.is_new = false;
+                if item_id.is_some() { break; }
+            }
+        }
     }
 }
