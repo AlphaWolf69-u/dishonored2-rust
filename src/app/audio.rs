@@ -739,6 +739,13 @@ fn play_events(
         decodes.release(event, DecodeClient::Watched);
     }
     let Some(mixer) = &mix.mixer else {
+        for queued in std::mem::take(&mut pending.0) {
+            match queued.request {
+                Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
+                    | Request::PostAt { event, emitter, .. } if queued.watched => completions.failed(event, emitter),
+                _ => {},
+            }
+        }
         for message in events.read() {
             match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
