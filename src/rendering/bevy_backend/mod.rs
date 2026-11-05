@@ -44,6 +44,8 @@ pub mod camera_mask_blur;
 #[cfg(feature = "game")]
 pub mod camera_masks;
 #[cfg(feature = "game")]
+pub mod mask_grading;
+#[cfg(feature = "game")]
 pub mod camera_blur;
 #[cfg(feature = "game")]
 pub mod camera_stencil;

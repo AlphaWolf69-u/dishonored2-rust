@@ -2063,3 +2063,16 @@ space for those keys exists. The helper remains unconnected and unbuilt;
 expected integration cost is two bounded key scans and at most two appends,
 with no resource reads or extra GPU work. Do not apply it before merging the
 incoming instance block or replace omitted keys with per-frame defaults.
+
+### Mask grayscale consumer implementation
+
+The pending mask consumer now has a complete host pass and installed-program
+WGSL port in `bevy_backend::mask_grading`. It consumes caller-owned HDR/mask
+views and the existing adaptation buffer, reuses unchanged bind groups and
+uniforms, and owns no target textures. The prediction remains zero runtime
+work until the actual effect owner activates it; an active invocation issues
+one fullscreen draw. Pipeline construction must stay lazy at the effect/view
+owner. No runtime owner or producer calls the pass yet, so this is unbuilt
+integration work and has no verified output or timing claim. The formula uses
+max(R,G,B), unsaturated mask*greyAmount, original invert semantics, and the
+existing HDR range conversion functions; it preserves source alpha.
