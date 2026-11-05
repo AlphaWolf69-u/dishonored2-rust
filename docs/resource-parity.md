@@ -3843,3 +3843,59 @@ F8. Next matching action or level retirement drops the old history. It checks
 conservative pre-jitter frustum intersection, not rasterization, alpha or
 occlusion. Camera-control f25c019 compiled, but the user's check still found
 intermittently missing hands; this diagnostic does not constitute a hand fix.
+
+### HUD ownership and sensor scheduling integration (2026-11-05)
+
+`app::hud_movie` uses the installed HUD movie and the existing Flash player,
+font, bitmap and GPU texture owners. Player-owned health, mana, oxygen,
+interaction focus and crosshair state feed the authored presentation. Ammo
+remains hidden until its real equipment owner supplies it. The supported
+initial possession state is constructor value 14 (1407f7860 -> 1408216d0);
+this does not implement possession abilities or saved-state restoration.
+
+Host: a HUD tick has one acknowledged worker handoff. The main thread services
+texture acquisition and failure/disconnection events while waiting, preserving
+ordered focus transitions rather than accumulating unbounded updates. The
+original host 14002cc90 permits at most one authored movie frame per engine
+update, retaining phase debt. Elapsed timer time is retained separately;
+141021b40's exact distinct internal clock consumers remain a Flash-runtime
+integration task. HUD sounds carry the level epoch, so retired movies cannot
+post into a later level. Pause and loading sounds retain their existing owner.
+
+GPU bitmap entries use shared image allocation identity, with weak image/movie
+leases preventing address reuse and retaining still-live hidden movies. Glyph
+entries use weak page leases and dirty versions. Incoming leases are registered
+before retirement; lookups use the batch character reference rather than a
+full image-map scan. Native bounded bitmap cache limits remain in force
+(140034ba0 -> 1402df160 / 1402e3460). This is host lifetime integration, not
+a claim that 1410150f0 describes bitmap cache ownership. Prediction: repeated
+use of a still-live HUD across pause reuses eligible uploads, outgoing movies
+release their leases, and one in-flight tick bounds queued HUD work. Existing
+opt-in HUD/cache diagnostics count affected work. Compilation and production
+verification of this integrated HUD batch are pending; no CPU gain is claimed.
+
+The latest hand report collision-1793899814727 records both contact flags false,
+not a renderer admission failure. Detailed geometry recording was disabled in
+that manually launched process; the configured process had been hidden by our
+launch helper. Startup now records the actual diagnostic flag in the session
+log. The native frame routine 1408af8a0 issues QUERY_PHYSICS (stage 1), resolves
+140096240 and waits through 14007a9e0, then runs DEFAULT (stage 2). Catfall
+1403a5e30/1403a5a00 and mantle 1403bcb20/1403bcb00 consume results from that
+same frame. The rewrite's previous-frame result consumption was corrected;
+mantle still issues from its existing prior-stage destination/forward state.
+This removes stale contact results without adding queries or GPU work; it is
+not proof that the remaining collision geometry gaps or missing hands are fixed.
+
+Broadphase tree-filter evidence was reused from the existing point-query audit
+and independently confirmed: arkCollisionQueryFilter vtable 141ad4b68 and
+arkCollisionFilter vtable 141ad4c08 both dispatch slot +0x38 to 14011d080,
+which returns true. Visiting all trees is exact for both; body and leaf filters
+still apply. No redundant always-true filter implementation was added.
+
+The e1cc75b sound/catalog source batch compiled successfully. A production
+EotW -> Dust -> Dust Return -> EotW client completed with exit 0 and retained
+the same catalog, GPU device, window and single audio output across transitions.
+No retired-generation error was logged. This verifies the exercised transition
+path, not an injected cancellation race or final sound latency comparison.
+The process-wide Catalog::shared intentionally retains its catalog until exit;
+static destruction is not expected to emit a final catalog Drop record.

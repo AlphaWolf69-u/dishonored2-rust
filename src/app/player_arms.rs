@@ -326,6 +326,10 @@ pub(super) fn load_player_arms(
             depth_hack: if model_depth_hack > 0.0 { parameter.unwrap_or(1.0) } else { 1.0 },
         });
     }
+    let capture_geometry = std::env::var("DH2_DEBUG_HAND_GEOMETRY").as_deref() == Ok("1");
+    crate::platform::client_diagnostics::record(&format!(
+        "Hand action geometry recording enabled={capture_geometry}"
+    ));
     Ok(PlayerArms {
         player_depth_hack: view.depth_hack,
         arms,
@@ -334,7 +338,7 @@ pub(super) fn load_player_arms(
         }),
         action_active: [false; 2],
         action_history: [None; 2],
-        capture_geometry: std::env::var("DH2_DEBUG_HAND_GEOMETRY").as_deref() == Ok("1"),
+        capture_geometry,
         action_capture: Default::default(),
     })
 }
