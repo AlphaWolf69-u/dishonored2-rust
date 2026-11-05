@@ -3,8 +3,7 @@ use crate::archive::Catalog;
 use crate::gameplay::player::decls;
 use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
-mod residency;
-pub(crate) fn release_unused() { residency::release_unused(); }
+mod acquisition;
 
 pub struct Rig {
     pub skeleton: std::sync::Arc<crate::edge_skeleton::EdgeSkeleton>,
@@ -14,8 +13,7 @@ pub struct Rig {
     animsets: Vec<String>,
     pub tokens: Vec<String>,
     pub path: String,
-    residency: Option<residency::Retire>,
-    audit: Option<residency::Audit>,
+    audit: Option<acquisition::Audit>,
 }
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
@@ -31,8 +29,8 @@ fn track_crc(crc: &mut flate2::Crc, bytes: &[u8], cycles: &mut u64, measure: boo
 }
 
 fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
-    let audit_cycles = residency::tracing().then(crate::loading::thread_cycles).flatten();
-    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") || residency::tracing();
+    let audit_cycles = acquisition::tracing().then(crate::loading::thread_cycles).flatten();
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") || acquisition::tracing();
     let mut checksum_cycles = 0;
     let mut source_crc = flate2::Crc::new();
     let mut animset_count = 0usize;
@@ -114,8 +112,8 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     if trace {
         eprintln!("MEMORY rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
     }
-    let audit = trace.then(|| residency::Audit::new(source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
-    Ok(Rig { skeleton, root, aliases, animsets, tokens, path, residency: None, audit })
+    let audit = trace.then(|| acquisition::Audit::new(source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
+    Ok(Rig { skeleton, root, aliases, animsets, tokens, path, audit })
 }
 
 impl Rig {
@@ -123,7 +121,7 @@ impl Rig {
         load_rig(catalog, &model.replace('\\', "/").to_ascii_lowercase())
     }
     pub fn acquire(catalog: &Catalog, model: &str) -> Result<std::sync::Arc<Self>, String> {
-        residency::acquire(catalog, model)
+        acquisition::acquire(catalog, model)
     }
     pub fn joint(&self, name: &str) -> Result<usize, String> {
         self.skeleton.joint_names.iter().position(|n| n == name).ok_or_else(|| format!("{} has no joint {name}", self.path))

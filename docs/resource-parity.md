@@ -3620,3 +3620,15 @@ content and final-release diagnostics remain for future measured overlaps;
 normal rendering performs no diagnostic checksum scan. Original class-wide
 streaming/admission and all unimplemented entity consumers are not certified
 by this four-map comparison.
+
+The same consumer review removed the new aggregate Rig registry before
+compilation. The integrated callers acquire distinct player body/left/right
+model rigs; usable instances already share their `BasicRig` through the live
+usable asset owner. Baseline four-map diagnostics show four acquisitions of
+each player rig, one per level, and map-scoped usable rig acquisitions. No
+additional concurrent model-rig consumer was established. `animation_rig`
+therefore keeps one typed loader and optional acquisition/release diagnostics,
+without another weak map, wait queue or cache-purge hook. The Edge skeleton
+identity owner is distinct: that actual installed resource is requested by
+player, arm rendering, physics and rest-skin consumers, so its sharing and
+full-payload lifetime tradeoff remain the next measured comparison.

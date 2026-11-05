@@ -2140,3 +2140,9 @@ setup-to-physics sharing already covered the exercised overlap. Remove that
 additional registry rather than pinning extra resources to create cache hits.
 Any future cross-owner cache requires an actual concurrent installed use case
 and an affected-function/residency measurement; it is not a current gain.
+
+The aggregate Rig global cache has also been removed after reviewing every
+integrated caller: body/arms use distinct model paths and usable instances
+already share the containing BasicRig asset. It had no established additional
+overlap to optimize. The common typed loader remains; skeleton resource
+sharing is measured separately because those consumers do overlap.
