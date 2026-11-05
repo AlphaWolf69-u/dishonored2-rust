@@ -2099,3 +2099,11 @@ R8_UNORM output and the opacity-only shader specialization. Ordinary record
 uses colour mode. No additional pass, target allocation or upload occurs until
 record_mask is invoked; the caller must gate it on actual mask demand. Shader
 and affected record/upload costs remain to be measured after integration.
+
+Mask target ownership implementation: predicted active logical payload is one
+R8 texel per full-resolution pixel (minimum8x8), with no mip chain or duplicate
+CPU image. Allocation occurs only on first prepare/extent change, clear occurs
+once per requested mask frame, and release_view drops both target and cached
+input references. The pipeline and uniform buffer can remain reusable without
+retaining scene textures. This is still inactive integration work; no memory
+or pass timing is claimed until its actual consuming view is connected.

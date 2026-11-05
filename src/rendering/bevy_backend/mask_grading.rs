@@ -11,6 +11,32 @@ pub struct MaskGradingParameters {
     pub invert: bool,
 }
 
+/// 14036d0c0's full-resolution R8_UNORM mask (minimum eight per axis).
+/// Kept with the consuming view, rather than in a global image registry.
+struct MaskTarget {
+    texture: Texture,
+    view: TextureView,
+    extent: [u32; 2],
+}
+
+impl MaskTarget {
+    fn new(device: &RenderDevice, extent: [u32; 2]) -> Self {
+        let extent = extent.map(|axis| axis.max(8));
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("bend-time mask"),
+            size: Extent3d { width: extent[0], height: extent[1], depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: TextureDimension::D2,
+            format: TextureFormat::R8Unorm,
+            // COPY_SRC permits the existing numeric capture owner to inspect
+            // this target; ordinary rendering schedules no copy.
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        Self { texture, view, extent }
+    }
+}
+
 pub struct MaskGradingPass {
     layout: BindGroupLayout,
     pipeline: RenderPipeline,
@@ -18,6 +44,7 @@ pub struct MaskGradingPass {
     sampler: Sampler,
     binding: Option<((TextureViewId, TextureViewId, BufferId), BindGroup)>,
     last_parameters: Option<[u8; 16]>,
+    mask: Option<MaskTarget>,
 }
 
 impl MaskGradingPass {
@@ -68,7 +95,53 @@ impl MaskGradingPass {
             address_mode_u: AddressMode::ClampToEdge, address_mode_v: AddressMode::ClampToEdge,
             min_filter: FilterMode::Linear, mag_filter: FilterMode::Linear, ..Default::default()
         });
-        Self { layout, pipeline, parameters, sampler, binding: None, last_parameters: None }
+        Self { layout, pipeline, parameters, sampler, binding: None, last_parameters: None, mask: None }
+    }
+
+    /// Invoke only for an active consuming view. Resizing releases old input
+    /// bindings before replacing the target, so they cannot pin the old image.
+    pub fn prepare_mask(&mut self, device: &RenderDevice, extent: [u32; 2]) -> &TextureView {
+        let extent = extent.map(|axis| axis.max(8));
+        if self.mask.as_ref().is_none_or(|mask| mask.extent != extent) {
+            self.binding = None;
+            self.mask = Some(MaskTarget::new(device, extent));
+        }
+        &self.mask.as_ref().unwrap().view
+    }
+
+    /// 1403222f0 clears the target even when its masking-surface list is empty.
+    /// It leaves scene depth intact for the subsequent surface draws.
+    pub fn clear_mask(&self, encoder: &mut CommandEncoder) -> Result<(), String> {
+        let mask = self.mask.as_ref().ok_or("mask target was not prepared")?;
+        let _pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("clear bend-time mask"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: &mask.view, depth_slice: None, resolve_target: None,
+                ops: Operations { load: LoadOp::Clear(Default::default()), store: StoreOp::Store },
+            })],
+            depth_stencil_attachment: None, timestamp_writes: None,
+            occlusion_query_set: None, multiview_mask: None,
+        });
+        Ok(())
+    }
+
+    /// The compiled pass may remain cached while its view is inactive; release
+    /// target and sampled input references together at that transition.
+    pub fn release_view(&mut self) {
+        self.binding = None;
+        self.mask = None;
+    }
+
+    pub fn mask_texture(&self) -> Option<&Texture> {
+        self.mask.as_ref().map(|mask| &mask.texture)
+    }
+
+    pub fn record_prepared_mask(&mut self, device: &RenderDevice, queue: &RenderQueue,
+        encoder: &mut CommandEncoder, parameters: &MaskGradingParameters,
+        hdr: &TextureView, adaptation: &Buffer, target: &TextureView,
+    ) -> Result<(), String> {
+        let mask = self.mask.as_ref().ok_or("mask target was not prepared")?.view.clone();
+        self.record(device, queue, encoder, parameters, hdr, &mask, adaptation, target)
     }
 
     /// The caller supplies distinct HDR source/destination views. Parameters

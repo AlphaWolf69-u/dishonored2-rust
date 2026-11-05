@@ -3565,3 +3565,11 @@ Bounded mask-material prewarming is available. Distinct authored masking
 programs and distortion masking still return explicit preparation errors.
 Status remains unbuilt/inactive: no view owner invokes the mode until target,
 consumer, dynamic overrides and world-material mesh handling are connected.
+
+The mask consumer now owns its lazily prepared per-view target as well:
+R8_UNORM, one mip/sample, full dimensions clamped to eight per axis, as in
+14036d0c0. Its explicit clear preserves scene depth and clears even an empty
+surface list (1403222f0). Resize and view release drop cached sampled input
+bindings together with the target; compiled pipeline/uniform capacity may
+remain with the host consumer. COPY_SRC is a host diagnostic permission only;
+normal rendering adds no readback. Status: unbuilt and not activated by a view.
