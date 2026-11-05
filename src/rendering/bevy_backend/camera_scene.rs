@@ -649,7 +649,6 @@ struct FxUpdateInputs<'w> {
     prewarm: Res<'w, super::world_effects::DynamicMaterialPrewarm>,
     world_sounds: Res<'w, super::world_sounds::WorldSounds>,
     decals: Res<'w, super::projected_decals::DecalScene>,
-    water_selection: Option<Res<'w, super::water_scene::WaterViewSelection>>,
     swimming_surface: Res<'w, super::water_scene::SwimmingSurfaceMailbox>,
 }
 
@@ -689,9 +688,8 @@ fn prepare_screen_effects(
     // The original advances FX on the game thread before the frame renders;
     // Its water inputs are the CPU view state and the previously published
     // head-query ring, both available without waiting for GPU work here.
-    let (ocean_height, head_water_surface, body_water_surface, samples) = match fog.upcoming_ocean_inputs(
+    let (ocean_height, head_water_surface, body_water_surface, samples) = match fog.simulation_ocean_inputs(
         water,
-        fx.water_selection.as_ref().and_then(|selection| selection.0.as_ref()),
     ) {
         Ok(inputs) => {
             *ocean_error = None;

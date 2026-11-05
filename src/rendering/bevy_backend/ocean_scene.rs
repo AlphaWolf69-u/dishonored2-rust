@@ -439,6 +439,11 @@ impl OceanScene {
         .0;
         view.enabled.then_some(view.water_level)
     }
+    /// Particle simulation runs before this update's render-view preparation
+    /// (3619d0 -> 361d60 -> 351780 -> 3014b0), so it reads the retained view.
+    pub(crate) fn retained_water_level(&self, disabled: bool) -> Option<f32> {
+        (!disabled && self.state.view.enabled).then_some(self.state.view.water_level)
+    }
     pub fn prepared_water_level(&self, frame: u32, disabled: bool) -> Result<Option<f32>, String> {
         if disabled {
             return Ok(None);
