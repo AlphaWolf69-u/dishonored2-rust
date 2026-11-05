@@ -1160,12 +1160,14 @@ impl StateMachine {
         let Some(path) = path else { return 0 };
         let Some(scene) = frame.scenes.get(path) else {
             eprintln!("Midnight scene {path} was not loaded");
+            frame.midnight.last_start_error = Some(format!("{path}: scene not loaded"));
             return 0;
         };
         match frame.midnight.start_with_parts(scene, frame.md6, rate, frame.animations, parts) {
             Ok(handle) => handle,
             Err(error) => {
                 eprintln!("Midnight scene {path}: {error}");
+                frame.midnight.last_start_error = Some(format!("{path}: {error}"));
                 0
             }
         }
