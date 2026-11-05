@@ -113,9 +113,20 @@ impl OceanQueryQueue {
         completed: [&[[f32; 4]]; 4],
         output: &mut [[f32; 4]],
     ) -> Result<Option<usize>, String> {
-        if handle.is_invalid() {
-            return Ok(None);
-        }
+        let count = self.peek(*handle, completed, output)?;
+        if count.is_some() { self.release(handle)?; }
+        Ok(count)
+    }
+
+    /// Read a completed CPU ring without consuming its handle. The renderer
+    /// uses this only to publish the value that gameplay will consume next.
+    pub fn peek(
+        &self,
+        handle: OceanQueryHandle,
+        completed: [&[[f32; 4]]; 4],
+        output: &mut [[f32; 4]],
+    ) -> Result<Option<usize>, String> {
+        if handle.is_invalid() { return Ok(None); }
         let slot = usize::from(handle.slot);
         let record = *self
             .records
@@ -135,8 +146,6 @@ impl OceanQueryQueue {
                 .ok_or("ocean query result storage is not available")?;
             destination.copy_from_slice(values);
         }
-        self.records[slot] = QueryRecord::default();
-        *handle = OceanQueryHandle::INVALID;
         Ok(Some(count))
     }
 

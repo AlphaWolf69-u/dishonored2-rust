@@ -1401,6 +1401,36 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                             publication.update = Some(Some(super::water_scene::PreparedOceanView { frame: water.matrices.frame, level }));
                         }
                     }
+                    // The next gameplay update consumes the CPU ring copied
+                    // by this render update, without waiting on the GPU.
+                    if let (Some(mailbox), Some(water)) = (
+                        resources.ocean_mailbox.as_ref(),
+                        resources.water_frame.as_ref().and_then(|value| value.0.as_ref())
+                            .filter(|water| water.camera == frame.camera),
+                    ) {
+                        if water.head_water_surface.is_none() {
+                            mailbox.publish(None);
+                        } else {
+                            let surface = match gpu.current.as_ref().and_then(|view| view.ocean.as_ref()) {
+                                Some(ocean) => ocean.next_swimming_surface(water),
+                                None => Ok(super::water_scene::SwimmingSurface {
+                                    frame: water.matrices.frame, plane: water.head_water_surface,
+                                    ocean_level: None, head: water.head_water_surface,
+                                    body: water.head_water_surface, samples: None,
+                                }),
+                            };
+                            match surface {
+                                Ok(surface) => mailbox.publish(Some(surface)),
+                                Err(error) => {
+                                    if last_error.as_ref() != Some(&error) {
+                                        warn!("Swimming query publication pending: {error}");
+                                    }
+                                    *last_error = Some(error);
+                                    return;
+                                }
+                            }
+                        }
+                    }
                 }
                 *last_error=None;
                 return;

@@ -192,8 +192,9 @@ pub struct WaterFrame {
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub struct WaterSceneFrame(pub Option<WaterFrame>);
 
-/// Completed existing ocean-height readbacks, shared back to gameplay. This
-/// carries no GPU resources; level teardown clears the publication.
+/// Completed CPU ocean-height data, shared back to gameplay. Publication uses
+/// a short mailbox lock and copies at most five float4 samples; it owns no GPU
+/// resources. Contact/owner changes and level teardown clear stale samples.
 #[derive(Clone, Copy, Debug)]
 pub struct SwimmingSurface {
     pub frame: u32,
@@ -218,6 +219,7 @@ pub struct SwimmingSurfaceMailbox {
     prepared_ocean: Arc<std::sync::Mutex<Option<PreparedOceanView>>>,
 }
 impl SwimmingSurfaceMailbox {
+    pub(super) fn identity(&self) -> usize { Arc::as_ptr(&self.swimming) as usize }
     pub fn latest(&self) -> Option<SwimmingSurface> {
         self.swimming.lock().ok().and_then(|value| *value)
     }

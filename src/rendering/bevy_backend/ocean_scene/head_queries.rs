@@ -122,6 +122,35 @@ impl HeadQueries {
     }
 }
 impl OceanScene {
+    /// Preview completed CPU-ring data for the next gameplay update. The
+    /// frame marker is the publication frame, not the GPU sample's age.
+    /// The query queue retains the handle until its normal consumption.
+    pub(crate) fn next_swimming_surface(&self, frame: &WaterFrame)
+        -> Result<super::super::water_scene::SwimmingSurface, String> {
+        let mut result = super::super::water_scene::SwimmingSurface {
+            frame: frame.matrices.frame,
+            plane: frame.head_water_surface,
+            ocean_level: self.retained_water_level(frame.ocean_render_settings.skip),
+            head: frame.head_water_surface,
+            body: frame.head_water_surface,
+            samples: None,
+        };
+        if frame.head_water_surface.is_some() && self.last_frame == Some(frame.matrices.frame)
+            && result.ocean_level.is_some() {
+            if let Some(queries) = self.head_queries.as_ref() {
+                let mut samples = [[0.; 4]; 5];
+                if let Some(count) = queries.requests.peek(
+                    queries.handles[queries.cursor], queries.readbacks.completed_rings(), &mut samples,
+                )? {
+                    if count != 5 { return Err("swimming wave query did not return five points".into()); }
+                    result.head = Some(samples[0][0]);
+                    result.body = Some(crate::gameplay::player::swimming::highest_wave(&samples));
+                    result.samples = Some(samples);
+                }
+            }
+        }
+        Ok(result)
+    }
     pub(super) fn record_head_queries(
         &mut self,
         device: &RenderDevice,

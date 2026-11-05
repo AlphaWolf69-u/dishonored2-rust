@@ -666,13 +666,10 @@ fn prepare_screen_effects(
     mut ocean_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
-    mut swimming_published: Local<bool>,
+    mut swimming_owner: Local<Option<(usize, Entity, Option<f32>, bool, bool)>>,
 ) {
     let Some(water) = water.0.as_ref() else {
-        if *swimming_published {
-            fx.swimming_surface.publish(None);
-            *swimming_published = false;
-        }
+        if swimming_owner.take().is_some() { fx.swimming_surface.publish(None); }
         gpu.screen_draws = None;
         gpu.simulation.screen_state = Default::default();
         gpu.simulation.particle_systems = Default::default();
@@ -684,11 +681,16 @@ fn prepare_screen_effects(
     if view.into_inner().id() != water.camera {
         return;
     }
+    let owner = (fx.swimming_surface.identity(), water.camera, water.head_water_surface,
+        water.ocean_render_settings.skip, water.ocean_environment.view.enabled);
+    if *swimming_owner != Some(owner) {
+        fx.swimming_surface.publish(None);
+        *swimming_owner = Some(owner);
+    }
     gpu.screen_draws = None;
     // The original advances FX on the game thread before the frame renders;
-    // Its water inputs are the CPU view state and the previously published
-    // head-query ring, both available without waiting for GPU work here.
-    let (ocean_height, head_water_surface, body_water_surface, samples) = match fog.simulation_ocean_inputs(
+    // FX reads the previously prepared ocean view and completed CPU query ring.
+    let (ocean_height, head_water_surface, _, _) = match fog.simulation_ocean_inputs(
         water,
     ) {
         Ok(inputs) => {
@@ -703,20 +705,6 @@ fn prepare_screen_effects(
             return;
         }
     };
-    if water.head_water_surface.is_some() {
-        fx.swimming_surface.publish(Some(super::water_scene::SwimmingSurface {
-            frame: water.matrices.frame,
-            plane: water.head_water_surface,
-            ocean_level: ocean_height,
-            head: head_water_surface,
-            body: body_water_surface,
-            samples,
-        }));
-        *swimming_published = true;
-    } else if *swimming_published {
-        fx.swimming_surface.publish(None);
-        *swimming_published = false;
-    }
     let Some(sources) = sources.0.as_ref() else {
         gpu.simulation.screen_state = Default::default();
         gpu.simulation.particle_systems = Default::default();
