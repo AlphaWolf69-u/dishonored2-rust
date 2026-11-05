@@ -1806,3 +1806,41 @@ uploaded bytes and frame-loop behavior. Any additional checks belong to
 acquisition or level transitions, not every streaming frame. Measure actual
 acquisition counts, uploads, input fingerprints and only the affected CPU
 spans before keeping a change.
+
+The no-overlay EotW / Dust / EotW production comparison matched 11,849
+image-packing descriptors and payload checksums, 430 UI bitmap fingerprints,
+and three collision-material fingerprints. The affected resident-image
+acquisition had 1,065 calls in each mode and a 4,200-cycle median in both.
+Image preparation included checksum work in the measured span, so its totals
+cannot establish an uninstrumented speed difference. No editable layer was
+active; the editable branches and overlapping-handle behavior were reviewed
+from the ownership code rather than observed in that run. Asset-ID checks at
+level cleanup also account for independently reconstructed Bevy handles; they
+do not keep an asset alive.
+
+### Combined level manifests: investigation and prediction
+
+`acquire_level_list` currently combines init, common and map manifests by
+cloning every resource descriptor, including its two owned strings. The init
+and common lists remain cached independently while the combined copy is live.
+The measured Edge of the World combined list contains 46,546 descriptors and
+counts 6,878,036 bytes of vector and String capacity; that is not all waste,
+because map-only descriptors are still needed and the count is not RSS.
+
+Investigate keeping three borrowed/shared manifest segments in load order,
+with map data released when its final consumer finishes. The predicted saving
+is the duplicate init/common descriptor and string storage plus the temporary
+clone work; one copy of every active map descriptor remains necessary. Before
+implementing, account for indexed request matching, report traversal, overlap
+between preparations and editable-manifest invalidation. Compare exact request
+order and progress, retained capacities, and only the affected assembly,
+precredit and read-history CPU spans. Per-entry lookup must not turn into an
+unmeasured gameplay-frame regression.
+
+The same manifest reader currently lowercases each path into a new String and
+then calls `replace` even when it contains no backslashes. Copy the path once,
+lowercase it in place and allocate a replacement only when a backslash exists.
+Predict one fewer temporary path allocation for each forward-slash-only entry,
+with unchanged ASCII normalization, error handling and request order. Measure
+the actual separator mix and the affected manifest-assembly span independently
+of segmented-list reuse before keeping this change.

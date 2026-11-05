@@ -92,7 +92,7 @@ impl LevelLifetime {
             world.get_resource::<super::resident_images::UiImages>(),
             world.get_resource::<super::texture_streaming::SharedImages>(),
         ) {
-            images.release_read_history(shared);
+            images.release_read_history(shared, world.get_resource::<Assets<Image>>());
         }
         drop(model_history);
         drop(material_history);

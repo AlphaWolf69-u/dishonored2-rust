@@ -93,7 +93,7 @@ impl WaterScene {
                 let chain = if let Some(chain) = cubes.get(&key) {
                     Arc::clone(chain)
                 } else {
-                    let chain = resident.layered(&key, true, || {
+                    let chain = resident.layered(catalog, &key, true, || {
                         let loaded = crate::material::load_cube_image(catalog, name)?;
                         Ok(crate::rendering::bevy_backend::layered_images::LayeredImageSource::cube(key.clone(), loaded.image))
                     })?;
@@ -112,7 +112,7 @@ impl WaterScene {
                 let chain = if let Some(chain) = arrays.get(&key) {
                     Arc::clone(chain)
                 } else {
-                    let chain = resident.layered(&key, false, || {
+                    let chain = resident.layered(catalog, &key, false, || {
                         let bytes = catalog.read(&key).map_err(|e| e.to_string())?
                             .ok_or_else(|| format!("missing water caustics {key}"))?;
                         let copy = std::env::var("DH2_DEBUG_COPY_LAYERED_STAGING").as_deref() == Ok("1");

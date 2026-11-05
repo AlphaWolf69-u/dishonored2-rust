@@ -3493,3 +3493,22 @@ matched 430 UI bitmap and two collision-material fingerprints. Acquisition
 measurements and their limitations are recorded in `optimization-opportunities.md`.
 Editable branches and overlapping generations were source-reviewed; that
 production comparison had no active editable layers.
+
+Editable image base files and separately indexed mip files now participate in
+the same re-acquisition decision. Scene images keep their authored common/map
+upload classification, while editable views are not carried forward as shared
+session images. Resident 2D views, water cube/array sources and UI bindings
+likewise avoid reusing an older editable view. Existing GPU handles remain
+valid; read-history bookkeeping tracks editable 2D generations by asset ID
+and weak handle and layered generations by weak source reference. The host
+retains an image history entry while the relevant handle or Bevy asset remains
+live. The original registry and view-publication boundaries are `14005feb0`,
+`140060180` and `1402f5530`.
+
+A same-executable no-overlay Edge of the World / Dust / Edge of the World
+comparison matched all 11,849 recorded image-packing descriptors and checksums,
+430 UI bitmap fingerprints and three collision-material fingerprints. The
+1,065 resident-image acquisition spans had a 4,200-cycle median in each mode.
+Longer preparation timings include diagnostic checksum work and do not show a
+clean CPU result. Editable-image branches and their overlap handling were
+source-reviewed; no active editable layer was present in that comparison.

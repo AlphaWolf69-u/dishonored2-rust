@@ -286,6 +286,21 @@ impl Catalog {
         self.overlay.iter().any(|(path, _)| path.starts_with(prefix) && path.ends_with(".decl"))
     }
 
+    /// A compiled image and its separate mip members form one cached identity.
+    /// Layer names are normalized and sorted when the catalog is opened.
+    pub(crate) fn image_has_overlay(&self, path: &str) -> bool {
+        if self.overlay.is_empty() { return false; }
+        let normalized = path.replace('\\', "/").to_ascii_lowercase();
+        let path = normalized.rsplit_once("_mip").filter(|(_, mip)|
+            !mip.is_empty() && mip.bytes().all(|byte| byte.is_ascii_digit()))
+            .map_or(normalized.as_str(), |(base, _)| base);
+        let start = self.overlay.partition_point(|(key, _)| key.as_str() < path);
+        self.overlay[start..].iter().take_while(|(key, _)| key.starts_with(path)).any(|(key, _)| {
+            key.as_str() == path || key.strip_prefix(path).and_then(|tail| tail.strip_prefix("_mip"))
+                .is_some_and(|mip| !mip.is_empty() && mip.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+    }
+
     /// Resource paths of the archives and the overlay, sorted and unique.
     fn all_paths<'a>(&'a self, keep: impl Fn(&str) -> bool + 'a) -> Vec<String> {
         let mut paths: Vec<String> = self

@@ -54,12 +54,16 @@ pub(super) struct DiffuseMipState {
 #[derive(Resource, Default, Clone)]
 pub(super) struct SharedImages {
     paths: std::collections::HashSet<String>,
+    editable: std::collections::HashSet<String>,
     resident: std::collections::HashMap<String, (Option<u8>, Handle<Image>, DiffuseMipState)>,
     pending: std::collections::HashMap<AssetId<Image>, residency::SharedReplacement>,
 }
 
 impl SharedImages {
     pub(super) fn contains(&self, path: &str) -> bool { self.paths.contains(path) }
+    pub(super) fn can_persist(&self, path: &str) -> bool {
+        self.paths.contains(path) && (self.editable.is_empty() || !self.editable.contains(path))
+    }
 
     pub(super) fn is_resident(&self, path: &str) -> bool { self.resident.contains_key(path) }
 
@@ -68,7 +72,8 @@ impl SharedImages {
     }
 
     pub(super) fn can_reuse(&self, path: &str, preferred: Option<u8>) -> bool {
-        self.resident.get(path).is_some_and(|(mip, _, _)| *mip == preferred)
+        (self.editable.is_empty() || !self.editable.contains(path))
+            && self.resident.get(path).is_some_and(|(mip, _, _)| *mip == preferred)
     }
 
     pub(super) fn current_view(&self, path: &str) -> Option<(Handle<Image>, DiffuseMipLevel)> {
@@ -92,8 +97,12 @@ impl SharedImages {
                     .map(|r| r.path.clone()),
             );
         }
+        let editable = if catalog.has_overlays() {
+            paths.iter().filter(|path| catalog.image_has_overlay(path)).cloned().collect()
+        } else { Default::default() };
         Ok(Self {
             paths,
+            editable,
             resident: Default::default(),
             pending: Default::default(),
         })
@@ -109,7 +118,7 @@ impl SharedImages {
         }
         let mut count = 0;
         for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
-            if !self.paths.contains(path) {
+            if !self.can_persist(path) {
                 continue;
             }
             let (Some(handle), state) = (
@@ -149,6 +158,7 @@ pub(super) fn reuse_shared_image(
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
 ) -> bool {
+    if !shared.editable.is_empty() && shared.editable.contains(&queue.diffuse_image_paths[slot]) { return false; }
     let Some((_, handle, mut state)) = shared
         .resident
         .remove(&queue.diffuse_image_paths[slot])

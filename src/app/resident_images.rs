@@ -21,6 +21,10 @@ struct Registry {
     layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
     noise: Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource>,
     leases: HashMap<String, Weak<ResidentImage>>,
+    /// Editable views are never reused. Asset IDs also cover independent
+    /// strong handles reconstructed by Bevy after the initial handle drops.
+    editable: HashMap<String, Vec<(AssetId<Image>, Weak<bevy::asset::StrongHandle>)>>,
+    editable_layered: HashMap<String, Vec<Weak<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>>,
     requests: usize,
     loads: usize,
     bytes: usize,
@@ -74,18 +78,21 @@ impl ResidentImages {
         if path == "_default" && !name.eq_ignore_ascii_case("_default") {
             warn!("Resident image {name}: resource missing; using the image loader's default texture");
         }
+        let editable = catalog.image_has_overlay(&path);
         // Fixed inline masks must not inherit a finer UI view. Conversely, a
         // full-image request can reuse inline data only if mip0 does not exist.
         let inline_equivalent = preferred.is_none() || !catalog.contains(&format!("{path}_mip0"));
         {
             let mut registry = self.registry.lock().unwrap();
             registry.requests += 1;
-            if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) {
-                return Ok(image);
+            if !editable {
+                if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) {
+                    return Ok(image);
+                }
             }
             // Named UI wrappers can outlive purge. Fixed inline sources are
             // held by their scope owner and ordinary frame/asset handles.
-            if preferred.is_some() {
+            if !editable && preferred.is_some() {
                 if let Some(image) = registry.leases.get(&path).and_then(Weak::upgrade) {
                     registry.resident.insert(path, image.clone());
                     return Ok(image);
@@ -104,17 +111,26 @@ impl ResidentImages {
         let extent = [loaded.image.width() as f64, loaded.image.height() as f64];
         let bytes = loaded.image.data.as_ref().map_or(0, Vec::len);
         let mut registry = self.registry.lock().unwrap();
-        if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) { return Ok(image); }
+        if !editable {
+            if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) { return Ok(image); }
+        }
         let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes, level, mip_count, initial_view: true});
         registry.loads += 1;
         registry.bytes += bytes;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY resident image load: path={path} bytes={bytes} separate={} preferred={preferred:?}", self.separate);
         }
-        if preferred.is_none() { registry.inline.insert(path, image.clone()); }
-        else {
-            registry.leases.insert(path.clone(), Arc::downgrade(&image));
-            registry.resident.insert(path, image.clone());
+        if editable {
+            if let Handle::Strong(handle) = &image.handle {
+                let generations = registry.editable.entry(path.clone()).or_default();
+                generations.push((image.handle.id(), Arc::downgrade(handle)));
+            }
+        } else {
+            if preferred.is_none() { registry.inline.insert(path, image.clone()); }
+            else {
+                registry.leases.insert(path.clone(), Arc::downgrade(&image));
+                registry.resident.insert(path, image.clone());
+            }
         }
         Ok(image)
     }
@@ -133,6 +149,7 @@ impl ResidentImages {
         if separate_scene_views() { return HashMap::new(); }
         let registry = self.registry.lock().unwrap();
         paths.iter().enumerate().filter_map(|(slot, path)| {
+            if catalog.image_has_overlay(path) { return None; }
             let selected = (!inline_slots.contains(&slot)).then_some(preferred).flatten().and_then(|mip| (0..=mip).rev()
                 .find(|mip| catalog.contains(&format!("{path}_mip{mip}"))));
             let image = registry.resident.get(path).into_iter().chain(registry.inline.get(path))
@@ -176,11 +193,20 @@ impl ResidentImages {
 
     /// The same registry boundary also owns cube/array identities. Their
     /// backend source retires upload staging and leases one immutable GPU image.
-    pub(super) fn layered(&self, path: &str, cube: bool,
+    pub(super) fn layered(&self, catalog: &archive::Catalog, path: &str, cube: bool,
         load: impl FnOnce() -> Result<crate::rendering::bevy_backend::layered_images::LayeredImageSource, String>,
     ) -> Result<Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>, String> {
         use crate::rendering::bevy_backend::layered_images::LayeredImageSource;
         if LayeredImageSource::separate() { return load().map(Arc::new); }
+        if catalog.image_has_overlay(path) {
+            let source = Arc::new(load()?);
+            if source.is_cube() != cube { return Err(format!("image {path} acquired with an incompatible cube/array type")); }
+            let mut registry = self.registry.lock().unwrap();
+            let generations = registry.editable_layered.entry(path.to_owned()).or_default();
+            generations.retain(|generation| generation.strong_count() != 0);
+            generations.push(Arc::downgrade(&source));
+            return Ok(source);
+        }
         if let Some(source) = self.registry.lock().unwrap().layered.get(path).cloned() {
             if source.is_cube() != cube { return Err(format!("image {path} acquired with an incompatible cube/array type")); }
             return Ok(source);
@@ -198,11 +224,15 @@ impl ResidentImages {
         let layered_before = registry.layered.len();
         let inline_before = registry.inline.len();
         // 14005fde0's builtins are class 2 even without archive manifest entries.
-        let persistent = |path: &String| shared.contains(path) || crate::material::intrinsic_image_kind(path).is_some();
+        let persistent = |path: &String| shared.can_persist(path) || crate::material::intrinsic_image_kind(path).is_some();
         registry.resident.retain(|path, _| persistent(path));
         registry.inline.retain(|path, _| persistent(path));
         registry.layered.retain(|path, _| persistent(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
+        registry.editable_layered.retain(|_, generations| {
+            generations.retain(|generation| generation.strong_count() != 0);
+            !generations.is_empty()
+        });
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY resident image registry purge: requests={} loads={} uploaded_bytes={} released={} retained_persistent={} retained_bytes={} live_leases={}",
                 registry.requests, registry.loads, registry.bytes, before-registry.resident.len(),
@@ -240,8 +270,17 @@ impl UiImages {
         images: &mut Assets<Image>, scene: Option<&SceneRenderQueue>, shared: Option<&SharedImages>) -> Result<crate::flash::iggy_functions::BoundTexture, String> {
         let path = crate::material::image_load_resource(catalog, name)
             .ok_or_else(|| format!("unresolved resident image source {name}"))?;
-        if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) { return Ok(binding); }
-        let current = if separate_scene_views() { None } else {
+        let editable = catalog.image_has_overlay(&path);
+        if editable {
+            let mut registry = self.registry.registry.lock().unwrap();
+            if let Some(generations) = registry.editable.get_mut(&path) {
+                generations.retain(|(id, generation)| generation.strong_count() != 0 || images.contains(*id));
+            }
+        }
+        if !editable {
+            if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) { return Ok(binding); }
+        }
+        let current = if editable || separate_scene_views() { None } else {
             scene.and_then(|scene| {
                 let slot = scene.diffuse_image_paths.iter().position(|source| source == &path)?;
                 Some((scene.diffuse_image_handles[slot].clone()?, scene.diffuse_mip_states[slot].resident?))
@@ -265,10 +304,19 @@ impl UiImages {
     /// Only identities that can actually be acquired from a surviving owner
     /// retain their loading credit; manifest membership by itself is not a
     /// resident image. Original 140060180 purges outgoing map resources.
-    pub(super) fn release_read_history(&self, shared: &SharedImages) {
+    pub(super) fn release_read_history(&self, shared: &SharedImages, images: Option<&Assets<Image>>) {
         let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
         let started = trace.then(crate::loading::thread_cycles).flatten();
-        let registry = self.registry.registry.lock().unwrap();
+        let mut registry = self.registry.registry.lock().unwrap();
+        registry.editable.retain(|_, generations| {
+            generations.retain(|(id, generation)| generation.strong_count() != 0
+                || images.is_some_and(|images| images.contains(*id)));
+            !generations.is_empty()
+        });
+        registry.editable_layered.retain(|_, generations| {
+            generations.retain(|generation| generation.strong_count() != 0);
+            !generations.is_empty()
+        });
         // Catalog read history normalizes case and separators. Most owner
         // keys are already canonical; only exceptional aliases need copies.
         let mut aliases = std::collections::HashSet::<String>::new();
@@ -276,6 +324,8 @@ impl UiImages {
             .chain(registry.resident.keys().map(String::as_str))
             .chain(registry.inline.keys().map(String::as_str))
             .chain(registry.layered.keys().map(String::as_str))
+            .chain(registry.editable.keys().map(String::as_str))
+            .chain(registry.editable_layered.keys().map(String::as_str))
             .chain(registry.leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
             .chain(self.bindings.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()));
         for path in paths {
@@ -291,6 +341,8 @@ impl UiImages {
                 || registry.resident.contains_key(path)
                 || registry.inline.contains_key(path)
                 || registry.layered.contains_key(path)
+                || registry.editable.contains_key(path)
+                || registry.editable_layered.contains_key(path)
                 || registry.leases.get(path).is_some_and(|lease| lease.strong_count() != 0)
                 || self.bindings.get(path).is_some_and(|binding| binding.strong_count() != 0)
         });
