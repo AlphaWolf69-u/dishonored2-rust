@@ -133,7 +133,8 @@ impl MaterialParameters {
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
         Ok(Self {
-            distortion_fog: if source.distortion {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)} else {Vec4::ZERO},
+            distortion_fog: if source.distortion {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)}
+                else if source.scrolling_water {Vec4::new(0.,0.,0.,scalar("liquid_Disto_amount")?)} else {Vec4::ZERO},
             pixel_effects: pixel.map_or(UVec4::ZERO, |p| UVec4::new(
                 u32::from(p.fuzz.is_some()), u32::from(p.fuzz_mask), u32::from(p.translucency.is_some()),
                 u32::from(p.translucency.as_ref().is_some_and(|t| t.vertex_alpha)))),
@@ -148,7 +149,11 @@ impl MaterialParameters {
             normal_options: UVec4::new(
                 u32::from(source.lighting.as_ref().is_some_and(|light| light.bump)),
                 u32::from(source.lighting.as_ref().is_some_and(|light| light.detail_bump.is_some())),
-                u32::from(source.option("twoSidedLighting")? != 0), 0),
+                u32::from(source.option("twoSidedLighting")? != 0),
+                if source.scrolling_water {
+                    u32::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
+                        | (u32::from(source.option("fx/opt/use_mesh")? != 0) << 1)
+                } else { 0 }),
             detail_normal: source.lighting.as_ref().and_then(|light| light.detail_bump)
                 .map_or(Vec4::ZERO, |detail| Vec4::new(detail[0], detail[1], 0., 0.)),
             surface_map_options: source.lighting.as_ref().map_or(UVec4::ZERO, |light| {
@@ -345,7 +350,7 @@ pub(super) struct ParticlePrograms {
     lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
-    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, i32), RenderPipeline>,
+    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, i32), RenderPipeline>,
 }
 impl ParticlePrograms {
     fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
@@ -1009,7 +1014,8 @@ impl ParticlePass {
                 },
                 BindGroupEntry {
                     binding: 19,
-                    resource: BindingResource::TextureView(views.get("bumpmap").unwrap_or(opacity)),
+                    resource: BindingResource::TextureView(
+                        views.get(if source.scrolling_water { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
                 },
                 BindGroupEntry {
                     binding: 20,
@@ -1117,7 +1123,7 @@ impl ParticlePass {
         parameters.write_buffer(device, queue);
         let binding = self.material_binding(images, device, queue, &source, &parameters, anisotropic_sampler)?;
         let lighting_mode = if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? };
-        let pipeline_key = (state, accumulation, source.distortion, lighting_mode);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, lighting_mode);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
@@ -1152,7 +1158,8 @@ impl ParticlePass {
             }
             let (front_face, cull_mode) = super::shadow_pipeline::shadow_mesh_raster(&state, false);
             let constants = [("particle_lighting_mode", f64::from(lighting_mode)),
-                ("particle_distortion_mode", f64::from(u32::from(source.distortion)))];
+                ("particle_distortion_mode", f64::from(u32::from(source.distortion))),
+                ("particle_scrolling_water", f64::from(u32::from(source.scrolling_water)))];
             let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some("particle sprite colour"),
                 layout: Some(&self.programs.pipeline_layout),

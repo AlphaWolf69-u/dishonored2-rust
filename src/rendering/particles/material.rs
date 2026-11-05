@@ -114,6 +114,8 @@ pub struct ParticleTranslucencyMaterial {
 pub struct ParticleMaterial {
     pub name: String,
     pub distortion: bool,
+    /// `particle/scrolling_water` uses its own texture and normal evaluation.
+    pub scrolling_water: bool,
     pub state: crate::render_state::RenderState,
     /// Material+4a high three bits, consumed by declaration analysis1c4460.
     pub darkvision_layer: u8,
@@ -162,7 +164,8 @@ impl ParticleMaterial {
         let program = crate::material::authored_program_override(&bytes, "mainProgram")
             .ok_or_else(|| format!("particle main program absent: {name}"))?;
         let distortion = program.eq_ignore_ascii_case("particle/dist_blur");
-        if !distortion && !program.eq_ignore_ascii_case("particle/add_default") {
+        let scrolling_water = program.eq_ignore_ascii_case("particle/scrolling_water");
+        if !distortion && !scrolling_water && !program.eq_ignore_ascii_case("particle/add_default") {
             return Err(format!("particle program {program} is not connected"));
         }
         let definition = library
@@ -221,6 +224,11 @@ impl ParticleMaterial {
             options.insert("fx/opt/distblur_constant_offset".into(), library.option_value(
                 program.as_bytes(), &overrides, b"fx/opt/distblur_constant_offset")?);
         }
+        if scrolling_water {
+            for name in ["fx/opt/water_alpha_mask_spec", "fx/opt/use_mesh"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+        }
         let empty = EnvironmentRenderParameters::default();
         let darkvision_layer =
             library.registered_option_value(&overrides, b"rendering/darkVisionLayer")? as u8 & 7;
@@ -243,6 +251,7 @@ impl ParticleMaterial {
         };
         let mut extra_uniforms = scroll_uniforms.to_vec();
         if distortion { extra_uniforms.extend(["fogStart", "fogEnd", "fogScale"]); }
+        if scrolling_water { extra_uniforms.push("liquid_Disto_amount"); }
         if options["fx/opt/use_macrouv"] != 0 {
             extra_uniforms.push("macroUvAmount");
         }
@@ -276,7 +285,8 @@ impl ParticleMaterial {
             ),
             ("particleFresnelLUT", Some("fx/opt/fresnel/uselut")),
         ] {
-            if option.is_some_and(|name| options[name] == 0)
+            let water_required = scrolling_water && matches!(image, "fx/disto1" | "fx/disto2" | "fx/diffuse");
+            if (!water_required && option.is_some_and(|name| options[name] == 0))
                 || (image.starts_with("particleFresnel") && options["fx/opt/fresnel"] == 0)
             {
                 continue;
@@ -286,6 +296,9 @@ impl ParticleMaterial {
                 image.to_ascii_lowercase(),
                 image_resources.image(catalog, &source)?,
             );
+        }
+        if scrolling_water {
+            images.insert("fx/normals".into(), image_resources.image(catalog, &scopes.image_source("fx/normals")?)?);
         }
         let lighting = if !distortion && options["fx/opt/use_lighting"] != 0 {
             let mut read_option =
@@ -468,7 +481,7 @@ impl ParticleMaterial {
         } else {
             None
         };
-        let volume = if options["fx/opt/use_flipbook"] != 0 {
+        let volume = if !scrolling_water && options["fx/opt/use_flipbook"] != 0 {
             Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbook")?)?)
         } else {
             None
@@ -486,6 +499,7 @@ impl ParticleMaterial {
         Ok(Self {
             name: name.to_owned(),
             distortion,
+            scrolling_water,
             state,
             darkvision_layer,
             options,
