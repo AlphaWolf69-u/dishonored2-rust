@@ -16,6 +16,56 @@ pub struct Readable {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadableKind { Document, Book }
 
+/// 140617930 applies the character inventory component's default loadout
+/// when there is no restored inventory, before any gameflow loadout.
+pub fn default_loadout(catalog: &Catalog, character: &str) -> Result<Vec<(String, u32)>, String> {
+    let read = |path: &str| -> Result<Option<String>, String> {
+        Ok(catalog.read(path).map_err(|error| error.to_string())?
+            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+    };
+    let entity = format!("models/characters/player/{character}/body.def");
+    let component = entities::player::entity_component(&entity, "cpntinventory", |path| read(path))?
+        .ok_or_else(|| format!("{entity} has no inventory component"))?;
+    let Some(name) = atom(&component, "m_defaultLoadout").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")) else {
+        return Ok(Vec::new());
+    };
+    let mut next = Some(name.to_owned());
+    let mut chain = Vec::new();
+    while let Some(name) = next.take() {
+        if chain.len() >= 32 || chain.iter().any(|(previous, _): &(String, Vec<(String, Value)>)| previous == &name) {
+            return Err(format!("inventory loadout inheritance cycle or excessive depth: {name}"));
+        }
+        let path = format!("generated/decls/inventoryloadout/{name}.decl");
+        let source = read(&path)?.ok_or_else(|| format!("inventory loadout missing: {path}"))?;
+        let fields = entities::parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
+        next = atom(&fields, "inherit").map(str::to_owned);
+        chain.push((name, fields));
+    }
+    let mut entries: Vec<(String, Option<String>, Option<u32>)> = Vec::new();
+    for (_, fields) in chain.iter().rev() {
+        let Some(Value::Scope(edit)) = fields.iter().find(|(key, _)| key == "edit").map(|(_, value)| value) else { continue };
+        let Some(Value::Scope(items)) = edit.iter().find(|(key, _)| key == "m_items").map(|(_, value)| value) else { continue };
+        for (key, value) in items {
+            if let Some(id) = key.strip_prefix("item_remove[").and_then(|s| s.strip_suffix(']')) {
+                entries.retain(|entry| entry.0 != id); continue;
+            }
+            let Some(id) = key.strip_prefix("item_add[").or_else(|| key.strip_prefix("item_override["))
+                .and_then(|s| s.strip_suffix(']')) else { continue };
+            let Value::Scope(fields) = value else { return Err("inventory loadout item is not a scope".into()) };
+            let index = entries.iter().position(|entry| entry.0 == id).unwrap_or_else(|| {
+                entries.push((id.to_owned(), None, None)); entries.len() - 1
+            });
+            if let Some(path) = atom(fields, "m_decl") { entries[index].1 = Some(path.to_owned()); }
+            if let Some(quantity) = atom(fields, "m_quantity") {
+                entries[index].2 = Some(quantity.parse().map_err(|_| format!("invalid loadout quantity {quantity}"))?);
+            }
+        }
+    }
+    entries.into_iter().filter_map(|(_, path, quantity)| path.filter(|path| !path.eq_ignore_ascii_case("NULL"))
+        .map(|path| quantity.map(|quantity| (path, quantity)).ok_or_else(|| "loadout item quantity missing".to_owned())))
+        .collect()
+}
+
 /// Per-item maximums from the selected player's inventory collection. Only
 /// overrides for relevant readable items are kept after preparation.
 pub struct ReadableLimits {

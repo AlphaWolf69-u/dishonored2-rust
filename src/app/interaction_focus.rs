@@ -27,11 +27,25 @@ pub(super) struct FocusedInteraction {
 #[derive(Resource, Default)]
 pub(super) struct RetiredPlacements(pub std::collections::HashSet<usize>);
 
+/// The initial loadout is prepared off-thread and consumed once by the
+/// session inventory, independently of level interaction availability.
+#[derive(Resource, Default)]
+pub(super) struct InitialInventory(pub Option<Vec<(String, u32, u32)>>);
+
+pub(super) fn initialize_inventory(mut inventory: bevy::prelude::ResMut<DiscoveredDocuments>,
+    initial: Option<bevy::prelude::ResMut<InitialInventory>>) {
+    if let Some(entries) = initial.and_then(|mut initial| initial.0.take()) {
+        inventory.initialize(entries);
+    }
+}
+
 /// Session-owned document declaration identities for the journal. Saving is
 /// a separate owner.
 #[derive(Resource, Default)]
 pub(super) struct DiscoveredDocuments {
     items: Vec<DocumentEntry>,
+    quantities: std::collections::HashMap<String, u32>,
+    initialized: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct DocumentEntry {
@@ -39,20 +53,38 @@ pub(super) struct DocumentEntry {
     pub item_id: u32,
     pub kind: crate::assets::inventory_item::ReadableKind,
     pub is_new: bool,
-    pub quantity: u32,
 }
 impl DiscoveredDocuments {
     pub fn items(&self) -> &[DocumentEntry] { &self.items }
+    /// The same session inventory owns power items and readable items.
+    pub fn quantity(&self, path: &str) -> u32 {
+        if path.bytes().all(|byte| !byte.is_ascii_uppercase()) {
+            self.quantities.get(path).copied().unwrap_or(0)
+        } else {
+            self.quantities.get(&path.to_ascii_lowercase()).copied().unwrap_or(0)
+        }
+    }
+
+    /// Add up to the authored maximum and report the quantity admitted.
+    pub fn add_item(&mut self, path: &str, quantity: u32, maximum: u32) -> u32 {
+        let key = path.to_ascii_lowercase();
+        let current = self.quantities.get(&key).copied().unwrap_or(0);
+        let admitted = quantity.min(maximum.saturating_sub(current));
+        if admitted != 0 { self.quantities.insert(key, current + admitted); }
+        admitted
+    }
+
+    pub fn initialize(&mut self, entries: impl IntoIterator<Item = (String, u32, u32)>) {
+        if self.initialized { return; }
+        self.initialized = true;
+        for (path, quantity, maximum) in entries { self.add_item(&path, quantity, maximum); }
+    }
     /// 1407241c0 inserts inventory additions as new entries. The caller must
     /// invoke this only after the gameplay inventory admits the item.
     pub fn admit(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind, maximum: u32) -> bool {
-        if let Some(item) = self.items.iter_mut().find(|item| item.path.eq_ignore_ascii_case(&path)) {
-            if item.quantity >= maximum { return false; }
-            item.quantity += 1;
-            return true;
-        }
-        if maximum == 0 { return false; }
-        self.items.push(DocumentEntry { path, item_id, kind, is_new: true, quantity: 1 });
+        if self.add_item(&path, 1, maximum) == 0 { return false; }
+        if self.items.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) { return true; }
+        self.items.push(DocumentEntry { path, item_id, kind, is_new: true });
         true
     }
     /// 140724bf0 clears the selected item; the journal passes -1 to clear all
