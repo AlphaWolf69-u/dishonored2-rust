@@ -797,8 +797,8 @@ pub(super) fn prepare(
                     };
                     let bounds = render_bounds(&points);
                     let instance = placed_transform(placement);
-                    let world_baked =
-                        needs_exact_world_mesh(&instance, &surface.positions, &points);
+                    let world_baked = !deformed.contains(&number)
+                        && needs_exact_world_mesh(&instance, &surface.positions, &points);
                     let skin_influences = resolver.shadow_materials.skin_influences(&mat.handle);
                     let (mesh, transform) = if world_baked {
                         (

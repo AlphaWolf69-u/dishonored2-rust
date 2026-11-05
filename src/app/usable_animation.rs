@@ -61,7 +61,7 @@ pub(super) fn advance(
         let shadow_sources: HashMap<_, _> = sources.0.iter().enumerate().map(|(index, source)| (source.placement, index)).collect();
         for (index, placement) in placements.0.iter().enumerate() {
             let Some(&actor) = interactions.actor_by_entity.get(&placement.id) else { continue };
-            if !placement.resource_path.ends_with(".md6") || !interactions.actors[actor].definition.steps.iter()
+            if crate::bmd6::declaration_path(&placement.resource_path).is_none() || !interactions.actors[actor].definition.steps.iter()
                 .any(|state| state.animation.is_some() || state.transition_animation.is_some()) { continue; }
             owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), source_index: shadow_sources.get(&index).copied(), asset: None,
                 node: None, publication: Default::default(), requested: false, failed: false, command: None,
@@ -97,7 +97,11 @@ pub(super) fn advance(
             let catalog = interactions.catalog.clone();
             let path = model.clone();
             owner.loading.insert(key, std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
-                let rig = BasicRig::load(&catalog, &path)?;
+                let declaration = crate::bmd6::declaration_path(&path).ok_or("usable model is not a compiled MD6")?;
+                let rig_name = declaration.strip_prefix("generated/decls/md6def/")
+                    .and_then(|name| name.strip_suffix(".decl"))
+                    .ok_or("usable MD6 declaration path is invalid")?;
+                let rig = BasicRig::load(&catalog, rig_name)?;
                 let model = crate::bmd6::ModelSources::new(&catalog).acquire(&catalog, &path)?;
                 Ok(Arc::new(Asset { rig, model }))
             })));
