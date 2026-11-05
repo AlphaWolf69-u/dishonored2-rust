@@ -179,9 +179,20 @@ impl ComponentRegistry {
                 owner.flags = (owner.flags & !4) | 8;
             }
             if owner.flags & 12 == 0 {
+                let previous_flags = owner.flags;
                 owner.flags = (owner.flags & !8) | 4;
-                self.pending_start
-                    .append(component as u64, grow_one_at_a_time)?;
+                let previous_count = self.pending_start.count();
+                match self.pending_start.append(component as u64, grow_one_at_a_time) {
+                    Ok(index) if index == previous_count && self.pending_start.count() == previous_count + 1 => {}
+                    Ok(_) => {
+                        owner.flags = previous_flags;
+                        return Err("component start queue rejected the append".into());
+                    }
+                    Err(error) => {
+                        owner.flags = previous_flags;
+                        return Err(error);
+                    }
+                }
                 self.maximum_registered = self
                     .maximum_registered
                     .max(self.pending_start.count() as i32);
@@ -207,12 +218,29 @@ impl ComponentRegistry {
         entity: usize,
         grow_one_at_a_time: bool,
     ) -> Result<u32, String> {
+        let previous_flags = owner.flags;
+        let previous_declaration = owner.declaration;
+        let previous_entity = owner.entity;
         owner.flags = (owner.flags & !2) | 1;
         owner.declaration = Some(declaration);
         owner.entity = Some(entity);
-        let index = self
-            .registered
-            .append(component as u64, grow_one_at_a_time)?;
+        let previous_count = self.registered.count();
+        let result = self.registered.append(component as u64, grow_one_at_a_time);
+        let index = match result {
+            Ok(index) if index == previous_count && self.registered.count() == previous_count + 1 => index,
+            Ok(_) => {
+                owner.flags = previous_flags;
+                owner.declaration = previous_declaration;
+                owner.entity = previous_entity;
+                return Err("component registration queue rejected the append".into());
+            }
+            Err(error) => {
+                owner.flags = previous_flags;
+                owner.declaration = previous_declaration;
+                owner.entity = previous_entity;
+                return Err(error);
+            }
+        };
         self.maximum_registered = self.maximum_registered.max(self.registered.count() as i32);
         Ok(index)
     }

@@ -95,8 +95,20 @@ impl ComponentRegistry {
                 world.shutdown(component, self)?;
                 world.released(component, self)?;
             } else {
-                world.owner_mut(component)?.flags |= 3;
-                self.pending_release.append(component.packed(), false)?;
+                let previous_flags = world.owner(component)?.flags;
+                world.owner_mut(component)?.flags = previous_flags | 3;
+                let previous_count = self.pending_release.count();
+                match self.pending_release.append(component.packed(), false) {
+                    Ok(index) if index == previous_count && self.pending_release.count() == previous_count + 1 => {}
+                    Ok(_) => {
+                        world.owner_mut(component)?.flags = previous_flags;
+                        return Err("component release queue rejected the append".into());
+                    }
+                    Err(error) => {
+                        world.owner_mut(component)?.flags = previous_flags;
+                        return Err(error);
+                    }
+                }
                 self.maximum_registered = self
                     .maximum_registered
                     .max(self.pending_release.count() as i32);
@@ -137,7 +149,18 @@ impl ComponentRegistry {
             if flags & 12 == 8 {
                 world.owner_mut(component)?.flags = flags | 12;
                 if flags & 0x1000_0000 == 0 {
-                    self.pending_stop.append(component.packed(), false)?;
+                    let previous_count = self.pending_stop.count();
+                    match self.pending_stop.append(component.packed(), false) {
+                        Ok(index) if index == previous_count && self.pending_stop.count() == previous_count + 1 => {}
+                        Ok(_) => {
+                            world.owner_mut(component)?.flags = flags;
+                            return Err("component stop queue rejected the append".into());
+                        }
+                        Err(error) => {
+                            world.owner_mut(component)?.flags = flags;
+                            return Err(error);
+                        }
+                    }
                     self.maximum_registered = self
                         .maximum_registered
                         .max(self.pending_stop.count() as i32);

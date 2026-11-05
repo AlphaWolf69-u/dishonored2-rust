@@ -59,6 +59,14 @@ pub struct EntityComponents {
 }
 
 impl EntityComponents {
+    /// Host rollback for the ordered class insertion that precedes a fallible
+    /// Rust constructor. No callback can mutate this cache before linking.
+    fn cancel_class_insertion(&mut self, position: usize) {
+        if let Some(classes) = &mut self.cached_classes {
+            classes.remove(position);
+        }
+    }
+
     /// Component-facing fields of 874c50. The full entity's other owners are
     /// constructed separately; this does not replace its full constructor.
     pub fn new(identity: usize) -> Self {
@@ -142,29 +150,58 @@ impl<T: ComponentInstance> ComponentFactory<'_, T> {
             entity.cached_classes.as_mut(),
             |value| Ok(ComponentHandle::from_packed(value)?.class_id),
         )?;
-        let slot = self.registry.allocate(self.pool, |slot, registry| {
+        let slot = match self.registry.allocate(self.pool, |slot, registry| {
             construct(slot, entity, registry)
-        })?;
+        }) {
+            Ok(slot) => slot,
+            Err(error) => {
+                entity.cancel_class_insertion(position);
+                return Err(error);
+            }
+        };
         let handle = ComponentHandle {
             class_id: self.declaration.class_id,
             slot,
         };
-        let identity = usize::try_from(handle.packed())
-            .map_err(|_| "component handle exceeds host pointer width")?;
-        entity
-            .entries
-            .insert(position as u32, handle.packed(), self.grow_one_at_a_time)?;
+        let identity = match usize::try_from(handle.packed()) {
+            Ok(identity) => identity,
+            Err(_) => {
+                entity.cancel_class_insertion(position);
+                self.pool.release(slot)?;
+                return Err("component handle exceeds host pointer width".into());
+            }
+        };
+        let inserted =
+            match entity
+                .entries
+                .insert(position as u32, handle.packed(), self.grow_one_at_a_time)
+            {
+                Ok(inserted) => inserted,
+                Err(error) => {
+                    entity.cancel_class_insertion(position);
+                    self.pool.release(slot)?;
+                    return Err(error);
+                }
+            };
         let value = self
             .pool
             .get_mut(slot)
             .ok_or("new entity component is missing")?;
-        self.registry.register(
+        if let Err(error) = self.registry.register(
             value.owner_mut(),
             identity,
             self.declaration.identity,
             entity.identity,
             self.grow_one_at_a_time,
-        )?;
+        ) {
+            // register restores the constructor's unlinked owner on failure.
+            // The class-cache insertion and pointer-list insertion may have
+            // different indices; undo each at its actual location.
+            entity.entries.remove_at(inserted as i32)?;
+            entity.cancel_class_insertion(position);
+            self.pool.release(slot)?;
+            return Err(error);
+        }
         if immediate
             && !entity.start_deferred
             && (self.declaration.scheduling.start_phases >> (entity.phase & 31)) & 1 != 0

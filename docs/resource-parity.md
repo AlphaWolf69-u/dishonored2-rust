@@ -4093,3 +4093,16 @@ This exercises the refactored common sound-node prefix reader during ordinary
 level acquisition/reuse, not music playback or the new component pool release
 callbacks (those callers remain on the interactions branch). No appearance,
 frame-time or new UI-cache-residency claim is made from these diagnostics.
+Host fallible factory admission now also undoes the pre-allocation class-cache
+insertion when construction fails. If handle conversion, entity-list insertion
+or registry insertion fails after construction, it removes the exact inserted
+cache/list entries and returns the inactive typed slot. Registration preserves
+the original link-before-append order but restores the prior owner on failed
+queue insertion, including denied appends that return an invalid index instead
+of Err. The normal successful admission order and generation allocation remain
+unchanged (875d50 / 7e7210). Immediate-start callback failures remain attached
+to their real entity/registry for lifecycle cleanup; they are not blindly
+dropped after callbacks may have registered listeners. Prediction: no walking
+cost or new success-path allocation; failure no longer strands a slot or leaves
+a false cached class. Production error-path exercise remains outstanding;
+no tests or compilation were run for this source fix.
