@@ -688,7 +688,7 @@ impl Attributes {
         attribute.percentage += percentage * sign;
         let mut current = attribute.percentage * attribute.base * 0.01 + attribute.base + attribute.increase;
         if let Some((min, max)) = attribute.limits {
-            current = if current < min { min } else if current > max { max } else { current };
+            current = if min <= current { if max < current { max } else { current } } else { min };
         }
         if let Some(value) = self.0.get_mut(tag) { *value = current; }
         true
