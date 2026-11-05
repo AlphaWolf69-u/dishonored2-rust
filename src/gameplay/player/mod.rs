@@ -200,6 +200,11 @@ impl Player {
             self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
             self.attribute_modifier_changed(&value.tag, false);
             true
+        } else if duration > 0.0 && self.attributes.1.contains_key(tag) {
+            // 14060c9b0 still publishes the remove event after a timed
+            // record has expired, without subtracting its value twice.
+            self.attribute_modifier_changed(tag, false);
+            true
         } else { false }
     }
 
@@ -332,14 +337,15 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
-        let mut index = 0;
-        while self.timed_modifiers != 0 && index < self.active_modifiers.len() {
-            if self.active_modifiers[index].expires_at.is_some_and(|deadline| deadline <= now) {
-                let value = self.active_modifiers.remove(index);
-                self.timed_modifiers -= 1;
-                self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
-                self.attribute_modifier_changed(&value.tag, false);
-            } else { index += 1; }
+        while self.timed_modifiers != 0 {
+            let next = self.active_modifiers.iter().enumerate().filter_map(|(index, value)| {
+                value.expires_at.filter(|deadline| *deadline <= now).map(|deadline| (index, deadline))
+            }).min_by(|a, b| a.1.total_cmp(&b.1));
+            let Some((index, _)) = next else { break };
+            let value = self.active_modifiers.remove(index);
+            self.timed_modifiers -= 1;
+            self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
+            self.attribute_modifier_changed(&value.tag, false);
         }
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
