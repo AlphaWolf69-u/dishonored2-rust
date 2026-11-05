@@ -11,7 +11,7 @@
 //! lacks. Fall damage, stats, slide slow-time, shoves and breakables are not
 //! ported.
 use super::body::{FollowSlope, JumpAnim, Lean};
-use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS};
+use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS, MODE_DROWNING};
 use super::midnight::{Midnight, PreparedScene};
 use super::sensors::{MantleHeight, MantleSensor, VaultLimits, VaultSensor};
 use super::shape::{POSTURE_LEAN_FORWARD, POSTURE_VAULTING};
@@ -1524,7 +1524,7 @@ impl StateMachine {
             self.states[index].death_timer = dead.duration;
             self.states[index].death_transition_pending = true;
             self.states[index].death_fx_pending = true;
-            frame.camera.set_target_mode(15, dead.look_duration);
+            frame.camera.set_target_mode(MODE_DROWNING, dead.look_duration);
             return;
         }
         if let Kind::Vault(vault) = &decl.kind {
