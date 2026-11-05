@@ -2125,3 +2125,18 @@ the removed copy or from debug load duration. This is a host weak/coalesced
 registry for the original `1400607f0` identity and `14024f2a0` skeleton loader;
 GPU output and pose behavior must remain unchanged.
 
+The same owner sweep found first-person arm/body render models still reading
+and decoding BMD6 directly. Route them through the existing `ModelSources`
+owner and retain its Arc instead of a separate `ModelInfo`. Prediction: source
+and decoded-content signatures stay identical; repeated aliases inside the arm preparation scope avoid another read/decode,
+while a unique arm still has one read/decode and no claimed payload saving. The normal arm mesh upload and
+per-frame skinning do not change. Include this acquisition in the next
+production identity/retirement comparison before claiming a measured gain.
+
+
+The four-map BMD6 comparison invalidated the added global cache prediction:
+separate/shared both performed 203 reads/decodes for 210 requests. Existing
+setup-to-physics sharing already covered the exercised overlap. Remove that
+additional registry rather than pinning extra resources to create cache hits.
+Any future cross-owner cache requires an actual concurrent installed use case
+and an affected-function/residency measurement; it is not a current gain.

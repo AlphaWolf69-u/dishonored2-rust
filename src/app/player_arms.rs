@@ -41,7 +41,7 @@ struct ArmModel {
     /// surfaces' SkinnedMesh reads them (created on first use).
     joints: Vec<Entity>,
     skeleton: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
-    info: bmd6::ModelInfo,
+    info: std::sync::Arc<bmd6::ModelInfo>,
     surfaces: Vec<ArmSurface>,
     lighting: crate::probe_lighting::ProbeQuery,
     shown: bool,
@@ -175,18 +175,14 @@ pub(super) fn load_player_arms(
         .map(|model| (model, arm_hack))
         .chain(std::iter::once((declarations.body_model.clone(), body_model_depth_hack(view.depth_hack))));
     let mut arms = Vec::new();
+    let mut model_sources = bmd6::ModelSources::new(catalog);
     for (model, (model_depth_hack, parameter)) in models {
         let stem = model
             .strip_suffix(".md6")
             .ok_or_else(|| format!("arm model {model} is not an md6"))?;
         let resource = format!("generated/basemodel/{stem}.bmd6model");
         let declaration = |path: &str| text(path).ok().flatten();
-        let mesh_path = bmd6::resolve_compiled_mesh(&resource, declaration)?;
-        let bytes = catalog
-            .read(&mesh_path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("{mesh_path} is absent"))?;
-        let info = bmd6::inspect(&bytes)?;
+        let info = model_sources.acquire(catalog, &resource)?;
         let binding = bmd6::resolve_skeleton_binding(&resource, declaration)?;
         let skeleton_name = binding
             .as_ref()
