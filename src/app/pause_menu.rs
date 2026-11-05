@@ -26,6 +26,14 @@ use std::sync::Arc;
 const PAUSE_ACTION: i32 = 43;
 
 enum Command {
+    StartHud { screen: (i32, i32), epoch: u64 },
+    HudTick(f64, bool),
+    HudInteraction(Option<super::hud_movie::Interaction>),
+    HudOxygen(Option<super::hud_movie::Oxygen>),
+    HudHealth(super::hud_movie::Health),
+    HudMana(super::hud_movie::Mana),
+    HudAdmission(bool),
+    EndHud,
     /// While closed: build the next open's player ahead of time.
     Prepare { screen: (i32, i32) },
     /// OnEnter: load the movie (the decl does not cache it) and show it.
@@ -53,6 +61,9 @@ enum Command {
 }
 
 enum Event {
+    HudFrame(u64, FlashFrame),
+    HudReady(u64, f64, Option<Vec<String>>),
+    HudFailed(u64, String),
     TexturePending,
     Frame(FlashFrame),
     Sound(u32),
@@ -113,6 +124,70 @@ pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(u
     Ok(out)
 }
 
+/// Resolve the movie selected by a game-logic state declaration, honoring
+/// the installed archive/overlay owner instead of duplicating its asset path.
+pub(super) fn state_movie(catalog: &Catalog, kind: &str, state: &str) -> Result<String, String> {
+    let mut read = |path: &str| catalog.read(path).ok().flatten();
+    let edit = crate::gameplay::options::decl::read_edit(&mut read, kind, state)?;
+    let reference = crate::gameplay::options::decl::atom(&edit, "m_iggyInfo")
+        .ok_or_else(|| format!("{state} has no m_iggyInfo"))?;
+    let movie = reference.strip_suffix(".iggyfile").ok_or_else(|| format!("{state} has invalid Iggy reference {reference}"))?;
+    Ok(format!("{movie}.iggy"))
+}
+
+/// Diagnostic only. Weak image references do not extend payload lifetime;
+/// each movie declares this guard last so it observes after its own fields
+/// have dropped. A live image may still be held by a submitted frame, another
+/// movie, or the session registry: shared library counts are not additive.
+pub(super) struct MovieResidency {
+    label: &'static str,
+    catalog_identity: u64,
+    libraries: Vec<(String, usize, bool, Vec<std::sync::Weak<Image>>)>,
+}
+impl MovieResidency {
+    pub(super) fn new(label: &'static str, catalog: &Catalog, resources: &[(usize, String)], images: &HashMap<CharRef, Arc<Image>>) -> Option<Self> {
+        if !std::env::var_os("DH2_DEBUG_UI_RESIDENCY").is_some_and(|v| v == "1") { return None; }
+        let libraries = resources.iter().map(|(index, path)| {
+            let members: Vec<_> = images.iter().filter(|(id, _)| id.library == *index).map(|(_, image)| image).collect();
+            let bytes = members.iter().map(|image| image.bytes.len()).sum();
+            let weak = members.into_iter().map(Arc::downgrade).collect();
+            let eligible = !(catalog.has_overlays() && (catalog.has_overlay_file(path) || catalog.has_overlay_file(&path.replace(".iggy", ".raw.iggytex"))));
+            let cached = eligible && bitmap_resources::debug_resident(catalog.identity(), path);
+            info!("UI residency open: movie={label} library={path} payload_bytes={bytes} session_registry={cached}");
+            (path.clone(), bytes, eligible, weak)
+        }).collect();
+        Some(Self { label, catalog_identity: catalog.identity(), libraries })
+    }
+}
+impl Drop for MovieResidency {
+    fn drop(&mut self) {
+        for (path, opened, eligible, images) in &self.libraries {
+            let cached = *eligible && bitmap_resources::debug_resident(self.catalog_identity, path);
+            let (mut live_bytes, mut live_images, mut externally_held) = (0usize, 0usize, 0usize);
+            for image in images {
+                let holders = image.strong_count();
+                if holders > (if cached { 1 } else { 0 }) { externally_held += 1; }
+                if let Some(image) = image.upgrade() { live_bytes += image.bytes.len(); live_images += 1; }
+            }
+            info!("UI residency after movie fields release: movie={} library={} opened_bytes={} live_bytes={} live_images={} session_registry={} images_with_other_holders={} (other holders include movies or in-flight frames)", self.label, path, opened, live_bytes, live_images, cached, externally_held);
+        }
+    }
+}
+
+/// 14002ca20 receives numeric sound IDs from a movie's ExternalInterface.
+pub(super) fn movie_notifications(player: &mut Player, closing: &str) -> (bool, Vec<u32>) {
+    use crate::flash::avm2::value::{to_uint32, Value};
+    let mut closed = false;
+    let mut sounds = Vec::new();
+    for (name, args) in player.take_notifications() {
+        if name == closing { closed = true; }
+        if name == "PostSoundEvent" {
+            if let Some(Value::Number(id)) = args.first() { sounds.push(to_uint32(*id)); }
+        }
+    }
+    (closed, sounds)
+}
+
 impl Loaded {
     /// The movie of the top focus entry.
     fn target(&mut self) -> &mut Player {
@@ -156,6 +231,18 @@ pub struct PauseMenu {
     /// The movie has produced a frame since it was opened: each frame then
     /// waits for its own tick's draw list.
     ready: bool,
+    hud_started: bool,
+    hud_epoch: u64,
+    hud_interaction: Option<super::hud_movie::Interaction>,
+    hud_oxygen: Option<super::hud_movie::Oxygen>,
+    hud_health: Option<super::hud_movie::Health>,
+    hud_mana: Option<super::hud_movie::Mana>,
+    hud_admission: Option<bool>,
+    hud_starting_powers: Option<Vec<String>>,
+    hud_interval: f64,
+    hud_elapsed: f64,
+    hud_phase: f64,
+    hud_force: bool,
 }
 
 /// The longest a frame waits for the movie's draw list (a slow tick is
@@ -181,12 +268,25 @@ impl Default for PauseMenu {
                 run(inbox, outbox);
             })
             .expect("pause movie thread");
-        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None) }
+        Self { commands, events, textures, open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true }
     }
 }
 
 impl PauseMenu {
     pub(super) fn begin_level(&mut self) {
+        let _ = self.commands.send(Command::EndHud);
+        self.hud_epoch = self.hud_epoch.wrapping_add(1);
+        self.hud_started = false;
+        self.hud_interaction = None;
+        self.hud_oxygen = None;
+        self.hud_health = None;
+        self.hud_mana = None;
+        self.hud_admission = None;
+        self.hud_starting_powers = None;
+        self.hud_interval = 0.0;
+        self.hud_elapsed = 0.0;
+        self.hud_phase = 0.0;
+        self.hud_force = true;
         let _ = self.commands.send(Command::Close);
         let _ = self.commands.send(Command::EndLoading);
         self.open = false;
@@ -317,8 +417,17 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
     let mut out: Vec<Command> = Vec::new();
     let mut tick: Option<(f64, std::time::Instant)> = None;
     let mut loading_tick: Option<(f64, f64, bool)> = None;
+    let mut hud_tick: Option<(f64, bool)> = None;
     for command in std::iter::once(first).chain(inbox.try_iter()) {
         match command {
+            Command::HudTick(dt, force) => {
+                let (elapsed, forced) = hud_tick.unwrap_or((0.0, false));
+                hud_tick = Some((elapsed + dt, forced || force));
+            }
+            Command::StartHud { .. } | Command::EndHud => {
+                hud_tick = None;
+                out.push(command);
+            }
             Command::Tick(dt, sent) => {
                 tick = Some(tick.map_or((dt, sent), |(sum, first)| (sum + dt, first)));
             }
@@ -340,12 +449,15 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
     }
     out.extend(tick.map(|(dt, sent)| Command::Tick(dt, sent)));
     out.extend(loading_tick.map(|(dt, progress, ready)| Command::LoadingTick { dt, progress, ready }));
+    out.extend(hud_tick.map(|(dt, force)| Command::HudTick(dt, force)));
     Some(out)
 }
 
 /// The movie thread: one player at a time, rebuilt on every Open.
 fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut loaded: Option<Loaded> = None;
+    let mut hud: Option<super::hud_movie::HudMovie> = None;
+    let mut hud_epoch = 0u64;
     let mut loading: Option<(super::loading_movie::Movie, Sender<Result<super::loading_movie::Frame, String>>)> = None;
     let keyboard = Keyboard::default();
     let mut generation = 0u64;
@@ -361,6 +473,42 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       let mut changed = false;
       for command in commands {
         match command {
+            Command::StartHud { screen, epoch } => {
+                hud_epoch = epoch;
+                generation += 1;
+                let result = installed_catalog().and_then(|catalog| {
+                    let base = installation::game_base().map_err(|e| e.to_string())?;
+                    let language = lang::read_text_language(&base)?;
+                    super::hud_movie::HudMovie::load(&catalog, language, screen, generation)
+                });
+                match result {
+                    Ok(movie) => { let _ = outbox.send(Event::HudReady(epoch, movie.interval(), movie.starting_powers())); hud = Some(movie); }
+                    Err(error) => { let _ = outbox.send(Event::HudFailed(epoch, error)); }
+                }
+            }
+            Command::HudTick(dt, force) => if let Some(movie) = hud.as_mut() {
+                match movie.frame(dt, force) {
+                    Ok((frame, sounds)) => {
+                        for sound in sounds { let _ = outbox.send(Event::Sound(sound)); }
+                        if let Some(frame) = frame { let _ = outbox.send(Event::HudFrame(hud_epoch, frame)); }
+                    }
+                    Err(error) => { hud = None; let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
+                }
+            },
+            Command::HudInteraction(value) => if let Some(movie) = hud.as_mut() {
+                if let Err(error) = movie.interaction(value) { warn!("HUD interaction: {error}"); }
+            },
+            Command::HudOxygen(value) => if let Some(movie) = hud.as_mut() {
+                if let Err(error) = movie.oxygen(value) { warn!("HUD oxygen: {error}"); }
+            },
+            Command::HudHealth(value) => if let Some(movie) = hud.as_mut() {
+                if let Err(error) = movie.health(value) { warn!("HUD health: {error}"); }
+            },
+            Command::HudMana(value) => if let Some(movie) = hud.as_mut() {
+                if let Err(error) = movie.mana(value) { warn!("HUD mana: {error}"); }
+            },
+            Command::HudAdmission(value) => if let Some(movie) = hud.as_mut() { movie.inactivity_admission(value); },
+            Command::EndHud => { hud = None; },
             Command::Loading { screen, map, frames } => {
                 generation += 1;
                 match super::loading_movie::Movie::load(screen, &map, generation) {
@@ -626,8 +774,78 @@ pub fn update_pause_menu(
     mut screen_fx: Option<ResMut<super::pause_fx::PauseScreenFx>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
     mut image_service: super::resident_images::UiImageService,
+    hud_data: (Option<Res<super::interaction_focus::FocusedInteraction>>, Option<Res<super::player::PlayerState>>, Option<Res<super::interaction_focus::DiscoveredDocuments>>),
 ) {
     let menu = &mut *menu;
+    let (focused, player_state, documents) = hud_data;
+    let hud_starting = !super::loading_screen::is_loading(&loading) && !menu.hud_started;
+    if hud_starting {
+        let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
+        let _ = menu.commands.send(Command::StartHud { screen: pause_state::screen_size(size, size), epoch: menu.hud_epoch });
+        menu.hud_started = true;
+    }
+    let focus_changed = focused.as_ref().is_some_and(|focus| focus.is_changed())
+        || (focused.is_none() && menu.hud_interaction.is_some());
+    if menu.hud_started && !super::loading_screen::is_loading(&loading) && (hud_starting || focus_changed) {
+        let interaction = focused.as_ref().and_then(|focus| focus.current.as_ref()).map(|prompt| super::hud_movie::Interaction {
+            entity: prompt.entity.clone(), kind: prompt.interaction_type,
+            action_label: prompt.usage_text.clone(), game_action: prompt.binding.clone(),
+            name: prompt.name.clone(), name_postfix: prompt.name_postfix.clone(),
+            hold: prompt.hold, locked: prompt.locked,
+        });
+        if interaction != menu.hud_interaction {
+            let _ = menu.commands.send(Command::HudInteraction(interaction.clone()));
+            menu.hud_interaction = interaction;
+            menu.hud_force = true;
+        }
+    }
+    if menu.hud_started && !menu.open && !super::loading_screen::is_loading(&loading)
+        && (menu.hud_interval > 0.0 || menu.hud_force)
+    {
+        let player = player_state.as_ref().and_then(|state| state.player.as_ref());
+        let oxygen = player.map(|player| {
+            let underwater = player.is_underwater();
+            super::hud_movie::Oxygen { underwater, breath: if underwater { player.breath() } else { 0.0 } }
+        });
+        if oxygen.map(|value| value.underwater) != menu.hud_oxygen.map(|value| value.underwater) { menu.hud_force = true; }
+        menu.hud_elapsed += time.delta_secs_f64();
+        menu.hud_phase += time.delta_secs_f64();
+        let due = menu.hud_interval > 0.0 && menu.hud_phase >= menu.hud_interval;
+        if due { menu.hud_phase -= menu.hud_interval; }
+        if menu.hud_force || due {
+            if oxygen != menu.hud_oxygen {
+                let _ = menu.commands.send(Command::HudOxygen(oxygen));
+                menu.hud_oxygen = oxygen;
+            }
+            if let Some(player) = player {
+                let admitted = player.possession_state() == Some(14)
+                    && !player.active_player_states().iter().any(|state| matches!(state.0, 26 | 39 | 44 | 56 | 60 | 62 | 63));
+                if Some(admitted) != menu.hud_admission {
+                    let _ = menu.commands.send(Command::HudAdmission(admitted));
+                    menu.hud_admission = Some(admitted);
+                }
+                if let (Some(powers), Some(documents)) = (menu.hud_starting_powers.as_ref(), documents.as_ref()) {
+                    let (current, maximum, regen_target, extension, suppressed, lock_flags) = player.mana_hud_values();
+                    let has_mark = powers.iter().any(|path| documents.quantity(path) > 0);
+                    let mana = super::hud_movie::Mana { current, maximum, regen_target, extension, suppressed, lock_flags, has_mark };
+                    if Some(mana) != menu.hud_mana {
+                        let _ = menu.commands.send(Command::HudMana(mana));
+                        menu.hud_mana = Some(mana);
+                    }
+                }
+                if let Some((current, maximum, projected, low, extensions)) = player.health_hud() {
+                    let health = super::hud_movie::Health { current, maximum, projected, low, extensions };
+                    if Some(health) != menu.hud_health {
+                        let _ = menu.commands.send(Command::HudHealth(health));
+                        menu.hud_health = Some(health);
+                    }
+                }
+            }
+            let elapsed = std::mem::take(&mut menu.hud_elapsed);
+            let force = std::mem::take(&mut menu.hud_force);
+            let _ = menu.commands.send(Command::HudTick(elapsed, force));
+        }
+    }
     // Diagnostic: DH2_DEBUG_OPEN_PAUSE_AFTER=<seconds> opens the pause state
     // once, that long after start (captures without keyboard input).
     let debug_open = !super::loading_screen::is_loading(&loading) && !menu.debug_opened
@@ -751,6 +969,19 @@ pub fn update_pause_menu(
         };
         match event {
             Event::TexturePending => image_service.service(menu, &loading.catalog),
+            Event::HudFrame(epoch, f) if epoch == menu.hud_epoch && !menu.open && !super::loading_screen::is_loading(&loading) => frame.0 = Some(f),
+            Event::HudFrame(_, _) => {},
+            Event::HudReady(epoch, interval, powers) if epoch == menu.hud_epoch && menu.hud_started && !super::loading_screen::is_loading(&loading) && interval.is_finite() && interval > 0.0 => {
+                menu.hud_interval = interval;
+                menu.hud_starting_powers = powers;
+                menu.hud_force = true;
+            }
+            Event::HudReady(_, _, _) => {},
+            Event::HudFailed(epoch, error) if epoch == menu.hud_epoch => {
+                warn!("HUD movie unavailable: {error}");
+                if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+            },
+            Event::HudFailed(_, _) => {},
             Event::Frame(f) if menu.open => {
                 framed = true;
                 menu.ready = true;
@@ -761,6 +992,7 @@ pub fn update_pause_menu(
                 // `FUN_14078ca40` pops the state; OnExit unloads the movie.
                 let _ = menu.commands.send(Command::Close);
                 menu.open = false;
+                menu.hud_force = true;
             }
             // The `quit` command ends the application.
             Event::Quit => {
@@ -779,11 +1011,11 @@ pub fn update_pause_menu(
             Event::Failed(e) => {
                 error!("Pause menu unavailable: {e}");
                 menu.open = false;
+                menu.hud_force = true;
             }
         }
     }
     if !menu.open {
-        if !super::loading_screen::is_loading(&loading) { frame.0 = None; }
         // Build the next open's player while the menu is closed.
         if let Some(w) = windows.iter().next() {
             let size = (w.physical_width(), w.physical_height());
