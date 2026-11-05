@@ -124,6 +124,10 @@ impl Default for SlippingThresholds {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Controller {
     pub mapping: Vec<StateMapping>,
+    /// Possession subsystem state (controller +0x5d0). Its constructor
+    /// 1408216d0 initializes the state to 14; state transitions belong to
+    /// the not-yet-connected possession subsystem.
+    possession_state: i32,
     allowed: u64,
     pressed: u64,
     released: u64,
@@ -171,6 +175,7 @@ impl Controller {
         let slide_action = action_of(StateId::SLIDING);
         Self {
             mapping,
+            possession_state: 14,
             allowed: !0,
             pressed: 0,
             released: 0,
@@ -196,6 +201,8 @@ impl Controller {
             is_slip_falling: false,
         }
     }
+
+    pub fn possession_state(&self) -> i32 { self.possession_state }
 
     pub fn down(&self, action: i32) -> bool {
         self.held & self.allowed & bit(action) != 0

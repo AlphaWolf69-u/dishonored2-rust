@@ -258,8 +258,9 @@ impl Player {
     pub fn is_swimming(&self) -> bool { self.swimming_active }
     /// The active mode's states, including when the swimming mode owns them.
     pub fn active_player_states(&self) -> &[StateId] { self.machine.active_states() }
-    /// No possession component is hosted by this player yet.
-    pub fn possession_state(&self) -> Option<i32> { None }
+    /// Controller-owned possession state. Possession transitions and saved
+    /// state restoration are not connected yet.
+    pub fn possession_state(&self) -> Option<i32> { Some(self.controller.possession_state()) }
 
     /// Breath is a percentage in the original component (0..100).
     pub fn breath(&self) -> f32 { self.breath.remaining }
