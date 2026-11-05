@@ -4168,3 +4168,19 @@ Prediction: a completed production session now logs zero remaining catalog
 consumers and the actual cache-destruction record. Movie cancellation and
 shutdown acceptance remain required; an exit-zero process is insufficient.
 No CPU improvement or RSS saving is claimed. No tests were written or run.
+
+
+Host session-teardown acceptance is verified for ce831ef: the production
+client completed EotW -> Dust District -> EotW and exited 0. After joining the
+movie worker, session-root release reported `remaining_consumers=0` and the
+actual Catalog destructor retired 209 animation entries, the blur/contact/
+declaration/render-parameter owners, 15 bitmap libraries, four manifest
+entries and both map-info cache owners. Read-history teardown released 7,852
+owned path records (662,228 string-content bytes), leaving zero catalog
+histories. These are owner/entry counts and string contents, not RSS or
+physical GPU-byte savings. No gameplay CPU or frame-time claim is made.
+This supersedes the earlier pending shutdown acceptance: both earlier
+exit-zero runs lacked actual final retirement, and only the joined-worker
+run proves that requirement. Evidence: local movie-retirement-build.source
+and movie-retirement-final-client.{exit,out,err}. No tests or visual
+inspection were performed.

@@ -2198,3 +2198,9 @@ normal movie frames add no work. Named-image acquisition requires two short
 mutex operations and one cancellation-sender clone. This correctness cost
 belongs to that callback, not whole-frame CPU, and carries no performance
 improvement claim. Remove the ineffective main-thread TLS cleanup.
+
+The joined-worker production run (ce831ef) matches the corrected ownership
+prediction: zero remaining catalog users at root release, followed by cache
+and read-history destruction with zero remaining catalog histories. It does
+not establish an RSS saving or faster menu acquisition; the extra named-image
+cancellation bookkeeping is not presented as a CPU optimization.
