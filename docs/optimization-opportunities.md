@@ -2090,3 +2090,12 @@ existing padding per published particle. This is incomplete integration;
 shader output and affected upload/vertex costs require later production GPU
 capture, and world FX rejection must remain until target/pass/consumer and
 dynamic per-instance overrides are all connected.
+
+Particle mask submission prediction: add an explicit record_mask mode to the
+existing ParticlePass rather than a second buffer/image owner. Pipeline and
+material cache keys distinguish masking from colour. Active mask work uses
+the original material state with depth writes disabled, stencil reference0,
+R8_UNORM output and the opacity-only shader specialization. Ordinary record
+uses colour mode. No additional pass, target allocation or upload occurs until
+record_mask is invoked; the caller must gate it on actual mask demand. Shader
+and affected record/upload costs remain to be measured after integration.

@@ -3556,3 +3556,12 @@ mesh handling and grading activation are still required before FX admission
 can be enabled. Original sources: 140227cd0, 140228110, 140226930, 14033b350,
 1403222f0 and the installed particle/add_default and postfx/colorgrading
 programs. This is no claim of verified rendering or memory/CPU improvement.
+
+Mask draw submission is now implemented as an explicit `ParticlePass` mode,
+sharing existing buffers, image leases and samplers. Its cache keys distinguish
+colour from mask variants; mask specialization writes R8_UNORM, disables only
+depth writes in the authored material state, and uses stencil reference zero.
+Bounded mask-material prewarming is available. Distinct authored masking
+programs and distortion masking still return explicit preparation errors.
+Status remains unbuilt/inactive: no view owner invokes the mode until target,
+consumer, dynamic overrides and world-material mesh handling are connected.

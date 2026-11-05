@@ -116,6 +116,9 @@ pub struct ParticleMaterial {
     pub distortion: bool,
     /// `particle/scrolling_water` uses its own texture and normal evaluation.
     pub scrolling_water: bool,
+    /// 1402d5210 derives the mask variant from MAIN only when no distinct
+    /// authored masking program is present. Such programs need their own owner.
+    pub masking_uses_main: bool,
     pub state: crate::render_state::RenderState,
     /// Material+4a high three bits, consumed by declaration analysis1c4460.
     pub darkvision_layer: u8,
@@ -165,6 +168,8 @@ impl ParticleMaterial {
             .ok_or_else(|| format!("particle main program absent: {name}"))?;
         let distortion = program.eq_ignore_ascii_case("particle/dist_blur");
         let scrolling_water = program.eq_ignore_ascii_case("particle/scrolling_water");
+        let masking_uses_main = crate::material::authored_program_override(&bytes, "maskingProgram")
+            .is_none_or(|masking| masking.eq_ignore_ascii_case(&program));
         if !distortion && !scrolling_water && !program.eq_ignore_ascii_case("particle/add_default") {
             return Err(format!("particle program {program} is not connected"));
         }
@@ -502,6 +507,7 @@ impl ParticleMaterial {
             name: name.to_owned(),
             distortion,
             scrolling_water,
+            masking_uses_main,
             state,
             darkvision_layer,
             options,

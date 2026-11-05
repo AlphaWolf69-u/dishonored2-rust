@@ -347,7 +347,7 @@ pub(super) struct ParticlePrograms {
     lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
-    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, i32, u8), RenderPipeline>,
+    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, i32, u8, bool), RenderPipeline>,
 }
 impl ParticlePrograms {
     fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
@@ -528,7 +528,7 @@ pub struct ParticlePass {
     comparison: Sampler,
     _unused_cube: Texture,
     unused_cube_view: TextureView,
-    materials: HashMap<(String, crate::render_state::RenderState), MaterialGpu>,
+    materials: HashMap<(String, crate::render_state::RenderState, bool), MaterialGpu>,
     // Host: pipeline specialization is independent of image/material binding
     // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
     pipeline_requests: usize,
@@ -1114,7 +1114,11 @@ impl ParticlePass {
         state: crate::render_state::RenderState,
         accumulation: bool,
         anisotropic_sampler: &Sampler,
+        masking: bool,
     ) -> Result<MaterialGpu, String> {
+        if masking && (!source.masking_uses_main || source.distortion) {
+            return Err(format!("particle masking program requires separate preparation: {}", source.name));
+        }
         let accumulation = accumulation && !source.distortion;
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
@@ -1124,14 +1128,16 @@ impl ParticlePass {
             u8::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
                 | (u8::from(source.option("fx/opt/use_mesh")? != 0) << 1)
         } else { 0 };
-        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, lighting_mode, water_options);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, lighting_mode, water_options, masking);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
         } else {
             let blends = crate::render_state::blend_state(&state);
             let formats = [
-                if accumulation || source.distortion {
+                if masking {
+                    TextureFormat::R8Unorm
+                } else if accumulation || source.distortion {
                     TextureFormat::Rgba16Float
                 } else {
                     self.colour_format
@@ -1162,7 +1168,8 @@ impl ParticlePass {
                 ("particle_distortion_mode", f64::from(u32::from(source.distortion))),
                 ("particle_scrolling_water", f64::from(u32::from(source.scrolling_water))),
                 ("particle_water_alpha_mask_spec", f64::from(u32::from(water_options & 1 != 0))),
-                ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0)))];
+                ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0))),
+                ("particle_masking", f64::from(u32::from(masking)))];
             let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
                 label: Some("particle sprite colour"),
                 layout: Some(&self.programs.pipeline_layout),
@@ -1256,15 +1263,43 @@ impl ParticlePass {
             if material.distortion { transparency.mode = 0; }
             for water in [false, true] {
                 let (state, _) = crate::render_state::alpha_surface_draw_state(material.state, transparency.mode != 0, water);
-                let key = (material.name.clone(), state);
+                let key = (material.name.clone(), state, false);
                 if self.materials.contains_key(&key) { continue; }
                 if max_created.is_some_and(|limit| created >= limit) {
                     return Ok((created, false));
                 }
-                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler)?;
+                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler, false)?;
                 self.materials.insert(key, gpu);
                 created += 1;
             }
+        }
+        Ok((created, true))
+    }
+
+    /// Prewarm only material identities requested by the mask owner. Colour
+    /// and mask variants share source/image leases but have distinct states.
+    pub fn prepare_mask_materials<'a>(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
+        surface_sampler: &Sampler,
+        max_created: Option<usize>,
+    ) -> Result<(usize, bool), String> {
+        if self.material_sampler != Some(surface_sampler.id()) {
+            self.rebind_materials(images, device, queue, surface_sampler)?;
+            self.material_sampler = Some(surface_sampler.id());
+        }
+        let mut created = 0;
+        for source in materials {
+            let state = crate::render_state::masking_surface_draw_state(source.state);
+            let key = (source.name.clone(), state, true);
+            if self.materials.contains_key(&key) { continue; }
+            if max_created.is_some_and(|limit| created >= limit) { return Ok((created, false)); }
+            let material = self.material(images, device, queue, source.clone(), state, false, surface_sampler, true)?;
+            self.materials.insert(key, material);
+            created += 1;
         }
         Ok((created, true))
     }
@@ -1278,12 +1313,47 @@ impl ParticlePass {
         input: ParticleViewInputs<'_>,
         draws: &[ParticleDraw],
     ) -> Result<(), String> {
+        self.record_mode(images, device, queue, encoder, input, draws, false)
+    }
+
+    /// 1403222f0's mask submission shares the ordinary particle buffers and
+    /// image bindings. The caller supplies the cleared R8 target and scene
+    /// depth; source material state is preserved except for depth writes.
+    pub fn record_mask(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        input: ParticleViewInputs<'_>,
+        draws: &[ParticleDraw],
+    ) -> Result<(), String> {
+        if !draws.iter().any(|draw| draw.masking_factor > 0.0) { return Ok(()); }
+        if draws.iter().any(|draw| draw.masking_factor > 0.0 && draw.material.distortion) {
+            return Err("distortion particle masking specialization is not connected".into());
+        }
+        self.record_mode(images, device, queue, encoder, input, draws, true)
+    }
+
+    fn record_mode(
+        &mut self,
+        images: &mut super::particle_images::ParticleImagesGpu,
+        device: &RenderDevice,
+        queue: &RenderQueue,
+        encoder: &mut CommandEncoder,
+        input: ParticleViewInputs<'_>,
+        draws: &[ParticleDraw],
+        masking: bool,
+    ) -> Result<(), String> {
         if draws.is_empty() {
             return Ok(());
         }
-        let accumulation = draws.iter().find(|draw| !draw.material.distortion)
+        let draw_state = |draw: &ParticleDraw| if masking {
+            crate::render_state::masking_surface_draw_state(draw.material.state)
+        } else { draw.state };
+        let accumulation = !masking && draws.iter().find(|draw| !draw.material.distortion)
             .is_some_and(|draw| draw.transparency.mode != 0);
-        if draws
+        if !masking && draws
             .iter()
             .any(|draw| !draw.material.distortion && (draw.transparency.mode != 0) != accumulation)
         {
@@ -1328,7 +1398,9 @@ impl ParticlePass {
             self.material_sampler = Some(sampler_id);
         }
         for draw in draws {
-            let key = (draw.material.name.clone(), draw.state);
+            if masking && !(draw.masking_factor > 0.0) { continue; }
+            let state = draw_state(draw);
+            let key = (draw.material.name.clone(), state, masking);
             if !self.materials.contains_key(&key) {
                 let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
                 let material = self.material(
@@ -1336,9 +1408,10 @@ impl ParticlePass {
                         device,
                         queue,
                         draw.material.clone(),
-                        draw.state,
+                        state,
                         accumulation,
                         &surface_sampler,
+                        masking,
                     )?;
                 self.materials.insert(key, material);
             }
@@ -1700,7 +1773,7 @@ impl ParticlePass {
             })]
         };
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("particle colour"),
+            label: Some(if masking { "particle masking" } else { "particle colour" }),
             color_attachments: &colour_attachments,
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: input.depth,
@@ -1721,11 +1794,13 @@ impl ParticlePass {
         pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
         let mut first = 0u32;
         for draw in draws {
-            if draw.material.distortion { first += draw.instances.len() as u32; continue; }
+            if draw.material.distortion || (masking && !(draw.masking_factor > 0.0)) {
+                first += draw.instances.len() as u32; continue;
+            }
             let level = draw.grid_level.min(5) as usize;
-            let material = &self.materials[&(draw.material.name.clone(), draw.state)];
+            let material = &self.materials[&(draw.material.name.clone(), draw_state(draw), masking)];
             pass.set_pipeline(&material.pipeline);
-            pass.set_stencil_reference(draw.stencil_reference);
+            pass.set_stencil_reference(if masking { 0 } else { draw.stencil_reference });
             let (geometry,binding)=if let Some((source,_))=&draw.mesh {
                 let cached=&self.meshes[source]; (&cached.0,&cached.1.as_ref().unwrap().1)
             } else {(&self.grids[level],&self.view_bindings.as_ref().unwrap().1[level])};
@@ -1737,7 +1812,7 @@ impl ParticlePass {
             first += count;
         }
         drop(pass);
-        if !self.reported_mesh_submission {
+        if !masking && !self.reported_mesh_submission {
             let meshes=draws.iter().filter(|draw|draw.mesh.is_some()&&!draw.material.distortion).collect::<Vec<_>>();
             if !meshes.is_empty() {
                 bevy::log::info!(draws=meshes.len(),instances=meshes.iter().map(|draw|draw.instances.len()).sum::<usize>(),
@@ -1751,7 +1826,7 @@ impl ParticlePass {
                 .unwrap()
                 .record_resolve(device, queue, encoder, &input)?;
         }
-        if draws.iter().any(|draw| draw.material.distortion) {
+        if !masking && draws.iter().any(|draw| draw.material.distortion) {
             if self.distortion.as_ref().is_none_or(|(extent, compressed, _, _)|
                 *extent != input.extent || *compressed != input.compressed_hdr) {
                 let format = if input.compressed_hdr { TextureFormat::Rg11b10Ufloat } else { TextureFormat::Rgba16Float };
@@ -1780,7 +1855,7 @@ impl ParticlePass {
                 let count = draw.instances.len() as u32;
                 if draw.material.distortion {
                     let level = draw.grid_level.min(5) as usize;
-                    let material = &self.materials[&(draw.material.name.clone(), draw.state)];
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state, false)];
                     pass.set_pipeline(&material.pipeline);
                     pass.set_stencil_reference(draw.stencil_reference);
                     let (geometry,binding)=if let Some((source,_))=&draw.mesh {
