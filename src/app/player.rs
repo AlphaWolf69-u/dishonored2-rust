@@ -703,6 +703,19 @@ pub(super) fn update_player(
     }
 }
 
+/// Send the dead state's authored screen FX to the shared level FX owner.
+/// Keep the request until that owner exists; level teardown owns retirement.
+pub(super) fn publish_drowning_fx(
+    mut state: ResMut<PlayerState>,
+    effects: Option<ResMut<super::usable_effects::EffectRequests>>,
+) {
+    let Some(mut effects) = effects else { return };
+    if !state.player.as_ref().is_some_and(|player| player.drowning_fx_requested()) { return; }
+    if let Some(path) = state.player.as_mut().and_then(|player| player.take_drowning_fx_request()) {
+        effects.start_player("drowning", &path);
+    }
+}
+
 /// `DH2_NAV_PROBE` / `DH2_NAV_POINT`: drive the player headlessly at the
 /// game's 1/120 s step and print its motion (settle; with `full`, also run,
 /// sneak, sprint and jump on bound actions).
