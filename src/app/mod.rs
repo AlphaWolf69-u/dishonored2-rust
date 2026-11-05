@@ -141,7 +141,7 @@ use material_loading::{material_option_overrides, MaterialResolver};
 mod setup;
 use setup::setup;
 mod controls;
-use controls::{camera_controls, interact_pickup, update_coordinate_overlay};
+use controls::{camera_controls, update_coordinate_overlay};
 mod diagnostics;
 use diagnostics::{collision_report, game_pose_from_view_transform, snapshot_once};
 mod visibility_queries;

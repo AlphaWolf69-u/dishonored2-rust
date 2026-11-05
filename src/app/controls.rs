@@ -1,10 +1,11 @@
 //! Controls.
 use super::player::{PlayerInput, PlayerState};
 use super::{
-    navigation, runtime, view_of, view_to_game, AccumulatedMouseMotion, BenchmarkSeconds,
-    CoordinateOverlay, CursorGrabMode, CursorOptions, FocusTargets, NavigationWorld,
-    PickupState, PickupVisual, SceneRenderQueue,
+    view_of, view_to_game, AccumulatedMouseMotion, BenchmarkSeconds,
+    CoordinateOverlay, CursorGrabMode, CursorOptions, FocusTargets,
 };
+#[cfg(test)]
+use super::{navigation, PickupState};
 use crate::gameplay::player::controller;
 use bevy::prelude::*;
 
@@ -237,7 +238,6 @@ pub(super) fn camera_controls(
 /// eActions_t MOVE_UP / MOVE_DOWN / INTERACT (binding_tables.rs).
 const ACTION_MOVE_UP: i32 = 17;
 const ACTION_MOVE_DOWN: i32 = 18;
-const ACTION_INTERACT: i32 = 22;
 
 pub(super) fn update_coordinate_overlay(
     cameras: Query<&Transform, With<Camera3d>>,
@@ -261,6 +261,7 @@ pub(super) fn update_coordinate_overlay(
     };
 }
 
+#[cfg(test)]
 pub(super) fn pickup_in_view(
     camera: &Transform,
     state: &PickupState,
@@ -291,65 +292,3 @@ pub(super) fn pickup_in_view(
         .map(|(index, _)| index)
 }
 
-pub(super) fn interact_pickup(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    cameras: Query<&Transform, With<Camera3d>>,
-    mut state: ResMut<PickupState>,
-    mut scene: ResMut<SceneRenderQueue>,
-    mut collision: Option<ResMut<NavigationWorld>>,
-    visuals: Query<(Entity, &PickupVisual)>,
-    mut windows: Query<&mut Window>,
-) {
-    let interact = {
-        let console = crate::platform::console::shared().read();
-        let bindings = &console.bindings.sets[crate::platform::bindings::IN_GAME];
-        keys.get_just_pressed().any(|&key| {
-            super::engine_keys::engine_key(key)
-                .and_then(|code| bindings.get(code as usize))
-                .is_some_and(|binding| binding.action == ACTION_INTERACT)
-        })
-    };
-    if !interact {
-        return;
-    }
-    let Ok(camera) = cameras.single() else {
-        return;
-    };
-    let Some(index) = pickup_in_view(camera, &state, collision.as_ref().map(|world| &world.0))
-    else {
-        return;
-    };
-    let id = state.items[index].entity_id.clone();
-    let Ok(runtime::WorldEvent::PickupCollected {
-        item_path: path,
-        quantity,
-        inventory_total,
-        ..
-    }) = state.world.collect_pickup(&id)
-    else {
-        return;
-    };
-    if let Some(world) = collision.as_mut() {
-        world.0.set_owner_active(&id, false);
-    }
-    for (entity, visual) in visuals.iter() {
-        if visual.0 == id {
-            commands.entity(entity).despawn();
-        }
-    }
-    let mut removed = 0;
-    for instance in &mut scene.instances {
-        if instance.pickup_id.as_deref() == Some(id.as_str()) && instance.entity.take().is_some() {
-            if instance.visible {
-                removed += 1;
-            }
-            instance.visible = false;
-        }
-    }
-    scene.active = scene.active.saturating_sub(removed);
-    if let Ok(mut window) = windows.single_mut() {
-        window.title = format!("Dishonored 2 Rust | picked up {quantity} Г— {path}");
-    }
-    println!("Picked up {id}: {quantity} Г— {path}; inventory total {inventory_total}");
-}
