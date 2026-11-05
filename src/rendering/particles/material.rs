@@ -423,7 +423,9 @@ impl ParticleMaterial {
             };
             let metallic = scopes.vector("metallicMinMax")?;
             let gloss_in_alpha = read_option("glossInDiffuseAlpha")? != 0;
-            let bump = read_option("hasBumpMap")? != 0;
+            // Scrolling water derives its normal from fx/normals; its source
+            // does not execute the ordinary material bump-map fetch.
+            let bump = !scrolling_water && read_option("hasBumpMap")? != 0;
             let detail_bump = if bump && read_option("hasDetailBumpMap")? != 0 {
                 Some([
                     scopes.vector("detailBumpmapTiling")?[0],
