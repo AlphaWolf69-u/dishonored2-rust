@@ -154,6 +154,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::shadow_pass::ShadowCaptureReadiness,
         backend::coarse_depth::CoarseDepthMailbox,
         backend::projected_decals::DecalScene,
+        backend::projected_decals::DynamicProxyReadiness,
         super::material_loading::alpha::AlphaDepthMaterials,
     );
     super::audio::begin_level(world);

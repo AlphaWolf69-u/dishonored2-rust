@@ -20,7 +20,7 @@ type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>
 struct GeometryLayouts(HashMap<AssetId<Mesh>, u32>);
 
 struct RuntimeDecalProxySet {
-    prepared: super::runtime_materials::PreparedDecal,
+    _prepared: super::runtime_materials::PreparedDecal,
     entities: Vec<Entity>,
 }
 #[derive(Resource, Default)]
@@ -248,6 +248,15 @@ pub(super) fn publish_runtime(
             }
         }
     }
+    Arc::make_mut(&mut scene.programs).retain(|_, variants| variants.iter().any(Option::is_some));
+    if request.prepared.is_empty() && state.owned.is_empty() && state.owns_scene_geometry {
+        scene.tree = None;
+        scene.receiver_range_ends = [0; 2];
+        *layouts = GeometryLayouts::default();
+        state.samples.clear();
+        if let Some(cube) = state.cube.take() { meshes.remove(cube.id()); }
+        state.owns_scene_geometry = false;
+    }
     let mut expected = Vec::new();
     for item in request.prepared.iter() {
         let key = (item.name.clone(), item.world);
@@ -286,7 +295,7 @@ pub(super) fn publish_runtime(
         Arc::make_mut(&mut scene.programs).entry(item.name.clone()).or_insert_with(|| [None, None])
             [usize::from(item.world)] = Some(item.program.clone());
         expected.extend(entities.iter().copied());
-        state.owned.insert(key, RuntimeDecalProxySet { prepared: item.clone(), entities });
+        state.owned.insert(key, RuntimeDecalProxySet { _prepared: item.clone(), entities });
     }
     readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
         generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(),
