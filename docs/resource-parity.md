@@ -3707,3 +3707,21 @@ Production evidence: `artifacts/skeleton-resource-comparison.json` and its
 `resource-skeleton-*` / `resource-parents-*` logs. This verifies the exercised
 resource and walking paths, not unfinished music, Kiscule ownership, general
 scene playback or player-state admission.
+
+Camera joint-control correction (source integration, 2026-11-05): the numeric
+hand capture `collision-1793889929793.txt` rules out missing renderer admission
+and skinning failure for the selected catfall right arm. Original joint mods
+14053f5f0 enqueue stage4/type2/additive1 controls; 14053bcd0 materializes each
+joint's updated hierarchy before applying the next modification. Descendant
+pivots therefore follow preceding ancestor rotations. The previous host pose
+helper incorrectly used unmodified pivots. Controls now prepare those pivots
+once and share the result among body/tag/arm/camera consumers. Sorting reuses
+the existing idLib quick sort: 140540630 compares joint, stage and type; its
+equal-key ordering is not stable. Camera controls share stage/type, leaving
+joint as the varying key. This changes output only where an earlier ancestor
+turn moves a later pivot or equal-key ordering matters. It is a correctness
+correction, not a claimed performance improvement or proof that both missing
+hand symptoms are resolved. Prediction: one prepared list replaces duplicate
+view/arm control preparation; each entry retains one extra Vec3, with no new
+per-joint allocation or GPU resource. Compilation and production verification
+of this source batch are pending.
