@@ -2157,3 +2157,15 @@ Finer-mip failures keep the existing resident texture. This fixes unbounded
 waiting/retention on the demonstrated source error path; it is not a claimed
 steady-state CPU improvement. Measure the affected coordinator/image-owner
 paths and exercise the actual failure route after compilation.
+
+Shared-skeleton release result (`a8fc323`): 17 live reuse hits remove 17 of
+225 decodes across four loads; all 79 skeleton signatures and model content
+signatures match. Full-representation peak logical payload falls from 60,006
+to 34,265 bytes and final live identities are zero. This is not a claim about
+the old subset-only representation or total RAM. Walking confirms the exact
+predicted one-allocation/320-byte parent-copy removal per pose; median isolated
+block cycles fall 2,905 -> 1,540 over 3,529/3,357 samples. The allocation-count
+prediction matches. Aggregate read/parse timing drift is not attributed to
+sharing; it contains cache/path effects. No further optimization is justified
+by those aggregate cycles alone. Full source/measurement scope is recorded in
+the parity ledger.

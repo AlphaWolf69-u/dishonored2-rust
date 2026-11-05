@@ -71,7 +71,7 @@ trailing `*` covers a family of kinds.
 | `areaTagCollection` | none | none: no owner yet |
 | `arkCloth` | none | none: no owner yet |
 | `arkTree` | none | none: no owner yet |
-| `baseModel` | `assets::bmd6::ModelSources`, `assets::entities` | host: preparation scopes own immutable decoded BMD6 identities; setup explicitly borrows live physics model sources and runtime skin/usable consumers retain their required Arcs. Final consumer drop frees model payload, with optional acquisition/release identity diagnostics. The extra process-wide weak/coalescing cache was removed: a four-map debug production comparison completed with 210 requests, 203 reads/decodes and 76 matching source/decoded path signatures in BOTH modes, with no client errors. It supplied no measured reuse. First-person render models now use the same loader instead of direct read/decode; that routing and the removed-cache source batch await compilation/runtime validation. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. No CPU/RSS gain is claimed from debug duration. GPU mesh residency remains with its existing owner; complete class lifecycle parity is still partial. |
+| `baseModel` | `assets::bmd6::ModelSources`, `assets::entities` | host: preparation scopes own immutable decoded BMD6 identities; setup explicitly borrows live physics model sources and runtime skin/usable consumers retain their required Arcs. Final consumer drop frees model payload, with optional acquisition/release identity diagnostics. The extra process-wide weak/coalescing cache was removed: a four-map debug production comparison completed with 210 requests, 203 reads/decodes and 76 matching source/decoded path signatures in BOTH modes, with no client errors. It supplied no measured reuse. First-person render models now use the same loader instead of direct read/decode; the routed loader and removed-cache batch compiled in the release game and completed both four-map runs, with matching model content signatures. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. No CPU/RSS gain is claimed from debug duration. GPU mesh residency remains with its existing owner; complete class lifecycle parity is still partial. |
 | `blueprint` | `assets::entities`, `app::view_geometry` | partial: reads its resources; lifecycle not ported (see its class) |
 | `boneCharmCollection` | none | none: no owner yet |
 | `boneCharmLoadout` | none | none: no owner yet |
@@ -140,7 +140,7 @@ trailing `*` covers a family of kinds.
 | `renderParm` | `assets::environment`, `app::material_loading` | partial: reads its resources; lifecycle not ported (see its class) |
 | `renderProg` | `assets::shader_cache` | partial: reads its resources; lifecycle not ported (see its class) |
 | `ruleHandler` | none | none: no owner yet |
-| `skeleton` | `assets::edge_skeleton`, `assets::animation_rig` | host: a catalog/path-keyed weak/coalescing Edge skeleton owner serves player body/arms, first-person rendering, rest-skin preparation and physics. Live consumers retain one immutable full skeleton; mutable poses and derived physics rest matrices stay separate. Final-drop tokens retire identity metadata; failed loads and level teardown prune empty entries. Editable overlays bypass sharing. Original lookup/load/purge: `1400607f0` / `14024f2a0` / `140060180`. Parent arrays are no longer copied into every body-camera pose. The full skeleton now retains names/inverse binds until the last consumer; source batch is unbuilt and must compare live/peak unique-identity bytes and changed acquisition/parent-copy cycles before acceptance. |
+| `skeleton` | `assets::edge_skeleton`, `assets::animation_rig` | host: a catalog/path-keyed weak/coalescing Edge skeleton owner serves player body/arms, first-person rendering, rest-skin preparation and physics. Live consumers retain one immutable full skeleton; mutable poses and derived physics rest matrices stay separate. Final-drop tokens retire identity metadata; failed loads and level teardown prune empty entries. Editable overlays bypass sharing. Original lookup/load/purge: `1400607f0` / `14024f2a0` / `140060180`. Parent arrays are no longer copied into every body-camera pose. The full skeleton retains names/inverse binds until the last consumer. The release four-map comparison recorded 225 -> 208 decodes for 225 requests, 17 live reuse hits, 79 matching resource signatures and zero final live identities in both modes. Peak full-skeleton logical payload was 60,006 -> 34,265 bytes. This compares full unshared/shared representations, not historical subset-only player RAM. Walking parent-source medians were 2,905 -> 1,540 thread cycles, with 320 -> 0 copied bytes and one allocation removed per pose. Actual original tag budgets cover additional unimplemented consumers; complete class parity is not inferred. |
 | `soundauxbus` | `gameplay::sound::auxiliary` (sound class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `soundengineinternals` | `app::audio` (sound class) | partial: reads its resources; lifecycle not ported (see its class) |
 | `soundevent` | `app::audio`, `assets::wwise` (sound class) | partial: reads its resources; lifecycle not ported (see its class) |
@@ -3563,7 +3563,7 @@ colour from mask variants; mask specialization writes R8_UNORM, disables only
 depth writes in the authored material state, and uses stencil reference zero.
 Bounded mask-material prewarming is available. Distinct authored masking
 programs and distortion masking still return explicit preparation errors.
-Status remains unbuilt/inactive: no view owner invokes the mode until target,
+Status remains inactive after successful release compilation: no view owner invokes the mode until target,
 consumer, dynamic overrides and world-material mesh handling are connected.
 
 The mask consumer now owns its lazily prepared per-view target as well:
@@ -3572,7 +3572,7 @@ R8_UNORM, one mip/sample, full dimensions clamped to eight per axis, as in
 surface list (1403222f0). Resize and view release drop cached sampled input
 bindings together with the target; compiled pipeline/uniform capacity may
 remain with the host consumer. COPY_SRC is a host diagnostic permission only;
-normal rendering adds no readback. Status: unbuilt and not activated by a view.
+normal rendering adds no readback. Status: compiled, but not activated by a view.
 
 Further grading trace identifies the actual consumer as 1403134e0, called by
 140315450 before its DoF operations. It reads greyAmount and invert from the
@@ -3676,3 +3676,34 @@ recovery is explicitly a host error mechanism, not a claim to reproduce the
 original fatal-error UI. Successful resident slots allocate no failure records.
 Source integration is complete; production failure/cancellation execution and
 changed-path costs remain to be verified before full lifecycle acceptance.
+
+### Shared skeleton and body-camera pose: release acceptance
+
+Release game source `a8fc323` compiled successfully. Two production runs each
+completed Edge of the World -> Dust District -> Dust Return -> Edge of the
+World and exited 0. Separate/shared modes each requested 225 skeletons across
+79 paths; source bytes/CRCs, parsed size fields and model content signatures
+matched. The owner reduced read/parse calls from 225 to 208, with 17 live reuse
+hits. Acquired/released identities reconstruct zero final live skeletons and
+zero unmatched release records in both modes. Peak full-skeleton logical
+payload was 60,006 versus 34,265 bytes (11 versus eight live identities).
+These are logical payloads, not allocator capacity or process RAM; the separate
+mode does not recreate the older subset-only player skeleton representation.
+
+Two further production clients walked the same two-way waterfront route for
+75 seconds each and exited 0. The isolated parent-source block recorded
+3,529 copy-mode and 3,357 shared-mode samples: medians 2,905 -> 1,540 thread
+cycles; means 3,054.293 -> 1,582.058 cycles. Copied bytes were exactly 320 per
+sample versus zero, eliminating one parent-vector allocation per pose.
+Both controls retain the shared skeleton reference, so these numbers isolate
+the removed allocation/copy; they are not complete Body::pose, frame-time,
+FPS or historical process-memory comparisons. The pose's diagnostic comparison
+field adds eight header bytes compared with the former parent Vec header.
+
+Raw skeleton read/parse sums were 15,211,338 versus 10,983,410 cycles, but path
+mix/cache warmth and diagnostic work prevent treating that aggregate difference
+as the isolated gain from 17 avoided parses. No such CPU percentage is claimed.
+Production evidence: `artifacts/skeleton-resource-comparison.json` and its
+`resource-skeleton-*` / `resource-parents-*` logs. This verifies the exercised
+resource and walking paths, not unfinished music, Kiscule ownership, general
+scene playback or player-state admission.
