@@ -8,12 +8,12 @@ use super::{
     local_light_clip_to_world, local_shadow_updates, material, mean_game_position,
     needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, render_bounds, render_light, render_model,
-    rest_skinning, retain_model_shadow_position, retain_skin_inputs, runtime, shadow_pipeline,
+    rest_skinning, retain_model_shadow_position, retain_skin_inputs, shadow_pipeline,
     shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
     CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass, DiffuseMipState,
     FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet, LocalLightCull,
-    MaterialResolver, NavigationWorld, PathBuf, PickupInstance, PickupState,
+    MaterialResolver, NavigationWorld, PathBuf,
     PlacedModelQueries, PlacedModelQueryGroup, ProbeMaterial, ProgramCacheSource, Projection,
     RectLight, RenderDevice, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, RenderSuppressionGroup, SceneData, SceneRenderQueue, ShaderBuffer,
@@ -91,18 +91,19 @@ pub(super) fn setup(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     view_settings: Res<ViewSettings>,
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
-    machinery: Option<Res<super::machinery::AmbientMachinery>>,
+    moving: (Option<Res<super::machinery::AmbientMachinery>>, Option<Res<super::interactions::Interactions>>),
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
     effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>),
 ) {
     let (mut programs, prepared) = programs;
     let (effect_graphs, resident_images) = effects_and_images;
+    let (machinery, interactions) = moving;
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
     prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
         &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
-        &mut world_matrices, machinery.as_deref(), environment_volumes.as_deref(),
+        &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
         effect_graphs.as_deref(), None, &resident_images);
 }
 
@@ -121,6 +122,7 @@ pub(super) fn prepare(
     view_settings: &ViewSettings,
     world_matrices: &mut super::world_instances::WorldMatrices,
     machinery: Option<&super::machinery::AmbientMachinery>,
+    interactions: Option<&super::interactions::Interactions>,
     environment_volumes: Option<&super::state::EnvironmentVolumes>,
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
     shared_images: Option<&super::texture_streaming::SharedImages>,
@@ -152,11 +154,12 @@ pub(super) fn prepare(
                     Vec3::from_array(render_light::sun_ground_color(colour)),
                 )
             });
-        let program_library = programs
+        let cache = programs
             .as_deref_mut()
             .expect("atmosphere requires the installed program cache")
-            .0
-            .as_mut()
+            .0.clone();
+        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let program_library = cache.as_mut()
             .unwrap_or_else(|error| panic!("atmosphere program cache unavailable: {error}"));
         let mut fog = super::fog_scene::FogScene::load(
             catalog,
@@ -380,6 +383,9 @@ pub(super) fn prepare(
     let reflections = loaded_reflections.image;
     let reflection_planes = loaded_reflections.planes;
     let reflection_brdf_lookup = loaded_reflections.brdf_lookup;
+    // Scene preparation runs before runtime FX requests and owns the same
+    // program library that those requests later acquire on their worker.
+    let mut program_guard = programs.as_ref().map(|source| source.0.lock().unwrap_or_else(|e| e.into_inner()));
     let mut resolver = MaterialResolver {
         blended_materials: Default::default(),
         fog_material: fog_material.bindings(),
@@ -392,7 +398,7 @@ pub(super) fn prepare(
         vista_sun,
         anisotropic_sampler_image,
         catalog,
-        programs: programs.as_deref_mut().map(|source| &mut source.0),
+        programs: program_guard.as_deref_mut(),
         probe_materials: probe_materials,
         sky_materials: sky_materials,
         decal_materials: decal_materials,
@@ -599,7 +605,7 @@ pub(super) fn prepare(
                     },
                     transform: Transform::IDENTITY,
                     bounds,
-                    pickup_id: None,
+
                     entity: None,
                     visible: false,
                 };
@@ -624,7 +630,7 @@ pub(super) fn prepare(
                     },
                     transform: instance,
                     bounds,
-                    pickup_id: None,
+
                     entity: None,
                     visible: false,
                 }
@@ -658,11 +664,6 @@ pub(super) fn prepare(
     let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
     let mut md6_rest_pose_instances = 0usize;
     let mut model_mesh_handles = HashMap::<(String, usize, bool, u8), Handle<Mesh>>::new();
-    let pickup_ids: HashSet<&str> = scene
-        .pickups
-        .iter()
-        .map(|pickup| pickup.entity_id.as_str())
-        .collect();
     let mut model_instances = 0usize;
     let mut model_surfaces = 0usize;
     let mut placed_model_queries = Vec::new();
@@ -671,7 +672,17 @@ pub(super) fn prepare(
     let mut skin_palettes =
         HashMap::<String, Result<Arc<shadow_updates::RestSkinning>, String>>::new();
     let mut placed_model_default_ranges = 0usize;
-    let deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
+    let mut deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
+    if let Some(interactions) = interactions {
+        for (index, placement) in expanded_placements.iter().enumerate() {
+            if crate::bmd6::declaration_path(&placement.resource_path).is_some()
+                && interactions.actor_by_entity.get(&placement.id).is_some_and(|&actor| {
+                    interactions.actors[actor].definition.steps.iter().any(|step| step.animation.is_some() || step.transition_animation.is_some())
+                }) {
+                deformed.insert(index);
+            }
+        }
+    }
     // Scene preparation can borrow already acquired physics sources. Editable
     // layers use fresh reads so changes between preparation phases remain visible.
     let physics_models: HashMap<&str, &Arc<bmd6::ModelInfo>> = if catalog.is_some_and(|c| !c.has_overlays()) {
@@ -787,8 +798,8 @@ pub(super) fn prepare(
                     };
                     let bounds = render_bounds(&points);
                     let instance = placed_transform(placement);
-                    let world_baked =
-                        needs_exact_world_mesh(&instance, &surface.positions, &points);
+                    let world_baked = !deformed.contains(&number)
+                        && needs_exact_world_mesh(&instance, &surface.positions, &points);
                     let skin_influences = resolver.shadow_materials.skin_influences(&mat.handle);
                     let (mesh, transform) = if world_baked {
                         (
@@ -885,7 +896,7 @@ pub(super) fn prepare(
                         probe_index: mat.probe_index,
                         transform,
                         bounds,
-                        pickup_id: None,
+
                         entity: None,
                         visible: false,
                     });
@@ -905,9 +916,6 @@ pub(super) fn prepare(
                     surfaces: caster_surfaces,
                     skinning: Some(skinning),
                     instances: model_render_start..render_instances.len(),
-                    pickup_id: pickup_ids
-                        .contains(placement.id.as_str())
-                        .then(|| placement.id.clone()),
                     flags_1c30: render_model::model_owner_bounds_flags(
                         0,
                         [
@@ -1091,9 +1099,6 @@ pub(super) fn prepare(
                 probe_index: mat.probe_index,
                 transform,
                 bounds,
-                pickup_id: pickup_ids
-                    .contains(placement.id.as_str())
-                    .then(|| placement.id.clone()),
                 entity: None,
                 visible: false,
             });
@@ -1113,9 +1118,6 @@ pub(super) fn prepare(
             surfaces: caster_surfaces,
             skinning: None,
             instances: model_render_start..render_instances.len(),
-            pickup_id: pickup_ids
-                .contains(placement.id.as_str())
-                .then(|| placement.id.clone()),
             flags_1c30: render_model::model_owner_bounds_flags(
                 0,
                 [
@@ -1411,18 +1413,6 @@ pub(super) fn prepare(
     }
     commands.insert_resource(super::player::PlayerState { debug_free_fly: player.is_none(), player, difficulty: catalog.and_then(super::player::load_difficulty) });
     commands.insert_resource(super::player::PlayerInput::default());
-    commands.insert_resource(PickupState {
-        items: scene
-            .pickups
-            .iter()
-            .map(|pickup| PickupInstance {
-                entity_id: pickup.entity_id.clone(),
-                position: game_to_view(pickup.position),
-            })
-            .collect(),
-        world: runtime::WorldState::from_pickups(&scene.pickups)
-            .expect("level contains invalid or duplicate pickup definitions"),
-    });
     if lit {
         // lightcontext HQ/AQ/LQ_ComputeAmbientLighting explicitly disable
         // the old env/ambient high/low term. Probe irradiance owns ambient;
@@ -1756,11 +1746,7 @@ pub(super) fn prepare(
         targets[active].label
     );
     println!(
-        "Controls: mouse/arrows look (captured after loading), click to recapture mouse, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F pick up mapped items; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
-    );
-    println!(
-        "Mapped pickups with explicit item and quantity: {}",
-        scene.pickups.len()
+        "Controls: mouse/arrows look (captured after loading), click to recapture mouse, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
     );
     commands.insert_resource(FocusTargets { targets, active });
     let mut tome_render_instances =
@@ -1861,6 +1847,7 @@ pub(super) fn prepare(
         slots: Arc::new(particle_image_slots), world_materials: Arc::new(particle_world_images), ..Default::default()
     });
     particle_resources.report_scene_images(&resolver.diffuse_image_paths);
+    commands.insert_resource(super::usable_effects::ParticleResourceOwner::new(particle_resources));
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
     let diffuse_image_count = resolver.diffuse_image_paths.len();
     // A proxy streams the images of the material it was cloned from.
@@ -1991,7 +1978,6 @@ pub(super) fn prepare(
     });
     // Every world mesh is uploaded and its shadow/water/probe inputs are
     // built; the original keeps no CPU copy of uploaded world geometry.
-    drop(pickup_ids);
     for mesh in &mut scene.world.meshes {
         mesh.positions = Vec::new();
         mesh.uvs = Vec::new();

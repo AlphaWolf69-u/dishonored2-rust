@@ -2,7 +2,7 @@
 use super::{
     bwm_lod_visibility_counts, game_pose_from_view_transform,
     game_settings, view_distance_scale, reference_fov_from_projection, tome, view_to_game,
-    Instant, MaterialHandle, MeshTag, ViewSettings, PickupState, PickupVisual,
+    Instant, MaterialHandle, MeshTag, ViewSettings,
     PlacedModelQueries, Projection, RenderSuppressionGroup, SceneRenderQueue, StreamingDiagnostics,
     TomeWorld, VisibilityElapsedTiming, DEFAULT_FAR, DEFAULT_NEAR,
 };
@@ -338,8 +338,6 @@ impl TomeRenderQueryCache {
 pub(super) struct VisibilityUpdateScratch {
     instance_buffer: usize,
     visible: Vec<bool>,
-    /// Instances with a pickup, whose visibility another system can clear.
-    pickup: Vec<bool>,
 }
 
 // The ordinary direct-Tome query selects mapped static BWM instances and
@@ -352,7 +350,7 @@ pub(super) fn stream_visible_models(
     mut scene: ResMut<SceneRenderQueue>,
     tome_world: Option<Res<TomeWorld>>,
     placed_model_queries: Option<Res<PlacedModelQueries>>,
-    pickups: Res<PickupState>,
+    retired: Option<Res<super::interaction_focus::RetiredPlacements>>,
     mut timing: Option<ResMut<VisibilityElapsedTiming>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     mut last_tome_error: Local<Option<String>>,
@@ -690,11 +688,6 @@ pub(super) fn stream_visible_models(
             .iter()
             .map(|instance| instance.visible)
             .collect();
-        updates.pickup = scene
-            .instances
-            .iter()
-            .map(|instance| instance.pickup_id.is_some())
-            .collect();
     }
     let verify_updates = std::env::var("DH2_VERIFY_VISIBILITY_UPDATES").as_deref() == Ok("1");
     if verify_updates {
@@ -725,25 +718,28 @@ pub(super) fn stream_visible_models(
         for index in block..block_end {
             // FUN_14037e1d0 handles BWM indices; FUN_14031ad30 handles the
             // supported initial BML groups independently of serialized Tome IDs.
-            let visible = tome_visibility.as_ref().is_some_and(|result| result[index]);
+            let visible = tome_visibility.as_ref().is_some_and(|result| result[index])
+                && retired.as_ref().is_none_or(|retired| {
+                    if retired.0.is_empty() { return true; }
+                    match scene.instances[index].source.map(|source| source.surface) {
+                        Some(super::RenderModelSurface::Bmodel { placement, .. } | super::RenderModelSurface::Bmd6 { placement, .. }) => !retired.0.contains(&placement),
+                        _ => true,
+                    }
+                });
             if !visible && !updates.visible[index] {
                 continue;
             }
-            // Visible last frame and now, without a pickup: the mirror equals
+            // Visible last frame and now: the mirror equals
             // the instance and nothing below would change it, so keep its
             // large record out of the cache.
-            if visible && updates.visible[index] && !updates.pickup[index] {
+            if visible && updates.visible[index] {
                 if let Some(selection) = visible_instances.as_deref_mut() {
                     selection.indices.push(index);
                 }
                 continue;
             }
             let instance = &mut scene.instances[index];
-            let available = instance
-                .pickup_id
-                .as_ref()
-                .is_none_or(|id| pickups.world.pickup_available(id));
-            if visible && available {
+            if visible {
                 if let Some(entity) = instance.entity {
                     if !instance.visible {
                         commands.entity(entity).insert(Visibility::Visible);
@@ -811,9 +807,6 @@ pub(super) fn stream_visible_models(
                         MeshTag(instance.probe_index),
                         GlobalTransform::from(instance.transform),
                     ));
-                    if let Some(id) = &instance.pickup_id {
-                        entity.insert(PickupVisual(id.clone()));
-                    }
                     instance.entity = Some(entity.id());
                     instance.visible = true;
                     active += 1;

@@ -139,7 +139,7 @@ mod tests {
             probe_index: 0,
             transform: Transform::IDENTITY,
             bounds: bevy::camera::primitives::Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
-            pickup_id: None,
+
             entity: None,
             visible: false,
         });

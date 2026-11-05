@@ -22,6 +22,11 @@ impl AmbientMachinery {
     pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
         self.skins.iter().map(|s| s.placement()).collect()
     }
+    pub(super) fn animated_palette(&self, placement: usize, animation: &[super::physics_skinning::Affine])
+        -> Option<Result<Vec<super::physics_skinning::Affine>, String>> {
+        self.skins.iter().find(|skin| skin.placement() == placement)
+            .map(|skin| skin.animated_palette(&self.physics, animation))
+    }
     pub(super) fn skin_models(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::bmd6::ModelInfo>)> {
         self.skins.iter().map(|skin| (skin.placement(), skin.model()))
     }
@@ -257,6 +262,7 @@ pub(super) fn pose_physics_systems(
     mut queue: ResMut<super::SceneRenderQueue>,
     mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     placements: Res<super::RenderSourcePlacements>,
+    animations: Option<Res<super::usable_animation::UsableAnimations>>,
 ) {
     let machinery = &mut *machinery;
     if machinery.skins.is_empty() {
@@ -270,6 +276,7 @@ pub(super) fn pose_physics_systems(
         &mut queue,
         &mut sources,
         &placements,
+        animations.as_deref(),
     );
 }
 

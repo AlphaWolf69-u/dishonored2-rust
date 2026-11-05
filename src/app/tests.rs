@@ -171,7 +171,7 @@ fn shadow_model_bounds_keep_hidden_owners_once_not_surface_boxes() {
         probe_index: 0,
         transform: Transform::default(),
         bounds: Aabb::from_min_max(Vec3::splat(1000.0), Vec3::splat(1001.0)),
-        pickup_id: None,
+
         entity: None,
         visible: false,
     };
@@ -208,28 +208,20 @@ fn shadow_model_bounds_keep_hidden_owners_once_not_surface_boxes() {
             bounds: second,
         },
     ]);
-    let pickups = PickupState {
-        items: Vec::new(),
-        world: runtime::WorldState::from_pickups(&[]).unwrap(),
-    };
     assert_eq!(
-        sources.active_bounds(&scene, &pickups).unwrap(),
+        sources.active_bounds(&scene, None).unwrap(),
         [first, second],
         "hidden/unspawned model owners remain receiver inputs, once per placement"
     );
-    for item in &mut scene.instances[..2] {
-        item.pickup_id = Some("removed-owner".into());
-    }
-    assert_eq!(sources.active_bounds(&scene, &pickups).unwrap(), [second]);
     sources.0[1].placement = 99;
     assert!(
-        sources.active_bounds(&scene, &pickups).is_err(),
+        sources.active_bounds(&scene, None).is_err(),
         "no owner substitution"
     );
     sources.0[1].placement = 12;
     sources.0[1].instances.end = 4;
     assert!(
-        sources.active_bounds(&scene, &pickups).is_err(),
+        sources.active_bounds(&scene, None).is_err(),
         "no partial range fallback"
     );
 }
@@ -280,10 +272,6 @@ fn shadow_ordinary_query_clears_when_camera_is_unavailable() {
     let mut scene = SceneRenderQueue::default();
     scene.publish_shadow_ordinary_query(&tome::RenderQueryObjectOutput::default());
     world.insert_resource(scene);
-    world.insert_resource(PickupState {
-        items: Vec::new(),
-        world: runtime::WorldState::from_pickups(&[]).unwrap(),
-    });
     world.run_system_once(stream_visible_models).unwrap();
     assert!(
         world
@@ -565,7 +553,6 @@ fn world_shadow_test_scene(world: world_mesh::WorldMesh) -> SceneData {
         shadow_cascade_controls: None,
         shadow_cascade_fars: None,
         far_shadow_bounds: None,
-        pickups: Vec::new(),
         catalog: None,
     }
 }
@@ -602,7 +589,7 @@ fn world_shadow_initial_publish_retries_alpha_and_owns_one_mask_batch() {
         probe_index: 0,
         transform: Transform::default(),
         bounds: Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
-        pickup_id: None,
+
         entity: None,
         visible: false,
     });
@@ -1042,7 +1029,6 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
         shadow_cascade_controls: Some(settings.cascade_controls),
         shadow_cascade_fars: settings.cascade_fars,
         far_shadow_bounds: entities::world_far_shadow_bounds(&document).unwrap(),
-        pickups: Vec::new(),
         catalog: None,
     };
     // Owner initialization must not depend on meshes/color visibility.
@@ -1257,10 +1243,6 @@ fn unavailable_or_unready_camera_replaces_model_and_texture_visibility() {
     use bevy::ecs::system::RunSystemOnce;
     for camera_count in [0, 1, 2] {
         let mut world = World::new();
-        world.insert_resource(PickupState {
-            items: Vec::new(),
-            world: runtime::WorldState::default(),
-        });
         world.insert_resource(VisibilityElapsedTiming::default());
         let entity = world.spawn(Visibility::Visible).id();
         world.insert_resource(SceneRenderQueue {
@@ -1273,7 +1255,7 @@ fn unavailable_or_unready_camera_replaces_model_and_texture_visibility() {
                 probe_index: 0,
                 transform: Transform::default(),
                 bounds: Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
-                pickup_id: None,
+
                 entity: Some(entity),
                 visible: true,
             }],
@@ -6602,10 +6584,6 @@ fn streamed_light_ids_replace_stale_data_on_worker_errors_and_camera_loss() {
         query_job_count: tome::DEFAULT_QUERY_JOB_COUNT,
         query_pool: None,
     });
-    world.insert_resource(PickupState {
-        items: Vec::new(),
-        world: runtime::WorldState::default(),
-    });
     world.insert_resource(SceneRenderQueue {
         // This focused fixture has no BWM bindings; every selected object
         // can therefore contribute its authored user IDs to light lookup.
@@ -7512,7 +7490,7 @@ fn visible_diffuse_is_uploaded_then_reduced_after_recorded_interval() {
             probe_index: 0,
             transform: Transform::IDENTITY,
             bounds: render_bounds(&[Vec3::ZERO, Vec3::ONE]),
-            pickup_id: None,
+
             entity: None,
             visible: true,
         }],
@@ -8396,10 +8374,6 @@ fn bwm_bounds_use_authored_game_coordinates() {
 fn unmapped_object_has_no_invented_frustum_visibility() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
-    app.insert_resource(PickupState {
-        items: Vec::new(),
-        world: runtime::WorldState::from_pickups(&[]).unwrap(),
-    });
     app.insert_resource(SceneRenderQueue {
         static_world_model_present: false,
         instances: vec![RenderInstance {
@@ -8410,7 +8384,7 @@ fn unmapped_object_has_no_invented_frustum_visibility() {
             probe_index: 0,
             transform: Transform::IDENTITY,
             bounds: render_bounds(&[Vec3::new(-2.0, 0.0, -200.0), Vec3::new(2.0, 3.0, -200.0)]),
-            pickup_id: None,
+
             entity: None,
             visible: false,
         }],
@@ -8567,7 +8541,7 @@ fn accepted_tome_area_metrics_reach_mapped_diffuse_images() {
         probe_index: 0,
         transform: Transform::IDENTITY,
         bounds: render_bounds(&[Vec3::ZERO, Vec3::ONE]),
-        pickup_id: None,
+
         entity: None,
         visible: false,
     });
@@ -8689,7 +8663,7 @@ fn post_merge_spatial_list_overwrites_visibility_and_clears_area_metrics() {
         probe_index: 0,
         transform: Transform::IDENTITY,
         bounds: render_bounds(&[Vec3::ZERO, Vec3::ONE]),
-        pickup_id: None,
+
         entity: None,
         visible: false,
     });
@@ -9064,39 +9038,6 @@ fn blueprint_root_collision_uses_component_not_render_children() {
         .unwrap();
     assert_eq!(world.owner_name(owner), Some("env_bp_fence_metal_200cm_02"));
     assert!((distance - 0.28008184).abs() < 0.00001);
-}
-
-#[test]
-fn pickup_selection_rejects_wall_occlusion() {
-    let definitions = [entities::Pickup {
-        entity_id: "test_item".into(),
-        position: [0.0, 0.0, 0.0],
-        item_path: "test/inventoryitem".into(),
-        quantity: 1,
-    }];
-    let state = PickupState {
-        items: vec![PickupInstance {
-            entity_id: "test_item".into(),
-            position: Vec3::new(0.0, 1.0, -2.0),
-        }],
-        world: runtime::WorldState::from_pickups(&definitions).unwrap(),
-    };
-    let camera = Transform::from_xyz(0.0, 1.0, 0.0);
-    let clear = navigation::CollisionWorld::new(std::iter::empty());
-    assert_eq!(pickup_in_view(&camera, &state, Some(&clear)), Some(0));
-    let wall = navigation::CollisionWorld::new([
-        [
-            Vec3::new(-1.0, 0.0, -1.0),
-            Vec3::new(1.0, 0.0, -1.0),
-            Vec3::new(-1.0, 2.0, -1.0),
-        ],
-        [
-            Vec3::new(1.0, 0.0, -1.0),
-            Vec3::new(1.0, 2.0, -1.0),
-            Vec3::new(-1.0, 2.0, -1.0),
-        ],
-    ]);
-    assert_eq!(pickup_in_view(&camera, &state, Some(&wall)), None);
 }
 
 #[test]

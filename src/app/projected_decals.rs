@@ -11,13 +11,28 @@ use bevy::{
     render::{sync_world::MainEntity, Extract, ExtractSchedule, RenderApp},
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::Arc,
 };
 
 type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>;
 #[derive(Resource, Default)]
-struct GeometryLayouts(HashMap<AssetId<Mesh>, u32>);
+struct GeometryLayouts {
+    ids: HashMap<AssetId<Mesh>, u32>,
+    samples: Vec<(u32, bool, Handle<Mesh>, bool)>,
+}
+
+struct RuntimeDecalProxySet {
+    _prepared: super::runtime_materials::PreparedDecal,
+    entities: Vec<Entity>,
+}
+#[derive(Resource, Default)]
+pub(super) struct RuntimeDecalProxies {
+    revision: Option<u64>,
+    owned: HashMap<(String, bool), RuntimeDecalProxySet>,
+    cube: Option<Handle<Mesh>>,
+    owns_scene_geometry: bool,
+}
 
 #[derive(Default)]
 struct BoundsOwners {
@@ -41,49 +56,18 @@ pub(super) fn register(app: &mut App) {
     }
 }
 
-pub(super) fn prepare(
-    sources: &crate::rendering::particles::world_sources::WorldFxSources,
-    world: &crate::world_mesh::WorldMesh,
+/// Preserve compact receiver layouts while the setup meshes are available.
+fn receiver_layouts(
     instances: &[RenderInstance],
-    resolver: &mut MaterialResolver,
-    meshes: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
-    commands: &mut super::setup_commands::SetupCommands,
-) -> Images {
-    let mut names = BTreeSet::new();
-    for decal in sources
-        .effects
-        .values()
-        .filter_map(|effect| effect.as_ref().ok())
-        .flat_map(|effect| &effect.groups)
-        .flat_map(|group| &group.decals)
-        .filter_map(|decal| decal.as_ref().ok())
-    {
-        for references in decal.declarations.iter().flatten() {
-            for (name, instanced) in [
-                (&references.opaque, false),
-                (&references.opaque_instanced, true),
-                (&references.alpha, false),
-                (&references.alpha_instanced, true),
-            ] {
-                if let Some(name) = name {
-                    names.insert((name.clone(), instanced));
-                }
-            }
-        }
-    }
-    if names.is_empty() {
-        commands.insert_resource(DecalScene::default());
-        commands.insert_resource(GeometryLayouts::default());
-        return Vec::new();
-    }
+    meshes: &dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
+) -> GeometryLayouts {
     let mut keys = HashMap::new();
     let mut layouts = GeometryLayouts::default();
-    let mut samples = Vec::new();
     for instance in instances {
         let Some(source) = instance.source else {
             continue;
         };
-        if layouts.0.contains_key(&instance.mesh.id()) {
+        if layouts.ids.contains_key(&instance.mesh.id()) {
             continue;
         }
         let Some(mesh) = meshes.get(&instance.mesh) else {
@@ -96,15 +80,34 @@ pub(super) fn prepare(
         let next = keys.len() as u32;
         let id = *keys.entry(key).or_insert(next);
         let is_world = matches!(source.surface, RenderModelSurface::World { .. });
-        layouts.0.insert(instance.mesh.id(), id);
-        if !samples
+        layouts.ids.insert(instance.mesh.id(), id);
+        if !layouts.samples
             .iter()
-            .any(|&(layout, world, _): &(u32, bool, Handle<Mesh>)| {
-                layout == id && world == is_world
+            .any(|(layout, world, _, _)| {
+                *layout == id && *world == is_world
             })
         {
-            samples.push((id, is_world, instance.mesh.clone()));
+            layouts.samples.push((id, is_world, instance.mesh.clone(),
+                mesh.contains_attribute(Mesh::ATTRIBUTE_JOINT_INDEX)));
         }
+    }
+    layouts
+}
+
+pub(super) fn prepare(
+    sources: &crate::rendering::particles::world_sources::WorldFxSources,
+    world: &crate::world_mesh::WorldMesh,
+    instances: &[RenderInstance],
+    resolver: &mut MaterialResolver,
+    meshes: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
+    commands: &mut super::setup_commands::SetupCommands,
+) -> Images {
+    let names = sources.decal_materials();
+    let layouts = receiver_layouts(instances, meshes);
+    if names.is_empty() {
+        commands.insert_resource(DecalScene::default());
+        commands.insert_resource(layouts);
+        return Vec::new();
     }
     // Native projection local bounds [-1,-1,-1]..[1,1,0], converted to view axes.
     let mut cube_mesh = Cuboid::new(2., 1., 2.)
@@ -159,7 +162,7 @@ pub(super) fn prepare(
             if depth_box {
                 proxy(commands, cube.clone(), u32::MAX);
             } else {
-                for (layout, is_world, mesh) in &samples {
+                for (layout, is_world, mesh, _) in &layouts.samples {
                     if *is_world == world {
                         proxy(commands, mesh.clone(), *layout);
                     }
@@ -198,19 +201,119 @@ pub(super) fn prepare(
     bindings
 }
 
+/// Publish prepared dynamic decal assets through the same receiver proxies as
+/// setup. Prepared records remain leased here for as long as the coordinator
+/// retains the corresponding effect or tail.
+pub(super) fn publish_runtime(
+    request: Option<Res<super::usable_effects::DynamicDecalMaterials>>,
+    mut state: Option<ResMut<RuntimeDecalProxies>>,
+    mut readiness: ResMut<crate::rendering::bevy_backend::projected_decals::DynamicProxyReadiness>,
+    scene_data: Option<Res<super::SceneData>>,
+    queue: Option<Res<SceneRenderQueue>>,
+    materials: Option<Res<ShadowMaterials>>,
+    mut scene: ResMut<DecalScene>,
+    layouts: Res<GeometryLayouts>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    existing: Query<(Entity, &ProjectedDecalProxy)>,
+    mut commands: Commands,
+) {
+    let (Some(request), Some(mut state), Some(scene_data), Some(queue), Some(materials)) =
+        (request, state, scene_data, queue, materials) else { return };
+    if request.prepared_generation != request.generation || state.revision == Some(request.prepared_revision) { return; }
+    if !request.prepared.is_empty() && scene.tree.is_none() {
+            scene.tree = Some(scene_data.world.spatial_query());
+            state.owns_scene_geometry = true;
+            let mut ends = [0; 2];
+            for instance in &queue.instances {
+                if let Some(super::RenderInstanceSource { surface: RenderModelSurface::World { object, .. }, .. }) = instance.source {
+                    if let Some(Ok(material)) = materials.0.get(&instance.material) {
+                        let class = usize::from(material.source.main_blend_state & 1 != 0);
+                        ends[class] = ends[class].max(scene_data.world.objects[object].matrix_end as u32);
+                    }
+                }
+            }
+            scene.receiver_range_ends = ends;
+    }
+    let wanted: std::collections::HashSet<_> = request.prepared.iter().map(|item| (item.name.clone(), item.world)).collect();
+    let obsolete: Vec<_> = state.owned.iter().filter(|(key, current)| {
+        !wanted.contains(*key) || request.prepared.iter().find(|item| item.name == key.0 && item.world == key.1)
+            .is_some_and(|item| item.handle.id() != current._prepared.handle.id()
+                || !Arc::ptr_eq(&item.program, &current._prepared.program))
+    }).map(|(key, _)| key.clone()).collect();
+    for key in obsolete {
+        if let Some(old) = state.owned.remove(&key) {
+            for entity in old.entities { commands.entity(entity).try_despawn(); }
+            if let Some(variants) = Arc::make_mut(&mut scene.programs).get_mut(&key.0) {
+                variants[usize::from(key.1)] = None;
+            }
+        }
+    }
+    Arc::make_mut(&mut scene.programs).retain(|_, variants| variants.iter().any(Option::is_some));
+    if request.prepared.is_empty() && state.owned.is_empty() && state.owns_scene_geometry {
+        scene.tree = None;
+        scene.receiver_range_ends = [0; 2];
+        if let Some(cube) = state.cube.take() { meshes.remove(cube.id()); }
+        state.owns_scene_geometry = false;
+    }
+    let mut expected = Vec::new();
+    for item in request.prepared.iter() {
+        let key = (item.name.clone(), item.world);
+        if let Some(current) = state.owned.get(&key) {
+            expected.extend(current.entities.iter().copied());
+            continue;
+        }
+        if scene.programs.get(&item.name).and_then(|variants| variants[usize::from(item.world)].as_ref()).is_some() {
+            expected.extend(existing.iter().filter(|(_, proxy)| proxy.material == item.name && proxy.world == item.world)
+                .map(|(entity, _)| entity));
+            continue;
+        }
+        let depth_box = item.program.kind == crate::rendering::decals::material::ProjectionKind::DepthBox;
+        if depth_box && state.cube.is_none() {
+            let mut cube = Cuboid::new(2., 1., 2.).mesh().build().translated_by(Vec3::new(0., -0.5, 0.));
+            cube.generate_tangents().expect("complete cube tangent inputs");
+            state.cube = Some(meshes.add(cube));
+        }
+        let candidates: Vec<_> = if depth_box {
+            vec![(u32::MAX, state.cube.as_ref().unwrap().clone(), false)]
+        } else {
+            layouts.samples.iter().filter(|(_, world, _, _)| *world == item.world)
+                .map(|(layout, _, mesh, skinned)| (*layout, mesh.clone(), *skinned)).collect()
+        };
+        let mut entities = Vec::with_capacity(candidates.len());
+        for (layout, mesh, skinned) in candidates {
+            let mut entity = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(item.handle.clone()),
+                Transform::IDENTITY, GlobalTransform::IDENTITY, Visibility::Visible,
+                bevy::camera::visibility::NoFrustumCulling, bevy::render::batching::NoAutomaticBatching,
+                bevy::light::NotShadowCaster, ProjectedDecalProxy { material: item.name.clone(), world: item.world,
+                    program: item.program.clone(), layout, mesh: mesh.id() }));
+            if skinned { entity.insert(bevy::pbr::DirectMeshSkin); }
+            entities.push(entity.id());
+        }
+        Arc::make_mut(&mut scene.programs).entry(item.name.clone()).or_insert_with(|| [None, None])
+            [usize::from(item.world)] = Some(item.program.clone());
+        expected.extend(entities.iter().copied());
+        state.owned.insert(key, RuntimeDecalProxySet { _prepared: item.clone(), entities });
+    }
+    readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
+        generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(), failed: request.failed.clone(),
+    };
+    state.revision = Some(request.prepared_revision);
+}
+
 fn extract_receivers(
     mut receivers: ResMut<DecalReceivers>,
     queue: Extract<Option<Res<SceneRenderQueue>>>,
     selection: Extract<Option<Res<super::scene_queue::VisibleSceneInstances>>>,
     materials: Extract<Option<Res<ShadowMaterials>>>,
     layouts: Extract<Res<GeometryLayouts>>,
+    decal_scene: Extract<Res<DecalScene>>,
     world_sources: Extract<Option<Res<super::WorldShadowMeshSources>>>,
     transforms: Extract<Query<&GlobalTransform>>,
     model_bounds: Extract<Option<Res<super::ShadowModelBoundsSources>>>,
     mut bounds_owners: Local<BoundsOwners>,
 ) {
     receivers.0.clear();
-    if layouts.0.is_empty() {
+    if layouts.ids.is_empty() || decal_scene.tree.is_none() {
         return;
     }
     let (Some(queue), Some(materials)) = (queue.as_ref(), materials.as_ref()) else {
@@ -235,7 +338,7 @@ fn extract_receivers(
         let (Some(entity), Some(source), Some(&layout)) = (
             instance.entity,
             instance.source,
-            layouts.0.get(&instance.mesh.id()),
+            layouts.ids.get(&instance.mesh.id()),
         ) else {
             return;
         };

@@ -564,13 +564,14 @@ fn acquire(world: &mut World) {
     if state.frames >= 2 {
         if let Some((catalog, level, base)) = state.input.take() {
             let preparation = super::scene_preparation::ScenePreparation::new(world);
+            let needs_initial_inventory = !world.resource::<super::interaction_focus::DiscoveredDocuments>().is_initialized();
             let (send, receive) = mpsc::channel();
             state.result = Some(Mutex::new(receive));
             std::thread::Builder::new()
                 .name("map acquisition".into())
                 .stack_size(32 << 20)
                 .spawn(move || {
-                    let result = super::level_prepare::prepare_level(base, catalog, level)
+                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory)
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
                             if !prepared.diagnostic_exit { preparation.prepare(&mut prepared)?; }

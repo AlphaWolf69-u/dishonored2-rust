@@ -86,6 +86,12 @@ impl PlayingEvents {
 
     pub fn is_empty(&self) -> bool { self.active.is_empty() }
 
+    /// True while any pending action or playing voice retains this
+    /// declaration reference. The registry itself owns only weak tickets.
+    pub fn references_declaration(&self, declaration: u32) -> bool {
+        self.active.values().filter_map(Weak::upgrade).any(|entry| entry.event.declaration == declaration)
+    }
+
     /// Drain before FX liveness checks, retaining IDs until their actual end
     /// notification is delivered. No elapsed-time estimate retires an event.
     pub fn take_notifications(&mut self) -> Vec<Notification> {

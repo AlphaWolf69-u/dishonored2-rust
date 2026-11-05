@@ -49,6 +49,27 @@ impl Default for ParticleImagesGpu {
 }
 
 impl ParticleImagesGpu {
+    /// Called after inactive material bindings retire. The source reference
+    /// held here only prevents address reuse; it must not own an otherwise
+    /// unused texture for the remainder of the level.
+    pub fn retire_unused(&mut self) {
+        let trace = super::world_effects::trace_lifecycle();
+        let before = self.resident.len();
+        let bytes_before = trace.then(|| self.resident.values().map(|image| image._source.payload_bytes).sum::<usize>());
+        let mut cached = HashMap::<usize, usize>::new();
+        for image in self.resident.values() {
+            *cached.entry(Arc::as_ptr(&image._source) as usize).or_default() += 1;
+        }
+        self.resident.retain(|_, image| {
+            Arc::strong_count(&image._source) > cached[&(Arc::as_ptr(&image._source) as usize)]
+        });
+        if let Some(bytes_before) = bytes_before {
+            let retained_bytes = self.resident.values().map(|image| image._source.payload_bytes).sum::<usize>();
+            eprintln!("FX_LIFECYCLE gpu_images_retired={} released_bytes={} retained_bytes={}",
+                before - self.resident.len(), bytes_before.saturating_sub(retained_bytes), retained_bytes);
+        }
+    }
+
     /// Preserve all committed views until every replacement is GPU-ready.
     /// Stable frames compare one Arc identity; no per-draw lock or map copy.
     pub fn sync_scene(&mut self, sources: &SceneParticleImages,
@@ -69,6 +90,9 @@ impl ParticleImagesGpu {
             if self.scene_views.get(path).is_none_or(|old| old.id() != view.id()) {
                 self.changed_paths.insert(path.clone());
             }
+        }
+        for path in self.scene_views.keys().filter(|path| !next.contains_key(*path)) {
+            self.changed_paths.insert(path.clone());
         }
         self.scene_views = next;
         self.scene_handles = Some(sources.handles.clone());

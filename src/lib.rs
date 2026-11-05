@@ -20,7 +20,6 @@ pub use gameplay::game_clock;
 #[cfg(feature = "game")]
 pub use gameplay::game_clock_runtime;
 pub use gameplay::navigation;
-pub use gameplay::runtime;
 #[cfg(feature = "game")]
 pub use platform::frame_profile;
 pub use platform::game_settings;

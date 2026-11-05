@@ -17,7 +17,7 @@ pub struct GraphVariable {
     pub parameters: Vec<(String, Value)>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FxDeclarations {
     /// First-reference order, including dependencies of nested declarations.
     pub declarations: Vec<Result<Arc<FxGraph>, String>>,

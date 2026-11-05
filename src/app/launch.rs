@@ -8,7 +8,7 @@ use super::{
     VisibilitySystems, archive, auto_exposure, benchmark_frames, camera_controls, coarse_depth,
     collision_report, cull_small_local_lights, entities, env, finish_streaming_diagnostics,
     frame_profile, game_clock_runtime, game_settings, initialize_parallel_shadow_owner,
-    interact_pickup, local_shadow_updates, publish_initial_whole_view_depth,
+    local_shadow_updates, publish_initial_whole_view_depth,
     report_prepared_diffuse_images, screen_shadow_pass, setup, shadow_pass, shadow_sampling,
     shadow_updates, show_frame_rate, snapshot_once, stream_visible_models, stream_visible_textures,
     sync_shadow_target, update_coordinate_overlay,
@@ -293,6 +293,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
+    app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
     app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)
         .add_plugins(super::display_settings::DisplaySettingsPlugin(
             std::sync::Mutex::new(display_state.take()),
@@ -348,14 +349,15 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             (
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
+                super::interaction_focus::apply_inventory_modifiers,
                 super::player::update_player,
+                super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
                 super::machinery::update_machinery,
                 super::machinery::pose_physics_systems,
                 update_coordinate_overlay,
-                interact_pickup.run_if(super::pause_menu::game_not_paused),
                 snapshot_once.run_if(super::loading_screen::is_playing),
                 benchmark_frames.run_if(super::loading_screen::is_playing),
                 show_frame_rate,
@@ -369,6 +371,29 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .before(stream_visible_models)
                 .before(shadow_updates::collect_model_casters),
         )
+        .add_systems(PreUpdate, super::interaction_focus::initialize_inventory)
+        .add_systems(PostUpdate, super::interactions::sync_boxes
+            .after(super::model_motion::publish_model_poses))
+        .add_systems(PostUpdate, super::interactions::focus_and_interact
+            .after(super::interactions::sync_boxes)
+            .run_if(super::pause_menu::game_not_paused)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::interactions::retire_admitted_pickups
+            .after(super::interactions::focus_and_interact)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters))
+        .add_systems(PostUpdate, super::usable_animation::advance
+            .after(super::interactions::focus_and_interact)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
+            super::runtime_fx_images::synchronize,
+            super::runtime_materials::coordinate.run_if(super::runtime_materials::needs_update),
+            super::projected_decals::publish_runtime,
+            super::usable_effects::publish).chain()
+            .after(super::usable_animation::advance)
+            .run_if(super::loading_screen::is_playing))
         .add_systems(
             PostUpdate,
             publish_initial_whole_view_depth

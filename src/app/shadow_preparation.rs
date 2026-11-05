@@ -428,7 +428,7 @@ pub(super) fn retain_model_shadow_position(
 /// when an on-demand shader read advances a file cursor.
 #[derive(Resource)]
 pub(super) struct ProgramCacheSource(
-    pub(super) Result<shader_cache::ProgramLibrary, String>,
+    pub(super) std::sync::Arc<std::sync::Mutex<Result<shader_cache::ProgramLibrary, String>>>,
 );
 
 pub(super) fn rest_skinning(

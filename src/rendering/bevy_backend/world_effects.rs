@@ -6,6 +6,11 @@ use bevy::{prelude::Resource, render::extract_resource::ExtractResource};
 use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
+pub(crate) fn trace_lifecycle() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("DH2_DEBUG_FX_LIFECYCLE").as_deref() == Ok("1"))
+}
+
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectDefinitions {
     pub graphs: Arc<Vec<Arc<crate::assets::entities::effects::FxGraph>>>,
@@ -15,6 +20,42 @@ pub struct WorldEffectDefinitions {
 
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct WorldEffectSources(pub Arc<WorldFxSources>);
+
+/// Runtime-owned effects published as a snapshot. Each revision represents a
+/// start event; removing an entry requests a stop but does not destroy its
+/// still-live particle or sound tails.
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct DynamicEffects(pub Arc<Vec<DynamicEffect>>);
+
+#[derive(Clone)]
+pub struct DynamicEffect {
+    pub owner: String,
+    pub revision: u64,
+    pub effect: String,
+    pub target: crate::gameplay::event_graph::EntityReference,
+    pub local: ReferenceFrame,
+    pub attached: bool,
+    /// Keeps sub-effect dependencies alive through stopped particle tails.
+    pub sources: Arc<WorldFxSources>,
+}
+
+/// Request-scoped GPU material preparation. A completion acknowledges only
+/// the matching generation, so removed/replaced requests cannot start later.
+#[derive(Resource, Clone, ExtractResource)]
+pub struct DynamicMaterialPrewarm {
+    pub generation: u64,
+    pub retirement: u64,
+    pub sources: Arc<WorldFxSources>,
+    pub completed: Arc<std::sync::atomic::AtomicU64>,
+    pub failed: Arc<std::sync::atomic::AtomicU64>,
+    pub retired_signal: Arc<std::sync::atomic::AtomicU64>,
+}
+impl Default for DynamicMaterialPrewarm {
+    fn default() -> Self {
+        Self { generation: 0, retirement: 0, sources: Arc::default(),
+            completed: Arc::default(), failed: Arc::default(), retired_signal: Arc::default() }
+    }
+}
 
 struct EntityFrame {
     spawn: ReferenceFrame,

@@ -17,6 +17,7 @@ pub struct EnvironmentViewContacts {
     /// render environment volumes. 707c50 selects the highest water plane.
     pub head_water_surface: Option<f32>,
     pub head_water_is_ocean: bool,
+    pub head_water_current: Option<[f32; 3]>,
 }
 impl EnvironmentViewContacts {
     pub fn new(retained_water_height: f32) -> Self {
@@ -25,6 +26,7 @@ impl EnvironmentViewContacts {
             selection: EnvironmentContactSelection::new(retained_water_height),
             head_water_surface: None,
             head_water_is_ocean: false,
+            head_water_current: None,
         }
     }
 

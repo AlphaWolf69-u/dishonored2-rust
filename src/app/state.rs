@@ -1,7 +1,7 @@
 use std::io::Write;
 // State.
 use super::{
-    archive, entities, env, fs, game_settings, navigation, probe_lighting, runtime, shadow_pass,
+    archive, entities, env, fs, game_settings, navigation, probe_lighting, shadow_pass,
     tome, world_mesh, Aabb, DecalExtension, ExtendedMaterial, Instant, PathBuf, ProbeExtension,
     Shader, SystemTime, VecDeque, UNIX_EPOCH,
 };
@@ -36,22 +36,7 @@ pub(super) struct SceneData {
     pub(super) shadow_cascade_fars: Option<[f32; 4]>,
     #[allow(dead_code)] // Authored whole-view receiver bounds, not visible-mesh bounds.
     pub(super) far_shadow_bounds: Option<[[f32; 3]; 2]>,
-    pub(super) pickups: Vec<entities::Pickup>,
     pub(super) catalog: Option<std::sync::Arc<archive::Catalog>>,
-}
-
-#[derive(Component)]
-pub(super) struct PickupVisual(pub(super) String);
-
-pub(super) struct PickupInstance {
-    pub(super) entity_id: String,
-    pub(super) position: Vec3,
-}
-
-#[derive(Resource)]
-pub(super) struct PickupState {
-    pub(super) items: Vec<PickupInstance>,
-    pub(super) world: runtime::WorldState,
 }
 
 #[derive(Resource)]
@@ -452,7 +437,6 @@ pub(super) struct RenderInstance {
     pub(super) probe_index: u32,
     pub(super) transform: Transform,
     pub(super) bounds: Aabb,
-    pub(super) pickup_id: Option<String>,
     pub(super) entity: Option<Entity>,
     pub(super) visible: bool,
 }

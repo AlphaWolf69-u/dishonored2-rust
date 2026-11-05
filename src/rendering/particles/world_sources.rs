@@ -113,6 +113,39 @@ fn cloned_value_bytes(value: &Value) -> usize {
 }
 
 impl WorldFxSources {
+    /// Reference one already prepared effect and its declared sub-effects
+    /// without retaining every unrelated effect in the level.
+    pub fn subset(&self, name: &str) -> Result<Self, String> {
+        let mut result = Self::default();
+        let mut pending = vec![name.to_owned()];
+        while let Some(name) = pending.pop() {
+            if result.effects.contains_key(&name) { continue; }
+            let definition = self.effects.get(&name).ok_or_else(|| format!("effect {name} was not prepared"))?;
+            let loaded = definition.as_ref().map_err(Clone::clone)?;
+            for child in loaded.groups.iter().flat_map(|group| &group.asset.sub_effects)
+                .flat_map(|sub| sub.effects.iter().flatten()) {
+                pending.push(child.clone());
+            }
+            result.effects.insert(name, definition.clone());
+        }
+        Ok(result)
+    }
+
+    /// Publish a new level snapshot without cloning any decoded FX assets.
+    /// Requests own only their contributions; dropping them from the next
+    /// snapshot lets the last instance release its declarations naturally.
+    pub fn with_additions<'a>(base: &Self, additions: impl IntoIterator<Item = &'a Self>) -> Self {
+        let mut effects = base.effects.clone();
+        for addition in additions {
+            for (name, definition) in &addition.effects {
+                effects.entry(name.clone()).or_insert_with(|| definition.clone());
+            }
+        }
+        Self { effects, declarations: base.declarations.clone(),
+            deferred_syntax_bytes: base.deferred_syntax_bytes,
+            deferred_admission_bytes: base.deferred_admission_bytes }
+    }
+
     /// Every particle material of the level's world FX.
     pub fn particle_materials(&self) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
         self.effects.values().filter_map(|e| e.as_ref().ok())
@@ -141,6 +174,24 @@ impl WorldFxSources {
             }
         }
         pairs.into_iter().map(|((source, material), model)| (source, material, model)).collect()
+    }
+
+    /// Material variants required by enabled projected decals, deduplicated
+    /// in the same order-independent form used by scene preparation.
+    pub fn decal_materials(&self) -> Vec<(String, bool)> {
+        let mut names = std::collections::BTreeSet::new();
+        for decal in self.effects.values().filter_map(|effect| effect.as_ref().ok())
+            .flat_map(|effect| &effect.groups).flat_map(|group| &group.decals)
+            .filter_map(|decal| decal.as_ref().ok()).filter(|decal| decal.asset.enabled)
+        {
+            for references in decal.declarations.iter().flatten() {
+                for (name, world) in [(&references.opaque, false), (&references.alpha, false),
+                    (&references.opaque_instanced, true), (&references.alpha_instanced, true)] {
+                    if let Some(name) = name { names.insert((name.clone(), world)); }
+                }
+            }
+        }
+        names.into_iter().collect()
     }
 
     /// Every sound event the level's world FX post.
@@ -186,8 +237,6 @@ impl WorldFxSources {
                 }
             }
         }
-        let mut sound_events = HashMap::new();
-        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
         let mut names = Vec::new();
@@ -225,6 +274,33 @@ impl WorldFxSources {
         if let Ok(effect) = std::env::var("DH2_DEBUG_PLAY_FX") {
             names.push(effect);
         }
+        result.load_named_into(names, catalog, library, resources);
+        result
+    }
+
+    /// Acquire explicitly requested effects and their sub-effects through the
+    /// same parser and resource owner used by authored world FX.
+    pub fn load_named_shared(
+        names: Vec<String>,
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
+    ) -> Self {
+        let mut result = Self::default();
+        result.load_named_into(names, catalog, library, resources);
+        result
+    }
+
+    fn load_named_into(
+        &mut self,
+        mut names: Vec<String>,
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
+    ) {
+        let result = self;
+        let mut sound_events = HashMap::new();
+        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Sub-FX declarations (m_subFXs) are loaded as further effects, in
         // reference order after the declarations that name them.
         let mut next = 0;
@@ -342,6 +418,5 @@ impl WorldFxSources {
             result.effects.insert(name.clone(), loaded);
             names.extend(children);
         }
-        result
     }
 }

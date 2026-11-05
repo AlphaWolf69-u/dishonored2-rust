@@ -11,7 +11,7 @@ fn separate_source() -> bool {
     *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_MATERIAL_SOURCE").as_deref() == Ok("1"))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::app) enum MaterialGeometry {
     World,
     Model,
@@ -29,6 +29,7 @@ impl MaterialGeometry {
 #[derive(Default)]
 pub(in crate::app) struct MaterialCache {
     entries: HashMap<String, [Option<Option<CachedMaterial>>; 2]>,
+    dependency_trace: Option<std::sync::Mutex<super::HashSet<(String, MaterialGeometry)>>>,
     image_priorities: Vec<u8>,
     pending_source: Option<(String, Vec<u8>)>,
     source_matches: usize,
@@ -93,14 +94,17 @@ impl MaterialCache {
         path: &str,
         geometry: MaterialGeometry,
     ) -> Option<&Option<CachedMaterial>> {
+        self.trace_dependency(path, geometry);
         let entry = self.entries.get(path)?;
         let index = geometry.index();
         entry[index].as_ref().or_else(|| {
-            entry[1 - index].as_ref().filter(|cached| {
-                cached
-                    .as_ref()
-                    .is_none_or(|cached| cached.compatible_geometry_routes)
-            })
+            let result = entry[1 - index].as_ref().filter(|cached| {
+                cached.as_ref().is_none_or(|cached| cached.compatible_geometry_routes)
+            });
+            if result.is_some() {
+                self.trace_dependency(path, if index == 0 { MaterialGeometry::Model } else { MaterialGeometry::World });
+            }
+            result
         })
     }
 
@@ -115,7 +119,50 @@ impl MaterialCache {
         geometry: MaterialGeometry,
         material: Option<CachedMaterial>,
     ) {
+        self.trace_dependency(&path, geometry);
         self.entries.entry(path).or_default()[geometry.index()] = Some(material);
+    }
+
+    /// Runtime workers trace only material identities actually touched by the
+    /// current request. Startup and ordinary frame paths retain no trace state.
+    pub(in crate::app) fn enable_dependency_trace(&mut self) {
+        self.dependency_trace = Some(std::sync::Mutex::new(super::HashSet::new()));
+    }
+    fn trace_dependency(&self, path: &str, geometry: MaterialGeometry) {
+        if let Some(trace) = &self.dependency_trace {
+            trace.lock().unwrap_or_else(|error| error.into_inner()).insert((path.to_owned(), geometry));
+        }
+    }
+    pub(in crate::app) fn take_dependencies(&self) -> super::HashSet<(String, MaterialGeometry)> {
+        self.dependency_trace.as_ref().map(|trace| std::mem::take(&mut *trace.lock()
+            .unwrap_or_else(|error| error.into_inner()))).unwrap_or_default()
+    }
+    pub(in crate::app) fn disable_dependency_trace(&mut self) { self.dependency_trace = None; }
+
+    /// Transfer worker-local identities to existing scene slots only after the
+    /// coordinator has verified that every mapped slot is resident.
+    pub(in crate::app) fn merge_dynamic(&mut self, other: MaterialCache, slots: &[usize])
+        -> Result<Vec<(String, MaterialGeometry, CachedMaterial)>, String> {
+        let mut mapped = Vec::new();
+        for (name, entries) in other.entries {
+            for (index, entry) in entries.into_iter().enumerate() {
+                let Some(Some(mut material)) = entry else { continue };
+                let geometry = if index == 0 { MaterialGeometry::World } else { MaterialGeometry::Model };
+                if self.get_for(&name, geometry).is_some() { continue; }
+                for (slot, _) in &mut material.images { *slot = *slots.get(*slot).ok_or("material image mapping is incomplete")?; }
+                material.diffuse_image_slot = material.diffuse_image_slot.map(|slot| slots.get(slot).copied()
+                    .ok_or("material diffuse image mapping is incomplete")).transpose()?;
+                mapped.push((name.clone(), geometry, material));
+            }
+        }
+        for (name, geometry, material) in &mapped { self.insert(name.clone(), *geometry, Some(material.clone())); }
+        Ok(mapped)
+    }
+    pub(in crate::app) fn remove_dynamic(&mut self, name: &str, geometry: MaterialGeometry) {
+        if let Some(entries) = self.entries.get_mut(name) {
+            entries[geometry.index()] = None;
+            if entries.iter().all(Option::is_none) { self.entries.remove(name); }
+        }
     }
 
     pub(in crate::app) fn len(&self) -> usize {

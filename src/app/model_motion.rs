@@ -379,7 +379,7 @@ mod tests {
             skinned: false,
             surfaces: Vec::new(),
             instances: 0..1,
-            pickup_id: None,
+
             flags_1c30: 0,
             flags_18bc: render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC,
             flags_18bd: 0,
@@ -411,7 +411,7 @@ mod tests {
             probe_index: 0,
             transform: Transform::IDENTITY,
             bounds: world_bounds,
-            pickup_id: None,
+
             entity: Some(entity),
             visible: true,
         });

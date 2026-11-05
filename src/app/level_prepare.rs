@@ -44,6 +44,7 @@ pub(super) fn prepare_level(
     base: PathBuf,
     catalog: std::sync::Arc<archive::Catalog>,
     level: crate::assets::level::LevelResources,
+    needs_initial_inventory: bool,
 ) -> Result<super::loading_screen::PreparedLevel, Box<dyn std::error::Error>> {
     let profile = env::var("DH2_PERF_PROFILE").as_deref() == Ok("1");
     let startup = Instant::now();
@@ -67,7 +68,7 @@ pub(super) fn prepare_level(
         language,
     )
     .map_err(std::io::Error::other)?;
-    crate::loading::begin_level(list, catalog.as_ref().unwrap());
+    crate::loading::begin_level(list.clone(), catalog.as_ref().unwrap());
     let mut physics_texts = crate::assets::declaration_texts::PhysicsSeed::new(
         catalog.as_ref().unwrap(), language,
     );
@@ -83,7 +84,7 @@ pub(super) fn prepare_level(
             startup.elapsed().as_secs_f64()
         );
     }
-    let (player_start, placed_models, pickups, entity_document) =
+    let (player_start, placed_models, entity_document) =
         match level.read_entities(catalog.as_ref().unwrap())? {
             Some(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -92,12 +93,45 @@ pub(super) fn prepare_level(
                 (
                     entities::player_start(&document),
                     entities::render_placements(&document),
-                    entities::pickups(&document),
                     Some(document),
                 )
             }
-            None => (None, Vec::new(), Vec::new(), None),
+            None => (None, Vec::new(), None),
         };
+    let character = super::player::character_name(super::pause_menu::debug_character());
+    let loadout = if !needs_initial_inventory { None } else { match crate::assets::inventory_item::default_loadout(catalog.as_ref().unwrap(), character) {
+        Ok(loadout) => Some(loadout),
+        Err(error) => { eprintln!("Initial inventory loadout unavailable: {error}"); None }
+    }};
+    let entries = loadout.as_deref().unwrap_or(&[]);
+    let mut interactions = match entity_document.as_ref() {
+        Some(document) => match super::interactions::Interactions::load(
+            catalog.as_ref().unwrap().clone(), document, character, entries, &list,
+        ) {
+            Ok(interactions) => Some(interactions),
+            Err(error) => { eprintln!("Interaction declarations unavailable: {error}"); None }
+        },
+        None => None,
+    };
+    let limits = if let Some(interactions) = interactions.as_ref() {
+        Some(interactions.limits())
+    } else {
+        match crate::assets::inventory_item::ReadableLimits::load(catalog.as_ref().unwrap(), character,
+            entries.iter().map(|(path, _)| path.clone()).chain(
+                list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned))) {
+            Ok(limits) => Some(std::sync::Arc::new(limits)),
+            Err(error) => { eprintln!("Inventory collection unavailable: {error}"); None }
+        }
+    };
+    let initial_inventory = loadout.as_ref().zip(limits.as_ref()).map(|(loadout, limits)|
+        loadout.iter().map(|(path, quantity)| (path.clone(), *quantity, limits.maximum(path))).collect());
+    let registered = limits.as_ref().map(|limits| super::interaction_focus::RegisteredItems::new(list.clone(), limits.clone()));
+    let initial_inventory = initial_inventory.map(|entries: Vec<(String, u32, u32)>| entries.into_iter()
+        .map(|(path, quantity, maximum)| {
+            let modifiers = crate::assets::inventory_item::modifiers(catalog.as_ref().unwrap(), &path)
+                .unwrap_or_else(|error| { eprintln!("Initial inventory modifiers {path}: {error}"); Default::default() });
+            super::interaction_focus::InitialItem { path, quantity, maximum, modifiers }
+        }).collect());
     if env::var("DH2_TRANSFORM_AUDIT").as_deref() == Ok("1") {
         let samples = [
             [0.0, 0.0, 0.0],
@@ -662,7 +696,7 @@ pub(super) fn prepare_level(
         }
         let model_material_base = resolved.len() as u32;
         resolved.extend(model_collision.materials);
-        let world = navigation::CollisionWorld::with_materials(
+        let mut world = navigation::CollisionWorld::with_materials(
             level_triangles
                 .into_iter()
                 .chain(model_collision.triangles.into_iter().map(
@@ -678,6 +712,9 @@ pub(super) fn prepare_level(
             model_collision.owners,
             resolved,
         );
+        if let Some(interactions) = interactions.as_mut() {
+            interactions.start_boxes(&mut world);
+        }
         if profile {
             println!(
                 "PERF triangle collision index: {:.3}s",
@@ -872,6 +909,20 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    if let Some(interactions) = interactions {
+        app.insert_resource(interactions);
+    }
+    app.insert_resource(super::interaction_focus::FocusedInteraction::default());
+    app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory, registered });
+    app.insert_resource(super::interaction_focus::RetiredPlacements::default());
+    app.insert_resource(super::usable_animation::UsableAnimations::default());
+    app.insert_resource(super::usable_effects::EffectRequests::default());
+    app.insert_resource(super::usable_effects::UsableEffects::default());
+    app.insert_resource(super::usable_effects::DynamicWorldMaterials::default());
+    app.insert_resource(super::usable_effects::DynamicDecalMaterials::default());
+    app.insert_resource(super::projected_decals::RuntimeDecalProxies::default());
+    app.insert_resource(super::runtime_fx_images::RuntimeFxImages::default());
+    app.insert_resource(super::runtime_materials::RuntimeMaterialCoordinator::default());
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(
         catalog.as_ref().unwrap(),
         entity_document.as_ref(),
@@ -880,7 +931,7 @@ pub(super) fn prepare_level(
     drop(shape_sources);
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     super::load_timing::mark("machinery and wind");
-    app.insert_resource(ProgramCacheSource(program_cache))
+    app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
         .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point
         // light. Dense missions contain hundreds of authored lights, so keep
@@ -942,7 +993,6 @@ pub(super) fn prepare_level(
             shadow_cascade_controls,
             shadow_cascade_fars,
             far_shadow_bounds,
-            pickups,
             catalog,
         })
         .insert_resource(super::state::EnvironmentVolumes(environment_volumes));

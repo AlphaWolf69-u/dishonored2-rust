@@ -11,7 +11,7 @@
 //! lacks. Fall damage, stats, slide slow-time, shoves and breakables are not
 //! ported.
 use super::body::{FollowSlope, JumpAnim, Lean};
-use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS};
+use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS, MODE_DROWNING};
 use super::midnight::{Midnight, PreparedScene};
 use super::sensors::{MantleHeight, MantleSensor, VaultLimits, VaultSensor};
 use super::shape::{POSTURE_LEAN_FORWARD, POSTURE_VAULTING};
@@ -43,6 +43,7 @@ impl StateId {
     pub const VAULT: Self = Self(9);
     pub const AUTOCROUCH: Self = Self(10);
     pub const WALLCROUCH: Self = Self(11);
+    pub const DEAD: Self = Self(15);
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
     pub const NULL: Self = Self(91);
@@ -412,6 +413,20 @@ pub enum Kind {
     CatFall(CatFallDecl),
     Mantle(MantleStateDecl),
     Vault(VaultDecl),
+    Swimming(super::swimming::SwimmingStateDecl),
+    SwimMantle,
+    Dead(DrowningDeathDecl),
+}
+
+/// arkDeclPlayerStateDead defaults from 14085b970.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrowningDeathDecl {
+    pub duration: f32,
+    pub vertical_speed: f32,
+    pub yaw_speed: f32,
+    pub look_duration: f32,
+    pub fx_delay: f32,
+    pub fx: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -489,6 +504,15 @@ impl StateDecl {
             Kind::Vault(_) => {
                 flags = StateFlags { primary: false, body_parts: 0x15, locked_body_parts: 0x05, exclusive_body_parts: 0x11, ..flags };
                 (StateId::VAULT, 0.0)
+            }
+            Kind::Swimming(ref swimming) => (swimming.id, 0.0),
+            Kind::SwimMantle => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
+                (StateId::MANTLE, 0.0)
+            }
+            Kind::Dead(_) => {
+                flags = StateFlags { primary: true, body_parts: 0x1f, locked_body_parts: 0x1f, exclusive_body_parts: 0x1f, allow_camera_out_of_shape: true, ..flags };
+                (StateId::DEAD, 0.0)
             }
         };
         Self { id, flags, navigation, air_friction, kind }
@@ -624,6 +648,10 @@ pub struct Frame<'a> {
     /// The player's health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX);
     /// the rewrite has no damage, so it stays full.
     pub health: f32,
+    pub underwater: bool,
+    pub swim_mantle_exit: &'a mut bool,
+    pub game_over_requested: &'a mut bool,
+    pub drowning_fx_requested: &'a mut Option<String>,
     /// The game's global LCG at gameLocal+0x600f8.
     pub random: &'a mut u32,
     /// `ark_playerSmallFallCooldown` (cvar 0x143996320, "0.5").
@@ -635,12 +663,35 @@ pub struct Frame<'a> {
 
 /// Player attribute base values (`attributes_player.cpntattributesplayer`).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Attributes(pub HashMap<String, f32>);
+pub struct Attributes(pub HashMap<String, f32>, pub HashMap<String, AttributeValue>);
+
+/// 14060b900 keeps the authored base, accumulated modifiers and limits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttributeValue {
+    pub base: f32,
+    pub increase: f32,
+    pub percentage: f32,
+    pub limits: Option<(f32, f32)>,
+}
 
 impl Attributes {
     /// A missing attribute index reads as 0.
     pub fn get(&self, tag: &str) -> f32 {
         self.0.get(tag).copied().unwrap_or(0.0)
+    }
+    /// Add or remove a modifier and update the current value; unknown tags
+    /// are ignored as in the original attribute lookup.
+    pub fn modifier(&mut self, tag: &str, increase: f32, percentage: f32, added: bool) -> bool {
+        let Some(attribute) = self.1.get_mut(tag) else { return false };
+        let sign = if added { 1.0 } else { -1.0 };
+        attribute.increase += increase * sign;
+        attribute.percentage += percentage * sign;
+        let mut current = attribute.percentage * attribute.base * 0.01 + attribute.base + attribute.increase;
+        if let Some((min, max)) = attribute.limits {
+            current = if min <= current { if max < current { max } else { current } } else { min };
+        }
+        if let Some(value) = self.0.get_mut(tag) { *value = current; }
+        true
     }
 }
 
@@ -864,6 +915,10 @@ pub struct State {
     damage: f32,
     mantle: MantleRun,
     vault: VaultRun,
+    swimming_dive: (Vec3, f32),
+    death_timer: f32,
+    death_transition_pending: bool,
+    death_fx_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -948,6 +1003,10 @@ impl StateMachine {
                 damage: 0.0,
                 mantle: MantleRun::default(),
                 vault: VaultRun::default(),
+                swimming_dive: (Vec3::ZERO, 0.0),
+                death_timer: 0.0,
+                death_transition_pending: false,
+                death_fx_pending: false,
             })
 
             .collect();
@@ -984,6 +1043,18 @@ impl StateMachine {
 
     pub fn active_states(&self) -> &[StateId] {
         &self.active
+    }
+
+    /// Mode switch 140805f70 deactivates the outgoing mode before entering
+    /// its replacement; each mode retains its own state instances.
+    pub fn leave_mode(&mut self, frame: &mut Frame) {
+        for id in self.active.clone().into_iter().rev() {
+            if let Some(index) = self.index(id) {
+                self.deactivate(index, frame);
+            }
+        }
+        self.active.clear();
+        self.queue.clear();
     }
 
     pub fn take_sound_events(&mut self) -> Vec<u32> {
@@ -1081,6 +1152,9 @@ impl StateMachine {
                     && !self.allowed(StateId::VAULT, frame)
             }
             Kind::Falling(_) => true,
+            Kind::Swimming(_) => navigation,
+            Kind::SwimMantle => !frame.underwater && frame.mantle_sensor.can_mantle(),
+            Kind::Dead(_) => true,
             // FUN_14085d9a0: the base body-part test passes with no parts.
             Kind::Leaning(_) => physics.near_ground(),
             // FUN_14085b2e0 (swimming is not ported).
@@ -1109,12 +1183,14 @@ impl StateMachine {
         let Some(path) = path else { return 0 };
         let Some(scene) = frame.scenes.get(path) else {
             eprintln!("Midnight scene {path} was not loaded");
+            frame.midnight.last_start_error = Some(format!("{path}: scene not loaded"));
             return 0;
         };
         match frame.midnight.start_with_parts(scene, frame.md6, rate, frame.animations, parts) {
             Ok(handle) => handle,
             Err(error) => {
                 eprintln!("Midnight scene {path}: {error}");
+                frame.midnight.last_start_error = Some(format!("{path}: {error}"));
                 0
             }
         }
@@ -1411,6 +1487,7 @@ impl StateMachine {
             } else {
                 (catfall.low_damage_midnight.as_ref(), &catfall.low_damage_arm_midnights)
             };
+            frame.catfall_sensor.last_selected_hands = Some(shown);
             // FUN_140774a10: hide the arms that are not shown.
             for (side, show) in shown.into_iter().enumerate() {
                 if !show {
@@ -1433,6 +1510,21 @@ impl StateMachine {
         }
         if let Kind::Mantle(mantle) = &decl.kind {
             self.activate_mantle(index, mantle, frame);
+            return;
+        }
+        if matches!(decl.kind, Kind::SwimMantle) {
+            // 140845b50 requests the outgoing mode and starts its mantle.
+            *frame.swim_mantle_exit = true;
+            self.quit(decl.id);
+            return;
+        }
+        if let Kind::Dead(dead) = &decl.kind {
+            // 14085ba50 starts the drowning countdown and the animated
+            // drowning camera when the fatal damage type is WATER.
+            self.states[index].death_timer = dead.duration;
+            self.states[index].death_transition_pending = true;
+            self.states[index].death_fx_pending = true;
+            frame.camera.set_target_mode(MODE_DROWNING, dead.look_duration);
             return;
         }
         if let Kind::Vault(vault) = &decl.kind {
@@ -1579,8 +1671,18 @@ impl StateMachine {
                     frame.jump_anim.stop_at_loop = false;
                 }
             }
+            Kind::Swimming(swimming) => {
+                // 140845ed0: entering the normal swim state carries a
+                // fraction of the player's velocity as a decaying dive.
+                let speed = frame.velocity.length();
+                let direction = frame.velocity / speed.max(f32::MIN_POSITIVE);
+                let impulse = if swimming.id == StateId::SPRINTING { 0.0 } else {
+                    speed * frame.physics.speed_scale() * swimming.diving_speed_ratio
+                };
+                self.states[index].swimming_dive = (direction, impulse);
+            }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) => {}
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::Dead(_) => {}
         }
     }
 
@@ -1661,6 +1763,7 @@ impl StateMachine {
                 frame.follow_slope.midnight_requests -= 1;
                 return;
             }
+            Kind::SwimMantle => return,
             Kind::Mantle(_) => {
                 // FUN_14085fd40.
                 set_mantle_collision(frame.physics, self.states[index].mantle.destination_body, true);
@@ -1748,6 +1851,10 @@ impl StateMachine {
                     frame.follow_slope.requests -= 1;
                 }
                 frame.autocrouch.set_detection_distance(0.0);
+            }
+            Kind::Swimming(_) => {
+                frame.physics.set_water_motion(Vec3::ZERO, None);
+                *frame.arms_shown = [true; 2];
             }
             _ => {}
         }
@@ -1839,12 +1946,49 @@ impl StateMachine {
             }
             Kind::Mantle(_) => self.mantle_update(index, frame),
             Kind::Vault(decl) => self.vault_update(index, &decl, frame),
+            Kind::Swimming(decl) => {
+                self.navigation_update(index, frame);
+                // 140846330: empty hands are hidden while the swim state
+                // owns them, then restored by its deactivation.
+                *frame.arms_shown = [false; 2];
+                let dive = &mut self.states[index].swimming_dive;
+                if dive.1 > 0.0 {
+                    frame.physics.instant_motion();
+                    dive.1 = (dive.1 - frame.dt * decl.diving_deceleration)
+                        .max(0.0)
+                        .min(frame.velocity.length() * frame.physics.speed_scale());
+                }
+                if decl.id == StateId::SPRINTING
+                    && (frame.physics.input_velocity().length() < decl.minimum_speed
+                        || frame.controller.input_move.truncate().length_squared() < decl.minimum_stick * decl.minimum_stick)
+                {
+                    self.quit(id);
+                    self.request(StateId::RUNNING);
+                }
+            }
+            Kind::SwimMantle => {}
+            Kind::Dead(dead) => {
+                // 14085c4e0 submits vertical and angular motion requests.
+                frame.requests.push_linear(0, Vec3::new(0.0, 0.0, dead.vertical_speed));
+                frame.requests.push_angular(0, Vec3::new(0.0, 0.0, dead.yaw_speed.to_radians()));
+                let state = &mut self.states[index];
+                if state.death_fx_pending && dead.duration - state.death_timer >= dead.fx_delay {
+                    *frame.drowning_fx_requested = dead.fx.clone();
+                    state.death_fx_pending = false;
+                }
+                if state.death_transition_pending && state.death_timer < 0.0 {
+                    state.death_transition_pending = false;
+                    *frame.game_over_requested = true;
+                }
+                state.death_timer -= frame.dt;
+            }
         }
     }
 
     /// Mantle Activate FUN_14085eaf0 (shadow walk, corpses, moving
     /// platforms, legs, footsteps and equipment are not ported).
     fn activate_mantle(&mut self, index: usize, decl: &MantleStateDecl, frame: &mut Frame) {
+        frame.mantle_sensor.last_selected_hands = Some([frame.mantle_sensor.use_left_hand, frame.mantle_sensor.use_right_hand]);
         let sensor = &*frame.mantle_sensor;
         let Some((final_posture, final_state)) = sensor.final_posture() else { return };
         let height = sensor.height(frame.origin);
@@ -2372,6 +2516,15 @@ impl StateMachine {
         );
         let speed_factor = frame.attributes.0.get("ARK_ATTRIBUTE_PLAYER_NAVIGATION_SPEED_FACTOR").copied().unwrap_or(1.0);
         velocity *= speed_factor * navigation.speed_multiplier;
+        if let Kind::Swimming(swimming) = &self.states[index].decl.kind {
+            let (direction, speed) = self.states[index].swimming_dive;
+            velocity = swimming.velocity(
+                velocity, frame.axis.y_axis, frame.camera.pitch,
+                frame.controller.down(swimming.up_action),
+                frame.controller.down(swimming.down_action),
+                (speed > 0.0).then_some(direction * speed),
+            );
+        }
         // FUN_1407f04a0.
         let scale = frame.attributes.get("ARK_ATTRIBUTE_SPYGLASS_TURNSPEED")
             * frame.attributes.get("ARK_ATTRIBUTE_CAMERA_ROTATION_FACTOR")

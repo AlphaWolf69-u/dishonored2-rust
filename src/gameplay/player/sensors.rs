@@ -603,6 +603,7 @@ pub struct MantleSensor {
     pub ceil_height: f32,
     pub use_left_hand: bool,
     pub use_right_hand: bool,
+    pub last_selected_hands: Option<[bool; 2]>,
     /// m_destinationPosition (zero: none) and m_destinationAxis.
     pub destination: Vec3,
     pub destination_axis: Mat3,
@@ -635,6 +636,7 @@ impl MantleSensor {
             ceil_height: 0.0,
             use_left_hand: false,
             use_right_hand: false,
+            last_selected_hands: None,
             destination: Vec3::ZERO,
             destination_axis: Mat3::IDENTITY,
             destination_body: 0,
@@ -872,13 +874,15 @@ pub struct CatfallSensor {
     /// +0x65 / +0x66.
     pub left_hit: bool,
     pub right_hit: bool,
+    /// Hand selection latched when the catfall state consumes its query.
+    pub last_selected_hands: Option<[bool; 2]>,
     /// The queries of the previous frame: hand ray origins and the three hits.
     pending: Option<([Vec3; 2], [Option<RayHit>; 3])>,
 }
 
 impl CatfallSensor {
     pub fn new(decl: CatfallDecl) -> Self {
-        Self { decl, enabled: false, left_hit: false, right_hit: false, pending: None }
+        Self { decl, enabled: false, left_hit: false, right_hit: false, last_selected_hands: None, pending: None }
     }
 
     /// FUN_1403a5980: disabling clears the hits and drops the queries.

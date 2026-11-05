@@ -7,6 +7,8 @@ pub mod sound;
 #[cfg(feature = "game")]
 pub mod game_clock_runtime;
 pub mod navigation;
+pub mod interaction_sensor;
+pub mod usable;
 pub mod player;
 pub mod shape_cast;
 pub mod message_box;
@@ -70,7 +72,6 @@ pub mod motion_properties;
 pub(crate) mod materials;
 pub mod convex_support;
 pub mod polytope_query;
-pub mod runtime;
 pub mod trigger_volume;
 
 pub mod wind;

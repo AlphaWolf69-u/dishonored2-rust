@@ -85,7 +85,7 @@ pub struct BodyPose {
 }
 
 impl BodyPose {
-    fn descends_from(&self, mut joint: usize, ancestor: usize) -> bool {
+    pub(super) fn descends_from(&self, mut joint: usize, ancestor: usize) -> bool {
         loop {
             if joint == ancestor {
                 return true;
@@ -130,6 +130,7 @@ pub const MODE_ANIMATED: i32 = 2;
 pub const MODE_CONSTRAINED: i32 = 3;
 pub const MODE_CONSTRAINED_WITH_ARMS: i32 = 6;
 pub const MODE_CATFALL: i32 = 14;
+pub const MODE_DROWNING: i32 = 15;
 pub const MODE_KEEP_PREVIOUS: i32 = 18;
 /// Modes integrated by FUN_1407f0bd0.
 const CONSTRAINED_MODES: u32 = 0x14748;
@@ -475,6 +476,9 @@ impl PlayerCamera {
                     (head_joint, yaw(w * self.yaw_offset)),
                     (head_joint, pitch(w * head)),
                 ]),
+                // 1407f5b30 rotates the head by -90 degrees times the
+                // mode-blend weight, independently of ordinary look input.
+                MODE_DROWNING => controls.push((head_joint, Mat3::from_rotation_y(-std::f32::consts::FRAC_PI_2 * w))),
                 // ANIMATED: camera_jnt as animated (arms only).
                 _ => {}
             }

@@ -448,6 +448,16 @@ pub struct AnimBasicNode {
 const END_MARGIN: f32 = 0.001;
 
 impl AnimBasicNode {
+    /// The newest clip's item, local time and playback flag without allocating.
+    pub fn current_clip(&self) -> Option<(usize, f32, bool)> {
+        self.clips.first().map(|clip| (clip.item, clip.time, clip.playing))
+    }
+
+    /// Whether no playback, blending or deferred command can change the pose.
+    pub fn is_settled(&self) -> bool {
+        self.deferred.is_none() && self.clips.iter().all(|clip| !clip.playing && clip.blend == Blend::None)
+    }
+
     /// The playing clips (item, weight, time), newest first.
     pub fn playing(&self) -> Vec<(usize, f32, f32)> {
         self.clips.iter().map(|c| (c.item, c.weight, c.time)).collect()

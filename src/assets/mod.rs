@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod animation_rig;
 pub mod bmd6;
 pub mod bmodel;
 pub mod bprobe;
@@ -13,6 +14,8 @@ pub mod environment;
 pub mod fx;
 pub mod iggy;
 pub mod installation;
+pub mod inventory_item;
+pub mod interactive_map;
 pub mod lang;
 pub mod level;
 pub mod map_resources;

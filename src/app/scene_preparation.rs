@@ -59,6 +59,7 @@ impl ScenePreparation {
             .take_resource::<ViewSettings>()
             .expect("prepared view settings");
         let machinery = prepared.take_resource::<super::machinery::AmbientMachinery>();
+        let interactions = prepared.take_resource::<super::interactions::Interactions>();
         let volumes = prepared.take_resource::<super::state::EnvironmentVolumes>();
         let effects = prepared
             .take_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>(
@@ -97,6 +98,7 @@ impl ScenePreparation {
             &settings,
             &mut matrices,
             machinery.as_ref(),
+            interactions.as_ref(),
             volumes.as_ref(),
             effects.as_ref(),
             Some(&self.shared_images),
@@ -147,6 +149,9 @@ impl ScenePreparation {
             prepared.insert_resource(value);
         }
         if let Some(value) = machinery {
+            prepared.insert_resource(value);
+        }
+        if let Some(value) = interactions {
             prepared.insert_resource(value);
         }
         if let Some(value) = volumes {

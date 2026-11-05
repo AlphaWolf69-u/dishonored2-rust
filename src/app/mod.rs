@@ -3,7 +3,7 @@ use crate::{
     archive, auto_exposure, bmd6, bmodel, camera_projection, coarse_depth, edge_skeleton, entities,
     frame_profile, game_clock, game_clock_runtime, game_settings, local_caster_query,
     local_shadow_cache, material, material_surface, navigation, physworld, probe_lighting,
-    render_light, render_model, render_program, render_shadow, render_state, runtime,
+    render_light, render_model, render_program, render_shadow, render_state,
     screen_shadow_pass, screen_shadow_pipeline, shader_cache, shadow_pass, shadow_pipeline,
     shadow_receiver, shadow_sampling, surface_gpu, texture, tiled_lighting, tome, worker_topology,
     world_mesh,
@@ -73,12 +73,17 @@ mod water_objects;
 mod water_scene;
 mod physics_scene;
 mod state;
+mod interaction_focus;
+mod interactions;
+mod readable_movie;
+mod usable_animation;
+mod usable_effects;
+mod runtime_fx_images;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
     FrameRateOverlay, LocalLightSphereBatch, MaterialHandle, ShadowCasterWorld,
     ViewSettings, NavigationWorld, LocalLightCull,
-    LocalLightCullEnabled, LocalLightCullStats, PickupInstance, PickupState,
-    PickupVisual, ProbeMaterial, RenderInstance, RenderInstanceSource, RenderModelSurface,
+    LocalLightCullEnabled, LocalLightCullStats, ProbeMaterial, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, ResolvedMaterial, SceneData, SnapshotPath, StreamingDiagnostics,
     TomeWorld, VisibilityElapsedTiming, DECAL_SHADER_HANDLE, FILLING_SHADER_HANDLE,
     INDIRECT_SHADER_HANDLE, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES,
@@ -144,7 +149,7 @@ use material_loading::{material_option_overrides, MaterialResolver};
 mod setup;
 use setup::setup;
 mod controls;
-use controls::{camera_controls, interact_pickup, update_coordinate_overlay};
+use controls::{camera_controls, update_coordinate_overlay};
 mod diagnostics;
 use diagnostics::{collision_report, game_pose_from_view_transform, snapshot_once};
 mod visibility_queries;

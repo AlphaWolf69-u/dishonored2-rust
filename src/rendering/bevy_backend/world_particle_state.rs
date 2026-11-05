@@ -26,6 +26,8 @@ struct FxEntity {
     component: WorldFxComponent,
     suspended: bool,
     pose: ReferenceFrame,
+    local: Option<ReferenceFrame>,
+    dynamic_sources: Option<Arc<WorldFxSources>>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
 }
 enum FxEntityOwner {
@@ -45,6 +47,8 @@ struct Instance {
     definition: Arc<WorldEffectDefinition>,
     parameters: FxRuntimeParameters,
     pose: ReferenceFrame,
+    local: Option<ReferenceFrame>,
+    dynamic_sources: Option<Arc<WorldFxSources>>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
@@ -348,6 +352,10 @@ pub(crate) struct WorldParticleState {
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
     actors: HashMap<String, u32>,
+    dynamic: HashMap<String, (u32, u64)>,
+    dynamic_snapshot: Option<Arc<Vec<super::world_effects::DynamicEffect>>>,
+    dynamic_retiring: HashSet<u32>,
+    dynamic_retired: u64,
     pending_actor_starts: Vec<u32>,
     timers: Vec<(usize, u32)>,
     entities: HashMap<u32, FxEntity>,
@@ -377,6 +385,10 @@ impl Default for WorldParticleState {
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
             actors: HashMap::new(),
+            dynamic: HashMap::new(),
+            dynamic_snapshot: None,
+            dynamic_retiring: HashSet::new(),
+            dynamic_retired: 0,
             pending_actor_starts: Vec::new(),
             timers: Vec::new(),
             entities: HashMap::new(),
@@ -411,6 +423,7 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(super) fn dynamic_retired(&self) -> u64 { self.dynamic_retired }
     pub(super) fn decal_pool(
         &mut self,
     ) -> &mut crate::rendering::decals::DecalPool<
@@ -491,6 +504,8 @@ impl WorldParticleState {
                     component: Default::default(),
                     suspended: false,
                     pose,
+                    local: None,
+                    dynamic_sources: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -626,7 +641,11 @@ impl WorldParticleState {
                     if let Some((graph, node)) = instance.actor_observer {
                         self.actor_completed.push((graph, node, instance.entity));
                     }
-                    self.entities.insert(instance.entity, entity);
+                    if self.dynamic_retiring.remove(&instance.entity) {
+                        self.dynamic_retired = self.dynamic_retired.wrapping_add(1);
+                    } else {
+                        self.entities.insert(instance.entity, entity);
+                    }
                 }
             }
         }
@@ -634,10 +653,68 @@ impl WorldParticleState {
         self.pool.release_head(&mut head)?;
         Ok(())
     }
+
+    fn sync_dynamic(&mut self, snapshot: &super::world_effects::DynamicEffects,
+        systems: &mut ParticleSystems, frames: &WorldEffectFrames) -> Result<(), String> {
+        if self.dynamic_snapshot.as_ref().is_some_and(|old| Arc::ptr_eq(old, &snapshot.0)) {
+            return Ok(());
+        }
+        let started = super::world_effects::trace_lifecycle().then(std::time::Instant::now);
+        let removed: Vec<_> = self.dynamic.iter().filter_map(|(owner, &(id, revision))| {
+            (!snapshot.0.iter().any(|entry| entry.owner == *owner && entry.revision == revision))
+                .then(|| (owner.clone(), id))
+        }).collect();
+        for (owner, id) in removed {
+            if started.is_some() { eprintln!("FX_LIFECYCLE stop owner={owner}"); }
+            self.dynamic.remove(&owner);
+            self.pending_actor_starts.retain(|pending| *pending != id);
+            let active = self.entities.get(&id).and_then(|entity| match &entity.owner {
+                FxEntityOwner::Actor { active, .. } => *active,
+                _ => None,
+            });
+            if let Some(handle) = active {
+                self.stop(handle, systems)?;
+                self.dynamic_retiring.insert(id);
+            } else {
+                self.entities.remove(&id);
+                self.dynamic_retired = self.dynamic_retired.wrapping_add(1);
+            }
+        }
+        for entry in snapshot.0.iter() {
+            if self.dynamic.contains_key(&entry.owner) { continue; }
+            let parent = frames.resolve(&entry.target, "")?.ok_or("dynamic FX target pose is unavailable")?;
+            let pose = crate::gameplay::reference_frame::compose(parent, entry.local);
+            let id = self.next_entity;
+            self.next_entity = id.wrapping_add(1);
+            self.entities.insert(id, FxEntity {
+                owner: FxEntityOwner::Actor { name: entry.owner.clone(), active: None, remove_on_end: false },
+                parameters: FxRuntimeParameters {
+                    effect: Some(entry.effect.clone()),
+                    location: Some(entry.target.clone()),
+                    update_position: entry.attached,
+                    stop_on_parent_removal: false,
+                    ..Default::default()
+                },
+                component: Default::default(), suspended: false, pose, local: Some(entry.local),
+                dynamic_sources: Some(entry.sources.clone()),
+                motion: crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() },
+            });
+            self.entity_order.push(id);
+            self.pending_actor_starts.push(id);
+            self.dynamic.insert(entry.owner.clone(), (id, entry.revision));
+            if started.is_some() { eprintln!("FX_LIFECYCLE start owner={} effect={}", entry.owner, entry.effect); }
+        }
+        self.dynamic_snapshot = Some(snapshot.0.clone());
+        if let Some(started) = started {
+            eprintln!("FX_LIFECYCLE owner_update_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
+        }
+        Ok(())
+    }
     pub fn advance(
         &mut self,
         graphs: &WorldEffectDefinitions,
         sources: &WorldFxSources,
+        dynamic: &super::world_effects::DynamicEffects,
         frames: &WorldEffectFrames,
         systems: &mut ParticleSystems,
         sounds: &super::world_sounds::WorldSounds,
@@ -685,6 +762,7 @@ impl WorldParticleState {
                         let event = audio
                             .declarations
                             .get(notification.event.declaration as usize)
+                            .and_then(Option::as_ref)
                             .ok_or("FX sound callback declaration is absent")?;
                         self.sound_systems.event_info(
                             notification.id,
@@ -697,6 +775,7 @@ impl WorldParticleState {
             }
         }
         self.initialize(graphs, sources, frames)?;
+        self.sync_dynamic(dynamic, systems, frames)?;
         if !Arc::ptr_eq(&self.decal_programs, &decal_scene.programs) {
             self.decal_programs = decal_scene.programs.clone();
         }
@@ -735,6 +814,8 @@ impl WorldParticleState {
                     component: Default::default(),
                     suspended: false,
                     pose,
+                    local: None,
+                    dynamic_sources: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -850,6 +931,7 @@ impl WorldParticleState {
                     .filter(|_| clock.entity_delta > 0.)
                 {
                     if let Some(pose) = frames.resolve(location, &entity.parameters.tag)? {
+                        let pose = entity.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local));
                         let velocities = crate::gameplay::reference_frame::velocities(
                             entity.pose,
                             pose,
@@ -926,7 +1008,7 @@ impl WorldParticleState {
                     sound_systems: &mut self.sound_systems,
                     decals: &mut self.decals,
                     sounds,
-                    effects: &sources.effects,
+                    effects: &instance.dynamic_sources.as_deref().unwrap_or(sources).effects,
                     world,
                     query: &mut query,
                     position: instance.pose.position,
@@ -946,6 +1028,7 @@ impl WorldParticleState {
                 if instance.parameters.update_position {
                     if let Some(location) = instance.parameters.location.as_ref() {
                         if let Some(pose) = frames.resolve(location, &instance.parameters.tag)? {
+                            let pose = instance.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local));
                             instance.pose = pose;
                         }
                     }
@@ -988,7 +1071,7 @@ impl WorldParticleState {
                     sound_systems: &mut self.sound_systems,
                     decals: &mut self.decals,
                     sounds,
-                    effects: &sources.effects,
+                    effects: &instance.dynamic_sources.as_deref().unwrap_or(sources).effects,
                     world,
                     query: &mut query,
                     position: instance.pose.position,
@@ -1199,6 +1282,8 @@ impl FxGraphWorld for GraphHost<'_> {
                 component: Default::default(),
                 suspended: false,
                 pose,
+                local: None,
+                dynamic_sources: None,
                 motion: crate::gameplay::particles::spawn::SpawnVelocity {
                     center: pose.position,
                     ..Default::default()
@@ -1262,8 +1347,8 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
             bevy::log::info!(effect = name, "World FX play requested");
         }
-        let definition = self
-            .sources
+        let sources = self.entity.dynamic_sources.as_deref().unwrap_or(self.sources);
+        let definition = sources
             .effects
             .get(name)
             .ok_or("world FX definition absent")?
@@ -1275,7 +1360,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
         admit(
             name,
             &definition,
-            &self.sources.effects,
+            &sources.effects,
             self.state.sounds.as_ref(),
             &self.state.decal_programs,
             &mut HashSet::new(),
@@ -1287,6 +1372,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
                 &parameters.tag,
             )?
             .ok_or("FX location was removed")?;
+        let pose = self.entity.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local));
         let mut slot = u16::MAX;
         if !self.state.pool.acquire(&mut slot)? {
             if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {
@@ -1302,6 +1388,8 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             definition,
             parameters: parameters.clone(),
             pose,
+            local: self.entity.local,
+            dynamic_sources: self.entity.dynamic_sources.clone(),
             motion: self.entity.motion,
             age: 0.,
             head: u16::MAX,

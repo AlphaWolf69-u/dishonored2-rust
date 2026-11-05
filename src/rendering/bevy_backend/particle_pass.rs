@@ -587,6 +587,22 @@ fn sampler_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 impl ParticlePass {
+    /// The GPU binding is a cache, not an effect owner. Call at effect/level
+    /// retirement after definitions and live instances have released their
+    /// references; active sources keep their existing bindings and pipelines.
+    pub(super) fn retire_unused_materials(&mut self) {
+        let trace = super::world_effects::trace_lifecycle();
+        let before = self.materials.len();
+        let mut cached = HashMap::<usize, usize>::new();
+        for material in self.materials.values() {
+            *cached.entry(Arc::as_ptr(&material.source) as usize).or_default() += 1;
+        }
+        self.materials.retain(|_, material| {
+            Arc::strong_count(&material.source) > cached[&(Arc::as_ptr(&material.source) as usize)]
+        });
+        if trace { eprintln!("FX_LIFECYCLE gpu_materials_retired={} retained={}", before - self.materials.len(), self.materials.len()); }
+    }
+
     /// Raise the instance/draw capacity in place. Only the capacity-sized
     /// storage and the bind groups that reference it are rebuilt; the shader,
     /// pipelines and level materials are kept.

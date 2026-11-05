@@ -133,6 +133,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::water_scene::WaterWorldMeshes,
         backend::water_scene::WaterImageSources,
         backend::water_scene::WaterSceneFrame,
+        backend::water_scene::SwimmingSurfaceMailbox,
         backend::water_scene::WaterViewSelection,
         backend::ocean_scene::OceanSources,
         backend::boat_scene::BoatMaterials,
@@ -140,6 +141,8 @@ fn reset_scene_publications(world: &mut World) {
         backend::world_effects::WorldEffectSources,
         backend::world_effects::WorldEffectDefinitions,
         backend::world_effects::WorldEffectFrames,
+        backend::world_effects::DynamicEffects,
+        backend::world_effects::DynamicMaterialPrewarm,
         backend::world_sounds::WorldSounds,
         backend::particle_pass::ParticleMaterialSampler,
         backend::particle_images::SceneParticleImages,
@@ -152,6 +155,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::shadow_pass::ShadowCaptureReadiness,
         backend::coarse_depth::CoarseDepthMailbox,
         backend::projected_decals::DecalScene,
+        backend::projected_decals::DynamicProxyReadiness,
         super::material_loading::alpha::AlphaDepthMaterials,
     );
     super::audio::begin_level(world);
