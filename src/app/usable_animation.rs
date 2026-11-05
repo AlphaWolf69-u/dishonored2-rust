@@ -21,6 +21,7 @@ struct Placement {
     command: Option<AnimBasicCommand>,
     initialized: bool,
     physics_owned: bool,
+    animation_pose: Option<Vec<super::physics_skinning::Affine>>,
 }
 
 #[derive(Resource, Default)]
@@ -31,6 +32,15 @@ pub(super) struct UsableAnimations {
     completed: Vec<(String, Result<Arc<Asset>, String>)>,
     playing: Vec<Option<bool>>,
     initialized: bool,
+}
+
+impl UsableAnimations {
+    /// Physics publishes until an overlap has an actual animation pose; then
+    /// this owner publishes their combined pose exactly once per frame.
+    pub(super) fn combines_physics(&self, placement: usize) -> bool {
+        self.placements.get(&placement).is_some_and(|slot|
+            slot.physics_owned && slot.asset.is_some() && slot.animation_pose.is_some())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -55,7 +65,7 @@ pub(super) fn advance(
                 .any(|state| state.animation.is_some() || state.transition_animation.is_some()) { continue; }
             owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), source_index: shadow_sources.get(&index).copied(), asset: None,
                 node: None, publication: Default::default(), requested: false, failed: false, command: None,
-                initialized: false, physics_owned: physics.contains(&index) });
+                initialized: false, physics_owned: physics.contains(&index), animation_pose: None });
         }
         owner.initialized = true;
     }
@@ -148,31 +158,47 @@ pub(super) fn advance(
             }
             slot.initialized = true;
         }
-        if slot.command.is_none() && node.is_settled() {
-            continue;
+        let changed = slot.command.is_some() || !node.is_settled();
+        if changed {
+            node.update(dt, slot.command.take(), &asset.rig.animations);
         }
-        node.update(dt, slot.command.take(), &asset.rig.animations);
         if let Some(playing) = &mut playing[slot.actor] {
             *playing |= node.current_clip().is_some_and(|(_, _, playing)| playing);
         }
-        let joints = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
-            Ok(Some(pose)) => pose.joints,
-            Ok(None) => continue,
-            Err(error) => { bevy::log::warn!("Usable animation evaluation: {error}"); continue; }
-        };
-        let matrices = match crate::edge_skeleton::pose_matrices(&joints, &asset.rig.skeleton.hierarchy, &asset.rig.root) {
-            Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skeleton pose: {error}"); continue; }
-        };
-        let Some(inverse_bind) = asset.rig.skeleton.inverse_bind.get(..matrices.len()) else {
-            bevy::log::warn!("Usable skeleton has fewer inverse bind matrices than joints");
-            continue;
-        };
-        let palette = match crate::edge_skeleton::skin_palette(&matrices, inverse_bind) {
-            Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skin palette: {error}"); continue; }
-        };
-        if !slot.physics_owned {
-            super::skin_publication::publish_skin(index, &asset.model, palette, &mut slot.publication,
-                &mut meshes, &mut buffers, &mut queue, &mut sources, &placements);
+        if changed {
+            let joints = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
+                Ok(Some(pose)) => pose.joints,
+                Ok(None) => continue,
+                Err(error) => { bevy::log::warn!("Usable animation evaluation: {error}"); continue; }
+            };
+            let matrices = match crate::edge_skeleton::pose_matrices(&joints, &asset.rig.skeleton.hierarchy, &asset.rig.root) {
+                Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skeleton pose: {error}"); continue; }
+            };
+            if slot.physics_owned {
+                slot.animation_pose = Some(matrices);
+            } else {
+                let Some(inverse_bind) = asset.rig.skeleton.inverse_bind.get(..matrices.len()) else {
+                    bevy::log::warn!("Usable skeleton has fewer inverse bind matrices than joints");
+                    continue;
+                };
+                let palette = match crate::edge_skeleton::skin_palette(&matrices, inverse_bind) {
+                    Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skin palette: {error}"); continue; }
+                };
+                super::skin_publication::publish_skin(index, &asset.model, palette, &mut slot.publication,
+                    &mut meshes, &mut buffers, &mut queue, &mut sources, &placements);
+            }
+        }
+        if slot.physics_owned {
+            let (Some(animation), Some(machinery)) = (&slot.animation_pose, machinery.as_deref()) else { continue };
+            let Some(result) = machinery.animated_palette(index, animation) else { continue };
+            match result {
+                Ok(palette) => super::skin_publication::publish_skin(index, &asset.model, palette, &mut slot.publication,
+                    &mut meshes, &mut buffers, &mut queue, &mut sources, &placements),
+                Err(error) => {
+                    slot.animation_pose = None;
+                    bevy::log::warn!("Usable physics/animation pose: {error}");
+                },
+            }
         }
     }
     for (actor, is_playing) in playing.iter().copied().enumerate().filter_map(|(index, playing)| playing.map(|value| (index, value))) {
@@ -198,6 +224,7 @@ pub(super) fn advance(
         if !visible && !playing && slot.command.is_none() && slot.asset.is_some() {
             slot.asset = None;
             slot.node = None;
+            slot.animation_pose = None;
             slot.requested = false;
             // A later acquisition creates a fresh node. Reapply the current
             // authored idle state instead of leaving that node at its rest pose.

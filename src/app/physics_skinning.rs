@@ -10,7 +10,7 @@ use crate::{archive::Catalog, assets::edge_skeleton, bmd6, gameplay::machinery_w
 use bevy::prelude::*;
 use std::sync::Arc;
 
-type Affine = [[f32; 4]; 3];
+pub(super) type Affine = [[f32; 4]; 3];
 
 pub(super) struct SystemSkin {
     system: usize,
@@ -42,6 +42,21 @@ fn inverse(m: &Affine) -> Affine {
         out[r][3] = -((out[r][1] * m[1][3] + out[r][0] * m[0][3]) + out[r][2] * m[2][3]);
     }
     out
+}
+
+/// Animation may contain authored scale. Unlike body transforms, these
+/// matrices are not necessarily rigid and require a full affine inverse.
+fn inverse_animation(m: &Affine) -> Result<Affine, String> {
+    let basis = Mat3::from_cols(Vec3::new(m[0][0], m[1][0], m[2][0]),
+        Vec3::new(m[0][1], m[1][1], m[2][1]), Vec3::new(m[0][2], m[1][2], m[2][2]));
+    let determinant = basis.determinant();
+    if !determinant.is_finite() || determinant == 0.0 {
+        return Err("animated parent joint transform is singular".into());
+    }
+    let inverse = basis.inverse();
+    let translation = -(inverse * Vec3::new(m[0][3], m[1][3], m[2][3]));
+    let columns = [inverse.x_axis, inverse.y_axis, inverse.z_axis];
+    Ok(std::array::from_fn(|row| [columns[0][row], columns[1][row], columns[2][row], translation[row]]))
 }
 
 /// An hkTransform (columns and translation) as a row-major 3x4.
@@ -90,6 +105,14 @@ impl SystemSkin {
     }
 
     fn current(&self, world: &MachineryWorld) -> Vec<Affine> {
+        self.current_with_animation(world, None).expect("rigid rest transform")
+    }
+
+    /// 14076d640 installs world-space modifications only for physics-driven
+    /// joints; 14053bcd0 composes their untouched descendants from the active
+    /// animation pose rather than resetting them to their bind pose.
+    fn current_with_animation(&self, world: &MachineryWorld, animation: Option<&[Affine]>) -> Result<Vec<Affine>, String> {
+        let base = animation.filter(|pose| pose.len() == self.rest.len()).unwrap_or(&self.rest);
         let system = &world.systems[self.system];
         let entity = {
             let basis = crate::physworld::quaternion_basis(system.orientation);
@@ -106,8 +129,9 @@ impl SystemSkin {
                 current[joint] = Some(multiply(&to_model, &multiply(&body, &map)));
             }
         }
-        // Rest-relative offsets for unmapped joints, parents first.
-        let mut out = self.rest.to_vec();
+        // Preserve each unmodified joint's current local animation relative
+        // to its parent, applying any physics override higher in the tree.
+        let mut out = base.to_vec();
         let mut done = vec![false; out.len()];
         for _ in 0..out.len() {
             for j in 0..out.len() {
@@ -119,7 +143,8 @@ impl SystemSkin {
                     done[j] = true;
                 } else if let Some(p) = self.parents.get(j).copied().flatten() {
                     if done[p] {
-                        let local = multiply(&inverse(&self.rest[p]), &self.rest[j]);
+                        let parent_inverse = if animation.is_some() { inverse_animation(&base[p])? } else { inverse(&base[p]) };
+                        let local = multiply(&parent_inverse, &base[j]);
                         out[j] = multiply(&out[p], &local);
                         done[j] = true;
                     }
@@ -128,7 +153,13 @@ impl SystemSkin {
                 }
             }
         }
-        out
+        Ok(out)
+    }
+
+    pub(super) fn animated_palette(&self, world: &MachineryWorld, animation: &[Affine]) -> Result<Vec<Affine>, String> {
+        if animation.len() != self.rest.len() { return Err("animation and physics skeleton joint counts differ".into()); }
+        let current = self.current_with_animation(world, Some(animation))?;
+        edge_skeleton::skin_palette(&current, &self.inverse_bind)
     }
 }
 
@@ -143,8 +174,10 @@ pub(super) fn pose_physics_systems(
     queue: &mut SceneRenderQueue,
     sources: &mut ModelShadowSources,
     placements: &RenderSourcePlacements,
+    animated: Option<&super::usable_animation::UsableAnimations>,
 ) {
     for skin in skins {
+        if animated.is_some_and(|animations| animations.combines_physics(skin.placement)) { continue; }
         let Some(placement) = placements.0.get(skin.placement) else {
             continue;
         };
