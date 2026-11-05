@@ -3,6 +3,27 @@
 //! rest Q/T/S and hierarchy through relative offsets. Custom skeleton data
 //! is parsed only through the inverse-bind table understood in 2564e0.
 
+// Host equivalent of the resource registry's scoped purge (140060180).
+static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+pub(crate) struct HistoryLease;
+impl HistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        std::sync::Arc::new(Self)
+    }
+}
+impl Drop for HistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        let (count, bytes, slots, _) = crate::loading::retain_kind("skeleton", |_| false);
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("MEMORY skeleton history release: entries={count} path_capacity_bytes={bytes} slots={slots}");
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointRestPose {
     pub rotation: [f32; 4],
@@ -372,6 +393,74 @@ pub fn vertex_skin_matrix(
             value
         })
     }))
+}
+
+/// Immutable slices shared by independently posed physics-system instances.
+#[derive(Clone)]
+pub(crate) struct SharedSlice<T>(std::sync::Arc<[T]>);
+impl<T> From<Vec<T>> for SharedSlice<T> {
+    fn from(values: Vec<T>) -> Self { Self(values.into()) }
+}
+impl<T> std::ops::Deref for SharedSlice<T> {
+    type Target = [T];
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+impl<'a, T> IntoIterator for &'a SharedSlice<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.0.iter() }
+}
+
+pub(crate) type Affine = [[f32; 4]; 3];
+
+/// Rest data prepared from a skeleton. Runtime poses and palettes are not
+/// shared. The original MD6 loader acquires the skeleton identity through
+/// 1400607f0 (14025aa00); each physics system constructs its own state.
+#[derive(Clone)]
+pub(crate) struct RestRig {
+    pub parents: SharedSlice<Option<usize>>,
+    pub rest: SharedSlice<Affine>,
+    pub inverse_bind: SharedSlice<Affine>,
+}
+
+pub(crate) struct RestRigSources {
+    catalog: u64,
+    share: bool,
+    rigs: std::collections::HashMap<String, RestRig>,
+}
+impl RestRigSources {
+    pub(crate) fn new(catalog: &crate::archive::Catalog) -> Self {
+        Self { catalog: catalog.identity(), share: !catalog.has_overlays(), rigs: Default::default() }
+    }
+
+    pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, name: &str) -> Result<RestRig, String> {
+        if self.catalog != catalog.identity() {
+            self.rigs.clear();
+            self.catalog = catalog.identity();
+            self.share = !catalog.has_overlays();
+        }
+        let stem = name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
+        let path = format!("generated/skeleton/{stem}.edgeskl");
+        let key = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
+            std::borrow::Cow::Borrowed(path.as_str())
+        } else {
+            let mut normalized = path.replace('\\', "/");
+            normalized.make_ascii_lowercase();
+            std::borrow::Cow::Owned(normalized)
+        };
+        if self.share {
+            if let Some(rig) = self.rigs.get(key.as_ref()) { return Ok(rig.clone()); }
+        }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("{path} is absent"))?;
+        let skeleton = parse(&bytes)?;
+        let root = JointRestPose { rotation: [0., 0., 0., 1.], translation: [0.; 3], scale: [1.; 3] };
+        let rest = pose_matrices(&skeleton.rest, &skeleton.hierarchy, &root)?;
+        let inverse_bind = skeleton.inverse_bind[..rest.len()].to_vec().into();
+        let rig = RestRig { parents: skeleton.parents.into(), rest: rest.into(), inverse_bind };
+        if self.share { self.rigs.insert(key.into_owned(), rig.clone()); }
+        Ok(rig)
+    }
 }
 
 #[cfg(test)]

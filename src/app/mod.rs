@@ -64,6 +64,7 @@ mod scene_preparation;
 mod loading_fade;
 pub use loading_screen::request_level;
 mod physics_skinning;
+mod skin_publication;
 mod shadow_updates;
 mod shadow_diagnostics;
 mod world_instances;
