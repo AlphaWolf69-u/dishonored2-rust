@@ -411,6 +411,7 @@ pub(super) struct RuntimeMaterialCoordinator {
     task: Option<PendingMaterialWork>,
     waiting: Option<WaitingMaterialBatch>,
     published_generation: Option<u64>,
+    handled_image_failure: Option<u64>,
 }
 impl Drop for RuntimeMaterialCoordinator {
     fn drop(&mut self) {
@@ -511,11 +512,14 @@ pub(super) fn needs_update(
     state: Option<Res<RuntimeMaterialCoordinator>>,
     request: Option<Res<super::usable_effects::DynamicWorldMaterials>>,
     decal: Option<Res<super::usable_effects::DynamicDecalMaterials>>,
+    images: Option<Res<super::runtime_fx_images::RuntimeFxImages>>,
     prewarm: Res<crate::rendering::bevy_backend::world_effects::DynamicMaterialPrewarm>,
 ) -> bool {
     let (Some(state), Some(request), Some(decal)) = (state, request, decal) else { return false };
     let generation = request.generation;
     if generation != decal.generation { return false; }
+    if images.as_deref().and_then(|images| images.failure.as_ref()).is_some_and(|(failed, _)| *failed == generation)
+        && state.handled_image_failure != Some(generation) { return true; }
     if !state.initialized || state.revision != Some(generation)
         || state.seen_retired != prewarm.retired_signal.load(Ordering::Acquire)
         || (state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0))
@@ -539,6 +543,10 @@ pub(super) fn coordinate(world: &mut World) {
         }
         if let Some(task) = state.task.take() { task.superseded.store(true, Ordering::Release); }
         state.waiting = None;
+        if world.get_resource::<super::runtime_fx_images::RuntimeFxImages>()
+            .and_then(|images| images.failure.as_ref()).is_some_and(|(failed, _)| *failed == generation) {
+            state.handled_image_failure = Some(generation);
+        }
         refresh_images(world, &state);
         state.published_generation = Some(generation);
     }
@@ -551,6 +559,12 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
     let generation = request.generation;
     let Some(decal_request) = world.get_resource::<super::usable_effects::DynamicDecalMaterials>() else { return Ok(()) };
     if generation != decal_request.generation { return Ok(()); }
+    if state.handled_image_failure != Some(generation) {
+        if let Some((_, error)) = world.get_resource::<super::runtime_fx_images::RuntimeFxImages>()
+            .and_then(|images| images.failure.as_ref()).filter(|(failed, _)| *failed == generation) {
+            return Err(error.clone());
+        }
+    }
     let retired = world.resource::<DynamicMaterialPrewarm>().retired_signal.load(Ordering::Acquire);
     let expired = state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0);
     if state.initialized && state.revision == Some(generation) && state.seen_retired == retired

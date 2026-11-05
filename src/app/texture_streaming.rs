@@ -617,6 +617,23 @@ pub(super) enum TextureReadTarget {
     Exact(u8, texture::ImageFormat),
 }
 
+#[derive(Debug)]
+pub(super) enum InitialTextureFailure {
+    Missing,
+    Read(String),
+    Upload(String),
+}
+
+impl std::fmt::Display for InitialTextureFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => f.write_str("base image missing"),
+            Self::Read(error) => write!(f, "base image read failed: {error}"),
+            Self::Upload(error) => write!(f, "base image GPU upload failed: {error}"),
+        }
+    }
+}
+
 pub(super) type TextureReadResult = (
     usize,
     TextureReadTarget,
@@ -644,6 +661,9 @@ pub(super) struct TextureReadWorker {
     pub(super) ready: VecDeque<TextureReadResult>,
     pub(super) inflight: Vec<bool>,
     pub(super) inflight_count: usize,
+    /// Last base-read or base-upload error for each scene slot. Fine-mip
+    /// failures leave the existing resident image usable and are tracked separately.
+    pub(super) initial_failures: std::collections::HashMap<usize, InitialTextureFailure>,
 }
 
 impl Drop for TextureReadWorker {
@@ -673,6 +693,7 @@ impl TextureReadWorker {
             ready: VecDeque::new(),
             inflight: vec![false; image_count],
             inflight_count: 0,
+            initial_failures: Default::default(),
         }
     }
 
@@ -1369,7 +1390,12 @@ pub(super) fn stream_visible_textures(
             queue.diffuse_mip_states[slot].pending_reduction = false;
             queue.diffuse_mip_states[slot].reserved_bytes = 0;
             if queue.diffuse_image_handles[slot].is_none() {
-                queue.diffuse_image_attempted[slot] = false;
+                worker.initial_failures.insert(slot, InitialTextureFailure::Upload(error));
+                // Startup retains its existing retry behavior. Runtime FX
+                // requests must fail their generation instead of retrying forever.
+                if !runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot)) {
+                    queue.diffuse_image_attempted[slot] = false;
+                }
             } else if !was_reduction {
                 if let Some(mip) = target.and_then(|level| level.resource_mip) {
                     queue.diffuse_mip_states[slot].unavailable_finer = Some(mip);
@@ -1515,6 +1541,8 @@ pub(super) fn stream_visible_textures(
                 eprintln!("Streamed diffuse missing: {path}");
                 if let TextureReadTarget::Exact(mip, _) = target {
                     queue.diffuse_mip_states[slot].unavailable_finer = Some(mip);
+                } else {
+                    worker.initial_failures.insert(slot, InitialTextureFailure::Missing);
                 }
                 continue;
             }
@@ -1530,6 +1558,8 @@ pub(super) fn stream_visible_textures(
                 eprintln!("Streamed diffuse {path}: {error}");
                 if let TextureReadTarget::Exact(mip, _) = target {
                     queue.diffuse_mip_states[slot].unavailable_finer = Some(mip);
+                } else {
+                    worker.initial_failures.insert(slot, InitialTextureFailure::Read(error));
                 }
                 continue;
             }
@@ -1781,6 +1811,7 @@ pub(super) fn stream_visible_textures(
                 }
                 if matches!(target, TextureReadTarget::Initial(_)) {
                     queue.diffuse_image_attempted[slot] = true;
+                    worker.initial_failures.remove(&slot);
                 }
                 worker.inflight[slot] = true;
                 worker.inflight_count += 1;

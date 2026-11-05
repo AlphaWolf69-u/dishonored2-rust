@@ -21,6 +21,7 @@ pub(super) struct RuntimeFxImages {
     seen_world_revision: Option<u64>,
     world_entries: std::collections::HashSet<String>,
     pub(super) requested: Vec<usize>,
+    pub(super) failure: Option<(u64, String)>,
 }
 
 impl RuntimeFxImages {
@@ -40,12 +41,16 @@ pub(super) fn synchronize(
     queue: Option<ResMut<super::SceneRenderQueue>>,
     worker: Option<ResMut<super::texture_streaming::TextureReadWorker>>,
     consumers: Option<ResMut<SceneParticleImages>>,
+    decals: Option<Res<super::usable_effects::DynamicDecalMaterials>>,
     prewarm: Res<crate::rendering::bevy_backend::world_effects::DynamicMaterialPrewarm>,
     registry: Option<Res<super::resident_images::ResidentImages>>,
     assets: Res<Assets<Image>>,
 ) {
     let (Some(owner), Some(mut world), Some(mut state), Some(mut queue), Some(mut worker), Some(mut consumers)) =
         (owner, world, state, queue, worker, consumers) else { return };
+    if state.failure.as_ref().is_some_and(|(generation, _)| *generation != world.generation) {
+        state.failure = None;
+    }
     if owner.ready.is_empty() && world.images.is_empty() && world.extra_images.is_empty() && state.slots.is_empty() && state.world_entries.is_empty() {
         world.images_ready = world.image_revision;
         if state.seen_revision != Some(owner.revision) || state.seen_world_revision != Some(world.image_revision) { state.seen_revision = Some(owner.revision); }
@@ -102,6 +107,7 @@ pub(super) fn synchronize(
     }
     state.requested.clear();
     let mut remove = Vec::new();
+    let mut failed = None;
     let state = &mut *state;
     let (slots, requested) = (&mut state.slots, &mut state.requested);
     for (path, slot) in slots {
@@ -120,6 +126,11 @@ pub(super) fn synchronize(
             continue;
         }
         if slot.wanted { requested.push(slot.index); }
+        if slot.wanted && queue.diffuse_image_handles[slot.index].is_none() {
+            if let Some(error) = worker.initial_failures.get(&slot.index) {
+                failed.get_or_insert_with(|| format!("runtime FX image {path}: {error}"));
+            }
+        }
         let Some(level) = queue.diffuse_mip_states[slot.index].resident else { continue };
         let Some(handle) = queue.diffuse_image_handles[slot.index].as_ref().cloned() else { continue };
         if let Some(registry) = registry.as_deref() {
@@ -135,6 +146,16 @@ pub(super) fn synchronize(
         Arc::make_mut(&mut consumers.handles).insert(path.clone(), handle);
         slot.registered = true;
         slot.added_consumer = true;
+    }
+    // Source revisions are published after this system. Never attribute an
+    // incoming request's failure to the previous generation.
+    if world.generation != 0 && world.generation == owner.revision {
+        if let Some(error) = failed {
+            state.failure = Some((world.generation, error));
+            world.failed.store(world.generation, Ordering::Release);
+            if let Some(decals) = decals.as_deref() { decals.failed.store(world.generation, Ordering::Release); }
+            prewarm.failed.store(world.generation, Ordering::Release);
+        }
     }
     // A world material can be demanded only once every scene-owned image has
     // a committed handle. Preserve startup bindings when the same material is
@@ -172,6 +193,7 @@ pub(super) fn synchronize(
             queue.diffuse_image_handles[slot.index] = None;
             queue.diffuse_mip_states[slot.index] = Default::default();
             queue.diffuse_image_attempted[slot.index] = false;
+            worker.initial_failures.remove(&slot.index);
             queue.diffuse_image_last_visible[slot.index] = 0;
             queue.diffuse_image_demands[slot.index] = Default::default();
             state.free.push(slot.index);
