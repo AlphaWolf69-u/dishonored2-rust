@@ -52,6 +52,9 @@ pub struct ArmActionDiagnostic {
     /// Min/max horizontal and vertical camera slopes while in front.
     pub camera_slopes: [[f32; 4]; 2],
     pub pose_error: [bool; 2],
+    pub tree_frames: [u32; 3],
+    pub visible_frames: [u32; 2],
+    pub in_front_frames: [u32; 2],
 }
 
 pub struct Player {
@@ -583,22 +586,30 @@ impl Player {
                     self.arm_action_history[slot] = Some(ArmActionDiagnostic {
                         frames: 0, tree_drove: [false; 3], published: [false; 2], visible: [false; 2],
                         ever_in_front: [false; 2], camera_slopes: [[f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY]; 2], pose_error: [false; 2],
+                        tree_frames: [0; 3], visible_frames: [0; 2], in_front_frames: [0; 2],
                     });
                 }
                 if let Some(history) = &mut self.arm_action_history[slot] {
                     history.frames = history.frames.saturating_add(1);
-                    for target in 0..3 { history.tree_drove[target] |= self.body.midnight.drives(target); }
+                    for target in 0..3 {
+                        let driven = self.body.midnight.drives(target);
+                        history.tree_drove[target] |= driven;
+                        history.tree_frames[target] = history.tree_frames[target].saturating_add(u32::from(driven));
+                    }
                     for side in 0..2 {
                         history.pose_error[side] |= self.arm_pose_errors[side].is_some();
                         if let Some(arm) = self.body.arms.get(side).and_then(|source| self.arm_render.iter().find(|arm| arm.model == source.model)) {
                             history.published[side] = true;
                             history.visible[side] |= arm.visible;
+                            history.visible_frames[side] = history.visible_frames[side].saturating_add(u32::from(arm.visible));
+                            let mut in_front = false;
                             for joint in &arm.joints {
                                 let p = Vec3::new(joint[0][3], joint[1][3], joint[2][3]);
                                 let relative = p - view.origin;
                                 let forward = relative.dot(view.axis.x_axis);
                                 if forward > 0.0 {
                                     history.ever_in_front[side] = true;
+                                    in_front = true;
                                     let horizontal = relative.dot(view.axis.y_axis) / forward;
                                     let vertical = relative.dot(view.axis.z_axis) / forward;
                                     let bounds = &mut history.camera_slopes[side];
@@ -606,6 +617,7 @@ impl Player {
                                     bounds[2] = bounds[2].min(vertical); bounds[3] = bounds[3].max(vertical);
                                 }
                             }
+                            history.in_front_frames[side] = history.in_front_frames[side].saturating_add(u32::from(in_front));
                         }
                     }
                 }
