@@ -13,6 +13,7 @@ pub mod event_graph;
 pub mod effects;
 pub mod player;
 pub mod triggers;
+pub mod usable;
 pub mod water;
 pub mod audio;
 mod pose;

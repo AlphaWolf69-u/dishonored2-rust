@@ -1731,7 +1731,7 @@ pub(super) fn prepare(
         targets[active].label
     );
     println!(
-        "Controls: mouse/arrows look (captured after loading), click to recapture mouse, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F pick up mapped items; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
+        "Controls: mouse/arrows look (captured after loading), click to recapture mouse, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
     );
     println!(
         "Mapped pickups with explicit item and quantity: {}",

@@ -13,6 +13,7 @@ pub mod environment;
 pub mod fx;
 pub mod iggy;
 pub mod installation;
+pub mod inventory_item;
 pub mod lang;
 pub mod level;
 pub mod map_resources;
