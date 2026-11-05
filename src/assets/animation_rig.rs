@@ -79,6 +79,51 @@ impl Rig {
     pub fn decl(&self, key: &str) -> Option<String> {
         self.tokens.iter().position(|t| t == key).and_then(|i| self.tokens.get(i + 1)).map(|t| t.trim_matches('"').to_owned())
     }
+
+    /// The marker events for an animation are stored in its model's animsets,
+    /// rather than in the compressed animation. 14018e810 converts their
+    /// authored frame numbers to milliseconds using the animation frame rate.
+    /// Read them on demand: most users of a rig do not play Midnight tracks.
+    pub fn animation_markers(&self, catalog: &Catalog, alias: &str) -> Result<Vec<(String, u32)>, String> {
+        let animation = self.aliases.get(alias).ok_or_else(|| format!("no animset alias {alias}"))?;
+        let mut markers = Vec::new();
+        let Some(start) = self.tokens.iter().position(|token| token == "animsets") else { return Ok(markers) };
+        for token in self.tokens[start + 2..].iter().take_while(|token| *token != "}") {
+            let path = format!("generated/decls/animset/{}.decl", token.trim_matches('"'));
+            let source = text_of(catalog, &path)?.ok_or_else(|| format!("{path} is absent"))?;
+            let tokens = crate::entities::declaration_lexemes(&source)?;
+            let mut i = 0;
+            while i + 2 < tokens.len() {
+                if tokens[i] != "events" || tokens[i + 1] != "{" { i += 1; continue; }
+                i += 2;
+                while i + 2 < tokens.len() && tokens[i] != "}" {
+                    if tokens[i] != "anim" || tokens[i + 2] != "{" { i += 1; continue; }
+                    let matches = tokens[i + 1].trim_matches('"') == animation.as_str();
+                    i += 3;
+                    while i + 2 < tokens.len() && tokens[i] != "}" {
+                        if tokens[i] != "event" || tokens[i + 2] != "{" { i += 1; continue; }
+                        let marker = matches && tokens[i + 1].trim_matches('"') == "ae_marker";
+                        i += 3;
+                        let mut frame = None;
+                        let mut name = None;
+                        let mut depth = 0;
+                        while i + 1 < tokens.len() && !(depth == 0 && tokens[i] == "}") {
+                            if tokens[i] == "{" { depth += 1; }
+                            if tokens[i] == "}" { depth -= 1; }
+                            if marker && depth == 0 && tokens[i] == "frame" { frame = Some(tokens[i + 1].parse::<u32>().map_err(|_| format!("invalid marker frame in {path}"))?); }
+                            if marker && depth == 0 && tokens[i] == "arkMidnightAnimMarker::Name_t" { name = Some(tokens[i + 1].trim_matches('"').to_owned()); }
+                            i += 1;
+                        }
+                        if marker { markers.push((name.ok_or_else(|| format!("marker name missing in {path}"))?, frame.ok_or_else(|| format!("marker frame missing in {path}"))?)); }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                break;
+            }
+        }
+        Ok(markers)
+    }
 }
 
 /// Loads clips by alias once, validated against the rig's rest pose.
