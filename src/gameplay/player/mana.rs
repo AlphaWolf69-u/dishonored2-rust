@@ -22,6 +22,15 @@ impl Mana {
     }
     pub fn lock_flags(&self) -> u8 { self.lock_flags }
     pub fn set_lock_flags(&mut self, flags: u8) { self.lock_flags = flags & 3; }
+    /// 140746120 adjusts current and target when maximum mana changes.
+    pub fn maximum_changed(&mut self, added: bool, attributes: &Attributes) {
+        let maximum = self.maximum(attributes).max(0.0);
+        if (added && self.current >= self.settings.maximum) || (!added && self.current > maximum) {
+            let previous = self.current;
+            self.current = maximum;
+            self.target = (self.target - (previous - self.current)).clamp(0.0, maximum);
+        }
+    }
     pub fn regen_target(&self, attributes: &Attributes, replenish: bool) -> f32 {
         let factor = attributes.0.get("ARK_ATTRIBUTE_MANA_REGEN_AMOUNT_FACTOR").copied().unwrap_or(1.0);
         let floor = if replenish { self.settings.regen_amount * factor } else { 0.0 };

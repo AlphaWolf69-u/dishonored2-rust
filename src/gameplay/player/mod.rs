@@ -57,6 +57,15 @@ pub struct ArmActionDiagnostic {
     pub in_front_frames: [u32; 2],
 }
 
+struct ActiveModifier {
+    owner: String,
+    index: usize,
+    tag: String,
+    increase: f32,
+    percentage: f32,
+    expires_at: Option<f64>,
+}
+
 pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
@@ -74,6 +83,8 @@ pub struct Player {
     pub camera: PlayerCamera,
     pub stances: LocoStances,
     pub attributes: Attributes,
+    active_modifiers: Vec<ActiveModifier>,
+    timed_modifiers: usize,
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
@@ -159,18 +170,35 @@ impl Player {
     /// Attribute modifier lifecycle notification (0xd6). The adrenaline
     /// component remains attached when stopped, so it can receive this event.
     pub fn attribute_modifier_changed(&mut self, tag: &str, added: bool) {
+        self.health.attribute_changed(tag, added, &self.attributes, self.health_regen_factor);
+        if tag == "ARK_ATTRIBUTE_MANA_MAX" { self.mana.maximum_changed(added, &self.attributes); }
         if tag == "ARK_ATTRIBUTE_BLOODTHIRSTY_ENABLED" {
             if added { self.adrenaline.start(); } else { self.adrenaline.stop(); }
         }
+    }
+    /// Apply an inventory/power modifier and deliver the matching 0xd6 event.
+    pub fn apply_attribute_modifier(&mut self, owner: &str, index: usize, tag: &str, increase: f32, percentage: f32, duration: f32, added: bool, now: f64) -> bool {
+        if added {
+            if !self.attributes.modifier(tag, increase, percentage, true) { return false; }
+            self.active_modifiers.push(ActiveModifier { owner: owner.to_owned(), index, tag: tag.to_owned(), increase, percentage,
+                expires_at: (duration > 0.0).then_some(now + f64::from(duration)) });
+            if duration > 0.0 { self.timed_modifiers += 1; }
+            self.attribute_modifier_changed(tag, true);
+            true
+        } else if let Some(position) = self.active_modifiers.iter().position(|value| value.owner == owner && value.index == index) {
+            let value = self.active_modifiers.remove(position);
+            if value.expires_at.is_some() { self.timed_modifiers -= 1; }
+            self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
+            self.attribute_modifier_changed(&value.tag, false);
+            true
+        } else { false }
     }
 
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
     pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
-    /// Returns no snapshot when attribute-change events needed by the
-    /// original HUD have not been connected.
-    pub fn health_hud(&self) -> Option<(f32, f32, f32, bool, u32)> {
-        let extensions = self.health.extensions(&self.attributes)?;
+    pub fn health_hud(&self) -> Option<(f32, f32, f32, bool, i32)> {
+        let extensions = self.health.extensions(&self.attributes);
         Some((self.health(), self.max_health(), self.projected_health(), self.health() < 20.0, extensions))
     }
     /// Advance the same game-local LCG already used by player scene picks.
@@ -257,6 +285,8 @@ impl Player {
             camera: PlayerCamera::new(setup.camera, base_fov),
             stances,
             attributes: setup.attributes,
+            active_modifiers: Vec::new(),
+            timed_modifiers: 0,
             body: setup.body,
             pose,
             autocrouch,
@@ -292,6 +322,15 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
+        let mut index = 0;
+        while self.timed_modifiers != 0 && index < self.active_modifiers.len() {
+            if self.active_modifiers[index].expires_at.is_some_and(|deadline| deadline <= now) {
+                let value = self.active_modifiers.remove(index);
+                self.timed_modifiers -= 1;
+                self.attributes.modifier(&value.tag, value.increase, value.percentage, false);
+                self.attribute_modifier_changed(&value.tag, false);
+            } else { index += 1; }
+        }
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
         let cast = body::cast(&self.body.animations, &self.body.arms);

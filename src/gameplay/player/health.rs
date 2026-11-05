@@ -6,7 +6,9 @@ pub struct Health {
     current: f32,
     base_max: f32,
     suppression_base: Option<f32>,
-    maximum_attribute_base: Option<f32>,
+    extensions: i32,
+    suppressed_health: f32,
+    heal_target: f32,
     accepts_water: bool,
     regen_amount: f32,
     regen_delay: f32,
@@ -22,7 +24,9 @@ impl Health {
             current: 0.0,
             base_max: settings.maximum,
             suppression_base: attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED").copied(),
-            maximum_attribute_base: attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX").copied(),
+            extensions: 0,
+            suppressed_health: 0.0,
+            heal_target: 0.0,
             accepts_water,
             regen_amount: settings.regen_amount,
             regen_delay: settings.regen_delay,
@@ -36,22 +40,59 @@ impl Health {
     pub fn current(&self) -> f32 { self.current }
     pub fn is_dead(&self) -> bool { self.dead }
     pub fn accepts_water(&self) -> bool { self.accepts_water }
-    /// The attribute owner currently exposes base values only, so a changed
-    /// maximum needs the missing attribute-change event before extensions can
-    /// be reported to the HUD.
-    pub fn extensions(&self, attributes: &Attributes) -> Option<u32> {
-        (attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX").copied() == self.maximum_attribute_base).then_some(0)
+    /// 14071a490 suppresses extensions while max health is suppressed.
+    pub fn extensions(&self, attributes: &Attributes) -> i32 {
+        let suppressed = self.suppression_base.is_some_and(|base| attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED").is_some_and(|current| *current != base));
+        if suppressed { 0 } else { self.extensions }
+    }
+    /// 140719e50 handles max-health attribute modifier notifications.
+    pub fn attribute_changed(&mut self, tag: &str, added: bool, attributes: &Attributes, difficulty_factor: f32) {
+        match tag {
+            "ARK_ATTRIBUTE_HEALTH_MAX" => {
+                if added {
+                    self.extensions += 1;
+                    if self.suppression_base.is_some_and(|base| attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED").is_some_and(|current| *current != base)) {
+                        self.suppressed_health = attributes.get("ARK_ATTRIBUTE_HEALTH_MAX");
+                    }
+                    if self.current >= self.base_max { self.set(self.maximum(attributes), attributes); }
+                } else {
+                    self.extensions -= 1;
+                    let maximum = self.maximum(attributes);
+                    if maximum < self.current {
+                        self.heal_target -= self.current - maximum;
+                        self.set(maximum, attributes);
+                    }
+                }
+            }
+            "ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED" => {
+                if added {
+                    let maximum = self.maximum(attributes);
+                    if maximum < self.current {
+                        self.suppressed_health = self.current - maximum;
+                        self.set(maximum, attributes);
+                        self.heal_target -= self.suppressed_health;
+                    }
+                } else if self.suppressed_health > 0.0 { self.suppressed_health = 0.0; }
+            }
+            _ => return,
+        }
+        let suppressed = self.suppression_base.is_some_and(|base| attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED").is_some_and(|current| *current != base));
+        let bonus = if suppressed { 0.0 } else { attributes.get("ARK_ATTRIBUTE_HEALTH_REGEN_AMOUNT") };
+        if self.regen_amount != 0.0 && self.current < (self.regen_amount + bonus) * difficulty_factor {
+            self.regen_countdown = self.regen_delay + attributes.get("ARK_ATTRIBUTE_HEALTH_REGEN_DELAY");
+        }
     }
     /// 140719990 for the ordinary player while health and mana are separate.
     pub fn projected(&self, attributes: &Attributes, difficulty_factor: f32) -> f32 {
-        if self.dead || self.regen_amount == 0.0 || self.regen_countdown > 0.0 {
-            return self.current;
-        }
+        let mut projected = self.current.max(self.heal_target);
         let suppressed = self.suppression_base.is_some_and(|base| {
             attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED").is_some_and(|current| *current != base)
         });
         let bonus = if suppressed { 0.0 } else { attributes.get("ARK_ATTRIBUTE_HEALTH_REGEN_AMOUNT") };
-        self.current.max((self.regen_amount + bonus) * difficulty_factor).min(self.maximum(attributes))
+        if !self.dead && self.regen_amount != 0.0 && self.regen_countdown <= 0.0 && self.current < (self.regen_amount + bonus) * difficulty_factor {
+            projected = projected.max((self.regen_amount + bonus) * difficulty_factor);
+        }
+        projected.min(self.maximum(attributes))
     }
     pub fn maximum(&self, attributes: &Attributes) -> f32 {
         let suppressed = self.suppression_base.is_some_and(|base| {
@@ -70,6 +111,7 @@ impl Health {
         if self.current < 0.5 {
             self.current = 0.0;
             self.dead = true;
+            self.heal_target = 0.0;
         }
         self.regen_countdown = self.regen_delay + attributes.get("ARK_ATTRIBUTE_HEALTH_REGEN_DELAY");
     }

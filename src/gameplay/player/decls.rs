@@ -691,14 +691,20 @@ fn sound_event_id(fields: &Fields, key: &str) -> Option<u32> {
 
 pub fn attributes(fields: &Fields) -> Result<Attributes, String> {
     let mut values = HashMap::new();
-    let Some(list) = scope(fields, "m_attributes") else { return Ok(Attributes(values)) };
+    let mut records = HashMap::new();
+    let Some(list) = scope(fields, "m_attributes") else { return Ok(Attributes(values, records)) };
     for (_, value) in list {
         let Value::Scope(item) = value else { continue };
         if let Some(tag) = atom(item, "m_tag") {
-            values.insert(tag.to_owned(), number(item, "m_baseValue", 0.0)?);
+            let base = number(item, "m_baseValue", 0.0)?;
+            let limits = if boolean(item, "m_hasLimits", false)? {
+                Some((number(item, "m_minValue", 0.0)?, number(item, "m_maxValue", 0.0)?))
+            } else { None };
+            values.insert(tag.to_owned(), base);
+            records.insert(tag.to_owned(), super::states::AttributeValue { base, increase: 0.0, percentage: 0.0, limits });
         }
     }
-    Ok(Attributes(values))
+    Ok(Attributes(values, records))
 }
 
 /// `m_stanceTransitions`: (from, to, body animation).

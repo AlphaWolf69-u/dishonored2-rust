@@ -663,12 +663,35 @@ pub struct Frame<'a> {
 
 /// Player attribute base values (`attributes_player.cpntattributesplayer`).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Attributes(pub HashMap<String, f32>);
+pub struct Attributes(pub HashMap<String, f32>, pub HashMap<String, AttributeValue>);
+
+/// 14060b900 keeps the authored base, accumulated modifiers and limits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttributeValue {
+    pub base: f32,
+    pub increase: f32,
+    pub percentage: f32,
+    pub limits: Option<(f32, f32)>,
+}
 
 impl Attributes {
     /// A missing attribute index reads as 0.
     pub fn get(&self, tag: &str) -> f32 {
         self.0.get(tag).copied().unwrap_or(0.0)
+    }
+    /// Add or remove a modifier and update the current value; unknown tags
+    /// are ignored as in the original attribute lookup.
+    pub fn modifier(&mut self, tag: &str, increase: f32, percentage: f32, added: bool) -> bool {
+        let Some(attribute) = self.1.get_mut(tag) else { return false };
+        let sign = if added { 1.0 } else { -1.0 };
+        attribute.increase += increase * sign;
+        attribute.percentage += percentage * sign;
+        let mut current = attribute.percentage * attribute.base * 0.01 + attribute.base + attribute.increase;
+        if let Some((min, max)) = attribute.limits {
+            current = if current < min { min } else if current > max { max } else { current };
+        }
+        if let Some(value) = self.0.get_mut(tag) { *value = current; }
+        true
     }
 }
 
