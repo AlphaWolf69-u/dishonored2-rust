@@ -3664,6 +3664,13 @@ data copying. GPU pass/readback counts should remain unchanged. Same-build
 publication fingerprints. Source integration alone does not verify output or
 establish CPU/RAM savings.
 
+The first combined compilation caught an oversized Bevy system parameter list
+and a double-borrowed decal iterator. Integration now groups the publication
+with the existing particle input bundle. Material prewarm also accepts an
+empty draw list when its admission is what the first effect is waiting for;
+ordinary rendering still requires a matching camera/frame publication.
+These are integration corrections, pending the next complete build.
+
 ### First-use sound preparation scheduling
 
 Host owner: `app::audio::acquisition::SourceJobs`. Original `1400bc8f0` /

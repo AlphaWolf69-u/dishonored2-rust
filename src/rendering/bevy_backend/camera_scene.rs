@@ -325,11 +325,11 @@ pub(crate) struct FxUpdate;
 /// Canonical lighting owners borrowed by the shared particle colour pass.
 #[derive(SystemParam)]
 struct ParticleLightingScene<'w> {
+    publication: Res<'w, FxPublication>,
     scene_images: Res<'w, super::particle_images::SceneParticleImages>,
     upload_budget: Res<'w, bevy::render::render_asset::RenderAssetBytesPerFrameLimiter>,
     screen: Option<Res<'w, super::screen_shadow_pass::ScreenShadowFrame>>,
     sampler: Option<Res<'w,super::particle_pass::ParticleMaterialSampler>>,
-    queries: Res<'w,super::particle_systems::ParticleQueryFrame>,
     probes: Res<'w,super::water_scene::WaterLighting>,
     models: Res<'w,super::water_scene::WaterModelLighting>,
     parallel: Option<Res<'w,super::shadow_sampling::ParallelSamplingBuffer>>,
@@ -345,7 +345,6 @@ struct ParticleLightingScene<'w> {
 /// Submit live sprites after atmosphere/depth and before ordinary transparency.
 fn render_particles(
     lighting_scene: ParticleLightingScene,
-    publication: Res<FxPublication>,
     sources: Res<super::screen_effects::ScreenEffectMaterials>,
     display: Res<DisplaySceneFrame>,
     water: Res<WaterSceneFrame>,
@@ -369,7 +368,7 @@ fn render_particles(
     mut reported: Local<bool>,
 ) {
     let _loading_span = bevy::render::diagnostic::LoadingSpan::new("particle rendering");
-    let queries=&lighting_scene.queries;
+    let publication = &lighting_scene.publication;
     let Some(water) = water.0.as_ref() else {
         gpu.particles = None;
         return;
@@ -427,7 +426,7 @@ fn render_particles(
         {
             return Err("particle colour requires a resolved full gameplay view".into());
         }
-        let frame = fog_frame
+        fog_frame
             .0
             .as_ref()
             .filter(|f| f.camera == water.camera)
@@ -438,9 +437,14 @@ fn render_particles(
         let matrices = &water.matrices.current;
         let frame_publication = publication.0.as_ref()
             .filter(|frame| frame.camera == water.camera && frame.frame == water.matrices.frame)
-            .ok_or("particle draws await the FX update")?;
-        let draws = &frame_publication.particles.as_ref()
-            .ok_or("particle draws await the FX update")?.draws;
+            .and_then(|frame| frame.particles.as_ref());
+        let draws = match frame_publication {
+            Some(frame) => frame.draws.as_slice(),
+            // Material admission must complete before the first runtime
+            // effect can publish any draws. Preserve that preparation path.
+            None if prewarm_only => &[],
+            None => return Err("particle draws await the FX update".into()),
+        };
         let lens = display
             .0
             .as_ref()

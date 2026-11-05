@@ -323,7 +323,7 @@ fn prepare(
             ));
         }
         gpu.world_target_floors.clear();
-        for (_, _, decal) in &decals {
+        for (_, _, decal) in decals {
             let admitted = [true, false].map(|opaque| {
                 decal
                     .description
