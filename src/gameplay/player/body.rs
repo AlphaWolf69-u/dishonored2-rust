@@ -18,9 +18,8 @@ use crate::edge_skeleton::{self, JointRestPose};
 use bevy_math::{Mat3, Quat, Vec3};
 
 pub struct BodySkeleton {
-    pub rest: Vec<JointRestPose>,
-    pub hierarchy: Vec<[u16; 2]>,
-    pub parents: Vec<Option<usize>>,
+    pub data: std::sync::Arc<crate::assets::animation_rig::SkeletonCore>,
+    pub joint_names: std::sync::Arc<[String]>,
     /// The md6 init offset as the hierarchy root.
     pub root: JointRestPose,
     pub camera: usize,
@@ -28,6 +27,11 @@ pub struct BodySkeleton {
     pub controls: [usize; 3],
     /// `anchor_jnt` (DAT_14398df10), the mantle retargeting's slave joint.
     pub anchor: Option<usize>,
+}
+
+impl std::ops::Deref for BodySkeleton {
+    type Target = crate::assets::animation_rig::SkeletonCore;
+    fn deref(&self) -> &Self::Target { &self.data }
 }
 
 /// arkDeclCpntPlayerBody fields the port uses (none are overridden).
@@ -348,7 +352,6 @@ pub struct Body {
     /// Installed model tags and joint names, for the same controlled pose used
     /// by attached render models (53dac0/53d3f0).
     pub tags: std::collections::HashMap<String, (usize, Vec3, Mat3)>,
-    pub joint_names: Vec<String>,
     pub skeleton: BodySkeleton,
     pub animations: Vec<EdgeAnimation>,
     pub decl: BodyDecl,
@@ -456,7 +459,6 @@ impl Body {
     pub fn new(skeleton: BodySkeleton, animations: Vec<EdgeAnimation>, decl: BodyDecl, body_node: LocoNode, bob_node: LocoNode) -> Self {
         Self {
             tags: Default::default(),
-            joint_names: Vec::new(),
             skeleton,
             animations,
             decl,
@@ -696,7 +698,7 @@ impl Body {
             positions,
             rotations,
 
-            parents: skeleton.parents.clone(),
+            skeleton: skeleton.data.clone(),
             camera: skeleton.camera,
             controls: skeleton.controls,
         })
@@ -715,9 +717,8 @@ mod tests {
         lean.set(1.0, 0.5, 1.0, &mut sensor);
         assert!(sensor.enabled);
         let skeleton = BodySkeleton {
-            rest: Vec::new(),
-            hierarchy: Vec::new(),
-            parents: Vec::new(),
+            data: std::sync::Arc::new(crate::assets::animation_rig::SkeletonCore::default()),
+            joint_names: Vec::<String>::new().into(),
             root: JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0; 3], scale: [1.0; 3] },
             camera: 0,
             controls: [0; 3],

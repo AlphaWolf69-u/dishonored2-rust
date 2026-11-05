@@ -19,13 +19,16 @@ use crate::edge_skeleton::{self, JointRestPose};
 use bevy_math::{Mat3, Vec3};
 
 pub struct ArmSkeleton {
-    pub rest: Vec<JointRestPose>,
-    pub hierarchy: Vec<[u16; 2]>,
-    pub parents: Vec<Option<usize>>,
+    pub data: std::sync::Arc<crate::assets::animation_rig::SkeletonCore>,
     /// The md6 init offset as the hierarchy root.
     pub root: JointRestPose,
     /// The camera's m_leftArmControlJointName / m_rightArmControlJointName.
     pub shoulder: usize,
+}
+
+impl std::ops::Deref for ArmSkeleton {
+    type Target = crate::assets::animation_rig::SkeletonCore;
+    fn deref(&self) -> &Self::Target { &self.data }
 }
 
 pub struct Arm {

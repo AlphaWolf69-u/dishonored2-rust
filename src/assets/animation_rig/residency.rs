@@ -74,7 +74,7 @@ fn report(model: &str, mode: &str, start: Option<Instant>, cycles: Option<u64>, 
     let mut aliases: Vec<_> = rig.aliases.iter().collect();
     aliases.sort_unstable_by_key(|(name, _)| *name);
     for (name, path) in aliases { decoded.update(name.as_bytes()); decoded.update(path.as_bytes()); }
-    let logical_bytes = std::mem::size_of::<Rig>() + rig.path.len()
+    let logical_bytes = std::mem::size_of::<Rig>() + std::mem::size_of::<super::SkeletonCore>() + rig.path.len()
         + rig.skeleton.rest.len() * std::mem::size_of::<crate::edge_skeleton::JointRestPose>()
         + rig.skeleton.parents.len() * std::mem::size_of::<Option<usize>>()
         + rig.skeleton.inverse_bind.len() * std::mem::size_of::<[[f32; 4]; 3]>()
@@ -86,21 +86,28 @@ fn report(model: &str, mode: &str, start: Option<Instant>, cycles: Option<u64>, 
         + rig.tokens.iter().map(String::len).sum::<usize>() + rig.animsets.iter().map(String::len).sum::<usize>()
         + rig.aliases.len() * std::mem::size_of::<(String, String)>()
         + rig.aliases.iter().map(|(key, value)| key.len() + value.len()).sum::<usize>();
-    eprintln!("RIG_ACQUIRE model={model} result={mode} us={elapsed} thread_cycles={cpu:?} identity={:p} source_crc={:?} source_bytes={:?} decoded_crc={:08x} logical_bytes={logical_bytes}",
-        Arc::as_ptr(rig), rig.audit.map(|audit| audit.0), rig.audit.map(|audit| audit.1), decoded.sum());
+    let core_bytes = std::mem::size_of::<super::SkeletonCore>()
+        + rig.skeleton.rest.len() * std::mem::size_of::<crate::edge_skeleton::JointRestPose>()
+        + rig.skeleton.parents.len() * std::mem::size_of::<Option<usize>>()
+        + rig.skeleton.hierarchy.len() * std::mem::size_of::<[u16; 2]>();
+    let names_bytes = rig.skeleton.joint_names.len() * std::mem::size_of::<String>()
+        + rig.skeleton.joint_names.iter().map(String::len).sum::<usize>();
+    let inverse_bind_bytes = rig.skeleton.inverse_bind.len() * std::mem::size_of::<[[f32; 4]; 3]>();
+    eprintln!("RIG_ACQUIRE model={model} result={mode} us={elapsed} thread_cycles={cpu:?} identity={:p} core_identity={:p} source_crc={:?} source_bytes={:?} decoded_crc={:08x} logical_bytes={logical_bytes} core_bytes={core_bytes} names_bytes={names_bytes} inverse_bind_bytes={inverse_bind_bytes}",
+        Arc::as_ptr(rig), Arc::as_ptr(&rig.skeleton.core), rig.audit.map(|audit| audit.0), rig.audit.map(|audit| audit.1), decoded.sum());
 }
 
 pub(super) fn acquire(catalog: &Catalog, model: &str) -> Result<Arc<Rig>, String> {
     let trace = tracing();
     let start = trace.then(Instant::now);
     let cycles = trace.then(crate::loading::thread_cycles).flatten();
+    let normalized = model.replace('\\', "/").to_ascii_lowercase();
     if catalog.has_overlays() || separate() {
-        let rig = Arc::new(super::load_rig(catalog, model)?);
+        let rig = Arc::new(super::load_rig(catalog, &normalized)?);
         report(model, if catalog.has_overlays() { "overlay" } else { "separate" }, start, cycles, &rig);
         return Ok(rig);
     }
-    let normalized = model.replace('\\', "/").to_ascii_lowercase();
-    let key = (catalog.identity(), Arc::<str>::from(normalized));
+    let key = (catalog.identity(), Arc::<str>::from(normalized.as_str()));
     let entry = {
         let mut registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
         registry.entry(key.clone()).or_insert_with(|| Arc::new(Entry { state: Mutex::new(State::Empty), ready: Condvar::new() })).clone()
@@ -134,7 +141,7 @@ pub(super) fn acquire(catalog: &Catalog, model: &str) -> Result<Arc<Rig>, String
         *state = State::Loading { waiters: 0 };
         drop(state);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut rig = super::load_rig(catalog, model)?;
+            let mut rig = super::load_rig(catalog, &normalized)?;
             rig.residency = Some(Retire { key: key.clone(), entry: Arc::downgrade(&entry) });
             Ok(Arc::new(rig))
         })).unwrap_or_else(|_| Err(format!("rig acquisition panicked for {model}")));

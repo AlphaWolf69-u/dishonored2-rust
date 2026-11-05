@@ -159,9 +159,7 @@ fn load_arm(
     let additives = anim_basic(&mut clips, &additives_fields)?;
     let jump_items = decls::arm_jump_aliases(body_decl, side, EQUIP).map(|alias| alias.and_then(|a| additives.index_of(&a)));
     let skeleton = ArmSkeleton {
-        rest: rig.skeleton.rest.clone(),
-        hierarchy: rig.skeleton.hierarchy.clone(),
-        parents: rig.skeleton.parents.clone(),
+        data: rig.skeleton.core.clone(),
         root: rig.root.clone(),
         shoulder: rig.joint(&camera.arm_joints[side])?,
     };
@@ -187,9 +185,8 @@ fn load_body(
     let text = |path: &str| text_of(catalog, path);
     let rig = Rig::acquire(catalog, body_model)?;
     let body_skeleton = BodySkeleton {
-        rest: rig.skeleton.rest.clone(),
-        hierarchy: rig.skeleton.hierarchy.clone(),
-        parents: rig.skeleton.parents.clone(),
+        data: rig.skeleton.core.clone(),
+        joint_names: rig.skeleton.joint_names.clone(),
         root: rig.root.clone(),
         camera: rig.joint(&camera.camera_joint)?,
         controls: [rig.joint(&camera.head_joint)?, rig.joint(&camera.neck_joint)?, rig.joint(&camera.arms_joint)?],
@@ -298,7 +295,6 @@ fn load_body(
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
-    body.joint_names = rig.skeleton.joint_names.clone();
     for entry in rig.tokens.windows(2).filter(|entry| entry[0] == "tag") {
         let name = entry[1].trim_matches('"');
         if !body.tags.contains_key(name) {

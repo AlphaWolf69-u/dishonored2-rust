@@ -805,7 +805,7 @@ impl Player {
             position: (origin + axis * position).to_array(),
             basis: (axis * rotation).to_cols_array_2d(),
         };
-        for (joint, name) in self.body.joint_names.iter().enumerate() {
+        for (joint, name) in self.body.skeleton.joint_names.iter().enumerate() {
             let (position, rotation) = joint_frame(joint);
             frames.insert(name.clone(), world_frame(position, rotation));
         }

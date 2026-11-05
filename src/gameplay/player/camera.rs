@@ -78,7 +78,7 @@ impl Default for CameraDecl {
 pub struct BodyPose {
     pub positions: Vec<Vec3>,
     pub rotations: Vec<Mat3>,
-    pub parents: Vec<Option<usize>>,
+    pub skeleton: std::sync::Arc<crate::assets::animation_rig::SkeletonCore>,
     pub camera: usize,
     /// head, neck, arms (center_spine03) control joints.
     pub controls: [usize; 3],
@@ -90,7 +90,7 @@ impl BodyPose {
             if joint == ancestor {
                 return true;
             }
-            match self.parents[joint] {
+            match self.skeleton.parents[joint] {
                 Some(parent) => joint = parent,
                 None => return false,
             }
@@ -554,7 +554,10 @@ mod tests {
         BodyPose {
             positions: vec![Vec3::new(0.0, 0.0, 1.3), Vec3::new(0.0, 0.0, 1.5), Vec3::new(0.0, 0.0, 1.6), Vec3::new(0.05, 0.0, 1.7)],
             rotations: vec![Mat3::IDENTITY; 4],
-            parents: vec![None, Some(0), Some(1), Some(2)],
+            skeleton: std::sync::Arc::new(crate::assets::animation_rig::SkeletonCore {
+                parents: vec![None, Some(0), Some(1), Some(2)],
+                ..Default::default()
+            }),
             camera: 3,
             controls: [2, 1, 0],
         }

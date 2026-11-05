@@ -7,7 +7,7 @@ mod residency;
 pub(crate) fn release_unused() { residency::release_unused(); }
 
 pub struct Rig {
-    pub skeleton: crate::edge_skeleton::EdgeSkeleton,
+    pub skeleton: RigSkeleton,
     pub root: crate::edge_skeleton::JointRestPose,
     pub aliases: HashMap<String, String>,
     /// Search order is child before parent, last authored set first.
@@ -16,6 +16,27 @@ pub struct Rig {
     pub path: String,
     residency: Option<residency::Retire>,
     audit: Option<(u32, usize)>,
+}
+
+/// Immutable inputs required by runtime pose evaluation. Inverse-bind data and
+/// names are kept separately so an arm need not retain them after preparation.
+#[derive(Debug, Default, PartialEq)]
+pub struct SkeletonCore {
+    pub rest: Vec<crate::edge_skeleton::JointRestPose>,
+    pub hierarchy: Vec<[u16; 2]>,
+    pub parents: Vec<Option<usize>>,
+}
+
+pub struct RigSkeleton {
+    pub core: std::sync::Arc<SkeletonCore>,
+    pub inverse_bind: Vec<[[f32; 4]; 3]>,
+    pub joint_names: std::sync::Arc<[String]>,
+    pub parent_skeleton: Option<String>,
+    pub parent_reference: Option<u16>,
+}
+impl std::ops::Deref for RigSkeleton {
+    type Target = SkeletonCore;
+    fn deref(&self) -> &Self::Target { &self.core }
 }
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
@@ -57,7 +78,12 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
     if trace { track_crc(&mut source_crc, &bytes, &mut checksum_cycles, audit_cycles.is_some()); }
     let skeleton_bytes = bytes.len();
-    let skeleton = crate::edge_skeleton::parse(&bytes)?;
+    let parsed = crate::edge_skeleton::parse(&bytes)?;
+    let skeleton = RigSkeleton {
+        core: std::sync::Arc::new(SkeletonCore { rest: parsed.rest, hierarchy: parsed.hierarchy, parents: parsed.parents }),
+        inverse_bind: parsed.inverse_bind, joint_names: parsed.joint_names.into(),
+        parent_skeleton: parsed.parent_skeleton, parent_reference: parsed.parent_reference,
+    };
     let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
     // 1401cab73 inherits animBasicDecl when absent; 1401c7c80 searches
     // each layer's animsets in reverse, then follows the parent model.
@@ -118,7 +144,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
 
 impl Rig {
     pub fn load(catalog: &Catalog, model: &str) -> Result<Self, String> {
-        load_rig(catalog, model)
+        load_rig(catalog, &model.replace('\\', "/").to_ascii_lowercase())
     }
     pub fn acquire(catalog: &Catalog, model: &str) -> Result<std::sync::Arc<Self>, String> {
         residency::acquire(catalog, model)
