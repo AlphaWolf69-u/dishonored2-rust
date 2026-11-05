@@ -3632,3 +3632,25 @@ without another weak map, wait queue or cache-purge hook. The Edge skeleton
 identity owner is distinct: that actual installed resource is requested by
 player, arm rendering, physics and rest-skin consumers, so its sharing and
 full-payload lifetime tradeoff remain the next measured comparison.
+
+### Particle simulation versus ocean readback scheduling
+
+The shared gameplay FX-owner migration must preserve this original ordering:
+`1403619d0` dispatches render-world vtable `+0xe0` (`14023ad00` -> `1402031e0`
+-> `140202740`) to submit `arkParticleSystemTask` work; `+0xe8`
+(`14023aea0` -> `1402037c0`) waits for that task group and `+0xf0` finalizes it.
+Only afterward does `140361bc0` -> `140361d60` -> `140304c40` map the ocean
+staging buffer and copy results into the CPU query ring. Swimming consumes
+its prior handle via `14088b360` -> `140302840`; registration `1403032b0`
+selects the four-slot ring with `(render counter + 1) & 3`. These are separate
+query/result and per-frame simulation lifetimes, not a reason for a second
+GPU readback or a mutex spanning simulation and rendering.
+
+The existing host path maps the head-water result before advancing particles,
+which reverses that traced order. The pending owner migration will consume the
+prior completed CPU result and publish later render readback for a subsequent
+update, preserving actual query handles and source leases. It must not move
+the host GPU wait onto the gameplay thread. Exact game-to-render scheduling
+and the complete publication/retirement handoff still require integration
+and affected-path measurements; this trace does not certify those unfinished
+paths.

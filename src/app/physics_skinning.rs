@@ -157,7 +157,7 @@ impl SystemSkin {
     pub(super) fn animated_palette(&self, world: &MachineryWorld, animation: &[Affine]) -> Result<Vec<Affine>, String> {
         if animation.len() != self.rest.len() { return Err("animation and physics skeleton joint counts differ".into()); }
         let current = self.current_with_animation(world, Some(animation))?;
-        edge_skeleton::skin_palette(&current, &self.inverse_bind)
+        edge_skeleton::skin_palette(&current, &self.skeleton.inverse_bind[..current.len()])
     }
 }
 
