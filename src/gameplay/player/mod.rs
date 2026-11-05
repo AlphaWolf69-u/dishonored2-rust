@@ -680,7 +680,7 @@ impl Player {
                 if !self.arm_action_active[slot] {
                     self.arm_action_history[slot] = Some(ArmActionDiagnostic {
                         selected_hands: if id == StateId::MANTLE { self.mantle_sensor.last_selected_hands } else { self.catfall_sensor.last_selected_hands },
-                        scenes: self.body.midnight.action_scenes(&self.scenes),
+                        scenes: Vec::new(),
                         scene_start_error: self.body.midnight.last_start_error.clone(),
                         frames: 0, tree_drove: [false; 3], published: [false; 2], visible: [false; 2],
                         ever_in_front: [false; 2], camera_slopes: [[f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY]; 2], pose_error: [false; 2],
@@ -688,6 +688,10 @@ impl Player {
                     });
                 }
                 if let Some(history) = &mut self.arm_action_history[slot] {
+                    self.body.midnight.capture_action_scenes(&self.scenes, &mut history.scenes);
+                    if history.scene_start_error.is_none() {
+                        history.scene_start_error = self.body.midnight.last_start_error.clone();
+                    }
                     history.frames = history.frames.saturating_add(1);
                     for target in 0..3 {
                         let driven = self.body.midnight.drives(target);

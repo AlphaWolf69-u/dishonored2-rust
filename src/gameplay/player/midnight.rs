@@ -284,21 +284,26 @@ impl Midnight {
         self.instances.iter().find(|i| i.parts & 1 << BODY != 0).map(|i| i.handle)
     }
 
-    /// Captured only on action entry so F8 can diagnose a short animation
-    /// without retaining or formatting a history every frame.
-    pub fn action_scenes(&self, scenes: &std::collections::HashMap<String, Arc<PreparedScene>>) -> Vec<ActionSceneDiagnostic> {
-        self.instances.iter().map(|instance| ActionSceneDiagnostic {
-            path: scenes.iter().find_map(|(path, scene)| Arc::ptr_eq(scene, &instance.scene).then(|| path.clone())),
-            handle: instance.handle,
-            cast_mask: instance.parts,
-            scene_uid: instance.scene.decl.scenes[instance.current].uid,
-            tracks: std::array::from_fn(|target| instance.clips[target].len()),
-            aliases: std::array::from_fn(|target| {
-                instance.scene.group(instance.current, target).ok().flatten().map(|group|
-                    instance.scene.decl.scenes[instance.current].groups[group].anim_keys.iter()
-                        .map(|key| key.anim.clone()).collect()).unwrap_or_default()
-            }),
-        }).collect()
+    /// Capture each scene segment once across an action; repeated frames do
+    /// not allocate. This retains transitions even if F8 is pressed later.
+    pub fn capture_action_scenes(&self, scenes: &std::collections::HashMap<String, Arc<PreparedScene>>,
+        history: &mut Vec<ActionSceneDiagnostic>) {
+        for instance in &self.instances {
+            let scene_uid = instance.scene.decl.scenes[instance.current].uid;
+            if history.iter().any(|entry| entry.handle == instance.handle && entry.scene_uid == scene_uid) { continue; }
+            history.push(ActionSceneDiagnostic {
+                path: scenes.iter().find_map(|(path, scene)| Arc::ptr_eq(scene, &instance.scene).then(|| path.clone())),
+                handle: instance.handle,
+                cast_mask: instance.parts,
+                scene_uid,
+                tracks: std::array::from_fn(|target| instance.clips[target].len()),
+                aliases: std::array::from_fn(|target| {
+                    instance.scene.group(instance.current, target).ok().flatten().map(|group|
+                        instance.scene.decl.scenes[instance.current].groups[group].anim_keys.iter()
+                            .map(|key| key.anim.clone()).collect()).unwrap_or_default()
+                }),
+            });
+        }
     }
 
     /// FUN_1407cf250(inst, ignoreBlendOut = 1): the scene reached its end.
