@@ -461,7 +461,7 @@ fn render_flash_ui(
 ) {
     let Some(frame) = &frame.0 else {
         let before = gpu.textures.len();
-        gpu.textures.retire_unowned();
+        gpu.textures.retire_unowned(&[]);
         if gpu.movie.take().is_some() {
             gpu.uploaded = None;
             // A hidden movie may still own its image map and glyph page.
@@ -477,7 +477,6 @@ fn render_flash_ui(
         return;
     };
     gpu.textures.begin_frame();
-    gpu.textures.retire_unowned();
     // Vertex data is movie-specific. Bitmap and glyph ownership is tracked
     // independently, since another still-live movie may use the same image.
     if gpu.movie.is_some_and(|generation| generation != frame.generation) {
@@ -485,6 +484,7 @@ fn render_flash_ui(
     }
     gpu.movie = Some(frame.generation);
     if frame.list.batches.is_empty() {
+        gpu.textures.retire_unowned(&frame.list.glyph_pages);
         gpu.textures.trim();
         return;
     }
@@ -513,6 +513,19 @@ fn render_flash_ui(
         })
         .collect();
     if let Some(started) = key_started { gpu.textures.record_key_build(started.elapsed()); }
+    // The outgoing map may have died after this incoming movie acquired the
+    // same image. Register its live lease before retiring obsolete owners.
+    let track_started = gpu.textures.tracing().then(std::time::Instant::now);
+    for key in &keys {
+        if matches!(key, TextureKey::Bitmap(_)) { gpu.textures.track_bitmap(key, &frame.images); }
+        if let TextureKey::Glyphs(id, version) = key {
+            if let Some(page) = frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
+                gpu.textures.track_glyph(key, page);
+            }
+        }
+    }
+    if let Some(started) = track_started { gpu.textures.record_owner_tracking(started.elapsed()); }
+    gpu.textures.retire_unowned(&frame.list.glyph_pages);
     // 1410150f0 binds the image owner, not a permanently captured view. Drop
     // outgoing named bindings even when one movie replaces another directly.
     gpu.textures.retain(|key, _| match key {
@@ -533,12 +546,6 @@ fn render_flash_ui(
             }
             gpu.textures.touch(key);
             continue;
-        }
-        if matches!(key, TextureKey::Bitmap(_)) { gpu.textures.track_bitmap(key, &frame.images); }
-        if let TextureKey::Glyphs(id, version) = key {
-            if let Some(page) = frame.list.glyph_pages.iter().find(|p| p.id == *id && p.version == *version) {
-                gpu.textures.track_glyph(key, page);
-            }
         }
         if gpu.textures.touch(key) {
             continue;

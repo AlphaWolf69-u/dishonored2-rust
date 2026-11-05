@@ -36,6 +36,8 @@ pub(super) struct UiTextures {
     key_build_frames: u64,
     owner_scan_time: std::time::Duration,
     owner_scans: u64,
+    owner_track_time: std::time::Duration,
+    owner_track_frames: u64,
     trace: bool,
     unbounded: bool,
 }
@@ -57,6 +59,8 @@ impl Default for UiTextures {
             key_build_frames: 0,
             owner_scan_time: std::time::Duration::ZERO,
             owner_scans: 0,
+            owner_track_time: std::time::Duration::ZERO,
+            owner_track_frames: 0,
             trace: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
             unbounded: std::env::var("DH2_DEBUG_RETAIN_UI_TEXTURES").as_deref() == Ok("1"),
         }
@@ -133,7 +137,7 @@ impl UiTextures {
     }
     /// The session bitmap registry may outlive movies, so image Arc counts
     /// alone do not establish that a GPU copy is still needed.
-    pub fn retire_unowned(&mut self) {
+    pub fn retire_unowned(&mut self, incoming_pages: &[Arc<crate::flash::glyph_cache::Page>]) {
         let started = self.trace.then(std::time::Instant::now);
         let mut removed = 0;
         let mut count = 0;
@@ -143,7 +147,8 @@ impl UiTextures {
                     entry.bitmap_owners.retain(|owner| owner.strong_count() != 0);
                     !entry.bitmap_owners.is_empty()
                 }
-                TextureKey::Glyphs(_, _) => entry.glyph_owner.as_ref().is_some_and(|owner| owner.strong_count() != 0),
+                TextureKey::Glyphs(id, _) => incoming_pages.iter().any(|page| page.id == *id)
+                    || entry.glyph_owner.as_ref().is_some_and(|owner| owner.strong_count() != 0),
                 _ => true,
             };
             if !keep { removed += entry.bytes; count += 1; }
@@ -158,6 +163,9 @@ impl UiTextures {
     }
     pub fn record_key_build(&mut self, duration: std::time::Duration) {
         if self.trace { self.key_build_frames += 1; self.key_build_time += duration; }
+    }
+    pub fn record_owner_tracking(&mut self, duration: std::time::Duration) {
+        if self.trace { self.owner_track_frames += 1; self.owner_track_time += duration; }
     }
     pub fn remove(&mut self, key: &TextureKey) -> Option<Image> {
         let entry = self.entries.remove(key)?;
@@ -228,11 +236,12 @@ impl UiTextures {
     }
     pub fn report(&self, phase: &str) {
         if self.trace {
-            eprintln!("MEMORY UI texture cache: phase={phase} entries={} payload_bytes={} peak_entries={} peak_payload_bytes={} pressure_evictions={} unowned_retirements={} bitmap_uploads={} bitmap_batch_reuses={} key_build_frames={} key_build_us={:.1} owner_scans={} owner_scan_us={:.1} active_over_budget={} unbounded={}",
+            eprintln!("MEMORY UI texture cache: phase={phase} entries={} payload_bytes={} peak_entries={} peak_payload_bytes={} pressure_evictions={} unowned_retirements={} bitmap_uploads={} bitmap_batch_reuses={} key_build_frames={} key_build_us={:.1} owner_scans={} owner_scan_us={:.1} owner_track_frames={} owner_track_us={:.1} active_over_budget={} unbounded={}",
                 self.entries.len(), self.bytes, self.peak_entries, self.peak_bytes,
                 self.evictions, self.unowned_retirements, self.bitmap_uploads, self.bitmap_reuses,
                 self.key_build_frames, self.key_build_time.as_secs_f64() * 1e6,
                 self.owner_scans, self.owner_scan_time.as_secs_f64() * 1e6,
+                self.owner_track_frames, self.owner_track_time.as_secs_f64() * 1e6,
                 self.over_budget(), self.unbounded);
         }
     }
