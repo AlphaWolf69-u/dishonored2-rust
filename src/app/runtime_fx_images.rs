@@ -130,10 +130,9 @@ pub(super) fn synchronize(
     // A world material can be demanded only once every scene-owned image has
     // a committed handle. Preserve startup bindings when the same material is
     // already part of the level; dynamic entries own only their own keys.
-    let ready = world.images.values().flatten().all(|(_, image)| {
+    if world.images_ready != world.image_revision && world.images.values().flatten().all(|(_, image)| {
         !image.scene_owned || consumers.handles.contains_key(&image.path)
-    });
-    if ready {
+    }) {
         let obsolete: Vec<_> = state.world_entries.iter()
             .filter(|name| !world.images.contains_key(*name)).cloned().collect();
         for name in obsolete {
