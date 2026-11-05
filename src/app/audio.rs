@@ -95,12 +95,19 @@ impl SoundCompletions {
     pub fn cancel(&mut self, event: u32, emitter: Emitter) {
         self.waiting.remove(&(event, emitter));
         self.completed.remove(&(event, emitter));
-        if self.active.remove(&(event, emitter)) && self.dynamic_sources.remove(&event) {
-            self.retired_sources.push(event);
-        }
+        self.active.remove(&(event, emitter));
+        self.retire_if_unused(event);
     }
     fn failed(&mut self, event: u32, emitter: Emitter) {
         if self.waiting.remove(&(event, emitter)) { self.completed.insert((event, emitter), false); }
+        self.retire_if_unused(event);
+    }
+    fn retire_if_unused(&mut self, event: u32) {
+        if !self.waiting.iter().any(|(id, _)| *id == event)
+            && !self.active.iter().any(|(id, _)| *id == event)
+            && self.dynamic_sources.remove(&event) {
+            self.retired_sources.push(event);
+        }
     }
     fn pump(&mut self) {
         use crate::gameplay::sound::playing::NotificationKind;
@@ -112,7 +119,7 @@ impl SoundCompletions {
                     let key = (note.event.declaration, note.event.object);
                     if self.active.remove(&key) {
                         self.completed.insert(key, submitted);
-                        if self.dynamic_sources.remove(&key.0) { self.retired_sources.push(key.0); }
+                        self.retire_if_unused(key.0);
                     }
                 },
                 NotificationKind::EventPlaying => {},
