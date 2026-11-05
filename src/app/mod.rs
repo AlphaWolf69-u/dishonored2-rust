@@ -170,6 +170,7 @@ mod loading_movie;
 mod audio;
 mod engine_keys;
 mod player;
+mod player_arm_capture;
 mod player_arms;
 mod pause_menu;
 mod pause_fx;

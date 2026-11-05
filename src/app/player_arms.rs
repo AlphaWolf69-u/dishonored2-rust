@@ -26,10 +26,12 @@ use super::{
 };
 use crate::gameplay::player::ArmRender;
 use bevy::prelude::*;
+use bevy::camera::CameraProjection;
 use std::borrow::Cow;
 
 struct ArmSurface {
     entity: Entity,
+    source_index: usize,
     probe_index: u32,
     material: MaterialHandle,
 }
@@ -47,6 +49,7 @@ struct ArmModel {
     shown: bool,
     /// Current world bounds (model vtable+88), while shown.
     world_bounds: Option<[[f32; 3]; 2]>,
+    depth_hack: f32,
 }
 
 /// Retained through the end of an action so F8 need not catch a short pose.
@@ -79,6 +82,7 @@ pub(super) struct PlayerArms {
     debug_rest: Option<f32>,
     action_active: [bool; 2],
     action_history: [Option<RenderActionHistory>; 2],
+    action_capture: [super::player_arm_capture::ActionCapture; 2],
 }
 
 impl PlayerArms {
@@ -89,6 +93,13 @@ impl PlayerArms {
             arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
         )).collect();
         report.push_str(&format!("  renderer action history [mantle, catfall]={:?}\n", self.action_history));
+        for (action, capture) in ["mantle", "catfall"].into_iter().zip(&self.action_capture) {
+            for (index, arm) in self.arms.iter().enumerate() {
+                let surfaces: Vec<_> = arm.surfaces.iter().map(|surface| surface.source_index).collect();
+                report.push_str(&format!("  {action} geometry {}: {}\n", arm.model,
+                    capture.describe(index, &arm.info, &surfaces, arm.depth_hack)));
+            }
+        }
         report
     }
     /// Materials of the arms on screen, whose textures stream like those of
@@ -288,6 +299,7 @@ pub(super) fn load_player_arms(
                 .id();
             surfaces.push(ArmSurface {
                 entity,
+                source_index: index,
                 probe_index: resolved.probe_index,
                 material: resolved.handle.clone(),
             });
@@ -304,6 +316,7 @@ pub(super) fn load_player_arms(
             lighting: Default::default(),
             shown: false,
             world_bounds: None,
+            depth_hack: if model_depth_hack > 0.0 { parameter.unwrap_or(1.0) } else { 1.0 },
         });
     }
     Ok(PlayerArms {
@@ -314,6 +327,7 @@ pub(super) fn load_player_arms(
         }),
         action_active: [false; 2],
         action_history: [None; 2],
+        action_capture: Default::default(),
     })
 }
 
@@ -425,7 +439,7 @@ fn joint_transform(matrix: &[[f32; 4]; 3]) -> GlobalTransform {
 pub(super) fn update_player_arms(
     state: Option<Res<PlayerState>>,
     arms: Option<ResMut<PlayerArms>>,
-    cameras: Query<&Transform, With<Camera3d>>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     scene: Option<Res<SceneData>>,
     probe_buffer: Option<Res<model_motion::ModelProbeLighting>>,
     mut commands: Commands,
@@ -442,7 +456,7 @@ pub(super) fn update_player_arms(
     let trace = std::env::var_os("DH2_PLAYER_VISIBILITY_TRACE").is_some();
     let renders: Cow<[ArmRender]> = if let Some(distance) = arms.debug_rest {
         match cameras.single() {
-            Ok(camera) => Cow::Owned(debug_rest_arms(&arms, camera, distance)),
+            Ok((camera, _)) => Cow::Owned(debug_rest_arms(&arms, camera, distance)),
             Err(_) => Cow::Borrowed(&[]),
         }
     } else {
@@ -460,6 +474,7 @@ pub(super) fn update_player_arms(
         if active {
             if !arms.action_active[index] {
                 arms.action_history[index] = Some(RenderActionHistory::default());
+                arms.action_capture[index] = Default::default();
             }
             if let Some(history) = &mut arms.action_history[index] {
                 history.frames = history.frames.saturating_add(1);
@@ -467,8 +482,12 @@ pub(super) fn update_player_arms(
         }
         arms.action_active[index] = active;
     }
+    let clip_from_world = if actions.iter().any(|active| *active) {
+        cameras.single().ok().map(|(camera, projection)|
+            projection.get_clip_from_view() * camera.to_matrix().inverse())
+    } else { None };
     let mut error = None;
-    let PlayerArms { arms: models, action_history, .. } = &mut *arms;
+    let PlayerArms { arms: models, action_history, action_capture, .. } = &mut *arms;
     for (model_index, arm) in models.iter_mut().enumerate() {
         let render = renders
             .iter()
@@ -484,6 +503,9 @@ pub(super) fn update_player_arms(
             }
             let palette =
                 edge_skeleton::skin_palette(&render.joints, &arm.skeleton.inverse_bind[..count])?;
+            for (index, active) in actions.into_iter().enumerate() {
+                if active { action_capture[index].push(model_index, clip_from_world, &palette); }
+            }
             if arm.joints.is_empty() {
                 // Bevy's joint matrices are joint transform x inverse bind;
                 // the palette already includes the inverse bind.
