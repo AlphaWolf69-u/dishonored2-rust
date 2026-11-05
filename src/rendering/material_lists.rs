@@ -1,6 +1,23 @@
 //! World material-list selection after program, visibility and instance admission.
 //! World surfaces use 339160's exact-value key; models use 3386a0's intervals.
 
+/// 14033b350 at 14033ba23..14033bab8 adds a second model draw to the
+/// masking list after ordinary surface admission. The selected masking bank
+/// must exist; 140342640 reads the object's bend-time parameter with zero
+/// fallback. The first runtime stage-sort threshold excludes boat volumes.
+/// Keep the ordered positive comparison: NaN factors are rejected, while
+/// the original unordered stage-sort comparison admits NaN sort values.
+pub fn model_masking_admitted(
+    masking_program_present: bool,
+    bend_time_factor: f32,
+    stage_sort: [f32; 2],
+    boat_sort: f32,
+) -> bool {
+    masking_program_present
+        && bend_time_factor > 0.0
+        && stage_sort[0] + stage_sort[1] != boat_sort
+}
+
 /// Destinations identified by 33bf30's worldSort context and list diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorldDrawList {

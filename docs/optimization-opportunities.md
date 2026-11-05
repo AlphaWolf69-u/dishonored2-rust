@@ -2043,3 +2043,23 @@ The task clears its mask output even for an empty surface list, so the earlier
 assumption that original execution itself must be absent when grading is
 inactive was unsupported. A host omission may still be equivalent when no
 consumer needs the mask, but requires establishing every consumer first.
+
+Mask admission follow-up: `14033b350` instructions `14033ba23..14033bab8`
+require masking-program availability, an ordered positive per-object bend-time
+factor (140342640 with zero fallback), and stageSort+stageSortAdjust unequal
+to runtime threshold 0 (boat volume). `model_masking_admitted` ports these
+comparisons for the pending renderer; no per-frame work is introduced before
+integration. Expected integration cost is these scalar comparisons per
+already-admitted model surface, with no declaration reads or allocations.
+
+### Particle automatic parameter updates: prediction
+
+`render_model::update_particle_parameters` ports 140228110 using the existing
+paired-slot owner and removal helper. 140226930 proves that its protected
+bend-time bit means the authored pblock contains that registered parameter;
+140236990 proves scalar writes splat four lanes. It removes/replaces at most
+two keys, retains Vec capacity, and never grows from repeated updates after
+space for those keys exists. The helper remains unconnected and unbuilt;
+expected integration cost is two bounded key scans and at most two appends,
+with no resource reads or extra GPU work. Do not apply it before merging the
+incoming instance block or replace omitted keys with per-frame defaults.

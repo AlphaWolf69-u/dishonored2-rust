@@ -4119,6 +4119,31 @@ pub fn remove_parameter(overrides: &mut Vec<(u16, [u32; 4])>, id: u32) {
     overrides.retain(|&(key, _)| u32::from(key) != id);
 }
 
+/// 140228110's automatic overrides, applied after merging the incoming block.
+/// 140226930 caches whether the authored declaration contains bendTimeFactor;
+/// that entry is protected even when its value is zero. 140236990 splats the
+/// scalar into all four lanes. Missing incoming keys otherwise keep their
+/// previous values; only these two explicitly managed keys are removed here.
+pub fn update_particle_parameters(
+    overrides: &mut Vec<(u16, [u32; 4])>,
+    authored_bend_time: bool,
+    bend_time_id: u16,
+    bend_time_factor: f32,
+    depth_hack_id: u16,
+    depth_hack: f32,
+) {
+    if !authored_bend_time {
+        remove_parameter(overrides, u32::from(bend_time_id));
+        if bend_time_factor > 0.0 {
+            overrides.push((bend_time_id, [bend_time_factor.to_bits(); 4]));
+        }
+    }
+    remove_parameter(overrides, u32::from(depth_hack_id));
+    if depth_hack > 0.0 && depth_hack != 1.0 {
+        overrides.push((depth_hack_id, [depth_hack.to_bits(); 4]));
+    }
+}
+
 /// An owned, preallocated idParmBlock. Entries follow the ID count, which
 /// need not equal the packed value count. Allocation/growth policies are
 /// deliberately not substituted with a generic Vec growth rule.
