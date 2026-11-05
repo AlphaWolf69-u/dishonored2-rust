@@ -226,8 +226,8 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
     let mut slots: Vec<Option<Step>> = vec![None; count];
     for (name, value) in states {
         let Some(index) = name.strip_prefix("item[").and_then(|s| s.strip_suffix(']')) else { continue };
-        let index = index.parse::<usize>().map_err(|_| "invalid usable state index")?;
-        let slot = slots.get_mut(index).ok_or("usable state index exceeds count")?;
+        let state_index = index.parse::<usize>().map_err(|_| "invalid usable state index")?;
+        let slot = slots.get_mut(state_index).ok_or("usable state index exceeds count")?;
         let data = scope(Some(value)).ok_or("usable state is not a scope")?;
         let override_interaction = boolean(data, "m_useOverrideInteractionDef", false)?;
         let interaction = if override_interaction { child(data, "m_overrideInteractionDef") } else { &[] };

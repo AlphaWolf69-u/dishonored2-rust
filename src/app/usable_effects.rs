@@ -163,7 +163,7 @@ impl UsableEffects {
             let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
             if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
             let mut programs = programs.lock().unwrap_or_else(|error| error.into_inner());
-            let programs = programs.as_mut().map_err(Clone::clone)?;
+            let programs = programs.as_mut().map_err(|error| error.clone())?;
             let mut resources = resources.lock().unwrap_or_else(|error| error.into_inner());
             if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
             let sources = Sources::load_named_shared(vec![name.clone()], &catalog, programs, &mut resources);
@@ -348,7 +348,7 @@ pub(super) fn publish(
         let needs_decals = !dynamic.decal_materials().is_empty();
         world.0 = Arc::new(combined);
         let dynamic = Arc::new(dynamic);
-        let leases = Arc::new(owner.ready.values().map(Arc::downgrade).collect());
+        let leases = Arc::new(owner.ready.values().map(Arc::downgrade).collect::<Vec<_>>());
         prewarm.sources = dynamic.clone();
         prewarm.generation = owner.revision;
         prewarm.retirement = owner.retirement;

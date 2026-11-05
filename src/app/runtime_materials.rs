@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 use bevy::render::storage::ShaderBuffer;
 use bevy::asset::{Asset, AssetId};
-use super::{material_loading::{MaterialCache, MaterialGeometry}, MaterialResolver};
+use super::{material_loading::{MaterialCache, MaterialGeometry}, ImageAccess, MaterialResolver};
 use crate::rendering::bevy_backend::fog_material::FogMaterialBindings;
 use crate::rendering::bevy_backend::asset_preparation::{AssetBatch, AssetWrite};
 use crate::rendering::particles::{definition::ParticleResources, image_resources::ParticleImage};
