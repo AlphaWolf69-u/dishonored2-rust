@@ -90,6 +90,35 @@ mod tests {
     }
 }
 impl ComponentRoster {
+    /// 48ff80 removes an inactive allocation and puts its slot into the sorted
+    /// free suffix. A scheduled component must first pass through 490320;
+    /// silently unscheduling here would skip the component's stop callbacks.
+    pub fn release(&mut self, slot: u16) -> Result<(), String> {
+        let boundary = usize::try_from(self.sorted_start)
+            .map_err(|_| "negative component update boundary")?;
+        let used = usize::try_from(self.used).map_err(|_| "negative component count")?;
+        let cursor = usize::try_from(self.cursor).map_err(|_| "negative component cursor")?;
+        if cursor != used || used > self.indices.len() {
+            return Err("component release cursors disagree with storage".into());
+        }
+        let inactive = self.indices.get(boundary..used)
+            .ok_or("component update boundary exceeds allocated roster")?;
+        let mut at = boundary + inactive.binary_search(&slot)
+            .map_err(|_| "component is absent or still scheduled")?;
+        // The source shifts every remaining allocation, then the free slots
+        // smaller than this one. Capacity and the high-water mark survive.
+        while at + 1 < self.indices.len()
+            && (at + 1 < cursor || self.indices[at + 1] < slot)
+        {
+            self.indices[at] = self.indices[at + 1];
+            at += 1;
+        }
+        self.indices[at] = slot;
+        self.cursor -= 1;
+        self.used -= 1;
+        Ok(())
+    }
+
     /// 490280 moves an allocated slot from the sorted inactive suffix into
     /// the sorted update prefix. The source count at +28 and pointer at +18
     /// describe the same boundary, represented here by sorted_start.

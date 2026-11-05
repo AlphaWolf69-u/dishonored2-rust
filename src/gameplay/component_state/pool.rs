@@ -74,18 +74,47 @@ impl<T> ComponentPool<T> {
         let chunk = index as usize / self.items_per_chunk;
         let slot = index as usize % self.items_per_chunk;
         if chunk == self.chunks.len() {
-            self.add_chunk()?;
+            if let Err(error) = self.add_chunk() {
+                self.roster.release(index)?;
+                return Err(error);
+            }
         }
         let target = self
             .chunks
             .get_mut(chunk)
-            .and_then(|v| v.get_mut(slot))
-            .ok_or("component roster index has no allocated chunk")?;
+            .and_then(|v| v.get_mut(slot));
+        let Some(target) = target else {
+            self.roster.release(index)?;
+            return Err("component roster index has no allocated chunk".into());
+        };
         if target.is_some() {
+            self.roster.release(index)?;
             return Err("component roster selected an occupied slot".into());
         }
-        *target = Some(construct(index)?);
+        match construct(index) {
+            Ok(value) => *target = Some(value),
+            Err(error) => {
+                // Host constructors can fail while acquiring installed data.
+                // Unlike the source's non-returning allocation failures, a
+                // Rust Result must return the reservation to this same pool.
+                self.roster.release(index)?;
+                return Err(error);
+            }
+        }
         Ok(index)
+    }
+
+    /// 48ff20 returns the slot through 48ff80 before invoking its destructor.
+    /// The lifecycle owner must stop and unlink the component first, including
+    /// detaching callbacks/body references; dropping T does not replace that.
+    /// Chunks remain resident for reuse, as in the original pool.
+    pub fn release(&mut self, index: u16) -> Result<(), String> {
+        self.get(index).ok_or("cannot release an unallocated component")?;
+        self.roster.release(index)?;
+        let value = self.chunks[index as usize / self.items_per_chunk]
+            [index as usize % self.items_per_chunk].take();
+        drop(value);
+        Ok(())
     }
 
     pub fn get(&self, index: u16) -> Option<&T> {

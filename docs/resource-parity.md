@@ -3919,3 +3919,67 @@ No retired-generation error was logged. This verifies the exercised transition
 path, not an injected cancellation race or final sound latency comparison.
 The process-wide Catalog::shared intentionally retains its catalog until exit;
 static destruction is not expected to emit a final catalog Drop record.
+### Reusable penetration scratch (source integration, 2026-11-05)
+
+`convex_support::solver::PenetrationScratch` is a lazy query-owned host
+workspace for 140c231b0's bounded penetration search. Original solver exit at
+vertex count greater than 0x31 and hull expansion 140c246a0's 90-face bound
+provide the reserve sizes: 50 vertices, 90 faces, 90 retired-face slots and
+50 boundary links. Geometry arithmetic, traversal order, statuses and retries
+are unchanged. The existing point-query and new convex-cast owners share their
+own scratch across serial leaf queries; neither a process cache nor retained
+shape source is added. Dropping the query owner releases all four vectors.
+
+Prediction: after the first ready penetration seed, resetting the hull performs
+zero heap allocations or capacity growth. Four positive-capacity vector
+allocations occur only at initial scratch construction rather than for each
+ready hull. This trades a bounded retained workspace per active query owner
+for allocation churn; it is not a process-RAM saving. Stateless convenience
+functions retain their API and use a temporary workspace. The successful
+feature-result path also stopped eagerly allocating its unused error String.
+
+DH2_DEBUG_PENETRATION_SCRATCH=1 records reset count, initialization count,
+isolated reset thread cycles and retained capacity bytes on owner release.
+DH2_DEBUG_SEPARATE_PENETRATION_SCRATCH=1 recreates the same bounded hull each
+reset for a same-binary comparison; both modes use identical arithmetic and
+bounds. This control measures reuse, not the historical vectors' growth policy.
+Production measurements and the integrated collision build remain pending;
+no timing, memory or output acceptance is claimed from source review alone.
+
+### Scaled compressed cast preparation (source integration, 2026-11-05)
+
+`gameplay::compressed_cast_scaled` ports 14124faa0's scaled-target setup:
+query calcAabb uses the original world frame, with columns multiplied by query
+scale and shape-info offset added directly to translation. Nonnegative query
+tolerance expands that AABB in world space. Target BVH bounds use the target
+rigid columns multiplied by target scale and translation plus its shape-info
+offset. The target-local cast displacement is rotated by the target rigid
+world frame; signed zeros are cleared, W is the original constant one, and
+zero XYZ reciprocal lanes use 0x7f7fffee (141ad2740). Existing reciprocal and
+query calcAabb owners supply their original arithmetic. No geometry copies,
+new heap storage or GPU work are added by this helper. It does not implement
+leaf scale/radius adjustment or publish a second collision owner. Source
+integration, cohesive compilation and affected-path production validation
+remain necessary before enabling the new cast owner.
+
+### Component slot destruction and failed acquisition (2026-11-05)
+
+`component_state::pool::ComponentPool::release` and
+`component_state::roster::ComponentRoster::release` port 14048ff20's slot
+release through 14048ff80 before the virtual destructor. Only an inactive
+allocation can be released: the lifecycle owner must first stop its scheduling,
+detach callbacks/bodies, and unlink its entity. The allocated suffix and free
+suffix preserve the source's ordering; used/cursor decrease while chunk
+storage and the high-water mark remain for reuse. There is no second free list.
+
+Host deviation: a fallible Rust constructor or chunk acquisition returns its
+reserved roster slot before propagating the error. Previously these early
+returns permanently consumed a reservation until whole-pool teardown.
+
+Prediction: releasing a component drops its owned resource leases immediately
+and returns exactly one reusable slot, without allocating or freeing chunk
+storage. Failed acquisition leaves the live slot count unchanged. No ordinary
+walking CPU improvement or process-RAM reduction is predicted; inactive chunks
+remain resident by design. Source implementation is present; integration with
+typed release callbacks and production-client unload evidence are still
+required. No tests or compiler were run for this isolated source change.
