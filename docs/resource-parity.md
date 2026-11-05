@@ -3997,8 +3997,9 @@ an invalid integer divisor rather than substituting a duration.
 This record retains no media/decoder and allocates nothing on success.
 Prediction: new music scheduling support, no walking CPU or resident-memory
 gain. Full track/segment/container playback remains unimplemented; this is
-not a claim of audible music. No compiler, tests or production comparison
-have been run for the new source. Existing bank/media owners stay authoritative.
+not a claim of audible music. The acquisition batch compiled in a85088d;
+clip sample conversion has not yet been exercised by scheduled playback.
+Existing bank/media owners stay authoritative. No tests were run.
 
 The bank owner now exposes `music_track_prelude`: borrowed source descriptors,
 40-byte clip records and automation-point ranges over its existing bank bytes.
@@ -4006,7 +4007,8 @@ The ordinary HIRC property reader uses this same prefix reader instead of a
 second skip-only implementation. Source plugin parameter blocks and curve
 points are neither cloned nor eagerly decoded into resident arrays. Bounds
 checks cover variable source parameters and counted clip/point records.
-Track mode/switch settings and scheduled playback still require implementation;
+Track mode/switch settings are covered by the full reader below; playback
+still requires implementation;
 the prefix is explicitly not treated as a complete music track.
 
 `music_track` additionally reads the common node properties, playback byte,
@@ -4032,7 +4034,7 @@ arrays borrow bank storage; no temporary label String or secondary encoded
 buffer is retained. Bounds checks cover counted arrays and variable labels.
 Music-node meter/stinger interpretation, marker sample conversion, transitions
 and scheduled playback remain separate work; serialized fields are not used
-as guessed runtime settings. No compilation or production acceptance yet.
+as guessed runtime settings. Compiled acquisition coverage is recorded below.
 
 Music switch-container acquisition now follows 141151320's transition rules
 and 1411583d0's group/type arrays, continuation flag, mode and decision-tree
@@ -4049,16 +4051,24 @@ loops/modifiers/weights/repeat and selection flags retain their original
 widths; no runtime cursor or random state enters the shared definition.
 Playlist entries borrow the bank and decode on demand. This completes source
 metadata access for HIRC music kinds 10–13, not their playback implementation.
-Integration, compiled acquisition diagnostics over installed banks and runtime
-streaming/voice scheduling remain required; no output/timing result is claimed.
+The compiled acquisition diagnostic is recorded below. Runtime streaming/voice
+scheduling remains required; no audible output/timing result is claimed.
 
 `wwise-audit --music-resources [package-or-directory]` exercises these actual
 bank-owner APIs over all installed bank/language entries without opening
 media/voices. It reports per-kind objects, clips, cues, rules and selectors
 plus contextual parse failures. Each bank drops before the next acquisition;
 it does not turn format diagnostics into an all-banks resident cache. This
-command has been implemented but not compiled/run yet. It is an acquisition
-diagnostic, not a test, audible-music check or original RAM-budget comparison.
+command compiled alongside the game in a85088d and exited 0 over 176 installed
+banks across all installed language entries. It acquired 6,271 segment, 7,767
+track, 34 switch-container and 300 playlist definitions with zero per-object
+parse failures. These are bank-definition counts, not globally unique actor
+IDs or simultaneously resident runtime objects. The command exercises each
+owner's complete metadata reader and its variable-length record iterators;
+it does not exercise sample conversion, RNG selection, scheduling or sound.
+Evidence: `artifacts/music-resource-bank-acquisition.log` and its exit/source
+records. No tests or visual inspection were performed. This is acquisition
+coverage, not an audible-music check or original RAM-budget comparison.
 
 ### Retired catalog accounting (2026-11-05)
 
@@ -4069,4 +4079,6 @@ inherits late-load classification from the retired world. Inactive-catalog
 retirement leaves the current world's phase intact. This is diagnostic-owner
 cleanup corresponding to 140060180; the process-shared gameplay catalog stays
 resident as before. Prediction: no ordinary walking CPU/GPU change and no
-claimed gameplay RAM saving. Final verification joins the acquisition batch.
+claimed gameplay RAM saving. The source compiled in a85088d. The process-shared
+catalog does not retire during ordinary map changes; that route cannot prove
+the independent-catalog retirement branch was executed.
