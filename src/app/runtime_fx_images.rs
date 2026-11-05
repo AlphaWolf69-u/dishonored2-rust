@@ -23,6 +23,14 @@ pub(super) struct RuntimeFxImages {
     pub(super) requested: Vec<usize>,
 }
 
+impl RuntimeFxImages {
+    /// Scene streaming slot only after its particle image identity has been
+    /// registered with the shared consumer owner.
+    pub(super) fn slot(&self, path: &str) -> Option<usize> {
+        self.slots.get(path).filter(|slot| slot.registered).map(|slot| slot.index)
+    }
+}
+
 /// Register newly acquired images without replacing the scene's existing
 /// slot identities. Texture reads continue through TextureReadWorker.
 pub(super) fn synchronize(
