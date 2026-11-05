@@ -77,6 +77,7 @@ struct Resources<'w> {
     program: Res<'w, SkyProgram>,
     capture_request: Res<'w, super::fog_capture::FogCaptureRequest>,
     water_frame: Option<Res<'w, super::water_scene::WaterSceneFrame>>,
+    ocean_mailbox: Option<Res<'w, super::water_scene::SwimmingSurfaceMailbox>>,
     water_selection: Option<Res<'w,super::water_scene::WaterViewSelection>>,
     ocean_sources: Option<Res<'w, super::ocean_scene::OceanSources>>,
     sun_ray_sources: Option<Res<'w, super::sun_rays::SunRaySources>>,
@@ -97,6 +98,18 @@ struct Resources<'w> {
     local_completion: Option<Res<'w, super::shadow_pass::LocalShadowCompletion>>,
     screen: Res<'w, super::screen_shadow_pass::ScreenGpu>,
 }
+/// Publish only a completed view. A failed preparation keeps the previous
+/// completed view while its owner remains live; owner removal/disable clears it.
+struct PreparedOceanPublication<'a> {
+    mailbox: &'a super::water_scene::SwimmingSurfaceMailbox,
+    update: Option<Option<super::water_scene::PreparedOceanView>>,
+}
+impl Drop for PreparedOceanPublication<'_> {
+    fn drop(&mut self) {
+        if let Some(value) = self.update { self.mailbox.publish_prepared_ocean(value); }
+    }
+}
+
 #[derive(Resource, Default)]
 pub(super) struct FogGpu {
     current: Option<ViewFog>,
@@ -339,6 +352,14 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
     });
     let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut area_bindings,mut context,mut last_error,mut water_submission}=params;
     let mut depth_prepared=false;
+    let mut prepared_ocean = if stage == Stage::Depth {
+        let live = gpu.current.as_ref().and_then(|view| view.ocean.as_ref()).is_some();
+        let disabled = resources.water_frame.as_ref().and_then(|frame| frame.0.as_ref())
+            .is_some_and(|water| water.ocean_render_settings.skip || !water.ocean_environment.view.enabled);
+        resources.ocean_mailbox.as_deref().map(|mailbox| PreparedOceanPublication {
+            mailbox, update: if !live || disabled { Some(None) } else { None },
+        })
+    } else { None };
 
     let material_parameters = shared
         .as_ref()
@@ -452,6 +473,7 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                 frame,
                 outputs.map(|(world, canvas, _)| (world, canvas)),
             )?);
+            if let Some(publication) = prepared_ocean.as_mut() { publication.update = Some(None); }
         }
         let current = gpu.current.as_mut().unwrap();
         if current.depth_id != depth.texture.id() {
@@ -1368,6 +1390,18 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
                 if stage!=Stage::Depth {*last_error=None;return;}
                 gpu.depth_completed=depth_frame.filter(|_|depth_prepared);
                 gpu.prepared_revision=depth_prepared.then_some((frame.camera,frame.revision));
+                if depth_prepared {
+                    if let Some(publication) = prepared_ocean.as_mut() { publication.update = Some(None); }
+                    if let (Some(publication), Some(water), Some(ocean)) = (
+                        prepared_ocean.as_mut(),
+                        resources.water_frame.as_ref().and_then(|frame| frame.0.as_ref()),
+                        gpu.current.as_ref().and_then(|view| view.ocean.as_ref()),
+                    ) {
+                        if let Ok(Some(level)) = ocean.prepared_water_level(water.matrices.frame, water.ocean_render_settings.skip) {
+                            publication.update = Some(Some(super::water_scene::PreparedOceanView { frame: water.matrices.frame, level }));
+                        }
+                    }
+                }
                 *last_error=None;
                 return;
             }

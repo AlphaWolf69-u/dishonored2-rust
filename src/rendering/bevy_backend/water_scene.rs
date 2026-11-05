@@ -204,14 +204,31 @@ pub struct SwimmingSurface {
     pub samples: Option<[[f32; 4]; 5]>,
 }
 
+/// A successfully prepared ocean view, distinct from asynchronous head
+/// samples and from the upcoming view's CPU prediction.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedOceanView {
+    pub frame: u32,
+    pub level: f32,
+}
+
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
-pub struct SwimmingSurfaceMailbox(Arc<std::sync::Mutex<Option<SwimmingSurface>>>);
+pub struct SwimmingSurfaceMailbox {
+    swimming: Arc<std::sync::Mutex<Option<SwimmingSurface>>>,
+    prepared_ocean: Arc<std::sync::Mutex<Option<PreparedOceanView>>>,
+}
 impl SwimmingSurfaceMailbox {
     pub fn latest(&self) -> Option<SwimmingSurface> {
-        self.0.lock().ok().and_then(|value| *value)
+        self.swimming.lock().ok().and_then(|value| *value)
+    }
+    pub fn prepared_ocean(&self) -> Option<PreparedOceanView> {
+        self.prepared_ocean.lock().ok().and_then(|value| *value)
     }
     pub(super) fn publish(&self, value: Option<SwimmingSurface>) {
-        if let Ok(mut current) = self.0.lock() { *current = value; }
+        if let Ok(mut current) = self.swimming.lock() { *current = value; }
+    }
+    pub(super) fn publish_prepared_ocean(&self, value: Option<PreparedOceanView>) {
+        if let Ok(mut current) = self.prepared_ocean.lock() { *current = value; }
     }
 }
 
