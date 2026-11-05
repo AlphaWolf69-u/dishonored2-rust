@@ -110,7 +110,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
         eprintln!("RIG_DECODE model={model} read_parse_cycles={} checksum_cycles={checksum_cycles}", end.saturating_sub(start).saturating_sub(checksum_cycles));
     }
     if trace {
-        eprintln!("MEMORY player rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
+        eprintln!("MEMORY rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
     }
     let audit = trace.then(|| (source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
     Ok(Rig { skeleton, root, aliases, animsets, tokens, path, residency: None, audit })
