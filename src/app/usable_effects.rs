@@ -117,6 +117,8 @@ impl Drop for UsableEffects {
 }
 
 impl UsableEffects {
+    pub(super) fn cancellation_token(&self) -> Arc<AtomicBool> { self.cancelled.clone() }
+
     fn request(
         &mut self,
         actor: EffectOwner,

@@ -239,7 +239,11 @@ pub(super) fn publish_runtime(
         }
     }
     let wanted: std::collections::HashSet<_> = request.prepared.iter().map(|item| (item.name.clone(), item.world)).collect();
-    let obsolete: Vec<_> = state.owned.keys().filter(|key| !wanted.contains(*key)).cloned().collect();
+    let obsolete: Vec<_> = state.owned.iter().filter(|(key, current)| {
+        !wanted.contains(*key) || request.prepared.iter().find(|item| item.name == key.0 && item.world == key.1)
+            .is_some_and(|item| item.handle.id() != current._prepared.handle.id()
+                || !Arc::ptr_eq(&item.program, &current._prepared.program))
+    }).map(|(key, _)| key.clone()).collect();
     for key in obsolete {
         if let Some(old) = state.owned.remove(&key) {
             for entity in old.entities { commands.entity(entity).try_despawn(); }
