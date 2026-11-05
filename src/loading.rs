@@ -23,7 +23,9 @@ use std::sync::Mutex;
 
 #[derive(Default)]
 struct State {
-    loaded: HashMap<String, HashSet<String>>,
+    // Paths are immutable after acquisition. A boxed slice preserves the
+    // string payload while avoiding an unused capacity word in every bucket.
+    loaded: HashMap<String, HashSet<Box<str>>>,
     common_texts: Option<(u64, std::sync::Arc<crate::assets::declaration_texts::TextMap>)>,
     common_exceptions: HashMap<String, Option<&'static str>>,
     gates: Vec<(&'static str, bool)>,
@@ -75,7 +77,7 @@ impl State {
             if !self.required_heads.is_empty() {
                 for path in old.keys() {
                     if let Some(kind) = common_kind(&old_exceptions, path) {
-                        if !self.loaded.get(kind).is_some_and(|paths| paths.contains(path)) {
+                        if !self.loaded.get(kind).is_some_and(|paths| paths.contains(path.as_str())) {
                             self.adjust_required(kind, path, false);
                         }
                     }
@@ -91,9 +93,9 @@ impl State {
             for path in common.keys() {
                 let inferred = inferred_common_kind(path);
                 let mut kind = inferred;
-                let mut duplicate = inferred.and_then(|kind| self.loaded.get_mut(kind).and_then(|paths| paths.take(path)));
+                let mut duplicate = inferred.and_then(|kind| self.loaded.get_mut(kind).and_then(|paths| paths.take(path.as_str())));
                 if duplicate.is_none() {
-                    let actual = self.loaded.iter().find_map(|(kind, paths)| paths.contains(path).then_some(kind.as_str()));
+                    let actual = self.loaded.iter().find_map(|(kind, paths)| paths.contains(path.as_str()).then_some(kind.as_str()));
                     match actual {
                         Some("fx") => kind = Some("fx"),
                         Some("soundevent") => kind = Some("soundevent"),
@@ -102,10 +104,10 @@ impl State {
                         None => {},
                     }
                     if kind != inferred { self.common_exceptions.insert(path.clone(), kind); }
-                    if let Some(kind) = kind { duplicate = self.loaded.get_mut(kind).and_then(|paths| paths.take(path)); }
+                    if let Some(kind) = kind { duplicate = self.loaded.get_mut(kind).and_then(|paths| paths.take(path.as_str())); }
                 }
                 let Some(kind) = kind else { continue; };
-                if let Some(path) = duplicate { removed += 1; bytes += path.capacity(); }
+                if let Some(path) = duplicate { removed += 1; bytes += path.len(); }
                 else if !self.required_heads.is_empty() { self.adjust_required(kind, path, true); }
             }
             for kind in ["fx", "soundevent", "physicsMaterial"] {
@@ -203,20 +205,20 @@ pub fn read(kind: &str, path: &str) {
             // Diagnostic control: reproduce the former per-read key allocations.
             use std::collections::hash_map::Entry;
             match s.loaded.entry(kind.to_owned()) {
-                Entry::Occupied(mut entry) => (entry.get_mut().insert(path.to_string()), false),
+                Entry::Occupied(mut entry) => (entry.get_mut().insert(Box::<str>::from(path)), false),
                 Entry::Vacant(entry) => {
                     let mut paths = HashSet::new();
-                    let inserted = paths.insert(path.to_string());
+                    let inserted = paths.insert(Box::<str>::from(path));
                     entry.insert(paths);
                     (inserted, true)
                 }
             }
         } else if let Some(paths) = s.loaded.get_mut(kind) {
             if paths.contains(normalized) { (false, false) }
-            else { (paths.insert(normalized.to_owned()), false) }
+            else { (paths.insert(Box::<str>::from(normalized)), false) }
         } else {
             let mut paths = HashSet::new();
-            let inserted = paths.insert(normalized.to_owned());
+            let inserted = paths.insert(Box::<str>::from(normalized));
             s.loaded.insert(kind.to_owned(), paths);
             (inserted, true)
         };
@@ -260,7 +262,7 @@ pub(crate) fn forget(kind: &str, path: &str) -> Option<usize> {
             if required.kind == kind && required.path == path { s.acquired = s.acquired.saturating_sub(1); }
             index = s.required_next[index];
         }
-        Some(removed.capacity())
+        Some(removed.len())
     })
 }
 
@@ -274,13 +276,13 @@ pub(crate) fn forget_kind(kind: &str) -> Option<(usize, usize, usize)> {
                 let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
                 while index != usize::MAX {
                     let required = &s.required[index];
-                    if required.kind == kind && required.path.as_str() == path.as_str() { removed_required += 1; }
+                    if required.kind == kind && required.path.as_str() == &**path { removed_required += 1; }
                     index = s.required_next[index];
                 }
             }
         }
         s.acquired = s.acquired.saturating_sub(removed_required);
-        Some((paths.len(), paths.iter().map(String::capacity).sum(), paths.capacity()))
+        Some((paths.len(), paths.iter().map(|path| path.len()).sum(), paths.capacity()))
     })
 }
 
@@ -297,12 +299,12 @@ pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (us
         paths.retain(|path| {
             if keep(path) { return true; }
             removed += 1;
-            bytes += path.capacity();
+            bytes += path.len();
             if !s.required_heads.is_empty() {
                 let mut index = s.required_heads.get(&resource_key(kind, path)).copied().unwrap_or(usize::MAX);
                 while index != usize::MAX {
                     let required = &s.required[index];
-                    if required.kind == kind && required.path == *path { removed_required += 1; }
+                    if required.kind == kind && required.path.as_str() == &**path { removed_required += 1; }
                     index = s.required_next[index];
                 }
             }
@@ -380,14 +382,17 @@ pub fn begin_level(list: std::sync::Arc<crate::assets::map_resources::LevelList>
         }
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             let mut by_kind: Vec<_> = s.loaded.iter().map(|(kind, paths)| {
-                let bytes = paths.iter().map(String::capacity).sum::<usize>();
+                let bytes = paths.iter().map(|path| path.len()).sum::<usize>();
                 (kind.as_str(), paths.len(), bytes)
             }).collect();
             by_kind.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
+            let usable_slots: usize = s.loaded.values().map(HashSet::capacity).sum();
             eprintln!("MEMORY loading read history: kinds={} entries={} path_capacity_bytes={} precredited={} requested={} largest={:?}",
                 by_kind.len(), by_kind.iter().map(|x| x.1).sum::<usize>(),
                 by_kind.iter().map(|x| x.2).sum::<usize>(), s.acquired, s.requested,
                 by_kind.iter().take(10).collect::<Vec<_>>());
+            eprintln!("MEMORY loading read history table: usable_slots={usable_slots} value_bytes_per_slot={}",
+                std::mem::size_of::<Box<str>>());
         }
     });
 }
@@ -457,7 +462,10 @@ pub(crate) fn report_iter<'a>(list: impl IntoIterator<Item = &'a crate::assets::
                 let paths = listed.get(kind);
                 let done = s.loaded.get(kind);
                 let loaded = paths.map_or(0, |p| p.iter().filter(|path| s.contains(kind, path)).count());
-                let mut unlisted = done.map_or(0, |d| d.iter().filter(|x| paths.is_none_or(|p| !p.contains(x.as_str()))).count());
+                let mut unlisted = done.map_or(0, |d| d.iter().filter(|x| {
+                    let path: &str = x;
+                    paths.is_none_or(|p| !p.contains(path))
+                }).count());
                 if let Some((_, common)) = &s.common_texts {
                     unlisted += common.keys().filter(|path| s.common_kind(path) == Some(kind)
                         && paths.is_none_or(|p| !p.contains(path.as_str()))).count();
