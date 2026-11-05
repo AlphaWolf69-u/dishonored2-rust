@@ -125,6 +125,16 @@ impl PreparedScene {
     }
 }
 
+#[derive(Debug)]
+pub struct ActionSceneDiagnostic {
+    pub path: Option<String>,
+    pub handle: u32,
+    pub cast_mask: u8,
+    pub scene_uid: u32,
+    pub tracks: [usize; TARGETS],
+    pub aliases: [Vec<String>; TARGETS],
+}
+
 /// The animations of each player tree (body, left arm, right arm).
 pub type Cast<'a> = [&'a [EdgeAnimation]; TARGETS];
 
@@ -272,6 +282,23 @@ impl Midnight {
     /// The scene playing on the body tree.
     pub fn playing(&self) -> Option<u32> {
         self.instances.iter().find(|i| i.parts & 1 << BODY != 0).map(|i| i.handle)
+    }
+
+    /// Captured only on action entry so F8 can diagnose a short animation
+    /// without retaining or formatting a history every frame.
+    pub fn action_scenes(&self, scenes: &std::collections::HashMap<String, Arc<PreparedScene>>) -> Vec<ActionSceneDiagnostic> {
+        self.instances.iter().map(|instance| ActionSceneDiagnostic {
+            path: scenes.iter().find_map(|(path, scene)| Arc::ptr_eq(scene, &instance.scene).then(|| path.clone())),
+            handle: instance.handle,
+            cast_mask: instance.parts,
+            scene_uid: instance.scene.decl.scenes[instance.current].uid,
+            tracks: std::array::from_fn(|target| instance.clips[target].len()),
+            aliases: std::array::from_fn(|target| {
+                instance.scene.group(instance.current, target).ok().flatten().map(|group|
+                    instance.scene.decl.scenes[instance.current].groups[group].anim_keys.iter()
+                        .map(|key| key.anim.clone()).collect()).unwrap_or_default()
+            }),
+        }).collect()
     }
 
     /// FUN_1407cf250(inst, ignoreBlendOut = 1): the scene reached its end.

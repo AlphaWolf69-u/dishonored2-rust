@@ -42,8 +42,11 @@ pub struct ArmRender {
 }
 
 /// Numeric action history retained so F8 need not land on a short animation.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct ArmActionDiagnostic {
+    pub selected_hands: Option<[bool; 2]>,
+    pub scenes: Vec<midnight::ActionSceneDiagnostic>,
+    pub scene_start_error: Option<String>,
     pub frames: u32,
     pub tree_drove: [bool; 3],
     pub published: [bool; 2],
@@ -676,6 +679,9 @@ impl Player {
             if active {
                 if !self.arm_action_active[slot] {
                     self.arm_action_history[slot] = Some(ArmActionDiagnostic {
+                        selected_hands: if id == StateId::MANTLE { self.mantle_sensor.last_selected_hands } else { self.catfall_sensor.last_selected_hands },
+                        scenes: self.body.midnight.action_scenes(&self.scenes),
+                        scene_start_error: self.body.midnight.last_start_error.clone(),
                         frames: 0, tree_drove: [false; 3], published: [false; 2], visible: [false; 2],
                         ever_in_front: [false; 2], camera_slopes: [[f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY]; 2], pose_error: [false; 2],
                         tree_frames: [0; 3], visible_frames: [0; 2], in_front_frames: [0; 2],

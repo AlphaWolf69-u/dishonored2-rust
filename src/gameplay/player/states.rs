@@ -1471,6 +1471,7 @@ impl StateMachine {
             *frame.desired_legs += 1;
         }
         if let Kind::CatFall(catfall) = &decl.kind {
+            frame.midnight.last_start_error = None;
             // FUN_14085a910 (equipment, the wind blast, fail chance and
             // footsteps are not ported).
             self.states[index].damage = slide_speed.unwrap_or(0.0);
@@ -1509,6 +1510,7 @@ impl StateMachine {
             return;
         }
         if let Kind::Mantle(mantle) = &decl.kind {
+            frame.midnight.last_start_error = None;
             self.activate_mantle(index, mantle, frame);
             return;
         }
