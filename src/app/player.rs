@@ -365,6 +365,7 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
         scenes,
         md6: declarations.body_model.clone(),
         health,
+        mana: decls::mana(&declarations.mana)?,
         swimming_settings: crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
         swimming_states: decls::swimming_states(&declarations)?,
         swimming_rules: decls::rules(&declarations.swimming_mode)?,
@@ -447,15 +448,15 @@ pub(super) fn look_settings() -> LookSettings {
 }
 
 /// `ark_playerSmoothedLoco` and the head-bob option `ark_playerBobAmount`.
-pub(super) fn body_settings(difficulty: Option<&DifficultyManager>) -> crate::gameplay::player::body::BodySettings {
+pub(super) fn body_settings(difficulty: Option<&DifficultyManager>) -> (crate::gameplay::player::body::BodySettings, i32) {
     let console = console::shared().read();
     let current = console.cvars.int("ark_difficulty_current").unwrap_or(0);
-    crate::gameplay::player::body::BodySettings {
+    (crate::gameplay::player::body::BodySettings {
         smoothed_loco: console.cvars.int("ark_playerSmoothedLoco").is_none_or(|v| v != 0),
         bob_amount: console.cvars.float("ark_playerBobAmount").unwrap_or(1.0),
         small_fall_cooldown: console.cvars.float("ark_playerSmallFallCooldown").unwrap_or(0.5),
         lean_limits: difficulty.map_or([1.0; 2], |manager| manager.lean_limits(current)),
-    }
+    }, current)
 }
 
 fn base_fov() -> f32 {
@@ -660,11 +661,13 @@ pub(super) fn update_player(
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
             let mut events = std::mem::take(&mut input.events);
             if walking { events.extend(walk.steer(player, dt)); }
-            player.body_settings = body_settings(difficulty.as_ref());
-            if (player.is_underwater() && player.breath() <= 0.0) || player.health() < player.max_health() {
-                let current = console::shared().read().cvars.int("ark_difficulty_current").unwrap_or(0);
+            let (body_settings, current) = body_settings(difficulty.as_ref());
+            player.body_settings = body_settings;
+            player.health_mana_merged = difficulty.as_ref().is_some_and(|manager| manager.health_mana_merged(current));
+            if (player.is_underwater() && player.breath() <= 0.0) || player.health() < player.max_health() || player.mana() < player.max_mana() {
                 player.incoming_damage_factor = difficulty.as_ref().map_or(1.0, |manager| manager.incoming_damage_factor(current));
                 player.health_regen_factor = difficulty.as_ref().map_or(1.0, |manager| manager.health_regen_factor(current));
+                player.mana_replenishes = difficulty.as_ref().is_none_or(|manager| manager.mana_replenishes(current));
             }
 
             player.frame(&world, &events, &look_settings(), dt, frame_delta, game_clock.time(3).unwrap_or(0.0), base);

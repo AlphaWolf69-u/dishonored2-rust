@@ -651,6 +651,7 @@ pub struct Frame<'a> {
     pub underwater: bool,
     pub swim_mantle_exit: &'a mut bool,
     pub game_over_requested: &'a mut bool,
+    pub drowning_fx_requested: &'a mut Option<String>,
     /// The game's global LCG at gameLocal+0x600f8.
     pub random: &'a mut u32,
     /// `ark_playerSmallFallCooldown` (cvar 0x143996320, "0.5").
@@ -894,6 +895,7 @@ pub struct State {
     swimming_dive: (Vec3, f32),
     death_timer: f32,
     death_transition_pending: bool,
+    death_fx_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -981,6 +983,7 @@ impl StateMachine {
                 swimming_dive: (Vec3::ZERO, 0.0),
                 death_timer: 0.0,
                 death_transition_pending: false,
+                death_fx_pending: false,
             })
 
             .collect();
@@ -1494,6 +1497,7 @@ impl StateMachine {
             // drowning camera when the fatal damage type is WATER.
             self.states[index].death_timer = dead.duration;
             self.states[index].death_transition_pending = true;
+            self.states[index].death_fx_pending = true;
             frame.camera.set_target_mode(15, dead.look_duration);
             return;
         }
@@ -1942,6 +1946,10 @@ impl StateMachine {
                 frame.requests.push_linear(0, Vec3::new(0.0, 0.0, dead.vertical_speed));
                 frame.requests.push_angular(0, Vec3::new(0.0, 0.0, dead.yaw_speed.to_radians()));
                 let state = &mut self.states[index];
+                if state.death_fx_pending && dead.duration - state.death_timer >= dead.fx_delay {
+                    *frame.drowning_fx_requested = dead.fx.clone();
+                    state.death_fx_pending = false;
+                }
                 if state.death_transition_pending && state.death_timer < 0.0 {
                     state.death_transition_pending = false;
                     *frame.game_over_requested = true;

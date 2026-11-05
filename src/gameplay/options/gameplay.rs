@@ -320,6 +320,8 @@ impl Manager {
     pub fn health_regen_factor(&self, difficulty: i32) -> f32 {
         if self.preset(difficulty)[16] != 0 { self.health_regen_amount_scale } else { 1.0 }
     }
+    pub fn mana_replenishes(&self, difficulty: i32) -> bool { self.preset(difficulty)[15] == 0 }
+    pub fn health_mana_merged(&self, difficulty: i32) -> bool { self.preset(difficulty)[23] != 0 }
 
     /// `FUN_140648300`: the name of a preset, the custom name otherwise.
     pub fn name(&self, index: i32) -> u32 {

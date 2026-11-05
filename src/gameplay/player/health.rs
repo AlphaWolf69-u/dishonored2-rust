@@ -6,6 +6,7 @@ pub struct Health {
     current: f32,
     base_max: f32,
     suppression_base: Option<f32>,
+    maximum_attribute_base: Option<f32>,
     accepts_water: bool,
     regen_amount: f32,
     regen_delay: f32,
@@ -21,6 +22,7 @@ impl Health {
             current: 0.0,
             base_max: settings.maximum,
             suppression_base: attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX_SUPPRESSED").copied(),
+            maximum_attribute_base: attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX").copied(),
             accepts_water,
             regen_amount: settings.regen_amount,
             regen_delay: settings.regen_delay,
@@ -34,6 +36,12 @@ impl Health {
     pub fn current(&self) -> f32 { self.current }
     pub fn is_dead(&self) -> bool { self.dead }
     pub fn accepts_water(&self) -> bool { self.accepts_water }
+    /// The attribute owner currently exposes base values only, so a changed
+    /// maximum needs the missing attribute-change event before extensions can
+    /// be reported to the HUD.
+    pub fn extensions(&self, attributes: &Attributes) -> Option<u32> {
+        (attributes.0.get("ARK_ATTRIBUTE_HEALTH_MAX").copied() == self.maximum_attribute_base).then_some(0)
+    }
     /// 140719990 for the ordinary player while health and mana are separate.
     pub fn projected(&self, attributes: &Attributes, difficulty_factor: f32) -> f32 {
         if self.dead || self.regen_amount == 0.0 || self.regen_countdown > 0.0 {

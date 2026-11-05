@@ -145,6 +145,16 @@ pub fn health(fields: &Fields) -> Result<super::health::Settings, String> {
     })
 }
 
+pub fn mana(fields: &Fields) -> Result<super::mana::Settings, String> {
+    let maximum = number(fields, "m_mana", f32::NAN)?;
+    if maximum.is_nan() { return Err("player mana decl has no m_mana".into()); }
+    Ok(super::mana::Settings { maximum,
+        regen_amount: number(fields, "m_regenAmount", 0.0)?,
+        regen_delay: number(fields, "m_regenDelay", 0.0)?,
+        regen_rate: number(fields, "m_regenRate", 0.0)?,
+    })
+}
+
 /// arkDeclCpntPlayerSensorMantle (ctor FUN_1403baf00).
 pub fn mantle_sensor(fields: &Fields) -> Result<MantleDecl, String> {
     let d = MantleDecl::default();
@@ -458,14 +468,18 @@ pub fn swimming_states(declarations: &PlayerDeclarations) -> Result<Vec<super::s
 
 pub fn swimming_death(declarations: &PlayerDeclarations) -> Result<Option<super::states::DrowningDeathDecl>, String> {
     let Some((_, fields)) = declarations.swimming_states.iter().find(|(kind, _)| kind == "playerstatedead") else { return Ok(None) };
-    Ok(Some(super::states::DrowningDeathDecl {
+    Ok(Some(drowning_death(fields)?))
+}
+
+fn drowning_death(fields: &Fields) -> Result<super::states::DrowningDeathDecl, String> {
+    Ok(super::states::DrowningDeathDecl {
         duration: seconds(fields, "m_drowningDuration", 6.0)?,
         vertical_speed: number(fields, "m_drowningVerticalSpeed", -1.0)?,
         yaw_speed: number(fields, "m_drowningYawSpeed", 15.0)?,
         look_duration: seconds(fields, "m_drowningLookDuration", 4.0)?,
         fx_delay: seconds(fields, "m_drowningScreenFXDelay", 3.0)?,
         fx: atom(fields, "m_drowningScreenFX").filter(|value| !value.is_empty()).map(str::to_owned),
-    }))
+    })
 }
 
 pub fn breath(fields: &Fields) -> Result<super::swimming::Breath, String> {
@@ -504,6 +518,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
     let mut result = Vec::new();
     for (kind, fields) in &declarations.states {
         let kind = match kind.as_str() {
+            "playerstatedead" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             "playerstaterunning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             "playerstatesneaking" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
             "playerstatesprinting" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {

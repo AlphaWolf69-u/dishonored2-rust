@@ -12,6 +12,7 @@ pub mod controller;
 pub mod decls;
 pub mod footsteps;
 pub mod health;
+pub mod mana;
 pub mod midnight;
 pub mod physics;
 pub mod swimming;
@@ -52,6 +53,8 @@ pub struct Player {
     breath: swimming::Breath,
     pub incoming_damage_factor: f32,
     pub health_regen_factor: f32,
+    pub mana_replenishes: bool,
+    pub health_mana_merged: bool,
     pub camera: PlayerCamera,
     pub stances: LocoStances,
     pub attributes: Attributes,
@@ -71,8 +74,9 @@ pub struct Player {
     scenes: Scenes,
     md6: String,
     health: health::Health,
-    warned_mana_drowning: bool,
+    mana: mana::Mana,
     game_over_requested: bool,
+    drowning_fx_requested: Option<String>,
     /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
     random: u32,
     /// `ark_playerSmoothedLoco` / `ark_playerBobAmount` and the difficulty's
@@ -104,6 +108,7 @@ pub struct PlayerSetup {
     pub md6: String,
     /// Health decl m_health before attributes.
     pub health: health::Settings,
+    pub mana: mana::Settings,
     pub swimming_settings: swimming::SwimmingSettings,
     pub swimming_states: Vec<swimming::SwimmingStateDecl>,
     pub swimming_rules: Vec<states::RuleDecl>,
@@ -119,19 +124,32 @@ impl Player {
     pub fn health(&self) -> f32 {
         self.health.current()
     }
+    pub fn mana(&self) -> f32 { self.mana.current() }
+    pub fn max_mana(&self) -> f32 { self.mana.maximum(&self.attributes) }
 
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
     pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
+    /// Returns no snapshot when the merged-health or attribute-event paths
+    /// needed by the original HUD have not been connected.
+    pub fn health_hud(&self) -> Option<(f32, f32, f32, bool, u32)> {
+        if self.health_mana_merged { return None; }
+        let extensions = self.health.extensions(&self.attributes)?;
+        Some((self.health(), self.max_health(), self.projected_health(), self.health() < 20.0, extensions))
+    }
     /// Advance the same game-local LCG already used by player scene picks.
     pub fn choose_random(&mut self, count: usize) -> Option<usize> {
         if count == 0 { return None; }
+        if count == 1 { return Some(0); }
         self.random = self.random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f);
         Some(((self.random >> 10) & 0x7fff) as usize % count)
     }
     pub fn take_game_over_request(&mut self) -> bool {
         std::mem::take(&mut self.game_over_requested)
     }
+    pub fn game_over_requested(&self) -> bool { self.game_over_requested }
+    pub fn drowning_fx_requested(&self) -> bool { self.drowning_fx_requested.is_some() }
+    pub fn take_drowning_fx_request(&mut self) -> Option<String> { self.drowning_fx_requested.take() }
 
     /// 14088a8c0 compares the gameplay eye with the completed head sample.
     pub fn is_underwater(&self) -> bool {
@@ -179,6 +197,7 @@ impl Player {
             swimming_decls.push(states::StateDecl::class_default(Kind::Dead(dead)));
         }
         let health = health::Health::new(setup.health, setup.accepts_water_damage, &setup.attributes);
+        let mana = mana::Mana::new(setup.mana, &setup.attributes);
         Ok(Self {
             physics,
             controller,
@@ -192,6 +211,8 @@ impl Player {
             breath: setup.breath,
             incoming_damage_factor: 1.0,
             health_regen_factor: 1.0,
+            mana_replenishes: true,
+            health_mana_merged: false,
             camera: PlayerCamera::new(setup.camera, base_fov),
             stances,
             attributes: setup.attributes,
@@ -209,8 +230,9 @@ impl Player {
             scenes: setup.scenes,
             md6: setup.md6,
             health,
-            warned_mana_drowning: false,
+            mana,
             game_over_requested: false,
+            drowning_fx_requested: None,
             random: 0,
             arm_render: Vec::new(),
             arm_pose_errors: [None, None],
@@ -299,6 +321,7 @@ impl Player {
                     underwater,
                     swim_mantle_exit: &mut swim_mantle_exit,
                     game_over_requested: &mut self.game_over_requested,
+                    drowning_fx_requested: &mut self.drowning_fx_requested,
                     random: &mut self.random,
                     small_fall_cooldown: self.body_settings.small_fall_cooldown,
                     lean_toggle: settings.lean_toggle,
@@ -359,24 +382,24 @@ impl Player {
             if cost != 0.0 { self.breath.consume(dt * cost); }
         }
         self.breath.update(dt);
+        self.mana.update(dt, &self.attributes, self.mana_replenishes);
         self.health.update(dt, &self.attributes, self.health_regen_factor);
-        // 1404c0cf0 dispatches the authored water damage after breath is
-        // exhausted. Mana-first damage requires the mana component; don't
-        // silently substitute health damage when that component is missing.
+        // 1404c0cf0 spends the mana-first share before dispatching the
+        // remaining authored water damage to health.
         if self.is_underwater() && self.breath.remaining <= 0.0 && self.health.accepts_water() {
             let mana_factor = self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGES_MANA_FIRST_FACTOR");
-            if mana_factor > 0.0 {
-                if !self.warned_mana_drowning {
-                    eprintln!("Drowning with mana-first damage requires the player mana component");
-                    self.warned_mana_drowning = true;
+            {
+                let mut raw_damage = dt * self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGE_PER_SECOND");
+                if mana_factor > 0.0 && raw_damage > 0.0 {
+                    let mana_cost = (raw_damage * mana_factor).min(self.mana.current());
+                    self.mana.consume(mana_cost, &self.attributes, self.mana_replenishes);
+                    raw_damage -= mana_cost / mana_factor;
                 }
-            } else {
                 let scale = self.attributes.0.get("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE").copied().unwrap_or(1.0);
-                let damage = dt * self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGE_PER_SECOND")
-                    * self.incoming_damage_factor * scale;
+                let damage = raw_damage * self.incoming_damage_factor * scale;
                 if damage > 0.0 && !self.health.is_dead() {
                     self.health.damage(damage, &self.attributes);
-                    if self.health.is_dead() && self.swimming_active {
+                    if self.health.is_dead() {
                         self.machine.request(StateId::DEAD);
                     }
                 }
