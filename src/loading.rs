@@ -205,10 +205,10 @@ pub fn read(kind: &str, path: &str) {
             // Diagnostic control: reproduce the former per-read key allocations.
             use std::collections::hash_map::Entry;
             match s.loaded.entry(kind.to_owned()) {
-                Entry::Occupied(mut entry) => (entry.get_mut().insert(Box::<str>::from(path)), false),
+                Entry::Occupied(mut entry) => (entry.get_mut().insert(Box::<str>::from(path.as_ref())), false),
                 Entry::Vacant(entry) => {
                     let mut paths = HashSet::new();
-                    let inserted = paths.insert(Box::<str>::from(path));
+                    let inserted = paths.insert(Box::<str>::from(path.as_ref()));
                     entry.insert(paths);
                     (inserted, true)
                 }

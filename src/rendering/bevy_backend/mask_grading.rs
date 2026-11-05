@@ -1,4 +1,4 @@
-//! Installed postfx/colorgrading, consumed by the original 140327270 post pass.
+//! Installed postfx/colorgrading: 1403134e0, called before DoF by 140315450.
 //! The caller owns HDR ping-pong and the mask target from 1403222f0. Construct
 //! this host pipeline lazily when the live effect owner requests grading;
 //! owning a compiled masking material alone does not activate this pass.
