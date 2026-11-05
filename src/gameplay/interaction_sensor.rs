@@ -16,9 +16,17 @@ pub struct Hit {
 pub struct Scratch {
     /// 1403b8430 processes cast groups in this order, closest hits first.
     pub hits: [Vec<Hit>; 5],
+    candidates: Vec<usize>,
+    triangles: Vec<(u32, [Vec3; 3], u32)>,
 }
 impl Default for Scratch {
-    fn default() -> Self { Self { hits: std::array::from_fn(|_| Vec::new()) } }
+    fn default() -> Self { Self { hits: std::array::from_fn(|_| Vec::new()), candidates: Vec::new(), triangles: Vec::new() } }
+}
+
+#[derive(Default)]
+pub struct OcclusionScratch {
+    candidates: Vec<usize>,
+    triangles: Vec<(u32, [Vec3; 3], u32)>,
 }
 
 /// Geometric equivalent of a sphere/triangle shape cast. The conservative
@@ -43,12 +51,14 @@ fn sphere_triangle(start: Vec3, displacement: Vec3, radius: f32, triangle: &[Vec
 pub enum OcclusionHit { Target, Ignore, Block }
 
 pub fn occluded(world: &CollisionWorld, eye: Vec3, hit: Vec3, radius: f32,
-    classify: impl Fn(u32, u32) -> OcclusionHit) -> bool {
+    classify: impl Fn(u32, u32) -> OcclusionHit, scratch: &mut OcclusionScratch) -> bool {
     let motion = hit - eye;
     let margin = Vec3::splat(radius);
     let filter = QueryFilter::layers(0xc43e, 4);
     let mut nearest: Option<(f32, OcclusionHit)> = None;
-    for (key, triangle, owner) in world.triangles_in(eye.min(hit) - margin, eye.max(hit) + margin, filter) {
+    world.triangles_in_reuse(eye.min(hit) - margin, eye.max(hit) + margin, filter,
+        &mut scratch.candidates, &mut scratch.triangles);
+    for &(key, triangle, owner) in &scratch.triangles {
         let kind = classify(key, owner);
         if matches!(kind, OcclusionHit::Ignore) { continue; }
         if let Some((fraction, _)) = sphere_triangle(eye, motion, radius, &triangle) {
@@ -72,7 +82,9 @@ pub fn cast(world: &CollisionWorld, eye: Vec3, forward: Vec3, sensor: Sensor, sc
         let end = start + displacement;
         let margin = Vec3::splat(radius);
         let filter = QueryFilter::layers(if i < 3 { 0x20cc38 } else { 0x408 }, 0);
-        for (_, triangle, owner) in world.triangles_in(start.min(end) - margin, start.max(end) + margin, filter) {
+        world.triangles_in_reuse(start.min(end) - margin, start.max(end) + margin, filter,
+            &mut scratch.candidates, &mut scratch.triangles);
+        for &(_, triangle, owner) in &scratch.triangles {
             if let Some((fraction, position)) = sphere_triangle(start, displacement, radius, &triangle) {
                 hits.push(Hit { fraction, owner, position });
             }

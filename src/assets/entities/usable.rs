@@ -9,6 +9,9 @@ pub struct Step {
     pub transition_animation: Option<u8>,
     pub transition_min_duration: f32,
     pub effect: Option<String>,
+    pub effect_origin: [f32; 3],
+    pub effect_axis: [[f32; 3]; 3],
+    pub effect_attached: bool,
     pub wait_transition_end_to_play_effect: bool,
     pub overrides_interaction: bool,
     pub interaction_name: Option<String>,
@@ -19,6 +22,20 @@ pub struct Step {
     pub maximum_height: f32,
     pub occlusion_shape: usize,
     pub locked: bool,
+    pub allowed_swimming: bool,
+}
+
+impl Default for Step {
+    fn default() -> Self {
+        // 14077a640: sparse list entries retain their constructed values.
+        Self { animation: None, transition_animation: None, transition_min_duration: 0.5,
+            effect: None, effect_origin: [0.0; 3],
+            effect_axis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            effect_attached: true, wait_transition_end_to_play_effect: false,
+            overrides_interaction: false, interaction_name: None, interaction_text: None,
+            interaction_icon: None, player_state: None, maximum_distance: 3.0,
+            maximum_height: 1000.0, occlusion_shape: 0, locked: false, allowed_swimming: true }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +53,7 @@ pub struct DefinitionData {
     pub maximum_height: f32,
     pub occlusion_shape: usize,
     pub locked: bool,
+    pub allowed_swimming: bool,
     pub steps: Box<[Step]>,
 }
 
@@ -68,6 +86,7 @@ pub struct ReadableBinding {
     pub maximum_height: f32,
     pub occlusion_shape: usize,
     pub locked: bool,
+    pub allowed_swimming: bool,
 }
 
 /// 14061e1a0 lets the interaction sensor pass through a material with
@@ -80,7 +99,11 @@ pub fn breakable_entities(document: &Document) -> Result<HashSet<String>, String
         for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
             if !key.starts_with("item_add[") { continue; }
             let Some(entry) = scope(Some(value)) else { continue };
-            if components::entry_class(entry, &declarations)?.as_deref() == Some("cpntbreakable") {
+            let class = match components::entry_class(entry, &declarations) {
+                Ok(class) => class,
+                Err(error) => { eprintln!("Component {} {key}: {error}", entity.id); continue; }
+            };
+            if class.as_deref() == Some("cpntbreakable") {
                 result.insert(entity.id.clone());
                 break;
             }
@@ -107,7 +130,10 @@ pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Resu
             };
             let interaction = child(&fields, "m_pickupInteraction");
             if atom(interaction, "m_playerState") != Some("PLAYER_STATE_READ_NOTE") { continue; }
-            let item = atom(&fields, "m_inventoryItem").ok_or_else(|| format!("{}: readable has no inventory item", entity.id))?;
+            let Some(item) = atom(&fields, "m_inventoryItem") else {
+                eprintln!("Readable component {} {key} has no inventory item", entity.id);
+                continue;
+            };
             result.push(ReadableBinding {
                 entity: entity.id.clone(), item: item.to_owned(),
                 interaction_name: optional_string(interaction, "m_name"),
@@ -117,6 +143,7 @@ pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Resu
                 maximum_height: number(interaction, "m_maxHeight", 1000.0)?,
                 occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
                 locked: boolean(interaction, "m_lockedInteraction", false)?,
+                allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
             });
         }
     }
@@ -204,11 +231,24 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
         let data = scope(Some(value)).ok_or("usable state is not a scope")?;
         let override_interaction = boolean(data, "m_useOverrideInteractionDef", false)?;
         let interaction = if override_interaction { child(data, "m_overrideInteractionDef") } else { &[] };
+        let fx = child(data, "m_FX");
+        let matrix = child(child(fx, "m_localAxis"), "mat");
+        let mut effect_axis = [[0.0; 3]; 3];
+        for (row, axis) in effect_axis.iter_mut().enumerate() {
+            let mut default = [0.0; 3];
+            default[row] = 1.0;
+            *axis = vector(matrix, &format!("mat[{row}]"), default)?;
+        }
         *slot = Some(Step {
             animation: animation_index(data, "m_animIdx")?,
             transition_animation: animation_index(data, "m_transitionAnimIdx")?,
-            transition_min_duration: number(data, "m_transitionMinDuration", 0.0)?,
-            effect: optional_string(child(data, "m_FX"), "m_declFX"),
+            // 14077a640 initializes the per-state duration to 0.5 seconds
+            // and its effect attachment flag to true.
+            transition_min_duration: number(data, "m_transitionMinDuration", 0.5)?,
+            effect: optional_string(fx, "m_declFX").filter(|path| !path.eq_ignore_ascii_case("NULL")),
+            effect_origin: vector(fx, "m_localOrigin", [0.0; 3])?,
+            effect_axis,
+            effect_attached: boolean(fx, "m_attached", true)?,
             wait_transition_end_to_play_effect: boolean(data, "m_waitTransitionEndToPlayFx", false)?,
             overrides_interaction: override_interaction,
             interaction_name: optional_string(interaction, "m_name"),
@@ -219,10 +259,10 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
             maximum_height: number(interaction, "m_maxHeight", 1000.0)?,
             occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
             locked: boolean(interaction, "m_lockedInteraction", false)?,
+            allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
         });
     }
-    let steps = slots.into_iter().map(|slot| slot.ok_or_else(|| "sparse usable state list".to_owned()))
-        .collect::<Result<Vec<_>, _>>()?.into_boxed_slice();
+    let steps = slots.into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>().into_boxed_slice();
     Ok(DefinitionData {
         starts_on_spawn: components::scheduling(fields,
             crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?.starts_on_spawn(),
@@ -239,6 +279,7 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
         maximum_height: number(interaction, "m_maxHeight", 1000.0)?,
         occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
         locked: boolean(interaction, "m_lockedInteraction", false)?,
+        allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
         steps,
     })
 }

@@ -140,6 +140,8 @@ fn reset_scene_publications(world: &mut World) {
         backend::world_effects::WorldEffectSources,
         backend::world_effects::WorldEffectDefinitions,
         backend::world_effects::WorldEffectFrames,
+        backend::world_effects::DynamicEffects,
+        backend::world_effects::DynamicMaterialPrewarm,
         backend::world_sounds::WorldSounds,
         backend::particle_pass::ParticleMaterialSampler,
         backend::particle_images::SceneParticleImages,

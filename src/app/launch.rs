@@ -349,6 +349,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             (
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
+                super::interaction_focus::apply_inventory_modifiers,
                 super::player::update_player,
                 super::player_arms::update_player_arms,
                 super::fog_scene::update_world_wind,
@@ -369,6 +370,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .before(stream_visible_models)
                 .before(shadow_updates::collect_model_casters),
         )
+        .add_systems(PreUpdate, super::interaction_focus::initialize_inventory)
         .add_systems(PostUpdate, super::interactions::sync_boxes
             .after(super::model_motion::publish_model_poses))
         .add_systems(PostUpdate, super::interactions::focus_and_interact
@@ -383,6 +385,10 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .after(super::interactions::focus_and_interact)
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
+            super::runtime_fx_images::synchronize, super::usable_effects::publish).chain()
+            .after(super::usable_animation::advance)
             .run_if(super::loading_screen::is_playing))
         .add_systems(
             PostUpdate,

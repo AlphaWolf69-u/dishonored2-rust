@@ -313,6 +313,7 @@ pub(super) fn initialize_screen_shadow_source(
     if existing.is_some() { return; }
     match prepare_screen_shadow_source(&scene, &mut programs, &mut images, &resident) {
         Ok((frame, source)) => { commands.insert_resource(frame); commands.insert_resource(source); }
+        Err(error) if error == "program cache is busy" => return,
         Err(error) => {
             eprintln!("Screen source unavailable: {error}");
             commands.insert_resource(ScreenShadowSource(Err(error)));
@@ -326,7 +327,8 @@ pub(super) fn prepare_screen_shadow_source(
     registry: &super::resident_images::ResidentImages,
 ) -> Result<(screen_shadow_pass::ScreenShadowFrame, ScreenShadowSource), String> {
     let result = (|| -> Result<(ScreenShadowParameters, Handle<Image>, Option<Handle<Image>>), String> {
-        let library = programs.0.as_mut().map_err(|error| error.clone())?;
+        let mut source = programs.0.try_lock().map_err(|_| "program cache is busy".to_owned())?;
+        let library = source.as_mut().map_err(|error| error.clone())?;
         let catalog = scene
             .catalog
             .as_ref()
@@ -559,7 +561,8 @@ pub(super) fn initialize_parallel_receiver_source(
     mut programs: ResMut<ProgramCacheSource>,
 ) {
     let result = (|| -> Result<ParallelReceiverCompile, String> {
-        let library = programs.0.as_mut().map_err(|error| error.clone())?;
+        let mut source = programs.0.try_lock().map_err(|_| "program cache is busy".to_owned())?;
+        let library = source.as_mut().map_err(|error| error.clone())?;
         let empty = render_program::SerializedParameterBlock {
             flags: 0,
             parameters: Vec::new(),
@@ -572,6 +575,7 @@ pub(super) fn initialize_parallel_receiver_source(
             slope_post_projection: option(b"shadow/slopeScaleIsPostProjection")? != 0,
         })
     })();
+    if result.as_ref().is_err_and(|error| error == "program cache is busy") { return; }
     commands.insert_resource(ParallelReceiverSource(result));
 }
 

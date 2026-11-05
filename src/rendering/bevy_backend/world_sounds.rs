@@ -53,7 +53,7 @@ impl SoundObject {
 #[derive(Default)]
 pub(crate) struct SoundState {
     pub events: HashMap<String, Result<u32, String>>,
-    pub declarations: Vec<Arc<WorldSoundEvent>>,
+    pub declarations: Vec<Option<Arc<WorldSoundEvent>>>,
     pub objects: HashMap<Emitter, SoundObject>,
     pub queued: Vec<Ticket>,
     pub released: Vec<Emitter>,
@@ -115,7 +115,7 @@ impl SoundObjectWorld for WorldSounds {
         event: u32, _: &SoundFrame) -> Result<Option<PlayingId>, String>
     {
         let mut state = self.lock();
-        let declaration = state.declarations.get(event as usize)
+        let declaration = state.declarations.get(event as usize).and_then(Option::as_ref)
             .ok_or("FX sound declaration reference is absent")?.clone();
         let declaration = &declaration.declaration;
         let source = state.objects.get(&object).ok_or("FX sound object is absent")?;

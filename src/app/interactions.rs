@@ -15,7 +15,7 @@ pub(super) struct Actor {
 #[derive(Resource)]
 pub(super) struct Interactions {
     pub catalog: Arc<Catalog>,
-    limits: crate::assets::inventory_item::ReadableLimits,
+    limits: Arc<crate::assets::inventory_item::ReadableLimits>,
     pub sensor: entities::usable::Sensor,
     pub actors: Vec<Actor>,
     pub readable: Vec<entities::usable::ReadableBinding>,
@@ -26,19 +26,45 @@ pub(super) struct Interactions {
     parent: HashMap<String, String>,
     pub pending: Vec<PendingChange>,
     selected: Option<(bool, usize, usize)>,
-    pending_read: Option<std::sync::Mutex<bevy::tasks::Task<Result<(String, String, Option<crate::assets::inventory_item::Readable>), String>>>>,
+    pending_read: Option<std::sync::Mutex<bevy::tasks::Task<Result<ReadResult, String>>>>,
     pub retire: Vec<String>,
+}
+
+enum ReadTarget {
+    Note(crate::assets::inventory_item::Readable),
+    Map(crate::assets::interactive_map::Map),
+}
+struct ReadResult {
+    entity: String,
+    path: String,
+    target: Option<ReadTarget>,
+    modifiers: crate::assets::inventory_item::ItemModifiers,
 }
 
 pub(super) struct PendingChange {
     pub actor: usize,
     pub animation: Option<crate::gameplay::player::animation::AnimBasicCommand>,
     pub stop_effect: bool,
-    pub start_effect: Option<String>,
+    pub start_effect: Option<EffectSpawn>,
+}
+
+#[derive(Clone)]
+pub(super) struct EffectSpawn {
+    pub path: String,
+    pub origin: [f32; 3],
+    pub axis: [[f32; 3]; 3],
+    pub attached: bool,
+}
+
+pub(super) fn effect_spawn(state: &Usable, path: &str) -> EffectSpawn {
+    let step = &state.definition.steps[state.state];
+    EffectSpawn { path: path.to_owned(), origin: step.effect_origin,
+        axis: step.effect_axis, attached: step.effect_attached }
 }
 
 impl Interactions {
-    pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str) -> Result<Self, String> {
+    pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str,
+        loadout: &[(String, u32)], list: &crate::assets::map_resources::LevelList) -> Result<Self, String> {
         let read = |path: &str| -> Result<Option<String>, String> {
             Ok(catalog.read(path).map_err(|e| e.to_string())?
                 .map(|bytes| entities::declaration_text(&bytes).into_owned()))
@@ -46,17 +72,24 @@ impl Interactions {
         let sensor = entities::usable::player_sensor(&catalog, character)?;
         let bindings = entities::usable::bindings(document, |path| read(path))?;
         let readable = entities::usable::readable_bindings(document, |path| read(path))?;
-        let limits = crate::assets::inventory_item::ReadableLimits::load(&catalog, character,
-            readable.iter().map(|binding| binding.item.clone()))?;
+        let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character,
+            readable.iter().map(|binding| binding.item.clone()).chain(loadout.iter().map(|(path, _)| path.clone()))
+                .chain(list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned)))?);
         let definitions: HashMap<&str, &entities::Definition> = document.definitions.iter()
             .filter(|d| d.kind == "entity").map(|d| (d.id.as_str(), d)).collect();
         let mut actors = Vec::new();
         for binding in bindings {
             let entity = definitions.get(binding.entity.as_str()).ok_or("usable entity missing")?;
-            let frame = entities::spawn_frame(entity)?;
+            let frame = match entities::spawn_frame(entity) {
+                Ok(frame) => frame,
+                Err(error) => { bevy::log::warn!("Usable {} has no valid spawn frame: {error}", binding.entity); continue; }
+            };
             // An empty authored state list is valid but has no state to toggle.
             let state = if binding.definition.steps.is_empty() { None }
-                else { Some(Usable::new(binding.definition.clone())?) };
+                else { match Usable::new(binding.definition.clone()) {
+                    Ok(state) => Some(state),
+                    Err(error) => { bevy::log::warn!("Usable {}: {error}", binding.entity); continue; }
+                } };
             actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, last_delta: None });
         }
         let actor_by_entity = actors.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
@@ -65,13 +98,16 @@ impl Interactions {
         let parent = entities::entity_binds(document).into_iter().map(|bind| (bind.entity_id, bind.parent)).collect();
         let pending = actors.iter().enumerate().filter_map(|(actor, value)| {
             if !value.definition.starts_on_spawn { return None; }
-            let change = value.state.as_ref()?.initial();
+            let state = value.state.as_ref()?;
+            let change = state.initial();
             change.start_effect.map(|effect| PendingChange { actor, animation: None,
-                stop_effect: change.stop_effect, start_effect: Some(effect.to_owned()) })
+                stop_effect: change.stop_effect, start_effect: Some(effect_spawn(state, effect)) })
         }).collect();
         Ok(Self { catalog, limits, sensor, actors, readable, actor_by_entity, readable_by_entity,
             casts: Default::default(), breakable, parent, pending, selected: None, pending_read: None, retire: Vec::new() })
     }
+
+    pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> { self.limits.clone() }
 
     /// Start the same fake bodies used by the original component. Their owner
     /// is the level collision world and the actor retains only its handle.
@@ -112,15 +148,21 @@ pub(super) fn focus_and_interact(
     world: Option<Res<super::NavigationWorld>>,
     camera: Query<&Transform, With<Camera3d>>,
     input: Res<super::player::PlayerInput>,
+    player: Option<Res<super::player::PlayerState>>,
     mut requests: Option<ResMut<super::readable_movie::ReadableRequests>>,
     mut inventory: ResMut<super::interaction_focus::DiscoveredDocuments>,
     mut focused: ResMut<super::interaction_focus::FocusedInteraction>,
     mut was_held: Local<bool>,
+    mut occlusion: Local<crate::gameplay::interaction_sensor::OcclusionScratch>,
 ) {
     let held = input.held.contains(&22);
     let pressed = held && !*was_held;
     *was_held = held;
-    let (Some(mut interactions), Some(world), Ok(camera)) = (interactions, world, camera.single()) else {
+    let Some(mut interactions) = interactions else {
+        if focused.current.is_some() { focused.current = None; }
+        return;
+    };
+    let (Some(world), Ok(camera)) = (world, camera.single()) else {
         if focused.current.is_some() { focused.current = None; }
         return;
     };
@@ -129,23 +171,42 @@ pub(super) fn focus_and_interact(
         if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
             interactions.pending_read = None;
             match result {
-                Ok((entity, path, Some(readable))) => {
+                Ok(ReadResult { entity, path, target: Some(ReadTarget::Note(readable)), modifiers }) => {
                     let maximum = interactions.limits.maximum(&path);
                     let id = if readable.title.is_empty() { 0 } else { crate::assets::lang::key_id(&readable.title) };
-                    if inventory.admit(path, id, readable.kind, maximum) && readable.can_be_picked_up {
+                    if inventory.admit(path, id, readable.kind, maximum, &modifiers) && readable.can_be_picked_up {
                         interactions.retire.push(entity);
                     }
                     if let Some(requests) = requests.as_deref_mut() {
                         requests.open.push_back(super::readable_movie::Request { title: readable.title, text: readable.text, note_type: readable.note_type });
                     }
                 },
-                Ok((_, path, None)) => bevy::log::warn!("Readable interaction has an unsupported item type: {path}"),
+                Ok(ReadResult { entity, path, target: Some(ReadTarget::Map(map)), modifiers }) => {
+                    let maximum = interactions.limits.maximum(&path);
+                    let key = if map.title.is_empty() { &map.item_name } else { &map.title };
+                    let id = if key.is_empty() { 0 } else { crate::assets::lang::key_id(key) };
+                    if inventory.admit_map(path, id, maximum, &modifiers) && map.can_be_picked_up {
+                        interactions.retire.push(entity);
+                    }
+                    if let Some(requests) = requests.as_deref_mut() {
+                        requests.map_open.push_back(super::readable_movie::MapRequest {
+                            title: map.title, image: map.image, legends: map.legends, map_type: map.map_type,
+                        });
+                    }
+                },
+                Ok(ReadResult { path, target: None, .. }) => bevy::log::warn!("Readable interaction has an unsupported item type: {path}"),
                 Err(error) => bevy::log::warn!("Readable item unavailable: {error}"),
             }
         }
     }
     let eye = camera.translation;
     let forward = camera.forward().as_vec3();
+    if player.as_deref().and_then(|state| state.player.as_ref()).is_some_and(|player| player.is_dead()) {
+        if focused.current.is_some() { focused.current = None; }
+        interactions.selected = None;
+        return;
+    }
+    let swimming = player.as_deref().and_then(|state| state.player.as_ref()).is_some_and(|player| player.is_swimming());
     let sensor = interactions.sensor;
     crate::gameplay::interaction_sensor::cast(&world.0, eye, forward, sensor, &mut interactions.casts);
     let mut selected = None;
@@ -154,16 +215,19 @@ pub(super) fn focus_and_interact(
             let Some(entity) = world.0.owner_name(hit.owner) else { continue };
             let readable = interactions.readable_by_entity.get(entity).copied();
             let actor = interactions.actor_by_entity.get(entity).copied();
-            let (is_readable, index, step, max_distance, shape) = if let Some(index) = readable {
-                (true, index, 0, interactions.readable[index].maximum_distance, interactions.readable[index].occlusion_shape)
+            let (is_readable, index, step, max_distance, shape, allowed_swimming) = if let Some(index) = readable {
+                (true, index, 0, interactions.readable[index].maximum_distance, interactions.readable[index].occlusion_shape,
+                    interactions.readable[index].allowed_swimming)
             } else if let Some(index) = actor {
                 let Some(state) = interactions.actors[index].state.as_ref() else { continue };
                 if !state.definition.starts_on_spawn { continue; }
                 let step = state.state;
                 let entry = &state.definition.steps[step];
                 (false, index, step, if entry.overrides_interaction { entry.maximum_distance } else { state.definition.maximum_distance },
-                    if entry.overrides_interaction { entry.occlusion_shape } else { state.definition.occlusion_shape })
+                    if entry.overrides_interaction { entry.occlusion_shape } else { state.definition.occlusion_shape },
+                    if entry.overrides_interaction { entry.allowed_swimming } else { state.definition.allowed_swimming })
             } else { continue };
+            if swimming && !allowed_swimming { continue; }
             if eye.distance_squared(hit.position) > max_distance * max_distance { continue; }
             let classify = |key, owner| {
                 use crate::gameplay::interaction_sensor::OcclusionHit;
@@ -175,9 +239,9 @@ pub(super) fn focus_and_interact(
                     OcclusionHit::Ignore
                 } else { OcclusionHit::Block }
             };
-            if crate::gameplay::interaction_sensor::occluded(&world.0, eye, hit.position, sensor.shape_radii[0], &classify)
+            if crate::gameplay::interaction_sensor::occluded(&world.0, eye, hit.position, sensor.shape_radii[0], &classify, &mut occlusion)
                 || (shape > 0 && sensor.shape_radii.get(shape).is_some_and(|&radius|
-                    crate::gameplay::interaction_sensor::occluded(&world.0, eye, hit.position, radius, &classify))) { continue; }
+                    crate::gameplay::interaction_sensor::occluded(&world.0, eye, hit.position, radius, &classify, &mut occlusion))) { continue; }
             selected = Some((is_readable, index, step));
             break 'casts;
         }
@@ -214,8 +278,14 @@ pub(super) fn focus_and_interact(
             let entity = interactions.readable[index].entity.clone();
             let catalog = interactions.catalog.clone();
             interactions.pending_read = Some(std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-                let value = crate::assets::inventory_item::readable(&catalog, &item)?;
-                Ok((entity, item, value))
+                let fields = crate::assets::inventory_item::item_fields(&catalog, &item)?;
+                let modifiers = crate::assets::inventory_item::modifiers_fields(&item, &fields)?;
+                let target = if let Some(note) = crate::assets::inventory_item::readable_fields(&fields)? {
+                    Some(ReadTarget::Note(note))
+                } else {
+                    crate::assets::interactive_map::resolve_fields(&catalog, &item, &fields)?.map(ReadTarget::Map)
+                };
+                Ok(ReadResult { entity, path: item, target, modifiers })
             })));
         }
     } else {
@@ -223,8 +293,11 @@ pub(super) fn focus_and_interact(
             let actor = &mut interactions.actors[index];
             let Some(state) = actor.state.as_mut() else { return };
             let changes = state.interact();
-            PendingChange { actor: index, animation: changes.animation, stop_effect: changes.stop_effect,
-                start_effect: changes.start_effect.map(str::to_owned) }
+            let animation = changes.animation;
+            let stop_effect = changes.stop_effect;
+            let path = changes.start_effect.map(str::to_owned);
+            PendingChange { actor: index, animation, stop_effect,
+                start_effect: path.as_deref().map(|path| effect_spawn(state, path)) }
         };
         interactions.pending.push(changes);
         // A state may change the authored prompt without a camera movement.

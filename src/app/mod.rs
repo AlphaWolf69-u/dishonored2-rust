@@ -76,6 +76,8 @@ mod interaction_focus;
 mod interactions;
 mod readable_movie;
 mod usable_animation;
+mod usable_effects;
+mod runtime_fx_images;
 use state::{
     BenchmarkSeconds, CoordinateOverlay, DecalMaterial, FocusTarget, FocusTargets,
     FrameRateOverlay, LocalLightSphereBatch, MaterialHandle, ShadowCasterWorld,

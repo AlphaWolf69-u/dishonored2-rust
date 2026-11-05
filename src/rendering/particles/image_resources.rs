@@ -1,7 +1,7 @@
 //! Level acquisition of particle images. Image registry 1400607f0/14005feb0
 //! shares a resource independently of its material and render state.
 use crate::{archive::Catalog, texture::BimageInfo};
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{collections::HashMap, sync::{Arc, Mutex, Weak}};
 
 /// Stable image identity survives retirement of its one-shot upload bytes.
 /// Host: queue upload copies compiled bytes; material/pass rebuilds reuse GPU
@@ -40,8 +40,8 @@ impl ParticleImage {
 }
 
 pub(crate) struct ParticleImages {
-    images: HashMap<Arc<str>, Arc<ParticleImage>>,
-    volumes: HashMap<Arc<str>, Arc<ParticleImage>>,
+    images: HashMap<Arc<str>, Weak<ParticleImage>>,
+    volumes: HashMap<Arc<str>, Weak<ParticleImage>>,
     shared: bool,
     scene_images: bool,
     retain_payload: bool,
@@ -65,30 +65,30 @@ impl Default for ParticleImages {
 
 impl ParticleImages {
     pub fn use_scene_images(&mut self) { self.scene_images = self.shared; }
-    pub fn images(&self) -> impl Iterator<Item = &Arc<ParticleImage>> { self.images.values() }
+    pub fn images(&self) -> impl Iterator<Item = Arc<ParticleImage>> + '_ { self.images.values().filter_map(Weak::upgrade) }
     pub fn scene_image(&mut self, catalog: &Catalog, name: &str) -> Result<Option<Arc<ParticleImage>>, String> {
         if self.scene_images { self.image(catalog, name).map(Some) } else { Ok(None) }
     }
     pub fn retire_unused(&mut self) -> (usize, usize) {
         let mut count = 0;
-        let mut bytes = 0;
         for images in [&mut self.images, &mut self.volumes] {
             images.retain(|_, image| {
-                if Arc::strong_count(image) > 1 { return true; }
+                if image.strong_count() != 0 { return true; }
                 count += 1;
-                bytes += image.payload_bytes;
                 false
             });
         }
-        (count, bytes)
+        // Payloads were already released with their final strong owner.
+        (count, 0)
     }
 
     pub fn report_scene_overlap(&self, paths: &[String]) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
         let paths: std::collections::HashSet<_> = paths.iter().map(String::as_str).collect();
-        let overlap: Vec<_> = self.images.iter().filter(|(path, _)| paths.contains(path.as_ref())).collect();
+        let overlap: Vec<_> = self.images.iter().filter(|(path, _)| paths.contains(path.as_ref()))
+            .filter_map(|(_, image)| image.upgrade()).collect();
         eprintln!("MEMORY particle/scene images: particle_2d={} particle_3d={} shared_paths={} shared_payload_bytes={}",
-            self.images.len(), self.volumes.len(), overlap.len(), overlap.iter().map(|(_, image)| image.payload_bytes).sum::<usize>());
+            self.images.len(), self.volumes.len(), overlap.len(), overlap.iter().map(|image| image.payload_bytes).sum::<usize>());
     }
 
     pub fn image(&mut self, catalog: &Catalog, source: &str) -> Result<Arc<ParticleImage>, String> {
@@ -97,7 +97,7 @@ impl ParticleImages {
             .ok_or_else(|| format!("particle image unresolved: {source}"))?
             .replace('\\', "/").to_ascii_lowercase().into();
         if self.shared {
-            if let Some(image) = self.images.get(&path) { return Ok(image.clone()); }
+            if let Some(image) = self.images.get(&path).and_then(Weak::upgrade) { return Ok(image); }
         }
         let image = if self.scene_images {
             let info = if path.starts_with('_') {
@@ -115,7 +115,7 @@ impl ParticleImages {
         };
         self.reads += 1;
         self.bytes += image.payload_bytes;
-        if self.shared { self.images.insert(path, image.clone()); }
+        if self.shared { self.images.insert(path, Arc::downgrade(&image)); }
         Ok(image)
     }
 
@@ -125,7 +125,7 @@ impl ParticleImages {
             .ok_or_else(|| format!("particle volume unresolved: {source}"))?
             .replace('\\', "/").to_ascii_lowercase().into();
         if self.shared {
-            if let Some(image) = self.volumes.get(&path) { return Ok(image.clone()); }
+            if let Some(image) = self.volumes.get(&path).and_then(Weak::upgrade) { return Ok(image); }
         }
         let image = crate::material::load_3d_image(catalog, source)?;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
@@ -146,7 +146,7 @@ impl ParticleImages {
         let image = Arc::new(ParticleImage::new(path.clone(), image.info, image.depth, image.payload, self.retain_payload));
         self.reads += 1;
         self.bytes += image.payload_bytes;
-        if self.shared { self.volumes.insert(path, image.clone()); }
+        if self.shared { self.volumes.insert(path, Arc::downgrade(&image)); }
         Ok(image)
     }
 }

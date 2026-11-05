@@ -1243,6 +1243,22 @@ impl Drop for FrameRequests {
     }
 }
 
+/// Reuse a compatible UI-owned resident image before creating a runtime FX
+/// view. This also handles a UI acquisition racing an in-flight base read.
+fn reuse_runtime_fx_view(slot: usize, queue: &mut SceneRenderQueue,
+    catalog: &archive::Catalog, registry: &super::resident_images::ResidentImages,
+    images: &mut Assets<Image>, probes: &mut Assets<ProbeMaterial>,
+    decals: &mut Assets<DecalMaterial>, skies: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>) -> bool {
+    if queue.diffuse_image_handles[slot].is_some() || queue.diffuse_mip_states[slot].resident.is_some() { return false; }
+    let paths = [queue.diffuse_image_paths[slot].clone()];
+    let mut views = registry.scene_views(catalog, &paths, queue.preferred_mip, &Default::default());
+    let Some(view) = views.remove(&0) else { return false };
+    attach_prepared_diffuse_image(slot, view.handle.clone(), queue, images, probes, decals, skies);
+    commit_prepared_diffuse_level(queue, slot, view.level, view.mip_count);
+    queue.diffuse_image_attempted[slot] = true;
+    true
+}
+
 /// Resolve authored diffuse resources after a render instance has been shown
 /// by the current visibility system. Archive reads run on a separate worker.
 pub(super) fn stream_visible_textures(
@@ -1255,7 +1271,8 @@ pub(super) fn stream_visible_textures(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     mut sky_materials: ResMut<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
-    owners: (Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::resident_images::ResidentImages>>),
+    owners: (Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::resident_images::ResidentImages>>,
+        Option<Res<super::runtime_fx_images::RuntimeFxImages>>),
     mut instance_slots: Local<InstanceImageSlots>,
     mut scratch: Local<FrameRequests>,
     mut initial_view_ready: Local<bool>,
@@ -1263,7 +1280,7 @@ pub(super) fn stream_visible_textures(
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
     mut shared_images: Option<ResMut<SharedImages>>,
 ) {
-    let (arms, registry) = owners;
+    let (arms, registry, runtime_fx_images) = owners;
     let Some(mut worker) = worker else {
         return;
     };
@@ -1306,6 +1323,11 @@ pub(super) fn stream_visible_textures(
     for &slot in &queue.shadow_diffuse_slots {
         if let Some(needed) = requested.get_mut(slot) {
             *needed = true;
+        }
+    }
+    if let Some(runtime_fx_images) = runtime_fx_images.as_deref() {
+        for &slot in &runtime_fx_images.requested {
+            if let Some(needed) = requested.get_mut(slot) { *needed = true; }
         }
     }
     if let Some(prepared_images) = prepared_images.as_ref() {
@@ -1512,6 +1534,15 @@ pub(super) fn stream_visible_textures(
                 continue;
             }
         };
+        if matches!(target, TextureReadTarget::Initial(_))
+            && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
+            && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
+                worker.catalog(), registry, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE scene_image_reuse_after_read slot={slot}");
+            }
+            continue;
+        }
         let previous = queue.diffuse_image_handles[slot]
             .as_ref()
             .map(|handle| handle.id());
@@ -1654,6 +1685,15 @@ pub(super) fn stream_visible_textures(
     let request_count = request_order.len();
     for &slot in request_order.iter() {
         if charged > residency::budget_bytes(settings) { break; }
+        if !worker.inflight[slot] && queue.diffuse_image_pending[slot].is_none()
+            && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
+            && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
+                worker.catalog(), registry, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE scene_image_reuse_before_read slot={slot}");
+            }
+            continue;
+        }
         if worker.inflight[slot] || queue.diffuse_image_pending[slot].is_some() {
             queue.diffuse_image_demands[slot].take();
             if frame % 60 == 0 {

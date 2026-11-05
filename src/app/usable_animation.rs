@@ -12,6 +12,7 @@ struct Asset {
 struct Placement {
     actor: usize,
     model: String,
+    source_index: Option<usize>,
     asset: Option<Arc<Asset>>,
     node: Option<AnimBasicNode>,
     publication: super::skin_publication::SkinPublication,
@@ -47,11 +48,12 @@ pub(super) fn advance(
     let Some(mut interactions) = interactions else { return };
     if !owner.initialized {
         let physics = machinery.as_ref().map(|m| m.deformed_placements()).unwrap_or_default();
+        let shadow_sources: HashMap<_, _> = sources.0.iter().enumerate().map(|(index, source)| (source.placement, index)).collect();
         for (index, placement) in placements.0.iter().enumerate() {
             let Some(&actor) = interactions.actor_by_entity.get(&placement.id) else { continue };
             if !placement.resource_path.ends_with(".md6") || !interactions.actors[actor].definition.steps.iter()
                 .any(|state| state.animation.is_some() || state.transition_animation.is_some()) { continue; }
-            owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), asset: None,
+            owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), source_index: shadow_sources.get(&index).copied(), asset: None,
                 node: None, publication: Default::default(), requested: false, failed: false, command: None,
                 initialized: false, physics_owned: physics.contains(&index) });
         }
@@ -68,7 +70,7 @@ pub(super) fn advance(
     }
     let mut load = Vec::new();
     for (&index, slot) in &mut owner.placements {
-        let visible = sources.0.iter().find(|source| source.placement == index)
+        let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
         if slot.asset.is_none() && !slot.requested && (visible || slot.command.is_some()) {
             slot.requested = true;
@@ -147,11 +149,12 @@ pub(super) fn advance(
             slot.initialized = true;
         }
         if slot.command.is_none() && node.is_settled() {
-            playing[slot.actor].get_or_insert(false);
             continue;
         }
         node.update(dt, slot.command.take(), &asset.rig.animations);
-        *playing[slot.actor].get_or_insert(false) |= node.current_clip().is_some_and(|(_, _, playing)| playing);
+        if let Some(playing) = &mut playing[slot.actor] {
+            *playing |= node.current_clip().is_some_and(|(_, _, playing)| playing);
+        }
         let joints = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
             Ok(Some(pose)) => pose.joints,
             Ok(None) => continue,
@@ -176,8 +179,11 @@ pub(super) fn advance(
         let change = {
             let Some(state) = interactions.actors[actor].state.as_mut() else { continue };
             let change = state.tick(dt, is_playing);
-            super::interactions::PendingChange { actor, animation: change.animation, stop_effect: change.stop_effect,
-                start_effect: change.start_effect.map(str::to_owned) }
+            let animation = change.animation;
+            let stop_effect = change.stop_effect;
+            let path = change.start_effect.map(str::to_owned);
+            super::interactions::PendingChange { actor, animation, stop_effect,
+                start_effect: path.as_deref().map(|path| super::interactions::effect_spawn(state, path)) }
         };
         if change.animation.is_some() || change.stop_effect || change.start_effect.is_some() {
             interactions.pending.push(change);
@@ -185,14 +191,17 @@ pub(super) fn advance(
     }
     // A stationary pose lives in the published palette; the source rig and
     // clips need not remain resident solely because the actor once moved.
-    for (&index, slot) in &mut owner.placements {
-        let visible = sources.0.iter().find(|source| source.placement == index)
+    for slot in owner.placements.values_mut() {
+        let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
         let playing = slot.node.as_ref().and_then(AnimBasicNode::current_clip).is_some_and(|(_, _, playing)| playing);
         if !visible && !playing && slot.command.is_none() && slot.asset.is_some() {
             slot.asset = None;
             slot.node = None;
             slot.requested = false;
+            // A later acquisition creates a fresh node. Reapply the current
+            // authored idle state instead of leaving that node at its rest pose.
+            slot.initialized = false;
         }
     }
 }

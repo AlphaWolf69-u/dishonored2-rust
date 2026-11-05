@@ -154,11 +154,12 @@ pub(super) fn prepare(
                     Vec3::from_array(render_light::sun_ground_color(colour)),
                 )
             });
-        let program_library = programs
+        let cache = programs
             .as_deref_mut()
             .expect("atmosphere requires the installed program cache")
-            .0
-            .as_mut()
+            .0.clone();
+        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let program_library = cache.as_mut()
             .unwrap_or_else(|error| panic!("atmosphere program cache unavailable: {error}"));
         let mut fog = super::fog_scene::FogScene::load(
             catalog,
@@ -382,6 +383,9 @@ pub(super) fn prepare(
     let reflections = loaded_reflections.image;
     let reflection_planes = loaded_reflections.planes;
     let reflection_brdf_lookup = loaded_reflections.brdf_lookup;
+    // Scene preparation runs before runtime FX requests and owns the same
+    // program library that those requests later acquire on their worker.
+    let mut program_guard = programs.as_ref().map(|source| source.0.lock().unwrap_or_else(|e| e.into_inner()));
     let mut resolver = MaterialResolver {
         blended_materials: Default::default(),
         fog_material: fog_material.bindings(),
@@ -394,7 +398,7 @@ pub(super) fn prepare(
         vista_sun,
         anisotropic_sampler_image,
         catalog,
-        programs: programs.as_deref_mut().map(|source| &mut source.0),
+        programs: program_guard.as_deref_mut(),
         probe_materials: probe_materials,
         sky_materials: sky_materials,
         decal_materials: decal_materials,
@@ -1839,6 +1843,7 @@ pub(super) fn prepare(
         slots: Arc::new(particle_image_slots), world_materials: Arc::new(particle_world_images), ..Default::default()
     });
     particle_resources.report_scene_images(&resolver.diffuse_image_paths);
+    commands.insert_resource(super::usable_effects::ParticleResourceOwner::new(particle_resources));
     diffuse_image_materials.resize(resolver.diffuse_image_paths.len(), Vec::new());
     let diffuse_image_count = resolver.diffuse_image_paths.len();
     // A proxy streams the images of the material it was cloned from.

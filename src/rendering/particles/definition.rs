@@ -59,7 +59,7 @@ impl ParticleResources {
     pub fn scene_image(&mut self, catalog: &Catalog, name: &str) -> Result<Option<Arc<super::image_resources::ParticleImage>>, String> {
         self.images.scene_image(catalog, name)
     }
-    pub fn images(&self) -> impl Iterator<Item = &Arc<super::image_resources::ParticleImage>> {
+    pub fn images(&self) -> impl Iterator<Item = Arc<super::image_resources::ParticleImage>> + '_ {
         self.images.images()
     }
 

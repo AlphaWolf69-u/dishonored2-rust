@@ -113,6 +113,39 @@ fn cloned_value_bytes(value: &Value) -> usize {
 }
 
 impl WorldFxSources {
+    /// Reference one already prepared effect and its declared sub-effects
+    /// without retaining every unrelated effect in the level.
+    pub fn subset(&self, name: &str) -> Result<Self, String> {
+        let mut result = Self::default();
+        let mut pending = vec![name.to_owned()];
+        while let Some(name) = pending.pop() {
+            if result.effects.contains_key(&name) { continue; }
+            let definition = self.effects.get(&name).ok_or_else(|| format!("effect {name} was not prepared"))?;
+            let loaded = definition.as_ref().map_err(Clone::clone)?;
+            for child in loaded.groups.iter().flat_map(|group| &group.asset.sub_effects)
+                .flat_map(|sub| sub.effects.iter().flatten()) {
+                pending.push(child.clone());
+            }
+            result.effects.insert(name, definition.clone());
+        }
+        Ok(result)
+    }
+
+    /// Publish a new level snapshot without cloning any decoded FX assets.
+    /// Requests own only their contributions; dropping them from the next
+    /// snapshot lets the last instance release its declarations naturally.
+    pub fn with_additions<'a>(base: &Self, additions: impl IntoIterator<Item = &'a Self>) -> Self {
+        let mut effects = base.effects.clone();
+        for addition in additions {
+            for (name, definition) in &addition.effects {
+                effects.entry(name.clone()).or_insert_with(|| definition.clone());
+            }
+        }
+        Self { effects, declarations: base.declarations.clone(),
+            deferred_syntax_bytes: base.deferred_syntax_bytes,
+            deferred_admission_bytes: base.deferred_admission_bytes }
+    }
+
     /// Every particle material of the level's world FX.
     pub fn particle_materials(&self) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
         self.effects.values().filter_map(|e| e.as_ref().ok())

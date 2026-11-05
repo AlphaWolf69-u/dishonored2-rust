@@ -17,13 +17,20 @@ struct PreparedEvent {
     actions: Arc<Vec<SourceAction>>,
 }
 
+type PendingDecode = bevy::tasks::Task<Result<Vec<SourceAction>, String>>;
+
 #[derive(Resource, Default)]
 pub(super) struct EffectAudio {
     source: Option<Arc<WorldFxSources>>,
-    events: Vec<PreparedEvent>,
+    events: Vec<Option<PreparedEvent>>,
+    free_events: Vec<u32>,
+    retiring_events: std::collections::HashSet<u32>,
+    dynamic_decodes: std::collections::HashSet<u32>,
     reported_playback: bool,
     trace_frame: u32,
     pending_media: std::collections::HashMap<crate::gameplay::sound::playing::PlayingId, Vec<super::graph::StreamHold>>,
+    pending_events: std::collections::HashMap<u32, std::sync::Mutex<PendingDecode>>,
+    failed_events: std::collections::HashMap<u32, String>,
 }
 
 /// Prepare dependencies, publish actual sound-object frames, then execute
@@ -40,6 +47,32 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
     let mut bridge = sounds.lock();
     bridge.pump_notifications();
     let state = &mut *state;
+    if !state.pending_events.is_empty() {
+        let needed: std::collections::HashSet<u32> = sources.0.effects.values()
+            .filter_map(|effect| effect.as_ref().ok()).flat_map(|effect| &effect.groups)
+            .flat_map(|group| &group.sounds).flat_map(|sound| [&sound.start, &sound.stop])
+            .flatten().map(|event| event.declaration.id).collect();
+        let mut completed = Vec::new();
+        state.pending_events.retain(|&id, task| {
+            if !needed.contains(&id) { return false; }
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+                completed.push((id, result)); false
+            } else { true }
+        });
+        for (id, result) in completed {
+            if !needed.contains(&id) { continue; }
+            match result {
+                Ok(actions) => {
+                    if let hashbrown::hash_map::Entry::Vacant(entry) = registry.sources.entry(id) {
+                        entry.insert(Arc::new(actions));
+                        state.dynamic_decodes.insert(id);
+                    }
+                }
+                Err(error) => { state.failed_events.insert(id, error); }
+            }
+        }
+    }
     // Released/cancelled tickets cease owning their completed reads even if
     // there is no replacement event to prepare this frame.
     state.pending_media.retain(|id, _| bridge.queued.iter().any(|ticket| ticket.id() == *id));
@@ -56,46 +89,128 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         }
         bridge.ready = engine.activity().is_some() && mix.physics_scale.is_some() && scene.listener().is_some();
         if state.source.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &sources.0)) {
+            let source_started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
             // Virtualized handles retain declaration references without an
             // allocated object or playing voice. Never renumber those refs.
             let mut references = bridge.events.clone();
             let mut events = Vec::new();
+            let mut waiting = false;
+            let mut active_names = std::collections::HashSet::new();
+            let mut active_ids = std::collections::HashSet::new();
+            let mut appended = 0usize;
             for effect in sources.0.effects.values().filter_map(|effect| effect.as_ref().ok()) {
                 for group in &effect.groups {
                     for event in group.sounds.iter().flat_map(|sound| [&sound.start, &sound.stop]).flatten() {
-                        references.entry(event.name.clone()).or_insert_with(|| {
+                        active_names.insert(event.name.clone());
+                        active_ids.insert(event.declaration.id);
+                        if references.contains_key(&event.name) { continue; }
+                        let declaration = &event.declaration;
+                        if !registry.sources.contains_key(&declaration.id)
+                            && !state.failed_events.contains_key(&declaration.id)
+                            && !declaration.game_defined && declaration.game_properties.is_none() {
+                            waiting = true;
+                            state.pending_events.entry(declaration.id).or_insert_with(|| {
+                                let snapshot = registry.decode_snapshot();
+                                let id = declaration.id;
+                                std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
+                                    let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
+                                    let result = snapshot.decode_event(id).map_err(|error| error.to_string());
+                                    if let Some(started) = started {
+                                        eprintln!("FX_LIFECYCLE audio={id:#010x} success={} decode_ms={:.3}",
+                                            result.is_ok(), started.elapsed().as_secs_f64() * 1000.0);
+                                    }
+                                    result
+                                }))
+                            });
+                            continue;
+                        }
+                        references.insert(event.name.clone(), (|| {
                             let declaration = &event.declaration;
                             if declaration.game_defined || declaration.game_properties.is_some() {
                                 return Err(format!("FX declaration {} requires its game sound handler", event.name));
                             }
-                            registry.prepare(declaration.id).map_err(|error| error.to_string())?;
+                            if let Some(error) = state.failed_events.get(&declaration.id) { return Err(error.clone()); }
                             let actions = registry.sources.get(&declaration.id).ok_or("prepared FX sound event is absent")?;
                             if actions.iter().any(|action| match action {
                                 SourceAction::Play { definition, .. } => !definition.can_route(),
                                 SourceAction::Stop { .. } | SourceAction::SetState { .. } => false,
                             }) { return Err(format!("{} requires multichannel FX output conversion", event.name)); }
-                            let reference = u32::try_from(state.events.len() + events.len()).map_err(|_| "too many FX sound declarations")?;
-                            events.push(PreparedEvent { declaration: event.clone(), actions: Arc::new(actions.clone()) });
+                            let reference = if let Some(index) = state.free_events.pop() { index } else {
+                                let index = u32::try_from(state.events.len() + appended).map_err(|_| "too many FX sound declarations")?;
+                                appended += 1;
+                                index
+                            };
+                            events.push((reference, PreparedEvent { declaration: event.clone(), actions: actions.clone() }));
                             Ok(reference)
-                        });
+                        })());
                     }
                 }
             }
+            references.retain(|name, result| result.is_ok() || active_names.contains(name));
             bridge.events = references;
-            bridge.declarations.extend(events.iter().map(|event| event.declaration.clone()));
-            state.events.extend(events);
-            state.source = Some(sources.0.clone());
-            state.reported_playback = false;
-            info!(declarations = bridge.declarations.len(), unavailable = bridge.events.values().filter(|event| event.is_err()).count(),
-                "World FX sound dependencies prepared");
+            for (index, event) in events {
+                let index = index as usize;
+                if index == state.events.len() {
+                    bridge.declarations.push(Some(event.declaration.clone()));
+                    state.events.push(Some(event));
+                } else {
+                    bridge.declarations[index] = Some(event.declaration.clone());
+                    state.events[index] = Some(event);
+                }
+            }
+            if !waiting {
+                state.failed_events.retain(|id, _| active_ids.contains(id));
+                for (index, event) in state.events.iter().enumerate() {
+                    let Some(event) = event else { continue };
+                    if active_names.contains(&event.declaration.name) { state.retiring_events.remove(&(index as u32)); }
+                    else { state.retiring_events.insert(index as u32); }
+                }
+                state.source = Some(sources.0.clone());
+                state.reported_playback = false;
+                info!(declarations = bridge.declarations.len(), unavailable = bridge.events.values().filter(|event| event.is_err()).count(),
+                    "World FX sound dependencies prepared");
+            }
             // DH2_TRACE_FX_SOUND_LIMITS=1: each FX event's Wwise playback limits.
             if trace_fx_sound_limits() {
-                for event in &state.events {
+                for event in state.events.iter().flatten() {
                     let id = event.declaration.declaration.id;
                     eprintln!("FX_SOUND_LIMITS {} id={id:#010x} chains={:?}", event.declaration.name,
                         registry.library.play_limits(id).map_err(|error| error.to_string()));
                 }
             }
+            if let Some(started) = source_started {
+                eprintln!("FX_LIFECYCLE audio_sources waiting={waiting} cpu_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        if !state.retiring_events.is_empty() {
+            let mut released = Vec::new();
+            for &index in &state.retiring_events {
+                let Some(event) = state.events.get(index as usize).and_then(Option::as_ref) else {
+                    released.push(index); continue;
+                };
+                // These two owners are the bridge and its prepared action
+                // table. FX definitions and active instances hold other Arcs.
+                if Arc::strong_count(&event.declaration) > 2
+                    || bridge.playing.references_declaration(index)
+                    || bridge.notifications.iter().any(|note| note.event.declaration == index) {
+                    continue;
+                }
+                let name = event.declaration.name.clone();
+                let id = event.declaration.declaration.id;
+                if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                    eprintln!("FX_LIFECYCLE audio_retire={name} id={id:#010x}");
+                }
+                bridge.events.remove(&name);
+                bridge.declarations[index as usize] = None;
+                state.events[index as usize] = None;
+                state.free_events.push(index);
+                if !state.events.iter().flatten().any(|event| event.declaration.declaration.id == id)
+                    && state.dynamic_decodes.remove(&id) {
+                    registry.sources.remove(&id);
+                }
+                released.push(index);
+            }
+            for index in released { state.retiring_events.remove(&index); }
         }
         if trace_fx_sound_limits() && !bridge.released.is_empty() {
             eprintln!("FX_SOUND_RELEASED {} frame={}", bridge.released.len(), state.trace_frame);
@@ -133,7 +248,8 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         for ticket in std::mem::take(&mut bridge.queued) {
             let previous_media = state.pending_media.remove(&ticket.id());
             let event = ticket.event();
-            let prepared = state.events.get(event.declaration as usize).ok_or("accepted FX event declaration is absent")?;
+            let prepared = state.events.get(event.declaration as usize).and_then(Option::as_ref)
+                .ok_or("accepted FX event declaration is absent")?;
             let object = bridge.objects.get(&event.object).ok_or("accepted FX event object is absent")?;
             let parameter = object.energy;
             let mut holds = Vec::new();
@@ -202,7 +318,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         if trace_fx_sound_limits() && state.trace_frame % 120 == 0 {
             let mut voices = std::collections::BTreeMap::<String, Vec<String>>::new();
             for (_, target, voice) in &playing {
-                let name = state.events.iter().find(|event| event.declaration.declaration.id == target.event)
+                let name = state.events.iter().flatten().find(|event| event.declaration.declaration.id == target.event)
                     .map_or_else(|| format!("event:{}", target.event), |event| event.declaration.name.clone());
                 let levels = voice.debug_levels().iter().map(|(id, volume, peak)| format!("{id}:{volume:.1}dB*{peak:.3}")).collect::<Vec<_>>().join("+");
                 let chain = voice.debug_chain().iter().map(u32::to_string).collect::<Vec<_>>().join(">");

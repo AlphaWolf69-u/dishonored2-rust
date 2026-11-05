@@ -586,8 +586,8 @@ pub(super) fn prepare_local_shadow_owner(
         render_shadow::local_hardware_bias(parameters, 0, quality.depth_32_bits, clamp)?;
     let hardware_bias_spot =
         render_shadow::local_hardware_bias(parameters, 2, quality.depth_32_bits, clamp)?;
-    let copy_state = programs
-        .0
+    let mut program_source = programs.0.try_lock().map_err(|_| "program cache is busy".to_owned())?;
+    let copy_state = program_source
         .as_mut()
         .map_err(|e| e.clone())?
         .definition(b"depthcopy")?

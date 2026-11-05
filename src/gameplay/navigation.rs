@@ -5,7 +5,7 @@
 use super::collision_filter::{filter_info, layer, QueryFilter};
 use crate::entities::physics_material::PhysicsMaterial;
 use bevy_math::Vec3;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 /// `material` value of a triangle whose physics material is not resolved.
 pub const NO_MATERIAL: u32 = u32::MAX;
@@ -34,7 +34,8 @@ pub struct CollisionWorld {
     component_owners: Vec<Option<u32>>,
     component_index: ExpandedIndex,
     free_component_boxes: Vec<(usize, u32)>,
-    owner_ids: HashMap<String, Vec<u32>>,
+    owner_ids: HashMap<Arc<str>, Vec<u32>>,
+    owner_names: Vec<Option<Arc<str>>>,
     owner_active: Vec<bool>,
     materials: Vec<PhysicsMaterial>,
 }
@@ -78,11 +79,15 @@ impl CollisionWorld {
             self.component_owners.push(None);
             let owner = self.owner_active.len() as u32;
             self.owner_active.push(false);
+            self.owner_names.push(None);
             (first, owner)
         });
         self.owner_active[owner as usize] = true;
         self.component_owners[first / 12] = Some(owner);
-        self.owner_ids.entry(entity.to_owned()).or_default().push(owner);
+        let name = self.owner_ids.get_key_value(entity).map(|(name, _)| name.clone())
+            .unwrap_or_else(|| Arc::<str>::from(entity));
+        self.owner_names[owner as usize] = Some(name.clone());
+        self.owner_ids.entry(name).or_default().push(owner);
         let handle = ComponentBox { first, owner, generation: self.component_generations[first / 12] };
         self.update_interaction_box(handle, corners);
         handle
@@ -124,10 +129,12 @@ impl CollisionWorld {
         self.owner_active[handle.owner as usize] = false;
         self.component_owners[handle.first / 12] = None;
         self.component_generations[handle.first / 12] = handle.generation.wrapping_add(1);
-        self.owner_ids.retain(|_, indices| {
-            indices.retain(|&owner| owner != handle.owner);
-            !indices.is_empty()
-        });
+        if let Some(name) = self.owner_names[handle.owner as usize].take() {
+            if let Some(indices) = self.owner_ids.get_mut(name.as_ref()) {
+                indices.retain(|&owner| owner != handle.owner);
+                if indices.is_empty() { self.owner_ids.remove(name.as_ref()); }
+            }
+        }
         self.free_component_boxes.push((handle.first, handle.owner));
     }
     pub fn new(source: impl IntoIterator<Item = [Vec3; 3]>) -> Self {
@@ -158,10 +165,15 @@ impl CollisionWorld {
         owners: Vec<String>,
         materials: Vec<PhysicsMaterial>,
     ) -> Self {
-        let mut owner_ids = HashMap::<String, Vec<u32>>::new();
-        for (index, id) in owners.iter().enumerate() {
-            owner_ids.entry(id.clone()).or_default().push(index as u32);
+        let mut owner_ids = HashMap::<Arc<str>, Vec<u32>>::new();
+        let mut owner_names = Vec::with_capacity(owners.len());
+        for (index, id) in owners.into_iter().enumerate() {
+            let name = owner_ids.get_key_value(id.as_str()).map(|(name, _)| name.clone())
+                .unwrap_or_else(|| Arc::<str>::from(id));
+            owner_ids.entry(name.clone()).or_default().push(index as u32);
+            owner_names.push(Some(name));
         }
+        let owner_count = owner_names.len();
         let mut build_index = ExpandedIndex::default();
         let mut world = Self {
             triangles: Vec::new(),
@@ -172,7 +184,8 @@ impl CollisionWorld {
             component_index: ExpandedIndex::default(),
             free_component_boxes: Vec::new(),
             owner_ids,
-            owner_active: vec![true; owners.len()],
+            owner_names,
+            owner_active: vec![true; owner_count],
             materials,
         };
         for ([a, b, c], owner, material, filter) in source {
@@ -323,9 +336,7 @@ impl CollisionWorld {
     }
 
     pub fn owner_name(&self, owner: u32) -> Option<&str> {
-        self.owner_ids
-            .iter()
-            .find_map(|(name, indices)| indices.contains(&owner).then_some(name.as_str()))
+        self.owner_names.get(owner as usize).and_then(Option::as_deref)
     }
 
     /// Active triangles `filter` accepts whose bounds overlap `min..max`:
@@ -340,18 +351,35 @@ impl CollisionWorld {
             .collect()
     }
 
+    /// Reuse the broad-phase and triangle buffers across repeated sensor casts.
+    pub fn triangles_in_reuse(&self, min: Vec3, max: Vec3, filter: QueryFilter,
+        candidates: &mut Vec<usize>, triangles: &mut Vec<(u32, [Vec3; 3], u32)>) {
+        self.candidates_into(min, max, filter, candidates);
+        triangles.clear();
+        triangles.extend(candidates.iter().map(|&index| {
+            let t = self.triangle(index).expect("indexed collision triangle");
+            (index as u32, [t.a, t.b, t.c], t.owner)
+        }));
+    }
+
     /// Matching triangle indices in ascending order, so results never depend
     /// on hash order (first_hit_details keeps the first of equal distances).
     fn candidates(&self, min: Vec3, max: Vec3, filter: QueryFilter) -> Vec<usize> {
+        let mut found = Vec::new();
+        self.candidates_into(min, max, filter, &mut found);
+        found
+    }
+
+    fn candidates_into(&self, min: Vec3, max: Vec3, filter: QueryFilter, found: &mut Vec<usize>) {
         static TIMING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let started = (*TIMING.get_or_init(|| std::env::var("DH2_DEBUG_COLLISION_TIMING").as_deref() == Ok("1")))
             .then(std::time::Instant::now);
         let low = cell(min);
         let high = cell(max);
-        let mut found;
+        found.clear();
         match &self.index {
             TriangleIndex::Packed { cells, indices, large } => {
-                found = large.iter().map(|&id| id as usize).collect::<Vec<_>>();
+                found.extend(large.iter().map(|&id| id as usize));
                 for x in low.0..=high.0 {
                     for y in low.1..=high.1 {
                         for z in low.2..=high.2 {
@@ -363,7 +391,7 @@ impl CollisionWorld {
                 }
             }
             TriangleIndex::Expanded(index) => {
-                found = index.large.clone();
+                found.extend(index.large.iter().copied());
                 for x in low.0..=high.0 {
                     for y in low.1..=high.1 {
                         for z in low.2..=high.2 {
@@ -413,7 +441,6 @@ impl CollisionWorld {
                 }
             });
         }
-        found
     }
 
     /// Highest walkable surface below/within one step above the proposed feet.

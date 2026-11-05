@@ -131,6 +131,7 @@ struct ParticleGpu {
     source: std::sync::Arc<super::screen_effects::ScreenEffectSources>,
     /// Every level particle material has its GPU material (`PARTICLE_GATE`).
     prepared: bool,
+    retirement: u64,
 }
 
 /// Level loading gate: the level's particle GPU materials exist.
@@ -200,6 +201,8 @@ pub(super) fn register(app: &mut App) {
     app.init_resource::<super::world_effects::WorldEffectSources>();
     app.init_resource::<super::world_effects::WorldEffectDefinitions>();
     app.init_resource::<super::world_effects::WorldEffectFrames>();
+    app.init_resource::<super::world_effects::DynamicEffects>();
+    app.init_resource::<super::world_effects::DynamicMaterialPrewarm>();
     app.init_resource::<super::world_sounds::WorldSounds>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_sounds::WorldSounds,
@@ -212,6 +215,12 @@ pub(super) fn register(app: &mut App) {
     >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::WorldEffectSources,
+    >::default());
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::world_effects::DynamicEffects,
+    >::default());
+    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
+        super::world_effects::DynamicMaterialPrewarm,
     >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::screen_effects::ScreenEffectMaterials,
@@ -285,6 +294,7 @@ struct ParticleLightingScene<'w> {
     local_completion: Option<Res<'w,super::shadow_pass::LocalShadowCompletion>>,
     lights: Res<'w,super::fog_light_scattering::LocalFogFrame>,
     world_sources: Res<'w,super::world_effects::WorldEffectSources>,
+    prewarm: Res<'w,super::world_effects::DynamicMaterialPrewarm>,
 }
 /// Submit live sprites after atmosphere/depth and before ordinary transparency.
 fn render_particles(
@@ -333,11 +343,30 @@ fn render_particles(
         gpu.particles = None;
     }
     let result = (|| -> Result<(), String> {
-        let (instances, draw_capacity) = gpu.particle_systems.capacity();
+        let (mut instances, mut draw_capacity) = gpu.particle_systems.capacity();
+        let mut prewarm_only = false;
         if instances == 0 || draw_capacity == 0 {
-            // A level without particle capacity has no particle materials to prepare.
+            // A runtime request may be the level's first particle system.
+            // Allocate a minimal pass for its material prewarm rather than
+            // waiting for playback, which itself waits for that prewarm.
             crate::loading::complete(PARTICLE_GATE);
-            return Ok(());
+            let prewarm = &lighting_scene.prewarm;
+            let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            if let Some(particles) = particles.as_mut() {
+                if particles.retirement != prewarm.retirement {
+                    particles.pass.retire_unused_materials();
+                    particle_images.retire_unused();
+                    particles.retirement = prewarm.retirement;
+                    prewarm.retired_signal.fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
+            use std::sync::atomic::Ordering;
+            if prewarm.generation == 0
+                || prewarm.completed.load(Ordering::Acquire) == prewarm.generation
+                || prewarm.failed.load(Ordering::Acquire) == prewarm.generation { return Ok(()); }
+            instances = instances.max(1);
+            draw_capacity = draw_capacity.max(1);
+            prewarm_only = true;
         }
         if !camera.hdr
             || target.main_texture().sample_count() != 1
@@ -403,7 +432,8 @@ fn render_particles(
                 colour_format,
                 depth_format,
                 source: sources.clone(),
-                prepared: false,
+                prepared: prewarm_only,
+                retirement: lighting_scene.prewarm.retirement,
             });
             info!(instances, draws=draw_capacity, "Particle colour resources prepared");
         }
@@ -431,6 +461,38 @@ fn render_particles(
                     crate::loading::complete(PARTICLE_GATE);
                 }
                 particles.prepared = true;
+            }
+            let prewarm = &lighting_scene.prewarm;
+            if particles.retirement != prewarm.retirement {
+                particles.pass.retire_unused_materials();
+                particle_images.retire_unused();
+                particles.retirement = prewarm.retirement;
+                prewarm.retired_signal.fetch_add(1, std::sync::atomic::Ordering::Release);
+            }
+            use std::sync::atomic::Ordering;
+            if prewarm.generation != 0
+                && prewarm.completed.load(Ordering::Acquire) != prewarm.generation
+                && prewarm.failed.load(Ordering::Acquire) != prewarm.generation
+                && prewarm.sources.particle_materials().flat_map(|material| material.images.values())
+                    .filter(|image| image.scene_owned)
+                    .all(|image| lighting_scene.scene_images.handles.contains_key(&image.path)) {
+                let console = crate::platform::console::shared().read();
+                let started = super::world_effects::trace_lifecycle().then(std::time::Instant::now);
+                match particles.pass.prepare_materials_bounded(particle_images, &device, &queue,
+                    prewarm.sources.particle_materials(), &console.cvars, sampler, Some(1)) {
+                    Ok((created, complete)) => {
+                        if let Some(started) = started {
+                            eprintln!("FX_LIFECYCLE gpu_prepare generation={} created={created} complete={complete} cpu_ms={:.3}",
+                                prewarm.generation, started.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        if complete { prewarm.completed.store(prewarm.generation, Ordering::Release); }
+                    }
+                    Err(error) if error.contains("not scene-resident") => {},
+                    Err(error) => {
+                        warn!("Dynamic particle material unavailable: {error}");
+                        prewarm.failed.store(prewarm.generation, Ordering::Release);
+                    }
+                }
             }
         }
         // Prepare the shared particle pipeline once the live pool exists,
@@ -579,6 +641,8 @@ struct FxUpdateInputs<'w> {
     world_sources: Res<'w, super::world_effects::WorldEffectSources>,
     world_graphs: Res<'w, super::world_effects::WorldEffectDefinitions>,
     world_frames: Res<'w, super::world_effects::WorldEffectFrames>,
+    dynamic: Res<'w, super::world_effects::DynamicEffects>,
+    prewarm: Res<'w, super::world_effects::DynamicMaterialPrewarm>,
     world_sounds: Res<'w, super::world_sounds::WorldSounds>,
     decals: Res<'w, super::projected_decals::DecalScene>,
     water_selection: Option<Res<'w, super::water_scene::WaterViewSelection>>,
@@ -673,7 +737,8 @@ fn prepare_screen_effects(
     );
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let CameraGpu { world_particles, particle_systems, .. } = &mut *gpu;
-        match world_particles.advance(&fx.world_graphs,&fx.world_sources.0,&fx.world_frames,
+        let retired_before = world_particles.dynamic_retired();
+        match world_particles.advance(&fx.world_graphs,&fx.world_sources.0,&fx.dynamic,&fx.world_frames,
             particle_systems,&fx.world_sounds,&fx.decals,water.matrices.frame,camera_frame,underwater,&inputs.world) {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
@@ -681,6 +746,13 @@ fn prepare_screen_effects(
                 *world_error = Some(error);
             }
             Err(_) => {},
+        }
+        let retired = world_particles.dynamic_retired() != retired_before;
+        if retired {
+            let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            if let Some(particles) = particles.as_mut() { particles.pass.retire_unused_materials(); }
+            particle_images.retire_unused();
+            fx.prewarm.retired_signal.fetch_add(1, std::sync::atomic::Ordering::Release);
         }
     }
     match result {

@@ -16,6 +16,64 @@ pub struct Readable {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadableKind { Document, Book }
 
+#[derive(Clone, Debug)]
+pub struct AttributeModifier {
+    /// Declaration identity and array index correspond to the source record
+    /// retained by 14060b780 for timed removal.
+    pub item: String,
+    pub index: usize,
+    pub tag: String,
+    pub increase: f32,
+    pub percentage: f32,
+    pub duration: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ItemModifiers {
+    pub enhancement: bool,
+    pub normal: Vec<AttributeModifier>,
+    pub suppressed: Vec<AttributeModifier>,
+}
+
+/// Immutable item modifiers, acquired off-thread with the loadout/item.
+pub fn modifiers(catalog: &Catalog, item: &str) -> Result<ItemModifiers, String> {
+    let fields = item_fields(catalog, item)?;
+    modifiers_fields(item, &fields)
+}
+
+pub fn modifiers_fields(item: &str, fields: &[(String, Value)]) -> Result<ItemModifiers, String> {
+    let number = |fields: &[(String, Value)], name: &str| -> Result<f32, String> {
+        match atom(fields, name) {
+            None => Ok(0.0),
+            Some(value) => value.parse::<f32>().ok().filter(|value| value.is_finite())
+                .ok_or_else(|| format!("invalid modifier {name}: {value}")),
+        }
+    };
+    let parse_list = |name: &str, suppressed: bool| -> Result<Vec<AttributeModifier>, String> {
+        let Some(Value::Scope(list)) = fields.iter().find(|(key, _)| key == name).map(|(_, value)| value) else { return Ok(Vec::new()) };
+        let count = atom(list, "num").unwrap_or("0").parse::<usize>().map_err(|_| "invalid modifier count")?;
+        let mut result = Vec::new();
+        for index in 0..count {
+            let key = format!("item[{index}]");
+            let Some(Value::Scope(fields)) = list.iter().find(|(name, _)| name == &key).map(|(_, value)| value) else { continue };
+            let Some(tag) = atom(fields, "m_attribute").filter(|tag| !tag.is_empty() && !tag.eq_ignore_ascii_case("NULL")) else { continue };
+            // Two lists live at different declaration addresses, even when
+            // both have item[0]. Preserve distinct stable record identities.
+            let identity = index.checked_mul(2).and_then(|index| index.checked_add(usize::from(suppressed)))
+                .ok_or("modifier identity overflow")?;
+            result.push(AttributeModifier { item: item.to_owned(), index: identity, tag: tag.to_owned(),
+                increase: number(fields, "m_increase")?, percentage: number(fields, "m_percentage")?,
+                duration: number(fields, "m_duration")? });
+        }
+        Ok(result)
+    };
+    Ok(ItemModifiers {
+        enhancement: matches!(atom(fields, "m_type"), Some("TYPE_ENHANCEMENT" | "18")),
+        normal: parse_list("m_modifiers", false)?,
+        suppressed: parse_list("m_magicSuppressedModifiers", true)?,
+    })
+}
+
 /// 140617930 applies the character inventory component's default loadout
 /// when there is no restored inventory, before any gameflow loadout.
 pub fn default_loadout(catalog: &Catalog, character: &str) -> Result<Vec<(String, u32)>, String> {
@@ -74,7 +132,11 @@ pub struct ReadableLimits {
 }
 impl ReadableLimits {
     pub fn maximum(&self, item: &str) -> u32 {
-        self.overrides.get(&item.to_ascii_lowercase()).copied().unwrap_or(self.default)
+        if item.bytes().all(|byte| !byte.is_ascii_uppercase()) {
+            self.overrides.get(item).copied().unwrap_or(self.default)
+        } else {
+            self.overrides.get(&item.to_ascii_lowercase()).copied().unwrap_or(self.default)
+        }
     }
     /// 140617300 gives every inventory item either its collection override or
     /// the collection type's default (0/1, enum 1419feba0).
@@ -168,53 +230,37 @@ fn note_type(name: &str) -> Result<i32, String> {
 /// Resolve the item declaration and inherited values. Non-readable items and
 /// interactive maps do not enter the note movie. The latter use `_C_ShowMap`.
 pub fn readable(catalog: &Catalog, item: &str) -> Result<Option<Readable>, String> {
-    let mut chain = Vec::new();
-    let mut next = Some(item.to_owned());
-    while let Some(name) = next.take() {
-        if chain.len() >= 32 || chain.iter().any(|(previous, _): &(String, Vec<(String, Value)>)| previous == &name) {
-            return Err(format!("inventory item inheritance cycle or excessive depth: {name}"));
-        }
-        let path = format!("generated/decls/inventoryitem/{name}.decl");
-        let bytes = catalog.read(&path).map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("inventory item missing: {path}"))?;
-        let text = entities::declaration_text(&bytes);
-        let fields = entities::parse_declaration(&text).map_err(|e| format!("{path}: {e}"))?;
-        next = atom(&fields, "inherit").map(str::to_owned);
-        chain.push((name, fields));
-    }
-    // Child fields override their parent. Constructor 14063c510 initializes
-    // m_noteType to -1 and m_readableCanBePickedUp to true.
-    let mut kind = None;
-    let mut title = None;
-    let mut text = None;
-    let mut style = None;
-    let mut can_pick_up = None;
-    let mut journal_image = None;
-    for (_, fields) in &chain {
-        let Some(Value::Scope(edit)) = fields.iter().find(|(k, _)| k == "edit").map(|(_, v)| v) else { continue };
-        kind = kind.or_else(|| atom(edit, "m_type"));
-        title = title.or_else(|| atom(edit, "m_name"));
-        text = text.or_else(|| atom(edit, "m_description"));
-        style = style.or_else(|| atom(edit, "m_noteType"));
-        can_pick_up = can_pick_up.or_else(|| atom(edit, "m_readableCanBePickedUp"));
-        journal_image = journal_image.or_else(|| atom(edit, "m_journalImage"));
-    }
-    let kind = match kind {
+    let fields = item_fields(catalog, item)?;
+    readable_fields(&fields)
+}
+
+/// Resolve once, then pass these same fields to the note or map reader.
+pub fn item_fields(catalog: &Catalog, item: &str) -> Result<Vec<(String, Value)>, String> {
+    entities::player::resolved_decl("inventoryitem", item, |path| {
+        Ok(catalog.read(path).map_err(|error| error.to_string())?
+            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+    })
+}
+
+pub fn readable_fields(fields: &[(String, Value)]) -> Result<Option<Readable>, String> {
+    // Constructor 14063c510 initializes m_noteType to -1 and
+    // m_readableCanBePickedUp to true.
+    let kind = match atom(fields, "m_type") {
         Some("TYPE_NOTE_DOCUMENT") => ReadableKind::Document,
         Some("TYPE_BOOK") => ReadableKind::Book,
         _ => return Ok(None),
     };
-    let can_be_picked_up = match can_pick_up.unwrap_or("true") {
+    let can_be_picked_up = match atom(fields, "m_readableCanBePickedUp").unwrap_or("true") {
         "true" => true,
         "false" => false,
         other => return Err(format!("invalid m_readableCanBePickedUp {other}")),
     };
     Ok(Some(Readable {
         kind,
-        title: title.unwrap_or("").to_owned(),
-        text: text.unwrap_or("").to_owned(),
-        note_type: style.map(note_type).transpose()?.unwrap_or(-1),
+        title: atom(fields, "m_name").unwrap_or("").to_owned(),
+        text: atom(fields, "m_description").unwrap_or("").to_owned(),
+        note_type: atom(fields, "m_noteType").map(note_type).transpose()?.unwrap_or(-1),
         can_be_picked_up,
-        journal_image: journal_image.filter(|image| !image.is_empty()).map(str::to_owned),
+        journal_image: atom(fields, "m_journalImage").filter(|image| !image.is_empty()).map(str::to_owned),
     }))
 }

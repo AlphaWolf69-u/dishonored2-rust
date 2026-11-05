@@ -5,8 +5,10 @@ use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_own
     PlaybackContainer, PlaybackNode, PlaybackSwitch, MediaBytes};
 use std::{borrow::Cow, collections::{HashMap, HashSet}, io, sync::{Arc, Mutex, Weak}};
 
+#[derive(Clone)]
 struct LoadedBank<'a> { bytes: BankBytes<'a>, feedback: bool }
 
+#[derive(Clone)]
 enum BankBytes<'a> {
     Borrowed(&'a [u8]),
     Shared(MediaBytes),
@@ -71,6 +73,16 @@ pub struct PlaybackBanks<'a> {
     events: HashMap<u32, Object>,
     custom_effects: HashMap<u32, Object>,
     property_chains: Mutex<HashMap<u32, Weak<[super::NodeProperties]>>>,
+}
+
+impl Clone for PlaybackBanks<'_> {
+    fn clone(&self) -> Self {
+        Self {
+            banks: self.banks.clone(), actors: self.actors.clone(), actions: self.actions.clone(),
+            events: self.events.clone(), custom_effects: self.custom_effects.clone(),
+            property_chains: Mutex::new(self.property_chains.lock().unwrap_or_else(|error| error.into_inner()).clone()),
+        }
+    }
 }
 
 impl<'a> PlaybackBanks<'a> {

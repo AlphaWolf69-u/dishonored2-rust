@@ -62,6 +62,34 @@ impl Default for ResidentImages {
     }
 }
 impl ResidentImages {
+    /// Lease a streamed scene view for other named consumers without making
+    /// the registry itself keep a runtime-only image alive. UI owners that
+    /// acquire it retain their own strong lease.
+    pub(super) fn lease_scene_view(&self, path: &str, handle: &Handle<Image>, level: DiffuseMipLevel,
+        mip_count: u32) -> Arc<ResidentImage> {
+        let mut registry = self.registry.lock().unwrap();
+        if let Some(existing) = registry.resident.get(path).into_iter()
+            .chain(registry.inline.get(path))
+            .find(|image| image.handle.id() == handle.id()) {
+            return existing.clone();
+        }
+        if let Some(existing) = registry.leases.get(path).and_then(Weak::upgrade) {
+            if existing.handle.id() == handle.id() { return existing; }
+        }
+        let bytes = (0..mip_count).map(|mip| level.format.mip_bytes(
+            (level.width >> mip).max(1), (level.height >> mip).max(1))).sum();
+        let image = Arc::new(ResidentImage { handle: handle.clone(),
+            extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false });
+        registry.leases.insert(path.to_owned(), Arc::downgrade(&image));
+        image
+    }
+
+    pub(super) fn retire_unused_scene_lease(&self, path: &str) {
+        let mut registry = self.registry.lock().unwrap();
+        if registry.leases.get(path).is_some_and(|lease| lease.strong_count() == 0) {
+            registry.leases.remove(path);
+        }
+    }
     /// Diagnostic restores the former per-consumer identity boundary.
     pub(super) fn consumer(&self) -> Self {
         if self.separate { Self { registry: Arc::default(), separate: true } }

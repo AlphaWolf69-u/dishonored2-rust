@@ -19,25 +19,34 @@ pub struct SoundEvent(pub Request);
 
 #[derive(Resource, Default)]
 struct WwiseRegistry {
-    banks: Vec<Bank>,
+    banks: Arc<Vec<Bank>>,
     packages: HashMap<PathBuf, Arc<crate::assets::wwise::Package>>,
     shared_banks: usize,
     shared_attenuations: std::collections::HashSet<u32>,
-    attenuations: HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-    library: crate::assets::wwise::PlaybackBanks<'static>,
-    sources: HashMap<u32, Vec<SourceAction>>,
+    attenuations: Arc<HashMap<u32, Arc<crate::assets::wwise::Attenuation>>>,
+    library: Arc<crate::assets::wwise::PlaybackBanks<'static>>,
+    sources: HashMap<u32, Arc<Vec<SourceAction>>>,
     scheduled_selections: graph::Selections,
     states: bevy_backend::StateGroups,
     /// The level's listed sound events were prepared at load.
     preloaded: bool,
     level_prepared: bool,
     /// Package location of every media read, for streamed sources.
-    locators: std::sync::Mutex<HashMap<u32, graph::StreamLocator>>,
-    stream_acquisition: std::sync::Mutex<(u64, u64, u64, std::time::Duration)>,
+    locators: Arc<std::sync::Mutex<HashMap<u32, graph::StreamLocator>>>,
+    stream_acquisition: Arc<std::sync::Mutex<(u64, u64, u64, std::time::Duration)>>,
     stream_io: Arc<crate::assets::wwise::stream_io::ReadPool>,
 }
 
 impl WwiseRegistry {
+    /// Immutable bank ownership for a background event decode. The encoded
+    /// banks and decoded index are shared; a level change can retire its own
+    /// references while an already-running read finishes safely.
+    fn decode_snapshot(&self) -> Self {
+        Self { banks: self.banks.clone(), attenuations: self.attenuations.clone(),
+            library: self.library.clone(), locators: Arc::default(),
+            stream_acquisition: self.stream_acquisition.clone(), stream_io: self.stream_io.clone(),
+            ..Default::default() }
+    }
     fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
         let mut files = HashMap::<usize, std::fs::File>::new();
         self.library.event_playback_shared(event, |owner, media_id, stream_type| {
@@ -87,7 +96,7 @@ impl WwiseRegistry {
             super::load_timing::late("sound event", &format!("{event:#010x}"));
         }
         let actions = self.decode_event(event)?;
-        self.sources.insert(event, actions);
+        self.sources.insert(event, Arc::new(actions));
         Ok(())
     }
 
@@ -162,6 +171,7 @@ impl AudioMix {
     }
 }
 
+#[derive(Clone)]
 struct Bank {
     path: PathBuf,
     package: Arc<crate::assets::wwise::Package>,
@@ -209,8 +219,8 @@ pub(super) fn begin_level(world: &mut World) {
     registry.sources.clear();
     registry.locators.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let keep = registry.shared_banks;
-    registry.library.truncate(keep);
-    registry.banks.truncate(keep);
+    Arc::make_mut(&mut registry.library).truncate(keep);
+    Arc::make_mut(&mut registry.banks).truncate(keep);
     let actors: std::collections::HashSet<_> = registry.library.actor_ids().collect();
     // Global history belongs to its retained actor; object-scoped history
     // belongs to the outgoing objects. Keep the same Arc for live UI voices.
@@ -218,7 +228,7 @@ pub(super) fn begin_level(world: &mut World) {
         .retain(|(actor, emitter), _| actors.contains(actor) && emitter.is_none_or(|e| e == Emitter::Menu));
     let sound_ids = registry.library.sound_ids().collect();
     let shared_attenuations = registry.shared_attenuations.clone();
-    registry.attenuations.retain(|id, _| shared_attenuations.contains(id));
+    Arc::make_mut(&mut registry.attenuations).retain(|id, _| shared_attenuations.contains(id));
     let packages: std::collections::HashSet<_> = registry.banks.iter().map(|bank| bank.path.clone()).collect();
     registry.packages.retain(|path, _| packages.contains(path));
     registry.stream_io.retain_packages(&packages);
@@ -364,10 +374,10 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
                 })();
                 match indexed {
                     Ok((bank_mix, bank_attenuations, bytes)) => {
-                        for attenuation in bank_attenuations { registry.attenuations.entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
+                        for attenuation in bank_attenuations { Arc::make_mut(&mut registry.attenuations).entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
                         if bank_mix.is_some() { output_mix = bank_mix; }
-                        registry.library.insert(bytes.into())?;
-                        registry.banks.push(Bank { path: path.clone(), package: package.clone(), entry });
+                        Arc::make_mut(&mut registry.library).insert(bytes.into())?;
+                        Arc::make_mut(&mut registry.banks).push(Bank { path: path.clone(), package: package.clone(), entry });
                     }
                     Err(error) => debug!("Skipping Wwise bank in {}: {error}", path.display()),
                 }
@@ -555,7 +565,7 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
         }
     }
     crate::assets::wwise::report_stream_diagnostics();
-    registry.sources.extend(prepared);
+    registry.sources.extend(prepared.into_iter().map(|(event, actions)| (event, Arc::new(actions))));
     count
 }
 
@@ -624,7 +634,7 @@ fn play_events(
             let mut holds = Vec::new();
             let mut loading = false;
             if graph::preload_event_streams() {
-                for action in &actions {
+                for action in actions.iter() {
                     let SourceAction::Play { definition, .. } = action else { continue };
                     for source in definition.streamed() {
                         match source.acquire() {
@@ -643,7 +653,7 @@ fn play_events(
                 continue;
             }
             let playing_id = engine.playing_id();
-            for action in actions {
+            for action in actions.iter().cloned() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
                         if let Err(error) = engine.post_state(action, target_path, event, emitter) {
