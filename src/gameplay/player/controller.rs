@@ -6,6 +6,9 @@ use super::character_proxy::SupportState;
 use super::states::{StateId, StateMachine};
 use bevy_math::Vec3;
 
+/// arkPlayerPossessionController::STATES_COUNT, the inactive sentinel.
+const POSSESSION_STATES_COUNT: i32 = 14;
+
 /// eActions_t ids (binding_tables.rs `ACTIONS`).
 pub const ACTION_MOVE: i32 = 1;
 pub const ACTION_MOVE_FORWARD: i32 = 2;
@@ -175,7 +178,7 @@ impl Controller {
         let slide_action = action_of(StateId::SLIDING);
         Self {
             mapping,
-            possession_state: 14,
+            possession_state: POSSESSION_STATES_COUNT,
             allowed: !0,
             pressed: 0,
             released: 0,
