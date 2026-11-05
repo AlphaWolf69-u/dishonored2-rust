@@ -2,7 +2,6 @@
 use dishonored2_rust::archive;
 use dishonored2_rust::bmodel;
 use dishonored2_rust::entities;
-use dishonored2_rust::runtime;
 use dishonored2_rust::tome;
 
 use std::{collections::BTreeMap, env, fs, path::Path};
@@ -999,7 +998,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         distance_squared(a.position, start.position)
             .total_cmp(&distance_squared(b.position, start.position))
     });
-    let mut runtime = runtime::WorldState::from_pickups(&pickups)?;
     println!(
         "Player start {:?}; {} map-local pickup instances",
         start.position,
@@ -1014,13 +1012,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pickup.quantity,
             pickup.position
         );
-    }
-    if let Some(pickup) = pickups.first() {
-        let event = runtime
-            .collect_pickup(&pickup.entity_id)
-            .map_err(|error| format!("runtime pickup failed: {error:?}"))?;
-        assert!(!runtime.pickup_available(&pickup.entity_id));
-        println!("Nearest pickup runtime event: {event:?}");
     }
     let pickup_ids: std::collections::HashSet<&str> = document.definitions.iter()
         .filter(|definition| definition.kind == "entity" && definition.fields.iter().any(|(key, value)| {

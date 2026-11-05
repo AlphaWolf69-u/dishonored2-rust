@@ -8,7 +8,7 @@ use super::{
     shadow_pass, shadow_pipeline, shadow_receiver, shadow_sampling, tome, view_to_game, Arc,
     Extent3d, ParallelShadowOwner, ProgramCacheSource, ShadowCasterWorld,
     ShadowMaterials, ShadowModelBoundsSources, VegetationMeshInputs,
-    ViewSettings, WorldShadowMeshSources, PickupState, Projection, RenderModelSurface,
+    ViewSettings, WorldShadowMeshSources, Projection, RenderModelSurface,
     RenderSourcePlacements, SceneData, SceneRenderQueue, ShaderBuffer,
     TomeWorld,
 };
@@ -32,7 +32,6 @@ pub(super) struct ModelShadowSource {
     pub skinned: bool,
     pub surfaces: Vec<(usize, i32, Result<u8, String>)>,
     pub instances: std::ops::Range<usize>,
-    pub pickup_id: Option<String>,
     pub flags_1c30: u8,
     pub flags_18bc: u8,
     pub flags_18bd: u8,
@@ -65,7 +64,6 @@ pub(super) fn collect_model_casters(
     sources: Res<ModelShadowSources>,
     scene: Res<SceneData>,
     queue: Res<SceneRenderQueue>,
-    pickups: Res<PickupState>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     frame_count: Res<bevy::diagnostic::FrameCount>,
     mut output: ResMut<ModelCasterFrame>,
@@ -98,13 +96,6 @@ pub(super) fn collect_model_casters(
             .cull_distance;
         let mut collected = Vec::new();
         for (source_index, source) in sources.0.iter().enumerate() {
-            if source
-                .pickup_id
-                .as_deref()
-                .is_some_and(|id| !pickups.world.pickup_available(id))
-            {
-                continue;
-            }
             let surfaces = source
                 .surfaces
                 .iter()
@@ -1307,7 +1298,6 @@ pub(super) fn prepare_parallel_shadow_cpu(
     world: Option<Res<TomeWorld>>,
     caster_world: Option<Res<ShadowCasterWorld>>,
     model_bounds: Res<ShadowModelBoundsSources>,
-    pickups: Res<PickupState>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     coarse: Res<coarse_depth::CoarseDepthMailbox>,
     frame_count: Res<bevy::diagnostic::FrameCount>,
@@ -1535,7 +1525,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
             radius: scale,
             override_center: false,
         });
-        let dynamic_bounds = model_bounds.active_bounds(&queue, &pickups)?;
+        let dynamic_bounds = model_bounds.active_bounds(&queue)?;
         let ray = toward_sun.map(|value| f32::from_bits(value.to_bits() ^ 0x8000_0000));
         let mut depth_projection = ReceiverDepthProjection {
             receiver_rows: [[0.0; 4]; 4],

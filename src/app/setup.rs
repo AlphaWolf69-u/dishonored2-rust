@@ -8,12 +8,12 @@ use super::{
     local_light_clip_to_world, local_shadow_updates, material, mean_game_position,
     needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, render_bounds, render_light, render_model,
-    rest_skinning, retain_model_shadow_position, retain_skin_inputs, runtime, shadow_pipeline,
+    rest_skinning, retain_model_shadow_position, retain_skin_inputs, shadow_pipeline,
     shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
     CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass, DiffuseMipState,
     FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet, LocalLightCull,
-    MaterialResolver, NavigationWorld, PathBuf, PickupInstance, PickupState,
+    MaterialResolver, NavigationWorld, PathBuf,
     PlacedModelQueries, PlacedModelQueryGroup, ProbeMaterial, ProgramCacheSource, Projection,
     RectLight, RenderDevice, RenderInstance, RenderInstanceSource, RenderModelSurface,
     RenderSourcePlacements, RenderSuppressionGroup, SceneData, SceneRenderQueue, ShaderBuffer,
@@ -587,7 +587,7 @@ pub(super) fn prepare(
                     },
                     transform: Transform::IDENTITY,
                     bounds,
-                    pickup_id: None,
+
                     entity: None,
                     visible: false,
                 };
@@ -612,7 +612,7 @@ pub(super) fn prepare(
                     },
                     transform: instance,
                     bounds,
-                    pickup_id: None,
+
                     entity: None,
                     visible: false,
                 }
@@ -646,11 +646,6 @@ pub(super) fn prepare(
     let mut md6_cache = HashMap::<String, Option<bmd6::ModelInfo>>::new();
     let mut md6_rest_pose_instances = 0usize;
     let mut model_mesh_handles = HashMap::<(String, usize, bool, u8), Handle<Mesh>>::new();
-    let pickup_ids: HashSet<&str> = scene
-        .pickups
-        .iter()
-        .map(|pickup| pickup.entity_id.as_str())
-        .collect();
     let mut model_instances = 0usize;
     let mut model_surfaces = 0usize;
     let mut placed_model_queries = Vec::new();
@@ -863,7 +858,7 @@ pub(super) fn prepare(
                         probe_index: mat.probe_index,
                         transform,
                         bounds,
-                        pickup_id: None,
+
                         entity: None,
                         visible: false,
                     });
@@ -883,9 +878,6 @@ pub(super) fn prepare(
                     surfaces: caster_surfaces,
                     skinning: Some(skinning),
                     instances: model_render_start..render_instances.len(),
-                    pickup_id: pickup_ids
-                        .contains(placement.id.as_str())
-                        .then(|| placement.id.clone()),
                     flags_1c30: render_model::model_owner_bounds_flags(
                         0,
                         [
@@ -1069,9 +1061,6 @@ pub(super) fn prepare(
                 probe_index: mat.probe_index,
                 transform,
                 bounds,
-                pickup_id: pickup_ids
-                    .contains(placement.id.as_str())
-                    .then(|| placement.id.clone()),
                 entity: None,
                 visible: false,
             });
@@ -1091,9 +1080,6 @@ pub(super) fn prepare(
             surfaces: caster_surfaces,
             skinning: None,
             instances: model_render_start..render_instances.len(),
-            pickup_id: pickup_ids
-                .contains(placement.id.as_str())
-                .then(|| placement.id.clone()),
             flags_1c30: render_model::model_owner_bounds_flags(
                 0,
                 [
@@ -1386,18 +1372,6 @@ pub(super) fn prepare(
     }
     commands.insert_resource(super::player::PlayerState { debug_free_fly: player.is_none(), player, difficulty: catalog.and_then(super::player::load_difficulty) });
     commands.insert_resource(super::player::PlayerInput::default());
-    commands.insert_resource(PickupState {
-        items: scene
-            .pickups
-            .iter()
-            .map(|pickup| PickupInstance {
-                entity_id: pickup.entity_id.clone(),
-                position: game_to_view(pickup.position),
-            })
-            .collect(),
-        world: runtime::WorldState::from_pickups(&scene.pickups)
-            .expect("level contains invalid or duplicate pickup definitions"),
-    });
     if lit {
         // lightcontext HQ/AQ/LQ_ComputeAmbientLighting explicitly disable
         // the old env/ambient high/low term. Probe irradiance owns ambient;
@@ -1733,10 +1707,6 @@ pub(super) fn prepare(
     println!(
         "Controls: mouse/arrows look (captured after loading), click to recapture mouse, Esc release; G toggles walk/free-fly; WASD move, Shift sprint, Space jump in walk; F8 save collision report and screenshot; Q/E vertical in free-fly; PageUp/PageDown region, Home reset, End overview"
     );
-    println!(
-        "Mapped pickups with explicit item and quantity: {}",
-        scene.pickups.len()
-    );
     commands.insert_resource(FocusTargets { targets, active });
     let mut tome_render_instances =
         TomeRenderInstanceMap::from_world_mapping(&scene.world, &bwm_visibility_render_instances);
@@ -1959,7 +1929,6 @@ pub(super) fn prepare(
     });
     // Every world mesh is uploaded and its shadow/water/probe inputs are
     // built; the original keeps no CPU copy of uploaded world geometry.
-    drop(pickup_ids);
     for mesh in &mut scene.world.meshes {
         mesh.positions = Vec::new();
         mesh.uvs = Vec::new();

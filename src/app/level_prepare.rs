@@ -67,7 +67,7 @@ pub(super) fn prepare_level(
             startup.elapsed().as_secs_f64()
         );
     }
-    let (player_start, placed_models, pickups, entity_document) =
+    let (player_start, placed_models, entity_document) =
         match level.read_entities(catalog.as_ref().unwrap())? {
             Some(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -76,11 +76,10 @@ pub(super) fn prepare_level(
                 (
                     entities::player_start(&document),
                     entities::render_placements(&document),
-                    entities::pickups(&document),
                     Some(document),
                 )
             }
-            None => (None, Vec::new(), Vec::new(), None),
+            None => (None, Vec::new(), None),
         };
     if env::var("DH2_TRANSFORM_AUDIT").as_deref() == Ok("1") {
         let samples = [
@@ -926,7 +925,6 @@ pub(super) fn prepare_level(
             shadow_cascade_controls,
             shadow_cascade_fars,
             far_shadow_bounds,
-            pickups,
             catalog,
         })
         .insert_resource(super::state::EnvironmentVolumes(environment_volumes));

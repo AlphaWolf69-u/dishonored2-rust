@@ -4,8 +4,6 @@ use super::{
     view_of, view_to_game, AccumulatedMouseMotion, BenchmarkSeconds,
     CoordinateOverlay, CursorGrabMode, CursorOptions, FocusTargets,
 };
-#[cfg(test)]
-use super::{navigation, PickupState};
 use crate::gameplay::player::controller;
 use bevy::prelude::*;
 
@@ -261,34 +259,4 @@ pub(super) fn update_coordinate_overlay(
     };
 }
 
-#[cfg(test)]
-pub(super) fn pickup_in_view(
-    camera: &Transform,
-    state: &PickupState,
-    collision: Option<&navigation::CollisionWorld>,
-) -> Option<usize> {
-    let forward = camera.forward().as_vec3();
-    state
-        .items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| state.world.pickup_available(&item.entity_id))
-        .filter_map(|(index, item)| {
-            let direction = item.position - camera.translation;
-            let distance = direction.length();
-            if distance > 2.5 || distance < 0.05 || forward.dot(direction / distance) < 0.8 {
-                return None;
-            }
-            // Leave a short margin for the pickup's own physics surface.
-            if collision
-                .and_then(|world| world.first_hit(camera.translation, item.position))
-                .is_some_and(|hit| hit < distance - 0.25)
-            {
-                return None;
-            }
-            Some((index, distance))
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(index, _)| index)
-}
 

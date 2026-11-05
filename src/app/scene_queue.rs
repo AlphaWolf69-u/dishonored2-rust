@@ -1,7 +1,7 @@
 //! Scene queue.
 use super::{
     env, render_model, surface_gpu, texture, tome, BTreeMap, DiffuseMipState, HashMap,
-    MaterialHandle, PickupState, RenderInstance, RenderModelSurface, TomeRenderInstanceMap,
+    MaterialHandle, RenderInstance, RenderModelSurface, TomeRenderInstanceMap,
     TomeWorld,
 };
 use bevy::prelude::*;
@@ -34,7 +34,6 @@ pub(super) fn for_each_visible_instance_index(
             && selection.count == scene.instances.len()
     }) {
         for &index in &selection.indices {
-            // A pickup may have been removed after forward visibility ran.
             if scene.instances[index].visible {
                 visit(index);
             }
@@ -59,7 +58,6 @@ pub(super) fn for_each_visible_instance(
     }) {
         for &index in &selection.indices {
             let instance = &scene.instances[index];
-            // A pickup may have been removed after forward visibility ran.
             if instance.visible {
                 visit(instance);
             }
@@ -240,7 +238,7 @@ mod tests {
                 probe_index: index,
                 transform: Transform::IDENTITY,
                 bounds: bevy::camera::primitives::Aabb::from_min_max(Vec3::ZERO, Vec3::ONE),
-                pickup_id: None,
+
                 entity: None,
                 visible: index == 1 || index == 4,
             });
@@ -329,7 +327,6 @@ impl ShadowModelBoundsSources {
     pub(super) fn active_bounds(
         &self,
         scene: &SceneRenderQueue,
-        pickups: &PickupState,
     ) -> Result<Vec<[[f32; 3]; 2]>, String> {
         let mut bounds = Vec::with_capacity(self.0.len());
         for source in &self.0 {
@@ -345,7 +342,6 @@ impl ShadowModelBoundsSources {
             {
                 return Err(format!("shadow model owner {} has invalid prepared bounds: {:?}",source.placement,source.bounds));
             }
-            let mut active = false;
             for instance in &scene.instances[source.instances.clone()] {
                 let placement = match instance.source.as_ref().map(|value| &value.surface) {
                     Some(RenderModelSurface::Bmodel { placement, .. })
@@ -355,14 +351,8 @@ impl ShadowModelBoundsSources {
                 if placement != source.placement {
                     return Err("shadow model bounds disagree with their model owner".into());
                 }
-                active |= instance
-                    .pickup_id
-                    .as_deref()
-                    .is_none_or(|id| pickups.world.pickup_available(id));
             }
-            if active {
-                bounds.push(source.bounds);
-            }
+            bounds.push(source.bounds);
         }
         Ok(bounds)
     }
