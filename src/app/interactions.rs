@@ -32,8 +32,10 @@ pub(super) struct Interactions {
 
 enum ReadTarget {
     Note(crate::assets::inventory_item::Readable),
+    Other(crate::assets::inventory_item::Readable, OtherKind),
     Map(crate::assets::interactive_map::Map),
 }
+enum OtherKind { Map, Audiograph, Item }
 struct ReadResult {
     entity: String,
     path: String,
@@ -181,6 +183,21 @@ pub(super) fn focus_and_interact(
                         requests.open.push_back(super::readable_movie::Request { title: readable.title, text: readable.text, note_type: readable.note_type });
                     }
                 },
+                Ok(ReadResult { entity, path, target: Some(ReadTarget::Other(readable, kind)), modifiers }) => {
+                    let maximum = interactions.limits.maximum(&path);
+                    let id = if readable.title.is_empty() { 0 } else { crate::assets::lang::key_id(&readable.title) };
+                    let accepted = match kind {
+                        OtherKind::Map => inventory.admit_map(path, id, maximum, &modifiers),
+                        OtherKind::Audiograph => inventory.admit_audiograph(path, id, maximum, &modifiers),
+                        OtherKind::Item => inventory.add_with_modifiers(&path, 1, maximum, &modifiers) != 0,
+                    };
+                    if accepted && readable.can_be_picked_up {
+                        interactions.retire.push(entity);
+                    }
+                    if let Some(requests) = requests.as_deref_mut() {
+                        requests.open.push_back(super::readable_movie::Request { title: readable.title, text: readable.text, note_type: readable.note_type });
+                    }
+                },
                 Ok(ReadResult { entity, path, target: Some(ReadTarget::Map(map)), modifiers }) => {
                     let maximum = interactions.limits.maximum(&path);
                     let key = if map.title.is_empty() { &map.item_name } else { &map.title };
@@ -283,7 +300,14 @@ pub(super) fn focus_and_interact(
                 let target = if let Some(note) = crate::assets::inventory_item::readable_fields(&fields)? {
                     Some(ReadTarget::Note(note))
                 } else {
-                    crate::assets::interactive_map::resolve_fields(&catalog, &item, &fields)?.map(ReadTarget::Map)
+                    match crate::assets::interactive_map::resolve_fields(&catalog, &item, &fields)? {
+                        Some(map) => Some(ReadTarget::Map(map)),
+                        None => crate::assets::inventory_item::other_readable_fields(&fields)?.map(|(readable, item_type)| {
+                            let kind = match item_type { "TYPE_INTERACTIVE_MAP" => OtherKind::Map,
+                                "TYPE_AUDIOGRAPH" => OtherKind::Audiograph, _ => OtherKind::Item };
+                            ReadTarget::Other(readable, kind)
+                        }),
+                    }
                 };
                 Ok(ReadResult { entity, path: item, target, modifiers })
             })));

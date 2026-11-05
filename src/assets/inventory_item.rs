@@ -253,17 +253,32 @@ pub fn readable_fields(fields: &[(String, Value)]) -> Result<Option<Readable>, S
     let note_type = atom(fields, "m_noteType").map(note_type).transpose()?.unwrap_or(-1);
     // 140844bf0 rejects an invalid note style except for books and maps.
     if kind == ReadableKind::Document && note_type == -1 { return Ok(None); }
+    readable_presentation(fields, kind, note_type).map(Some)
+}
+
+/// The read interaction accepts any item with an authored note style, not
+/// only journal document/book types. Maps without map info fall through to
+/// the same note presentation even with the default style (1408450b0).
+pub fn other_readable_fields(fields: &[(String, Value)]) -> Result<Option<(Readable, &str)>, String> {
+    let item_type = atom(fields, "m_type").unwrap_or("");
+    if item_type == "TYPE_NOTE_DOCUMENT" || item_type == "TYPE_BOOK" { return Ok(None); }
+    let style = atom(fields, "m_noteType").map(note_type).transpose()?.unwrap_or(-1);
+    if style == -1 && item_type != "TYPE_INTERACTIVE_MAP" { return Ok(None); }
+    Ok(Some((readable_presentation(fields, ReadableKind::Document, style)?, item_type)))
+}
+
+fn readable_presentation(fields: &[(String, Value)], kind: ReadableKind, note_type: i32) -> Result<Readable, String> {
     let can_be_picked_up = match atom(fields, "m_readableCanBePickedUp").unwrap_or("true") {
         "true" => true,
         "false" => false,
         other => return Err(format!("invalid m_readableCanBePickedUp {other}")),
     };
-    Ok(Some(Readable {
+    Ok(Readable {
         kind,
         title: atom(fields, "m_name").unwrap_or("").to_owned(),
         text: atom(fields, "m_description").unwrap_or("").to_owned(),
         note_type,
         can_be_picked_up,
         journal_image: atom(fields, "m_journalImage").filter(|image| !image.is_empty()).map(str::to_owned),
-    }))
+    })
 }
