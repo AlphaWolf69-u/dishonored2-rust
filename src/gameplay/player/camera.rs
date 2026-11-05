@@ -115,11 +115,29 @@ impl BodyPose {
     pub fn joint_with_controls(&self, joint: usize, controls: &[(usize, Mat3)]) -> (Vec3, Mat3) {
         let mut position = self.positions[joint];
         let mut rotation = self.rotations[joint];
-        for &(control, turn) in controls {
+        // A control's pivot follows earlier controls on its ancestors, just
+        // as the animator's hierarchy update does before each joint mod.
+        // Normal camera modes use at most eight controls; keep those on the
+        // stack, while allowing callers to supply larger lists.
+        let mut inline_pivots = [Vec3::ZERO; 8];
+        let mut extra_pivots = Vec::new();
+        let pivots = if controls.len() <= inline_pivots.len() {
+            &mut inline_pivots[..controls.len()]
+        } else {
+            extra_pivots.resize(controls.len(), Vec3::ZERO);
+            &mut extra_pivots[..]
+        };
+        for (index, &(control, turn)) in controls.iter().enumerate() {
+            let mut pivot = self.positions[control];
+            for (previous, &(ancestor, ancestor_turn)) in controls[..index].iter().enumerate() {
+                if self.descends_from(control, ancestor) {
+                    pivot = pivots[previous] + ancestor_turn * (pivot - pivots[previous]);
+                }
+            }
+            pivots[index] = pivot;
             if !self.descends_from(joint, control) {
                 continue;
             }
-            let pivot = self.positions[control];
             position = pivot + turn * (position - pivot);
             rotation = turn * rotation;
         }
