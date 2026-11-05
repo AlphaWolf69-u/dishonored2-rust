@@ -18,8 +18,7 @@ use crate::edge_skeleton::{self, JointRestPose};
 use bevy_math::{Mat3, Quat, Vec3};
 
 pub struct BodySkeleton {
-    pub data: std::sync::Arc<crate::assets::animation_rig::SkeletonCore>,
-    pub joint_names: std::sync::Arc<[String]>,
+    pub data: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
     /// The md6 init offset as the hierarchy root.
     pub root: JointRestPose,
     pub camera: usize,
@@ -30,7 +29,7 @@ pub struct BodySkeleton {
 }
 
 impl std::ops::Deref for BodySkeleton {
-    type Target = crate::assets::animation_rig::SkeletonCore;
+    type Target = edge_skeleton::EdgeSkeleton;
     fn deref(&self) -> &Self::Target { &self.data }
 }
 
@@ -694,11 +693,22 @@ impl Body {
                 *r = turn * *r;
             }
         }
+        static TRACE_PARENTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static COPY_PARENTS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let trace = *TRACE_PARENTS.get_or_init(|| std::env::var_os("DH2_DEBUG_PLAYER_PARENT_CYCLES").is_some_and(|v| v == "1"));
+        let copy = *COPY_PARENTS.get_or_init(|| std::env::var_os("DH2_DEBUG_COPY_PLAYER_PARENTS").is_some_and(|v| v == "1"));
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let shared_skeleton = skeleton.data.clone();
+        let debug_copied_parents = copy.then(|| skeleton.parents.clone());
+        let cycles = start.zip(if trace { crate::loading::thread_cycles() } else { None }).map(|(a, b)| b.saturating_sub(a));
+        if trace { eprintln!("PLAYER_PARENT_SOURCE copied={} parent_count={} copied_bytes={} thread_cycles={cycles:?}",
+            copy, skeleton.parents.len(), debug_copied_parents.as_ref().map_or(0, |v| v.len() * std::mem::size_of::<Option<usize>>())); }
         Ok(BodyPose {
             positions,
             rotations,
 
-            skeleton: skeleton.data.clone(),
+            skeleton: shared_skeleton,
+            debug_copied_parents,
             camera: skeleton.camera,
             controls: skeleton.controls,
         })
@@ -717,8 +727,7 @@ mod tests {
         lean.set(1.0, 0.5, 1.0, &mut sensor);
         assert!(sensor.enabled);
         let skeleton = BodySkeleton {
-            data: std::sync::Arc::new(crate::assets::animation_rig::SkeletonCore::default()),
-            joint_names: Vec::<String>::new().into(),
+            data: std::sync::Arc::new(edge_skeleton::EdgeSkeleton::default()),
             root: JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0; 3], scale: [1.0; 3] },
             camera: 0,
             controls: [0; 3],

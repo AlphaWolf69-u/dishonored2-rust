@@ -78,7 +78,9 @@ impl Default for CameraDecl {
 pub struct BodyPose {
     pub positions: Vec<Vec3>,
     pub rotations: Vec<Mat3>,
-    pub skeleton: std::sync::Arc<crate::assets::animation_rig::SkeletonCore>,
+    pub skeleton: std::sync::Arc<crate::edge_skeleton::EdgeSkeleton>,
+    /// Opt-in comparison against the former per-pose parent allocation.
+    pub debug_copied_parents: Option<Vec<Option<usize>>>,
     pub camera: usize,
     /// head, neck, arms (center_spine03) control joints.
     pub controls: [usize; 3],
@@ -86,11 +88,12 @@ pub struct BodyPose {
 
 impl BodyPose {
     pub(super) fn descends_from(&self, mut joint: usize, ancestor: usize) -> bool {
+        let parents = self.debug_copied_parents.as_deref().unwrap_or(self.skeleton.parents.as_slice());
         loop {
             if joint == ancestor {
                 return true;
             }
-            match self.skeleton.parents[joint] {
+            match parents[joint] {
                 Some(parent) => joint = parent,
                 None => return false,
             }
@@ -554,10 +557,9 @@ mod tests {
         BodyPose {
             positions: vec![Vec3::new(0.0, 0.0, 1.3), Vec3::new(0.0, 0.0, 1.5), Vec3::new(0.0, 0.0, 1.6), Vec3::new(0.05, 0.0, 1.7)],
             rotations: vec![Mat3::IDENTITY; 4],
-            skeleton: std::sync::Arc::new(crate::assets::animation_rig::SkeletonCore {
-                parents: vec![None, Some(0), Some(1), Some(2)],
-                ..Default::default()
-            }),
+            skeleton: { let mut skeleton = crate::edge_skeleton::EdgeSkeleton::default();
+                skeleton.parents = vec![None, Some(0), Some(1), Some(2)]; std::sync::Arc::new(skeleton) },
+            debug_copied_parents: None,
             camera: 3,
             controls: [2, 1, 0],
         }

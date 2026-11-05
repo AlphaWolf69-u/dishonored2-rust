@@ -485,16 +485,13 @@ pub(super) fn rest_skinning(
 pub(super) fn read_skeleton(
     catalog: &archive::Catalog,
     name: &str,
-) -> Result<edge_skeleton::EdgeSkeleton, String> {
-    let stem = name
+) -> Result<Arc<edge_skeleton::EdgeSkeleton>, String> {
+    let normalized = name.replace('\\', "/").to_ascii_lowercase();
+    let stem = normalized
         .strip_suffix(".md6skl")
         .ok_or("unsupported skeleton resource suffix")?;
     let path = format!("generated/skeleton/{stem}.edgeskl");
-    let bytes = catalog
-        .read(&path)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("skeleton {path} is absent"))?;
-    edge_skeleton::parse(&bytes)
+    edge_skeleton::acquire(catalog, &path)
 }
 
 pub(super) fn retain_skin_inputs(mesh: &mut Mesh, surface: &bmd6::SurfaceInfo) {

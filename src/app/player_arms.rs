@@ -40,7 +40,7 @@ struct ArmModel {
     /// One entity per palette entry whose transform is that entry; its
     /// surfaces' SkinnedMesh reads them (created on first use).
     joints: Vec<Entity>,
-    skeleton: edge_skeleton::EdgeSkeleton,
+    skeleton: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
     info: bmd6::ModelInfo,
     surfaces: Vec<ArmSurface>,
     lighting: crate::probe_lighting::ProbeQuery,

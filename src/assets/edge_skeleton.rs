@@ -4,6 +4,8 @@
 //! is parsed only through the inverse-bind table understood in 2564e0.
 
 // Host equivalent of the resource registry's scoped purge (140060180).
+mod residency;
+pub(crate) use residency::{acquire, release_unused};
 static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 pub(crate) struct HistoryLease;
 impl HistoryLease {
@@ -31,7 +33,7 @@ pub struct JointRestPose {
     pub scale: [f32; 3],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Default)]
 pub struct EdgeSkeleton {
     pub rest: Vec<JointRestPose>,
     pub parents: Vec<Option<usize>>,
@@ -40,6 +42,26 @@ pub struct EdgeSkeleton {
     pub inverse_bind: Vec<[[f32; 4]; 3]>,
     pub joint_names: Vec<String>,
     pub hierarchy: Vec<[u16; 2]>,
+    residency: Option<residency::Retire>,
+    audit: Option<residency::Audit>,
+}
+
+impl Clone for EdgeSkeleton {
+    fn clone(&self) -> Self {
+        Self { rest: self.rest.clone(), parents: self.parents.clone(), parent_skeleton: self.parent_skeleton.clone(),
+            parent_reference: self.parent_reference, inverse_bind: self.inverse_bind.clone(), joint_names: self.joint_names.clone(),
+            hierarchy: self.hierarchy.clone(), residency: None, audit: None }
+    }
+}
+impl PartialEq for EdgeSkeleton {
+    fn eq(&self, other: &Self) -> bool {
+        self.rest == other.rest && self.parents == other.parents && self.parent_skeleton == other.parent_skeleton
+            && self.parent_reference == other.parent_reference && self.inverse_bind == other.inverse_bind
+            && self.joint_names == other.joint_names && self.hierarchy == other.hierarchy
+    }
+}
+impl EdgeSkeleton {
+    pub(crate) fn source_audit(&self) -> Option<(u32, usize)> { self.audit.as_ref().map(|audit| (audit.source_crc, audit.source_bytes)) }
 }
 
 struct Reader<'a> {
@@ -221,6 +243,8 @@ pub fn parse(bytes: &[u8]) -> Result<EdgeSkeleton, String> {
         inverse_bind,
         joint_names,
         hierarchy,
+        residency: None,
+        audit: None,
     })
 }
 
@@ -418,9 +442,8 @@ pub(crate) type Affine = [[f32; 4]; 3];
 /// 1400607f0 (14025aa00); each physics system constructs its own state.
 #[derive(Clone)]
 pub(crate) struct RestRig {
-    pub parents: SharedSlice<Option<usize>>,
+    pub skeleton: std::sync::Arc<EdgeSkeleton>,
     pub rest: SharedSlice<Affine>,
-    pub inverse_bind: SharedSlice<Affine>,
 }
 
 pub(crate) struct RestRigSources {
@@ -439,7 +462,8 @@ impl RestRigSources {
             self.catalog = catalog.identity();
             self.share = !catalog.has_overlays();
         }
-        let stem = name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
+        let normalized = name.replace('\\', "/").to_ascii_lowercase();
+        let stem = normalized.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
         let path = format!("generated/skeleton/{stem}.edgeskl");
         let key = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
             std::borrow::Cow::Borrowed(path.as_str())
@@ -451,13 +475,11 @@ impl RestRigSources {
         if self.share {
             if let Some(rig) = self.rigs.get(key.as_ref()) { return Ok(rig.clone()); }
         }
-        let bytes = catalog.read(&path).map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("{path} is absent"))?;
-        let skeleton = parse(&bytes)?;
+        let skeleton = acquire(catalog, &path)?;
         let root = JointRestPose { rotation: [0., 0., 0., 1.], translation: [0.; 3], scale: [1.; 3] };
         let rest = pose_matrices(&skeleton.rest, &skeleton.hierarchy, &root)?;
-        let inverse_bind = skeleton.inverse_bind[..rest.len()].to_vec().into();
-        let rig = RestRig { parents: skeleton.parents.into(), rest: rest.into(), inverse_bind };
+        if skeleton.inverse_bind.len() < rest.len() { return Err("skeleton inverse bind table is short".into()); }
+        let rig = RestRig { skeleton, rest: rest.into() };
         if self.share { self.rigs.insert(key.into_owned(), rig.clone()); }
         Ok(rig)
     }

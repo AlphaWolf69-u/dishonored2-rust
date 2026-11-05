@@ -7,7 +7,7 @@ mod residency;
 pub(crate) fn release_unused() { residency::release_unused(); }
 
 pub struct Rig {
-    pub skeleton: RigSkeleton,
+    pub skeleton: std::sync::Arc<crate::edge_skeleton::EdgeSkeleton>,
     pub root: crate::edge_skeleton::JointRestPose,
     pub aliases: HashMap<String, String>,
     /// Search order is child before parent, last authored set first.
@@ -15,28 +15,7 @@ pub struct Rig {
     pub tokens: Vec<String>,
     pub path: String,
     residency: Option<residency::Retire>,
-    audit: Option<(u32, usize)>,
-}
-
-/// Immutable inputs required by runtime pose evaluation. Inverse-bind data and
-/// names are kept separately so an arm need not retain them after preparation.
-#[derive(Debug, Default, PartialEq)]
-pub struct SkeletonCore {
-    pub rest: Vec<crate::edge_skeleton::JointRestPose>,
-    pub hierarchy: Vec<[u16; 2]>,
-    pub parents: Vec<Option<usize>>,
-}
-
-pub struct RigSkeleton {
-    pub core: std::sync::Arc<SkeletonCore>,
-    pub inverse_bind: Vec<[[f32; 4]; 3]>,
-    pub joint_names: std::sync::Arc<[String]>,
-    pub parent_skeleton: Option<String>,
-    pub parent_reference: Option<u16>,
-}
-impl std::ops::Deref for RigSkeleton {
-    type Target = SkeletonCore;
-    fn deref(&self) -> &Self::Target { &self.core }
+    audit: Option<residency::Audit>,
 }
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
@@ -73,17 +52,14 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     })?;
     if let Some(error) = read_error { return Err(error); }
     let binding = binding.ok_or_else(|| format!("{model} has no skeleton"))?;
-    let skeleton_stem = binding.name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
+    let skeleton_name = binding.name.replace('\\', "/").to_ascii_lowercase();
+    let skeleton_stem = skeleton_name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
     let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
-    let bytes = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
-    if trace { track_crc(&mut source_crc, &bytes, &mut checksum_cycles, audit_cycles.is_some()); }
-    let skeleton_bytes = bytes.len();
-    let parsed = crate::edge_skeleton::parse(&bytes)?;
-    let skeleton = RigSkeleton {
-        core: std::sync::Arc::new(SkeletonCore { rest: parsed.rest, hierarchy: parsed.hierarchy, parents: parsed.parents }),
-        inverse_bind: parsed.inverse_bind, joint_names: parsed.joint_names.into(),
-        parent_skeleton: parsed.parent_skeleton, parent_reference: parsed.parent_reference,
-    };
+    let skeleton = crate::edge_skeleton::acquire(catalog, &path)?;
+    // Composite signature uses the raw skeleton CRC followed by MD6/animset
+    // bytes; this avoids rereading a skeleton already held by another owner.
+    let skeleton_bytes = skeleton.source_audit().map_or(0, |(_, bytes)| bytes);
+    if trace { track_crc(&mut source_crc, &skeleton.source_audit().map_or(0, |(crc, _)| crc).to_le_bytes(), &mut checksum_cycles, audit_cycles.is_some()); }
     let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
     // 1401cab73 inherits animBasicDecl when absent; 1401c7c80 searches
     // each layer's animsets in reverse, then follows the parent model.
@@ -138,7 +114,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     if trace {
         eprintln!("MEMORY rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
     }
-    let audit = trace.then(|| (source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
+    let audit = trace.then(|| residency::Audit::new(source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
     Ok(Rig { skeleton, root, aliases, animsets, tokens, path, residency: None, audit })
 }
 

@@ -159,7 +159,7 @@ fn load_arm(
     let additives = anim_basic(&mut clips, &additives_fields)?;
     let jump_items = decls::arm_jump_aliases(body_decl, side, EQUIP).map(|alias| alias.and_then(|a| additives.index_of(&a)));
     let skeleton = ArmSkeleton {
-        data: rig.skeleton.core.clone(),
+        data: rig.skeleton.clone(),
         root: rig.root.clone(),
         shoulder: rig.joint(&camera.arm_joints[side])?,
     };
@@ -185,8 +185,7 @@ fn load_body(
     let text = |path: &str| text_of(catalog, path);
     let rig = Rig::acquire(catalog, body_model)?;
     let body_skeleton = BodySkeleton {
-        data: rig.skeleton.core.clone(),
-        joint_names: rig.skeleton.joint_names.clone(),
+        data: rig.skeleton.clone(),
         root: rig.root.clone(),
         camera: rig.joint(&camera.camera_joint)?,
         controls: [rig.joint(&camera.head_joint)?, rig.joint(&camera.neck_joint)?, rig.joint(&camera.arms_joint)?],
@@ -650,7 +649,7 @@ pub(super) fn update_player(
         if clock.advanced() {
             let dt = game_clock.delta(3).unwrap_or(0.0);
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
-            player.set_entity_event_time(game_clock.time(2).unwrap_or(0.0));
+            player.set_entity_event_time(game_clock.time(2).expect("five clock groups"));
             let mut events = std::mem::take(&mut input.events);
             if walking { events.extend(walk.steer(player, dt)); }
             let (body_settings, current) = body_settings(difficulty.as_ref());

@@ -15,9 +15,8 @@ pub(super) type Affine = [[f32; 4]; 3];
 pub(super) struct SystemSkin {
     system: usize,
     placement: usize,
-    parents: edge_skeleton::SharedSlice<Option<usize>>,
+    skeleton: Arc<edge_skeleton::EdgeSkeleton>,
     rest: edge_skeleton::SharedSlice<Affine>,
-    inverse_bind: edge_skeleton::SharedSlice<Affine>,
     model: Arc<bmd6::ModelInfo>,
     publication: super::skin_publication::SkinPublication,
 }
@@ -80,8 +79,7 @@ pub(super) fn load_skins(
             Ok(SystemSkin {
                 system: index,
                 placement: system.placement,
-                parents: rig.parents,
-                inverse_bind: rig.inverse_bind,
+                skeleton: rig.skeleton,
                 rest: rig.rest,
                 model,
                 publication: Default::default(),
@@ -141,7 +139,7 @@ impl SystemSkin {
                 if let Some(m) = current[j] {
                     out[j] = m;
                     done[j] = true;
-                } else if let Some(p) = self.parents.get(j).copied().flatten() {
+                } else if let Some(p) = self.skeleton.parents.get(j).copied().flatten() {
                     if done[p] {
                         let parent_inverse = if animation.is_some() { inverse_animation(&base[p])? } else { inverse(&base[p]) };
                         let local = multiply(&parent_inverse, &base[j]);
@@ -185,7 +183,7 @@ pub(super) fn pose_physics_systems(
             continue;
         };
         let current = skin.current(world);
-        let Ok(palette) = edge_skeleton::skin_palette(&current, &skin.inverse_bind) else {
+        let Ok(palette) = edge_skeleton::skin_palette(&current, &skin.skeleton.inverse_bind[..current.len()]) else {
             continue;
         };
         super::skin_publication::publish_target(
