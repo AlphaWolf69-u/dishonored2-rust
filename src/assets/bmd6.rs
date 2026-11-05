@@ -494,8 +494,12 @@ mod residency {
     struct Registry { entries: HashMap<Key, Arc<Entry>>, requests: usize }
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     static TRACE: OnceLock<bool> = OnceLock::new();
+    static SEPARATE: OnceLock<bool> = OnceLock::new();
     pub(super) fn tracing() -> bool {
         *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_MODEL_ACQUISITION").is_some_and(|v| v == "1"))
+    }
+    pub(super) fn separate() -> bool {
+        *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_MODEL_RESOURCES").is_some_and(|v| v == "1"))
     }
 
     fn retain_live(entry: &Arc<Entry>) -> bool {
@@ -624,7 +628,7 @@ impl ModelSources {
                 return Ok(model);
             }
         }
-        let model = if self.share {
+        let model = if self.share && !residency::separate() {
             residency::acquire(catalog, &path, &key)?
         } else {
             let bytes = catalog.read(&path).map_err(|error| error.to_string())?
@@ -636,7 +640,7 @@ impl ModelSources {
             self.models.insert(key.clone(), model.clone());
             self.paths.insert(resource.to_owned(), key);
         }
-        if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result={} us={}", if self.share { "shared" } else { "overlay" }, started.elapsed().as_micros()); }
+        if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result={} us={}", if !self.share { "overlay" } else if residency::separate() { "separate" } else { "shared" }, started.elapsed().as_micros()); }
         Ok(model)
     }
 }
