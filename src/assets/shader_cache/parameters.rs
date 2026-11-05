@@ -12,6 +12,42 @@ pub(super) struct Parameters {
 
 static RESIDENT: LazyLock<Mutex<Option<(u64, std::path::PathBuf, Parameters)>>> = LazyLock::new(Default::default);
 
+/// 1402d8820 registers the numeric union subtype and color annotation used
+/// by 14098cdd0. Parse only requested parameter-block metadata.
+pub(super) fn value_metadata(catalog: &Catalog, name: &str) -> Result<crate::render_program::ParameterMetadata> {
+    use crate::render_program::{NumericStorage, ParameterMetadata, RenderParameterKind};
+    let path = format!("generated/decls/renderparm/{name}.decl");
+    let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("renderParm absent: {path}"))?;
+    let text = crate::entities::declaration_text(&bytes);
+    let kind = crate::render_program::render_parameter_kind(&text)?;
+    let tokens = crate::entities::declaration_lexemes(&text)?;
+    let (numeric, lanes) = match kind {
+        RenderParameterKind::Option => (Some(NumericStorage::Unsigned), 1),
+        RenderParameterKind::Uniform | RenderParameterKind::Semantic => {
+            if tokens.iter().any(|token| token.eq_ignore_ascii_case("color")) {
+                (Some(NumericStorage::Color), 4)
+            } else if tokens.get(1).is_some_and(|token| token.eq_ignore_ascii_case("vec")) {
+                (Some(NumericStorage::Float), 4)
+            } else {
+                let subtype = tokens.iter().skip(2).find(|token| !token.eq_ignore_ascii_case("notbakeable"))
+                    .ok_or_else(|| format!("renderParm has no numeric type: {path}"))?;
+                let lower = subtype.to_ascii_lowercase();
+                let storage = match lower.as_str() {
+                    "float" | "float2" | "float3" | "float4" => NumericStorage::Float,
+                    "int" | "int2" | "int3" | "int4" => NumericStorage::Signed,
+                    "uint" | "uint2" | "uint3" | "uint4" | "bool" => NumericStorage::Unsigned,
+                    _ => return Err(format!("unsupported renderParm numeric type {subtype:?}: {path}")),
+                };
+                let lanes = match lower.as_bytes().last() { Some(b'2') => 2, Some(b'3') => 3, Some(b'4') => 4, _ => 1 };
+                (Some(storage), lanes)
+            }
+        }
+        _ => (None, 0),
+    };
+    Ok(ParameterMetadata { kind, numeric, lanes })
+}
+
 pub(super) fn acquire(base: &Path, catalog: &Catalog) -> Result<Parameters> {
     let started = std::time::Instant::now();
     let mut resident = RESIDENT.lock().unwrap_or_else(|error| error.into_inner());

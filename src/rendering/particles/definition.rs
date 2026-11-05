@@ -35,6 +35,7 @@ pub struct ParticleResources {
     shared: bool,
     history: Option<Arc<particle_declaration::HistoryLease>>,
     model_history: Option<Arc<crate::assets::particle_model::HistoryLease>>,
+    parameter_blocks: Option<Box<crate::assets::parm_block::ParmBlockSources>>,
 }
 impl Default for ParticleResources {
     fn default() -> Self {
@@ -53,6 +54,7 @@ impl Default for ParticleResources {
             shared: true,
             history: None,
             model_history: None,
+            parameter_blocks: None,
         }
     }
 }
@@ -79,6 +81,9 @@ impl ParticleResources {
         if self.declarations.is_empty() { self.history = None; }
         if self.models.is_empty() { self.model_history = None; }
         let (images, payload_bytes) = self.images.retire_unused();
+        if self.parameter_blocks.as_mut().is_some_and(|blocks| blocks.retire_unused()) {
+            self.parameter_blocks = None;
+        }
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY particle cache retirement: declarations={} materials={} models={} fields={} images={} acquisition_payload_bytes={}",
                 before.0 - self.declarations.len(), before.1 - self.materials.len(),
@@ -205,6 +210,9 @@ impl ParticleResources {
 #[derive(Clone)]
 pub struct ParticleDefinition {
     pub owner: Arc<particle_system::ParticleSystemAsset>,
+    /// The immutable authored block is shared; mutable per-instance values
+    /// remain with the runtime FX owner (140227cd0, 140228110).
+    pub(crate) parameter_block: Option<Arc<crate::assets::parm_block::ParmBlock>>,
     pub declarations: Vec<Option<Arc<particle_declaration::ParticleDeclaration>>>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
     /// Mesh materials whose MAIN program is a world program. 1401fbad0 makes
@@ -220,6 +228,11 @@ impl ParticleDefinition {
         resources: &mut ParticleResources,
     ) -> Result<Self, String> {
         let owner = particle_system::particle_system(fields)?;
+        let parameter_block = owner.parameter_block.as_deref().map(|name| {
+            resources.parameter_blocks
+                .get_or_insert_with(|| Box::new(crate::assets::parm_block::ParmBlockSources::new(catalog)))
+                .acquire(catalog, name, |parameter| library.parameter_value_metadata(catalog, parameter))
+        }).transpose()?;
         if !resources.shared {
             resources.models.clear();
             resources.field_images.clear();
@@ -288,6 +301,7 @@ impl ParticleDefinition {
         }
         Ok(Self {
             owner: Arc::new(owner),
+            parameter_block,
             declarations,
             materials,
             world_mesh_materials,

@@ -16,6 +16,7 @@ pub mod installation;
 pub mod lang;
 pub mod level;
 pub mod map_resources;
+pub(crate) mod parm_block;
 pub mod physworld;
 pub mod pnetwork;
 pub mod shader_cache;

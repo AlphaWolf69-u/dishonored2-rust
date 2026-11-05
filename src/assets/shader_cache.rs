@@ -403,6 +403,8 @@ fn is_captured_rigid_opaque_stage(bytes: &[u8]) -> bool {
 pub struct ProgramLibrary {
     pub cache: ShaderCache,
     pub parameter_kinds: Arc<HashMap<Vec<u8>, crate::render_program::RenderParameterKind>>,
+    parameter_metadata: HashMap<Vec<u8>, crate::render_program::ParameterMetadata>,
+    catalog_identity: u64,
     option_defaults: Arc<HashMap<Vec<u8>, i32>>,
     float_vector_defaults: HashMap<Vec<u8>, Result<[u32; 4]>>,
     definitions: HashMap<Vec<u8>, crate::render_program::RenderProgramDefinition>,
@@ -425,6 +427,8 @@ impl ProgramLibrary {
         Ok(Self {
             cache,
             parameter_kinds: parameters.kinds,
+            parameter_metadata: HashMap::new(),
+            catalog_identity: catalog.identity(),
             option_defaults: parameters.options,
             float_vector_defaults: HashMap::new(),
             definitions: HashMap::new(),
@@ -432,6 +436,22 @@ impl ProgramLibrary {
             world_shadow_sources: HashMap::new(),
             water_depth_sources: HashMap::new(),
         })
+    }
+
+    /// Lazy subtype metadata shares the program owner's catalog scope. A
+    /// mutable declaration is reacquired; errors are never cached.
+    pub(crate) fn parameter_value_metadata(&mut self, catalog: &crate::archive::Catalog, name: &str)
+        -> Result<crate::render_program::ParameterMetadata>
+    {
+        let key = name_key(name.as_bytes());
+        let path = format!("generated/decls/renderparm/{name}.decl");
+        let shared = catalog.identity() == self.catalog_identity && !catalog.has_overlay_file(&path);
+        if shared {
+            if let Some(value) = self.parameter_metadata.get(&key) { return Ok(*value); }
+        }
+        let metadata = parameters::value_metadata(catalog, name)?;
+        if shared { self.parameter_metadata.insert(key, metadata); }
+        Ok(metadata)
     }
 
     pub fn definition(

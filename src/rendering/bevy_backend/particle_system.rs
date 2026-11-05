@@ -43,6 +43,9 @@ pub(crate) struct ParticleDrawContext<'a> {
 
 pub(crate) struct ParticleSystem {
     pub effect: ParticleEffect,
+    /// The immutable declaration remains leased while render-world particles
+    /// outlive their initiating FX. Mutable overrides are not connected yet.
+    pub parameter_block: Option<Arc<crate::assets::parm_block::ParmBlock>>,
     pub stages: Vec<StageSimulation>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
     /// World-program mesh materials, drawn as material surfaces (1401fbad0).
@@ -383,6 +386,7 @@ impl ParticleSystem {
         )?;
         Ok(Self {
             effect,
+            parameter_block: definition.parameter_block.clone(),
             stages,
             materials: definition.materials.clone(),
             world_mesh_materials: Arc::new(definition.world_mesh_materials.clone()),

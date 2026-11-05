@@ -256,6 +256,18 @@ pub enum RenderParameterKind {
     ParameterBlock = 15,
 }
 
+/// Numeric storage selected by the registered renderParm (1402d8820).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NumericStorage { Float, Signed, Unsigned, Color }
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParameterMetadata {
+    pub kind: RenderParameterKind,
+    pub numeric: Option<NumericStorage>,
+    /// Registered vector width; 14098cdd0 reads only this many union lanes.
+    pub lanes: u8,
+}
+
 pub fn render_parameter_kind(source: &str) -> Result<RenderParameterKind, String> {
     use RenderParameterKind::*;
     let token = crate::entities::declaration_type_name(source)?;
