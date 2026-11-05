@@ -186,8 +186,6 @@ impl WorldFxSources {
                 }
             }
         }
-        let mut sound_events = HashMap::new();
-        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Preserve graph/node order for preparation and share declaration and
         // material storage across all node references to the same FX resource.
         let mut names = Vec::new();
@@ -225,6 +223,33 @@ impl WorldFxSources {
         if let Ok(effect) = std::env::var("DH2_DEBUG_PLAY_FX") {
             names.push(effect);
         }
+        result.load_named_into(names, catalog, library, resources);
+        result
+    }
+
+    /// Acquire explicitly requested effects and their sub-effects through the
+    /// same parser and resource owner used by authored world FX.
+    pub fn load_named_shared(
+        names: Vec<String>,
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
+    ) -> Self {
+        let mut result = Self::default();
+        result.load_named_into(names, catalog, library, resources);
+        result
+    }
+
+    fn load_named_into(
+        &mut self,
+        mut names: Vec<String>,
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
+    ) {
+        let result = self;
+        let mut sound_events = HashMap::new();
+        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Sub-FX declarations (m_subFXs) are loaded as further effects, in
         // reference order after the declarations that name them.
         let mut next = 0;
@@ -342,6 +367,5 @@ impl WorldFxSources {
             result.effects.insert(name.clone(), loaded);
             names.extend(children);
         }
-        result
     }
 }

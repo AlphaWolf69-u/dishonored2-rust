@@ -327,9 +327,11 @@ impl ShadowModelBoundsSources {
     pub(super) fn active_bounds(
         &self,
         scene: &SceneRenderQueue,
+        retired: Option<&super::interaction_focus::RetiredPlacements>,
     ) -> Result<Vec<[[f32; 3]; 2]>, String> {
         let mut bounds = Vec::with_capacity(self.0.len());
         for source in &self.0 {
+            if retired.is_some_and(|retired| retired.0.contains(&source.placement)) { continue; }
             if source.instances.is_empty() || source.instances.end > scene.instances.len() {
                 return Err("shadow model bounds reference an invalid owner range".into());
             }

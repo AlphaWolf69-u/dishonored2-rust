@@ -64,6 +64,7 @@ pub(super) fn collect_model_casters(
     sources: Res<ModelShadowSources>,
     scene: Res<SceneData>,
     queue: Res<SceneRenderQueue>,
+    retired: Option<Res<super::interaction_focus::RetiredPlacements>>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     frame_count: Res<bevy::diagnostic::FrameCount>,
     mut output: ResMut<ModelCasterFrame>,
@@ -96,6 +97,7 @@ pub(super) fn collect_model_casters(
             .cull_distance;
         let mut collected = Vec::new();
         for (source_index, source) in sources.0.iter().enumerate() {
+            if retired.as_ref().is_some_and(|retired| retired.0.contains(&source.placement)) { continue; }
             let surfaces = source
                 .surfaces
                 .iter()
@@ -1298,6 +1300,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
     world: Option<Res<TomeWorld>>,
     caster_world: Option<Res<ShadowCasterWorld>>,
     model_bounds: Res<ShadowModelBoundsSources>,
+    retired: Option<Res<super::interaction_focus::RetiredPlacements>>,
     cameras: Query<(&Camera, &Transform, &Projection), With<Camera3d>>,
     coarse: Res<coarse_depth::CoarseDepthMailbox>,
     frame_count: Res<bevy::diagnostic::FrameCount>,
@@ -1525,7 +1528,7 @@ pub(super) fn prepare_parallel_shadow_cpu(
             radius: scale,
             override_center: false,
         });
-        let dynamic_bounds = model_bounds.active_bounds(&queue)?;
+        let dynamic_bounds = model_bounds.active_bounds(&queue, retired.as_deref())?;
         let ray = toward_sun.map(|value| f32::from_bits(value.to_bits() ^ 0x8000_0000));
         let mut depth_projection = ReceiverDepthProjection {
             receiver_rows: [[0.0; 4]; 4],

@@ -350,6 +350,7 @@ pub(super) fn stream_visible_models(
     mut scene: ResMut<SceneRenderQueue>,
     tome_world: Option<Res<TomeWorld>>,
     placed_model_queries: Option<Res<PlacedModelQueries>>,
+    retired: Option<Res<super::interaction_focus::RetiredPlacements>>,
     mut timing: Option<ResMut<VisibilityElapsedTiming>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     mut last_tome_error: Local<Option<String>>,
@@ -717,7 +718,14 @@ pub(super) fn stream_visible_models(
         for index in block..block_end {
             // FUN_14037e1d0 handles BWM indices; FUN_14031ad30 handles the
             // supported initial BML groups independently of serialized Tome IDs.
-            let visible = tome_visibility.as_ref().is_some_and(|result| result[index]);
+            let visible = tome_visibility.as_ref().is_some_and(|result| result[index])
+                && retired.as_ref().is_none_or(|retired| {
+                    if retired.0.is_empty() { return true; }
+                    match scene.instances[index].source.map(|source| source.surface) {
+                        Some(super::RenderModelSurface::Bmodel { placement, .. } | super::RenderModelSurface::Bmd6 { placement, .. }) => !retired.0.contains(&placement),
+                        _ => true,
+                    }
+                });
             if !visible && !updates.visible[index] {
                 continue;
             }

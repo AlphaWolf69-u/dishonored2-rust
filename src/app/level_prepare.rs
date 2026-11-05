@@ -81,6 +81,16 @@ pub(super) fn prepare_level(
             }
             None => (None, Vec::new(), None),
         };
+    let mut interactions = match entity_document.as_ref() {
+        Some(document) => match super::interactions::Interactions::load(
+            catalog.as_ref().unwrap().clone(), document,
+            super::player::character_name(super::pause_menu::debug_character()),
+        ) {
+            Ok(interactions) => Some(interactions),
+            Err(error) => { eprintln!("Interaction declarations unavailable: {error}"); None }
+        },
+        None => None,
+    };
     if env::var("DH2_TRANSFORM_AUDIT").as_deref() == Ok("1") {
         let samples = [
             [0.0, 0.0, 0.0],
@@ -645,7 +655,7 @@ pub(super) fn prepare_level(
         }
         let model_material_base = resolved.len() as u32;
         resolved.extend(model_collision.materials);
-        let world = navigation::CollisionWorld::with_materials(
+        let mut world = navigation::CollisionWorld::with_materials(
             level_triangles
                 .into_iter()
                 .chain(model_collision.triangles.into_iter().map(
@@ -661,6 +671,9 @@ pub(super) fn prepare_level(
             model_collision.owners,
             resolved,
         );
+        if let Some(interactions) = interactions.as_mut() {
+            interactions.start_boxes(&mut world);
+        }
         if profile {
             println!(
                 "PERF triangle collision index: {:.3}s",
@@ -855,6 +868,12 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    if let Some(interactions) = interactions {
+        app.insert_resource(interactions);
+    }
+    app.insert_resource(super::interaction_focus::FocusedInteraction::default());
+    app.insert_resource(super::interaction_focus::RetiredPlacements::default());
+    app.insert_resource(super::usable_animation::UsableAnimations::default());
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(
         catalog.as_ref().unwrap(),
         entity_document.as_ref(),

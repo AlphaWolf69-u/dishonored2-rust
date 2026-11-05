@@ -1,7 +1,7 @@
 //! Typed usable-state declarations. The temporary generic declaration tree
 //! is dropped after the level's component bindings have been resolved.
 use super::{components, field, scope, Definition, Document, Value};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct Step {
@@ -10,18 +10,32 @@ pub struct Step {
     pub transition_min_duration: f32,
     pub effect: Option<String>,
     pub wait_transition_end_to_play_effect: bool,
+    pub overrides_interaction: bool,
     pub interaction_name: Option<String>,
     pub interaction_text: Option<String>,
+    pub interaction_icon: Option<String>,
+    pub player_state: Option<String>,
+    pub maximum_distance: f32,
+    pub maximum_height: f32,
+    pub occlusion_shape: usize,
+    pub locked: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct DefinitionData {
+    pub starts_on_spawn: bool,
     pub initial_step: usize,
     pub fake_collision: bool,
     pub fake_collision_size: [f32; 3],
     pub fake_collision_offset: [f32; 3],
     pub interaction_name: Option<String>,
     pub interaction_text: Option<String>,
+    pub interaction_icon: Option<String>,
+    pub player_state: Option<String>,
+    pub maximum_distance: f32,
+    pub maximum_height: f32,
+    pub occlusion_shape: usize,
+    pub locked: bool,
     pub steps: Box<[Step]>,
 }
 
@@ -29,6 +43,84 @@ pub struct DefinitionData {
 pub struct Binding {
     pub entity: String,
     pub definition: Arc<DefinitionData>,
+}
+
+/// Corners of the fake interaction box in game coordinates. 14077af40
+/// applies the entity basis to the offset and uses half of the authored size.
+pub fn fake_box_corners(frame: &crate::gameplay::reference_frame::ReferenceFrame, definition: &DefinitionData) -> [[f32; 3]; 8] {
+    std::array::from_fn(|corner| {
+        let local: [f32; 3] = std::array::from_fn(|axis| {
+            let sign = if (corner >> axis) & 1 == 0 { -0.5 } else { 0.5 };
+            definition.fake_collision_offset[axis] + definition.fake_collision_size[axis] * sign
+        });
+        std::array::from_fn(|axis| frame.position[axis] + (0..3).map(|i| frame.basis[i][axis] * local[i]).sum::<f32>())
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct ReadableBinding {
+    pub entity: String,
+    pub item: String,
+    pub interaction_name: Option<String>,
+    pub interaction_text: Option<String>,
+    pub interaction_icon: Option<String>,
+    pub maximum_distance: f32,
+    pub maximum_height: f32,
+    pub occlusion_shape: usize,
+    pub locked: bool,
+}
+
+/// 14061e1a0 lets the interaction sensor pass through a material with
+/// CAN_BLINK_THROUGH only when its owning entity has arkCpntBreakable.
+pub fn breakable_entities(document: &Document) -> Result<HashSet<String>, String> {
+    let declarations: HashMap<&str, &Definition> = document.definitions.iter()
+        .filter(|d| d.kind == "component").map(|d| (d.id.as_str(), d)).collect();
+    let mut result = HashSet::new();
+    for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
+        for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
+            if !key.starts_with("item_add[") { continue; }
+            let Some(entry) = scope(Some(value)) else { continue };
+            if components::entry_class(entry, &declarations)?.as_deref() == Some("cpntbreakable") {
+                result.insert(entity.id.clone());
+                break;
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Readable pickables declare the read state on their pickup interaction;
+/// other pickables must not be converted into notes merely by model name.
+pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<ReadableBinding>, String> {
+    let declarations: HashMap<&str, &Definition> = document.definitions.iter()
+        .filter(|d| d.kind == "component").map(|d| (d.id.as_str(), d)).collect();
+    let mut cache = HashMap::new();
+    let mut result = Vec::new();
+    for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
+        for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
+            if !key.starts_with("item_add[") { continue; }
+            let Some(entry) = scope(Some(value)) else { continue };
+            let fields = match components::entry_fields(entry, "cpntpickable_simple", &declarations, &mut cache, &mut read) {
+                Ok(Some(fields)) => fields,
+                Ok(None) => continue,
+                Err(error) => { eprintln!("Readable component {} {key}: {error}", entity.id); continue; }
+            };
+            let interaction = child(&fields, "m_pickupInteraction");
+            if atom(interaction, "m_playerState") != Some("PLAYER_STATE_READ_NOTE") { continue; }
+            let item = atom(&fields, "m_inventoryItem").ok_or_else(|| format!("{}: readable has no inventory item", entity.id))?;
+            result.push(ReadableBinding {
+                entity: entity.id.clone(), item: item.to_owned(),
+                interaction_name: optional_string(interaction, "m_name"),
+                interaction_text: optional_string(interaction, "m_usageText"),
+                interaction_icon: optional_string(interaction, "m_interactionIcon"),
+                maximum_distance: number(interaction, "m_maximumDistance", 3.0)?,
+                maximum_height: number(interaction, "m_maxHeight", 1000.0)?,
+                occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
+                locked: boolean(interaction, "m_lockedInteraction", false)?,
+            });
+        }
+    }
+    Ok(result)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -77,6 +169,12 @@ fn number(fields: &[(String, Value)], name: &str, default: f32) -> Result<f32, S
             .filter(|v| v.is_finite()).ok_or_else(|| format!("invalid {name}: {value}")),
     }
 }
+fn index(fields: &[(String, Value)], name: &str, default: usize) -> Result<usize, String> {
+    match atom(fields, name) {
+        None => Ok(default),
+        Some(value) => value.parse().map_err(|_| format!("invalid {name}: {value}")),
+    }
+}
 fn vector(fields: &[(String, Value)], name: &str, default: [f32; 3]) -> Result<[f32; 3], String> {
     let fields = child(fields, name);
     Ok([number(fields, "x", default[0])?, number(fields, "y", default[1])?, number(fields, "z", default[2])?])
@@ -112,13 +210,22 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
             transition_min_duration: number(data, "m_transitionMinDuration", 0.0)?,
             effect: optional_string(child(data, "m_FX"), "m_declFX"),
             wait_transition_end_to_play_effect: boolean(data, "m_waitTransitionEndToPlayFx", false)?,
+            overrides_interaction: override_interaction,
             interaction_name: optional_string(interaction, "m_name"),
             interaction_text: optional_string(interaction, "m_usageText"),
+            interaction_icon: optional_string(interaction, "m_interactionIcon"),
+            player_state: optional_string(interaction, "m_playerState"),
+            maximum_distance: number(interaction, "m_maximumDistance", 3.0)?,
+            maximum_height: number(interaction, "m_maxHeight", 1000.0)?,
+            occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
+            locked: boolean(interaction, "m_lockedInteraction", false)?,
         });
     }
     let steps = slots.into_iter().map(|slot| slot.ok_or_else(|| "sparse usable state list".to_owned()))
         .collect::<Result<Vec<_>, _>>()?.into_boxed_slice();
     Ok(DefinitionData {
+        starts_on_spawn: components::scheduling(fields,
+            crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?.starts_on_spawn(),
         initial_step,
         // arkDeclCpntUsableWithStateList constructor 14077a4a0.
         fake_collision: boolean(fields, "m_useFakeCollision", true)?,
@@ -126,6 +233,12 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
         fake_collision_offset: vector(fields, "m_fakeCollisionOffset", [0.0, 0.0, 1.4])?,
         interaction_name: optional_string(interaction, "m_name"),
         interaction_text: optional_string(interaction, "m_usageText"),
+        interaction_icon: optional_string(interaction, "m_interactionIcon"),
+        player_state: optional_string(interaction, "m_playerState"),
+        maximum_distance: number(interaction, "m_maximumDistance", 3.0)?,
+        maximum_height: number(interaction, "m_maxHeight", 1000.0)?,
+        occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
+        locked: boolean(interaction, "m_lockedInteraction", false)?,
         steps,
     })
 }
@@ -148,8 +261,15 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
             let definition = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
                 shared.clone()
             } else {
-                let Some(fields) = components::entry_fields(entry, "cpntusablewithstatelist", &declarations, &mut source_cache, &mut read)? else { continue };
-                let definition = Arc::new(parse(&fields).map_err(|e| format!("{} {key}: {e}", entity.id))?);
+                let fields = match components::entry_fields(entry, "cpntusablewithstatelist", &declarations, &mut source_cache, &mut read) {
+                    Ok(Some(fields)) => fields,
+                    Ok(None) => continue,
+                    Err(error) => { eprintln!("Usable component {} {key}: {error}", entity.id); continue; }
+                };
+                let definition = match parse(&fields) {
+                    Ok(definition) => Arc::new(definition),
+                    Err(error) => { eprintln!("Usable component {} {key}: {error}", entity.id); continue; }
+                };
                 if let Some(key) = cache_key { typed_cache.insert(key, definition.clone()); }
                 definition
             };

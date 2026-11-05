@@ -33,8 +33,17 @@ impl Usable {
     /// 14077a880 initializes an idle pose and its active effect on spawn.
     pub fn initial(&self) -> Changes<'_> {
         let state = &self.definition.steps[self.state];
-        Changes { animation: state.animation.map(|index| command(index, PlayMode::Loop)),
-            stop_effect: false, start_effect: state.effect.as_deref() }
+        if let Some(index) = state.animation {
+            Changes { animation: Some(command(index, PlayMode::Loop)),
+                stop_effect: true, start_effect: state.effect.as_deref() }
+        } else if let Some(index) = state.transition_animation {
+            // 14077b3b0 holds the first transition frame when no idle is
+            // authored, and clears the current effect.
+            Changes { animation: Some(command(index, PlayMode::StayOnFirstFrame)),
+                stop_effect: true, start_effect: None }
+        } else {
+            Changes::default()
+        }
     }
 
     /// 14077aec0 wraps to the next state and ignores input during a transition.

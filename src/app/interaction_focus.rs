@@ -22,6 +22,11 @@ pub(super) struct FocusedInteraction {
     pub current: Option<InteractionPrompt>,
 }
 
+/// Model placements whose owning entity has actually been removed by a
+/// gameplay event. Most levels never populate this set.
+#[derive(Resource, Default)]
+pub(super) struct RetiredPlacements(pub std::collections::HashSet<usize>);
+
 /// Session-owned document declaration identities for the journal. Saving is
 /// a separate owner.
 #[derive(Resource, Default)]
@@ -34,15 +39,21 @@ pub(super) struct DocumentEntry {
     pub item_id: u32,
     pub kind: crate::assets::inventory_item::ReadableKind,
     pub is_new: bool,
+    pub quantity: u32,
 }
 impl DiscoveredDocuments {
     pub fn items(&self) -> &[DocumentEntry] { &self.items }
     /// 1407241c0 inserts inventory additions as new entries. The caller must
     /// invoke this only after the gameplay inventory admits the item.
-    pub fn record(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind) {
-        if !self.items.iter().any(|item| item.path == path) {
-            self.items.push(DocumentEntry { path, item_id, kind, is_new: true });
+    pub fn admit(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind, maximum: u32) -> bool {
+        if let Some(item) = self.items.iter_mut().find(|item| item.path.eq_ignore_ascii_case(&path)) {
+            if item.quantity >= maximum { return false; }
+            item.quantity += 1;
+            return true;
         }
+        if maximum == 0 { return false; }
+        self.items.push(DocumentEntry { path, item_id, kind, is_new: true, quantity: 1 });
+        true
     }
     /// 140724bf0 clears the selected item; the journal passes -1 to clear all
     /// entries of the selected document/book kind.

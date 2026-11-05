@@ -7,6 +7,7 @@ pub mod sound;
 #[cfg(feature = "game")]
 pub mod game_clock_runtime;
 pub mod navigation;
+pub mod interaction_sensor;
 pub mod usable;
 pub mod player;
 pub mod shape_cast;

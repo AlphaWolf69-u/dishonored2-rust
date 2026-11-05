@@ -80,18 +80,19 @@ pub(super) fn setup(
     mut decal_materials: ResMut<Assets<DecalMaterial>>,
     view_settings: Res<ViewSettings>,
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
-    machinery: Option<Res<super::machinery::AmbientMachinery>>,
+    moving: (Option<Res<super::machinery::AmbientMachinery>>, Option<Res<super::interactions::Interactions>>),
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
     effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>),
 ) {
     let (mut programs, prepared) = programs;
     let (effect_graphs, resident_images) = effects_and_images;
+    let (machinery, interactions) = moving;
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
     prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
         &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
-        &mut world_matrices, machinery.as_deref(), environment_volumes.as_deref(),
+        &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
         effect_graphs.as_deref(), None, &resident_images);
 }
 
@@ -110,6 +111,7 @@ pub(super) fn prepare(
     view_settings: &ViewSettings,
     world_matrices: &mut super::world_instances::WorldMatrices,
     machinery: Option<&super::machinery::AmbientMachinery>,
+    interactions: Option<&super::interactions::Interactions>,
     environment_volumes: Option<&super::state::EnvironmentVolumes>,
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
     shared_images: Option<&super::texture_streaming::SharedImages>,
@@ -654,7 +656,16 @@ pub(super) fn prepare(
     let mut skin_palettes =
         HashMap::<String, Result<Arc<shadow_updates::RestSkinning>, String>>::new();
     let mut placed_model_default_ranges = 0usize;
-    let deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
+    let mut deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
+    if let Some(interactions) = interactions {
+        for (index, placement) in expanded_placements.iter().enumerate() {
+            if interactions.actor_by_entity.get(&placement.id).is_some_and(|&actor| {
+                interactions.actors[actor].definition.steps.iter().any(|step| step.animation.is_some() || step.transition_animation.is_some())
+            }) {
+                deformed.insert(index);
+            }
+        }
+    }
     for (number, placement) in expanded_placements.iter().enumerate() {
         if trace_startup {
             eprintln!(

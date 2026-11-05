@@ -209,19 +209,19 @@ fn shadow_model_bounds_keep_hidden_owners_once_not_surface_boxes() {
         },
     ]);
     assert_eq!(
-        sources.active_bounds(&scene).unwrap(),
+        sources.active_bounds(&scene, None).unwrap(),
         [first, second],
         "hidden/unspawned model owners remain receiver inputs, once per placement"
     );
     sources.0[1].placement = 99;
     assert!(
-        sources.active_bounds(&scene).is_err(),
+        sources.active_bounds(&scene, None).is_err(),
         "no owner substitution"
     );
     sources.0[1].placement = 12;
     sources.0[1].instances.end = 4;
     assert!(
-        sources.active_bounds(&scene).is_err(),
+        sources.active_bounds(&scene, None).is_err(),
         "no partial range fallback"
     );
 }

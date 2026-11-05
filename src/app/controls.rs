@@ -258,5 +258,3 @@ pub(super) fn update_coordinate_overlay(
         None => format!("Game XYZ camera: {x:.2}, {y:.2}, {z:.2} | debug free camera | F8 report"),
     };
 }
-
-

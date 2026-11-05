@@ -28,6 +28,12 @@ struct Triangle {
 pub struct CollisionWorld {
     triangles: Vec<Triangle>,
     index: TriangleIndex,
+    /// Component-owned collision, updated independently of the immutable map.
+    component_triangles: Vec<Option<Triangle>>,
+    component_generations: Vec<u32>,
+    component_owners: Vec<Option<u32>>,
+    component_index: ExpandedIndex,
+    free_component_boxes: Vec<(usize, u32)>,
     owner_ids: HashMap<String, Vec<u32>>,
     owner_active: Vec<bool>,
     materials: Vec<PhysicsMaterial>,
@@ -45,6 +51,10 @@ enum TriangleIndex {
     Expanded(ExpandedIndex),
 }
 
+/// A component-owned fake interaction body. Handles are valid until removal.
+#[derive(Clone, Copy, Debug)]
+pub struct ComponentBox { first: usize, owner: u32, generation: u32 }
+
 #[derive(Default)]
 struct ExpandedIndex {
     /// foldhash (hashbrown's default): looked up per cell of every query.
@@ -53,6 +63,73 @@ struct ExpandedIndex {
 }
 
 impl CollisionWorld {
+    fn triangle(&self, index: usize) -> Option<Triangle> {
+        if index < self.triangles.len() { self.triangles.get(index).copied() }
+        else { self.component_triangles.get(index - self.triangles.len()).copied().flatten() }
+    }
+
+    /// 14077af40 creates the fake interaction box; 14077be20 publishes its
+    /// transformed pose and 14077b610 removes it on component stop.
+    pub fn add_interaction_box(&mut self, entity: &str, corners: [Vec3; 8]) -> ComponentBox {
+        let (first, owner) = self.free_component_boxes.pop().unwrap_or_else(|| {
+            let first = self.component_triangles.len();
+            self.component_triangles.resize(first + 12, None);
+            self.component_generations.push(0);
+            self.component_owners.push(None);
+            let owner = self.owner_active.len() as u32;
+            self.owner_active.push(false);
+            (first, owner)
+        });
+        self.owner_active[owner as usize] = true;
+        self.component_owners[first / 12] = Some(owner);
+        self.owner_ids.entry(entity.to_owned()).or_default().push(owner);
+        let handle = ComponentBox { first, owner, generation: self.component_generations[first / 12] };
+        self.update_interaction_box(handle, corners);
+        handle
+    }
+
+    pub fn update_interaction_box(&mut self, handle: ComponentBox, corners: [Vec3; 8]) {
+        if self.component_generations.get(handle.first / 12).copied() != Some(handle.generation)
+            || self.component_owners.get(handle.first / 12).copied().flatten() != Some(handle.owner) { return; }
+        const FACES: [[usize; 3]; 12] = [
+            [0, 3, 1], [0, 2, 3], [4, 5, 7], [4, 7, 6],
+            [0, 1, 5], [0, 5, 4], [2, 6, 7], [2, 7, 3],
+            [0, 4, 6], [0, 6, 2], [1, 3, 7], [1, 7, 5],
+        ];
+        for (face, points) in FACES.into_iter().enumerate() {
+            let local = handle.first + face;
+            let index = self.triangles.len() + local;
+            if let Some(old) = self.component_triangles[local] {
+                unindex_component(&mut self.component_index, index, old.min, old.max);
+            }
+            let [a, b, c] = points.map(|i| corners[i]);
+            let triangle = Triangle {
+                a, b, c, min: a.min(b).min(c), max: a.max(b).max(c), owner: handle.owner,
+                material: NO_MATERIAL,
+                filter: crate::gameplay::collision_filter::filter_info(crate::gameplay::collision_filter::layer::INTERACTABLE) & !0x800,
+            };
+            self.component_triangles[local] = Some(triangle);
+            index_component(&mut self.component_index, index, triangle.min, triangle.max);
+        }
+    }
+
+    pub fn remove_interaction_box(&mut self, handle: ComponentBox) {
+        if self.component_generations.get(handle.first / 12).copied() != Some(handle.generation)
+            || self.component_owners.get(handle.first / 12).copied().flatten() != Some(handle.owner) { return; }
+        for local in handle.first..handle.first + 12 {
+            if let Some(old) = self.component_triangles[local].take() {
+                unindex_component(&mut self.component_index, self.triangles.len() + local, old.min, old.max);
+            }
+        }
+        self.owner_active[handle.owner as usize] = false;
+        self.component_owners[handle.first / 12] = None;
+        self.component_generations[handle.first / 12] = handle.generation.wrapping_add(1);
+        self.owner_ids.retain(|_, indices| {
+            indices.retain(|&owner| owner != handle.owner);
+            !indices.is_empty()
+        });
+        self.free_component_boxes.push((handle.first, handle.owner));
+    }
     pub fn new(source: impl IntoIterator<Item = [Vec3; 3]>) -> Self {
         Self::with_owned(
             source.into_iter().map(|triangle| (triangle, u32::MAX)),
@@ -89,6 +166,11 @@ impl CollisionWorld {
         let mut world = Self {
             triangles: Vec::new(),
             index: TriangleIndex::Expanded(ExpandedIndex::default()),
+            component_triangles: Vec::new(),
+            component_generations: Vec::new(),
+            component_owners: Vec::new(),
+            component_index: ExpandedIndex::default(),
+            free_component_boxes: Vec::new(),
             owner_ids,
             owner_active: vec![true; owners.len()],
             materials,
@@ -204,7 +286,7 @@ impl CollisionWorld {
 
     /// A triangle's filter word (the key `triangles_in` reports).
     pub fn collision_filter(&self, triangle: u32) -> Option<u32> {
-        self.triangles.get(triangle as usize).map(|t| t.filter)
+        self.triangle(triangle as usize).map(|t| t.filter)
     }
 
     /// The arkPhysicsMaterial the game resolves for a triangle (FUN_1400922d0
@@ -212,7 +294,7 @@ impl CollisionWorld {
     /// `first_hit_details` report. `None` where the material is not decoded
     /// (placed-model colliders, unresolved codec paths).
     pub fn physics_material(&self, triangle: u32) -> Option<&PhysicsMaterial> {
-        let material = self.triangles.get(triangle as usize)?.material;
+        let material = self.triangle(triangle as usize)?.material;
         self.materials.get(material as usize)
     }
 
@@ -228,7 +310,7 @@ impl CollisionWorld {
         self.candidates(start.min(end), start.max(end), filter)
             .into_iter()
             .filter_map(|index| {
-                let triangle = self.triangles[index];
+                let triangle = self.triangle(index)?;
                 let distance = segment_triangle_hit(start, direction, triangle)?;
                 (distance > 0.001 && distance < length).then_some((
                     distance,
@@ -252,7 +334,7 @@ impl CollisionWorld {
         self.candidates(min, max, filter)
             .into_iter()
             .map(|index| {
-                let t = self.triangles[index];
+                let t = self.triangle(index).expect("indexed collision triangle");
                 (index as u32, [t.a, t.b, t.c], t.owner)
             })
             .collect()
@@ -293,8 +375,22 @@ impl CollisionWorld {
                 }
             }
         }
+        // Fake interactable bodies have their own mutable broad phase. Most
+        // player/world queries reject this layer and avoid touching it.
+        if filter.accepts(crate::gameplay::collision_filter::filter_info(crate::gameplay::collision_filter::layer::INTERACTABLE) & !0x800) {
+            found.extend(self.component_index.large.iter().copied());
+            for x in low.0..=high.0 {
+                for y in low.1..=high.1 {
+                    for z in low.2..=high.2 {
+                        if let Some(indices) = self.component_index.cells.get(&(x, y, z)) {
+                            found.extend(indices.iter().copied());
+                        }
+                    }
+                }
+            }
+        }
         found.retain(|&index| {
-            let triangle = self.triangles[index];
+            let Some(triangle) = self.triangle(index) else { return false };
             (triangle.owner == u32::MAX || self.owner_active[triangle.owner as usize])
                 && filter.accepts(triangle.filter)
                 && (0..3).all(|axis| {
@@ -326,7 +422,7 @@ impl CollisionWorld {
         let max = feet + Vec3::new(0.02, step_up, 0.02);
         let mut best: Option<f32> = None;
         for index in self.candidates(min, max, QueryFilter::ALL) {
-            let triangle = self.triangles[index];
+            let triangle = self.triangle(index).expect("indexed collision triangle");
             let normal = (triangle.b - triangle.a)
                 .cross(triangle.c - triangle.a)
                 .normalize_or_zero();
@@ -342,6 +438,36 @@ impl CollisionWorld {
             best = Some(best.map_or(height, |previous| previous.max(height)));
         }
         best
+    }
+}
+
+fn index_component(index: &mut ExpandedIndex, id: usize, min: Vec3, max: Vec3) {
+    let low = cell(min);
+    let high = cell(max);
+    let count = (high.0 - low.0 + 1) as i64 * (high.1 - low.1 + 1) as i64 * (high.2 - low.2 + 1) as i64;
+    if count > 4096 { index.large.push(id); return; }
+    for x in low.0..=high.0 {
+        for y in low.1..=high.1 {
+            for z in low.2..=high.2 { index.cells.entry((x, y, z)).or_default().push(id); }
+        }
+    }
+}
+
+fn unindex_component(index: &mut ExpandedIndex, id: usize, min: Vec3, max: Vec3) {
+    let low = cell(min);
+    let high = cell(max);
+    let count = (high.0 - low.0 + 1) as i64 * (high.1 - low.1 + 1) as i64 * (high.2 - low.2 + 1) as i64;
+    if count > 4096 { index.large.retain(|&v| v != id); return; }
+    for x in low.0..=high.0 {
+        for y in low.1..=high.1 {
+            for z in low.2..=high.2 {
+                let key = (x, y, z);
+                if let Some(values) = index.cells.get_mut(&key) {
+                    values.retain(|&v| v != id);
+                    if values.is_empty() { index.cells.remove(&key); }
+                }
+            }
+        }
     }
 }
 

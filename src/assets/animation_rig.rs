@@ -117,3 +117,28 @@ pub fn anim_basic(clips: &mut Clips, fields: &[(String, crate::entities::Value)]
     Ok(node)
 }
 
+/// Immutable model-specific data shared by usable instances. The individual
+/// actors own their playback node and time; compressed clips already use the
+/// animation resource owner's shared residency.
+pub struct BasicRig {
+    pub skeleton: crate::edge_skeleton::EdgeSkeleton,
+    pub root: crate::edge_skeleton::JointRestPose,
+    pub animations: Vec<crate::edge_animation::EdgeAnimation>,
+    pub template: crate::gameplay::player::animation::AnimBasicNode,
+}
+
+impl BasicRig {
+    pub fn load(catalog: &Catalog, model: &str) -> Result<Self, String> {
+        let rig = Rig::load(catalog, model)?;
+        let declaration = rig.decl("animBasicDecl").ok_or_else(|| format!("{model} has no animBasicDecl"))?;
+        let fields = crate::entities::player::resolved_decl("animbasic", &declaration, |path| text_of(catalog, path))?;
+        let (template, animations) = {
+            let mut clips = Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest,
+                animations: Vec::new(), loaded: HashMap::new() };
+            let template = anim_basic(&mut clips, &fields)?;
+            (template, clips.animations)
+        };
+        Ok(Self { skeleton: rig.skeleton, root: rig.root, animations, template })
+    }
+}
+

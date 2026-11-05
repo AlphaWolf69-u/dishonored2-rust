@@ -369,6 +369,21 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .before(stream_visible_models)
                 .before(shadow_updates::collect_model_casters),
         )
+        .add_systems(PostUpdate, super::interactions::sync_boxes
+            .after(super::model_motion::publish_model_poses))
+        .add_systems(PostUpdate, super::interactions::focus_and_interact
+            .after(super::interactions::sync_boxes)
+            .run_if(super::pause_menu::game_not_paused)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::interactions::retire_admitted_pickups
+            .after(super::interactions::focus_and_interact)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters))
+        .add_systems(PostUpdate, super::usable_animation::advance
+            .after(super::interactions::focus_and_interact)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters)
+            .run_if(super::loading_screen::is_playing))
         .add_systems(
             PostUpdate,
             publish_initial_whole_view_depth
