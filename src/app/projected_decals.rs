@@ -19,6 +19,19 @@ type Images = Vec<(MaterialHandle, Vec<(usize, crate::surface_gpu::ImageRole)>)>
 #[derive(Resource, Default)]
 struct GeometryLayouts(HashMap<AssetId<Mesh>, u32>);
 
+struct RuntimeDecalProxySet {
+    prepared: super::runtime_materials::PreparedDecal,
+    entities: Vec<Entity>,
+}
+#[derive(Resource, Default)]
+pub(super) struct RuntimeDecalProxies {
+    generation: u64,
+    owned: HashMap<(String, bool), RuntimeDecalProxySet>,
+    samples: Vec<(u32, bool, Handle<Mesh>)>,
+    cube: Option<Handle<Mesh>>,
+    owns_scene_geometry: bool,
+}
+
 #[derive(Default)]
 struct BoundsOwners {
     domain: (usize, usize),
@@ -185,6 +198,100 @@ pub(super) fn prepare(
     });
     commands.insert_resource(layouts);
     bindings
+}
+
+/// Publish prepared dynamic decal assets through the same receiver proxies as
+/// setup. Prepared records remain leased here for as long as the coordinator
+/// retains the corresponding effect or tail.
+pub(super) fn publish_runtime(
+    request: Option<Res<super::usable_effects::DynamicDecalMaterials>>,
+    mut state: Option<ResMut<RuntimeDecalProxies>>,
+    mut readiness: ResMut<crate::rendering::bevy_backend::projected_decals::DynamicProxyReadiness>,
+    scene_data: Option<Res<super::SceneData>>,
+    queue: Option<Res<SceneRenderQueue>>,
+    materials: Option<Res<ShadowMaterials>>,
+    mut scene: ResMut<DecalScene>,
+    mut layouts: ResMut<GeometryLayouts>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    existing: Query<(Entity, &ProjectedDecalProxy)>,
+    mut commands: Commands,
+) {
+    let (Some(request), Some(mut state), Some(scene_data), Some(queue), Some(materials)) =
+        (request, state, scene_data, queue, materials) else { return };
+    if request.prepared_generation != request.generation || state.generation == request.generation { return; }
+    if !request.prepared.is_empty() && state.samples.is_empty() {
+        let (new_layouts, samples) = receiver_layouts(&queue.instances, &*meshes);
+        *layouts = new_layouts;
+        state.samples = samples;
+        if scene.tree.is_none() {
+            scene.tree = Some(scene_data.world.spatial_query());
+            state.owns_scene_geometry = true;
+            let mut ends = [0; 2];
+            for instance in &queue.instances {
+                if let Some(super::RenderInstanceSource { surface: RenderModelSurface::World { object, .. }, .. }) = instance.source {
+                    if let Some(Ok(material)) = materials.0.get(&instance.material) {
+                        let class = usize::from(material.source.main_blend_state & 1 != 0);
+                        ends[class] = ends[class].max(scene_data.world.objects[object].matrix_end as u32);
+                    }
+                }
+            }
+            scene.receiver_range_ends = ends;
+        }
+    }
+    let wanted: std::collections::HashSet<_> = request.prepared.iter().map(|item| (item.name.clone(), item.world)).collect();
+    let obsolete: Vec<_> = state.owned.keys().filter(|key| !wanted.contains(*key)).cloned().collect();
+    for key in obsolete {
+        if let Some(old) = state.owned.remove(&key) {
+            for entity in old.entities { commands.entity(entity).try_despawn(); }
+            if let Some(variants) = Arc::make_mut(&mut scene.programs).get_mut(&key.0) {
+                variants[usize::from(key.1)] = None;
+            }
+        }
+    }
+    let mut expected = Vec::new();
+    for item in request.prepared.iter() {
+        let key = (item.name.clone(), item.world);
+        if let Some(current) = state.owned.get(&key) {
+            expected.extend(current.entities.iter().copied());
+            continue;
+        }
+        if scene.programs.get(&item.name).and_then(|variants| variants[usize::from(item.world)].as_ref()).is_some() {
+            expected.extend(existing.iter().filter(|(_, proxy)| proxy.material == item.name && proxy.world == item.world)
+                .map(|(entity, _)| entity));
+            continue;
+        }
+        let depth_box = item.program.kind == crate::rendering::decals::material::ProjectionKind::DepthBox;
+        if depth_box && state.cube.is_none() {
+            let mut cube = Cuboid::new(2., 1., 2.).mesh().build().translated_by(Vec3::new(0., -0.5, 0.));
+            cube.generate_tangents().expect("complete cube tangent inputs");
+            state.cube = Some(meshes.add(cube));
+        }
+        let candidates: Vec<_> = if depth_box {
+            vec![(u32::MAX, state.cube.as_ref().unwrap().clone())]
+        } else {
+            state.samples.iter().filter(|(_, world, _)| *world == item.world)
+                .map(|(layout, _, mesh)| (*layout, mesh.clone())).collect()
+        };
+        let mut entities = Vec::with_capacity(candidates.len());
+        for (layout, mesh) in candidates {
+            let skinned = meshes.get(&mesh).is_some_and(|mesh| mesh.contains_attribute(Mesh::ATTRIBUTE_JOINT_INDEX));
+            let mut entity = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(item.handle.clone()),
+                Transform::IDENTITY, GlobalTransform::IDENTITY, Visibility::Visible,
+                bevy::camera::visibility::NoFrustumCulling, bevy::render::batching::NoAutomaticBatching,
+                bevy::light::NotShadowCaster, ProjectedDecalProxy { material: item.name.clone(), world: item.world,
+                    program: item.program.clone(), layout, mesh: mesh.id() }));
+            if skinned { entity.insert(bevy::pbr::DirectMeshSkin); }
+            entities.push(entity.id());
+        }
+        Arc::make_mut(&mut scene.programs).entry(item.name.clone()).or_insert_with(|| [None, None])
+            [usize::from(item.world)] = Some(item.program.clone());
+        expected.extend(entities.iter().copied());
+        state.owned.insert(key, RuntimeDecalProxySet { prepared: item.clone(), entities });
+    }
+    readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
+        generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(),
+    };
+    state.generation = request.generation;
 }
 
 fn extract_receivers(

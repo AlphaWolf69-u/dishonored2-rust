@@ -920,6 +920,7 @@ pub(super) fn prepare_level(
     app.insert_resource(super::usable_effects::UsableEffects::default());
     app.insert_resource(super::usable_effects::DynamicWorldMaterials::default());
     app.insert_resource(super::usable_effects::DynamicDecalMaterials::default());
+    app.insert_resource(super::projected_decals::RuntimeDecalProxies::default());
     app.insert_resource(super::runtime_fx_images::RuntimeFxImages::default());
     app.insert_resource(super::vegetation_wind::LevelTriggerWinds::load(
         catalog.as_ref().unwrap(),

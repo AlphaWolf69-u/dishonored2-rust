@@ -42,6 +42,9 @@ pub(super) struct DynamicDecalMaterials {
     pub generation: u64,
     pub retirement: u64,
     pub sources: Arc<Sources>,
+    pub prepared_generation: u64,
+    pub prepared: Arc<Vec<super::runtime_materials::PreparedDecal>>,
+    pub gpu_completed: Arc<std::sync::atomic::AtomicU64>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
     pub failed: Arc<std::sync::atomic::AtomicU64>,
 }
