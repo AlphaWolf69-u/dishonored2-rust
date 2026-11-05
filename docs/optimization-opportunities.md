@@ -2107,3 +2107,21 @@ once per requested mask frame, and release_view drops both target and cached
 input references. The pipeline and uniform buffer can remain reusable without
 retaining scene textures. This is still inactive integration work; no memory
 or pass timing is claimed until its actual consuming view is connected.
+# Shared skeleton acquisition and runtime ownership — prediction
+
+Before integrating the shared owner: player body/arms, arm rendering, rest-skin
+preparation and physics should use one immutable Edge skeleton identity per
+catalog/path, coalescing overlapping reads and parses. A repeated acquisition
+while that identity is live should perform no skeleton read/parse. Mutable
+poses and derived physics matrices remain independent. The body-camera pose
+should stop copying its parent array each frame, saving one allocation and
+`parent_count * size_of::<Option<usize>>()` copied bytes per body pose; compare
+only that block over a moving route with the existing diagnostic switch.
+The cost is retaining names and inverse-bind data with the skeleton until its
+last consumer releases it. Acquisition/release identity timestamps and separate
+core/name/inverse-bind logical-byte counts must demonstrate the actual peak
+and retained-byte tradeoff. Do not infer an RSS or total CPU improvement from
+the removed copy or from debug load duration. This is a host weak/coalesced
+registry for the original `1400607f0` identity and `14024f2a0` skeleton loader;
+GPU output and pose behavior must remain unchanged.
+
