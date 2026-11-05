@@ -672,8 +672,9 @@ impl Player {
         }
         let allow = self.machine.allow_camera_out_of_shape();
         let body_yaw = self.body.follow_slope.yaw_offset;
-        self.update_arms(body_yaw);
-        let view = self.camera.view(&self.pose, &self.physics, allow, body_yaw);
+        let body_controls = self.camera.controls(&self.pose, body_yaw);
+        self.update_arms(body_yaw, &body_controls);
+        let view = self.camera.view(&self.pose, &self.physics, allow, &body_controls);
         for (slot, id) in [StateId::MANTLE, StateId::CATFALL].into_iter().enumerate() {
             let active = self.machine.is_active(id);
             if active {
@@ -733,8 +734,7 @@ impl Player {
     /// the body pose after the camera's joint controls, FUN_1407506d0), its
     /// tree pose, then the camera's shoulder controls (FUN_14053bcd0: world
     /// rotations about the shoulder, children carried).
-    fn update_arms(&mut self, body_yaw: f32) {
-        let body_controls = self.camera.controls(&self.pose, body_yaw);
+    fn update_arms(&mut self, body_yaw: f32, body_controls: &[camera::JointControl]) {
         let shoulder_controls = self.camera.arm_controls(body_yaw);
         let (position, axis) = (self.physics.position(), self.physics.axis());
         let mut render = Vec::with_capacity(self.body.arms.len());
@@ -757,7 +757,7 @@ impl Player {
                     continue;
                 }
             };
-            let (frame_p, frame_r) = self.arm_frame(arm, &body_controls);
+            let (frame_p, frame_r) = self.arm_frame(arm, body_controls);
             let shoulder = arm.skeleton.shoulder;
             let pivot = frame_p + frame_r * joints[shoulder].0;
             let rows = joints
@@ -782,7 +782,7 @@ impl Player {
         if self.body.legs_visible {
             let joints = (0..self.pose.positions.len())
                 .map(|j| {
-                    let (p, r) = self.pose.joint_with_controls(j, &body_controls);
+                    let (p, r) = self.pose.joint_with_controls(j, body_controls);
                     let (p, r) = (position + axis * p, axis * r);
                     std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
                 })
@@ -792,7 +792,7 @@ impl Player {
         self.arm_render = render;
     }
 
-    fn arm_frame(&self, arm: &arms::Arm, controls: &[(usize, Mat3)]) -> (Vec3, Mat3) {
+    fn arm_frame(&self, arm: &arms::Arm, controls: &[camera::JointControl]) -> (Vec3, Mat3) {
         let (tag_p, tag_r) = self.pose.joint_with_controls(arm.bind_joint, controls);
         (tag_p + tag_r * arm.bind.0, tag_r * arm.bind.1)
     }

@@ -86,6 +86,16 @@ pub struct BodyPose {
     pub controls: [usize; 3],
 }
 
+#[derive(Clone, Copy)]
+pub struct JointControl {
+    joint: usize,
+    turn: Mat3,
+    pivot: Vec3,
+}
+impl JointControl {
+    fn new(joint: usize, turn: Mat3) -> Self { Self { joint, turn, pivot: Vec3::ZERO } }
+}
+
 impl BodyPose {
     pub(super) fn descends_from(&self, mut joint: usize, ancestor: usize) -> bool {
         let parents = self.debug_copied_parents.as_deref().unwrap_or(self.skeleton.parents.as_slice());
@@ -106,35 +116,33 @@ impl BodyPose {
     pub fn camera_with_pitch(&self, pitch: f32, forward_ratios: [f32; 3], backward_ratios: [f32; 3]) -> (Vec3, Mat3) {
         let ratios = if pitch > 0.0 { forward_ratios } else { backward_ratios };
         let turn = |r: f32| Mat3::from_quat(Quat::from_axis_angle(Vec3::Y, pitch * r));
-        let controls = [(self.controls[2], turn(ratios[2])), (self.controls[1], turn(ratios[1])), (self.controls[0], turn(ratios[0]))];
+        let controls = self.prepare_controls(vec![JointControl::new(self.controls[2], turn(ratios[2])), JointControl::new(self.controls[1], turn(ratios[1])), JointControl::new(self.controls[0], turn(ratios[0]))]);
         self.joint_with_controls(self.camera, &controls)
+    }
+
+    fn prepare_controls(&self, mut controls: Vec<JointControl>) -> Vec<JointControl> {
+        // The animator processes joint modifications in skeleton order. Keep
+        // the submission order of multiple modifications to the same joint.
+        controls.sort_by_key(|control| control.joint);
+        for index in 0..controls.len() {
+            let joint = controls[index].joint;
+            let mut pivot = self.positions[joint];
+            for previous in &controls[..index] {
+                if self.descends_from(joint, previous.joint) {
+                    pivot = previous.pivot + previous.turn * (pivot - previous.pivot);
+                }
+            }
+            controls[index].pivot = pivot;
+        }
+        controls
     }
 
     /// `joint`'s model-space position and rotation after joint controls,
     /// applied in order, each about its control joint in model space.
-    pub fn joint_with_controls(&self, joint: usize, controls: &[(usize, Mat3)]) -> (Vec3, Mat3) {
+    pub fn joint_with_controls(&self, joint: usize, controls: &[JointControl]) -> (Vec3, Mat3) {
         let mut position = self.positions[joint];
         let mut rotation = self.rotations[joint];
-        // A control's pivot follows earlier controls on its ancestors, just
-        // as the animator's hierarchy update does before each joint mod.
-        // Normal camera modes use at most eight controls; keep those on the
-        // stack, while allowing callers to supply larger lists.
-        let mut inline_pivots = [Vec3::ZERO; 8];
-        let mut extra_pivots = Vec::new();
-        let pivots = if controls.len() <= inline_pivots.len() {
-            &mut inline_pivots[..controls.len()]
-        } else {
-            extra_pivots.resize(controls.len(), Vec3::ZERO);
-            &mut extra_pivots[..]
-        };
-        for (index, &(control, turn)) in controls.iter().enumerate() {
-            let mut pivot = self.positions[control];
-            for (previous, &(ancestor, ancestor_turn)) in controls[..index].iter().enumerate() {
-                if self.descends_from(control, ancestor) {
-                    pivot = pivots[previous] + ancestor_turn * (pivot - pivots[previous]);
-                }
-            }
-            pivots[index] = pivot;
+        for &JointControl { joint: control, turn, pivot } in controls {
             if !self.descends_from(joint, control) {
                 continue;
             }
@@ -467,7 +475,7 @@ impl PlayerCamera {
 
     /// The joint controls of this update's poses (pitch about the body's
     /// left, turned by the body yaw offset; yaw about up).
-    pub fn controls(&self, pose: &BodyPose, body_yaw: f32) -> Vec<(usize, Mat3)> {
+    pub fn controls(&self, pose: &BodyPose, body_yaw: f32) -> Vec<JointControl> {
         let ratios = if self.pitch > 0.0 { self.decl.forward_ratios } else { self.decl.backward_ratios };
         let (head, neck, arms) = (self.pitch * ratios[0], self.pitch * ratios[1], self.pitch * ratios[2]);
         let axis = Mat3::from_rotation_z(body_yaw) * Vec3::Y;
@@ -478,33 +486,33 @@ impl PlayerCamera {
         for &(mode, w, _) in &self.poses {
             match mode {
                 MODE_AND_ARMS => {
-                    controls.extend([(arms_joint, pitch(w * arms)), (neck_joint, pitch(w * neck)), (head_joint, pitch(w * head))]);
+                    controls.extend([(arms_joint, pitch(w * arms)), (neck_joint, pitch(w * neck)), (head_joint, pitch(w * head))].map(|(joint, turn)| JointControl::new(joint, turn)));
                 }
                 MODE_CONSTRAINED => controls.extend([
                     (arms_joint, pitch(w * arms)),
                     (neck_joint, pitch(w * neck)),
                     (head_joint, yaw(w * self.yaw_offset)),
                     (head_joint, pitch(w * head)),
-                ]),
+                ].map(|(joint, turn)| JointControl::new(joint, turn))),
                 MODE_CONSTRAINED_WITH_ARMS => controls.extend([
                     (arms_joint, pitch(w * arms)),
                     (arms_joint, yaw(w * self.yaw_offset)),
                     (neck_joint, pitch(w * neck)),
                     (head_joint, pitch(w * head)),
-                ]),
+                ].map(|(joint, turn)| JointControl::new(joint, turn))),
                 MODE_CATFALL => controls.extend([
                     (neck_joint, pitch(w * (neck + arms))),
                     (head_joint, yaw(w * self.yaw_offset)),
                     (head_joint, pitch(w * head)),
-                ]),
+                ].map(|(joint, turn)| JointControl::new(joint, turn))),
                 // 1407f5b30 rotates the head by -90 degrees times the
                 // mode-blend weight, independently of ordinary look input.
-                MODE_DROWNING => controls.push((head_joint, Mat3::from_rotation_y(-std::f32::consts::FRAC_PI_2 * w))),
+                MODE_DROWNING => controls.push(JointControl::new(head_joint, Mat3::from_rotation_y(-std::f32::consts::FRAC_PI_2 * w))),
                 // ANIMATED: camera_jnt as animated (arms only).
                 _ => {}
             }
         }
-        controls
+        pose.prepare_controls(controls)
     }
 
     /// FUN_1407f7500: sprinting (or jumping/falling started from a sprint)
@@ -520,9 +528,8 @@ impl PlayerCamera {
     }
 
     /// FUN_1407f6a80: camera_jnt in world space, kept inside the capsule.
-    pub fn view(&mut self, pose: &BodyPose, physics: &PlayerPhysics, allow_out_of_shape: bool, body_yaw: f32) -> View {
-        let controls = self.controls(pose, body_yaw);
-        let (local, local_rotation) = pose.joint_with_controls(pose.camera, &controls);
+    pub fn view(&mut self, pose: &BodyPose, physics: &PlayerPhysics, allow_out_of_shape: bool, controls: &[JointControl]) -> View {
+        let (local, local_rotation) = pose.joint_with_controls(pose.camera, controls);
         let axis = physics.axis();
         let position = physics.position();
         let base = position + physics.lean_offset;
@@ -554,7 +561,7 @@ impl PlayerCamera {
         // pitched about its left and turned by the yaw offset; the clamped
         // view itself otherwise.
         self.eye = if from_joint {
-            let (head, _) = pose.joint_with_controls(pose.controls[0], &controls);
+            let (head, _) = pose.joint_with_controls(pose.controls[0], controls);
             let head = position + axis * head;
             let forward = Mat3::from_rotation_z(self.yaw_offset) * (Quat::from_axis_angle(axis.y_axis, self.pitch) * axis.x_axis);
             head + forward * origin.distance(head)
