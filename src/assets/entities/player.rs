@@ -250,7 +250,7 @@ pub fn player_declarations(
     let mut swimming_states = Vec::new();
     for name in list_items(&swimming_mode, "m_states") {
         let Some(kind) = kind_of(&name) else { continue };
-        if kind == "playerstateswimming" || kind == "playerstateswimmantle" {
+        if kind == "playerstateswimming" || kind == "playerstateswimmantle" || kind == "playerstatedead" {
             swimming_states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
         }
     }

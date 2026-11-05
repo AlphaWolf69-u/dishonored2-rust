@@ -72,6 +72,7 @@ pub struct Player {
     md6: String,
     health: health::Health,
     warned_mana_drowning: bool,
+    game_over_requested: bool,
     /// The game's LCG at gameLocal+0x600f8 (its seed is not traced).
     random: u32,
     /// `ark_playerSmoothedLoco` / `ark_playerBobAmount` and the difficulty's
@@ -108,6 +109,7 @@ pub struct PlayerSetup {
     pub swimming_rules: Vec<states::RuleDecl>,
     pub swimming_default_state: StateId,
     pub swimming_has_mantle: bool,
+    pub swimming_death: Option<states::DrowningDeathDecl>,
     pub breath: swimming::Breath,
     pub accepts_water_damage: bool,
 }
@@ -121,6 +123,15 @@ impl Player {
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
     pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
+    /// Advance the same game-local LCG already used by player scene picks.
+    pub fn choose_random(&mut self, count: usize) -> Option<usize> {
+        if count == 0 { return None; }
+        self.random = self.random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f);
+        Some(((self.random >> 10) & 0x7fff) as usize % count)
+    }
+    pub fn take_game_over_request(&mut self) -> bool {
+        std::mem::take(&mut self.game_over_requested)
+    }
 
     /// 14088a8c0 compares the gameplay eye with the completed head sample.
     pub fn is_underwater(&self) -> bool {
@@ -164,6 +175,9 @@ impl Player {
         if setup.swimming_has_mantle {
             swimming_decls.push(states::StateDecl::class_default(Kind::SwimMantle));
         }
+        if let Some(dead) = setup.swimming_death {
+            swimming_decls.push(states::StateDecl::class_default(Kind::Dead(dead)));
+        }
         let health = health::Health::new(setup.health, setup.accepts_water_damage, &setup.attributes);
         Ok(Self {
             physics,
@@ -196,6 +210,7 @@ impl Player {
             md6: setup.md6,
             health,
             warned_mana_drowning: false,
+            game_over_requested: false,
             random: 0,
             arm_render: Vec::new(),
             arm_pose_errors: [None, None],
@@ -283,6 +298,7 @@ impl Player {
                     health: self.health.current(),
                     underwater,
                     swim_mantle_exit: &mut swim_mantle_exit,
+                    game_over_requested: &mut self.game_over_requested,
                     random: &mut self.random,
                     small_fall_cooldown: self.body_settings.small_fall_cooldown,
                     lean_toggle: settings.lean_toggle,
@@ -291,7 +307,7 @@ impl Player {
                 }
             };
         }
-        let in_water = (!self.machine.is_active(StateId::MANTLE) || self.swimming_active) && self.swimming_contact.is_some_and(|water| {
+        let in_water = if self.health.is_dead() { self.swimming_active } else { (!self.machine.is_active(StateId::MANTLE) || self.swimming_active) && self.swimming_contact.is_some_and(|water| {
             let depth = water.plane - origin.z + self.physics.ground_ray_distance_min;
             let head_underwater = self.camera.eye.z <= water.head;
             let surface = water.plane + self.swimming_settings.distance_above_surface;
@@ -306,7 +322,7 @@ impl Player {
                 depth >= self.swimming_settings.minimum_depth
                     && (head_underwater || origin.z + self.swimming_eye_height <= surface)
             }
-        });
+        }) };
         if in_water != self.swimming_active && self.swimming_available {
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
@@ -358,7 +374,12 @@ impl Player {
                 let scale = self.attributes.0.get("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE").copied().unwrap_or(1.0);
                 let damage = dt * self.attributes.get("ARK_ATTRIBUTE_DROWNING_DAMAGE_PER_SECOND")
                     * self.incoming_damage_factor * scale;
-                if damage > 0.0 { self.health.damage(damage, &self.attributes); }
+                if damage > 0.0 && !self.health.is_dead() {
+                    self.health.damage(damage, &self.attributes);
+                    if self.health.is_dead() && self.swimming_active {
+                        self.machine.request(StateId::DEAD);
+                    }
+                }
             }
         }
         // Camera DEFAULT (FUN_1407f6140): modes, look integration, FOV.

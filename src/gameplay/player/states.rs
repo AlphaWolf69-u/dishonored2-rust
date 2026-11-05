@@ -43,6 +43,7 @@ impl StateId {
     pub const VAULT: Self = Self(9);
     pub const AUTOCROUCH: Self = Self(10);
     pub const WALLCROUCH: Self = Self(11);
+    pub const DEAD: Self = Self(15);
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
     pub const NULL: Self = Self(91);
@@ -414,6 +415,18 @@ pub enum Kind {
     Vault(VaultDecl),
     Swimming(super::swimming::SwimmingStateDecl),
     SwimMantle,
+    Dead(DrowningDeathDecl),
+}
+
+/// arkDeclPlayerStateDead defaults from 14085b970.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrowningDeathDecl {
+    pub duration: f32,
+    pub vertical_speed: f32,
+    pub yaw_speed: f32,
+    pub look_duration: f32,
+    pub fx_delay: f32,
+    pub fx: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -496,6 +509,10 @@ impl StateDecl {
             Kind::SwimMantle => {
                 flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
                 (StateId::MANTLE, 0.0)
+            }
+            Kind::Dead(_) => {
+                flags = StateFlags { primary: true, body_parts: 0x1f, locked_body_parts: 0x1f, exclusive_body_parts: 0x1f, allow_camera_out_of_shape: true, ..flags };
+                (StateId::DEAD, 0.0)
             }
         };
         Self { id, flags, navigation, air_friction, kind }
@@ -633,6 +650,7 @@ pub struct Frame<'a> {
     pub health: f32,
     pub underwater: bool,
     pub swim_mantle_exit: &'a mut bool,
+    pub game_over_requested: &'a mut bool,
     /// The game's global LCG at gameLocal+0x600f8.
     pub random: &'a mut u32,
     /// `ark_playerSmallFallCooldown` (cvar 0x143996320, "0.5").
@@ -874,6 +892,8 @@ pub struct State {
     mantle: MantleRun,
     vault: VaultRun,
     swimming_dive: (Vec3, f32),
+    death_timer: f32,
+    death_transition_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -959,6 +979,8 @@ impl StateMachine {
                 mantle: MantleRun::default(),
                 vault: VaultRun::default(),
                 swimming_dive: (Vec3::ZERO, 0.0),
+                death_timer: 0.0,
+                death_transition_pending: false,
             })
 
             .collect();
@@ -1106,6 +1128,7 @@ impl StateMachine {
             Kind::Falling(_) => true,
             Kind::Swimming(_) => navigation,
             Kind::SwimMantle => !frame.underwater && frame.mantle_sensor.can_mantle(),
+            Kind::Dead(_) => true,
             // FUN_14085d9a0: the base body-part test passes with no parts.
             Kind::Leaning(_) => physics.near_ground(),
             // FUN_14085b2e0 (swimming is not ported).
@@ -1466,6 +1489,14 @@ impl StateMachine {
             self.quit(decl.id);
             return;
         }
+        if let Kind::Dead(dead) = &decl.kind {
+            // 14085ba50 starts the drowning countdown and the animated
+            // drowning camera when the fatal damage type is WATER.
+            self.states[index].death_timer = dead.duration;
+            self.states[index].death_transition_pending = true;
+            frame.camera.set_target_mode(15, dead.look_duration);
+            return;
+        }
         if let Kind::Vault(vault) = &decl.kind {
             // FUN_1408715a0.
             let sensor = &*frame.vault_sensor;
@@ -1621,7 +1652,7 @@ impl StateMachine {
                 self.states[index].swimming_dive = (direction, impulse);
             }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle => {}
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::Dead(_) => {}
         }
     }
 
@@ -1906,6 +1937,17 @@ impl StateMachine {
                 }
             }
             Kind::SwimMantle => {}
+            Kind::Dead(dead) => {
+                // 14085c4e0 submits vertical and angular motion requests.
+                frame.requests.push_linear(0, Vec3::new(0.0, 0.0, dead.vertical_speed));
+                frame.requests.push_angular(0, Vec3::new(0.0, 0.0, dead.yaw_speed.to_radians()));
+                let state = &mut self.states[index];
+                if state.death_transition_pending && state.death_timer < 0.0 {
+                    state.death_transition_pending = false;
+                    *frame.game_over_requested = true;
+                }
+                state.death_timer -= frame.dt;
+            }
         }
     }
 

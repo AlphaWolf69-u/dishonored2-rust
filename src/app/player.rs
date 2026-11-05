@@ -370,6 +370,7 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
         swimming_rules: decls::rules(&declarations.swimming_mode)?,
         swimming_default_state: decls::default_state(&declarations.swimming_mode),
         swimming_has_mantle: declarations.swimming_states.iter().any(|(kind, _)| kind == "playerstateswimmantle"),
+        swimming_death: decls::swimming_death(&declarations)?,
         breath: decls::breath(&declarations.breath)?,
         accepts_water_damage,
     })

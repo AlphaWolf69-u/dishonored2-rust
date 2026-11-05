@@ -227,6 +227,7 @@ pub fn state_id(name: &str) -> Option<StateId> {
         "AUTOCROUCH" => 10,
         "WALLCROUCH" => 11,
         "BLINKING" => 12,
+        "DEAD" => 15,
         "LEANING" => 18,
         "IDLE" => 22,
         "CINEMATIC" => 23,
@@ -453,6 +454,18 @@ pub fn swimming_states(declarations: &PlayerDeclarations) -> Result<Vec<super::s
         });
     }
     Ok(result)
+}
+
+pub fn swimming_death(declarations: &PlayerDeclarations) -> Result<Option<super::states::DrowningDeathDecl>, String> {
+    let Some((_, fields)) = declarations.swimming_states.iter().find(|(kind, _)| kind == "playerstatedead") else { return Ok(None) };
+    Ok(Some(super::states::DrowningDeathDecl {
+        duration: seconds(fields, "m_drowningDuration", 6.0)?,
+        vertical_speed: number(fields, "m_drowningVerticalSpeed", -1.0)?,
+        yaw_speed: number(fields, "m_drowningYawSpeed", 15.0)?,
+        look_duration: seconds(fields, "m_drowningLookDuration", 4.0)?,
+        fx_delay: seconds(fields, "m_drowningScreenFXDelay", 3.0)?,
+        fx: atom(fields, "m_drowningScreenFX").filter(|value| !value.is_empty()).map(str::to_owned),
+    }))
 }
 
 pub fn breath(fields: &Fields) -> Result<super::swimming::Breath, String> {
