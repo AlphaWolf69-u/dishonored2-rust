@@ -122,6 +122,19 @@ impl MaterialCache {
         self.entries.len()
     }
 
+    /// Logical cache storage retained when the startup owner is transferred
+    /// to runtime effect preparation; this is not process RSS.
+    pub(in crate::app) fn report_runtime_retention(&self) {
+        if trace_source() {
+            let paths: usize = self.entries.keys().map(String::capacity).sum();
+            let image_slots: usize = self.entries.values().flat_map(|entry| entry.iter())
+                .filter_map(Option::as_ref).filter_map(Option::as_ref)
+                .map(|material| material.images.capacity()).sum();
+            eprintln!("MEMORY runtime material cache: entries={} usable_slots={} path_capacity_bytes={} image_reference_slots={image_slots}",
+                self.entries.len(), self.entries.capacity(), paths);
+        }
+    }
+
     pub(in crate::app) fn values(&self) -> impl Iterator<Item = &Option<CachedMaterial>> {
         self.entries
             .values()

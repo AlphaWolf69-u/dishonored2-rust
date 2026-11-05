@@ -421,6 +421,7 @@ pub(super) fn prepare(
         probe_sample_misses: 0,
         lit,
     };
+    let runtime_material_bindings = super::runtime_materials::MaterialBindings::capture(&resolver);
     let mut whole_world = Bounds::empty();
     let mut regions = BTreeMap::<i32, Bounds>::new();
     let mut world_shadow_mesh_sources = WorldShadowMeshSources::prepare(&scene.world, meshes);
@@ -1838,8 +1839,10 @@ pub(super) fn prepare(
         let sources = Arc::new(
             crate::rendering::particles::world_sources::WorldFxSources::load_shared(&graphs.graphs,&graphs.actors,catalog,programs,&mut particle_resources)
         );
-        particle_surfaces = spawn_particle_surfaces(&sources, &mut resolver, meshes, commands,
-            &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials);
+        let surface_failures = prepare_particle_surfaces(sources.world_meshes(), &mut resolver, meshes,
+            &mut particle_resources, &mut particle_world_images, &mut dynamic_particle_materials,
+            |surface| particle_surfaces.push(super::particle_surface::publish(commands, surface)));
+        for error in surface_failures { eprintln!("Particle surface: {error}"); }
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
             &mut resolver, meshes, commands));
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
@@ -1960,6 +1963,11 @@ pub(super) fn prepare(
             .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
     }
     resolver.cache.report_source_handoff();
+    resolver.cache.report_runtime_retention();
+    commands.insert_resource(super::runtime_materials::RuntimeMaterialOwner {
+        bindings: runtime_material_bindings,
+        cache: std::mem::take(&mut resolver.cache),
+    });
     let image_catalog = catalog_storage.clone();
     commands.insert_resource(render_queue);
     if let Some(catalog) = catalog_storage {
@@ -1996,27 +2004,27 @@ pub(super) fn prepare(
 /// 1401fbad0 makes a particle mesh renderer an ordinary model surface of its
 /// world material; one proxy per (PMODEL, material) pair carries that
 /// material's own pipelines, and the FX update supplies its instances.
-fn spawn_particle_surfaces(
-    sources: &crate::rendering::particles::world_sources::WorldFxSources,
+pub(super) fn prepare_particle_surfaces(
+    world_meshes: Vec<(String, String, Arc<crate::assets::particle_model::ParticleModel>)>,
     resolver: &mut MaterialResolver,
     meshes: &mut dyn AssetWrite<Mesh>,
-    commands: &mut super::setup_commands::SetupCommands,
     resources: &mut crate::rendering::particles::definition::ParticleResources,
     world_images: &mut std::collections::HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
     dynamic_materials: &mut HashSet<super::MaterialHandle>,
-) -> Vec<(super::MaterialHandle, Vec<(usize, crate::rendering::bevy_backend::surface_gpu::ImageRole)>)> {
-    let mut proxies = Vec::new();
-    for (source, material, model) in sources.world_meshes() {
+    mut prepared: impl FnMut(super::particle_surface::PreparedSurface),
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (source, material, model) in world_meshes {
         let Some(resolved) = resolver.get(&material, 0, [0.0; 3]) else {
-            eprintln!("Particle surface material unresolved {source} {material}");
+            failures.push(format!("material unresolved {source} {material}"));
             continue;
         };
         let super::MaterialHandle::Probe(handle) = &resolved.handle else {
-            eprintln!("Particle surface {source} {material} is not a forward model material");
+            failures.push(format!("{source} {material} is not a forward model material"));
             continue;
         };
         let Some(mut instanced) = resolver.probe_materials.get(handle).cloned() else {
-            eprintln!("Particle surface {source} {material} has no prepared material");
+            failures.push(format!("{source} {material} has no prepared material"));
             continue;
         };
         match resolver.caster_admission(&material) {
@@ -2028,36 +2036,34 @@ fn spawn_particle_surfaces(
         }
         let prepared_mesh = match super::particle_surface::prepare_mesh(&model) {
             Ok(mesh) => mesh,
-            Err(error) => { eprintln!("Particle surface {source} {error}"); continue; }
+            Err(error) => { failures.push(format!("{source} {error}")); continue; }
         };
         instanced.extension.surface.particle_instances.x = 1;
         let images = resolver.model_images(&material);
-        let mesh = meshes.add(prepared_mesh);
-        let instanced = resolver.probe_materials.add(instanced);
         let mut bindings = Vec::new();
+        let mut image_failure = None;
         if let Some(catalog) = resolver.catalog {
             for &(slot, _) in &images {
-                if let Some(image) = resources.scene_image(catalog, &resolver.diffuse_image_paths[slot])
-                    .unwrap_or_else(|error| panic!("particle world image acquisition: {error}")) {
-                    bindings.push(image);
+                match resources.scene_image(catalog, &resolver.diffuse_image_paths[slot]) {
+                    Ok(Some(image)) => bindings.push(image),
+                    Ok(None) => {}
+                    Err(error) => { image_failure = Some(error); break; }
                 }
             }
         }
+        if let Some(error) = image_failure {
+            failures.push(format!("{source} {material} image acquisition: {error}"));
+            continue;
+        }
+        let mesh = meshes.add(prepared_mesh);
+        let instanced = resolver.probe_materials.add(instanced);
         if !bindings.is_empty() && bindings.len() == images.len() {
             world_images.entry(material.clone()).or_insert(bindings);
             dynamic_materials.insert(super::MaterialHandle::Probe(instanced.clone()));
         }
-        proxies.push((super::MaterialHandle::Probe(instanced.clone()), images));
-        commands.spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(instanced),
-            Transform::IDENTITY,
-            GlobalTransform::IDENTITY,
-            Visibility::Visible,
-            bevy::camera::visibility::NoFrustumCulling,
-            bevy::light::NotShadowCaster,
-            crate::rendering::bevy_backend::particle_meshes::ParticleMeshProxy { source, material },
-        ));
+        prepared(super::particle_surface::PreparedSurface {
+            source, material, mesh, handle: instanced, images,
+        });
     }
-    proxies
+    failures
 }
