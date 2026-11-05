@@ -41,6 +41,45 @@ pub(super) fn register(app: &mut App) {
     }
 }
 
+/// Discover the same receiver layouts for both level setup and a later FX
+/// request. It runs only when a level first needs projected decals.
+fn receiver_layouts(
+    instances: &[RenderInstance],
+    meshes: &dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<Mesh>,
+) -> (GeometryLayouts, Vec<(u32, bool, Handle<Mesh>)>) {
+    let mut keys = HashMap::new();
+    let mut layouts = GeometryLayouts::default();
+    let mut samples = Vec::new();
+    for instance in instances {
+        let Some(source) = instance.source else {
+            continue;
+        };
+        if layouts.0.contains_key(&instance.mesh.id()) {
+            continue;
+        }
+        let Some(mesh) = meshes.get(&instance.mesh) else {
+            continue;
+        };
+        let key = mesh
+            .attributes()
+            .map(|(attribute, _)| (attribute.id, attribute.format))
+            .collect::<Vec<_>>();
+        let next = keys.len() as u32;
+        let id = *keys.entry(key).or_insert(next);
+        let is_world = matches!(source.surface, RenderModelSurface::World { .. });
+        layouts.0.insert(instance.mesh.id(), id);
+        if !samples
+            .iter()
+            .any(|&(layout, world, _): &(u32, bool, Handle<Mesh>)| {
+                layout == id && world == is_world
+            })
+        {
+            samples.push((id, is_world, instance.mesh.clone()));
+        }
+    }
+    (layouts, samples)
+}
+
 pub(super) fn prepare(
     sources: &crate::rendering::particles::world_sources::WorldFxSources,
     world: &crate::world_mesh::WorldMesh,
@@ -76,36 +115,7 @@ pub(super) fn prepare(
         commands.insert_resource(GeometryLayouts::default());
         return Vec::new();
     }
-    let mut keys = HashMap::new();
-    let mut layouts = GeometryLayouts::default();
-    let mut samples = Vec::new();
-    for instance in instances {
-        let Some(source) = instance.source else {
-            continue;
-        };
-        if layouts.0.contains_key(&instance.mesh.id()) {
-            continue;
-        }
-        let Some(mesh) = meshes.get(&instance.mesh) else {
-            continue;
-        };
-        let key = mesh
-            .attributes()
-            .map(|(attribute, _)| (attribute.id, attribute.format))
-            .collect::<Vec<_>>();
-        let next = keys.len() as u32;
-        let id = *keys.entry(key).or_insert(next);
-        let is_world = matches!(source.surface, RenderModelSurface::World { .. });
-        layouts.0.insert(instance.mesh.id(), id);
-        if !samples
-            .iter()
-            .any(|&(layout, world, _): &(u32, bool, Handle<Mesh>)| {
-                layout == id && world == is_world
-            })
-        {
-            samples.push((id, is_world, instance.mesh.clone()));
-        }
-    }
+    let (layouts, samples) = receiver_layouts(instances, meshes);
     // Native projection local bounds [-1,-1,-1]..[1,1,0], converted to view axes.
     let mut cube_mesh = Cuboid::new(2., 1., 2.)
         .mesh()
