@@ -2030,3 +2030,16 @@ metadata compared with dropping this map. Record its entry count, capacities and
 path bytes, and measure first-use/reuse and retirement paths; do not call it a
 memory saving. If the cost is material, replace the map with a compact shared
 identity index before completing the lifecycle audit.
+
+### Masking surface state: implementation prediction
+
+The original distortion task also draws masking surfaces (`14034fe00`
+registers `1403222f0` at task offset `0x540`). The masking loop preserves the
+selected material's nine-word state and clears only word 5 bit `0x10`, which
+is depth-write enable. The shared state helper ports this operation with no
+runtime cost until the mask renderer is connected. Expected active cost is
+one bit clear per prepared state; it introduces no allocations or GPU work.
+The task clears its mask output even for an empty surface list, so the earlier
+assumption that original execution itself must be absent when grading is
+inactive was unsupported. A host omission may still be equivalent when no
+consumer needs the mask, but requires establishing every consumer first.

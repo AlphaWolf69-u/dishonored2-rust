@@ -9,6 +9,15 @@
 
 pub type RenderState = [u32; 9];
 
+/// 1403222f0's masking-surface loop selects the masking material program,
+/// preserves its blend/depth-test/stencil fields, and disables depth writes.
+/// The mask uses the scene depth attachment; an opaque replacement blend or
+/// depth-disabled state would discard the authored material behavior.
+pub fn masking_surface_draw_state(mut state: RenderState) -> RenderState {
+    state[5] &= !0x10;
+    state
+}
+
 /// 31dce0's dynamicAlpha colour state. The accumulation mode additionally
 /// writes its second target; the ordinary path preserves material blending.
 /// Stencil reference is returned separately, as passed through 319900.
