@@ -34,6 +34,18 @@ impl Default for DynamicWorldMaterials {
     }
 }
 
+/// Level-scoped request for the ordinary projected-decal owner. The publisher
+/// acknowledges only after material variants, their images and receiver proxy
+/// pipelines are usable. Existing effect tails keep their definitions alive.
+#[derive(Resource, Clone, Default)]
+pub(super) struct DynamicDecalMaterials {
+    pub generation: u64,
+    pub retirement: u64,
+    pub sources: Arc<Sources>,
+    pub completed: Arc<std::sync::atomic::AtomicU64>,
+    pub failed: Arc<std::sync::atomic::AtomicU64>,
+}
+
 impl ParticleResourceOwner {
     pub(super) fn new(resources: crate::rendering::particles::definition::ParticleResources) -> Self {
         Self(Arc::new(Mutex::new(resources)))
@@ -277,6 +289,7 @@ pub(super) fn publish(
     mut world: bevy::prelude::ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectSources>,
     mut prewarm: bevy::prelude::ResMut<crate::rendering::bevy_backend::world_effects::DynamicMaterialPrewarm>,
     mut world_materials: bevy::prelude::ResMut<DynamicWorldMaterials>,
+    mut decal_materials: bevy::prelude::ResMut<DynamicDecalMaterials>,
     mut active: bevy::prelude::ResMut<crate::rendering::bevy_backend::world_effects::DynamicEffects>,
     images: bevy::prelude::Res<crate::rendering::bevy_backend::particle_images::SceneParticleImages>,
     sounds: bevy::prelude::Res<crate::rendering::bevy_backend::world_sounds::WorldSounds>,
@@ -289,7 +302,8 @@ pub(super) fn publish(
         EffectOwner::Player(name) => format!("player:{name}"),
     };
     if prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
-        || world_materials.failed.load(Ordering::Acquire) == prewarm.generation)
+        || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
+        || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)
         && owner.published_revision == Some(owner.revision) {
         let failed: Vec<_> = owner.wanted.iter().filter_map(|(id, wanted)| {
             (!active.0.iter().any(|entry| entry.owner == key(id) && entry.revision == wanted.revision)).then_some(id.clone())
@@ -319,16 +333,26 @@ pub(super) fn publish(
             .filter(|source| !Arc::ptr_eq(source, &base)).map(Arc::as_ref));
         let needs_materials = dynamic.particle_materials().next().is_some();
         let needs_world_materials = !dynamic.world_meshes().is_empty();
+        let needs_decals = dynamic.effects.values().filter_map(|effect| effect.as_ref().ok())
+            .flat_map(|effect| &effect.groups).flat_map(|group| &group.decals)
+            .filter_map(|decal| decal.as_ref().ok()).any(|decal| decal.asset.enabled
+                && decal.declarations.iter().flatten().any(|refs|
+                    refs.opaque.is_some() || refs.alpha.is_some()
+                        || refs.opaque_instanced.is_some() || refs.alpha_instanced.is_some()));
         world.0 = Arc::new(combined);
         let dynamic = Arc::new(dynamic);
         prewarm.sources = dynamic.clone();
         prewarm.generation = owner.revision;
         prewarm.retirement = owner.retirement;
         if !needs_materials { prewarm.completed.store(prewarm.generation, Ordering::Release); }
-        world_materials.sources = dynamic;
+        world_materials.sources = dynamic.clone();
         world_materials.generation = owner.revision;
         world_materials.retirement = owner.retirement;
         if !needs_world_materials { world_materials.completed.store(world_materials.generation, Ordering::Release); }
+        decal_materials.sources = dynamic;
+        decal_materials.generation = owner.revision;
+        decal_materials.retirement = owner.retirement;
+        if !needs_decals { decal_materials.completed.store(decal_materials.generation, Ordering::Release); }
         owner.published_revision = Some(owner.revision);
     }
     if owner.published_active_revision == Some(owner.revision) { return; }
@@ -336,7 +360,8 @@ pub(super) fn publish(
         owner.wanted.iter().any(|(id, wanted)| key(id) == entry.owner && wanted.revision == entry.revision)
     }).cloned().collect();
     let prewarmed = (prewarm.generation == 0 || prewarm.completed.load(Ordering::Acquire) == prewarm.generation)
-        && (world_materials.generation == 0 || world_materials.completed.load(Ordering::Acquire) == world_materials.generation);
+        && (world_materials.generation == 0 || world_materials.completed.load(Ordering::Acquire) == world_materials.generation)
+        && (decal_materials.generation == 0 || decal_materials.completed.load(Ordering::Acquire) == decal_materials.generation);
     if prewarmed {
         let audio = sounds.lock();
         for (id, wanted) in &owner.wanted {
@@ -367,7 +392,8 @@ pub(super) fn publish(
     }
     if active.0.len() == owner.wanted.len()
         || (prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
-            || world_materials.failed.load(Ordering::Acquire) == prewarm.generation)) {
+            || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
+            || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)) {
         owner.published_active_revision = Some(owner.revision);
     }
 }
