@@ -37,6 +37,14 @@ pub struct ModelInfo {
     pub has_decoded_geometry: bool,
     pub authored_bounds: [[f32; 3]; 2],
     residency: Option<residency::Retire>,
+    audit: Option<ModelAudit>,
+}
+
+#[derive(Debug)]
+struct ModelAudit {
+    source_crc: u32,
+    source_bytes: usize,
+    decoded_crc: std::sync::OnceLock<u32>,
 }
 
 #[derive(Debug)]
@@ -474,6 +482,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
         has_decoded_geometry,
         authored_bounds,
         residency: None,
+        audit: None,
     })
 }
 
@@ -502,6 +511,63 @@ mod residency {
     }
     pub(super) fn separate() -> bool {
         *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_MODEL_RESOURCES").is_some_and(|v| v == "1"))
+    }
+
+    pub(super) fn decoded(catalog: &crate::archive::Catalog, path: &str) -> Result<ModelInfo, String> {
+        let tracing = tracing();
+        let cycles = tracing.then(crate::loading::thread_cycles).flatten();
+        let bytes = catalog.read(path).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("{path} is absent"))?;
+        let mut model = super::inspect(&bytes)?;
+        let decode_cycles = cycles.zip(if tracing { crate::loading::thread_cycles() } else { None })
+            .map(|(start, end)| end.saturating_sub(start));
+        if tracing {
+            // The diagnostic checksum scan follows the measured read/decode.
+            let mut crc = flate2::Crc::new();
+            crc.update(&bytes);
+            model.audit = Some(super::ModelAudit { source_crc: crc.sum(), source_bytes: bytes.len(), decoded_crc: OnceLock::new() });
+            eprintln!("MODEL_DECODE path={path} read_decode_cycles={decode_cycles:?}");
+        }
+        Ok(model)
+    }
+
+    pub(super) fn report(resource: &str, mode: &str, start: Option<Instant>, cycles: Option<u64>, model: &Arc<ModelInfo>) {
+        let Some(start) = start else { return };
+        let elapsed = start.elapsed().as_micros();
+        let cpu = cycles.zip(crate::loading::thread_cycles()).map(|(a, b)| b.saturating_sub(a));
+        let audit = model.audit.as_ref();
+        let decoded_crc = audit.map(|audit| *audit.decoded_crc.get_or_init(|| {
+            let mut crc = flate2::Crc::new();
+            crc.update(model.skeleton_name.as_bytes());
+            crc.update(&[u8::from(model.has_skeleton), u8::from(model.has_decoded_geometry)]);
+            crc.update(&model.skeleton_reference.unwrap_or(u16::MAX).to_le_bytes());
+            for bound in model.authored_bounds.iter().flatten() { crc.update(&bound.to_bits().to_le_bytes()); }
+            for surface in &model.surfaces {
+                crc.update(surface.name.as_bytes());
+                crc.update(surface.material_path.as_bytes());
+                for value in [surface.cpu_vertex_declaration, surface.gpu_vertex_declaration, surface.vertex_count,
+                    surface.index_count, surface.attachment_count] { crc.update(&value.to_le_bytes()); }
+                crc.update(&surface.matrix_offset.to_le_bytes());
+                crc.update(&[surface.skin_influences]);
+                for value in surface.positions.iter().flatten().chain(surface.uvs.iter().flatten()) { crc.update(&value.to_bits().to_le_bytes()); }
+                for value in &surface.packed_channels { crc.update(value); }
+                for value in &surface.skin_weights { crc.update(value); }
+                for value in &surface.skin_indices { crc.update(value); }
+                for value in &surface.indices { crc.update(&value.to_le_bytes()); }
+            }
+            crc.sum()
+        }));
+        let logical_bytes = std::mem::size_of::<ModelInfo>() + model.skeleton_name.len()
+            + model.surfaces.len() * std::mem::size_of::<super::SurfaceInfo>()
+            + model.surfaces.iter().map(|surface| surface.name.len() + surface.material_path.len()
+                + surface.positions.len() * std::mem::size_of::<[f32; 3]>()
+                + surface.uvs.len() * std::mem::size_of::<[f32; 2]>()
+                + surface.packed_channels.len() * std::mem::size_of::<[u8; 12]>()
+                + surface.skin_weights.len() * std::mem::size_of::<[u8; 8]>()
+                + surface.skin_indices.len() * std::mem::size_of::<[u8; 8]>()
+                + surface.indices.len() * std::mem::size_of::<u16>()).sum::<usize>();
+        eprintln!("MODEL_SOURCE path={resource} result={mode} us={elapsed} thread_cycles={cpu:?} identity={:p} source_crc={:?} source_bytes={:?} decoded_crc={decoded_crc:?} logical_bytes={logical_bytes}",
+            Arc::as_ptr(model), audit.map(|audit| audit.source_crc), audit.map(|audit| audit.source_bytes));
     }
 
     /// Token lives inside the decoded model; its final drop removes the weak
@@ -591,9 +657,7 @@ mod residency {
             *state = State::Loading { waiters: 0 };
             drop(state);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let bytes = catalog.read(path).map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("{path} is absent"))?;
-                let mut model = super::inspect(&bytes)?;
+                let mut model = decoded(catalog, path)?;
                 model.residency = Some(Retire { key: key.clone(), entry: Arc::downgrade(&entry) });
                 Ok(Arc::new(model))
             })).unwrap_or_else(|_| Err(format!("model acquisition panicked for {path}")));
@@ -633,6 +697,7 @@ impl ModelSources {
         -> Result<std::sync::Arc<ModelInfo>, String>
     {
         let started = residency::tracing().then(std::time::Instant::now);
+        let cycles = residency::tracing().then(crate::loading::thread_cycles).flatten();
         if self.catalog != catalog.identity() {
             self.models.clear();
             self.paths.clear();
@@ -641,7 +706,7 @@ impl ModelSources {
         }
         if self.share {
             if let Some(model) = self.paths.get(resource).and_then(|path| self.models.get(path)) {
-                if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result=local us={}", started.elapsed().as_micros()); }
+                residency::report(resource, "local", started, cycles, model);
                 return Ok(model.clone());
             }
         }
@@ -662,23 +727,21 @@ impl ModelSources {
             if let Some(model) = self.models.get(key.as_ref()) {
                 let model = model.clone();
                 self.paths.insert(resource.to_owned(), key.into_owned());
-                if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result=alias us={}", started.elapsed().as_micros()); }
+                residency::report(resource, "alias", started, cycles, &model);
                 return Ok(model);
             }
         }
         let model = if self.share && !residency::separate() {
             residency::acquire(catalog, &path, &key)?
         } else {
-            let bytes = catalog.read(&path).map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("{path} is absent"))?;
-            std::sync::Arc::new(inspect(&bytes)?)
+            std::sync::Arc::new(residency::decoded(catalog, &path)?)
         };
         if self.share {
             let key = key.into_owned();
             self.models.insert(key.clone(), model.clone());
             self.paths.insert(resource.to_owned(), key);
         }
-        if let Some(started) = started { eprintln!("MODEL_SOURCE path={resource} result={} us={}", if !self.share { "overlay" } else if residency::separate() { "separate" } else { "shared" }, started.elapsed().as_micros()); }
+        residency::report(resource, if !self.share { "overlay" } else if residency::separate() { "separate" } else { "shared" }, started, cycles, &model);
         Ok(model)
     }
 }
