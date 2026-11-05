@@ -388,7 +388,6 @@ impl Player {
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
             self.swimming_active = false;
-            self.breath.reset_for_water_entry();
             self.machine.request(StateId::MANTLE);
             self.machine.think(&mut frame!());
         }
