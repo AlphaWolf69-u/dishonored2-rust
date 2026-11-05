@@ -66,6 +66,12 @@ struct ActiveModifier {
     expires_at: Option<f64>,
 }
 
+/// Entity notifications published to attached component owners. The original
+/// incapacitation message carries damage parameters; this records the damage
+/// type needed by the connected drowning consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityEvent { Incapacitated { damage_type: u64 } }
+
 pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
@@ -86,6 +92,7 @@ pub struct Player {
     active_modifiers: Vec<ActiveModifier>,
     next_modifier_expiration: Option<f64>,
     attribute_modifier_events: Vec<(String, bool)>,
+    entity_events: Vec<EntityEvent>,
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
@@ -182,6 +189,7 @@ impl Player {
     pub fn take_attribute_modifier_events(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.attribute_modifier_events)
     }
+    pub fn take_entity_events(&mut self) -> Vec<EntityEvent> { std::mem::take(&mut self.entity_events) }
     pub fn attribute_differs_from_base(&self, tag: &str) -> bool {
         self.attributes.1.get(tag).is_some_and(|value| self.attributes.get(tag) != value.base)
     }
@@ -308,6 +316,7 @@ impl Player {
             active_modifiers: Vec::new(),
             next_modifier_expiration: None,
             attribute_modifier_events: Vec::new(),
+            entity_events: Vec::new(),
             body: setup.body,
             pose,
             autocrouch,
@@ -364,7 +373,7 @@ impl Player {
             }
             Err(error) => eprintln!("Midnight playback: {error}"),
         }
-        self.controller.process_input(events, settings);
+        if !self.health.is_dead() { self.controller.process_input(events, settings); }
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
         // before the controller (it depends on both), then the states.
         self.physics.update_queries(world);
@@ -374,7 +383,7 @@ impl Player {
         self.mantle_sensor.update(world, &self.physics, dt, self.physics.velocity.z);
         self.vault_sensor.update(world, &self.physics, dt);
         self.catfall_sensor.update(world, &self.physics);
-        self.controller.think(settings, frame_delta);
+        if !self.health.is_dead() { self.controller.think(settings, frame_delta); }
         self.requests = MotionRequests::default();
         let mut origin = self.physics.position();
         let axis = self.physics.axis();
@@ -469,13 +478,15 @@ impl Player {
             }
         }
         if !self.swimming_active {
-            self.machine.controller_support(&mut frame!());
-        } else if let Some(water) = self.swimming_contact {
-            let current = self.swimming_current.update(water.current, dt, &self.swimming_settings);
-            self.physics.set_water_motion(current,
-                Some(water.plane + self.swimming_settings.distance_above_surface - self.swimming_eye_height));
+            if !self.health.is_dead() { self.machine.controller_support(&mut frame!()); }
+        } else if !self.health.is_dead() {
+            if let Some(water) = self.swimming_contact {
+                let current = self.swimming_current.update(water.current, dt, &self.swimming_settings);
+                self.physics.set_water_motion(current,
+                    Some(water.plane + self.swimming_settings.distance_above_surface - self.swimming_eye_height));
+            }
         }
-        self.controller.apply_mapping(&mut self.machine);
+        if !self.health.is_dead() { self.controller.apply_mapping(&mut self.machine); }
         self.machine.think(&mut frame!());
         if self.swimming_active && swim_mantle_exit {
             self.machine.leave_mode(&mut frame!());
@@ -528,7 +539,13 @@ impl Player {
                 if damage > 0.0 && !self.health.is_dead() {
                     self.health.damage(damage, &self.attributes);
                     if self.health.is_dead() {
+                        // Entity incapacitation message 0xa5; water is bit 20.
+                        self.entity_events.push(EntityEvent::Incapacitated { damage_type: 0x10_0000 });
                         self.adrenaline.stop();
+                        // 1407f8e70 requests DEAD then stops the player
+                        // controller, so input cannot replace that state.
+                        self.controller.input_move = Vec3::ZERO;
+                        self.controller.input_look = Vec3::ZERO;
                         self.machine.request(StateId::DEAD);
                     }
                 }
