@@ -12,6 +12,11 @@ pub struct BlurResources {
 // 1400607f0 returns already acquired declaration identities. This host
 // owner shares their immutable prepared camera metadata between levels.
 static RESIDENT: std::sync::Mutex<Option<(u64, std::sync::Arc<BlurResources>)>> = std::sync::Mutex::new(None);
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let retired = RESIDENT.lock().unwrap_or_else(|e| e.into_inner())
+        .take_if(|(identity, _)| *identity == catalog);
+    usize::from(retired.is_some())
+}
 /// Names whose parsed material metadata is still owned by the session cache.
 pub(crate) fn retained_material_paths() -> std::collections::HashSet<String> {
     let resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());

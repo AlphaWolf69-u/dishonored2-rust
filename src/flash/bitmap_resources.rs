@@ -143,6 +143,17 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
 type LibraryImages = std::sync::Arc<Vec<(u16, std::sync::Arc<Image>)>>;
 static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(u64, String), LibraryImages>>> = std::sync::Mutex::new(None);
 
+/// Retire cache references only; submitted movies keep their own image Arcs.
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let mut resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(images) = resident.as_mut() else { return 0; };
+    let before = images.len();
+    images.retain(|(identity, _), _| *identity != catalog);
+    let removed = before - images.len();
+    if images.is_empty() { *resident = None; }
+    removed
+}
+
 /// Diagnostic lookup only; does not acquire or extend the image lifetime.
 pub(crate) fn debug_resident(catalog: u64, resource: &str) -> bool {
     let key = (catalog, resource.replace('\\', "/").to_ascii_lowercase());

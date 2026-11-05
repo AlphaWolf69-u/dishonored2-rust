@@ -45,6 +45,13 @@ impl Registry {
     }
 }
 static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let retired = REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+        .take_if(|owner| owner.catalog_identity == catalog);
+    // Existing actors keep their own immutable clip lease. Removing the
+    // registry releases only session pins and identity bookkeeping.
+    retired.as_ref().map_or(0, |owner| owner.entries.len() + owner.editable.len())
+}
 fn separate() -> bool {
     static SEPARATE: OnceLock<bool> = OnceLock::new();
     *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_ANIMATION_RESOURCES").as_deref() == Ok("1"))

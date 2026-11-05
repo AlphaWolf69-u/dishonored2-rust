@@ -15,6 +15,39 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
 
+type ListKey = (u64, std::path::PathBuf, String, String);
+static SOURCE_LISTS: std::sync::Mutex<Option<HashMap<ListKey, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
+type CachedLevel = (std::sync::Weak<LevelList>, Option<std::sync::Arc<LevelList>>);
+static LEVEL_LISTS: std::sync::Mutex<Option<HashMap<ListKey, CachedLevel>>> = std::sync::Mutex::new(None);
+
+/// Session request metadata belongs to its archive namespace. Live loading
+/// consumers retain their section leases independently of these cache entries.
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let sources = {
+        let mut owner = SOURCE_LISTS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(lists) = owner.as_mut() {
+            let before = lists.len();
+            lists.retain(|(identity, _, _, _), _| *identity != catalog);
+            let removed = before - lists.len();
+            if lists.is_empty() { *owner = None; }
+            removed
+        } else {
+            0
+        }
+    };
+    sources + retire_level_lists(catalog)
+}
+
+fn retire_level_lists(catalog: u64) -> usize {
+    let mut owner = LEVEL_LISTS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(lists) = owner.as_mut() else { return 0; };
+    let before = lists.len();
+    lists.retain(|(identity, _, _, _), _| *identity != catalog);
+    let removed = before - lists.len();
+    if lists.is_empty() { *owner = None; }
+    removed
+}
+
 const HEADER: usize = 12;
 const ENTRY: usize = 28;
 
@@ -98,8 +131,6 @@ pub fn level_load_list(base: &Path, catalog: &Catalog, map: &str, language: &str
 /// Bootstrap manifests are shared for the session. A map's temporary request
 /// table belongs to acquisition (1400661e0), not the registered resources.
 pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) -> Result<std::sync::Arc<Vec<Resource>>> {
-    type Key = (u64, std::path::PathBuf, String, String);
-    static LISTS: std::sync::Mutex<Option<HashMap<Key, std::sync::Arc<Vec<Resource>>>>> = std::sync::Mutex::new(None);
     let normalized = name.to_ascii_lowercase();
     // A loose manifest can change without changing the catalog snapshot.
     let manifest = format!("generated/buildgame/{normalized}.mapresources");
@@ -107,7 +138,7 @@ pub fn acquire_list(base: &Path, catalog: &Catalog, name: &str, language: &str) 
         return Ok(std::sync::Arc::new(load_list(base, catalog, name, language)?));
     }
     let key = (catalog.identity(), base.to_owned(), normalized, language.to_ascii_lowercase());
-    let mut lists = LISTS.lock().unwrap();
+    let mut lists = SOURCE_LISTS.lock().unwrap();
     let lists = lists.get_or_insert_with(Default::default);
     // Existing callers keep their Arc; the owner no longer pins another catalog.
     lists.retain(|(identity, _, _, _), _| *identity == catalog.identity());
@@ -170,14 +201,11 @@ pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &
         catalog.has_overlay_file(&format!("generated/buildgame/{}.mapresources", name.to_ascii_lowercase()))) {
         return Ok(std::sync::Arc::new(LevelList::acquire(base, catalog, map, language)?));
     }
-    type Key = (u64, std::path::PathBuf, String, String);
     // 1400661e0 releases its assembled request table after acquisition. Source
     // manifests above remain reusable metadata; a combined view belongs only
     // to its active consumers, not every map visited during this session.
-    type Cached = (std::sync::Weak<LevelList>, Option<std::sync::Arc<LevelList>>);
-    static LISTS: std::sync::Mutex<Option<HashMap<Key, Cached>>> = std::sync::Mutex::new(None);
     let key = (catalog.identity(), base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
-    let mut lists = LISTS.lock().unwrap();
+    let mut lists = LEVEL_LISTS.lock().unwrap();
     let lists = lists.get_or_insert_with(Default::default);
     lists.retain(|(identity, _, _, _), (list, _)| *identity == catalog.identity() && list.strong_count() != 0);
     if let Some(list) = lists.get(&key).and_then(|(list, _)| list.upgrade()) {

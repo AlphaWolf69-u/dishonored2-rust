@@ -159,6 +159,15 @@ static SHARED: std::sync::Mutex<Option<(PathBuf, std::sync::Arc<Catalog>)>> = st
 static NEXT_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Catalog {
+    /// End the desktop session's shared root lease. Outstanding workers and
+    /// consumers still own their Arcs; final retirement follows their release.
+    pub(crate) fn release_shared(identity: u64) {
+        let retired = SHARED.lock().unwrap_or_else(|e| e.into_inner())
+            .take_if(|(_, catalog)| catalog.identity() == identity);
+        // Drop outside SHARED: Catalog retirement invokes its resource owners.
+        drop(retired);
+    }
+
     /// The process's catalog of `base`, opened on first use.
     pub fn shared(base: &Path) -> Result<std::sync::Arc<Self>> {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());

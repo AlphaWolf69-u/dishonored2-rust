@@ -15,6 +15,12 @@ struct ResidentDatabase {
 }
 static RESIDENT_DATABASE: std::sync::Mutex<Option<ResidentDatabase>> = std::sync::Mutex::new(None);
 
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let retired = RESIDENT_DATABASE.lock().unwrap_or_else(|e| e.into_inner())
+        .take_if(|entry| entry.catalog == catalog);
+    usize::from(retired.is_some())
+}
+
 impl ContactDatabase {
     /// The installed common ContactSystemDB is a session resource (1400607f0).
     /// Runtime contact chains and effect instances remain per-level.

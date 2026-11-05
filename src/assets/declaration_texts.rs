@@ -22,6 +22,13 @@ struct SharedTexts {
 }
 static COMMON_TEXTS: std::sync::Mutex<Option<SharedTexts>> = std::sync::Mutex::new(None);
 
+/// Host archive-namespace retirement, separate from ordinary map unload.
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let retired = COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner())
+        .take_if(|entry| entry.catalog == catalog);
+    usize::from(retired.is_some())
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum PhysicsUse { World, Model, Machinery, Runtime }
 

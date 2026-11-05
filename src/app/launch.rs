@@ -15,6 +15,15 @@ use super::{
 };
 use bevy::prelude::*;
 
+/// Host root for the immutable archive namespace. Declared before App so its
+/// world and workers release their leases before this session root retires.
+struct CatalogSession(u64);
+impl Drop for CatalogSession {
+    fn drop(&mut self) {
+        archive::Catalog::release_shared(self.0);
+    }
+}
+
 pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let light_area_cull = env::var("DH2_LIGHT_AREA_CULL").as_deref() != Ok("0");
     println!(
@@ -36,6 +45,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let base_for_loading = base.clone();
     let game_base = Some(base);
     let catalog = Some(archive::Catalog::shared(game_base.as_deref().unwrap())?);
+    let _catalog_session = CatalogSession(catalog.as_ref().unwrap().identity());
     super::load_timing::mark("catalog");
     let requested = env::args()
         .nth(1)

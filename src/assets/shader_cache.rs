@@ -17,6 +17,7 @@ type Result<T> = std::result::Result<T, String>;
 mod water;
 mod boat;
 mod parameters;
+pub(crate) use parameters::retire_catalog;
 pub use water::{CachedWaterDepthClass, CachedWaterDepthSource};
 const VERSION: u32 = 14;
 

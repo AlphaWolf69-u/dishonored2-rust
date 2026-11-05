@@ -12,6 +12,12 @@ pub(super) struct Parameters {
 
 static RESIDENT: LazyLock<Mutex<Option<(u64, std::path::PathBuf, Parameters)>>> = LazyLock::new(Default::default);
 
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let retired = RESIDENT.lock().unwrap_or_else(|e| e.into_inner())
+        .take_if(|(identity, _, _)| *identity == catalog);
+    usize::from(retired.is_some())
+}
+
 /// 1402d8820 registers the numeric union subtype and color annotation used
 /// by 14098cdd0. Parse only requested parameter-block metadata.
 pub(super) fn value_metadata(catalog: &Catalog, name: &str) -> Result<crate::render_program::ParameterMetadata> {

@@ -2169,3 +2169,16 @@ prediction matches. Aggregate read/parse timing drift is not attributed to
 sharing; it contains cache/path effects. No further optimization is justified
 by those aggregate cycles alone. Full source/measurement scope is recorded in
 the parity ledger.
+
+
+Archive-session retirement prediction: normal map changes retain the same
+catalog and therefore should have unchanged reads, decodes, uploads and hot
+paths. When the desktop session ends, release its static root catalog lease;
+after the last real consumer/worker releases it, remove that identity's
+shared declaration texts, contact database, camera-blur metadata, animation
+pins, render-parameter metadata, CPU movie bitmaps and manifest cache entries.
+Active payload Arcs may outlive the removed cache entry. The expected result
+is zero cache entries for that retired identity, not a claimed RSS reduction
+or CPU speedup. The diagnostic records removed owner entries on actual
+catalog destruction. Immutable installation-keyed shader indices and live
+weak skeleton identities retain their separate existing owners.

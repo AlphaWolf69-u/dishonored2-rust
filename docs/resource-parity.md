@@ -4106,3 +4106,29 @@ dropped after callbacks may have registered listeners. Prediction: no walking
 cost or new success-path allocation; failure no longer strands a slot or leaves
 a false cached class. Production error-path exercise remains outstanding;
 no tests or compilation were run for this source fix.
+
+
+### Host archive-session teardown
+
+The desktop launch now holds an explicit catalog-session root around the
+application. Its teardown releases the static shared catalog reference on
+both success and setup/runtime failure. Outstanding world or worker Arcs
+still keep the catalog alive; destruction is deferred until their final
+release. Ordinary level changes keep the same root and retain init/common
+resources, following the separation established by 1400661e0/140060180.
+This is host ownership of an archive namespace, not an additional game
+resource manager or a forced purge of live payloads.
+
+Catalog destruction now removes only matching-identity cache references in
+the declaration-text, contact-database, camera-blur, compressed-animation,
+render-parameter, CPU movie-bitmap and request-manifest owners. Consumer Arcs
+remain valid. Installation-keyed shader-cache indices remain with their
+independent process/device metadata owner; skeletons already retire through
+weak identities and final-consumer tokens. Cache retirement happens outside
+the loading-state mutex, and payloads taken from singleton owners drop after
+their owner mutex is released. No extra checks run on the gameplay path.
+
+Status: host implementation; production shutdown/error-path acceptance is
+pending the cohesive build. Prediction and exact scope are recorded in
+optimization-opportunities.md. No RSS, timing or behavior benefit is claimed
+without that acceptance, and no tests were written or run.

@@ -12,6 +12,7 @@ use crate::edge_skeleton::JointRestPose;
 mod residency;
 pub use residency::acquire;
 pub(crate) use residency::release_level;
+pub(crate) use residency::retire_catalog;
 
 /// An immutable compressed resource; poses and playback time belong to actors.
 #[derive(Clone, Debug)]
