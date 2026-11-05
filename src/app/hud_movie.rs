@@ -178,7 +178,7 @@ impl HudMovie {
     ) -> Result<Self, String> {
         let (mana_low_level, starting_powers, inactivity_delay) = match mana_config(catalog) {
             Ok((low, powers, inactivity)) => (Some(low), Some(powers), Some(inactivity)),
-            Err(e) => { tracing::warn!("HUD mana configuration unavailable: {e}"); (None, None, None) }
+            Err(e) => { bevy::log::warn!("HUD mana configuration unavailable: {e}"); (None, None, None) }
         };
         let path = super::pause_menu::state_movie(
             catalog,
