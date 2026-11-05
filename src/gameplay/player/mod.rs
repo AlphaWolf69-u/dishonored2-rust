@@ -41,6 +41,17 @@ pub struct ArmRender {
     pub visible: bool,
 }
 
+/// Numeric action history retained so F8 need not land on a short animation.
+#[derive(Clone, Copy, Debug)]
+pub struct ArmActionDiagnostic {
+    pub frames: u32,
+    pub tree_drove: [bool; 3],
+    pub published: [bool; 2],
+    pub visible: [bool; 2],
+    pub ever_in_front: [bool; 2],
+    pub pose_error: [bool; 2],
+}
+
 pub struct Player {
     pub physics: PlayerPhysics,
     pub controller: Controller,
@@ -91,6 +102,8 @@ pub struct Player {
     /// The arms as of the last view (PRE_RENDER).
     arm_render: Vec<ArmRender>,
     arm_pose_errors: [Option<String>; 2],
+    arm_action_history: [Option<ArmActionDiagnostic>; 2],
+    arm_action_active: [bool; 2],
 }
 
 /// Everything `Player::new` reads from the installed declarations.
@@ -175,6 +188,7 @@ impl Player {
     pub fn arm_pose_errors(&self) -> &[Option<String>; 2] {
         &self.arm_pose_errors
     }
+    pub fn arm_action_history(&self) -> &[Option<ArmActionDiagnostic>; 2] { &self.arm_action_history }
 
     /// Spawn with the feet at `position` (idPlayerStart.spawnPosition) facing
     /// `yaw` radians.
@@ -251,6 +265,8 @@ impl Player {
             random: 0,
             arm_render: Vec::new(),
             arm_pose_errors: [None, None],
+            arm_action_history: [None, None],
+            arm_action_active: [false; 2],
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -546,7 +562,35 @@ impl Player {
         let allow = self.machine.allow_camera_out_of_shape();
         let body_yaw = self.body.follow_slope.yaw_offset;
         self.update_arms(body_yaw);
-        self.camera.view(&self.pose, &self.physics, allow, body_yaw)
+        let view = self.camera.view(&self.pose, &self.physics, allow, body_yaw);
+        for (slot, id) in [StateId::MANTLE, StateId::CATFALL].into_iter().enumerate() {
+            let active = self.machine.is_active(id);
+            if active {
+                if !self.arm_action_active[slot] {
+                    self.arm_action_history[slot] = Some(ArmActionDiagnostic {
+                        frames: 0, tree_drove: [false; 3], published: [false; 2], visible: [false; 2],
+                        ever_in_front: [false; 2], pose_error: [false; 2],
+                    });
+                }
+                if let Some(history) = &mut self.arm_action_history[slot] {
+                    history.frames = history.frames.saturating_add(1);
+                    for target in 0..3 { history.tree_drove[target] |= self.body.midnight.drives(target); }
+                    for side in 0..2 {
+                        history.pose_error[side] |= self.arm_pose_errors[side].is_some();
+                        if let Some(arm) = self.body.arms.get(side).and_then(|source| self.arm_render.iter().find(|arm| arm.model == source.model)) {
+                            history.published[side] = true;
+                            history.visible[side] |= arm.visible;
+                            history.ever_in_front[side] |= arm.joints.iter().any(|joint| {
+                                let p = Vec3::new(joint[0][3], joint[1][3], joint[2][3]);
+                                (p - view.origin).dot(view.axis.x_axis) > 0.0
+                            });
+                        }
+                    }
+                }
+            }
+            self.arm_action_active[slot] = active;
+        }
+        view
     }
 
     /// The arm entities' joints: each arm bound to its body tag (spine03 of

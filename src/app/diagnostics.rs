@@ -299,7 +299,7 @@ pub(super) fn collision_report(
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
     (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
-    display_capture: Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>,
+    (display_capture, rendered_arms): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>),
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -458,6 +458,8 @@ pub(super) fn collision_report(
         report.push_str(&format!("  pose errors={:?} midnight_handle={:?} midnight_drives=[{}, {}, {}]\n",
             player.arm_pose_errors(), player.body.midnight.playing(), player.body.midnight.drives(0),
             player.body.midnight.drives(1), player.body.midnight.drives(2)));
+        report.push_str(&format!("  action history [mantle, catfall]={:?}\n", player.arm_action_history()));
+        if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic()); }
     }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
