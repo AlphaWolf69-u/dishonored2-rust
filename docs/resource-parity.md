@@ -3710,8 +3710,28 @@ private task pool preserves the old IO pool's preparation concurrency instead
 of reducing it to one worker. Prediction: another slow header read no longer
 serializes all preparation when the old pool has multiple workers; the codec
 work, encoded-data budget and GPU work stay unchanged. Extra session worker
-stacks are host overhead, not a claimed RAM saving. The final pool must still
-be verified; cfbbba2's numbers are not assigned to its newer implementation.
+stacks are host overhead, not a claimed RAM saving. Those cfbbba2 numbers are
+not assigned to its newer implementation; the final comparison follows below.
+
+Final implementation 7b6801a: four optimized 45-second walking clients
+(shared / dedicated / dedicated / shared) all exited 0 without runtime errors.
+The unchanged route produced 34/35/35/33 stream preparations. Shared queue
+medians were 2,898/2,959 us; dedicated medians were 493/565 us. Maximum waits
+were 7,272/5,868 us shared versus 2,383/1,945 us dedicated. Random event choices
+change the job mix, so the same (kind, source ID) pairs present in every run
+were also compared: 21 identities, median per-identity queue 4,653 -> 554 us.
+Each identity uses its two per-run medians before that cross-identity summary.
+
+For those matching identities, preparation work medians were 187.5 -> 156 us
+and 653,065 -> 534,992.5 thread cycles. This supports no measured preparation
+regression in this route; it is not a codec optimization claim. Source
+arithmetic/media stayed unchanged. Both fly sources were exercised in all
+four runs. No isolated slow-header event occurred here, so the comparison does
+not prove an arbitrary worst-case latency bound. These are sparse source-job
+measurements during walking, not whole-frame CPU, FPS or speaker latency.
+User audibility remains unconfirmed. Production evidence:
+`artifacts/sound-final-pool-comparison.json` and the four corresponding
+`sound-final-pool-*` logs. No tests or visual inspection were performed.
 
 The copy controls recorded 301,028 / 256,620 pose entries and 33,136,236 /
 28,247,940 cumulative payload/string bytes copied across 3,514 / 3,033 frames.
