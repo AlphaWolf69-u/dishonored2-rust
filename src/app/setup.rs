@@ -675,9 +675,10 @@ pub(super) fn prepare(
     let mut deformed = machinery.map(|m| m.deformed_placements()).unwrap_or_default();
     if let Some(interactions) = interactions {
         for (index, placement) in expanded_placements.iter().enumerate() {
-            if interactions.actor_by_entity.get(&placement.id).is_some_and(|&actor| {
-                interactions.actors[actor].definition.steps.iter().any(|step| step.animation.is_some() || step.transition_animation.is_some())
-            }) {
+            if crate::bmd6::declaration_path(&placement.resource_path).is_some()
+                && interactions.actor_by_entity.get(&placement.id).is_some_and(|&actor| {
+                    interactions.actors[actor].definition.steps.iter().any(|step| step.animation.is_some() || step.transition_animation.is_some())
+                }) {
                 deformed.insert(index);
             }
         }
