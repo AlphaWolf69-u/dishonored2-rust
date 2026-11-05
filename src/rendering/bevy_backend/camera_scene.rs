@@ -214,9 +214,6 @@ pub(super) fn register(app: &mut App) {
         super::particle_systems::ParticleQueryFrame,
     >::default());
     app.init_resource::<super::physics_queries::PhysicsQueryFrame>();
-    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-        super::physics_queries::PhysicsQueryFrame,
-    >::default());
     crate::loading::gate(PARTICLE_GATE);
     app.init_resource::<super::screen_effects::ScreenEffectMaterials>();
     app.init_resource::<super::world_effects::WorldEffectSources>();
@@ -226,19 +223,7 @@ pub(super) fn register(app: &mut App) {
     app.init_resource::<super::world_effects::DynamicMaterialPrewarm>();
     app.init_resource::<super::world_sounds::WorldSounds>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-        super::world_sounds::WorldSounds,
-    >::default());
-    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-        super::world_effects::WorldEffectDefinitions,
-    >::default());
-    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-        super::world_effects::WorldEffectFrames,
-    >::default());
-    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::WorldEffectSources,
-    >::default());
-    app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-        super::world_effects::DynamicEffects,
     >::default());
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
         super::world_effects::DynamicMaterialPrewarm,

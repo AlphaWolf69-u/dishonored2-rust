@@ -70,12 +70,31 @@ struct FrameBinding {
 
 /// Pose publication includes non-rendered FX targets. This is not a second
 /// physics world: moving owners publish the same pose used by their geometry.
-#[derive(Resource, Clone, Default, ExtractResource)]
+#[derive(Resource, Default, ExtractResource)]
 pub struct WorldEffectFrames {
     entities: Arc<HashMap<String, EntityFrame>>,
     published: HashMap<String, ReferenceFrame>,
     pub clock: Option<WorldFxClock>,
     player: Option<(ReferenceFrame, Arc<HashMap<String, ReferenceFrame>>)>,
+}
+
+impl Clone for WorldEffectFrames {
+    fn clone(&self) -> Self {
+        let trace = trace_lifecycle();
+        let cycles = if trace { crate::loading::thread_cycles() } else { None };
+        let copy = Self {
+            entities: self.entities.clone(),
+            published: self.published.clone(),
+            clock: self.clock,
+            player: self.player.clone(),
+        };
+        if trace {
+            let elapsed = cycles.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start));
+            eprintln!("FX_LIFECYCLE frame_clone poses={} cpu_cycles={elapsed:?}", self.published.len());
+        }
+        copy
+    }
 }
 
 #[derive(Clone, Copy)]
