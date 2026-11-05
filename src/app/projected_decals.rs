@@ -306,13 +306,14 @@ fn extract_receivers(
     selection: Extract<Option<Res<super::scene_queue::VisibleSceneInstances>>>,
     materials: Extract<Option<Res<ShadowMaterials>>>,
     layouts: Extract<Res<GeometryLayouts>>,
+    decal_scene: Extract<Res<DecalScene>>,
     world_sources: Extract<Option<Res<super::WorldShadowMeshSources>>>,
     transforms: Extract<Query<&GlobalTransform>>,
     model_bounds: Extract<Option<Res<super::ShadowModelBoundsSources>>>,
     mut bounds_owners: Local<BoundsOwners>,
 ) {
     receivers.0.clear();
-    if layouts.ids.is_empty() {
+    if layouts.ids.is_empty() || decal_scene.tree.is_none() {
         return;
     }
     let (Some(queue), Some(materials)) = (queue.as_ref(), materials.as_ref()) else {
