@@ -125,6 +125,7 @@ pub(crate) struct ProxyReadinessBatch {
     pub generation: u64,
     pub proxies: Arc<Vec<Entity>>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
+    pub failed: Arc<std::sync::atomic::AtomicU64>,
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct DynamicProxyReadiness {
@@ -139,12 +140,31 @@ fn acknowledge_dynamic_proxies(
 ) {
     use std::sync::atomic::Ordering;
     for batch in [&request.decals, &request.world_meshes] {
-        if batch.generation == 0 || batch.completed.load(Ordering::Acquire) == batch.generation { continue; }
+        if batch.generation == 0 || batch.completed.load(Ordering::Acquire) == batch.generation
+            || batch.failed.load(Ordering::Acquire) == batch.generation { continue; }
+        let mut failed = false;
         let ready = batch.proxies.iter().all(|entity| {
             let main = bevy::render::sync_world::MainEntity::from(*entity);
-            specialized.values().any(|view| view.get(&main)
-                .is_some_and(|id| pipelines.get_render_pipeline(*id).is_some()))
+            let mut error = None;
+            let mut waiting = false;
+            for view in specialized.values() {
+                let Some(id) = view.get(&main) else { continue };
+                match pipelines.get_render_pipeline_state(*id) {
+                    CachedPipelineState::Ok(_) => return true,
+                    CachedPipelineState::Err(bevy::shader::ShaderCacheError::ProcessShaderError(_))
+                    | CachedPipelineState::Err(bevy::shader::ShaderCacheError::CreateShaderModule(_)) => error = Some(*id),
+                    _ => waiting = true,
+                }
+            }
+            if !waiting {
+                if let Some(id) = error {
+                    bevy::log::warn!("Runtime FX proxy pipeline {id:?} failed to compile");
+                    failed = true;
+                }
+            }
+            false
         });
+        if failed { batch.failed.store(batch.generation, Ordering::Release); }
         if ready { batch.completed.store(batch.generation, Ordering::Release); }
     }
 }

@@ -28,7 +28,7 @@ struct RuntimeDecalProxySet {
 }
 #[derive(Resource, Default)]
 pub(super) struct RuntimeDecalProxies {
-    generation: u64,
+    revision: Option<u64>,
     owned: HashMap<(String, bool), RuntimeDecalProxySet>,
     cube: Option<Handle<Mesh>>,
     owns_scene_geometry: bool,
@@ -219,7 +219,7 @@ pub(super) fn publish_runtime(
 ) {
     let (Some(request), Some(mut state), Some(scene_data), Some(queue), Some(materials)) =
         (request, state, scene_data, queue, materials) else { return };
-    if request.prepared_generation != request.generation || state.generation == request.generation { return; }
+    if request.prepared_generation != request.generation || state.revision == Some(request.prepared_revision) { return; }
     if !request.prepared.is_empty() && scene.tree.is_none() {
             scene.tree = Some(scene_data.world.spatial_query());
             state.owns_scene_geometry = true;
@@ -295,9 +295,9 @@ pub(super) fn publish_runtime(
         state.owned.insert(key, RuntimeDecalProxySet { _prepared: item.clone(), entities });
     }
     readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
-        generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(),
+        generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(), failed: request.failed.clone(),
     };
-    state.generation = request.generation;
+    state.revision = Some(request.prepared_revision);
 }
 
 fn extract_receivers(

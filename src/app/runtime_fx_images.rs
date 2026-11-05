@@ -46,7 +46,7 @@ pub(super) fn synchronize(
 ) {
     let (Some(owner), Some(mut world), Some(mut state), Some(mut queue), Some(mut worker), Some(mut consumers)) =
         (owner, world, state, queue, worker, consumers) else { return };
-    if owner.ready.is_empty() && world.images.is_empty() && state.slots.is_empty() && state.world_entries.is_empty() {
+    if owner.ready.is_empty() && world.images.is_empty() && world.extra_images.is_empty() && state.slots.is_empty() && state.world_entries.is_empty() {
         world.images_ready = world.image_revision;
         if state.seen_revision != Some(owner.revision) || state.seen_world_revision != Some(world.image_revision) { state.seen_revision = Some(owner.revision); }
         if !state.requested.is_empty() { state.requested.clear(); }
@@ -57,6 +57,7 @@ pub(super) fn synchronize(
         for source in owner.ready.values().flat_map(|sources| sources.particle_materials())
             .flat_map(|material| material.images.values())
             .chain(world.images.values().flat_map(|images| images.iter().map(|(_, image)| image)))
+            .chain(world.extra_images.iter())
             .filter(|image| image.scene_owned)
         {
             let path = source.path.clone();
@@ -138,9 +139,8 @@ pub(super) fn synchronize(
     // A world material can be demanded only once every scene-owned image has
     // a committed handle. Preserve startup bindings when the same material is
     // already part of the level; dynamic entries own only their own keys.
-    if world.images_ready != world.image_revision && world.images.values().flatten().all(|(_, image)| {
-        !image.scene_owned || consumers.handles.contains_key(&image.path)
-    }) {
+    if world.images_ready != world.image_revision && world.images.values().flatten().map(|(_, image)| image)
+        .chain(world.extra_images.iter()).all(|image| !image.scene_owned || consumers.handles.contains_key(&image.path)) {
         let obsolete: Vec<_> = state.world_entries.iter()
             .filter(|name| !world.images.contains_key(*name)).cloned().collect();
         for name in obsolete {

@@ -11,7 +11,7 @@ fn separate_source() -> bool {
     *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_MATERIAL_SOURCE").as_deref() == Ok("1"))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::app) enum MaterialGeometry {
     World,
     Model,
@@ -116,6 +116,38 @@ impl MaterialCache {
         material: Option<CachedMaterial>,
     ) {
         self.entries.entry(path).or_default()[geometry.index()] = Some(material);
+    }
+
+    /// Transfer worker-local identities to existing scene slots only after the
+    /// coordinator has verified that every mapped slot is resident.
+    pub(in crate::app) fn merge_dynamic(&mut self, other: MaterialCache, slots: &[usize])
+        -> Result<Vec<(String, MaterialGeometry, CachedMaterial)>, String> {
+        let mut mapped = Vec::new();
+        for (name, entries) in other.entries {
+            for (index, entry) in entries.into_iter().enumerate() {
+                let Some(Some(mut material)) = entry else { continue };
+                let geometry = if index == 0 { MaterialGeometry::World } else { MaterialGeometry::Model };
+                if self.get_for(&name, geometry).is_some() { continue; }
+                for (slot, _) in &mut material.images { *slot = *slots.get(*slot).ok_or("material image mapping is incomplete")?; }
+                material.diffuse_image_slot = material.diffuse_image_slot.map(|slot| slots.get(slot).copied()
+                    .ok_or("material diffuse image mapping is incomplete")).transpose()?;
+                mapped.push((name.clone(), geometry, material));
+            }
+        }
+        for (name, geometry, material) in &mapped { self.insert(name.clone(), *geometry, Some(material.clone())); }
+        Ok(mapped)
+    }
+    pub(in crate::app) fn keys(&self) -> Vec<(String, MaterialGeometry)> {
+        self.entries.iter().flat_map(|(name, entries)| entries.iter().enumerate().filter_map(move |(index, entry)| {
+            entry.as_ref().and_then(Option::as_ref).map(|_| (name.clone(),
+                if index == 0 { MaterialGeometry::World } else { MaterialGeometry::Model }))
+        })).collect()
+    }
+    pub(in crate::app) fn remove_dynamic(&mut self, name: &str, geometry: MaterialGeometry) {
+        if let Some(entries) = self.entries.get_mut(name) {
+            entries[geometry.index()] = None;
+            if entries.iter().all(Option::is_none) { self.entries.remove(name); }
+        }
     }
 
     pub(in crate::app) fn len(&self) -> usize {

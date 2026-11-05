@@ -22,17 +22,19 @@ pub(super) struct DynamicWorldMaterials {
     /// Per-request sources are also retained by the render-side FX entity and
     /// its instance until every particle, sound and decal tail has retired.
     pub leases: Arc<Vec<Weak<Sources>>>,
+    pub gpu_completed: Arc<std::sync::atomic::AtomicU64>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
     pub failed: Arc<std::sync::atomic::AtomicU64>,
     /// Ordered world-material dependencies, retained for live proxies and tails.
     pub images: HashMap<String, Vec<(crate::rendering::bevy_backend::surface_gpu::ImageRole, Arc<crate::rendering::particles::image_resources::ParticleImage>)>>,
+    pub extra_images: Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>,
     pub image_revision: u64,
     pub images_ready: u64,
 }
 impl Default for DynamicWorldMaterials {
     fn default() -> Self {
-        Self { generation: 0, retirement: 0, sources: Arc::default(), leases: Arc::default(),
-            completed: Arc::default(), failed: Arc::default(), images: HashMap::new(),
+        Self { generation: 0, retirement: 0, sources: Arc::default(), leases: Arc::default(), gpu_completed: Arc::default(),
+            completed: Arc::default(), failed: Arc::default(), images: HashMap::new(), extra_images: Vec::new(),
             image_revision: 0, images_ready: 0 }
     }
 }
@@ -47,6 +49,7 @@ pub(super) struct DynamicDecalMaterials {
     pub sources: Arc<Sources>,
     pub leases: Arc<Vec<Weak<Sources>>>,
     pub prepared_generation: u64,
+    pub prepared_revision: u64,
     pub prepared: Arc<Vec<super::runtime_materials::PreparedDecal>>,
     pub gpu_completed: Arc<std::sync::atomic::AtomicU64>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
