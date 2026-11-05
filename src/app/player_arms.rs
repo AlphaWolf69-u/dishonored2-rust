@@ -49,6 +49,25 @@ struct ArmModel {
     world_bounds: Option<[[f32; 3]; 2]>,
 }
 
+/// Retained through the end of an action so F8 need not catch a short pose.
+/// Model indices use the same order as the individual diagnostic lines below.
+#[derive(Clone, Copy, Debug, Default)]
+struct RenderModelHistory {
+    published_frames: u32,
+    requested_frames: u32,
+    skinned_frames: u32,
+    skin_error_frames: u32,
+    visible_surface_frames: u32,
+    maximum_visible_surfaces: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RenderActionHistory {
+    frames: u32,
+    // The installed body declaration has at most two arms plus the body.
+    models: [RenderModelHistory; 3],
+}
+
 #[derive(Resource)]
 pub(super) struct PlayerArms {
     /// r_playerDepthHack after the body component's start.
@@ -58,15 +77,19 @@ pub(super) struct PlayerArms {
     /// front of the camera instead of `Player::arms()`; another number sets
     /// that distance in metres (a diagnostic only).
     debug_rest: Option<f32>,
+    action_active: [bool; 2],
+    action_history: [Option<RenderActionHistory>; 2],
 }
 
 impl PlayerArms {
     /// F8-only snapshot of the render owner's published arm state.
     pub(super) fn diagnostic(&self) -> String {
-        self.arms.iter().map(|arm| format!(
+        let mut report: String = self.arms.iter().map(|arm| format!(
             "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
             arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
-        )).collect()
+        )).collect();
+        report.push_str(&format!("  renderer action history [mantle, catfall]={:?}\n", self.action_history));
+        report
     }
     /// Materials of the arms on screen, whose textures stream like those of
     /// visible scene instances.
@@ -289,6 +312,8 @@ pub(super) fn load_player_arms(
         debug_rest: std::env::var("DH2_DEBUG_REST_ARMS").ok().and_then(|value| {
             if value == "1" { Some(0.5) } else { value.parse().ok() }
         }),
+        action_active: [false; 2],
+        action_history: [None; 2],
     })
 }
 
@@ -427,8 +452,24 @@ pub(super) fn update_player_arms(
         }
     };
     let probes = scene.as_ref().and_then(|scene| scene.environment_probes.as_deref());
+    let actions = [crate::gameplay::player::states::StateId::MANTLE,
+        crate::gameplay::player::states::StateId::CATFALL].map(|id|
+        state.as_deref().and_then(|state| state.player.as_ref())
+            .is_some_and(|player| player.machine.is_active(id)));
+    for (index, active) in actions.into_iter().enumerate() {
+        if active {
+            if !arms.action_active[index] {
+                arms.action_history[index] = Some(RenderActionHistory::default());
+            }
+            if let Some(history) = &mut arms.action_history[index] {
+                history.frames = history.frames.saturating_add(1);
+            }
+        }
+        arms.action_active[index] = active;
+    }
     let mut error = None;
-    for arm in &mut arms.arms {
+    let PlayerArms { arms: models, action_history, .. } = &mut *arms;
+    for (model_index, arm) in models.iter_mut().enumerate() {
         let render = renders
             .iter()
             .find(|render| render.model == arm.model && render.visible);
@@ -498,6 +539,7 @@ pub(super) fn update_player_arms(
             }
             None => false,
         };
+        let skin_error = render.is_some() && !show;
         if trace {
             let player = state.as_deref().and_then(|state| state.player.as_ref());
             let states = player.map(|player| player.machine.active_states()).unwrap_or_default();
@@ -523,6 +565,23 @@ pub(super) fn update_player_arms(
                 }
             }
             arm.shown = show;
+        }
+        if actions.iter().any(|active| *active) {
+            let visible_surfaces = arm.surfaces.iter().filter(|surface|
+                visibility.get(surface.entity).is_ok_and(|value| *value == Visibility::Visible))
+                .count() as u32;
+            for (index, active) in actions.into_iter().enumerate() {
+                if !active { continue; }
+                let Some(history) = action_history[index].as_mut()
+                    .and_then(|history| history.models.get_mut(model_index)) else { continue };
+                history.published_frames = history.published_frames.saturating_add(u32::from(
+                    renders.iter().any(|render| render.model == arm.model)));
+                history.requested_frames = history.requested_frames.saturating_add(u32::from(render.is_some()));
+                history.skinned_frames = history.skinned_frames.saturating_add(u32::from(show));
+                history.skin_error_frames = history.skin_error_frames.saturating_add(u32::from(skin_error));
+                history.visible_surface_frames = history.visible_surface_frames.saturating_add(u32::from(visible_surfaces != 0));
+                history.maximum_visible_surfaces = history.maximum_visible_surfaces.max(visible_surfaces);
+            }
         }
     }
     if error != *last_error {
