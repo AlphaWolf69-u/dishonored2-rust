@@ -18,6 +18,8 @@ pub(super) struct RuntimeFxImages {
     slots: HashMap<Arc<str>, Slot>,
     free: Vec<usize>,
     seen_revision: Option<u64>,
+    seen_world_revision: Option<u64>,
+    world_entries: std::collections::HashSet<String>,
     pub(super) requested: Vec<usize>,
 }
 
@@ -25,6 +27,7 @@ pub(super) struct RuntimeFxImages {
 /// slot identities. Texture reads continue through TextureReadWorker.
 pub(super) fn synchronize(
     owner: Option<Res<super::usable_effects::UsableEffects>>,
+    world: Option<ResMut<super::usable_effects::DynamicWorldMaterials>>,
     state: Option<ResMut<RuntimeFxImages>>,
     queue: Option<ResMut<super::SceneRenderQueue>>,
     worker: Option<ResMut<super::texture_streaming::TextureReadWorker>>,
@@ -33,20 +36,29 @@ pub(super) fn synchronize(
     registry: Option<Res<super::resident_images::ResidentImages>>,
     assets: Res<Assets<Image>>,
 ) {
-    let (Some(owner), Some(mut state), Some(mut queue), Some(mut worker), Some(mut consumers)) =
-        (owner, state, queue, worker, consumers) else { return };
-    if owner.ready.is_empty() && state.slots.is_empty() {
-        if state.seen_revision != Some(owner.revision) { state.seen_revision = Some(owner.revision); }
+    let (Some(owner), Some(mut world), Some(mut state), Some(mut queue), Some(mut worker), Some(mut consumers)) =
+        (owner, world, state, queue, worker, consumers) else { return };
+    if owner.ready.is_empty() && world.images.is_empty() && state.slots.is_empty() && state.world_entries.is_empty() {
+        world.images_ready = world.image_revision;
+        if state.seen_revision != Some(owner.revision) || state.seen_world_revision != Some(world.image_revision) { state.seen_revision = Some(owner.revision); }
         if !state.requested.is_empty() { state.requested.clear(); }
         return;
     }
-    if state.seen_revision != Some(owner.revision) {
+    if state.seen_revision != Some(owner.revision) || state.seen_world_revision != Some(world.image_revision) {
         for slot in state.slots.values_mut() { slot.wanted = false; }
         for source in owner.ready.values().flat_map(|sources| sources.particle_materials())
-            .flat_map(|material| material.images.values()).filter(|image| image.scene_owned)
+            .flat_map(|material| material.images.values())
+            .chain(world.images.values().flat_map(|images| images.iter().map(|(_, image)| image)))
+            .filter(|image| image.scene_owned)
         {
             let path = source.path.clone();
-            if let Some(slot) = state.slots.get_mut(&path) { slot.wanted = true; continue; }
+            if let Some(slot) = state.slots.get_mut(&path) {
+                slot.wanted = true;
+                // An immutable registry normally reuses the same identity; a
+                // fresh acquisition after retirement must not retain a dead weak pointer.
+                if slot.image.strong_count() == 0 { slot.image = Arc::downgrade(source); }
+                continue;
+            }
             if let Some((index, _)) = consumers.slots.iter().find(|(_, image)| image.path == path) {
                 state.slots.insert(path, Slot { index: *index, image: Arc::downgrade(source), owned: false, registered: true, added_consumer: false, wanted: true, lease: None });
                 continue;
@@ -77,6 +89,7 @@ pub(super) fn synchronize(
             }
         }
         state.seen_revision = Some(owner.revision);
+        state.seen_world_revision = Some(world.image_revision);
     }
     state.requested.clear();
     let mut remove = Vec::new();
@@ -113,6 +126,30 @@ pub(super) fn synchronize(
         Arc::make_mut(&mut consumers.handles).insert(path.clone(), handle);
         slot.registered = true;
         slot.added_consumer = true;
+    }
+    // A world material can be demanded only once every scene-owned image has
+    // a committed handle. Preserve startup bindings when the same material is
+    // already part of the level; dynamic entries own only their own keys.
+    let ready = world.images.values().flatten().all(|(_, image)| {
+        !image.scene_owned || consumers.handles.contains_key(&image.path)
+    });
+    if ready {
+        let obsolete: Vec<_> = state.world_entries.iter()
+            .filter(|name| !world.images.contains_key(*name)).cloned().collect();
+        for name in obsolete {
+            Arc::make_mut(&mut consumers.world_materials).remove(&name);
+            state.world_entries.remove(&name);
+        }
+        for (name, images) in &world.images {
+            if state.world_entries.contains(name) || !consumers.world_materials.contains_key(name) {
+                let binding: Vec<_> = images.iter().map(|(_, image)| image.clone()).collect();
+                let changed = consumers.world_materials.get(name).is_none_or(|old|
+                    old.len() != binding.len() || old.iter().zip(&binding).any(|(a, b)| !Arc::ptr_eq(a, b)));
+                if changed { Arc::make_mut(&mut consumers.world_materials).insert(name.clone(), binding); }
+                state.world_entries.insert(name.clone());
+            }
+        }
+        world.images_ready = world.image_revision;
     }
     for path in remove {
         let Some(slot) = state.slots.remove(&path) else { continue };

@@ -21,11 +21,16 @@ pub(super) struct DynamicWorldMaterials {
     pub sources: Arc<Sources>,
     pub completed: Arc<std::sync::atomic::AtomicU64>,
     pub failed: Arc<std::sync::atomic::AtomicU64>,
+    /// Ordered world-material dependencies, retained for live proxies and tails.
+    pub images: HashMap<String, Vec<(crate::rendering::bevy_backend::surface_gpu::ImageRole, Arc<crate::rendering::particles::image_resources::ParticleImage>)>>,
+    pub image_revision: u64,
+    pub images_ready: u64,
 }
 impl Default for DynamicWorldMaterials {
     fn default() -> Self {
         Self { generation: 0, retirement: 0, sources: Arc::default(),
-            completed: Arc::default(), failed: Arc::default() }
+            completed: Arc::default(), failed: Arc::default(), images: HashMap::new(),
+            image_revision: 0, images_ready: 0 }
     }
 }
 
