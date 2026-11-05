@@ -28,6 +28,7 @@ pub(super) struct StreamLocator {
     pub(super) offset: u64,
     pub(super) size: usize,
     pub(super) pool: Arc<crate::assets::wwise::stream_io::ReadPool>,
+    pub(super) source_jobs: std::sync::Weak<super::acquisition::Pool>,
 }
 
 /// A streamed or prefetched Wwise source (stream type != 0). The original
@@ -49,7 +50,7 @@ struct StreamRead {
 }
 
 struct StreamReadState {
-    task: Option<bevy::tasks::Task<io::Result<Samples>>>,
+    task: Option<super::acquisition::Job<io::Result<Samples>>>,
     samples: Option<Arc<Samples>>,
 }
 
@@ -87,8 +88,11 @@ impl StreamedSource {
         let read = if let Some(read) = loading.upgrade() { read } else {
             let locator = self.locator.clone();
             let prefix = self.prefix.clone();
+            let pool = self.locator.source_jobs.upgrade()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "sound preparation owner retired"))?;
+            let task = pool.submit("stream", self.sound, move || read_streamed(&locator, prefix))?;
             let read = Arc::new(StreamRead { state: Mutex::new(StreamReadState {
-                task: Some(bevy::tasks::IoTaskPool::get().spawn(async move { read_streamed(&locator, prefix) })),
+                task: Some(task),
                 samples: None,
             }) });
             *loading = Arc::downgrade(&read);
@@ -99,7 +103,7 @@ impl StreamedSource {
             return Ok(StreamHold { resident: Some(samples.clone()), _read: None });
         }
         let pending = state.task.as_mut().ok_or_else(|| invalid("streamed read completed without resident media"))?;
-        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(pending)) {
+        if let Some(result) = pending.take() {
             state.task = None;
             let samples = Arc::new(result?);
             state.samples = Some(samples.clone());

@@ -8,6 +8,7 @@ mod graph;
 mod bevy_backend;
 mod fade;
 mod contacts;
+mod acquisition;
 use crate::assets::declaration_texts;
 mod effects;
 mod spatial;
@@ -23,7 +24,7 @@ pub struct SoundEvent(pub Request);
 enum DecodeClient { Effects = 1, Watched = 2 }
 struct DecodeJob {
     clients: u8,
-    task: Option<std::sync::Mutex<bevy::tasks::Task<Result<Vec<SourceAction>, String>>>>,
+    task: Option<std::sync::Mutex<acquisition::Job<Result<Vec<SourceAction>, String>>>>,
     result: Option<Result<Arc<Vec<SourceAction>>, String>>,
 }
 #[derive(Resource, Default)]
@@ -32,15 +33,19 @@ impl SoundDecodeQueue {
     fn request(&mut self, event: u32, client: DecodeClient, registry: &WwiseRegistry) {
         let job = self.0.entry(event).or_insert_with(|| {
             let snapshot = registry.decode_snapshot();
-            DecodeJob { clients: 0, result: None, task: Some(std::sync::Mutex::new(
-                bevy::tasks::IoTaskPool::get().spawn(async move {
+            let task = registry.source_jobs.upgrade().ok_or_else(|| "sound preparation owner is absent".to_owned())
+                .and_then(|pool| pool.submit("event", event, move || {
                     let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
                     let result = snapshot.decode_event(event).map_err(|error| error.to_string());
                     if let Some(started) = started {
                         eprintln!("FX_LIFECYCLE audio={event:#010x} success={} decode_ms={:.3}", result.is_ok(), started.elapsed().as_secs_f64() * 1000.0);
                     }
                     result
-                }))) }
+                }).map_err(|error| error.to_string()));
+            match task {
+                Ok(task) => DecodeJob { clients: 0, result: None, task: Some(std::sync::Mutex::new(task)) },
+                Err(error) => DecodeJob { clients: 0, result: Some(Err(error)), task: None },
+            }
         });
         job.clients |= client as u8;
     }
@@ -48,7 +53,7 @@ impl SoundDecodeQueue {
         for job in self.0.values_mut() {
             let Some(task) = job.task.as_mut() else { continue };
             let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
-            if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+            if let Some(result) = task.take() {
                 job.result = Some(result.map(Arc::new));
                 job.task = None;
             }
@@ -148,6 +153,9 @@ struct WwiseRegistry {
     locators: Arc<std::sync::Mutex<HashMap<u32, graph::StreamLocator>>>,
     stream_acquisition: Arc<std::sync::Mutex<(u64, u64, u64, std::time::Duration)>>,
     stream_io: Arc<crate::assets::wwise::stream_io::ReadPool>,
+    /// The plugin owns the worker. Snapshots/queued inputs use a weak link so
+    /// the worker queue cannot form an ownership cycle with its own jobs.
+    source_jobs: std::sync::Weak<acquisition::Pool>,
 }
 
 impl WwiseRegistry {
@@ -158,6 +166,7 @@ impl WwiseRegistry {
         Self { banks: self.banks.clone(), attenuations: self.attenuations.clone(),
             library: self.library.clone(), locators: Arc::default(),
             stream_acquisition: self.stream_acquisition.clone(), stream_io: self.stream_io.clone(),
+            source_jobs: self.source_jobs.clone(),
             ..Default::default() }
     }
     fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
@@ -170,6 +179,7 @@ impl WwiseRegistry {
                 path: bank.path.clone(), offset: media.offset,
                 size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
                 pool: self.stream_io.clone(),
+                source_jobs: self.source_jobs.clone(),
             });
             if stream_type == 1 && crate::assets::wwise::stream_io::enabled() {
                 // The bank owns the prefetch bytes. Publish the package extent
@@ -383,6 +393,7 @@ impl Plugin for SoundPlugin {
             .init_resource::<objects::EffectObjects>()
             .init_resource::<effects::EffectAudio>()
             .init_resource::<WwiseRegistry>()
+            .init_resource::<acquisition::SourceJobs>()
             .init_resource::<PendingSounds>()
             .init_resource::<SoundCompletions>()
             .init_resource::<SoundDecodeQueue>()
@@ -393,6 +404,8 @@ impl Plugin for SoundPlugin {
             .add_systems(Update, contacts::update.after(super::player::update_player))
             .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
+        let source_jobs = Arc::downgrade(&app.world().resource::<acquisition::SourceJobs>().0);
+        app.world_mut().resource_mut::<WwiseRegistry>().source_jobs = source_jobs;
     }
 }
 

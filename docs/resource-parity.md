@@ -3646,14 +3646,45 @@ selects the four-slot ring with `(render counter + 1) & 3`. These are separate
 query/result and per-frame simulation lifetimes, not a reason for a second
 GPU readback or a mutex spanning simulation and rendering.
 
-The existing host path maps the head-water result before advancing particles,
-which reverses that traced order. The pending owner migration will consume the
-prior completed CPU result and publish later render readback for a subsequent
-update, preserving actual query handles and source leases. It must not move
-the host GPU wait onto the gameplay thread. Exact game-to-render scheduling
-and the complete publication/retirement handoff still require integration
-and affected-path measurements; this trace does not certify those unfinished
-paths.
+The integrated host owner is now `camera_scene::FxSimulation`, in the gameplay
+world. It consumes one atomic snapshot of the prior ocean query results and
+publishes an immutable `Arc<FxFrame>` for rendering. The existing render readback
+publishes the next result without releasing the swimming query handle early;
+the ordinary ring consumer still releases it. Level retirement replaces the
+mailbox identity, so outgoing render work cannot publish into a new level.
+This is source integration, not yet production verification. No GPU wait or
+second particle simulator was added to the gameplay thread.
+
+Prediction before measurement: normal extraction removes one deep
+`WorldEffectFrames` pose-map copy per frame. It adds one immutable frame
+publication allocation/reference handoff and at most 80 bytes of ocean query
+data copying. GPU pass/readback counts should remain unchanged. Same-build
+`DH2_DEBUG_EFFECT_FRAME_EXTRACTION=1` restores the former pose-map extraction;
+`DH2_DEBUG_FX_LIFECYCLE=1` records changed-block cycles, copied payload and
+publication fingerprints. Source integration alone does not verify output or
+establish CPU/RAM savings.
+
+### First-use sound preparation scheduling
+
+Host owner: `app::audio::acquisition::SourceJobs`. Original `1400bc8f0` /
+`1410bf740` configure a dedicated sound streaming device. Encoded block reads
+remain in `assets::wwise::stream_io`, with the same 2 MiB budget and 16 KiB
+granularity. Previously event/source preparation used the generic IO pool,
+also used by the texture worker's drain loop. Source preparation now has one
+lazy, session-owned worker, weak back-links from source locators/snapshots,
+cancelled queued-result leases, and explicit shutdown/join. Level resets keep
+the session worker and release outgoing requests; no full streamed media is
+preloaded to conceal cold-start delay.
+
+The reported fly event `0xc64fd6cf` has no action delay and selects two type-2
+Vorbis streams (`0x1003ce06`, `0x12165710`). Installed HIRC and package data
+therefore do not justify adding a delay or treating them as prefetched media.
+Prediction: sound preparation should no longer queue behind texture-drain
+jobs; preparation work and decoded samples should remain unchanged. No FPS or
+codec-speed gain is predicted. `DH2_DEBUG_SOUND_ACQUISITION=1` records queue
+and work time separately; `DH2_DEBUG_SHARED_SOUND_JOBS=1` selects the former
+generic-pool scheduling for a same-build comparison. Compilation, affected
+queue measurements and the reported first-use audio outcome remain pending.
 
 ### Runtime initial-image failure retirement
 
