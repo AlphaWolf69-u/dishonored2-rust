@@ -26,6 +26,11 @@ pub struct QuadDraw {
     material: usize,
     blend: f32,
 }
+impl QuadDraw {
+    pub(super) fn debug_values(&self) -> (usize, u32) {
+        (self.material, self.blend.to_bits())
+    }
+}
 struct PlayingQuad {
     material: usize,
     stage: ScreenQuadStage,

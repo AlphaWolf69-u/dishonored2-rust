@@ -82,6 +82,39 @@ pub(super) struct FxFrame {
     pub particles: Option<ParticlePublicationFrame>,
     pub decals: Vec<(u32, u64, crate::rendering::decals::CommittedDecal<super::decal_effects::DecalReferences>)>,
 }
+impl FxFrame {
+    /// Covers published particle geometry/parameters, screen quads and decal
+    /// identities; it does not claim to hash every material or decal property.
+    fn debug_draw_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        fn particle(value: &crate::rendering::particles::ParticleInstance, hash: &mut impl Hasher) {
+            for number in value.position.iter().chain(value.axes.iter().flatten()) {
+                number.to_bits().hash(hash);
+            }
+            value.parameters.colour.hash(hash);
+            value.parameters.flipbook_seed_uv.hash(hash);
+            value.parameters.size.hash(hash);
+        }
+        self.capacity.hash(&mut hash);
+        for draw in self.screen_draws.iter().flatten() { draw.debug_values().hash(&mut hash); }
+        if let Some(published) = &self.particles {
+            for draw in &published.draws {
+                draw.material.name.hash(&mut hash);
+                draw.instances.len().hash(&mut hash);
+                for value in &draw.instances { particle(value, &mut hash); }
+            }
+            for draw in &published.world_meshes {
+                draw.source.hash(&mut hash);
+                draw.material.hash(&mut hash);
+                draw.instances.len().hash(&mut hash);
+                for value in &draw.instances { particle(value, &mut hash); }
+            }
+        }
+        for (root, identity, _) in &self.decals { root.hash(&mut hash); identity.hash(&mut hash); }
+        hash.finish()
+    }
+}
 
 /// 1ffff0 publishes every visible system's renderers after its simulation;
 /// all of this frame's consumers read the same publication.
@@ -780,8 +813,10 @@ pub(crate) fn simulate_effects(
     if let Some(started) = started {
         let cpu_cycles = cycles.zip(crate::loading::thread_cycles())
             .map(|(start, end)| end.saturating_sub(start));
-        eprintln!("FX_LIFECYCLE gameplay_simulation frame={} elapsed_ms={:.3} cpu_cycles={cpu_cycles:?} pose_signature={:016x}",
-            water.matrices.frame, started.elapsed().as_secs_f64() * 1000.0, fx.world_frames.debug_pose_signature());
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let draw_signature = published.0.as_ref().map(|frame| frame.debug_draw_signature()).unwrap_or_default();
+        eprintln!("FX_LIFECYCLE gameplay_simulation frame={} elapsed_ms={elapsed_ms:.3} cpu_cycles={cpu_cycles:?} pose_signature={:016x} draw_signature={draw_signature:016x}",
+            water.matrices.frame, fx.world_frames.debug_pose_signature());
     }
 }
 
