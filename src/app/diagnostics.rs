@@ -427,14 +427,16 @@ pub(super) fn collision_report(
     );
     if let Some(player) = walker {
         report.push_str(&format!(
-            "\nPlayer arm state: shown={:?}, mantle hands=[{}, {}], mantle destination={:?}, catfall sensor enabled={} hits=[{}, {}]\n",
+            "\nPlayer arm state: shown={:?}, mantle hands=[{}, {}] last_selection={:?}, mantle destination={:?}, catfall sensor enabled={} hits=[{}, {}] last_selection={:?}\n",
             player.body.arms_shown,
             player.mantle_sensor.use_left_hand,
             player.mantle_sensor.use_right_hand,
+            player.mantle_sensor.last_selected_hands,
             player.mantle_sensor.destination,
             player.catfall_sensor.enabled,
             player.catfall_sensor.left_hit,
             player.catfall_sensor.right_hit,
+            player.catfall_sensor.last_selected_hands,
         ));
         let eye = Vec3::from_array(view_to_game(camera.translation));
         let forward = Vec3::from_array(view_to_game(direction));
@@ -453,7 +455,9 @@ pub(super) fn collision_report(
             }
             report.push_str(&format!("  model={} visible={} joints={} in_front={} camera_bounds={:?}..{:?}\n", arm.model, arm.visible, arm.joints.len(), in_front, min, max));
         }
-        report.push_str(&format!("  pose errors={:?}\n", player.arm_pose_errors()));
+        report.push_str(&format!("  pose errors={:?} midnight_handle={:?} midnight_drives=[{}, {}, {}]\n",
+            player.arm_pose_errors(), player.body.midnight.playing(), player.body.midnight.drives(0),
+            player.body.midnight.drives(1), player.body.midnight.drives(2)));
     }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.

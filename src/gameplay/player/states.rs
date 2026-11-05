@@ -1462,6 +1462,7 @@ impl StateMachine {
             } else {
                 (catfall.low_damage_midnight.as_ref(), &catfall.low_damage_arm_midnights)
             };
+            frame.catfall_sensor.last_selected_hands = Some(shown);
             // FUN_140774a10: hide the arms that are not shown.
             for (side, show) in shown.into_iter().enumerate() {
                 if !show {
@@ -1962,6 +1963,7 @@ impl StateMachine {
     /// Mantle Activate FUN_14085eaf0 (shadow walk, corpses, moving
     /// platforms, legs, footsteps and equipment are not ported).
     fn activate_mantle(&mut self, index: usize, decl: &MantleStateDecl, frame: &mut Frame) {
+        frame.mantle_sensor.last_selected_hands = Some([frame.mantle_sensor.use_left_hand, frame.mantle_sensor.use_right_hand]);
         let sensor = &*frame.mantle_sensor;
         let Some((final_posture, final_state)) = sensor.final_posture() else { return };
         let height = sensor.height(frame.origin);
