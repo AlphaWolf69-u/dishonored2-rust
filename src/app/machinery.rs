@@ -22,6 +22,9 @@ impl AmbientMachinery {
     pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
         self.skins.iter().map(|s| s.placement()).collect()
     }
+    pub(super) fn skin_models(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::bmd6::ModelInfo>)> {
+        self.skins.iter().map(|skin| (skin.placement(), skin.model()))
+    }
     #[allow(dead_code)]
     pub(super) fn load(
         catalog: &Catalog,

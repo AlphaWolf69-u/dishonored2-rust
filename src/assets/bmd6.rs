@@ -4,6 +4,29 @@
 //! Field order follows the installed game's idMD6Model loader and BTRI v2
 //! reader (Ghidra functions 0x14025aa00, 0x140259960, 0x14025a040).
 
+// Host equivalent of the resource registry's scoped purge (140060180).
+static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+pub(crate) struct HistoryLease;
+impl HistoryLease {
+    pub(crate) fn acquire() -> std::sync::Arc<Self> {
+        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        std::sync::Arc::new(Self)
+    }
+}
+impl Drop for HistoryLease {
+    fn drop(&mut self) {
+        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+        *scopes -= 1;
+        if *scopes != 0 { return; }
+        for kind in ["baseModel", "md6Def"] {
+            let (count, bytes, slots, _) = crate::loading::retain_kind(kind, |_| false);
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("MEMORY {kind} history release: entries={count} path_capacity_bytes={bytes} slots={slots}");
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ModelInfo {
     pub surfaces: Vec<SurfaceInfo>,
@@ -450,6 +473,66 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
         has_decoded_geometry,
         authored_bounds,
     })
+}
+
+/// Preparation-scoped immutable MD6 models. 14025aa00 loads each registered
+/// model identity once; instances retain separate pose and physics state.
+pub(crate) struct ModelSources {
+    catalog: u64,
+    share: bool,
+    models: std::collections::HashMap<String, std::sync::Arc<ModelInfo>>,
+    paths: std::collections::HashMap<String, String>,
+}
+impl ModelSources {
+    pub(crate) fn new(catalog: &crate::archive::Catalog) -> Self {
+        Self { catalog: catalog.identity(), share: !catalog.has_overlays(),
+            models: Default::default(), paths: Default::default() }
+    }
+
+    pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, resource: &str)
+        -> Result<std::sync::Arc<ModelInfo>, String>
+    {
+        if self.catalog != catalog.identity() {
+            self.models.clear();
+            self.paths.clear();
+            self.catalog = catalog.identity();
+            self.share = !catalog.has_overlays();
+        }
+        if self.share {
+            if let Some(model) = self.paths.get(resource).and_then(|path| self.models.get(path)) {
+                return Ok(model.clone());
+            }
+        }
+        let read = |decl: &str| {
+            catalog.read(decl).ok().flatten().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        };
+        let path = resolve_compiled_mesh(resource, read)?;
+        // A validated alias resolves to the same catalog identity despite
+        // differences in ASCII case or slash direction (140140da0/140140de0).
+        let key = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
+            std::borrow::Cow::Borrowed(path.as_str())
+        } else {
+            let mut normalized = path.replace('\\', "/");
+            normalized.make_ascii_lowercase();
+            std::borrow::Cow::Owned(normalized)
+        };
+        if self.share {
+            if let Some(model) = self.models.get(key.as_ref()) {
+                let model = model.clone();
+                self.paths.insert(resource.to_owned(), key.into_owned());
+                return Ok(model);
+            }
+        }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("{path} is absent"))?;
+        let model = std::sync::Arc::new(inspect(&bytes)?);
+        if self.share {
+            let key = key.into_owned();
+            self.models.insert(key.clone(), model.clone());
+            self.paths.insert(resource.to_owned(), key);
+        }
+        Ok(model)
+    }
 }
 
 #[cfg(test)]
