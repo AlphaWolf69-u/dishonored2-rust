@@ -4302,3 +4302,20 @@ The existing `DH2_TRACE_WORLD_FX` acquisition diagnostic now records each
 prepared definition's group count or actual error. This runs only at resource
 acquisition, with one opt-in check per batch, and will distinguish a valid
 zero-group definition from a rejected declaration in the production client.
+
+
+Empty-declaration acceptance: `a1a972a` built both the actual game and the
+existing read-only tools successfully. The updated installed EotW acquisition
+has 99 effect identities and zero effect acquisition failures; declaration
+requests/reads remain 91/87. A production EotW run acquired the empty effect
+with `groups=0`, then the ordinary authored-actor preview reported one
+attempt, one acquisition and zero rejections, and the client exited 0 with
+zero final catalog consumers. No default groups or fallback resource were
+created. The pre-existing named-variable graph binding error remains a
+separate graph-owner integration issue; zero FX declaration failures does
+not claim all gameplay FX are implemented. The older tools inventory has a
+different material-read count (44 versus the rebuilt tool's 45), so that
+cross-version count/timing is not attributed to this parser change.
+Evidence: `artifacts/empty-fx-build.{source,exit}`,
+`empty-fx-inventory.{out,err,exit}` and `empty-fx-client.{out,err,exit}`.
+No tests or visual checks were used.

@@ -40,9 +40,13 @@ references require 91 reads without sharing and 87 with sharing; PMODEL reads
 45 -> 26, field-image reads 17 -> 7. Dust District: declarations 109 -> 101,
 PMODELs 27 -> 12, field images 24 -> 4. Material reads are unchanged in these
 world-only acquisitions (44 and 48); player and world production acquisition
-now use the same cache. The single missing-edit-scope `empty.fx` failure is
-identical in both modes. Cold-versus-warm whole-load timings are not used as
-proof of a CPU gain.
+now use the same cache. Those historical sharing runs had the same single
+missing-edit-scope `empty.fx` failure in both modes. That separate format
+error was fixed on 2026-11-06: the shared reader accepts a valid empty root,
+as the original common parser does. Rebuilt EotW acquisition has 99 effects
+and zero declaration failures; production accepts the zero-group effect and
+exits cleanly. See the empty-declaration acceptance in resource-parity.md.
+Cold-versus-warm whole-load timings are not used as proof of a CPU gain.
 
 Edge of the World: 306 graph instances reference 138 prepared definitions.
 The former deep-copy mode retains 306 runtime definitions in addition to those
