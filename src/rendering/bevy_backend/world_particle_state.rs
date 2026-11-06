@@ -612,7 +612,10 @@ impl WorldParticleState {
         result
     }
     fn retire(&mut self, slot: u16, systems: &mut ParticleSystems) -> Result<(), String> {
-        let Some(mut instance) = self.slots[usize::from(slot)].take() else {
+        // bevy_backend: keep the owner and its advancing chain heads live
+        // until every fallible host release succeeds. Taking the slot first
+        // drops that progress on an error but leaves handles/pool links live.
+        let Some(instance) = self.slots[usize::from(slot)].as_mut() else {
             return Ok(());
         };
         systems.clear(&mut instance.head)?;
@@ -634,6 +637,10 @@ impl WorldParticleState {
             self.sound_systems
                 .clear(&mut instance.sound_head, &mut sounds)?;
         }
+        // All remaining operations use the completed release record; no
+        // resource-family clear can now discard a still-owned chain.
+        let instance = self.slots[usize::from(slot)].take()
+            .expect("cleared FX instance remains owned until retirement");
         self.handles.remove(&instance.id);
         if let Some(index) = self
             .pending_starts

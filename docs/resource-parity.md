@@ -4319,3 +4319,6 @@ cross-version count/timing is not attributed to this parser change.
 Evidence: `artifacts/empty-fx-build.{source,exit}`,
 `empty-fx-inventory.{out,err,exit}` and `empty-fx-client.{out,err,exit}`.
 No tests or visual checks were used.
+### FX release error ownership
+
+`WorldParticleState::retire` retains its live instance slot while particle, decal, sub-effect and sound chain releases can still fail. Completed family heads remain advanced in that same record, so an error no longer drops the declaration lease and remaining chain heads while leaving the handle and pool allocation registered. The slot is removed only after every family clear succeeds. This is `host:` Rust fallible-release ownership around the existing native family cleanup ordering (`140223c20`, `1401a31f0`), not an invented native exception behavior. Prediction: no new allocation or per-update work, no CPU gain claimed, and no orphaned instance record on a family-clear error. Source inspection confirms all fallible family clears precede `take`; production integration is still pending with the shared lifecycle batch. No tests or synthetic failure runs were performed.
