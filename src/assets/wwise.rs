@@ -9,7 +9,7 @@ use std::path::Path;
 mod bank;
 mod vorbis;
 pub use vorbis::VorbisCursor;
-pub(crate) use vorbis::release_unused_headers;
+pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
 mod playback;
 mod property_chains;

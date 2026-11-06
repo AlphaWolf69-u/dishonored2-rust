@@ -12,6 +12,8 @@ mod acquisition;
 use crate::assets::declaration_texts;
 mod effects;
 mod spatial;
+mod session;
+pub(super) use session::{work as acquire_audio_work, Session as AudioSession};
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
 
@@ -32,9 +34,15 @@ struct SoundDecodeQueue(std::collections::HashMap<u32, DecodeJob>);
 impl SoundDecodeQueue {
     fn request(&mut self, event: u32, client: DecodeClient, registry: &WwiseRegistry) {
         let job = self.0.entry(event).or_insert_with(|| {
+            let work = match session::work() {
+                Ok(work) => work,
+                Err(error) => return DecodeJob { clients: 0, task: None, result: Some(Err(error.into())) },
+            };
             let snapshot = registry.decode_snapshot();
             let task = registry.source_jobs.upgrade().ok_or_else(|| "sound preparation owner is absent".to_owned())
                 .map(|pool| pool.submit("event", event, move || {
+                    let _work = work;
+                    if _work.is_closing() { return Err("audio session is closing".into()); }
                     let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
                     let result = snapshot.decode_event(event).map_err(|error| error.to_string());
                     if let Some(started) = started {

@@ -563,6 +563,15 @@ fn acquire(world: &mut World) {
     // Give the bootstrap a complete extraction/presentation before work starts.
     if state.frames >= 2 {
         if let Some((catalog, level, base)) = state.input.take() {
+            let audio_work = match super::audio::acquire_audio_work() {
+                Ok(work) => work,
+                Err(error) => {
+                    error!("Map audio preparation is unavailable: {error}");
+                    world.insert_resource(state);
+                    world.write_message(AppExit::error());
+                    return;
+                }
+            };
             let preparation = super::scene_preparation::ScenePreparation::new(world);
             let needs_initial_inventory = !world.resource::<super::interaction_focus::DiscoveredDocuments>().is_initialized();
             let (send, receive) = mpsc::channel();
@@ -571,9 +580,12 @@ fn acquire(world: &mut World) {
                 .name("map acquisition".into())
                 .stack_size(32 << 20)
                 .spawn(move || {
+                    let _audio_work = audio_work;
+                    if _audio_work.is_closing() { return; }
                     let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory)
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
+                            if _audio_work.is_closing() { return Err("audio session is closing".into()); }
                             if !prepared.diagnostic_exit { preparation.prepare(&mut prepared)?; }
                             Ok(prepared)
                         });

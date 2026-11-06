@@ -38,6 +38,7 @@ pub(super) struct StreamLocator {
 /// playback holds it any more.
 pub(super) struct StreamedSource {
     sound: u32,
+    session: super::session::Handle,
     prefix: Option<crate::assets::wwise::MediaBytes>,
     prefetched: Option<Arc<Samples>>,
     locator: StreamLocator,
@@ -86,11 +87,16 @@ impl StreamedSource {
         }
         let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
         let read = if let Some(read) = loading.upgrade() { read } else {
+            let work = self.session.work().map_err(io::Error::other)?;
             let locator = self.locator.clone();
             let prefix = self.prefix.clone();
             let pool = self.locator.source_jobs.upgrade()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "sound preparation owner retired"))?;
-            let task = pool.submit("stream", self.sound, move || read_streamed(&locator, prefix));
+            let task = pool.submit("stream", self.sound, move || {
+                let _work = work;
+                if _work.is_closing() { return Err(io::Error::other("audio session is closing")); }
+                read_streamed(&locator, prefix)
+            });
             let read = Arc::new(StreamRead { state: Mutex::new(StreamReadState {
                 task: Some(task),
                 samples: None,
@@ -298,6 +304,21 @@ pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) -> u64 {
     generation
 }
 
+/// Final session retirement releases the cache's ownership, even if an
+/// outgoing decoder still holds its own immutable media/header lease.
+pub(super) fn retire_session_media() -> (usize, usize) {
+    let mut media = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
+    let media_count = media.len();
+    media.clear();
+    drop(media);
+    let mut streamed = STREAMED.lock().unwrap_or_else(|e| e.into_inner());
+    let stream_count = streamed.len();
+    streamed.clear();
+    drop(streamed);
+    crate::assets::wwise::retire_headers();
+    (media_count, stream_count)
+}
+
 /// A streamed source's format, read once at load; its media is not kept.
 /// Media that decode to PCM stay resident (`prepare_media`).
 fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator, generation: u64) -> io::Result<PreparedMedia> {
@@ -330,7 +351,8 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
             locator.pool.clone(), Arc::new(locator.path.clone()), locator.offset, locator.size, prefix.clone()))
             .transpose()?.flatten().map(|media| Arc::new(Samples::File(Arc::new(media), None)))
     } else { None };
-    let source = StreamedSource { sound, locator, prefix, prefetched, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(std::sync::Weak::new()) };
+    let source = StreamedSource { sound, session: super::session::handle().map_err(io::Error::other)?,
+        locator, prefix, prefetched, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(std::sync::Weak::new()) };
     let prepared = (Samples::Streamed(Arc::new(source)), channels, rate, frames, points);
     // Parallel event preparation can reach the same source concurrently.
     // Publish one identity; losing preparations must not escape into graphs.

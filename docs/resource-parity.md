@@ -4184,3 +4184,34 @@ exit-zero runs lacked actual final retirement, and only the joined-worker
 run proves that requirement. Evidence: local movie-retirement-build.source
 and movie-retirement-final-client.{exit,out,err}. No tests or visual
 inspection were performed.
+
+
+### Audio session producer drain and final cache retirement
+
+Host integration for the existing Wwise source lifetime (`141122400` /
+`1410f1910`) and dedicated streaming/preparation owners (`1400bc8f0` /
+`1410bf740`): `app::audio::session` now closes admission, drains work leases
+acquired before map preparation, event-decode and stream-read submission,
+then retires the prepared MEDIA/STREAMED and Vorbis header/setup cache roots.
+The guard drops after App and its queue owners, before CatalogSession.
+The existing dedicated PreparationQueue, source generations and cancellation
+behavior remain intact; this does not move jobs back onto the graphics IO
+pool or substitute an earlier audio implementation.
+
+An outgoing decoder keeps its own immutable Arc valid. Final retirement
+clears cache ownership even if such a decoder temporarily outlives the app;
+it does not rely on a last unused-header scan happening at exactly the right
+moment. Already running jobs finish before retirement; queued work that sees
+closure exits, and canceled jobs release their captured lease. Streamed
+sources retain a session handle so output-thread submissions use atomics
+without the global session mutex. Cached/ordinary per-sample decoding adds
+no new guard operations. The map-worker lease also covers scoped startup
+sound preparation and cleanup when the receiver has already disappeared.
+
+Prediction: final cache entry counts reach zero after admitted producers
+retire, with no late repopulation. There is no predicted playback CPU/GPU
+improvement. Submission adds bounded atomic/reference-count bookkeeping;
+`DH2_DEBUG_AUDIO_RESOURCES=1` measures admitted jobs, peak concurrency,
+acquisition bookkeeping time and shutdown drain time. This source batch has
+not yet been compiled or production-accepted; no byte/time saving is claimed.
+No tests were written or run.

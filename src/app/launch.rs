@@ -46,6 +46,8 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let game_base = Some(base);
     let catalog = Some(archive::Catalog::shared(game_base.as_deref().unwrap())?);
     let _catalog_session = CatalogSession(catalog.as_ref().unwrap().identity());
+    // Drop App and its worker owners before audio caches, then the catalog.
+    let _audio_session = super::audio::AudioSession::begin()?;
     super::load_timing::mark("catalog");
     let requested = env::args()
         .nth(1)

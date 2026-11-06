@@ -122,6 +122,23 @@ type SetupKey = (Vec<u8>, u8, (u8, u8));
 static SETUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, Arc<SetupHeader>>>> =
     std::sync::LazyLock::new(Default::default);
 
+/// Final session retirement drops cache ownership even when a decoder still
+/// holds a header. Those decoder Arcs remain valid until their own retirement.
+pub(crate) fn retire_headers() {
+    if std::env::var("DH2_DEBUG_RETAIN_SOUND_HEADERS").as_deref() == Ok("1") { return; }
+    let mut headers = WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner());
+    let header_count = headers.len();
+    headers.clear();
+    drop(headers);
+    let mut setups = SETUPS.lock().unwrap_or_else(|e| e.into_inner());
+    let setup_count = setups.len();
+    setups.clear();
+    drop(setups);
+    if std::env::var("DH2_DEBUG_AUDIO_RESOURCES").as_deref() == Ok("1") {
+        eprintln!("AUDIO_SESSION_HEADERS retired_headers={header_count} retired_setups={setup_count} remaining_headers=0 remaining_setups=0");
+    }
+}
+
 /// Bank/source release (141122400/1410f1910) also ends ownership of decoder
 /// definitions. Host sharing must not make unused codebooks process resident.
 /// Run after outgoing voices and prepared media have released their references.
