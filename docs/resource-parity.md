@@ -4250,3 +4250,22 @@ and eliminate their acquisition counts and most of the measured worker wait.
 The expected result is resource-work removal, not a walking-CPU improvement;
 wall-clock process exit is not the affected-code metric. This follow-up is
 not yet built or accepted. No tests were written or run.
+
+
+Cancellation acceptance: the `ba7280d` dev game build succeeded. The same
+production close request after `LOAD world mesh` exited 0 and stopped after
+the program-cache boundary, matching the predicted phase/work removal:
+there are no probe, Tome, collision or machinery acquisition phases after it.
+The affected session's worker wait fell from 2,528.676 to 301.019 ms (88.1%);
+that includes finishing the current phase and dropping its prepared data,
+not merely the cancellation predicate. Process exit after close was 0.429 s,
+reported separately from the worker wait. The retired catalog's acquired-path
+count fell from 2,001 to 1,755; these are request-history counts, not a RAM
+saving claim. Both runs released all catalog consumers and cleared audio and
+header roots. The result supports the work-count prediction; it does not
+claim a walking CPU/GPU improvement or original-game exit-time comparison.
+Evidence: `artifacts/audio-cancel-build.{source,exit}` and
+`artifacts/audio-close-cancel-client.{out,err,exit}`, compared with
+`artifacts/audio-close-client.{out,err,exit}` from the guard-only build.
+The normal three-level lifecycle acceptance remains recorded above. No
+tests, screenshots, visual inspection or gameplay navigation were used.
