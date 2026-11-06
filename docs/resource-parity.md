@@ -4269,3 +4269,36 @@ Evidence: `artifacts/audio-cancel-build.{source,exit}` and
 `artifacts/audio-close-client.{out,err,exit}` from the guard-only build.
 The normal three-level lifecycle acceptance remains recorded above. No
 tests, screenshots, visual inspection or gameplay navigation were used.
+
+
+### Empty declaration acquisition
+
+The installed `generated/decls/fx/models/effects/empty.fx.decl` is a valid
+six-byte empty object. The shared `gameplay::options::decl::read_edit` reader
+previously rejected it solely because it lacks an explicit `edit` field.
+Original `1401c5b20` resets FX data, calls common parser `140022fd0`, then runs
+its group postprocessing. The common parser tries its editable blocks and
+marks the resource defined even when neither exists. The FX reset
+`1401c5ad0` clears the group count; `1401c5c10`/`1401c5b70` accept that empty
+list without creating particle/sound/decal instances.
+
+The shared reader now returns an empty field set for a syntactically valid
+empty root object, matching an explicit empty edit. No effect-name/type
+exception, fabricated group, fallback asset, cache or GPU allocation is added.
+Missing files, malformed objects, non-scope edit values and unsupported
+non-empty roots retain their existing errors. Existing acquisition owners
+and downstream class defaults are unchanged.
+
+Prediction: the current EotW FX inventory's sole acquisition failure becomes
+zero, with the same 99 effect identities and zero groups/resources for the
+empty declaration. This is format/lifecycle correctness, not a CPU or RAM
+speedup. The existing read-only tools binary supplied the installed-data
+baseline (91 declaration requests, 99 effects, one failure); it predates this
+change and is not runtime acceptance of the new reader. Source references are
+saved locally under `artifacts/fx-declaration-*.c`; installed data remains
+uncommitted. No tests were written or run. Build/production acceptance pending.
+
+The existing `DH2_TRACE_WORLD_FX` acquisition diagnostic now records each
+prepared definition's group count or actual error. This runs only at resource
+acquisition, with one opt-in check per batch, and will distinguish a valid
+zero-group definition from a rejected declaration in the production client.

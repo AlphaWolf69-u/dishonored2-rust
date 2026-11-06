@@ -299,6 +299,7 @@ impl WorldFxSources {
         resources: &mut super::definition::ParticleResources,
     ) {
         let result = self;
+        let trace = std::env::var_os("DH2_TRACE_WORLD_FX").is_some();
         let mut sound_events = HashMap::new();
         let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Sub-FX declarations (m_subFXs) are loaded as further effects, in
@@ -415,6 +416,12 @@ impl WorldFxSources {
                 Ok(Arc::new(WorldEffectDefinition { groups }))
             };
             let loaded = load().map_err(|error| format!("{name}: {error}"));
+            if trace {
+                match &loaded {
+                    Ok(definition) => eprintln!("World FX definition acquired: {name} groups={}", definition.groups.len()),
+                    Err(error) => eprintln!("World FX definition rejected: {error}"),
+                }
+            }
             result.effects.insert(name.clone(), loaded);
             names.extend(children);
         }

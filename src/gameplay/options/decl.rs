@@ -219,6 +219,10 @@ pub fn read_edit(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, kind: &str, name
     let bytes = read(&path).ok_or_else(|| format!("decl missing: {path}"))?;
     let text = crate::assets::entities::declaration_text(&bytes);
     let mut fields = parse_declaration(&text).map_err(|e| format!("{path}: {e}"))?;
+    // 140022fd0 leaves constructor state intact when neither editable block
+    // exists. A valid empty object is not a missing/malformed declaration;
+    // consumers apply the same class defaults as for an empty edit scope.
+    if fields.is_empty() { return Ok(fields); }
     let at = fields.iter().position(|(k, _)| k == "edit").ok_or_else(|| format!("{path}: no edit scope"))?;
     match fields.swap_remove(at).1 {
         Value::Scope(edit) => Ok(edit),
