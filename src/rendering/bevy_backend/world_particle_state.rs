@@ -35,6 +35,9 @@ enum FxEntityOwner {
         graph: usize,
         node: u32,
     },
+    /// The FX instance still owns its tails after its completion receiver
+    /// has been removed; retirement must not notify that receiver (199df0).
+    Detached,
     Actor {
         name: String,
         active: Option<u32>,
@@ -657,6 +660,7 @@ impl WorldParticleState {
                 FxEntityOwner::Node { graph, node } => {
                     self.completed.push((*graph, *node, instance.id))
                 }
+                FxEntityOwner::Detached => {}
                 FxEntityOwner::Actor { active, .. } => {
                     if *active == Some(instance.id) {
                         *active = None;
