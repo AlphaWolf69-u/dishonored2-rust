@@ -20,6 +20,8 @@ impl<O, P> Default for SoundSystems<O, P> {
     }
 }
 impl<O: Copy, P: Copy + PartialEq> SoundSystems<O, P> {
+    pub(crate) fn allocated_count(&self) -> u16 { self.links.allocated_count }
+
     /// 222f80 samples the position before attempting pool acquisition. A full
     /// pool consumes those three samples, but not 230160's start-delay sample.
     pub fn start(

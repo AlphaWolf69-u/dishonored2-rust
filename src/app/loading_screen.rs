@@ -446,7 +446,13 @@ fn acquire(world: &mut World) {
         }
         {
             let _span = super::load_timing::Span::new("outgoing world release");
-            state.lifetime.clear(world);
+            if let Err(error) = state.lifetime.clear(world) {
+                error!("Outgoing level release failed: {error}");
+                crate::platform::client_diagnostics::record(&format!("Outgoing level release failed: {error}"));
+                world.write_message(AppExit::error());
+                world.insert_resource(state);
+                return;
+            }
         }
         let level = state.next.take().unwrap();
         state.map = level.entities.trim_end_matches(".entities").to_owned() + ".map";

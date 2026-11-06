@@ -677,6 +677,79 @@ impl WorldParticleState {
         Ok(())
     }
 
+    /// 199df0 clears each remaining instance's completion callback before
+    /// releasing its effect families, then drains deferred instance removal.
+    /// Actual component Stop and graph destruction precede this owner phase;
+    /// the host's synthetic FX entities are cleared here with their owner.
+    pub(super) fn shutdown(&mut self, systems: &mut ParticleSystems) -> Result<(), String> {
+        let trace = std::env::var_os("DH2_DEBUG_FX_RESOURCES").is_some();
+        let started = trace.then(std::time::Instant::now);
+        let cycles = trace.then(crate::loading::thread_cycles).flatten();
+        let before = trace.then(|| (self.slots.iter().flatten().count(), self.handles.len(),
+            self.pending_starts.len(), systems.allocated_count(), self.sound_systems.allocated_count(),
+            self.decals.allocated_count()));
+        let result = self.shutdown_inner(systems);
+        if let Some((instances, handles, starts, particles, sounds, decals)) = before {
+            let elapsed = started.expect("trace start").elapsed().as_secs_f64() * 1000.0;
+            let cycles = cycles.zip(crate::loading::thread_cycles()).map(|(start, end)| end.saturating_sub(start));
+            eprintln!("FX_RESOURCES shutdown_ok={} instances={}->{} handles={}->{} pending_starts={}->{} shared_particle_slots={}->{} sound_slots={}->{} decal_slots={}->{} elapsed_ms={elapsed:.3} thread_cycles={cycles:?}",
+                result.is_ok(), instances, self.slots.iter().flatten().count(), handles, self.handles.len(),
+                starts, self.pending_starts.len(), particles, systems.allocated_count(),
+                sounds, self.sound_systems.allocated_count(), decals, self.decals.allocated_count());
+        }
+        result
+    }
+
+    fn shutdown_inner(&mut self, systems: &mut ParticleSystems) -> Result<(), String> {
+        // A family clear can notify another still-live instance in this host.
+        // Disarm every completion route before the first fallible clear.
+        for instance in self.slots.iter_mut().flatten() { instance.actor_observer = None; }
+        for entity in self.entities.values_mut() {
+            if matches!(entity.owner, FxEntityOwner::Node { .. }) {
+                entity.owner = FxEntityOwner::Detached;
+            }
+        }
+        self.started.clear();
+        self.completed.clear();
+        self.actor_completed.clear();
+        for position in 0..self.entity_order.len() {
+            let entity_id = self.entity_order[position];
+            let handle = self.entities.get(&entity_id).and_then(|entity| match &entity.owner {
+                FxEntityOwner::Actor { active, .. } => *active,
+                FxEntityOwner::Node { .. } | FxEntityOwner::Detached => entity.component.handle(),
+            });
+            if let Some(slot) = handle.and_then(|handle| self.handles.get(&handle).copied()) {
+                self.shutdown_instance(slot, systems)?;
+            }
+        }
+        // The real manager can also own detached/pending instances that no
+        // longer have an entity entry. Keep those leases until cleared too.
+        for index in 0..self.slots.len() {
+            if self.slots[index].is_some() { self.shutdown_instance(index as u16, systems)?; }
+        }
+        self.pending_starts.clear();
+        self.pending_actor_starts.clear();
+        self.entities.clear();
+        self.entity_order.clear();
+        self.actors.clear();
+        self.dynamic.clear();
+        self.dynamic_retiring.clear();
+        self.dynamic_snapshot = None;
+        Ok(())
+    }
+
+    fn shutdown_instance(&mut self, slot: u16, systems: &mut ParticleSystems) -> Result<(), String> {
+        let instance = self.slots.get_mut(usize::from(slot)).and_then(Option::as_mut)
+            .ok_or("FX shutdown instance absent")?;
+        instance.actor_observer = None;
+        if let Some(entity) = self.entities.get_mut(&instance.entity) {
+            if matches!(entity.owner, FxEntityOwner::Node { .. }) {
+                entity.owner = FxEntityOwner::Detached;
+            }
+        }
+        self.retire(slot, systems)
+    }
+
     fn sync_dynamic(&mut self, snapshot: &super::world_effects::DynamicEffects,
         systems: &mut ParticleSystems, frames: &WorldEffectFrames) -> Result<(), String> {
         if self.dynamic_snapshot.as_ref().is_some_and(|old| Arc::ptr_eq(old, &snapshot.0)) {

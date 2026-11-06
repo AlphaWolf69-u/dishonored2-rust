@@ -1,6 +1,6 @@
 //! bevy_backend: map world lifetime inside the persistent host application.
-//! 1400410f0 destroys the outgoing world separately from the conditional
-//! resource-class purge. Device, configuration and shared resource owners
+//! 1408a4830 destroys the outgoing GameLocal; 1400410f0 separately
+//! performs conditional resource-class purge. Device and shared owners
 //! belong to the session; entities and mutable scene publications do not.
 use bevy::{ecs::component::ComponentId, prelude::*};
 use std::collections::HashSet;
@@ -36,7 +36,14 @@ impl LevelLifetime {
             .collect();
     }
 
-    pub fn clear(&mut self, world: &mut World) {
+    pub fn clear(&mut self, world: &mut World) -> Result<(), String> {
+        // bevy_backend: retire the currently hosted FX chains while their
+        // support owners are still present. The caller has acknowledged the
+        // outgoing render publication. This does not replace the GameLocal
+        // component/entity/graph shutdown phases still being integrated.
+        if let Some(mut effects) = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() {
+            effects.shutdown_world_effects()?;
+        }
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
@@ -99,6 +106,7 @@ impl LevelLifetime {
         drop(material_history);
         drop(skeletal_history);
         crate::edge_skeleton::release_unused();
+        Ok(())
     }
 }
 

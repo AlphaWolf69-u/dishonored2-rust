@@ -51,6 +51,15 @@ impl Default for FxSimulation {
     }
 }
 
+impl FxSimulation {
+    /// World FX manager shutdown (199df0), after actual entity/component and
+    /// graph retirement. Repeating a completed shutdown is harmless.
+    pub(crate) fn shutdown_world_effects(&mut self) -> Result<(), String> {
+        self.world_particles.shutdown(&mut self.particle_systems)
+    }
+
+}
+
 #[derive(Resource, Default)]
 pub(super) struct CameraGpu {
     current: Option<(Entity, CameraView)>,

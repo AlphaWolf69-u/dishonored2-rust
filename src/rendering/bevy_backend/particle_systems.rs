@@ -51,6 +51,8 @@ impl Default for ParticleSystems {
     }
 }
 impl ParticleSystems {
+    pub(super) fn allocated_count(&self) -> u16 { self.links.allocated_count }
+
     pub fn start(
         &mut self,
         head: &mut u16,

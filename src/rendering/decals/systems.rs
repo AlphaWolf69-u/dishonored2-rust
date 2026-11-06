@@ -22,6 +22,8 @@ pub struct DecalSystems<M, R> {
 }
 
 impl<M, R> DecalSystems<M, R> {
+    pub(crate) fn allocated_count(&self) -> u16 { self.links.allocated_count }
+
     pub fn new(projection_limit: usize) -> Result<Self, String> {
         let links = EffectPoolLinks::decals();
         Ok(Self {
