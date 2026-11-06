@@ -45,7 +45,19 @@ pub(super) fn prepare_level(
     catalog: std::sync::Arc<archive::Catalog>,
     level: crate::assets::level::LevelResources,
     needs_initial_inventory: bool,
+    cancelled: impl Fn() -> bool,
 ) -> Result<super::loading_screen::PreparedLevel, Box<dyn std::error::Error>> {
+    // Host worker shutdown: stop between acquisition phases instead of
+    // loading the remaining map after its presentation owner has closed.
+    // The caller owns cancellation; resource readers and gameplay are unchanged.
+    let check_cancelled = || -> Result<(), std::io::Error> {
+        if cancelled() {
+            Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "level acquisition cancelled"))
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
     let profile = env::var("DH2_PERF_PROFILE").as_deref() == Ok("1");
     let startup = Instant::now();
     let path = PathBuf::from(&level.world);
@@ -78,6 +90,7 @@ pub(super) fn prepare_level(
     // `run` lasts the whole session; the installed file is parsed.
     drop(bytes);
     super::load_timing::mark("world mesh");
+    check_cancelled()?;
     if profile {
         println!(
             "PERF world mesh parse: {:.3}s",
@@ -211,6 +224,7 @@ pub(super) fn prepare_level(
         Err(error) => eprintln!("Program cache unavailable: {error}"),
     }
     super::load_timing::mark("program cache");
+    check_cancelled()?;
     // Resolve the user's ORIGINAL quality cvar and the installed declaration
     // once. No per-frame filesystem/catalog scans and no copied capture values.
     let shadow_settings = game_settings::read_shadow_settings();
@@ -448,6 +462,7 @@ pub(super) fn prepare_level(
         println!("No unambiguous installed probe network matches the world stem.");
     }
     super::load_timing::mark("probes");
+    check_cancelled()?;
     if let Some(parameters) = &environment_render_parameters {
         let value_count = parameters
             .layers
@@ -556,6 +571,7 @@ pub(super) fn prepare_level(
         );
     }
     super::load_timing::mark("tome");
+    check_cancelled()?;
     if let Some(physics_bytes) = level.read_physics(catalog.as_ref().unwrap())? {
         let physics_start = std::time::Instant::now();
         let physics = physworld::parse(&physics_bytes)?;
@@ -722,6 +738,7 @@ pub(super) fn prepare_level(
             );
         }
         super::load_timing::mark("physics and collision");
+    check_cancelled()?;
         println!(
             "Navigation collision index: {} nondegenerate triangles",
             world.triangle_count()
@@ -931,6 +948,7 @@ pub(super) fn prepare_level(
     drop(shape_sources);
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     super::load_timing::mark("machinery and wind");
+    check_cancelled()?;
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
         .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point

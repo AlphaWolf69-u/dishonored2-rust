@@ -582,7 +582,7 @@ fn acquire(world: &mut World) {
                 .spawn(move || {
                     let _audio_work = audio_work;
                     if _audio_work.is_closing() { return; }
-                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory)
+                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory, || _audio_work.is_closing())
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
                             if _audio_work.is_closing() { return Err("audio session is closing".into()); }

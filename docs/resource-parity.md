@@ -4215,3 +4215,38 @@ improvement. Submission adds bounded atomic/reference-count bookkeeping;
 acquisition bookkeeping time and shutdown drain time. This source batch has
 not yet been compiled or production-accepted; no byte/time saving is claimed.
 No tests were written or run.
+
+
+Audio session normal-shutdown acceptance: dev game build of `be4d6c8`
+succeeded, then the production EotW -> Dust -> EotW client exited 0. The
+existing dedicated source queue ran actual stream reads. The session tracked
+62 admitted jobs with peak concurrency 12; instrumented handle acquisition
+latency totalled 0.003 ms and shutdown wait rounded to 0.000 ms. These are
+narrow guard diagnostics, not whole-CPU or walking-performance measurements.
+Final shutdown removed four Vorbis headers and two setup entries, with both
+maps empty afterward. MEDIA and STREAMED were already empty after the
+existing SourceJobs retirement. Catalog release then reported zero remaining
+consumers and retired its matching metadata/history owners. This confirms
+normal shutdown and preserves the earlier catalog cleanup; close during an
+active map worker is being verified separately. No tests or visual checks.
+Evidence: `artifacts/audio-session-build.source`, `audio-session-build.exit`,
+`audio-session-client.{out,err,exit}` in the same worktree.
+
+
+Close-during-loading evidence and cancellation prediction: the same built
+production client received its normal window close request after `LOAD world
+mesh`. It exited 0 with zero final catalog consumers and empty audio/header
+roots, proving that the admitted map-worker lease drains safely. However,
+the worker still completed program/probe/Tome/collision/machinery acquisition;
+the audio guard measured 2,528.676 ms waiting for that unnecessary work.
+
+The map preparation owner now checks its caller's existing cancellation state
+at entry and the six existing acquisition phase boundaries. This adds no
+per-read hook, thread, allocation, GPU pass or gameplay-frame work. A phase
+already running can finish; subsequent phases do not acquire resources for
+an abandoned map. Based on the measured phase sequence, the same close point
+should stop by the program-cache boundary, skip probes/Tome/collision/machinery
+and eliminate their acquisition counts and most of the measured worker wait.
+The expected result is resource-work removal, not a walking-CPU improvement;
+wall-clock process exit is not the affected-code metric. This follow-up is
+not yet built or accepted. No tests were written or run.
