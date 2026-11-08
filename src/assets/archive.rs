@@ -77,6 +77,9 @@ pub struct Catalog {
     identity: u64,
     /// One session owner for live AnimSet declaration identities.
     pub(crate) animset_declarations: std::sync::Mutex<crate::assets::animation_rig::animset::Registry>,
+    /// Shared registered MD6 declaration headers and immutable metadata.
+    pub(crate) md6_declarations: std::sync::Mutex<crate::assets::animation_rig::declaration::Registry>,
+    pub(crate) md6_loading: std::sync::Mutex<()>,
     /// One resource-list identity owner for this catalog's animation clips.
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
@@ -99,6 +102,8 @@ pub struct Catalog {
     containers: containers::Containers,
     /// 068c30/0658b0 primary header order, distinct from data archive slots.
     header_order: std::sync::OnceLock<std::result::Result<Box<[u8]>, String>>,
+    pub(crate) animation_preload_bootstrap: std::sync::OnceLock<std::result::Result<usize, String>>,
+    pub(crate) animation_preload_map: std::sync::Mutex<Option<Box<str>>>,
 }
 
 impl Drop for Catalog {
@@ -162,6 +167,10 @@ impl Catalog {
     }
     /// Trim dead level AnimSet identities without dropping the session root
     /// or declarations still retained by live model/scene owners.
+    pub(crate) fn release_md6_level(&self) {
+        crate::assets::animation_rig::declaration::release_level(self);
+    }
+
     pub(crate) fn release_animset_level(&self) {
         self.animset_declarations.lock().unwrap_or_else(|error| error.into_inner()).release_level(self);
     }
@@ -316,6 +325,10 @@ impl Catalog {
         Ok(Self {
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             animset_declarations: Default::default(),
+            md6_declarations: Default::default(),
+            md6_loading: Default::default(),
+            animation_preload_bootstrap: Default::default(),
+            animation_preload_map: Default::default(),
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             pickable_sources: Default::default(),

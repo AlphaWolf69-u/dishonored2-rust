@@ -31,12 +31,28 @@ impl Drop for HistoryLease {
 pub struct ModelInfo {
     pub surfaces: Vec<SurfaceInfo>,
     pub bytes_after_surfaces: usize,
+    /// None identifies a surface-only structural inspection. Installed
+    /// acquisition requires the complete 25aa00 tail, including end magic.
+    pub tail: Option<ModelTail>,
     pub has_skeleton: bool,
     pub skeleton_name: String,
     pub skeleton_reference: Option<u16>,
     pub has_decoded_geometry: bool,
     pub authored_bounds: [[f32; 3]; 2],
     audit: Option<ModelAudit>,
+}
+
+#[derive(Debug)]
+pub struct MaterialBinding {
+    pub material_path: String,
+    /// The three serialized words copied unchanged by 25aa00.
+    pub words: [u32; 3],
+}
+#[derive(Debug)]
+pub struct ModelTail {
+    pub material_bindings: Vec<MaterialBinding>,
+    /// 25aa00 retains only bit zero of the serialized load flag.
+    pub load_flags: u8,
 }
 
 #[derive(Debug)]
@@ -138,35 +154,54 @@ pub fn declaration_path(compiled_guess: &str) -> Option<String> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkeletonBinding {
-    pub name: String,
+    /// A declaration can retain an offset or ragdoll without a skeleton.
+    pub name: Option<String>,
     pub offset: Option<[f32; 3]>,
+    /// Inherited idDeclMD6 `calcRefBoundsFromJoints`, absent means ctor false.
+    pub calc_ref_bounds_from_joints: Option<bool>,
     /// init `ragdoll`: the physics-system resource (arkPhysicsSystemResource).
     pub ragdoll: Option<String>,
 }
 
 /// Resolve independently inherited MD6 init skeleton/offset. A child can
 /// replace its LOD0 mesh while continuing to use the parent's skeleton.
+/// Offset-only and ragdoll-only declarations retain their own fields.
 pub fn resolve_skeleton_binding(
     compiled_guess: &str,
     mut read: impl FnMut(&str) -> Option<String>,
+) -> Result<Option<SkeletonBinding>, String> {
+    resolve_skeleton_binding_tokens(compiled_guess, |path| {
+        let Some(source) = read(path) else { return Ok(None) };
+        let tokens = crate::entities::declaration_lexemes(&source)?
+            .into_iter().map(str::to_owned).collect::<Vec<_>>();
+        Ok(Some(tokens.into()))
+    })
+}
+
+/// The same resolver over an existing immutable declaration-token owner.
+pub(crate) fn resolve_skeleton_binding_tokens(
+    compiled_guess: &str,
+    mut read: impl FnMut(&str) -> Result<Option<std::sync::Arc<[String]>>, String>,
 ) -> Result<Option<SkeletonBinding>, String> {
     let mut path = declaration_path(compiled_guess).ok_or("not a compiled MD6 model path")?;
     let mut visited = std::collections::HashSet::new();
     let mut skeleton = None;
     let mut offset = None;
     let mut ragdoll = None;
-    for _ in 0..16 {
+    let mut calc_ref_bounds_from_joints = None;
+    // The MD6 parent chain is not truncated at a host-chosen depth (1c8cc0).
+    // The visited identities below still reject an actual inheritance cycle.
+    loop {
         if !visited.insert(path.clone()) {
             return Err("MD6 inheritance cycle".into());
         }
-        let Some(source) = read(&path) else {
+        let Some(tokens) = read(&path)? else {
             break;
         };
-        let tokens = crate::entities::declaration_lexemes(&source)?;
         let mut depth = 0usize;
         let mut init = None;
         let mut parent = None;
-        for (i, &token) in tokens.iter().enumerate() {
+        for (i, token) in tokens.iter().map(String::as_str).enumerate() {
             if token == "{" {
                 depth += 1;
                 continue;
@@ -178,11 +213,21 @@ pub fn resolve_skeleton_binding(
                 depth = depth.checked_sub(1).ok_or("unbalanced MD6 declaration")?;
                 continue;
             }
-            if depth == 1 && token == "init" && tokens.get(i + 1) == Some(&"{") {
+            if depth == 1 && token == "init" && tokens.get(i + 1).map(String::as_str) == Some("{") {
                 init = Some(depth + 1);
             }
             if depth == 1 && token == "inherit" {
-                parent = tokens.get(i + 1).copied();
+                parent = tokens.get(i + 1).map(String::as_str);
+            }
+            if (depth == 1 || init == Some(depth)) && token == "calcRefBoundsFromJoints"
+                && calc_ref_bounds_from_joints.is_none() {
+                let value = tokens.get(i + 1).map(String::as_str).ok_or("missing MD6 calcRefBoundsFromJoints")?;
+                calc_ref_bounds_from_joints = Some(match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => value.parse::<i32>().map(|integer| integer != 0)
+                        .map_err(|_| "invalid MD6 calcRefBoundsFromJoints")?,
+                });
             }
             if init != Some(depth) {
                 continue;
@@ -223,18 +268,20 @@ pub fn resolve_skeleton_binding(
         if depth != 0 {
             return Err("unbalanced MD6 declaration".into());
         }
-        if skeleton.is_some() && offset.is_some() && ragdoll.is_some() {
+        if skeleton.is_some() && offset.is_some() && ragdoll.is_some() && calc_ref_bounds_from_joints.is_some() {
             break;
         }
         let Some(parent) = parent else {
             break;
         };
-        let stem = parent
-            .strip_suffix(".md6")
+        let stem = parent.get(..parent.len().saturating_sub(4))
+            .filter(|_| parent.get(parent.len().saturating_sub(4)..)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".md6")))
             .ok_or("invalid MD6 inherit path")?;
         path = format!("generated/decls/md6def/{stem}.md6.decl");
     }
-    Ok(skeleton.map(|name| SkeletonBinding { name, offset, ragdoll }))
+    Ok((skeleton.is_some() || offset.is_some() || ragdoll.is_some() || calc_ref_bounds_from_joints.is_some())
+        .then_some(SkeletonBinding { name: skeleton, offset, ragdoll, calc_ref_bounds_from_joints }))
 }
 
 impl Reader<'_> {
@@ -266,6 +313,37 @@ impl Reader<'_> {
             .map_err(|error| error.to_string())?
             .trim_end_matches('\0')
             .to_string())
+    }
+    fn signed_string(&mut self) -> Result<String, String> {
+        let length = self.u32()? as i32;
+        if length <= 0 { return Ok(String::new()); }
+        let raw = self.take(length as usize)?;
+        Ok(std::str::from_utf8(raw).map_err(|error| error.to_string())?.trim_end_matches('\0').to_owned())
+    }
+    /// 25aa00 and 2538f0/2537d0. Auxiliary groups have no current consumer;
+    /// bounds-check their actual serialized records without retaining bytes.
+    fn model_tail(&mut self) -> Result<ModelTail, String> {
+        let count = self.u32()? as usize;
+        if count > (self.bytes.len() - self.at) / 16 { return Err("MD6 material-binding count exceeds data".into()); }
+        let mut material_bindings = Vec::new();
+        material_bindings.try_reserve_exact(count).map_err(|error| format!("MD6 material bindings: {error}"))?;
+        for _ in 0..count {
+            let material_path = self.signed_string()?;
+            let words = [self.u32()?, self.u32()?, self.u32()?];
+            material_bindings.push(MaterialBinding { material_path, words });
+        }
+        let groups = self.u32()? as usize;
+        if groups > (self.bytes.len() - self.at) / 8 { return Err("MD6 auxiliary-group count exceeds data".into()); }
+        for _ in 0..groups {
+            let length = self.u32()? as i32; // 069340 serialized idStr.
+            if length > 0 { self.take(length as usize)?; }
+            let records = self.u32()? as usize;
+            // Each 2537d0 record reads a u16, u32 and three floats.
+            self.take(records.checked_mul(18).ok_or("MD6 auxiliary-record size overflow")?)?;
+        }
+        let load_flags = self.u8()? & 1;
+        if self.take(4)? != b"MM6B" { return Err("MD6 closing magic missing".into()); }
+        Ok(ModelTail { material_bindings, load_flags })
     }
 }
 
@@ -463,6 +541,8 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
             indices,
         });
     }
+    let bytes_after_surfaces = bytes.len() - input.at;
+    let tail = if bytes_after_surfaces == 0 { None } else { Some(input.model_tail()?) };
     let margin = (0..3)
         .map(|axis| authored_bounds[1][axis] - authored_bounds[0][axis])
         .fold(0.0f32, f32::max)
@@ -484,7 +564,8 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
         });
     Ok(ModelInfo {
         surfaces,
-        bytes_after_surfaces: bytes.len() - input.at,
+        bytes_after_surfaces,
+        tail,
         has_skeleton: !source_name.is_empty(),
         skeleton_name: source_name,
         skeleton_reference,
@@ -512,6 +593,7 @@ mod acquisition {
         let bytes = catalog.read(path).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{path} is absent"))?;
         let mut model = super::inspect(&bytes)?;
+        if model.tail.is_none() { return Err(format!("{path}: installed MD6 resource has no closing tail")); }
         let decode_cycles = cycles.zip(if tracing { crate::loading::thread_cycles() } else { None })
             .map(|(start, end)| end.saturating_sub(start));
         if tracing {
@@ -526,6 +608,8 @@ mod acquisition {
 
     fn logical_bytes(model: &ModelInfo) -> usize {
         std::mem::size_of::<ModelInfo>() + model.skeleton_name.len()
+            + model.tail.as_ref().map_or(0, |tail| tail.material_bindings.len() * std::mem::size_of::<super::MaterialBinding>()
+                + tail.material_bindings.iter().map(|binding| binding.material_path.len()).sum::<usize>())
             + model.surfaces.len() * std::mem::size_of::<super::SurfaceInfo>()
             + model.surfaces.iter().map(|surface| surface.name.len() + surface.material_path.len()
                 + surface.positions.len() * std::mem::size_of::<[f32; 3]>()
@@ -557,6 +641,13 @@ mod acquisition {
             crc.update(&[u8::from(model.has_skeleton), u8::from(model.has_decoded_geometry)]);
             crc.update(&model.skeleton_reference.unwrap_or(u16::MAX).to_le_bytes());
             for bound in model.authored_bounds.iter().flatten() { crc.update(&bound.to_bits().to_le_bytes()); }
+            if let Some(tail) = &model.tail {
+                crc.update(&[tail.load_flags]);
+                for binding in &tail.material_bindings {
+                    crc.update(binding.material_path.as_bytes());
+                    for word in binding.words { crc.update(&word.to_le_bytes()); }
+                }
+            }
             for surface in &model.surfaces {
                 crc.update(surface.name.as_bytes());
                 crc.update(surface.material_path.as_bytes());

@@ -4,7 +4,7 @@
 //! registration roster contains no animation-class references.
 use super::{AnimationData, EdgeAnimation};
 use crate::assets::{archive::Catalog, map_resources::{self, Resource}};
-use std::{borrow::Cow, collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak}};
+use std::{borrow::Cow, collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak, atomic::{AtomicU8, Ordering}}};
 
 #[derive(Default)]
 struct Snapshot {
@@ -21,11 +21,13 @@ struct Snapshot {
 /// across acquisition also prevents a concurrent purge from replacing it.
 struct Record {
     scope: ResourceScope,
+    /// Native +0x24 marker, or 0xff for the older host-classified path.
+    marker: AtomicU8,
     snapshot: Mutex<Snapshot>,
 }
 impl Record {
-    fn new(scope: ResourceScope) -> Self {
-        Self { scope, snapshot: Mutex::new(Snapshot::default()) }
+    fn new(scope: ResourceScope, marker: Option<CreationContext>) -> Self {
+        Self { scope, marker: AtomicU8::new(marker.map_or(0xff, |marker| marker as u8)), snapshot: Mutex::new(Snapshot::default()) }
     }
 }
 
@@ -153,8 +155,62 @@ fn lease(catalog: &Catalog, path: &str, record: Arc<Record>, duplicate: bool) ->
 /// load diagnostics may return; the resource header still belongs to its list.
 pub(crate) fn acquire_record(catalog: &Catalog, name: &str) -> Result<ResourceLease, String> {
     let path = normalize(name);
-    let record = create(catalog, &path, None)?;
+    let record = create(catalog, &path, None, None)?;
     lease(catalog, &path, record, separate())
+}
+
+/// Creating acquisition with the caller's actual allocator context. Reuse
+/// keeps the marker installed by the original creation.
+pub(crate) fn acquire_record_in_context(catalog: &Catalog, name: &str, context: CreationContext)
+    -> Result<ResourceLease, String> {
+    let path = normalize(name);
+    let record = create(catalog, &path, Some(ResourceScope::Level), Some(context))?;
+    lease(catalog, &path, record, false)
+}
+
+/// 0661e0's header pass creates a lazy record without reading the payload.
+pub(crate) fn register_lazy_in_context(catalog: &Catalog, name: &str, context: CreationContext)
+    -> Result<(), String> {
+    let path = normalize(name);
+    create(catalog, &path, Some(ResourceScope::Level), Some(context)).map(drop)
+}
+
+/// The 0661e0 header pass temporarily enters heap 1 for its selected kinds.
+/// This affects only a newly constructed record; an existing header retains
+/// its creation marker. The caller supplies the source's actual decision.
+pub(crate) fn register_lazy_preload(catalog: &Catalog, name: &str, context: CreationContext,
+    persistent_kind: bool) -> Result<(), String> {
+    let context = if persistent_kind { CreationContext::PersistentHeap } else { context };
+    register_lazy_in_context(catalog, name, context)
+}
+
+/// Explicit marker writes made by the preload and bootstrap producers.
+pub(crate) fn mark_preload_persistent(lease: &ResourceLease) { lease.record.marker.store(1, Ordering::Relaxed); }
+pub(crate) fn promote_bootstrap(lease: &ResourceLease) { lease.record.marker.store(2, Ordering::Relaxed); }
+
+/// 060b60 also visits unloaded registered headers. Promotion must not load
+/// their payload or create a record that was absent from the bootstrap list.
+pub(crate) fn promote_existing_bootstrap(catalog: &Catalog, name: &str) -> Result<bool, String> {
+    let Some(record) = existing(catalog, &normalize(name))? else { return Ok(false) };
+    record.marker.store(2, Ordering::Relaxed);
+    Ok(true)
+}
+
+/// 060b60 visits every existing header, including unloaded records. Called
+/// once at the bootstrap boundary (040490), never at a later map transition.
+pub(crate) fn promote_bootstrap_records(catalog: &Catalog) -> Result<(), String> {
+    let current = catalog.animation_resources.lock().map_err(|_| "animation resource owner is poisoned")?;
+    if let Some(owner) = current.as_ref() {
+        for record in owner.records.values() {
+            record.marker.store(2, Ordering::Relaxed);
+            let mut snapshot = record.snapshot.lock().map_err(|_| "animation resource record is poisoned")?;
+            snapshot.retain_until_purge = true;
+            if snapshot.pinned.is_none() {
+                snapshot.pinned = snapshot.weak.upgrade().map(EdgeAnimation);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Unlike a decoded-clip lookup, this preserves a registered failed record.
@@ -165,7 +221,7 @@ pub(crate) fn find_record(catalog: &Catalog, name: &str) -> Result<Option<Resour
     lease(catalog, &path, record, false).map(Some)
 }
 
-fn create(catalog: &Catalog, path: &str, scope: Option<ResourceScope>) -> Result<Arc<Record>, String> {
+fn create(catalog: &Catalog, path: &str, scope: Option<ResourceScope>, marker: Option<CreationContext>) -> Result<Arc<Record>, String> {
     ensure_registry(catalog)?;
     if let Some(record) = existing(catalog, path)? { return Ok(record); }
     let mutable = catalog.has_overlay_file(path);
@@ -179,7 +235,7 @@ fn create(catalog: &Catalog, path: &str, scope: Option<ResourceScope>) -> Result
         } else { ResourceScope::Level }
     });
     let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animation records"));
-    let record = Arc::new(Record::new(scope));
+    let record = Arc::new(Record::new(scope, marker));
     owner.records.insert(path.to_owned(), record.clone());
     if tracing() {
         eprintln!("MEMORY animation record registration: path={path} common={} entries={} record_bytes={} map_entry_bytes={}",
@@ -208,7 +264,7 @@ pub fn acquire(catalog: &Catalog, name: &str) -> Result<EdgeAnimation, String> {
 }
 fn acquire_scoped(catalog: &Catalog, name: &str, scope: Option<ResourceScope>) -> Result<EdgeAnimation, String> {
     let path = normalize(name);
-    let record = create(catalog, &path, scope)?;
+    let record = create(catalog, &path, scope, None)?;
     load(catalog, &path, &record, separate() && scope.is_none(), scope.is_some()).map_err(LoadFailure::into_string)
 }
 
@@ -277,10 +333,41 @@ fn load(catalog: &Catalog, path: &str, record: &Arc<Record>, duplicate: bool, re
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResourceScope { Level, Common }
 
+/// The current allocator heap at native resource creation. Marker 2 is only
+/// installed by a later explicit bootstrap promotion.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreationContext { Level = 0, PersistentHeap = 1 }
+
+#[derive(Clone, Copy)]
+pub(crate) enum PurgeMarker { Level = 0, PersistentHeap = 1, Permanent = 2 }
+
 /// 257390: the resource owner, not an alias value, retains a forced clip.
 /// A hash lookup replaces the former linear scan of two strong-lease vectors.
 pub(crate) fn force_load(catalog: &Catalog, name: &str, scope: ResourceScope) -> Result<(), String> {
     acquire_scoped(catalog, name, Some(scope)).map(drop)
+}
+
+pub(crate) fn force_load_in_context(catalog: &Catalog, name: &str, context: CreationContext) -> Result<(), String> {
+    let path = normalize(name);
+    let record = create(catalog, &path, Some(ResourceScope::Level), Some(context))?;
+    load(catalog, &path, &record, false, true).map(drop).map_err(LoadFailure::into_string)
+}
+
+/// 060180 removes only the requested native marker. Live Rust leases keep
+/// the exact header/snapshot until their existing owners release it.
+pub(crate) fn release_marker(catalog: &Catalog, marker: PurgeMarker) {
+    let mut current = catalog.animation_resources.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(owner) = current.as_mut() else { return };
+    owner.records.retain(|path, record| {
+        if record.marker.load(Ordering::Relaxed) != marker as u8 { return true; }
+        let mut snapshot = record.snapshot.lock().unwrap_or_else(|error| error.into_inner());
+        snapshot.previous.retain(|generation| generation.strong_count() != 0);
+        snapshot.retain_until_purge = false;
+        snapshot.pinned = None;
+        let keep = Arc::strong_count(record) > 1 || snapshot.weak.strong_count() != 0 || !snapshot.previous.is_empty();
+        if !keep { let _ = crate::loading::forget(catalog.identity(), "anim", path); }
+        keep
+    });
 }
 
 pub(crate) fn release_level(catalog: &Catalog) {
@@ -293,7 +380,8 @@ pub(crate) fn release_level(catalog: &Catalog) {
     owner.records.retain(|path, record| {
         let mut snapshot = record.snapshot.lock().unwrap_or_else(|error| error.into_inner());
         snapshot.previous.retain(|generation| generation.strong_count() != 0);
-        if record.scope == ResourceScope::Common { return true; }
+        let marker = record.marker.load(Ordering::Relaxed);
+        if marker == 1 || marker == 2 || (marker == 0xff && record.scope == ResourceScope::Common) { return true; }
         snapshot.retain_until_purge = false;
         snapshot.pinned = None;
         let keep = Arc::strong_count(record) > 1 || snapshot.weak.strong_count() != 0 || !snapshot.previous.is_empty();

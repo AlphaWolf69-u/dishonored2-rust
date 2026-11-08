@@ -12,7 +12,9 @@ use crate::edge_skeleton::JointRestPose;
 pub(crate) mod residency;
 pub use residency::acquire;
 pub(crate) use residency::{find_existing, force_load, ResourceScope};
-pub(crate) use residency::{acquire_record, find_record, ResourceLease};
+pub(crate) use residency::{acquire_record, acquire_record_in_context, find_record, register_lazy_in_context, register_lazy_preload,
+    force_load_in_context, mark_preload_persistent, promote_bootstrap, promote_existing_bootstrap,
+    release_marker, CreationContext, PurgeMarker, ResourceLease};
 pub(crate) use residency::release_level;
 pub(crate) use residency::retire_catalog;
 
@@ -205,6 +207,19 @@ impl EdgeAnimation {
 
     /// Local joint poses at `time` seconds over the skeleton's rest pose.
     pub fn sample(&self, rest: &[JointRestPose], time: f32) -> Result<Vec<JointRestPose>, String> {
+        let frame_time = (time * self.frame_rate).max(0.0);
+        self.sample_inner(rest, frame_time, None)
+    }
+
+    /// Sample a separately resolved frame and interpolation fraction, as
+    /// supplied by 6e0ba0 after applying the graph node's wrap policy.
+    pub(crate) fn sample_frame(&self, rest: &[JointRestPose], frame: u16, fraction: f32)
+        -> Result<Vec<JointRestPose>, String> {
+        self.sample_inner(rest, f32::from(frame), Some((frame, fraction)))
+    }
+
+    fn sample_inner(&self, rest: &[JointRestPose], frame_time: f32,
+        explicit: Option<(u16, f32)>) -> Result<Vec<JointRestPose>, String> {
         let h = &self.data;
         let mut pose = rest.to_vec();
         let joints = pose.len();
@@ -212,7 +227,6 @@ impl EdgeAnimation {
             let index = index as usize;
             if index < joints { Ok(index) } else { Err("Edge animation joint outside the skeleton".into()) }
         };
-        let frame_time = (time * self.frame_rate).max(0.0);
         let starts = relative(h, 0x3c)?.ok_or("Edge animation has no frame-set starts")?;
         let (mut lo, mut hi) = (0usize, self.frame_set_count.saturating_sub(1) as usize);
         while lo + 1 < hi {
@@ -225,9 +239,14 @@ impl EdgeAnimation {
         }
         let set = lo;
         let n = u16_at(h, starts + set * 4 + 2)? as usize;
-        let local = frame_time - u16_at(h, starts + set * 4)? as f32;
-        let mut frame = local as usize;
-        let mut fraction = local - frame as f32;
+        let first = u16_at(h, starts + set * 4)?;
+        let local = frame_time - f32::from(first);
+        let (mut frame, mut fraction) = if let Some((global, fraction)) = explicit {
+            (usize::from(global.saturating_sub(first)), fraction)
+        } else {
+            let frame = local as usize;
+            (frame, local - frame as f32)
+        };
         if n < frame {
             frame = n;
             fraction = 1.0;
@@ -347,6 +366,72 @@ pub(crate) struct AnimMovement {
     pub strafe_yaw: f32,
     pub slope_angle: f32,
     pub vertical_move_length: f32,
+}
+
+/// An `ae_marker` in an AnimSet's animation-event list. The enum values are
+/// initialized by 141a08120; time is the authored animation frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AnimMarker { pub kind: u8, pub frame: i16 }
+
+/// Read marker events from the already-tokenized AnimSet declaration. Other
+/// event types remain owned by their respective event consumers.
+pub(crate) fn visit_animset_markers(tokens: &[&str],
+    mut visit: impl FnMut(&str, Vec<AnimMarker>) -> Result<(), String>) -> Result<(), String> {
+    fn block_end(tokens: &[&str], open: usize) -> Result<usize, String> {
+        if tokens.get(open) != Some(&"{") { return Err("animation event block is absent".into()); }
+        let mut depth = 1usize;
+        for (index, token) in tokens.iter().enumerate().skip(open + 1) {
+            match *token {
+                "{" => depth += 1,
+                "}" => { depth -= 1; if depth == 0 { return Ok(index); } },
+                _ => {}
+            }
+        }
+        Err("unterminated animation event block".into())
+    }
+    let mut depth = 0usize;
+    let mut start = None;
+    for (index, token) in tokens.iter().enumerate() {
+        if depth <= 1 && *token == "events" && tokens.get(index + 1) == Some(&"{") {
+            start = Some(index);
+            break;
+        }
+        match *token { "{" => depth += 1, "}" => depth = depth.saturating_sub(1), _ => {} }
+    }
+    let Some(start) = start else { return Ok(()) };
+    let end = block_end(tokens, start + 1)?;
+    let mut at = start + 2;
+    while at < end {
+        if tokens[at] != "anim" || tokens.get(at + 2) != Some(&"{") {
+            return Err("invalid animation event list".into());
+        }
+        let animation = tokens[at + 1].trim_matches('"');
+        let animation_end = block_end(tokens, at + 2)?;
+        let mut markers = Vec::new();
+        let mut event = at + 3;
+        while event < animation_end {
+            if tokens[event] != "event" || tokens.get(event + 2) != Some(&"{") {
+                return Err("invalid animation event".into());
+            }
+            let event_end = block_end(tokens, event + 2)?;
+            if tokens[event + 1].trim_matches('"') == "ae_marker" {
+                let body = &tokens[event + 3..event_end];
+                let frame = body.iter().position(|token| *token == "frame")
+                    .and_then(|index| body.get(index + 1)).ok_or("animation marker frame is absent")?
+                    .parse::<i16>().map_err(|_| "animation marker frame is invalid")?;
+                let name = body.iter().position(|token| *token == "arkMidnightAnimMarker::Name_t")
+                    .and_then(|index| body.get(index + 1)).ok_or("animation marker kind is absent")?.trim_matches('"');
+                let kind = match name { "EMAM_IN" => 0, "EMAM_APEX" => 1, "EMAM_ACCENT" => 2,
+                    "EMAM_LOOP" => 3, "EMAM_LOOPEND" => 4, "EMAM_OUT" => 5,
+                    "EMAM_INVALID" | "EMAM_MAX" => 6, _ => return Err(format!("unknown animation marker {name}")) };
+                markers.push(AnimMarker { kind, frame });
+            }
+            event = event_end + 1;
+        }
+        if !markers.is_empty() { visit(animation, markers)?; }
+        at = animation_end + 1;
+    }
+    Ok(())
 }
 
 /// Visit aliases in declaration order. Native 257390 loads a forced clip

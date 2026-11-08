@@ -305,8 +305,7 @@ fn load_body(
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
-    for entry in rig.tokens.windows(2).filter(|entry| entry[0] == "tag") {
-        let name = entry[1].trim_matches('"');
+    for name in rig.tag_names() {
         if !body.tags.contains_key(name) {
             body.tags.insert(name.to_owned(), rig.tag(name)?);
         }

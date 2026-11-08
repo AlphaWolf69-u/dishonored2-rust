@@ -5,15 +5,87 @@ use bevy_math::{Mat3, Vec3};
 use std::collections::HashMap;
 mod acquisition;
 pub(crate) mod animset;
+pub(crate) mod declaration;
 
 pub struct Rig {
     pub skeleton: std::sync::Arc<crate::edge_skeleton::EdgeSkeleton>,
     pub root: crate::edge_skeleton::JointRestPose,
+    pub binding: crate::bmd6::SkeletonBinding,
     /// Search order is child before parent, last authored set first.
     animsets: Vec<std::sync::Arc<animset::AnimSet>>,
-    pub tokens: Vec<String>,
+    declarations: Vec<std::sync::Arc<declaration::Declaration>>,
+    model_reference: declaration::ModelReference,
+    property_groups: Vec<PropertyGroup>,
     pub path: String,
     audit: Option<acquisition::Audit>,
+}
+
+/// Indices borrow the actual retained declaration layers; inherited records
+/// do not duplicate declaration strings (25be70 / 25bfe0).
+struct PropertyGroup {
+    layer: usize,
+    name: usize,
+    tags: Vec<PropertyTag>,
+}
+
+struct PropertyTag { layer: usize, tokens: std::ops::Range<usize> }
+
+fn scope_end(tokens: &[String], open: usize) -> Result<usize, String> {
+    if tokens.get(open).map(String::as_str) != Some("{") {
+        return Err("MD6 property scope has no opening brace".into());
+    }
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.as_str() {
+            "{" => depth += 1,
+            "}" => {
+                depth -= 1;
+                if depth == 0 { return Ok(index); }
+            }
+            _ => {}
+        }
+    }
+    Err("unterminated MD6 property scope".into())
+}
+
+fn property_groups(tokens: &[String], layer: usize) -> Result<Vec<PropertyGroup>, String> {
+    let mut groups = Vec::new();
+    let mut depth = 0usize;
+    let mut cursor = 0usize;
+    while cursor < tokens.len() {
+        match tokens[cursor].as_str() {
+            "{" => depth += 1,
+            "}" => depth = depth.checked_sub(1).ok_or("unbalanced MD6 declaration")?,
+            "props" if depth == 1 => {
+                // 25c6e0 / 25c360 accept an optional authored count before '{'.
+                let open = cursor + if tokens.get(cursor + 1).map(String::as_str) == Some("{") { 1 } else { 2 };
+                let end = scope_end(tokens, open)?;
+                let mut prop = open + 1;
+                while prop < end {
+                    if tokens[prop] != "prop" { return Err(format!("unknown MD6 props token {}", tokens[prop])); }
+                    let name = prop + 1;
+                    let open = prop + if tokens.get(prop + 2).map(String::as_str) == Some("{") { 2 } else { 3 };
+                    let close = scope_end(tokens, open)?;
+                    if close > end { return Err("MD6 property group escapes props".into()); }
+                    let mut tags = Vec::new();
+                    let mut tag = open + 1;
+                    while tag < close {
+                        if tokens[tag] != "tag" { return Err(format!("unknown MD6 property token {}", tokens[tag])); }
+                        let tag_end = scope_end(tokens, tag + 2)?;
+                        if tag_end > close { return Err("MD6 tag escapes property group".into()); }
+                        tags.push(PropertyTag { layer, tokens: tag + 1..tag_end + 1 });
+                        tag = tag_end + 1;
+                    }
+                    groups.push(PropertyGroup { layer, name, tags });
+                    prop = close + 1;
+                }
+                cursor = end;
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    Ok(groups)
 }
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
@@ -38,19 +110,12 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let stem = model.strip_suffix(".md6").ok_or_else(|| format!("{model} is not an md6"))?;
     // The skeleton resolver and animation inheritance walk the same MD6
     // declarations. Share their temporary source reads during this load.
-    let mut declarations = HashMap::<String, String>::new();
-    let mut read_error = None;
-    let binding = crate::bmd6::resolve_skeleton_binding(&format!("generated/basemodel/{stem}.bmd6model"), |path| {
-        if let Some(source) = declarations.get(path) { return Some(source.clone()); }
-        match text_of(catalog, path) {
-            Ok(Some(source)) => { declarations.insert(path.to_owned(), source.clone()); Some(source) },
-            Ok(None) => None,
-            Err(error) => { read_error = Some(error); None },
-        }
-    })?;
-    if let Some(error) = read_error { return Err(error); }
+    let (binding, declarations) = declaration::resolve_binding(catalog,
+        &format!("generated/basemodel/{stem}.bmd6model"), declaration::LoadContext::Level)?;
+    let mut declarations: HashMap<_, _> = declarations.into_iter().collect();
     let binding = binding.ok_or_else(|| format!("{model} has no skeleton"))?;
-    let skeleton_name = binding.name.replace('\\', "/").to_ascii_lowercase();
+    let skeleton_name = binding.name.as_deref().ok_or_else(|| format!("{model} has no skeleton"))?
+        .replace('\\', "/").to_ascii_lowercase();
     let skeleton_stem = skeleton_name.strip_suffix(".md6skl").ok_or("unsupported skeleton resource suffix")?;
     let path = format!("generated/skeleton/{skeleton_stem}.edgeskl");
     let skeleton = crate::edge_skeleton::acquire(catalog, &path)?;
@@ -61,7 +126,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let root = crate::edge_skeleton::JointRestPose { rotation: [0.0, 0.0, 0.0, 1.0], translation: binding.offset.unwrap_or([0.0; 3]), scale: [1.0; 3] };
     // 1401cab73 inherits animBasicDecl when absent; 1401c7c80 searches
     // each layer's animsets in reverse, then follows the parent model.
-    let mut layers = Vec::<Vec<String>>::new();
+    let mut layers = Vec::<std::sync::Arc<declaration::Declaration>>::new();
     let mut visited = std::collections::HashSet::new();
     let mut name = model.to_owned();
     let mut md6_bytes = 0usize;
@@ -72,31 +137,25 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
         let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");
         let md6 = match declarations.remove(&md6_path) {
             Some(source) => source,
-            None => text_of(catalog, &md6_path)?.ok_or_else(|| format!("{md6_path} is absent"))?,
+            None => declaration::register(catalog, &md6_path, declaration::LoadContext::Level)?
+                .load(catalog, catalog.has_overlay_file(&md6_path), declaration::LoadContext::Level)?
+                .ok_or_else(|| format!("{md6_path} is absent"))?,
         };
-        md6_bytes += md6.len();
-        if trace { track_crc(&mut source_crc, md6.as_bytes(), &mut checksum_cycles, audit_cycles.is_some()); }
-        let tokens: Vec<String> = crate::entities::declaration_lexemes(&md6)?.into_iter().map(str::to_owned).collect();
-        let mut depth = 0usize;
-        let mut parent = None;
-        for (index, token) in tokens.iter().enumerate() {
-            match token.as_str() {
-                "{" => depth += 1,
-                "}" => depth = depth.checked_sub(1).ok_or("unbalanced MD6 declaration")?,
-                "inherit" if depth == 1 => parent = tokens.get(index + 1).cloned(),
-                _ => {}
+        md6_bytes += md6.source_bytes;
+        if trace {
+            let start = audit_cycles.is_some().then(crate::loading::thread_cycles).flatten();
+            source_crc.combine(md6.source_crc.as_ref().ok_or("MD6 declaration diagnostic digest is absent")?);
+            if let (Some(start), Some(end)) = (start, crate::loading::thread_cycles()) {
+                checksum_cycles = checksum_cycles.saturating_add(end.saturating_sub(start));
             }
         }
-        if depth != 0 { return Err("unbalanced MD6 declaration".into()); }
-        layers.push(tokens);
-        match parent { Some(parent) => name = parent, None => break }
+        let parent = md6.parent.map(|index| md6.tokens[index].clone());
+        layers.push(md6);
+        match parent { Some(parent) => name = parent.replace('\\', "/").to_ascii_lowercase(), None => break }
     }
     let mut animsets = Vec::new();
-    for tokens in layers.iter().rev() {
-        if let Some(start) = tokens.iter().position(|token| token == "animsets") {
-            for token in tokens[start + 2..].iter().take_while(|token| *token != "}") {
-                let path = format!("generated/decls/animset/{}.decl", token.trim_matches('"'));
-                let set = animset::acquire(catalog, &path)?;
+    for layer in layers.iter().rev() {
+            for set in &layer.animsets {
                 if trace {
                     animset_count += 1;
                     animset_bytes += set.source_bytes();
@@ -108,13 +167,32 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
                 }
                 {
                     let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
-                    animsets.push(set);
+                    animsets.push(set.clone());
                 }
             }
-        }
     }
     animsets.reverse();
-    let tokens = layers.into_iter().flatten().collect();
+    let mut group_layers = Vec::with_capacity(layers.len());
+    for (index, layer) in layers.iter().enumerate() {
+        group_layers.push(property_groups(&layer.tokens, index)?);
+    }
+    let mut inherited = Vec::<PropertyGroup>::new();
+    // Merge the immediate parent's fully inherited groups, then its child.
+    // The first child group wins; only missing tag names are appended.
+    for mut child in group_layers.into_iter().rev() {
+        for parent in inherited {
+            if let Some(group) = child.iter_mut().find(|group| layers[group.layer].tokens[group.name] == layers[parent.layer].tokens[parent.name]) {
+                let authored_count = group.tags.len();
+                for tag in parent.tags {
+                    if !group.tags[..authored_count].iter().any(|own| layers[own.layer].tokens[own.tokens.start] == layers[tag.layer].tokens[tag.tokens.start]) {
+                        group.tags.push(tag);
+                    }
+                }
+            } else { child.push(parent); }
+        }
+        inherited = child;
+    }
+    let property_groups = inherited;
     if let Some((start, end)) = audit_cycles.zip(if audit_cycles.is_some() { crate::loading::thread_cycles() } else { None }) {
         eprintln!("RIG_DECODE model={model} read_parse_cycles={} checksum_cycles={checksum_cycles}", end.saturating_sub(start).saturating_sub(checksum_cycles));
     }
@@ -122,19 +200,26 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
         eprintln!("MEMORY rig acquisition: model={model} skeleton_bytes={skeleton_bytes} md6_bytes={} animsets={animset_count} animset_bytes={animset_bytes} signature={:08x}", md6_bytes, source_crc.sum());
     }
     let audit = trace.then(|| acquisition::Audit::new(source_crc.sum(), skeleton_bytes + md6_bytes + animset_bytes));
-    Ok(Rig { skeleton, root, animsets, tokens, path, audit })
+    let model_reference = declaration::reference_generation(catalog,
+        layers.first().ok_or("MD6 declaration is absent")?.clone())?;
+    Ok(Rig { skeleton, root, binding, animsets, declarations: layers, model_reference, property_groups, path, audit })
 }
 
 impl Rig {
+    pub(crate) fn model_reference(&self) -> &declaration::ModelReference { &self.model_reference }
     /// 1c7c80 searches the actual child-before-parent AnimSet leases.
     pub fn alias(&self, name: &str) -> Option<&str> {
         self.animsets.iter().find_map(|set| set.alias(name))
     }
-    /// 243980 resolves movement in the same first matching AnimSet as the clip.
+    /// 243980 resolves movement in the same first matching AnimSet as the
+    /// clip; do not fall through to a different set when its record is absent.
     pub(crate) fn movement(&self, name: &str) -> Result<crate::edge_animation::AnimMovement, String> {
         let set = self.animsets.iter().find(|set| set.alias(name).is_some())
             .ok_or_else(|| format!("{} has no animation alias {name}", self.path))?;
         set.movement(name).ok_or_else(|| format!("{} has no generated movement for {name}", set.path))
+    }
+    pub(crate) fn has_tag(&self, name: &str) -> bool {
+        self.tag_names().any(|tag| tag == name)
     }
     pub fn load(catalog: &Catalog, model: &str) -> Result<Self, String> {
         load_rig(catalog, &model.replace('\\', "/").to_ascii_lowercase())
@@ -148,23 +233,87 @@ impl Rig {
 
     /// An md6 `tag "<name>" { trans ( x y z ) rot ( x y z w ) parent "<joint>" }`.
     pub fn tag(&self, name: &str) -> Result<(usize, Vec3, Mat3), String> {
-        let at = self.tokens.windows(2).position(|w| w[0] == "tag" && w[1].trim_matches('"') == name).ok_or_else(|| format!("md6 has no tag {name}"))?;
-        let tail = &self.tokens[at + 2..];
-        let end = tail.iter().position(|token| token == "}").ok_or_else(|| format!("tag {name} is unterminated"))?;
-        let body = &tail[..end];
-        let numbers = |key: &str, n: usize| -> Result<Vec<f32>, String> {
-            let i = body.iter().position(|t| t == key).ok_or_else(|| format!("tag {name} has no {key}"))?;
-            body.get(i + 2..i + 2 + n).ok_or_else(|| format!("tag {name} truncated {key}"))?.iter().map(|t| t.parse::<f32>().map_err(|_| format!("tag {name} {key}"))).collect()
-        };
-        let t = numbers("trans", 3)?;
-        let r = numbers("rot", 4)?;
-        let parent = body.iter().position(|t| t == "parent").map(|i| body[i + 1].trim_matches('"').to_owned()).ok_or_else(|| format!("tag {name} has no parent"))?;
-        Ok((self.joint(&parent)?, Vec3::new(t[0], t[1], t[2]), Mat3::from_quat(bevy_math::Quat::from_xyzw(r[0], r[1], r[2], r[3]))))
+        let (joint, position, rotation) = self.tag_quaternion(name)?;
+        Ok((joint, position, Mat3::from_quat(rotation)))
+    }
+
+    fn property_group(&self, name: &str) -> Option<&PropertyGroup> {
+        // 25bfe0 falls back to _info only when the requested GROUP is absent.
+        self.property_groups.iter().find(|group| self.declarations[group.layer].tokens[group.name].trim_matches('"') == name)
+            .or_else(|| self.property_groups.iter().find(|group| self.declarations[group.layer].tokens[group.name].trim_matches('"') == "_info"))
+    }
+
+    pub fn tag_names(&self) -> impl Iterator<Item = &str> {
+        self.property_group("_info").into_iter().flat_map(|group| group.tags.iter())
+            .map(|tag| self.declarations[tag.layer].tokens[tag.tokens.start].trim_matches('"'))
+    }
+
+    /// 879890 uses _info when there is no attached-model property selector.
+    pub fn tag_quaternion(&self, name: &str) -> Result<(usize, Vec3, bevy_math::Quat), String> {
+        self.tag_quaternion_in_group("_info", name)
+    }
+
+    pub fn tag_quaternion_in_group(&self, group: &str, name: &str) -> Result<(usize, Vec3, bevy_math::Quat), String> {
+        self.optional_tag_quaternion_in_group(group, name)?
+            .ok_or_else(|| format!("MD6 has no bound tag {name} in property group {group}"))
+    }
+
+    /// 879890 returns false for an absent tag or its unbound joint sentinel.
+    pub(crate) fn optional_tag_quaternion_in_group(&self, group: &str, name: &str)
+        -> Result<Option<(usize, Vec3, bevy_math::Quat)>, String> {
+        let Some(location) = self.property_group(group).and_then(|group| group.tags.iter()
+            .find(|tag| self.declarations[tag.layer].tokens[tag.tokens.start].trim_matches('"') == name)) else { return Ok(None) };
+        let body = &self.declarations[location.layer].tokens[location.tokens.start + 2..location.tokens.end - 1];
+        // 25c9a0: omitted offsets and quaternions use zero / identity;
+        // an omitted parent leaves the record unbound, rejected by 879890.
+        let mut position = Vec3::ZERO;
+        let mut rotation = bevy_math::Quat::IDENTITY;
+        let mut joint = None;
+        let mut cursor = 0usize;
+        while cursor < body.len() {
+            let key = body[cursor].as_str();
+            match key {
+                "offset" | "trans" | "quat" | "rot" => {
+                    let count = if key == "offset" || key == "trans" { 3 } else { 4 };
+                    if body.get(cursor + 1).map(String::as_str) != Some("(") || body.get(cursor + 2 + count).map(String::as_str) != Some(")") {
+                        return Err(format!("tag {name} has malformed {key}"));
+                    }
+                    let mut values = [0.0f32; 4];
+                    for (out, token) in values[..count].iter_mut().zip(&body[cursor + 2..cursor + 2 + count]) {
+                        *out = token.parse().map_err(|_| format!("tag {name} has invalid {key}"))?;
+                    }
+                    if count == 3 { position = Vec3::new(values[0], values[1], values[2]); }
+                    else {
+                        rotation = bevy_math::Quat::from_array(values);
+                        // Constants at 141ab3b00 and 141ae3c60 in 25c9a0.
+                        let mut length = rotation.length_squared();
+                        if length < 0.0001 { rotation = bevy_math::Quat::IDENTITY; length = 1.0; }
+                        rotation *= 1.0 / length.max(f32::MIN_POSITIVE).sqrt();
+                    }
+                    cursor += count + 3;
+                }
+                "actor_joint" | "parent" => {
+                    let parent = body.get(cursor + 1).ok_or_else(|| format!("tag {name} has no parent name"))?;
+                    joint = self.skeleton.joint_names.iter().position(|joint| joint == parent.trim_matches('"'));
+                    cursor += 2;
+                }
+                "movemode" => {
+                    body.get(cursor + 1).ok_or_else(|| format!("tag {name} has no movemode"))?;
+                    cursor += 2;
+                }
+                _ => return Err(format!("unknown MD6 tag token {key} in {name}")),
+            }
+        }
+        Ok(joint.map(|joint| (joint, position, rotation)))
     }
 
     /// A decl the md6 names (`locomotionDecl`, `animBasicDecl`).
     pub fn decl(&self, key: &str) -> Option<String> {
-        self.tokens.iter().position(|t| t == key).and_then(|i| self.tokens.get(i + 1)).map(|t| t.trim_matches('"').to_owned())
+        let mut tokens = self.declarations.iter().flat_map(|declaration| declaration.tokens.iter());
+        while let Some(token) = tokens.next() {
+            if token == key { return tokens.next().map(|value| value.trim_matches('"').to_owned()); }
+        }
+        None
     }
 
     /// The marker events for an animation are stored in its model's animsets,
