@@ -121,6 +121,31 @@ fn parse_selected_index(
     Ok(payload_size)
 }
 
+/// Primary header order from master.index (140068c30, 1400658b0).
+/// The existing host catalog reads the four installed gameN_patch indexes;
+/// additional data archives do not define another primary header namespace.
+pub(super) fn primary_header_groups(base: &Path) -> Result<Box<[u8]>> {
+    let mut input = BufReader::new(File::open(base.join("master.index"))?);
+    if &number::<4>(&mut input)?[1..] != b"SER" {
+        return Err(invalid("wrong master resource index signature").into());
+    }
+    let _version = be_u16(&mut input)?;
+    let count = be_u16(&mut input)?;
+    let mut groups = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let index = name(&mut input)?.replace('\\', "/").to_ascii_lowercase();
+        let _data = name(&mut input)?;
+        let group = index.strip_prefix("game").and_then(|name| name.strip_suffix("_patch.index"))
+            .and_then(|number| number.parse::<u8>().ok()).filter(|group| (1..=4).contains(group))
+            .ok_or_else(|| invalid(format!("primary header index is not hosted by this catalog: {index}")))?;
+        if groups.contains(&group) {
+            return Err(invalid(format!("duplicate primary header group: {group}")).into());
+        }
+        groups.push(group);
+    }
+    Ok(groups.into_boxed_slice())
+}
+
 pub fn archive_path(base: &Path, group: u8, slot: u16) -> Result<PathBuf> {
     let filename = match slot {
         0 => format!("game{group}.resources"),

@@ -12,6 +12,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Clone, Copy)]
 struct Entry {
     group: u8,
+    /// Primary header tables containing this identity, before payload overrides.
+    header_groups: u8,
     offset: u64,
     size: u32,
     stored_size: u32,
@@ -93,6 +95,8 @@ pub struct Catalog {
     image_sources: (Names, Vec<u32>),
     image_programs: (Names, Vec<u32>),
     containers: containers::Containers,
+    /// 068c30/0658b0 primary header order, distinct from data archive slots.
+    header_order: std::sync::OnceLock<std::result::Result<Box<[u8]>, String>>,
 }
 
 impl Drop for Catalog {
@@ -250,6 +254,7 @@ impl Catalog {
                     path,
                     Entry {
                         group,
+                        header_groups: 1 << (group - 1),
                         offset,
                         size,
                         stored_size,
@@ -266,7 +271,9 @@ impl Catalog {
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         entries.dedup_by(|later, earlier| {
             if later.0 == earlier.0 {
+                let header_groups = earlier.1.header_groups | later.1.header_groups;
                 earlier.1 = later.1;
+                earlier.1.header_groups = header_groups;
                 true
             } else {
                 false
@@ -304,6 +311,7 @@ impl Catalog {
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             containers: Default::default(),
+            header_order: Default::default(),
             kinds,
             base: base.to_path_buf(),
             paths: Names::new(entries.iter().map(|(path, _)| path.as_str())),
@@ -383,10 +391,22 @@ impl Catalog {
         self.entry(path).map(|entry| entry.size as usize)
     }
 
-    /// Registered container lookup (140064590). This uses the same selected
-    /// entry as payload acquisition, without reopening archive indices.
+    /// Data archive holding the selected payload. Its slot is not the native
+    /// primary header container ID returned by 140064590.
     pub(super) fn resource_container(&self, path: &str) -> Option<(u8, u16)> {
         self.entry(path).map(|entry| (entry.group, entry.slot))
+    }
+
+    /// 140064590 returns the first header table containing the path, in the
+    /// order mounted by 1400658b0. Preserve all memberships even when a later
+    /// table supplies the payload selected by the host catalog.
+    pub(crate) fn resource_header_container(&self, path: &str) -> std::result::Result<Option<u16>, String> {
+        let Some(entry) = self.entry(path) else { return Ok(None) };
+        let order = self.header_order.get_or_init(|| index::primary_header_groups(&self.base)
+            .map_err(|error| error.to_string())).as_ref().map_err(Clone::clone)?;
+        order.iter().position(|group| entry.header_groups & (1 << (group - 1)) != 0)
+            .map(|index| u16::try_from(index).map_err(|_| "primary header container ID exceeds 16 bits".into()))
+            .transpose()
     }
 
     /// Resolve the source->compiled resource mapping stored by the game itself.
