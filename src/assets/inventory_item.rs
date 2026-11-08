@@ -2,6 +2,8 @@
 //! The source declaration is acquired on demand and is not retained.
 use crate::assets::{archive::Catalog, entities::{self, Value}};
 use std::collections::HashMap;
+mod sources;
+pub use sources::{PickableItem, PickableReadable, PickableOtherKind, PickableSources, PickableSourceLease};
 
 #[derive(Clone, Debug)]
 pub struct Readable {

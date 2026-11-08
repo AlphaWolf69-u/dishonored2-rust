@@ -121,8 +121,11 @@ pub(super) fn entry_fields(
     } else {
         component_fields(kind, atom(entry, "inheritedDecl").unwrap(), 0, cache, read)?
     };
-    if let Some(inline) = scope(field(entry, "inlineDecl")) {
-        overlay(&mut resolved, inline);
+    // 14000c710 normalizes mapComponentDecl entries by removing sibling
+    // inherited/inline fields before declaration lookup. Those fields are
+    // alternative serialized forms, not an overlay on a selected map decl.
+    if atom(entry, "mapComponentDecl").is_none() {
+        if let Some(inline) = scope(field(entry, "inlineDecl")) { overlay(&mut resolved, inline); }
     }
     Ok(Some(resolved))
 }

@@ -306,6 +306,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
+    app.init_resource::<super::readable_movie::ReadableRequests>();
     app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)
         .add_plugins(super::display_settings::DisplaySettingsPlugin(
             std::sync::Mutex::new(display_state.take()),

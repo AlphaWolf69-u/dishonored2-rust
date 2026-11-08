@@ -8,6 +8,7 @@ use crate::gameplay::{collision_filter::QueryFilter, navigation::CollisionWorld,
 
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
+    pub key: u32,
     pub fraction: f32,
     pub owner: u32,
     pub position: Vec3,
@@ -84,9 +85,9 @@ pub fn cast(world: &CollisionWorld, eye: Vec3, forward: Vec3, sensor: Sensor, sc
         let filter = QueryFilter::layers(if i < 3 { 0x20cc38 } else { 0x408 }, 0);
         world.triangles_in_reuse(start.min(end) - margin, start.max(end) + margin, filter,
             &mut scratch.candidates, &mut scratch.triangles);
-        for &(_, triangle, owner) in &scratch.triangles {
+        for &(key, triangle, owner) in &scratch.triangles {
             if let Some((fraction, position)) = sphere_triangle(start, displacement, radius, &triangle) {
-                hits.push(Hit { fraction, owner, position });
+                hits.push(Hit { key, fraction, owner, position });
             }
         }
         hits.sort_unstable_by(|a, b| a.fraction.total_cmp(&b.fraction));

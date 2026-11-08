@@ -1,0 +1,263 @@
+//! Journal/readable states hosted by the existing UI worker and player runtime.
+use super::*;
+use crate::gameplay::{game_logic::{GameLogic, StateId}, player::read_note::Presentation};
+use super::super::{interaction_focus::{DiscoveredDocuments, DocumentEntry, JournalItem}, journal_movie, readable_movie};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind { Journal, Readable }
+pub(super) struct Snapshot {
+    documents: Vec<DocumentEntry>, maps: Vec<JournalItem>, audiographs: Vec<JournalItem>,
+    progress: Option<crate::gameplay::gameflow::State>, sources: journal_movie::ItemSources,
+}
+pub(super) struct Command { pub epoch: u64, pub operation: Operation }
+pub(super) enum Operation {
+    Journal { screen: (i32,i32), path: String, snapshot: Snapshot },
+    Readable { screen: (i32,i32), path: String, presentation: Arc<Presentation> },
+    Key { down: bool, key: u32 }, Cursor { x: f64, y: f64 }, Button { down: bool, button: u8 }, Wheel(i32),
+    Tick(f64), Clear,
+}
+pub(super) struct Event { pub epoch: u64, pub payload: Notification }
+pub(super) enum Notification {
+    Ready(Kind), Frame(Option<FlashFrame>), Closed(Kind), Failed(String),
+    Actions(Vec<journal_movie::Action>), Presentation(Arc<Presentation>),
+}
+#[derive(Default)]
+pub(super) struct Worker {
+    epoch: u64, journal: Option<journal_movie::Movie>, readable: Option<readable_movie::Movie>,
+}
+impl Worker {
+    pub fn clear(&mut self) { self.readable = None; self.journal = None; }
+    pub fn command(&mut self, command: Command, generation: &mut u64, outbox: &Sender<super::Event>) {
+        if command.epoch != self.epoch {
+            if !matches!(&command.operation, Operation::Journal {..} | Operation::Readable {..} | Operation::Clear) { return; }
+            self.clear(); self.epoch = command.epoch;
+        }
+        let send = |payload| { let _ = outbox.send(super::Event::Modal(Event { epoch: command.epoch, payload })); };
+        let result: Result<(), String> = (|| {
+            match command.operation {
+                Operation::Journal { screen, path, snapshot } => {
+                    self.clear(); *generation = generation.wrapping_add(1);
+                    self.journal = Some(journal_movie::Movie::load(screen, *generation, &path,
+                        snapshot.documents, snapshot.maps, snapshot.audiographs, None, None, snapshot.progress, snapshot.sources)?);
+                    send(Notification::Ready(Kind::Journal));
+                },
+                Operation::Readable { screen, path, presentation } => {
+                    *generation = generation.wrapping_add(1);
+                    self.readable = Some(readable_movie::Movie::load(screen, &presentation, *generation, &path)?);
+                    send(Notification::Ready(Kind::Readable));
+                },
+                Operation::Key { down, key } => {
+                    let vk = Keyboard::default().virtual_key(key).unwrap_or(key);
+                    if let Some(movie) = &mut self.readable { movie.key(down, vk)?; }
+                    else if let Some(movie) = &mut self.journal { movie.key(down, vk)?; }
+                },
+                Operation::Cursor { x, y } => {
+                    if let Some(movie) = &mut self.readable { movie.cursor(x,y)?; }
+                    else if let Some(movie) = &mut self.journal { movie.cursor(x,y)?; }
+                },
+                Operation::Button { down, button } => {
+                    if let Some(movie) = &mut self.readable { movie.mouse_button(down, button)?; }
+                    else if let Some(movie) = &mut self.journal { movie.button(down, button)?; }
+                },
+                Operation::Wheel(delta) => {
+                    if let Some(movie) = &mut self.readable { movie.mouse_wheel(delta)?; }
+                    else if let Some(movie) = &mut self.journal { movie.wheel(delta)?; }
+                },
+                Operation::Tick(dt) => {
+                    if let Some(movie) = &mut self.readable {
+                        let frame = movie.frame(dt, false)?;
+                        for id in frame.sounds { let _ = outbox.send(super::Event::ModalSound(command.epoch, id)); }
+                        send(Notification::Frame(frame.frame));
+                        if frame.closed {
+                            self.readable = None;
+                            if let Some(journal) = &mut self.journal { journal.subscreen_closed()?; }
+                            send(Notification::Closed(Kind::Readable));
+                        }
+                    } else if let Some(movie) = &mut self.journal {
+                        let (frame, closed, sounds, actions) = movie.frame(dt, false)?;
+                        for id in sounds { let _ = outbox.send(super::Event::ModalSound(command.epoch, id)); }
+                        send(Notification::Frame(frame));
+                        if !actions.is_empty() {
+                            for action in &actions {
+                                if let journal_movie::Action::Show(path) | journal_movie::Action::ShowMap(path) = action {
+                                    let item = movie.item(path).ok_or("Journal item lease is absent")?;
+                                    send(Notification::Presentation(presentation(item)?));
+                                }
+                            }
+                            send(Notification::Actions(actions));
+                        }
+                        if closed { self.journal = None; send(Notification::Closed(Kind::Journal)); }
+                    }
+                },
+                Operation::Clear => self.clear(),
+            }
+            Ok(())
+        })();
+        if let Err(error) = result { self.clear(); send(Notification::Failed(error)); }
+    }
+}
+pub(in crate::app) fn presentation(item: &crate::assets::inventory_item::PickableItem) -> Result<Arc<Presentation>, String> {
+    use crate::assets::inventory_item::PickableReadable;
+    Ok(Arc::new(match &item.readable {
+        Some(PickableReadable::Note(note) | PickableReadable::Other(note, _)) => Presentation::Note {
+            title: note.title.clone(), text: note.text.clone(), note_type: note.note_type },
+        Some(PickableReadable::Map(map)) => Presentation::Map {
+            title: map.title.clone(), image: map.image.clone(), legends: map.legends.clone(), map_type: map.map_type },
+        None => return Err("Journal item has no supported reading presentation".into()),
+    }))
+}
+
+#[derive(Default)]
+pub(super) struct Session { pub active: Option<Kind>, pub ready: bool, pub in_flight: bool, hud_ready: bool, elapsed: f64, cursor: Option<(f64,f64)> }
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Data<'w> {
+    logic: Option<ResMut<'w, GameLogic>>,
+    progress: Option<ResMut<'w, crate::gameplay::gameflow::State>>,
+    requests: Option<ResMut<'w, readable_movie::ReadableRequests>>,
+    sources: Option<Res<'w, crate::assets::inventory_item::PickableSourceLease>>,
+}
+impl Session {
+    pub fn hud_ready(&mut self) { self.hud_ready = true; }
+    pub fn clear(&mut self) { *self = Self::default(); }
+    fn send(&self, epoch: u64, operation: Operation, commands: &Sender<super::Command>) {
+        let _ = commands.send(super::Command::Modal(Command { epoch, operation }));
+    }
+    pub fn input(&mut self, epoch: u64, operation: Operation, commands: &Sender<super::Command>) {
+        if let Operation::Cursor { x, y } = &operation {
+            if self.cursor == Some((*x,*y)) { return; }
+            self.cursor = Some((*x,*y));
+        }
+        self.send(epoch,operation,commands);
+    }
+    pub fn begin_pause(&mut self, data: &mut Data) -> Result<(), String> {
+        if let Some(logic) = data.logic.as_deref_mut() {
+            if !logic.request(StateId::PAUSE) { return Err("pause state request is unavailable".into()); }
+            logic.commit()?.ok_or("pause state transition was not committed")?;
+        }
+        Ok(())
+    }
+    pub fn end_pause(&mut self, data: &mut Data) {
+        if let Some(logic) = data.logic.as_deref_mut() {
+            if logic.current() == Some(StateId::PAUSE) { logic.request_finish_current(); logic.commit_finish(); }
+        }
+    }
+    fn finish_modals(&mut self, data: &mut Data) {
+        if let Some(logic) = data.logic.as_deref_mut() {
+            while matches!(logic.current(), Some(StateId::JOURNAL | StateId::READ_NOTE)) {
+                logic.request_finish_current(); logic.commit_finish();
+            }
+        }
+    }
+    fn switch(&mut self, target: StateId, data: &mut Data) -> Result<String, String> {
+        let logic = data.logic.as_deref_mut().ok_or("Journal game-logic owner is absent")?;
+        let path = logic.declaration.states[target.0 as usize].clone().ok_or("Journal state declaration is absent")?;
+        if !logic.request(target) { return Err("authored game-logic rules reject the requested UI state".into()); }
+        let transition = logic.commit()?.ok_or("Journal state transition was not committed")?;
+        if transition.entered != target { return Err("Journal state transition identity differs".into()); }
+        self.active = Some(if target == StateId::JOURNAL { Kind::Journal } else { Kind::Readable });
+        self.ready = false; self.in_flight = false; self.elapsed = 0.0; self.cursor = None;
+        Ok(path)
+    }
+    pub fn initialize(&mut self, data: &mut Data) -> Result<(), String> {
+        if !self.hud_ready { return Ok(()); }
+        let Some(logic) = data.logic.as_deref_mut() else { return Ok(()) };
+        if matches!(logic.current(), None | Some(StateId::MAP_TRANSITION)) { logic.enter_initial_state()?; }
+        Ok(())
+    }
+    pub fn open_journal(&mut self, epoch: u64, screen: (i32,i32), data: &mut Data,
+        inventory: Option<&DiscoveredDocuments>, commands: &Sender<super::Command>) -> Result<(), String> {
+        if self.active.is_some() || !self.hud_ready { return Ok(()); }
+        let inventory = inventory.ok_or("Journal inventory owner is absent")?;
+        let sources = data.sources.as_ref().ok_or("Journal item source owner is absent")?.0.clone();
+        let progress = data.progress.as_deref().cloned();
+        let snapshot = Snapshot { documents: inventory.items().to_vec(), maps: inventory.maps().to_vec(),
+            audiographs: inventory.audiographs().to_vec(), progress, sources };
+        let path = self.switch(StateId::JOURNAL, data)?;
+        self.send(epoch, Operation::Journal { screen, path, snapshot }, commands);
+        Ok(())
+    }
+    pub fn update(&mut self, epoch: u64, screen: (i32,i32), data: &mut Data,
+        mut player: Option<&mut crate::gameplay::player::Player>, commands: &Sender<super::Command>, dt: f64, paused: bool) -> Result<(), String> {
+        self.initialize(data)?;
+        if let Some(player) = player.as_deref_mut() {
+            let available = self.hud_ready && !paused && self.active.is_none()
+                && data.logic.as_deref().is_some_and(|logic| logic.available(StateId::READ_NOTE)
+                    && logic.current().is_some_and(|current| logic.declaration.rule(current, StateId::READ_NOTE).is_some_and(|rule| rule.allow)));
+            player.set_read_note_admission(available);
+        }
+        if self.active != Some(Kind::Readable) {
+            let request = data.requests.as_deref_mut().and_then(|requests| requests.open.pop_front());
+            if let Some(presentation) = request {
+                let path = match self.switch(StateId::READ_NOTE,data) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        if let Some(player) = player.as_deref_mut() { player.finish_read_note(); }
+                        if let Some(requests) = data.requests.as_deref_mut() { requests.failed = requests.failed.wrapping_add(1); }
+                        return Err(error);
+                    }
+                };
+                self.send(epoch, Operation::Readable { screen, path, presentation }, commands);
+            }
+        }
+        if self.active.is_some() { self.elapsed += dt; }
+        Ok(())
+    }
+    pub fn tick(&mut self, epoch: u64, commands: &Sender<super::Command>) {
+        if self.active.is_some() && self.ready && !self.in_flight {
+            self.send(epoch, Operation::Tick(std::mem::take(&mut self.elapsed)), commands); self.in_flight = true;
+        }
+    }
+    pub fn event(&mut self, epoch: u64, event: Event, screen: (i32,i32), data: &mut Data,
+        inventory: Option<&mut DiscoveredDocuments>, player: Option<&mut crate::gameplay::player::Player>,
+        frame: &mut FlashUiFrame, commands: &Sender<super::Command>) -> Result<(), String> {
+        if event.epoch != epoch { return Ok(()); }
+        match event.payload {
+            Notification::Ready(kind) if self.active == Some(kind) => { self.ready = true; },
+            Notification::Ready(_) => {},
+            Notification::Frame(value) => { self.in_flight = false; if self.active.is_some() { if let Some(value) = value { frame.0 = Some(value); } } },
+            Notification::Closed(kind) => {
+                if let Some(logic) = data.logic.as_deref_mut() { logic.request_finish_current(); logic.commit_finish();
+                    self.active = (logic.current() == Some(StateId::JOURNAL)).then_some(Kind::Journal); }
+                else { self.active = None; }
+                self.ready = self.active.is_some(); self.in_flight = false;
+                if kind == Kind::Readable {
+                    if let Some(requests) = data.requests.as_deref_mut() { requests.closed = requests.closed.wrapping_add(1); }
+                    if let Some(player) = player { player.finish_read_note(); }
+                }
+                if self.active.is_none() { frame.0 = None; }
+            },
+            Notification::Failed(error) => {
+                self.active = None; self.ready = false; self.in_flight = false; frame.0 = None;
+                if let Some(player) = player { player.finish_read_note(); }
+                if let Some(requests) = data.requests.as_deref_mut() { requests.failed = requests.failed.wrapping_add(1); }
+                self.finish_modals(data);
+                return Err(error);
+            },
+            Notification::Presentation(presentation) => {
+                let player = player.ok_or("Journal reading player is absent")?;
+                if !player.set_read_note_presentation(presentation.clone()) { return Err("Journal READ_NOTE descriptor owner is absent".into()); }
+                let path = match self.switch(StateId::READ_NOTE,data) {
+                    Ok(path) => path,
+                    Err(error) => { player.finish_read_note(); return Err(error); }
+                };
+                self.send(epoch, Operation::Readable { screen, path, presentation }, commands);
+            },
+            Notification::Actions(actions) => {
+                let inventory = inventory.ok_or("Journal inventory owner is absent")?;
+                for action in actions {
+                    match action {
+                        journal_movie::Action::Seen(kind,id) => inventory.mark_seen(kind,id),
+                        journal_movie::Action::SeenMap(id) => inventory.mark_maps_seen(id),
+                        journal_movie::Action::SeenAudiographs => inventory.mark_audiographs_seen(None),
+                        journal_movie::Action::ShowHistory(show) => if let Some(progress) = data.progress.as_deref_mut() { progress.set_show_history(show); },
+                        journal_movie::Action::MarkTasks(marked,ids) => if let Some(progress) = data.progress.as_deref_mut() { for id in ids { progress.set_task_marked(id,marked); } },
+                        journal_movie::Action::Show(_) | journal_movie::Action::ShowMap(_) => {},
+                        journal_movie::Action::PlayAudiograph { .. } => return Err("Journal audiograph playback requires its real completion owner".into()),
+                        journal_movie::Action::PurchasePower { .. } => return Err("Journal power purchase requires its actual power-system eligibility owner".into()),
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+}

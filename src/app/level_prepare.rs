@@ -117,6 +117,22 @@ pub(super) fn prepare_level(
         Err(error) => { eprintln!("Initial inventory loadout unavailable: {error}"); None }
     }};
     let entries = loadout.as_deref().unwrap_or(&[]);
+    // The existing UI worker owns these concrete game-logic state backends;
+    // register only those implementations, then use the authored transition matrix.
+    if let Some(document) = entity_document.as_ref() {
+        let declaration = crate::gameplay::game_logic::Declaration::load(catalog.as_ref().unwrap(), document)
+            .map_err(std::io::Error::other)?;
+        let mut logic = crate::gameplay::game_logic::GameLogic::new(declaration);
+        use crate::gameplay::game_logic::StateId;
+        for state in [StateId::MAP_TRANSITION, StateId::INGAME, StateId::PAUSE, StateId::READ_NOTE, StateId::JOURNAL] {
+            if logic.declaration.states[state.0 as usize].is_some() { logic.register(state).map_err(std::io::Error::other)?; }
+        }
+        logic.begin_map_transition().map_err(std::io::Error::other)?;
+        app.insert_resource(logic);
+    }
+    app.insert_resource(super::readable_movie::ReadableRequests::default());
+    app.insert_resource(crate::assets::inventory_item::PickableSourceLease::for_catalog(catalog.as_ref().unwrap())
+        .map_err(std::io::Error::other)?);
     let mut interactions = match entity_document.as_ref() {
         Some(document) => match super::interactions::Interactions::load(
             catalog.as_ref().unwrap().clone(), document, character, entries, &list,

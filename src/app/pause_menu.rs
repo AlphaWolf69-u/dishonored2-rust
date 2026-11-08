@@ -24,8 +24,11 @@ use std::sync::{Arc, Mutex};
 
 /// `GBA_PAUSE`.
 const PAUSE_ACTION: i32 = 43;
+mod journal;
+pub(super) use journal::presentation as readable_presentation;
 
 enum Command {
+    Modal(journal::Command),
     Shutdown,
     StartHud { screen: (i32, i32), epoch: u64 },
     HudTick(f64, bool),
@@ -62,6 +65,8 @@ enum Command {
 }
 
 enum Event {
+    Modal(journal::Event),
+    ModalSound(u64, u32),
     HudFrame(u64, Option<FlashFrame>, bool),
     HudReady(u64, f64, Option<Vec<String>>),
     HudFailed(u64, String),
@@ -226,6 +231,7 @@ pub struct PauseMenu {
     texture_wait: Arc<Mutex<TextureWait>>,
     worker: Option<std::thread::JoinHandle<()>>,
     open: bool,
+    modal: journal::Session,
     /// The screen size the next player was last prepared for.
     prepared_for: Option<(i32, i32)>,
     /// `DH2_DEBUG_OPEN_PAUSE_AFTER` has opened the pause state.
@@ -328,12 +334,13 @@ impl Default for PauseMenu {
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
 impl PauseMenu {
     pub(super) fn begin_level(&mut self) {
+        self.modal.clear();
         let _ = self.commands.send(Command::EndHud);
         self.hud_epoch = self.hud_epoch.wrapping_add(1);
         self.hud_started = false;
@@ -514,6 +521,7 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
 
 /// The movie thread: one player at a time, rebuilt on every Open.
 fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
+    let mut modal = journal::Worker::default();
     let mut loaded: Option<Loaded> = None;
     let mut hud: Option<super::hud_movie::HudMovie> = None;
     let mut hud_epoch = 0u64;
@@ -532,6 +540,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       let mut changed = false;
       for command in commands {
         match command {
+            Command::Modal(command) => modal.command(command, &mut generation, &outbox),
             Command::Shutdown => return,
             Command::StartHud { screen, epoch } => {
                 hud_epoch = epoch;
@@ -568,7 +577,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 if let Err(error) = movie.mana(value) { warn!("HUD mana: {error}"); }
             },
             Command::HudAdmission(value) => if let Some(movie) = hud.as_mut() { movie.inactivity_admission(value); },
-            Command::EndHud => { hud = None; },
+            Command::EndHud => { hud = None; modal.clear(); },
             Command::Loading { screen, map, frames } => {
                 generation += 1;
                 match super::loading_movie::Movie::load(screen, &map, generation) {
@@ -834,10 +843,18 @@ pub fn update_pause_menu(
     mut screen_fx: Option<ResMut<super::pause_fx::PauseScreenFx>>,
     mut sound_events: MessageWriter<super::audio::SoundEvent>,
     mut image_service: super::resident_images::UiImageService,
-    hud_data: (Option<Res<super::interaction_focus::FocusedInteraction>>, Option<Res<super::player::PlayerState>>, Option<Res<super::interaction_focus::DiscoveredDocuments>>),
+    hud_data: (Option<Res<super::interaction_focus::FocusedInteraction>>, Option<ResMut<super::player::PlayerState>>, Option<ResMut<super::interaction_focus::DiscoveredDocuments>>),
+    mut journal_data: journal::Data,
 ) {
     let menu = &mut *menu;
-    let (focused, player_state, documents) = hud_data;
+    let (focused, mut player_state, mut documents) = hud_data;
+    let modal_screen = windows.iter().next().map_or((1920,1080), |window| pause_state::screen_size((window.physical_width(),window.physical_height()), (window.physical_width(),window.physical_height())));
+    if !super::loading_screen::is_loading(&loading) {
+        if let Err(error) = menu.modal.update(menu.hud_epoch, modal_screen, &mut journal_data,
+            player_state.as_deref_mut().and_then(|runtime| runtime.player.as_mut()), &menu.commands, time.delta_secs_f64(), menu.open) {
+            warn!("Journal/reading state: {error}");
+        }
+    }
     let hud_starting = !super::loading_screen::is_loading(&loading) && !menu.hud_started;
     if hud_starting {
         let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
@@ -859,7 +876,7 @@ pub fn update_pause_menu(
             menu.hud_force = true;
         }
     }
-    if menu.hud_started && !menu.hud_failed && !menu.open && !super::loading_screen::is_loading(&loading)
+    if menu.hud_started && !menu.hud_failed && !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading)
         && (menu.hud_interval > 0.0 || menu.hud_force)
     {
         let player = player_state.as_ref().and_then(|state| state.player.as_ref());
@@ -972,12 +989,18 @@ pub fn update_pause_menu(
         }
         let Some(key) = super::engine_keys::engine_key(input.key_code) else { continue };
         let down = input.state == ButtonState::Pressed;
-        if menu.open {
+        if menu.modal.active.is_some() {
+            menu.modal.input(menu.hud_epoch, journal::Operation::Key { down, key }, &menu.commands);
+        } else if down && !menu.open && crate::platform::console::shared().read().bindings.keys_for_action(bindings::IN_GAME, 44).contains(&key) {
+            if let Err(error) = menu.modal.open_journal(menu.hud_epoch, modal_screen, &mut journal_data,
+                documents.as_deref(), &menu.commands) { warn!("Journal: {error}"); }
+        } else if menu.open {
             let _ = menu.commands.send(Command::Key { down, key });
         } else if down && crate::platform::console::shared().read().bindings.keys_for_action(bindings::IN_GAME, PAUSE_ACTION).contains(&key) {
             // `SwitchState(GAME_LOGIC_STATE_PAUSE)`; the UI renders at window size.
             let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
             let screen = pause_state::screen_size(size, size);
+            if let Err(error) = menu.modal.begin_pause(&mut journal_data) { warn!("Pause: {error}"); continue; }
             let _ = menu.commands.send(Command::Open { screen });
             menu.open = true;
             menu.ready = false;
@@ -985,7 +1008,27 @@ pub fn update_pause_menu(
             menu.prepared_for = None;
         }
     }
-    if menu.open {
+    if menu.modal.active.is_some() {
+        if let Some(window) = windows.iter().next() {
+            if let Some(cursor) = window.cursor_position() {
+                menu.modal.input(menu.hud_epoch, journal::Operation::Cursor {
+                    x: cursor.x as f64 * 1920.0 / window.width() as f64,
+                    y: cursor.y as f64 * 1080.0 / window.height() as f64 }, &menu.commands);
+            }
+        }
+        for button in buttons.read() {
+            let button_id = match button.button {
+                MouseButton::Left => 0, MouseButton::Right => 1, MouseButton::Middle => 2,
+                MouseButton::Back => 3, MouseButton::Forward => 4, MouseButton::Other(id) if id < 7 => id as u8,
+                _ => continue,
+            };
+            menu.modal.input(menu.hud_epoch, journal::Operation::Button { down: button.state == ButtonState::Pressed, button: button_id }, &menu.commands);
+        }
+        for wheel in wheels.read() {
+            let delta = match wheel.unit { MouseScrollUnit::Line => wheel.y as i32, MouseScrollUnit::Pixel => (wheel.y / 120.0) as i32 };
+            if delta != 0 { menu.modal.input(menu.hud_epoch, journal::Operation::Wheel(delta.signum()), &menu.commands); }
+        }
+    } else if menu.open {
         if let Some(window) = windows.iter().next() {
             // The UI fills the window: movie pixels = window pixels × 1920 / width.
             if let Some(c) = window.cursor_position() {
@@ -1024,6 +1067,7 @@ pub fn update_pause_menu(
     // The game ticks its Flash players within the frame, so this frame shows
     // this frame's input: once the movie is loaded, wait for the draw list
     // of the tick just sent.
+    menu.modal.tick(menu.hud_epoch, &menu.commands);
     let mut framed = false;
     loop {
         let event = match menu.events.try_recv() {
@@ -1031,7 +1075,7 @@ pub fn update_pause_menu(
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 menu.hud_in_flight = false;
                 menu.hud_failed = true;
-                if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
                 break;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) if (menu.open && menu.ready && !framed) || menu.hud_in_flight => {
@@ -1047,7 +1091,7 @@ pub fn update_pause_menu(
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         menu.hud_in_flight = false;
                         menu.hud_failed = true;
-                        if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                        if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
                         break;
                     }
                 }
@@ -1055,6 +1099,12 @@ pub fn update_pause_menu(
             Err(std::sync::mpsc::TryRecvError::Empty) => break,
         };
         match event {
+            Event::Modal(event) => {
+                if let Err(error) = menu.modal.event(menu.hud_epoch, event, modal_screen, &mut journal_data,
+                    documents.as_deref_mut(), player_state.as_deref_mut().and_then(|runtime| runtime.player.as_mut()),
+                    &mut frame, &menu.commands) { warn!("Journal/reading UI: {error}"); }
+                menu.hud_force = true;
+            },
             Event::TexturePending => image_service.service(menu, &loading.catalog),
             Event::HudFrame(epoch, f, ticked) if epoch == menu.hud_epoch => {
                 menu.hud_in_flight = false;
@@ -1066,12 +1116,13 @@ pub fn update_pause_menu(
                 }
                 if menu.hud_timing_since.is_some() { menu.hud_acks += 1; }
                 if f.is_none() && forced { menu.hud_force = true; }
-                if !menu.open && !super::loading_screen::is_loading(&loading) {
+                if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) {
                     if let Some(f) = f { frame.0 = Some(f); }
                 } else if f.is_some() { menu.hud_force = true; }
             }
             Event::HudFrame(_, _, _) => {},
             Event::HudReady(epoch, interval, powers) if epoch == menu.hud_epoch && menu.hud_started && !super::loading_screen::is_loading(&loading) && interval.is_finite() && interval > 0.0 => {
+                menu.modal.hud_ready();
                 menu.hud_interval = interval;
                 menu.hud_starting_powers = powers;
                 menu.hud_force = true;
@@ -1083,15 +1134,15 @@ pub fn update_pause_menu(
                 menu.hud_in_flight_before_ready = false;
                 menu.hud_failed = true;
                 warn!("HUD movie unavailable: {error}");
-                if !menu.open && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
+                if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
             },
             Event::HudFailed(_, _) => {},
-            Event::HudSound(epoch, id) if epoch == menu.hud_epoch && !super::loading_screen::is_loading(&loading) => {
+            Event::HudSound(epoch, id) | Event::ModalSound(epoch, id) if epoch == menu.hud_epoch && !super::loading_screen::is_loading(&loading) => {
                 sound_events.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
                     event: id, emitter: crate::gameplay::sound::Emitter::Menu,
                 }));
             }
-            Event::HudSound(_, _) => {},
+            Event::HudSound(_, _) | Event::ModalSound(_, _) => {},
             Event::Frame(f) if menu.open => {
                 framed = true;
                 menu.ready = true;
@@ -1099,6 +1150,7 @@ pub fn update_pause_menu(
             }
             Event::Frame(_) => {}
             Event::Resume => {
+                menu.modal.end_pause(&mut journal_data);
                 // `FUN_14078ca40` pops the state; OnExit unloads the movie.
                 let _ = menu.commands.send(Command::Close);
                 menu.open = false;
@@ -1119,6 +1171,7 @@ pub fn update_pause_menu(
                 }));
             }
             Event::Failed(e) => {
+                menu.modal.end_pause(&mut journal_data);
                 error!("Pause menu unavailable: {e}");
                 menu.open = false;
                 menu.hud_force = true;
@@ -1150,10 +1203,11 @@ pub fn update_pause_menu(
     }
     // The movie draws its own cursor; the OS cursor is released and hidden
     // while the pause state is open (whether the game hides it is not traced).
-    if menu.open != paused.0 && !super::loading_screen::is_loading(&loading) {
-        crate::platform::console::shared().write(|c| if menu.open { pause_state::enter(&mut c.cvars) } else { pause_state::exit(&mut c.cvars) });
+    let ui_open = menu.open || menu.modal.active.is_some();
+    if ui_open != paused.0 && !super::loading_screen::is_loading(&loading) {
+        crate::platform::console::shared().write(|c| if ui_open { pause_state::enter(&mut c.cvars) } else { pause_state::exit(&mut c.cvars) });
         for mut c in &mut cursors {
-            if menu.open {
+            if ui_open {
                 c.grab_mode = CursorGrabMode::None;
                 c.visible = false;
             } else {
@@ -1161,7 +1215,7 @@ pub fn update_pause_menu(
             }
         }
     }
-    paused.0 = menu.open || super::loading_screen::is_loading(&loading);
+    paused.0 = ui_open || super::loading_screen::is_loading(&loading);
 }
 
 /// Run condition for gameplay input: the pause decl blocks player input

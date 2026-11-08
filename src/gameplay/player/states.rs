@@ -46,6 +46,7 @@ impl StateId {
     pub const DEAD: Self = Self(15);
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
+    pub const READ_NOTE: Self = Self(52);
     pub const NULL: Self = Self(91);
     pub const ANY: Self = Self(92);
 }
@@ -415,6 +416,7 @@ pub enum Kind {
     Vault(VaultDecl),
     Swimming(super::swimming::SwimmingStateDecl),
     SwimMantle,
+    ReadNote,
     Dead(DrowningDeathDecl),
 }
 
@@ -509,6 +511,11 @@ impl StateDecl {
             Kind::SwimMantle => {
                 flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
                 (StateId::MANTLE, 0.0)
+            }
+            Kind::ReadNote => {
+                // 844d60 ->853c90: secondary state, empty body-part masks.
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
+                (StateId::READ_NOTE, 0.0)
             }
             Kind::Dead(_) => {
                 flags = StateFlags { primary: true, body_parts: 0x1f, locked_body_parts: 0x1f, exclusive_body_parts: 0x1f, allow_camera_out_of_shape: true, ..flags };
@@ -896,6 +903,7 @@ fn latch(input: f32, target: f32) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub decl: StateDecl,
+    read_note_requests: Option<crate::gameplay::interaction_definition::StateRequestPair>,
     pub active: bool,
     navigation: Navigation,
     in_air: InAir,
@@ -932,6 +940,7 @@ enum Command {
     /// FUN_1407fbb20's landing request: the first available of Running,
     /// Sneaking, AutoCrouch and the mode default.
     Landing,
+    RequestReadNote,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -943,6 +952,7 @@ pub struct StateMachine {
     rules: HashMap<(StateId, StateId), Rule>,
     default_state: StateId,
     pending_sounds: Vec<u32>,
+    read_note: super::read_note::Runtime,
 }
 
 fn cos_snap(degrees: f32) -> f32 {
@@ -972,7 +982,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new() }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), read_note: Default::default() }
     }
 
     /// The mode: its state decls, `m_rules` and default state.
@@ -980,6 +990,7 @@ impl StateMachine {
         let states: Vec<State> = decls
             .into_iter()
             .map(|decl| State {
+                read_note_requests: matches!(decl.kind, Kind::ReadNote).then(crate::gameplay::interaction_definition::StateRequestPair::new),
                 navigation: Navigation {
                     speed_multiplier: 1.0,
                     agility_run_increase: 0.0,
@@ -1038,7 +1049,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new() }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), read_note: Default::default() }
     }
 
     pub fn active_states(&self) -> &[StateId] {
@@ -1048,6 +1059,8 @@ impl StateMachine {
     /// Mode switch 140805f70 deactivates the outgoing mode before entering
     /// its replacement; each mode retains its own state instances.
     pub fn leave_mode(&mut self, frame: &mut Frame) {
+        self.read_note.reject();
+        self.read_note.deactivate();
         for id in self.active.clone().into_iter().rev() {
             if let Some(index) = self.index(id) {
                 self.deactivate(index, frame);
@@ -1092,6 +1105,40 @@ impl StateMachine {
     }
 
     /// FUN_1408022e0.
+    pub fn read_note_busy(&self) -> bool { self.read_note.busy() }
+    pub fn read_note_request_pending(&self) -> bool { self.read_note.pending() }
+    pub fn set_read_note_admission(&mut self, available: bool) { self.read_note.admission = available; }
+
+    pub fn request_read_note(&mut self, presentation: Arc<super::read_note::Presentation>) -> bool {
+        if !self.read_note.request(presentation) { return false; }
+        self.queue.push(Command::RequestReadNote);
+        true
+    }
+
+    pub fn take_read_note_result(&mut self) -> Option<super::read_note::ActivationResult> {
+        self.read_note.take_result()
+    }
+
+    pub fn read_note_presentation(&self) -> Option<&Arc<super::read_note::Presentation>> {
+        self.read_note.descriptor.as_ref()
+    }
+
+    /// 1408451b0/140845160: journal items replace the same descriptor without
+    /// activating player state 52 or admitting the item to inventory again.
+    pub fn set_read_note_presentation(&mut self, presentation: Arc<super::read_note::Presentation>) -> bool {
+        if self.index(StateId::READ_NOTE).is_none() { return false; }
+        self.read_note.descriptor = Some(presentation);
+        true
+    }
+
+    pub fn finish_read_note(&mut self) {
+        // Journal helpers can populate an inactive state. Its original raw
+        // descriptor fields do not own strings; release our host Arc lease
+        // when that UI context ends, even when no active state will exit.
+        if !self.is_active(StateId::READ_NOTE) { self.read_note.deactivate(); }
+        self.quit(StateId::READ_NOTE);
+    }
+
     pub fn request(&mut self, id: StateId) {
         self.queue.push(Command::Request(id));
     }
@@ -1152,6 +1199,7 @@ impl StateMachine {
                     && !self.allowed(StateId::VAULT, frame)
             }
             Kind::Falling(_) => true,
+            Kind::ReadNote => state.decl.flags.body_parts == 0 && self.read_note.admission,
             Kind::Swimming(_) => navigation,
             Kind::SwimMantle => !frame.underwater && frame.mantle_sensor.can_mantle(),
             Kind::Dead(_) => true,
@@ -1170,6 +1218,16 @@ impl StateMachine {
                     && (self.is_active(StateId::SLIDING) || v.x * v.x + v.y * v.y >= decl.min_speed * decl.min_speed)
             }
         }
+    }
+
+    /// 140803280 for the installed READ_NOTE decl. Its empty body-part
+    /// mask makes 140854890 unconditional; parameterized item and game-logic
+    /// checks remain with their actual owners. A modified nonempty mask needs
+    /// the code-lock owner, which is not yet hosted.
+    pub fn read_note_state_allowed(&self) -> Option<bool> {
+        let Some(state) = self.state(StateId::READ_NOTE) else { return Some(false) };
+        if state.decl.flags.body_parts != 0 { return None; }
+        Some(self.active.iter().all(|&active| self.rule(active, StateId::READ_NOTE).allow))
     }
 
     /// FUN_1408031b0: available and allowed by every active state.
@@ -1335,6 +1393,7 @@ impl StateMachine {
         let mut snapshot = self.active.clone();
         let mut accepted: Vec<(StateId, Option<f32>)> = Vec::new();
         let mut quits = Vec::new();
+        let mut read_note_requested = false;
         for command in queue {
             match command {
                 Command::Quit(id) => {
@@ -1356,6 +1415,10 @@ impl StateMachine {
                     if let Some(id) = landing {
                         self.accept(id, None, &snapshot, &mut accepted, frame);
                     }
+                }
+                Command::RequestReadNote => {
+                    read_note_requested = true;
+                    self.accept(StateId::READ_NOTE, None, &snapshot, &mut accepted, frame);
                 }
                 Command::Request(id) => self.accept(id, None, &snapshot, &mut accepted, frame),
                 Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
@@ -1394,6 +1457,7 @@ impl StateMachine {
             }
             self.activate(index, speed, frame);
         }
+        if read_note_requested { self.read_note.reject(); }
         if !self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.primary)) {
             let mut id = self.default_state;
             for _ in 0..8 {
@@ -1512,6 +1576,11 @@ impl StateMachine {
         if let Kind::Mantle(mantle) = &decl.kind {
             frame.midnight.last_start_error = None;
             self.activate_mantle(index, mantle, frame);
+            return;
+        }
+        if matches!(decl.kind, Kind::ReadNote) {
+            // 844bf0 ->8450b0: only an accepted state owns the descriptor.
+            self.read_note.activate();
             return;
         }
         if matches!(decl.kind, Kind::SwimMantle) {
@@ -1684,7 +1753,7 @@ impl StateMachine {
                 self.states[index].swimming_dive = (direction, impulse);
             }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::Dead(_) => {}
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::Dead(_) => {}
         }
     }
 
@@ -1765,6 +1834,7 @@ impl StateMachine {
                 frame.follow_slope.midnight_requests -= 1;
                 return;
             }
+            Kind::ReadNote => { self.read_note.deactivate(); return; },
             Kind::SwimMantle => return,
             Kind::Mantle(_) => {
                 // FUN_14085fd40.
@@ -1969,7 +2039,7 @@ impl StateMachine {
                     self.request(StateId::RUNNING);
                 }
             }
-            Kind::SwimMantle => {}
+            Kind::SwimMantle | Kind::ReadNote => {}
             Kind::Dead(dead) => {
                 // 14085c4e0 submits vertical and angular motion requests.
                 frame.requests.push_linear(0, Vec3::new(0.0, 0.0, dead.vertical_speed));

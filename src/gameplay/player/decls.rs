@@ -234,6 +234,7 @@ pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Resul
 /// arkPlayerStateId_t names the port resolves (enum table 0x142391a90).
 pub fn state_id(name: &str) -> Option<StateId> {
     let value = match name.strip_prefix("PLAYER_STATE_")? {
+        "READ_NOTE" => 52,
         "RUNNING" => 0,
         "SPRINTING" => 1,
         "JUMPING" => 2,
@@ -529,6 +530,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
     for (kind, fields) in &declarations.states {
         let kind = match kind.as_str() {
             "playerstatedead" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
+            "playerstatereadnote" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
             "playerstaterunning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             "playerstatesneaking" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
             "playerstatesprinting" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
@@ -959,4 +961,16 @@ pub fn loco_transitions(locomotion: &Fields) -> Result<Vec<(String, String, Stri
         ));
     }
     Ok(result)
+}
+
+
+/// READ_NOTE is an empty base-state decl in the installed swimming mode.
+pub fn swimming_read_note(declarations: &PlayerDeclarations) -> Result<Option<StateDecl>, String> {
+    let Some((_, fields)) = declarations.swimming_states.iter().find(|(kind, _)| kind == "playerstatereadnote") else { return Ok(None) };
+    let mut decl = StateDecl::class_default(Kind::ReadNote);
+    decl.flags.primary = boolean(fields, "m_primary", decl.flags.primary)?;
+    decl.flags.body_parts = body_parts(fields, "m_bodyParts", decl.flags.body_parts)?;
+    decl.flags.locked_body_parts = body_parts(fields, "m_lockedBodyParts", decl.flags.locked_body_parts)?;
+    decl.flags.exclusive_body_parts = body_parts(fields, "m_exclusiveBodyParts", decl.flags.exclusive_body_parts)?;
+    Ok(Some(decl))
 }

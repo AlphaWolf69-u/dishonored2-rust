@@ -76,6 +76,7 @@ mod state;
 mod interaction_focus;
 mod interactions;
 mod readable_movie;
+mod journal_movie;
 mod usable_animation;
 mod usable_effects;
 mod runtime_fx_images;

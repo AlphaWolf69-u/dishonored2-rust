@@ -27,20 +27,15 @@ pub(super) struct Interactions {
     pub pending: Vec<PendingChange>,
     selected: Option<(bool, usize, usize)>,
     pending_read: Option<std::sync::Mutex<bevy::tasks::Task<Result<ReadResult, String>>>>,
+    pending_activation: Option<(ReadResult, Arc<crate::gameplay::player::read_note::Presentation>)>,
+    item_sources: crate::assets::inventory_item::PickableSourceLease,
     pub retire: Vec<String>,
 }
 
-enum ReadTarget {
-    Note(crate::assets::inventory_item::Readable),
-    Other(crate::assets::inventory_item::Readable, OtherKind),
-    Map(crate::assets::interactive_map::Map),
-}
-enum OtherKind { Map, Audiograph, Item }
 struct ReadResult {
     entity: String,
     path: String,
-    target: Option<ReadTarget>,
-    modifiers: crate::assets::inventory_item::ItemModifiers,
+    item: Arc<crate::assets::inventory_item::PickableItem>,
 }
 
 pub(super) struct PendingChange {
@@ -105,8 +100,9 @@ impl Interactions {
             change.start_effect.map(|effect| PendingChange { actor, animation: None,
                 stop_effect: change.stop_effect, start_effect: Some(effect_spawn(state, effect)) })
         }).collect();
+        let item_sources = crate::assets::inventory_item::PickableSourceLease::for_catalog(&catalog)?;
         Ok(Self { catalog, limits, sensor, actors, readable, actor_by_entity, readable_by_entity,
-            casts: Default::default(), breakable, parent, pending, selected: None, pending_read: None, retire: Vec::new() })
+            casts: Default::default(), breakable, parent, pending, selected: None, pending_read: None, pending_activation: None, item_sources, retire: Vec::new() })
     }
 
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> { self.limits.clone() }
@@ -150,7 +146,7 @@ pub(super) fn focus_and_interact(
     world: Option<Res<super::NavigationWorld>>,
     camera: Query<&Transform, With<Camera3d>>,
     input: Res<super::player::PlayerInput>,
-    player: Option<Res<super::player::PlayerState>>,
+    mut player: Option<ResMut<super::player::PlayerState>>,
     mut requests: Option<ResMut<super::readable_movie::ReadableRequests>>,
     mut inventory: ResMut<super::interaction_focus::DiscoveredDocuments>,
     mut focused: ResMut<super::interaction_focus::FocusedInteraction>,
@@ -168,51 +164,55 @@ pub(super) fn focus_and_interact(
         if focused.current.is_some() { focused.current = None; }
         return;
     };
+    // A UI request follows the real READ_NOTE acceptance; acquiring the item
+    // does not admit inventory, hide the pickup, or open a movie by itself.
+    if interactions.pending_activation.is_some() {
+        let result = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()).and_then(|player| player.take_read_note_result());
+        if let Some(result) = result {
+            let (read, expected) = interactions.pending_activation.take().expect("retained read activation");
+            if let Ok(presentation) = result {
+                if !Arc::ptr_eq(&presentation, &expected) { warn!("READ_NOTE activation descriptor differs"); return; }
+                let Some(requests) = requests.as_deref_mut() else { warn!("Reading UI request owner is absent"); return };
+                let maximum = interactions.limits.maximum(&read.path);
+                use crate::assets::inventory_item::{PickableReadable, PickableOtherKind};
+                let (accepted, portable) = match &read.item.readable {
+                    Some(PickableReadable::Note(note)) => {
+                        let id = if note.title.is_empty() { 0 } else { crate::assets::lang::key_id(&note.title) };
+                        (inventory.admit(read.path, id, note.kind, maximum, &read.item.modifiers), note.can_be_picked_up)
+                    },
+                    Some(PickableReadable::Other(note, kind)) => {
+                        let id = if note.title.is_empty() { 0 } else { crate::assets::lang::key_id(&note.title) };
+                        let accepted = match kind {
+                            PickableOtherKind::Map => inventory.admit_map(read.path,id,maximum,&read.item.modifiers),
+                            PickableOtherKind::Audiograph => inventory.admit_audiograph(read.path,id,maximum,&read.item.modifiers),
+                            PickableOtherKind::Item => inventory.add_with_modifiers(&read.path,1,maximum,&read.item.modifiers) != 0,
+                        };
+                        (accepted,note.can_be_picked_up)
+                    },
+                    Some(PickableReadable::Map(map)) => {
+                        let name = if map.title.is_empty() { &map.item_name } else { &map.title };
+                        let id = if name.is_empty() { 0 } else { crate::assets::lang::key_id(name) };
+                        (inventory.admit_map(read.path,id,maximum,&read.item.modifiers),map.can_be_picked_up)
+                    },
+                    None => { warn!("READ_NOTE item has no presentation"); return; },
+                };
+                if accepted && portable { interactions.retire.push(read.entity); }
+                requests.open.push_back(presentation);
+            }
+        }
+    }
     if let Some(task) = interactions.pending_read.as_mut() {
-        let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
-        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task.get_mut().unwrap_or_else(|error| error.into_inner()))) {
             interactions.pending_read = None;
-            match result {
-                Ok(ReadResult { entity, path, target: Some(ReadTarget::Note(readable)), modifiers }) => {
-                    let maximum = interactions.limits.maximum(&path);
-                    let id = if readable.title.is_empty() { 0 } else { crate::assets::lang::key_id(&readable.title) };
-                    if inventory.admit(path, id, readable.kind, maximum, &modifiers) && readable.can_be_picked_up {
-                        interactions.retire.push(entity);
-                    }
-                    if let Some(requests) = requests.as_deref_mut() {
-                        requests.open.push_back(super::readable_movie::Request { title: readable.title, text: readable.text, note_type: readable.note_type });
+            match result.and_then(|read| super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation))) {
+                Ok((read,presentation)) => {
+                    if let Some(player) = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()) {
+                        if player.read_note_state_allowed() == Some(true) && player.request_read_note(presentation.clone()) {
+                            interactions.pending_activation = Some((read,presentation));
+                        }
                     }
                 },
-                Ok(ReadResult { entity, path, target: Some(ReadTarget::Other(readable, kind)), modifiers }) => {
-                    let maximum = interactions.limits.maximum(&path);
-                    let id = if readable.title.is_empty() { 0 } else { crate::assets::lang::key_id(&readable.title) };
-                    let accepted = match kind {
-                        OtherKind::Map => inventory.admit_map(path, id, maximum, &modifiers),
-                        OtherKind::Audiograph => inventory.admit_audiograph(path, id, maximum, &modifiers),
-                        OtherKind::Item => inventory.add_with_modifiers(&path, 1, maximum, &modifiers) != 0,
-                    };
-                    if accepted && readable.can_be_picked_up {
-                        interactions.retire.push(entity);
-                    }
-                    if let Some(requests) = requests.as_deref_mut() {
-                        requests.open.push_back(super::readable_movie::Request { title: readable.title, text: readable.text, note_type: readable.note_type });
-                    }
-                },
-                Ok(ReadResult { entity, path, target: Some(ReadTarget::Map(map)), modifiers }) => {
-                    let maximum = interactions.limits.maximum(&path);
-                    let key = if map.title.is_empty() { &map.item_name } else { &map.title };
-                    let id = if key.is_empty() { 0 } else { crate::assets::lang::key_id(key) };
-                    if inventory.admit_map(path, id, maximum, &modifiers) && map.can_be_picked_up {
-                        interactions.retire.push(entity);
-                    }
-                    if let Some(requests) = requests.as_deref_mut() {
-                        requests.map_open.push_back(super::readable_movie::MapRequest {
-                            title: map.title, image: map.image, legends: map.legends, map_type: map.map_type,
-                        });
-                    }
-                },
-                Ok(ReadResult { path, target: None, .. }) => bevy::log::warn!("Readable interaction has an unsupported item type: {path}"),
-                Err(error) => bevy::log::warn!("Readable item unavailable: {error}"),
+                Err(error) => warn!("Readable item unavailable: {error}"),
             }
         }
     }
@@ -230,6 +230,10 @@ pub(super) fn focus_and_interact(
     'casts: for hits in &interactions.casts.hits {
         for hit in hits {
             let Some(entity) = world.0.owner_name(hit.owner) else { continue };
+            // 3b8430 skips a transparent breakable before requesting its
+            // interaction, using the actual contacted physics material.
+            if interactions.breakable.contains(entity)
+                && world.0.physics_material(hit.key).is_some_and(|material| material.can_blink_through()) { continue; }
             let readable = interactions.readable_by_entity.get(entity).copied();
             let actor = interactions.actor_by_entity.get(entity).copied();
             let (is_readable, index, step, max_distance, shape, allowed_swimming) = if let Some(index) = readable {
@@ -245,11 +249,14 @@ pub(super) fn focus_and_interact(
                     if entry.overrides_interaction { entry.allowed_swimming } else { state.definition.allowed_swimming })
             } else { continue };
             if swimming && !allowed_swimming { continue; }
+            if is_readable && player.as_deref().and_then(|runtime| runtime.player.as_ref())
+                .is_none_or(|player| player.read_note_state_allowed() != Some(true)) { continue; }
             if eye.distance_squared(hit.position) > max_distance * max_distance { continue; }
             let classify = |key, owner| {
                 use crate::gameplay::interaction_sensor::OcclusionHit;
                 let owner = world.0.owner_name(owner);
-                if owner == Some(entity) || owner.and_then(|name| interactions.parent.get(name)).is_some_and(|parent| parent == entity) {
+                if owner == Some(entity) || owner.and_then(|name| interactions.parent.get(name)).is_some_and(|parent|
+                    parent == entity || interactions.parent.get(parent).is_some_and(|grandparent| grandparent == entity)) {
                     OcclusionHit::Target
                 } else if owner.is_some_and(|name| interactions.breakable.contains(name))
                     && world.0.physics_material(key).is_some_and(|material| material.can_blink_through()) {
@@ -290,26 +297,14 @@ pub(super) fn focus_and_interact(
     if !pressed || focused.current.as_ref().is_none_or(|prompt| prompt.locked) { return; }
     let Some((is_readable, index, _)) = selected else { return };
     if is_readable {
-        if interactions.pending_read.is_none() {
+        if interactions.pending_read.is_none() && interactions.pending_activation.is_none() {
             let item = interactions.readable[index].item.clone();
             let entity = interactions.readable[index].entity.clone();
             let catalog = interactions.catalog.clone();
+            let sources = interactions.item_sources.clone();
             interactions.pending_read = Some(std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-                let fields = crate::assets::inventory_item::item_fields(&catalog, &item)?;
-                let modifiers = crate::assets::inventory_item::modifiers_fields(&item, &fields)?;
-                let target = if let Some(note) = crate::assets::inventory_item::readable_fields(&fields)? {
-                    Some(ReadTarget::Note(note))
-                } else {
-                    match crate::assets::interactive_map::resolve_fields(&catalog, &item, &fields)? {
-                        Some(map) => Some(ReadTarget::Map(map)),
-                        None => crate::assets::inventory_item::other_readable_fields(&fields)?.map(|(readable, item_type)| {
-                            let kind = match item_type { "TYPE_INTERACTIVE_MAP" => OtherKind::Map,
-                                "TYPE_AUDIOGRAPH" => OtherKind::Audiograph, _ => OtherKind::Item };
-                            ReadTarget::Other(readable, kind)
-                        }),
-                    }
-                };
-                Ok(ReadResult { entity, path: item, target, modifiers })
+                let declaration = sources.0.lock().map_err(|_| "readable item source is poisoned")?.acquire(&catalog, &item)?;
+                Ok(ReadResult { entity, path: item, item: declaration })
             })));
         }
     } else {

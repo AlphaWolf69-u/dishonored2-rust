@@ -21,6 +21,7 @@ pub mod sensors;
 pub mod shape;
 pub mod simplex_solver;
 pub mod states;
+pub mod read_note;
 
 use bevy_math::{Mat3, Vec3};
 use body::Body;
@@ -162,6 +163,7 @@ pub struct PlayerSetup {
     pub swimming_rules: Vec<states::RuleDecl>,
     pub swimming_default_state: StateId,
     pub swimming_has_mantle: bool,
+    pub swimming_read_note: Option<states::StateDecl>,
     pub swimming_death: Option<states::DrowningDeathDecl>,
     pub breath: swimming::Breath,
     pub accepts_water_damage: bool,
@@ -169,6 +171,36 @@ pub struct PlayerSetup {
 }
 
 impl Player {
+    pub fn read_note_state_allowed(&self) -> Option<bool> {
+        if self.swimming_active { self.swimming_machine.read_note_state_allowed() } else { self.machine.read_note_state_allowed() }
+    }
+    /// The interaction owner checks item and game-logic admission before
+    /// requesting the mode's parameterized READ_NOTE state.
+    pub fn request_read_note(&mut self, presentation: std::sync::Arc<read_note::Presentation>) -> bool {
+        if self.machine.read_note_busy() || self.swimming_machine.read_note_busy() { return false; }
+        if self.swimming_active { self.swimming_machine.request_read_note(presentation) } else { self.machine.request_read_note(presentation) }
+    }
+    pub fn take_read_note_result(&mut self) -> Option<read_note::ActivationResult> {
+        self.machine.take_read_note_result().or_else(|| self.swimming_machine.take_read_note_result())
+    }
+    pub fn read_note_request_pending(&self) -> bool {
+        self.machine.read_note_request_pending() || self.swimming_machine.read_note_request_pending()
+    }
+    pub fn set_read_note_admission(&mut self, available: bool) {
+        self.machine.set_read_note_admission(available);
+        self.swimming_machine.set_read_note_admission(available);
+    }
+    pub fn read_note_presentation(&self) -> Option<&std::sync::Arc<read_note::Presentation>> {
+        self.machine.read_note_presentation().or_else(|| self.swimming_machine.read_note_presentation())
+    }
+    pub fn set_read_note_presentation(&mut self, presentation: std::sync::Arc<read_note::Presentation>) -> bool {
+        if self.swimming_active { self.swimming_machine.set_read_note_presentation(presentation) } else { self.machine.set_read_note_presentation(presentation) }
+    }
+    pub fn finish_read_note(&mut self) {
+        self.machine.finish_read_note();
+        self.swimming_machine.finish_read_note();
+    }
+
     /// The current health owned by the player; HUD consumers do not mutate it.
     pub fn health(&self) -> f32 {
         self.health.current()
@@ -301,6 +333,7 @@ impl Player {
         if let Some(dead) = setup.swimming_death {
             swimming_decls.push(states::StateDecl::class_default(Kind::Dead(dead)));
         }
+        if let Some(read_note) = setup.swimming_read_note { swimming_decls.push(read_note); }
         let health = health::Health::new(setup.health, setup.accepts_water_damage, &setup.attributes);
         let mana = mana::Mana::new(setup.mana, &setup.attributes);
         let adrenaline = adrenaline::Adrenaline::new(setup.adrenaline, &setup.attributes);
