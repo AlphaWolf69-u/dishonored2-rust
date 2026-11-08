@@ -110,6 +110,7 @@ impl LevelLifetime {
         if let Some(catalog) = self.catalog.take() {
             crate::edge_animation::release_level(&catalog);
             catalog.release_animset_level();
+            catalog.release_parameter_block_level();
         }
         crate::edge_skeleton::release_unused();
         Ok(())

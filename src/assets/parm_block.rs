@@ -55,6 +55,15 @@ pub(crate) struct ParmBlock {
     _history: Option<Arc<HistoryLease>>,
 }
 
+impl Drop for ParmBlock {
+    fn drop(&mut self) {
+        if self._history.is_some()
+            && std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("PBLOCK_RELEASE identity={:p} assignments={}", self, self.assignments.len());
+        }
+    }
+}
+
 impl ParmBlock {
     /// The declaration preserves authored duplicates; the last assignment is
     /// the value retained by 140343670. Return raw lanes without conversion.
@@ -305,10 +314,57 @@ fn parse(
     })
 }
 
-/// A level owner keeps weak identities only; the last active FX/material
-/// lease releases the decoded block. Editable files always reacquire.
+#[derive(Default)]
+struct Entry {
+    current: Weak<ParmBlock>,
+    previous: Vec<Weak<ParmBlock>>,
+}
+
+/// 0607f0/05feb0 identity is shared across all consumers in this catalog.
+/// The header never owns a decoded block; actual FX/material leases do.
+#[derive(Default)]
+pub(crate) struct Registry {
+    entries: HashMap<String, Arc<Mutex<Entry>>>,
+}
+impl Registry {
+    fn record(&mut self, path: &str) -> Arc<Mutex<Entry>> {
+        if let Some(header) = self.entries.get(path) { return header.clone(); }
+        let header = Arc::new(Mutex::new(Entry::default()));
+        self.entries.insert(path.to_owned(), header.clone());
+        header
+    }
+
+    pub(crate) fn retire_unused(&mut self, catalog: u64) {
+        self.entries.retain(|path, header| {
+            // Acquisitions take the header before IO; its payload may not yet
+            // be published. Never remove that identity/read while in flight.
+            if Arc::strong_count(header) > 1 { return true; }
+            let mut entry = header.lock().unwrap_or_else(|error| error.into_inner());
+            entry.previous.retain(|generation| generation.strong_count() != 0);
+            if entry.current.strong_count() != 0 || !entry.previous.is_empty() { return true; }
+            crate::loading::forget(catalog, "pblock", path);
+            false
+        });
+    }
+
+    pub(crate) fn release_session(&mut self) {
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            let live = self.entries.values().map(|header| {
+                let entry = header.lock().unwrap_or_else(|error| error.into_inner());
+                usize::from(entry.current.strong_count() != 0)
+                    + entry.previous.iter().filter(|generation| generation.strong_count() != 0).count()
+            }).sum::<usize>();
+            eprintln!("PBLOCK_REGISTRY_RELEASE records={} live_generations={live}", self.entries.len());
+        }
+        drop(std::mem::take(&mut self.entries));
+    }
+}
+
+/// Caller-local weak references keep the existing fast lookup and scope
+/// retirement; decoded identities come from the one catalog class owner.
 pub(crate) struct ParmBlockSources {
     catalog: u64,
+    registry: Arc<Mutex<Registry>>,
     entries: HashMap<String, Weak<ParmBlock>>,
     history: Option<Arc<HistoryLease>>,
 }
@@ -316,6 +372,7 @@ impl ParmBlockSources {
     pub(crate) fn new(catalog: &Catalog) -> Self {
         Self {
             catalog: catalog.identity(),
+            registry: catalog.parameter_blocks.get_or_init(Default::default).clone(),
             entries: HashMap::new(),
             history: None,
         }
@@ -332,6 +389,7 @@ impl ParmBlockSources {
             self.entries.clear();
             self.history = None;
             self.catalog = catalog.identity();
+            self.registry = catalog.parameter_blocks.get_or_init(Default::default).clone();
         }
         let normalized = name.replace('\\', "/").to_ascii_lowercase();
         let path = normalized
@@ -346,7 +404,25 @@ impl ParmBlockSources {
                     let cycles = started.zip(crate::loading::thread_cycles())
                         .map_or(0, |(start, end)| end.saturating_sub(start));
                     eprintln!("MEMORY particle parameter block: reused=1 source_bytes=0 assignments={} cycles={cycles}", block.assignments.len());
+                    eprintln!("PBLOCK_LEASE catalog={} path={resource} identity={:p} reused=true shared_class=false", self.catalog, Arc::as_ptr(&block));
                 }
+                return Ok(block);
+            }
+        }
+        let header = self.registry.lock().map_err(|_| "parameter-block registry is poisoned")?
+            .record(&resource);
+        // Metadata lookup may acquire renderParm declarations, but never
+        // another pblock. Only this resource is locked across its read/parse.
+        let mut entry = header.lock().map_err(|_| "parameter-block record is poisoned")?;
+        if shared {
+            if let Some(block) = entry.current.upgrade() {
+                if trace {
+                    let cycles = started.zip(crate::loading::thread_cycles())
+                        .map_or(0, |(start, end)| end.saturating_sub(start));
+                    eprintln!("MEMORY particle parameter block: reused=1 source_bytes=0 assignments={} cycles={cycles} shared_class=1", block.assignments.len());
+                    eprintln!("PBLOCK_LEASE catalog={} path={resource} identity={:p} reused=true shared_class=true", self.catalog, Arc::as_ptr(&block));
+                }
+                self.entries.insert(resource, Arc::downgrade(&block));
                 return Ok(block);
             }
         }
@@ -366,6 +442,10 @@ impl ParmBlockSources {
         self.history.get_or_insert_with(|| history.clone());
         block._history = Some(history);
         let block = Arc::new(block);
+        if trace { eprintln!("PBLOCK_LEASE catalog={} path={resource} identity={:p} reused=false shared_class=true", self.catalog, Arc::as_ptr(&block)); }
+        let previous = std::mem::replace(&mut entry.current, Arc::downgrade(&block));
+        entry.previous.retain(|generation| generation.strong_count() != 0);
+        if previous.strong_count() != 0 { entry.previous.push(previous); }
         if shared {
             self.entries.insert(resource, Arc::downgrade(&block));
         }
@@ -375,10 +455,17 @@ impl ParmBlockSources {
     /// blocks are never entered here; their live Arcs carry their own lease.
     pub(crate) fn retire_unused(&mut self) -> bool {
         self.entries.retain(|_, value| value.strong_count() != 0);
+        self.registry.lock().unwrap_or_else(|error| error.into_inner()).retire_unused(self.catalog);
         if self.entries.is_empty() {
             self.history = None;
             return true;
         }
         false
+    }
+}
+
+impl Drop for ParmBlockSources {
+    fn drop(&mut self) {
+        self.registry.lock().unwrap_or_else(|error| error.into_inner()).retire_unused(self.catalog);
     }
 }

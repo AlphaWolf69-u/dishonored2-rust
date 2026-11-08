@@ -77,6 +77,8 @@ pub struct Catalog {
     pub(crate) animset_declarations: std::sync::Mutex<crate::assets::animation_rig::animset::Registry>,
     /// One resource-list identity owner for this catalog's animation clips.
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
+    /// One lazy class owner shared by particle and material parameter blocks.
+    pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
@@ -95,6 +97,9 @@ pub struct Catalog {
 
 impl Drop for Catalog {
     fn drop(&mut self) {
+        if let Some(owner) = self.parameter_blocks.get() {
+            owner.lock().unwrap_or_else(|error| error.into_inner()).release_session();
+        }
         self.animset_declarations.get_mut().unwrap_or_else(|error| error.into_inner()).release_session();
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
@@ -138,6 +143,11 @@ fn image_program_key(source: &str) -> String {
 }
 
 impl Catalog {
+    pub(crate) fn release_parameter_block_level(&self) {
+        if let Some(owner) = self.parameter_blocks.get() {
+            owner.lock().unwrap_or_else(|error| error.into_inner()).retire_unused(self.identity);
+        }
+    }
     /// Trim dead level AnimSet identities without dropping the session root
     /// or declarations still retained by live model/scene owners.
     pub(crate) fn release_animset_level(&self) {
@@ -292,6 +302,7 @@ impl Catalog {
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             animset_declarations: Default::default(),
             animation_resources: Default::default(),
+            parameter_blocks: Default::default(),
             containers: Default::default(),
             kinds,
             base: base.to_path_buf(),
