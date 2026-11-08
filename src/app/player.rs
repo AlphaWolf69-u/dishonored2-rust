@@ -139,6 +139,10 @@ fn load_arm(
     let (bind_joint, bind_t, bind_r) = body.tag(tag)?;
     let mut clips = Clips { catalog, rig: &rig, rest: &rig.skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
     let mut data = LocoData::default();
+    data.idle_blend = decls::loco_idle_blend(locomotion)?;
+    if let Some(alias) = decls::loco_arm_idle(locomotion, "Swimming", side, EQUIP) {
+        data.swimming_idle = Some(clips.clip(&alias)?);
+    }
     for (stance, speeds) in decls::loco_stances(locomotion, [EQUIP; 2])? {
         let mut sets: [Option<SpeedSet>; 4] = Default::default();
         for entry in speeds {

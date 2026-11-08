@@ -837,6 +837,22 @@ fn moves(fields: Option<&Fields>) -> Option<[String; 4]> {
     all.iter().any(|name| !name.is_empty()).then_some(all)
 }
 
+/// The authored idle animation for an arm's selected equip state.
+pub fn loco_arm_idle(locomotion: &Fields, stance_name: &str, side: usize, equip: &str) -> Option<String> {
+    let stance = items(locomotion, "m_stances").into_iter()
+        .find(|stance| atom(stance, "m_stance") == Some(stance_name))?;
+    let idle = scope(stance, "m_idle")?;
+    let side = if side == 0 { "m_leftArm" } else { "m_rightArm" };
+    equip_item(idle, side, equip).and_then(|item| atom(item, "m_anim"))
+        .filter(|alias| !alias.is_empty()).map(str::to_owned)
+}
+
+/// Locomotion data constructor 2406b0 and the authored overrides.
+pub fn loco_idle_blend(locomotion: &Fields) -> Result<[f32; 2], String> {
+    Ok([number(locomotion, "m_idleBlendIn", f32::from_bits(0x38d1_b717))?,
+        number(locomotion, "m_idleBlendOut", f32::from_bits(0x3e99_999a))?])
+}
+
 /// `m_stances` with their speed sets (FUN_1407030a0 → FUN_140249400) and
 /// the arms' clips for their equip states `arm_equip` (left, right).
 pub fn loco_stances(locomotion: &Fields, arm_equip: [&str; 2]) -> Result<Vec<(String, Vec<LocoSpeedDecl>)>, String> {

@@ -1950,9 +1950,10 @@ impl StateMachine {
             Kind::Vault(decl) => self.vault_update(index, &decl, frame),
             Kind::Swimming(decl) => {
                 self.navigation_update(index, frame);
-                // 140846330: empty hands are hidden while the swim state
-                // owns them, then restored by its deactivation.
-                *frame.arms_shown = [false; 2];
+                // 140846330 shows empty hands underwater. The supported mode
+                // has no hold-object state or layered-action producer; surface
+                // swimming keeps the existing unclaimed hands hidden.
+                *frame.arms_shown = [frame.underwater; 2];
                 let dive = &mut self.states[index].swimming_dive;
                 if dive.1 > 0.0 {
                     frame.physics.instant_motion();

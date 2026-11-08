@@ -145,6 +145,17 @@ pub struct LocoData {
     /// stance → speed sets (Idle, Walk, Run, Sprint), `None` when undefined.
     pub stances: HashMap<String, [Option<SpeedSet>; 4]>,
     pub transitions: HashMap<(String, String), Transition>,
+    /// The selected arm's authored Swimming idle leaf.
+    pub swimming_idle: Option<usize>,
+    pub idle_blend: [f32; 2],
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LocoIdle {
+    clip: Option<usize>,
+    weight: f32,
+    elapsed: f32,
+    fade_out: Option<f32>,
 }
 
 /// The stance manager (node+0xd08, FUN_1406fcf90/fd5b0/fd760/fd400).
@@ -175,9 +186,20 @@ pub struct LocoNode {
     /// (clip, weight, clip speed).
     inputs: Vec<(usize, f32, f32)>,
     transition_input: Option<(usize, f32, f32)>,
+    idle: LocoIdle,
+    /// None retains the existing scalar host; managed validation alone may
+    /// bind a concrete movement-state owner. Do not invent that binding here.
+    source_arm_move_state: Option<u32>,
 }
 
 impl LocoNode {
+    /// F8-only description; no formatting or allocation during node updates.
+    pub fn idle_diagnostic(&self) -> String {
+        format!("stance={:?}->{:?} manager={} move_state={:?} clip={:?} weight={} elapsed={} fade_out={:?}",
+            self.manager.from, self.manager.to, self.manager.state, self.source_arm_move_state,
+            self.idle.clip, self.idle.weight, self.idle.elapsed, self.idle.fade_out)
+    }
+
     pub fn new(data: LocoData) -> Self {
         Self {
             data,
@@ -186,6 +208,8 @@ impl LocoNode {
             rate_multiplier: 1.0,
             inputs: Vec::new(),
             transition_input: None,
+            idle: LocoIdle::default(),
+            source_arm_move_state: None,
         }
     }
 
@@ -290,6 +314,41 @@ impl LocoNode {
         let speed = speed.max(0.0);
         let angle = wrap180(angle);
         self.manage(dt, target, speed, animations);
+        // 6f9b90: the idle leaf starts when locomotion comes to rest,
+        // fades in, and fades out over the declaration's idle blend time.
+        // 6f9b90 uses the source stance, switching to the destination during
+        // the final transition phase. A non-normal Loco move state clears the
+        // idle leaf immediately; validated scalar arms currently bind state 0.
+        let idle_stance = if self.manager.state == 5 { self.manager.to.as_deref() }
+            else { self.manager.from.as_deref() };
+        let selected_idle = if idle_stance == Some("Swimming") { self.data.swimming_idle } else { None };
+        if self.source_arm_move_state.is_some_and(|state| state != 0) { self.idle = LocoIdle::default(); }
+        let stopped = speed <= f32::from_bits(0x3a83_126f);
+        if let Some(clip) = self.idle.clip {
+            self.idle.elapsed += dt;
+            let mut started_fade = false;
+            if self.idle.fade_out.is_none() && (!stopped || selected_idle.is_none()) {
+                self.idle.fade_out = Some(0.0);
+                started_fade = true;
+            } else if self.idle.fade_out.is_none() && selected_idle != Some(clip) {
+                self.idle.clip = selected_idle;
+                self.idle.elapsed = 0.0;
+            }
+            if let Some(elapsed) = &mut self.idle.fade_out {
+                if !started_fade { *elapsed += dt; }
+                let duration = self.data.idle_blend[1].max(0.001);
+                self.idle.weight = self.idle.weight.min(1.0 - (*elapsed / duration).min(1.0));
+                if *elapsed >= duration { self.idle = LocoIdle::default(); }
+            } else {
+                let duration = self.data.idle_blend[0];
+                self.idle.weight = if duration > 0.0 { (self.idle.weight + dt / duration).min(1.0) } else { 1.0 };
+            }
+        } else if stopped && self.source_arm_move_state.is_none_or(|state| state == 0) {
+            if let Some(clip) = selected_idle {
+                self.idle.clip = Some(clip);
+                self.idle.weight = if self.data.idle_blend[0] > 0.0 { 0.0 } else { 1.0 };
+            }
+        }
         self.inputs.clear();
         let (q, f, between) = quadrant(angle);
         for (stance, weight) in self.stance_list() {
@@ -352,6 +411,16 @@ impl LocoNode {
     /// folded from the last with raw weights as BLEND (lerp) alphas.
     pub fn evaluate(&self, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<Option<Pose>, String> {
         let mut children: Vec<(Pose, f32)> = Vec::new();
+        if let Some(clip) = self.idle.clip.filter(|_| self.idle.weight > 1e-4) {
+            let animation = &animations[clip];
+            let time = if animation.duration() > 0.0 { self.idle.elapsed.rem_euclid(animation.duration()) } else { 0.0 };
+            let pose = sample(animation, rest, time)?;
+            // The first blend child replaces the entire lower chain at weight
+            // one. Keep all update/clock work, but avoid sampling overwritten
+            // move and transition poses in that case.
+            if self.idle.weight >= 1.0 { return Ok(Some(pose)); }
+            children.push((pose, self.idle.weight));
+        }
         if let Some((clip, weight, time)) = self.transition_input.filter(|&(_, w, _)| w > 1e-4) {
             let animation = &animations[clip];
             children.push((sample(animation, rest, time.min(animation.duration()))?, weight));

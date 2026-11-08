@@ -426,6 +426,11 @@ pub(super) fn collision_report(
         screenshot_path.display()
     );
     if let Some(player) = walker {
+        report.push_str(&format!("\nSwimming: active={} eye_underwater={} contact={:?}\n",
+            player.is_swimming(), player.is_underwater(), player.swimming_contact));
+        for (index, arm) in player.body.arms.iter().enumerate() {
+            report.push_str(&format!("  arm {index} idle: {}\n", arm.loco.idle_diagnostic()));
+        }
         report.push_str(&format!(
             "\nPlayer arm state: shown={:?}, mantle hands=[{}, {}] last_selection={:?}, mantle destination={:?}, catfall sensor enabled={} hits=[{}, {}] last_selection={:?}\n",
             player.body.arms_shown,
@@ -443,10 +448,12 @@ pub(super) fn collision_report(
         let up = Vec3::from_array(view_to_game(camera.up().as_vec3()));
         let right = forward.cross(up).normalize_or_zero();
         for arm in player.arms() {
+            let mut pose_crc = flate2::Crc::new();
             let mut min = Vec3::splat(f32::INFINITY);
             let mut max = Vec3::splat(f32::NEG_INFINITY);
             let mut in_front = 0;
             for joint in &arm.joints {
+                for value in joint.iter().flatten() { pose_crc.update(&value.to_bits().to_le_bytes()); }
                 let delta = Vec3::new(joint[0][3], joint[1][3], joint[2][3]) - eye;
                 let position = Vec3::new(delta.dot(right), delta.dot(up), delta.dot(forward));
                 min = min.min(position);
@@ -454,6 +461,7 @@ pub(super) fn collision_report(
                 in_front += usize::from(position.z > 0.0);
             }
             report.push_str(&format!("  model={} visible={} joints={} in_front={} camera_bounds={:?}..{:?}\n", arm.model, arm.visible, arm.joints.len(), in_front, min, max));
+            report.push_str(&format!("    published_pose_crc={:08x} first_joint={:?}\n", pose_crc.sum(), arm.joints.first()));
         }
         report.push_str(&format!("  pose errors={:?} midnight_handle={:?} midnight_drives=[{}, {}, {}]\n",
             player.arm_pose_errors(), player.body.midnight.playing(), player.body.midnight.drives(0),
