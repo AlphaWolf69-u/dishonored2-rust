@@ -81,6 +81,8 @@ pub struct Catalog {
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    /// Inventory/history leases can outlive a map's item acquisition table.
+    pub(crate) pickable_sources: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::inventory_item::PickableSources>>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
@@ -150,6 +152,12 @@ impl Catalog {
     pub(crate) fn release_parameter_block_level(&self) {
         if let Some(owner) = self.parameter_blocks.get() {
             owner.lock().unwrap_or_else(|error| error.into_inner()).retire_unused(self.identity);
+        }
+    }
+
+    pub(crate) fn release_pickable_level(&self) {
+        if let Some(owner) = self.pickable_sources.get() {
+            owner.lock().unwrap_or_else(|error| error.into_inner()).retire_unused();
         }
     }
     /// Trim dead level AnimSet identities without dropping the session root
@@ -310,6 +318,7 @@ impl Catalog {
             animset_declarations: Default::default(),
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
+            pickable_sources: Default::default(),
             containers: Default::default(),
             header_order: Default::default(),
             kinds,

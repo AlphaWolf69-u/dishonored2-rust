@@ -36,17 +36,18 @@ pub struct PickableSources {
 #[derive(Clone)]
 #[cfg_attr(feature = "game", derive(bevy::prelude::Resource))]
 pub struct PickableSourceLease(pub Arc<Mutex<PickableSources>>);
-static SESSIONS: std::sync::LazyLock<Mutex<HashMap<u64, Weak<Mutex<PickableSources>>>>> = std::sync::LazyLock::new(Default::default);
 impl PickableSourceLease {
     pub(crate) fn for_catalog(catalog: &Catalog) -> Result<Self, String> {
-        let mut sessions = SESSIONS.lock().map_err(|_| "item source sessions are poisoned")?;
-        let id = catalog.identity();
-        if let Some(owner) = sessions.get(&id).and_then(Weak::upgrade) { return Ok(Self(owner)); }
-        sessions.retain(|_, owner| owner.strong_count() != 0);
-        let owner = Arc::new(Mutex::new(PickableSources { catalog_identity: Some(id), ..Default::default() }));
-        sessions.insert(id, Arc::downgrade(&owner));
+        let owner = catalog.pickable_sources.get_or_init(|| Arc::new(Mutex::new(
+            PickableSources { catalog_identity: Some(catalog.identity()), ..Default::default() }
+        ))).clone();
+        if tracing() { eprintln!("PICKABLE_OWNER catalog={} identity={:p}", catalog.identity(), Arc::as_ptr(&owner)); }
         Ok(Self(owner))
     }
+}
+fn tracing() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_PICKABLE_RESOURCES").is_some())
 }
 impl PickableSources {
     pub fn acquire(&mut self, catalog: &Catalog, path: &str) -> Result<Arc<PickableItem>, String> {
@@ -57,7 +58,10 @@ impl PickableSources {
         self.retire_unused();
         let key: Arc<str> = Arc::from(path.replace('\\', "/").to_ascii_lowercase());
         if !catalog.has_overlays() {
-            if let Some(item) = self.items.get(&key).and_then(Weak::upgrade) { return Ok(item); }
+            if let Some(item) = self.items.get(&key).and_then(Weak::upgrade) {
+                if tracing() { eprintln!("PICKABLE_ITEM path={key} identity={:p} reused=true", Arc::as_ptr(&item)); }
+                return Ok(item);
+            }
         }
         let fields = item_fields(catalog, &key)?;
         let readable = if let Some(note) = readable_fields(&fields)? { Some(PickableReadable::Note(note)) }
@@ -73,6 +77,7 @@ impl PickableSources {
             item_type: atom(&fields, "m_type").map(str::to_owned), audio,
             pickup_image: atom(&fields, "m_pickupLogImage").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned) });
         if !catalog.has_overlays() { self.items.insert(key, Arc::downgrade(&item)); }
+        if tracing() { eprintln!("PICKABLE_ITEM path={} identity={:p} reused=false", item.path, Arc::as_ptr(&item)); }
         Ok(item)
     }
     pub fn retire_unused(&mut self) { self.items.retain(|_, item| item.strong_count() != 0); }
