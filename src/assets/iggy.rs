@@ -105,11 +105,25 @@ impl DataSection {
 }
 
 /// A decoded `.iggy` file.
-#[derive(Clone)]
 pub struct IggyFile {
     bytes: Vec<u8>,
     sections: Vec<DataSection>,
     parsed_abc: std::cell::OnceCell<std::rc::Rc<swf::avm2::types::AbcFile>>,
+    // Host: 14102bd60 attaches the font provider to its serialized record.
+    // Decoded providers share that identity while movies use them, without
+    // a file -> font -> file strong-reference cycle.
+    shared_fonts: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Weak<font::Font>>>,
+}
+
+impl Clone for IggyFile {
+    fn clone(&self) -> Self {
+        Self {
+            bytes: self.bytes.clone(),
+            sections: self.sections.clone(),
+            parsed_abc: self.parsed_abc.clone(),
+            shared_fonts: Default::default(),
+        }
+    }
 }
 
 impl fmt::Debug for IggyFile {
@@ -379,7 +393,7 @@ impl IggyFile {
         if sections.first().map(|s| s.kind) != Some(ROOT_KIND) {
             return Err(Error::Corrupt("first section is not the movie root"));
         }
-        Ok(Self { bytes, sections, parsed_abc: Default::default() })
+        Ok(Self { bytes, sections, parsed_abc: Default::default(), shared_fonts: Default::default() })
     }
 
     /// Immutable compiled definition data shared by player VMs. Namespace and

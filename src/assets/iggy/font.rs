@@ -123,6 +123,15 @@ pub struct Font {
     pub kerning: Vec<(u16, u16, f32)>,
 }
 
+impl Drop for Font {
+    fn drop(&mut self) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("FONT_RECORD_RELEASE identity={:p} glyphs={} decoded_outlines={}",
+                self, self.glyphs.len(), self.glyphs.decoded_count());
+        }
+    }
+}
+
 impl Font {
     /// Glyph index for a character (`FUN_14102b970`; U+00A0 maps to space
     /// in `FUN_14102c060`). A miss returns `None`; the player then uses the
@@ -159,14 +168,38 @@ impl IggyFile {
         }))
     }
 
-    /// Share the library's source bytes and decode only requested glyphs.
-    pub fn shared_font(self: &Rc<Self>, id: usize) -> Result<Option<Font>> {
+    /// Share a live decoded provider as well as its immutable library bytes.
+    /// The weak file-local entry cannot retain the provider or form a cycle
+    /// with the provider's source lease. Glyph pages remain movie-owned.
+    pub fn shared_font(self: &Rc<Self>, id: usize) -> Result<Option<Rc<Font>>> {
         // Acquisition A/B uses the same player and immutable source bytes.
         if std::env::var("DH2_DEBUG_EAGER_FONT_OUTLINES").as_deref() == Ok("1") {
-            self.read_font(id, None)
-        } else {
-            self.read_font(id, Some(self.clone()))
+            return self.read_font(id, None).map(|font| font.map(Rc::new));
         }
+        let separate = std::env::var("DH2_DEBUG_SEPARATE_FONT_RECORDS").as_deref() == Ok("1");
+        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+        if !separate {
+            if let Some(font) = self.shared_fonts.borrow().get(&id).and_then(std::rc::Weak::upgrade) {
+                if trace {
+                    eprintln!("FONT_RECORD_ACQUIRE file={:p} id={id} identity={:p} reused=true record_bytes={:?} outline_bytes={:?}",
+                        Rc::as_ptr(self), Rc::as_ptr(&font),
+                        crate::platform::allocation_tags::live_bytes("font records"),
+                        crate::platform::allocation_tags::live_bytes("font outlines"));
+                }
+                return Ok(Some(font));
+            }
+        }
+        let _tag = crate::platform::allocation_tags::tag("font records");
+        let Some(font) = self.read_font(id, Some(self.clone()))? else { return Ok(None); };
+        let font = Rc::new(font);
+        if !separate { self.shared_fonts.borrow_mut().insert(id, Rc::downgrade(&font)); }
+        if trace {
+            eprintln!("FONT_RECORD_ACQUIRE file={:p} id={id} identity={:p} reused=false record_bytes={:?} outline_bytes={:?}",
+                Rc::as_ptr(self), Rc::as_ptr(&font),
+                crate::platform::allocation_tags::live_bytes("font records"),
+                crate::platform::allocation_tags::live_bytes("font outlines"));
+        }
+        Ok(Some(font))
     }
 
     pub fn font(&self, id: usize) -> Result<Option<Font>> {

@@ -102,7 +102,7 @@ impl PlayerState {
         let count = file.movie().map(|m| m.character_count).unwrap_or(0) as usize;
         for id in 0..count {
             if let Ok(Some(font)) = file.shared_font(id) {
-                self.fonts.push(Rc::new(font));
+                self.fonts.push(font);
             }
         }
         self.libraries.push(Library { name, file, unit, symbols, timelines: RefCell::default() });
