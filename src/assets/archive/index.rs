@@ -217,6 +217,7 @@ pub fn read_entry(base: &Path, entry: &IndexEntry) -> Result<Vec<u8>> {
         &entry.path,
         &super::Entry {
             group: entry.group,
+            header_groups: 1 << (entry.group - 1),
             offset: entry.offset,
             size: entry.size,
             stored_size: entry.stored_size,
