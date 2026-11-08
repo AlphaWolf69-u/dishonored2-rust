@@ -9,8 +9,10 @@
 //! are rejected. The slerp uses an exact reciprocal square root where the
 //! game's SSE path uses unrefined RSQRTPS (differences up to ~2e-4).
 use crate::edge_skeleton::JointRestPose;
-mod residency;
+pub(crate) mod residency;
 pub use residency::acquire;
+pub(crate) use residency::{find_existing, force_load, ResourceScope};
+pub(crate) use residency::{acquire_record, find_record, ResourceLease};
 pub(crate) use residency::release_level;
 pub(crate) use residency::retire_catalog;
 
@@ -324,34 +326,124 @@ impl EdgeAnimation {
 /// md6anim resource. Call it in the md6's animset order: a later animset's
 /// alias replaces an earlier one, as the model def's lookups
 /// (FUN_1401c7030 / FUN_1401c7bf0) search the list from its last entry.
-pub fn animset_aliases(source: &str, aliases: &mut std::collections::HashMap<String, String>) -> Result<(), String> {
+#[derive(Clone, Debug)]
+pub(crate) struct AnimSetAlias {
+    pub animation: String,
+    pub force_load: bool,
+    pub force_zero_speed: bool,
+    pub movement: Option<std::num::NonZeroU32>,
+}
+
+/// `246c00`'s persisted animation movement record. Values describe the
+/// authored/generated trajectory; they do not modify clip sampling.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AnimMovement {
+    pub start_speed: f32,
+    pub end_speed: f32,
+    pub average_speed: f32,
+    pub start_yaw: f32,
+    pub end_yaw: f32,
+    pub average_turn_speed: f32,
+    pub strafe_yaw: f32,
+    pub slope_angle: f32,
+    pub vertical_move_length: f32,
+}
+
+/// Visit aliases in declaration order. Native 257390 loads a forced clip
+/// before its caller inserts that alias, including when a name is repeated.
+pub(crate) fn visit_animset_aliases(
+    source: &str,
+    visit: impl FnMut(String, AnimSetAlias) -> Result<(), String>,
+) -> Result<(), String> {
     let tokens = crate::entities::declaration_lexemes(source)?;
+    visit_animset_alias_tokens(&tokens, visit)
+}
+
+pub(crate) fn visit_animset_alias_tokens(
+    tokens: &[&str],
+    mut visit: impl FnMut(String, AnimSetAlias) -> Result<(), String>,
+) -> Result<(), String> {
     let mut i = 0;
     while i < tokens.len() {
         if tokens[i] == "alias" && tokens.get(i + 1) == Some(&"{") {
-            let mut name = None;
-            let mut anim = None;
+            let (mut name, mut anim) = (None, None);
+            let (mut force_load, mut force_zero_speed) = (false, false);
             let mut k = i + 2;
-            // Nested blocks (`flags { forceLoad }`, events) end before the alias.
             let mut depth = 0;
+            let mut flags_depth = None;
             while k < tokens.len() && !(depth == 0 && tokens[k] == "}") {
                 match tokens[k] {
+                    "flags" if depth == 0 && tokens.get(k + 1) == Some(&"{") => flags_depth = Some(depth + 1),
                     "{" => depth += 1,
-                    "}" => depth -= 1,
+                    "}" => { if flags_depth == Some(depth) { flags_depth = None; } depth -= 1; },
                     "name" if depth == 0 => name = tokens.get(k + 1).map(|t| t.trim_matches('"').to_owned()),
                     "anim" if depth == 0 => anim = tokens.get(k + 1).map(|t| t.trim_matches('"').to_owned()),
+                    flag if flags_depth == Some(depth) && flag.eq_ignore_ascii_case("forceLoad") => force_load = true,
+                    flag if flags_depth == Some(depth) && flag.eq_ignore_ascii_case("forceZeroSpeed") => force_zero_speed = true,
                     _ => {}
                 }
                 k += 1;
             }
-            if let (Some(name), Some(anim)) = (name, anim) {
-                aliases.insert(name, anim);
+            if let (Some(name), Some(animation)) = (name, anim) {
+                visit(name, AnimSetAlias { animation, force_load, force_zero_speed, movement: None })?;
             }
             i = k;
         }
         i += 1;
     }
     Ok(())
+}
+
+/// `2462b0` walks generated alias references in source order. Required
+/// movement fields use the same zero-initialized optional fields as 246c00.
+pub(crate) fn visit_animset_movement(
+    tokens: &[&str],
+    mut visit: impl FnMut(&str, AnimMovement) -> Result<(), String>,
+) -> Result<(), String> {
+    let Some(start) = tokens.windows(2).position(|pair| pair == ["animGeneratedData", "{"]) else { return Ok(()); };
+    let mut at = start + 2;
+    while at < tokens.len() && tokens[at] != "}" {
+        if tokens[at] != "aliasRef" || tokens.get(at + 2) != Some(&"{") {
+            return Err("invalid animGeneratedData alias reference".into());
+        }
+        let name = tokens.get(at + 1).ok_or("missing generated alias name")?.trim_matches('"');
+        let mut end = at + 3;
+        let mut depth = 1usize;
+        while end < tokens.len() && depth != 0 {
+            match tokens[end] { "{" => depth += 1, "}" => depth -= 1, _ => {} }
+            end += 1;
+        }
+        if depth != 0 { return Err(format!("unterminated generated alias {name}")); }
+        let body = &tokens[at + 3..end - 1];
+        let marker = body.windows(2).position(|pair| pair == ["animMovementProp", "{"])
+            .ok_or_else(|| format!("generated alias {name} has no movement record"))?;
+        let rest = &body[marker + 2..];
+        let close = rest.iter().position(|token| *token == "}")
+            .ok_or_else(|| format!("unterminated movement record for {name}"))?;
+        let fields = &rest[..close];
+        let value = |key: &str, required: bool| -> Result<f32, String> {
+            match fields.iter().position(|field| *field == key) {
+                Some(index) => fields.get(index + 1).ok_or_else(|| format!("missing {key} for {name}"))?
+                    .parse().map_err(|_| format!("invalid {key} for {name}")),
+                None if !required => Ok(0.0),
+                None => Err(format!("missing {key} for {name}")),
+            }
+        };
+        visit(name, AnimMovement {
+            start_speed: value("startSpeed", true)?, end_speed: value("endSpeed", true)?,
+            average_speed: value("averageSpeed", true)?, start_yaw: value("startYaw", true)?,
+            end_yaw: value("endYaw", true)?, average_turn_speed: value("averageTurnSpeed", true)?,
+            strafe_yaw: value("strafeYaw", false)?, slope_angle: value("slopeAngle", true)?,
+            vertical_move_length: value("verticalMoveLength", false)?,
+        })?;
+        at = end;
+    }
+    if at == tokens.len() { return Err("unterminated animGeneratedData".into()); }
+    Ok(())
+}
+
+pub fn animset_aliases(source: &str, aliases: &mut std::collections::HashMap<String, String>) -> Result<(), String> {
+    visit_animset_aliases(source, |name, alias| { aliases.insert(name, alias.animation); Ok(()) })
 }
 
 /// The compiled resource of an md6anim path.

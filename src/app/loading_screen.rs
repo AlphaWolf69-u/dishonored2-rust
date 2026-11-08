@@ -633,7 +633,7 @@ fn acquire(world: &mut World) {
                 for camera in cameras {
                     world.despawn(camera);
                 }
-                let (mut lifetime, resources) = super::level_lifetime::LevelLifetime::begin(world);
+                let (mut lifetime, resources) = super::level_lifetime::LevelLifetime::begin(world, state.catalog.clone());
                 prepared.publish(world);
                 if let Some(mut startup) = state.startup.take() {
                     let _span = super::load_timing::Span::new("remaining startup");

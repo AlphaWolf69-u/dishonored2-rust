@@ -13,16 +13,19 @@ pub(super) struct SessionEntity;
 pub(super) struct LevelLifetime {
     host_entities: HashSet<Entity>,
     resources: Vec<ComponentId>,
+    /// Keep the exact archive namespace that prepared this level.
+    catalog: Option<std::sync::Arc<crate::assets::archive::Catalog>>,
 }
 
 impl LevelLifetime {
-    pub fn begin(world: &mut World) -> (Self, HashSet<ComponentId>) {
+    pub fn begin(world: &mut World, catalog: std::sync::Arc<crate::assets::archive::Catalog>) -> (Self, HashSet<ComponentId>) {
         let host_entities = world.query::<Entity>().iter(world).collect();
         let resources = world.iter_resources().map(|(info, _)| info.id()).collect();
         (
             Self {
                 host_entities,
                 resources: Vec::new(),
+                catalog: Some(catalog),
             },
             resources,
         )
@@ -93,7 +96,6 @@ impl LevelLifetime {
                 }
             }
         }
-        crate::edge_animation::release_level();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
         if let (Some(images), Some(shared)) = (
@@ -105,6 +107,10 @@ impl LevelLifetime {
         drop(model_history);
         drop(material_history);
         drop(skeletal_history);
+        if let Some(catalog) = self.catalog.take() {
+            crate::edge_animation::release_level(&catalog);
+            catalog.release_animset_level();
+        }
         crate::edge_skeleton::release_unused();
         Ok(())
     }

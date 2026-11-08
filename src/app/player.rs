@@ -137,7 +137,7 @@ fn load_arm(
         .to_owned();
     let rig = Rig::acquire(catalog, &model)?;
     let (bind_joint, bind_t, bind_r) = body.tag(tag)?;
-    let mut clips = Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
+    let mut clips = Clips { catalog, rig: &rig, rest: &rig.skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
     let mut data = LocoData::default();
     for (stance, speeds) in decls::loco_stances(locomotion, [EQUIP; 2])? {
         let mut sets: [Option<SpeedSet>; 4] = Default::default();
@@ -146,6 +146,10 @@ fn load_arm(
                 continue;
             }
             if let Some(names) = &entry.arms[side] {
+                // 703460 -> 243cd0 -> 243980 requires the selected set's
+                // generated movement; the source then overrides average
+                // speeds with this stance's three authored values.
+                for name in names { rig.movement(name)?; }
                 sets[entry.speed] = Some(SpeedSet { clips: [clips.clip(&names[0])?, clips.clip(&names[1])?, clips.clip(&names[2])?, clips.clip(&names[3])?], speeds: entry.speeds });
             }
         }
@@ -191,7 +195,7 @@ fn load_body(
         controls: [rig.joint(&camera.head_joint)?, rig.joint(&camera.neck_joint)?, rig.joint(&camera.arms_joint)?],
         anchor: rig.skeleton.joint_names.iter().position(|n| n == "anchor_jnt"),
     };
-    let mut clips = Clips { catalog, aliases: &rig.aliases, rest: &body_skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
+    let mut clips = Clips { catalog, rig: &rig, rest: &body_skeleton.rest, animations: Vec::new(), loaded: HashMap::new() };
     let mut clip = |alias: &str| clips.clip(alias);
     use crate::gameplay::player::animation::{LocoData, SpeedSet, Transition};
     let mut body_data = LocoData::default();
@@ -203,6 +207,9 @@ fn load_body(
                 continue;
             }
             let set = |names: &[String; 4], clip: &mut dyn FnMut(&str) -> Result<usize, String>| -> Result<SpeedSet, String> {
+                // 243980 validates the generated record before 243cd0
+                // applies the selected stance's authored speed override.
+                for name in names { rig.movement(name)?; }
                 Ok(SpeedSet { clips: [clip(&names[0])?, clip(&names[1])?, clip(&names[2])?, clip(&names[3])?], speeds: entry.speeds })
             };
             if let Some(names) = &entry.body {
@@ -260,7 +267,7 @@ fn load_body(
     let mut arm_clips: Vec<Clips> = arms
         .iter_mut()
         .zip(&arm_rigs)
-        .map(|(arm, rig)| Clips { catalog, aliases: &rig.aliases, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
+        .map(|(arm, rig)| Clips { catalog, rig, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
         .collect();
     for path in scene_paths {
         let resource = format!("generated/decls/midnightscene/{path}.decl");

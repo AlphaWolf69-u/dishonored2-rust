@@ -73,6 +73,10 @@ impl Names {
 pub struct Catalog {
     /// Distinguish independently opened catalogs for session metadata caches.
     identity: u64,
+    /// One session owner for live AnimSet declaration identities.
+    pub(crate) animset_declarations: std::sync::Mutex<crate::assets::animation_rig::animset::Registry>,
+    /// One resource-list identity owner for this catalog's animation clips.
+    pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
@@ -91,9 +95,15 @@ pub struct Catalog {
 
 impl Drop for Catalog {
     fn drop(&mut self) {
+        self.animset_declarations.get_mut().unwrap_or_else(|error| error.into_inner()).release_session();
+        if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
+            eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
+        }
         // Host read accounting belongs to this immutable archive namespace;
         // releasing it must not leave credits for a later Catalog identity.
-        crate::loading::retire_catalog(self.identity);
+        let animations = crate::assets::edge_animation::retire_catalog(
+            self.animation_resources.get_mut().unwrap_or_else(|error| error.into_inner()).take());
+        crate::loading::retire_catalog(self.identity, animations);
     }
 }
 
@@ -128,6 +138,12 @@ fn image_program_key(source: &str) -> String {
 }
 
 impl Catalog {
+    /// Trim dead level AnimSet identities without dropping the session root
+    /// or declarations still retained by live model/scene owners.
+    pub(crate) fn release_animset_level(&self) {
+        self.animset_declarations.lock().unwrap_or_else(|error| error.into_inner()).release_level(self);
+    }
+
     /// 140066ac0..140066b8c classifies these as streamed rather than map
     /// preload requests. The load-list reader already normalizes this path.
     pub(crate) fn preloads(&self, path: &str) -> bool {
@@ -274,6 +290,8 @@ impl Catalog {
         };
         Ok(Self {
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            animset_declarations: Default::default(),
+            animation_resources: Default::default(),
             containers: Default::default(),
             kinds,
             base: base.to_path_buf(),

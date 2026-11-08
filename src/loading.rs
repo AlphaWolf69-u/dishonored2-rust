@@ -221,11 +221,10 @@ pub(crate) fn set_common_texts(catalog: u64, common: Option<std::sync::Arc<crate
 /// Retire host session caches when their archive namespace ends, then remove
 /// its diagnostic read identities. This does not run on ordinary map unload:
 /// 1400661e0's init/common resources remain available across those transitions.
-pub(crate) fn retire_catalog(catalog: u64) {
+pub(crate) fn retire_catalog(catalog: u64, animations: usize) {
     // Each owner removes only cache references for this exact identity. Live
     // actor/movie/render leases keep their immutable payload until final use.
     // Do not hold STATE while dropping owners: release diagnostics can use it.
-    let animations = crate::assets::edge_animation::retire_catalog(catalog);
     let blur = crate::assets::camera_blur::retire_catalog(catalog);
     let contacts = crate::assets::entities::contacts::retire_catalog(catalog);
     let declarations = crate::assets::declaration_texts::retire_catalog(catalog);

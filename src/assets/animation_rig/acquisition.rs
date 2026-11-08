@@ -20,10 +20,9 @@ impl Drop for Audit {
 }
 fn owned_bytes(rig: &Rig) -> usize {
     std::mem::size_of::<Rig>() + rig.path.len()
-        + (rig.tokens.len() + rig.animsets.len()) * std::mem::size_of::<String>()
-        + rig.tokens.iter().map(String::len).sum::<usize>() + rig.animsets.iter().map(String::len).sum::<usize>()
-        + rig.aliases.len() * std::mem::size_of::<(String, String)>()
-        + rig.aliases.iter().map(|(key, value)| key.len() + value.len()).sum::<usize>()
+        + rig.tokens.len() * std::mem::size_of::<String>()
+        + rig.tokens.iter().map(String::len).sum::<usize>()
+        + rig.animsets.capacity() * std::mem::size_of::<Arc<super::animset::AnimSet>>()
 }
 fn wrap(rig: Rig) -> Arc<Rig> {
     let mut rig = Arc::new(rig);
@@ -56,7 +55,13 @@ fn report(model: &str, mode: &str, start: Option<Instant>, cycles: Option<u64>, 
     for pair in &rig.skeleton.hierarchy { for value in pair { decoded.update(&value.to_le_bytes()); } }
     for row in rig.skeleton.inverse_bind.iter().flatten() { for value in row { decoded.update(&value.to_bits().to_le_bytes()); } }
     for name in &rig.skeleton.joint_names { decoded.update(name.as_bytes()); }
-    let mut aliases: Vec<_> = rig.aliases.iter().collect();
+    // Diagnostic only: reconstruct the previous flattened view without
+    // retaining duplicate alias definitions in every live rig.
+    let mut flattened = std::collections::HashMap::new();
+    for set in rig.animsets.iter().rev() {
+        for (name, path) in set.entries() { flattened.insert(name, path); }
+    }
+    let mut aliases: Vec<_> = flattened.into_iter().collect();
     aliases.sort_unstable_by_key(|(name, _)| *name);
     for (name, path) in aliases { decoded.update(name.as_bytes()); decoded.update(path.as_bytes()); }
     // Skeleton bytes are reported by its own identity; count only rig-owned
