@@ -52,6 +52,15 @@ pub fn report() -> Vec<(&'static str, isize)> {
     out
 }
 
+/// Read one diagnostic tag without allocating a report snapshot.
+/// None means this binary has no tracking allocator.
+pub fn live_bytes(name: &str) -> Option<isize> {
+    if !cfg!(feature = "debug_allocations") { return None; }
+    let names = NAMES.lock().unwrap_or_else(|error| error.into_inner());
+    Some(names.iter().position(|candidate| *candidate == name)
+        .map_or(0, |index| LIVE[index].load(Ordering::Relaxed)))
+}
+
 /// Live blocks of at least `BIG_BYTES`, with the stack that allocated them.
 #[cfg(feature = "debug_allocations")]
 static BIG: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>> =

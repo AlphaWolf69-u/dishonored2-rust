@@ -172,6 +172,10 @@ impl IggyFile {
     /// The weak file-local entry cannot retain the provider or form a cycle
     /// with the provider's source lease. Glyph pages remain movie-owned.
     pub fn shared_font(self: &Rc<Self>, id: usize) -> Result<Option<Rc<Font>>> {
+        // Libraries ask about every character. Reject other record kinds
+        // before cache controls/tag bookkeeping; only fonts need that work.
+        let Some(record) = self.character(id)? else { return Ok(None) };
+        if record.u8(0)? != kind::FONT { return Ok(None); }
         // Acquisition A/B uses the same player and immutable source bytes.
         if std::env::var("DH2_DEBUG_EAGER_FONT_OUTLINES").as_deref() == Ok("1") {
             return self.read_font(id, None).map(|font| font.map(Rc::new));
