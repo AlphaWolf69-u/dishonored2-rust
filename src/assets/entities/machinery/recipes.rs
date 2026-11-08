@@ -123,6 +123,7 @@ fn physics_systems(
             let Some(binding) = crate::bmd6::resolve_skeleton_binding(&p.resource_path, read)? else {
                 return Err(format!("{id}: MD6 has no skeleton"));
             };
+            let skeleton = binding.name.ok_or_else(|| format!("{id}: MD6 has no skeleton"))?;
             let ragdoll = binding.ragdoll.ok_or_else(|| format!("{id}: MD6 init has no ragdoll"))?;
             let stem = ragdoll
                 .strip_suffix(".hkt")
@@ -134,7 +135,7 @@ fn physics_systems(
                     physworld::physics_system::AcquireError::Parse(error) => format!("{id}: {error}"),
                 })?
                 .ok_or_else(|| format!("{id}: missing {path}"))?;
-            let map = physworld::physics_system::ragdoll_path(&binding.name, &ragdoll);
+            let map = physworld::physics_system::ragdoll_path(&skeleton, &ragdoll);
             let ragdoll = sources.ragdoll(catalog, &map)
                 .map_err(|error| match error {
                     physworld::physics_system::AcquireError::Read(error)
@@ -151,7 +152,7 @@ fn physics_systems(
                 position: p.position,
                 orientation: physworld::rotation_quaternion(basis),
                 system,
-                skeleton: binding.name,
+                skeleton,
                 ragdoll,
                 collision_layer: layer.clone(),
             }))

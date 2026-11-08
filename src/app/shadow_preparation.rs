@@ -446,7 +446,7 @@ pub(super) fn rest_skinning(
     })?;
     let name = binding
         .as_ref()
-        .map(|binding| binding.name.as_str())
+        .and_then(|binding| binding.name.as_deref())
         .filter(|name| !name.is_empty())
         .or_else(|| (!model.skeleton_name.is_empty()).then_some(model.skeleton_name.as_str()))
         .ok_or("MD6 init has no actual skeleton binding")?;

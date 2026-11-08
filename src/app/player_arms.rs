@@ -227,7 +227,7 @@ pub(super) fn load_player_arms(
         let binding = bmd6::resolve_skeleton_binding(&resource, declaration)?;
         let skeleton_name = binding
             .as_ref()
-            .map(|binding| binding.name.as_str())
+            .and_then(|binding| binding.name.as_deref())
             .filter(|name| !name.is_empty())
             .or_else(|| (!info.skeleton_name.is_empty()).then_some(info.skeleton_name.as_str()))
             .ok_or_else(|| format!("{model} has no skeleton binding"))?;

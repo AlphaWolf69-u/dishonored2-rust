@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 const TAGS: usize = 64;
 static LIVE: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
+#[cfg(feature = "debug_allocations")]
+static RESERVED: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
 static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
 
 thread_local! {
@@ -55,13 +57,26 @@ pub fn report() -> Vec<(&'static str, isize)> {
     out
 }
 
-/// Read one diagnostic tag without allocating a report snapshot.
-/// None means this binary has no tracking allocator.
+/// Read one diagnostic allocation tag without allocating a report snapshot.
+/// None means this binary was built without the tracking allocator.
 pub fn live_bytes(name: &str) -> Option<isize> {
     if !cfg!(feature = "debug_allocations") { return None; }
     let names = NAMES.lock().unwrap_or_else(|error| error.into_inner());
     Some(names.iter().position(|candidate| *candidate == name)
         .map_or(0, |index| LIVE[index].load(Ordering::Relaxed)))
+}
+
+/// Bytes requested from the diagnostic allocator's System backend, including
+/// its actual per-allocation tag prefix; excludes System's internal overhead.
+pub fn live_reserved_bytes(name: &str) -> Option<isize> {
+    #[cfg(feature = "debug_allocations")]
+    {
+        let names = NAMES.lock().unwrap_or_else(|error| error.into_inner());
+        Some(names.iter().position(|candidate| *candidate == name)
+            .map_or(0, |index| RESERVED[index].load(Ordering::Relaxed)))
+    }
+    #[cfg(not(feature = "debug_allocations"))]
+    { let _ = name; None }
 }
 
 /// Live blocks of at least `BIG_BYTES`, with the stack that allocated them.
@@ -142,6 +157,7 @@ unsafe impl std::alloc::GlobalAlloc for TaggedAllocator {
         let tag = CURRENT.try_with(|c| c.get()).unwrap_or(0);
         unsafe { base.write(tag) };
         LIVE[tag as usize].fetch_add(layout.size() as isize, Ordering::Relaxed);
+        RESERVED[tag as usize].fetch_add(full.size() as isize, Ordering::Relaxed);
         let ptr = unsafe { base.add(prefix) };
         if layout.size() >= BIG_BYTES {
             record_big(ptr as usize, layout.size(), true);
@@ -158,6 +174,7 @@ unsafe impl std::alloc::GlobalAlloc for TaggedAllocator {
         let tag = unsafe { base.read() };
         LIVE[tag as usize].fetch_sub(layout.size() as isize, Ordering::Relaxed);
         let full = unsafe { std::alloc::Layout::from_size_align_unchecked(layout.size() + prefix, layout.align().max(16)) };
+        RESERVED[tag as usize].fetch_sub(full.size() as isize, Ordering::Relaxed);
         unsafe { std::alloc::System.dealloc(base, full) };
     }
 }
