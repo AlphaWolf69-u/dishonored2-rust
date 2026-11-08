@@ -1,6 +1,7 @@
 //! 0607f0 item-declaration leases shared by world reading and Journal opens.
 use super::*;
 use std::sync::{Arc, Mutex, Weak};
+#[derive(Debug)]
 pub struct PickableItem {
     pub path: Arc<str>,
     pub readable: Option<PickableReadable>,
@@ -9,12 +10,13 @@ pub struct PickableItem {
     audio: Option<(String, String)>,
     pickup_image: Option<String>,
 }
+#[derive(Debug)]
 pub enum PickableReadable {
     Note(Readable),
     Other(Readable, PickableOtherKind),
     Map(crate::assets::interactive_map::Map),
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum PickableOtherKind { Map, Audiograph, Item }
 impl PickableItem {
     pub fn item_type(&self) -> &str { self.item_type.as_deref().unwrap_or("0") }
@@ -50,6 +52,9 @@ impl PickableSources {
     pub fn acquire(&mut self, catalog: &Catalog, path: &str) -> Result<Arc<PickableItem>, String> {
         if self.catalog_identity.is_some_and(|id| id != catalog.identity()) { return Err("item source belongs to another catalog".into()); }
         self.catalog_identity = Some(catalog.identity());
+        // Acquisition is off-thread, outside the frame loop. Retire dead
+        // weak identities here; admitted inventory entries keep their leases.
+        self.retire_unused();
         let key: Arc<str> = Arc::from(path.replace('\\', "/").to_ascii_lowercase());
         if !catalog.has_overlays() {
             if let Some(item) = self.items.get(&key).and_then(Weak::upgrade) { return Ok(item); }

@@ -178,13 +178,13 @@ pub(super) fn focus_and_interact(
                 let (accepted, portable) = match &read.item.readable {
                     Some(PickableReadable::Note(note)) => {
                         let id = if note.title.is_empty() { 0 } else { crate::assets::lang::key_id(&note.title) };
-                        (inventory.admit(read.path, id, note.kind, maximum, &read.item.modifiers), note.can_be_picked_up)
+                        (inventory.admit(read.path, id, note.kind, maximum, read.item.clone()), note.can_be_picked_up)
                     },
                     Some(PickableReadable::Other(note, kind)) => {
                         let id = if note.title.is_empty() { 0 } else { crate::assets::lang::key_id(&note.title) };
                         let accepted = match kind {
-                            PickableOtherKind::Map => inventory.admit_map(read.path,id,maximum,&read.item.modifiers),
-                            PickableOtherKind::Audiograph => inventory.admit_audiograph(read.path,id,maximum,&read.item.modifiers),
+                            PickableOtherKind::Map => inventory.admit_map(read.path,id,maximum,read.item.clone()),
+                            PickableOtherKind::Audiograph => inventory.admit_audiograph(read.path,id,maximum,read.item.clone()),
                             PickableOtherKind::Item => inventory.add_with_modifiers(&read.path,1,maximum,&read.item.modifiers) != 0,
                         };
                         (accepted,note.can_be_picked_up)
@@ -192,7 +192,7 @@ pub(super) fn focus_and_interact(
                     Some(PickableReadable::Map(map)) => {
                         let name = if map.title.is_empty() { &map.item_name } else { &map.title };
                         let id = if name.is_empty() { 0 } else { crate::assets::lang::key_id(name) };
-                        (inventory.admit_map(read.path,id,maximum,&read.item.modifiers),map.can_be_picked_up)
+                        (inventory.admit_map(read.path,id,maximum,read.item.clone()),map.can_be_picked_up)
                     },
                     None => { warn!("READ_NOTE item has no presentation"); return; },
                 };
@@ -255,8 +255,7 @@ pub(super) fn focus_and_interact(
             let classify = |key, owner| {
                 use crate::gameplay::interaction_sensor::OcclusionHit;
                 let owner = world.0.owner_name(owner);
-                if owner == Some(entity) || owner.and_then(|name| interactions.parent.get(name)).is_some_and(|parent|
-                    parent == entity || interactions.parent.get(parent).is_some_and(|grandparent| grandparent == entity)) {
+                if owner == Some(entity) || owner.and_then(|name| interactions.parent.get(name)).is_some_and(|parent| parent == entity) {
                     OcclusionHit::Target
                 } else if owner.is_some_and(|name| interactions.breakable.contains(name))
                     && world.0.physics_material(key).is_some_and(|material| material.can_blink_through()) {

@@ -113,6 +113,7 @@ impl Movie {
             (screen.0 as u32, screen.1 as u32),
         ));
         let interval = 1.0 / player.state.borrow().frame_rate;
+        super::pause_menu::report_uncaught(&mut player, "Readable");
         Ok(Self {
             player,
             images,
@@ -124,6 +125,10 @@ impl Movie {
             last: None,
             _residency: residency,
         })
+    }
+
+    pub(super) fn report_uncaught(&mut self) {
+        super::pause_menu::report_uncaught(&mut self.player, "Readable");
     }
 
     pub fn interval(&self) -> f64 {
@@ -153,6 +158,7 @@ impl Movie {
                 serial: self.serial,
             });
         }
+        self.report_uncaught();
         Ok(Frame {
             frame: if changed || force {
                 self.last.clone()

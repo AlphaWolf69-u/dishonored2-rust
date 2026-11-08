@@ -120,6 +120,24 @@ pub fn entity_component(entity: &str, kind: &str,
     Ok(result)
 }
 
+/// Resolve matching component declarations in their inherited entity slot
+/// order, sharing the same component-declaration cache for the whole entity.
+pub fn entity_components_with_prefix(entity: &str, prefix: &str,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<(String, Fields)>, String>
+{
+    let entries = component_entries(&entity_chain(entity, &mut read)?);
+    let mut cache = HashMap::new();
+    let mut result = Vec::new();
+    for (_, entry) in entries {
+        let Some(name) = atom(&entry, "inheritedDecl") else { continue };
+        let Some(kind) = kind_of(name).filter(|kind| kind.starts_with(prefix)) else { continue };
+        let mut fields = component_fields(kind, name, 0, &mut cache, &mut read)?;
+        if let Some(inline) = scope(field(&entry, "inlineDecl")) { overlay(&mut fields, inline); }
+        result.push((kind.to_owned(), fields));
+    }
+    Ok(result)
+}
+
 /// The components the player locomotion reads.
 const PLAYER_COMPONENTS: [&str; 15] = [
     "cpntplayerphysics",

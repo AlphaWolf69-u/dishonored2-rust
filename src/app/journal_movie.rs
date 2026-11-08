@@ -10,29 +10,6 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 
-pub(super) type ItemSources = Arc<std::sync::Mutex<inventory_item::PickableSources>>;
-
-struct ItemLeases {
-    sources: ItemSources,
-    items: HashMap<String, Arc<inventory_item::PickableItem>>,
-}
-impl ItemLeases {
-    fn acquire(&mut self, catalog: &Catalog, path: &str) -> Result<Arc<inventory_item::PickableItem>, String> {
-        let key = path.replace('\\', "/").to_ascii_lowercase();
-        if let Some(item) = self.items.get(&key) { return Ok(item.clone()); }
-        let item = self.sources.lock().map_err(|_| "item source lock poisoned")?.acquire(catalog, path)?;
-        self.items.insert(key, item.clone());
-        Ok(item)
-    }
-}
-impl Drop for ItemLeases {
-    fn drop(&mut self) {
-        // This owner lives and drops on the UI worker, including failed opens.
-        self.items.clear();
-        if let Ok(mut sources) = self.sources.lock() { sources.retire_unused(); }
-    }
-}
-
 pub(super) struct PowerData {
     pub definitions: Arc<(Vec<crate::assets::power_journal::Power>, String)>,
     pub quantities: HashMap<String, u32>,
@@ -104,7 +81,6 @@ pub(super) struct Movie {
     audiographs: Vec<JournalItem>,
     purchase_object: Option<crate::flash::avm2::object::Obj>,
     _residency: Option<super::pause_menu::MovieResidency>,
-    items: ItemLeases,
 }
 
 impl Movie {
@@ -118,11 +94,9 @@ impl Movie {
         playing_audiograph: Option<u32>,
         powers: Option<PowerData>,
         gameflow: Option<crate::gameplay::gameflow::State>,
-        item_sources: ItemSources,
     ) -> Result<Self, String> {
         let base = installation::game_base().map_err(|e| e.to_string())?;
         let catalog = Catalog::shared(&base).map_err(|e| e.to_string())?;
-        let mut item_leases = ItemLeases { sources: item_sources, items: HashMap::new() };
         let language = lang::read_text_language(&base)?;
         let path = super::pause_menu::state_movie(
             &catalog,
@@ -167,7 +141,7 @@ impl Movie {
             )
             .map_err(|e| player.describe(&e))?;
         // 140520890/140520af0 populate the two inventory lists in reverse
-        // order. Resolve their declarations only when the journal opens.
+        // order, reading the actual declaration leases retained by inventory.
         for (kind, provider, new_flag) in [
             (
                 ReadableKind::Document,
@@ -190,7 +164,7 @@ impl Movie {
                 .map_err(|e| player.describe(&e))?;
             let mut any_new = false;
             for (index, entry) in entries.iter().enumerate() {
-                let item = item_leases.acquire(&catalog, &entry.path)?;
+                let item = &entry.declaration;
                 let readable = match item.readable.as_ref() {
                     Some(inventory_item::PickableReadable::Note(readable)) => readable,
                     _ => return Err(format!("not a readable item: {}", entry.path)),
@@ -248,7 +222,7 @@ impl Movie {
         player.set_value("journalData.notes.audiographsData.elements.length", (audio_entries.len() as u32).into()).map_err(|e| player.describe(&e))?;
         let mut audio_new = false;
         for (index, entry) in audio_entries.iter().enumerate() {
-            let item = item_leases.acquire(&catalog, &entry.path)?;
+            let item = &entry.declaration;
             let (name, description, image) = item.audiograph_text().ok_or_else(|| format!("not an audiograph: {}", entry.path))?;
             let element = format!("journalData.notes.audiographsData.elements.data[{index}]");
             for (field, key) in [("label", name), ("description", description)] {
@@ -269,7 +243,7 @@ impl Movie {
         player.set_value("journalData.notes.mapsData.elements.length", (map_entries.len() as u32).into()).map_err(|e| player.describe(&e))?;
         let mut any_new = false;
         for (index, entry) in map_entries.iter().enumerate() {
-            let item = item_leases.acquire(&catalog, &entry.path)?;
+            let item = &entry.declaration;
             let map = item.map().map_err(str::to_owned)?
                 .ok_or_else(|| format!("not an interactive map: {}", entry.path))?;
             let element = format!("journalData.notes.mapsData.elements.data[{index}]");
@@ -375,6 +349,7 @@ impl Movie {
             (screen.0 as u32, screen.1 as u32),
         ));
         let interval = 1.0 / player.state.borrow().frame_rate;
+        super::pause_menu::report_uncaught(&mut player, "Journal");
         Ok(Self {
             player,
             images,
@@ -389,12 +364,13 @@ impl Movie {
             audiographs,
             purchase_object: None,
             _residency: residency,
-            items: item_leases,
         })
     }
 
     pub(super) fn item(&self, path: &str) -> Option<&inventory_item::PickableItem> {
-        self.items.items.get(&path.replace('\\', "/").to_ascii_lowercase()).map(Arc::as_ref)
+        self.documents.iter().find(|entry| entry.path.eq_ignore_ascii_case(path)).map(|entry| entry.declaration.as_ref())
+            .or_else(|| self.maps.iter().chain(&self.audiographs).find(|entry| entry.path.eq_ignore_ascii_case(path))
+                .map(|entry| entry.declaration.as_ref()))
     }
 
     /// The native callback writes cost=0 and refreshes runes only on a
@@ -424,6 +400,10 @@ impl Movie {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn report_uncaught(&mut self) {
+        super::pause_menu::report_uncaught(&mut self.player, "Journal");
     }
 
     pub(super) fn interval(&self) -> f64 {
@@ -531,7 +511,7 @@ impl Movie {
             let kind = match name.as_str() {
                 "OnDocumentsRead" | "OnShowDocument" => ReadableKind::Document,
                 "OnBooksRead" | "OnShowBook" => ReadableKind::Book,
-                _ => continue,
+                _ => { super::pause_menu::report_unknown_callback("Journal", &name); continue; },
             };
             let Some(value) = number else {
                 if name == "OnShowDocument" || name == "OnShowBook" {
@@ -568,6 +548,7 @@ impl Movie {
                 serial: self.serial,
             });
         }
+        self.report_uncaught();
         Ok((
             if changed || force {
                 self.last.clone()

@@ -189,10 +189,12 @@ pub(super) fn movie_notifications(player: &mut Player, closing: &str) -> (bool, 
     let mut closed = false;
     let mut sounds = Vec::new();
     for (name, args) in player.take_notifications() {
-        if name == closing { closed = true; }
+        if name == closing { closed = true; continue; }
         if name == "PostSoundEvent" {
             if let Some(Value::Number(id)) = args.first() { sounds.push(to_uint32(*id)); }
+            continue;
         }
+        if !closing.is_empty() { report_unknown_callback("Readable", &name); }
     }
     (closed, sounds)
 }
@@ -472,11 +474,17 @@ fn load(screen: (i32, i32), prepared: Option<Prepared>) -> Result<Loaded, String
     })
 }
 
-fn report_uncaught(player: &mut Player) {
+pub(super) fn report_uncaught(player: &mut Player, movie: &str) {
     let uncaught = std::mem::take(&mut player.state.borrow_mut().uncaught);
     for e in uncaught {
-        warn!("Pause movie: {e}");
+        warn!("{movie} movie: {e}");
     }
+}
+
+/// ExternalInterface calls are deferred by the shared VM; an unrecognized
+/// game callback must remain visible instead of disappearing from the queue.
+pub(super) fn report_unknown_callback(movie: &str, name: &str) {
+    warn!("{movie} movie: unhandled ExternalInterface callback {name}");
 }
 
 /// Everything queued since the thread last looked, in order, with each run
@@ -674,7 +682,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 if let Err(e) = target.key_event(down, vk, 0) {
                     warn!("Pause movie key: {}", target.describe(&e));
                 }
-                report_uncaught(target);
+                report_uncaught(target, "Pause");
             }
             Command::Cursor { x, y } => {
                 let Some(l) = loaded.as_mut() else { continue };
@@ -691,7 +699,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     if let Err(e) = moved {
                         warn!("Pause movie cursor: {}", target.describe(&e));
                     }
-                    report_uncaught(target);
+                    report_uncaught(target, "Pause");
                 }
             }
             Command::MouseButton { code, down } => {
@@ -714,7 +722,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 if let Err(e) = result {
                     warn!("Pause movie mouse: {}", target.describe(&e));
                 }
-                report_uncaught(target);
+                report_uncaught(target, "Pause");
             }
             Command::Wheel(delta) => {
                 let Some(l) = loaded.as_mut() else { continue };
@@ -723,7 +731,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 if let Err(e) = target.mouse_wheel(delta) {
                     warn!("Pause movie wheel: {}", target.describe(&e));
                 }
-                report_uncaught(target);
+                report_uncaught(target, "Pause");
             }
             Command::Tick(dt, sent) => {
                 let Some(l) = loaded.as_mut() else { continue };
@@ -739,12 +747,12 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     if let Err(e) = l.player.tick(step) {
                         warn!("Pause movie tick: {}", l.player.describe(&e));
                     }
-                    report_uncaught(&mut l.player);
+                    report_uncaught(&mut l.player, "Pause");
                     if let Some(g) = l.pause.boxes.global() {
                         if let Err(e) = g.tick(step) {
                             warn!("Message box movie tick: {}", g.describe(&e));
                         }
-                        report_uncaught(g);
+                        report_uncaught(g, "Global");
                     }
                 }
                 phases[1] = tick_started.elapsed();

@@ -7,7 +7,7 @@ use super::super::{interaction_focus::{DiscoveredDocuments, DocumentEntry, Journ
 pub(super) enum Kind { Journal, Readable }
 pub(super) struct Snapshot {
     documents: Vec<DocumentEntry>, maps: Vec<JournalItem>, audiographs: Vec<JournalItem>,
-    progress: Option<crate::gameplay::gameflow::State>, sources: journal_movie::ItemSources,
+    progress: Option<crate::gameplay::gameflow::State>,
 }
 pub(super) struct Command { pub epoch: u64, pub operation: Operation }
 pub(super) enum Operation {
@@ -38,7 +38,7 @@ impl Worker {
                 Operation::Journal { screen, path, snapshot } => {
                     self.clear(); *generation = generation.wrapping_add(1);
                     self.journal = Some(journal_movie::Movie::load(screen, *generation, &path,
-                        snapshot.documents, snapshot.maps, snapshot.audiographs, None, None, snapshot.progress, snapshot.sources)?);
+                        snapshot.documents, snapshot.maps, snapshot.audiographs, None, None, snapshot.progress)?);
                     send(Notification::Ready(Kind::Journal));
                 },
                 Operation::Readable { screen, path, presentation } => {
@@ -93,6 +93,10 @@ impl Worker {
             }
             Ok(())
         })();
+        // Lifecycle/event callbacks store uncaught AS3 exceptions as Iggy
+        // does; drain the same reporter as Pause after every operation.
+        if let Some(movie) = &mut self.readable { movie.report_uncaught(); }
+        if let Some(movie) = &mut self.journal { movie.report_uncaught(); }
         if let Err(error) = result { self.clear(); send(Notification::Failed(error)); }
     }
 }
@@ -114,7 +118,6 @@ pub struct Data<'w> {
     logic: Option<ResMut<'w, GameLogic>>,
     progress: Option<ResMut<'w, crate::gameplay::gameflow::State>>,
     requests: Option<ResMut<'w, readable_movie::ReadableRequests>>,
-    sources: Option<Res<'w, crate::assets::inventory_item::PickableSourceLease>>,
 }
 impl Session {
     pub fn hud_ready(&mut self) { self.hud_ready = true; }
@@ -168,10 +171,9 @@ impl Session {
         inventory: Option<&DiscoveredDocuments>, commands: &Sender<super::Command>) -> Result<(), String> {
         if self.active.is_some() || !self.hud_ready { return Ok(()); }
         let inventory = inventory.ok_or("Journal inventory owner is absent")?;
-        let sources = data.sources.as_ref().ok_or("Journal item source owner is absent")?.0.clone();
         let progress = data.progress.as_deref().cloned();
         let snapshot = Snapshot { documents: inventory.items().to_vec(), maps: inventory.maps().to_vec(),
-            audiographs: inventory.audiographs().to_vec(), progress, sources };
+            audiographs: inventory.audiographs().to_vec(), progress };
         let path = self.switch(StateId::JOURNAL, data)?;
         self.send(epoch, Operation::Journal { screen, path, snapshot }, commands);
         Ok(())
@@ -204,7 +206,8 @@ impl Session {
     }
     pub fn tick(&mut self, epoch: u64, commands: &Sender<super::Command>) {
         if self.active.is_some() && self.ready && !self.in_flight {
-            self.send(epoch, Operation::Tick(std::mem::take(&mut self.elapsed)), commands); self.in_flight = true;
+            let elapsed = std::mem::take(&mut self.elapsed);
+            self.send(epoch, Operation::Tick(elapsed), commands); self.in_flight = true;
         }
     }
     pub fn event(&mut self, epoch: u64, event: Event, screen: (i32,i32), data: &mut Data,

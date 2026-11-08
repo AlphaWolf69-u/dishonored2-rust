@@ -156,6 +156,9 @@ pub(super) struct DiscoveredDocuments {
 }
 #[derive(Clone, Debug)]
 pub(super) struct DocumentEntry {
+    /// 63c630 stores the inventory record's declaration pointer. History
+    /// retains that same lease while the admitted journal entry exists.
+    pub declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>,
     pub path: String,
     pub item_id: u32,
     pub kind: crate::assets::inventory_item::ReadableKind,
@@ -164,6 +167,7 @@ pub(super) struct DocumentEntry {
 
 #[derive(Clone, Debug)]
 pub(super) struct JournalItem {
+    pub declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>,
     pub path: String,
     /// Map entries use the map-info title ID (falling back to item name);
     /// audiographs use the inventory item's name ID.
@@ -258,27 +262,27 @@ impl DiscoveredDocuments {
     /// 1407241c0 inserts inventory additions as new entries. The caller must
     /// invoke this only after the gameplay inventory admits the item.
     pub fn admit(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind,
-        maximum: u32, modifiers: &crate::assets::inventory_item::ItemModifiers) -> bool {
-        if self.add_with_modifiers(&path, 1, maximum, modifiers) == 0 { return false; }
+        maximum: u32, declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
+        if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
         if self.items.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) { return true; }
-        self.items.push(DocumentEntry { path, item_id, kind, is_new: true });
+        self.items.push(DocumentEntry { declaration, path, item_id, kind, is_new: true });
         true
     }
 
     pub fn admit_map(&mut self, path: String, item_id: u32, maximum: u32,
-        modifiers: &crate::assets::inventory_item::ItemModifiers) -> bool {
-        if self.add_with_modifiers(&path, 1, maximum, modifiers) == 0 { return false; }
+        declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
+        if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
         if !self.maps.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) {
-            self.maps.push(JournalItem { path, item_id, is_new: true });
+            self.maps.push(JournalItem { declaration, path, item_id, is_new: true });
         }
         true
     }
 
     pub fn admit_audiograph(&mut self, path: String, item_id: u32, maximum: u32,
-        modifiers: &crate::assets::inventory_item::ItemModifiers) -> bool {
-        if self.add_with_modifiers(&path, 1, maximum, modifiers) == 0 { return false; }
+        declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
+        if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
         if !self.audiographs.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) {
-            self.audiographs.push(JournalItem { path, item_id, is_new: true });
+            self.audiographs.push(JournalItem { declaration, path, item_id, is_new: true });
         }
         true
     }
