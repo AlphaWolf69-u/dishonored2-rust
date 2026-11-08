@@ -30,6 +30,9 @@ pub fn tag(name: &'static str) -> Guard {
     let index = {
         let mut names = NAMES.lock().unwrap();
         if names.is_empty() {
+            // Process diagnostic metadata must not grow under a resource tag.
+            // The registry is bounded by TAGS; allocate once before first use.
+            names.reserve_exact(TAGS);
             names.push("untagged");
         }
         match names.iter().position(|n| *n == name) {
