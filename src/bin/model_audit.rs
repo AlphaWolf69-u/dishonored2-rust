@@ -409,13 +409,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut children = 0usize;
         let mut missing_models = 0usize;
         let mut failures = Vec::new();
+        let mut blueprint_sources = entities::blueprint::Sources::new(&catalog);
         for placement in &blueprints {
-            let Some(bytes) = catalog.read(&placement.resource_path)? else {
-                failures.push(format!("missing declaration {}", placement.resource_path));
-                continue;
-            };
-            match entities::expand_blueprint(placement, &String::from_utf8_lossy(&bytes)) {
-                Ok(items) => {
+            match blueprint_sources.expand(placement) {
+                Ok(Some(items)) => {
                     children += items.len();
                     for item in items {
                         if !catalog.contains(&item.resource_path) {
@@ -423,6 +420,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
+                Ok(None) => failures.push(format!("missing declaration {}", placement.resource_path)),
                 Err(error) => failures.push(format!("{}: {error}", placement.resource_path)),
             }
         }
@@ -516,19 +514,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         let mut placements = entities::render_placements(&doc);
         let mut cursor = 0;
+        let mut blueprint_sources = entities::blueprint::Sources::new(&catalog);
         while cursor < placements.len() {
             let placement = &placements[cursor];
             if placement.resource_path.ends_with(".blueprint.decl") {
                 if placement.id.matches("#blueprint[").count() >= 16 {
                     return Err(format!("Blueprint nesting exceeds16: {}", placement.id).into());
                 }
-                let bytes = catalog
-                    .read(&placement.resource_path)?
-                    .ok_or("missing blueprint")?;
-                placements.extend(entities::expand_blueprint(
-                    placement,
-                    &String::from_utf8_lossy(&bytes),
-                )?);
+                placements.extend(blueprint_sources.expand(placement)?.ok_or("missing blueprint")?);
             }
             cursor += 1;
         }

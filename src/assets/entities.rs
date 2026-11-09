@@ -1,4 +1,5 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
+pub mod blueprint;
 use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
@@ -2595,98 +2596,10 @@ pub fn pickups(document: &Document) -> Vec<Pickup> {
     result
 }
 
-/// Expand a Void blueprint's authored submodels through its parent transform.
-/// The basis stores the full affine linear transform, including any shear
-/// produced by nonuniform parent scale followed by child rotation.
-pub fn expand_blueprint(
-    parent: &PlacedModel,
-    declaration: &str,
-) -> Result<Vec<PlacedModel>, String> {
-    let fields = parse_declaration(declaration)?;
-    let edit = scope(field(&fields, "edit")).ok_or("blueprint has no edit scope")?;
-    let submodels = scope(field(edit, "m_subModels")).ok_or("blueprint has no m_subModels")?;
-    let count = match field(submodels, "num") {
-        Some(Value::Atom(number)) => number
-            .parse::<usize>()
-            .map_err(|_| "invalid blueprint model count")?,
-        _ => return Err("blueprint has no model count".into()),
-    };
-    if count > 4096 {
-        return Err("blueprint model count exceeds 4096".into());
-    }
-    let mut children = Vec::with_capacity(count);
-    for index in 0..count {
-        let item = scope(field(submodels, &format!("item[{index}]")))
-            .ok_or_else(|| format!("blueprint missing item[{index}]"))?;
-        let model = match field(item, "m_model") {
-            Some(Value::Atom(path)) => path.trim_matches('"'),
-            _ => return Err(format!("blueprint item[{index}] has no model")),
-        };
-        let resource_path = if let Some(stem) = model.strip_suffix(".lwo") {
-            format!("generated/model/{stem}.bmodel")
-        } else if model.ends_with(".blueprint") {
-            format!("generated/decls/blueprint/{model}.decl")
-        } else {
-            return Err(format!("unsupported blueprint child model: {model}"));
-        };
-        let translation = scope(field(item, "m_translation"))
-            .and_then(|values| vector(values, [0.0; 3]))
-            .ok_or_else(|| format!("invalid blueprint item[{index}] translation"))?;
-        let child_scale = scope(field(item, "m_scale"))
-            .and_then(|values| vector(values, [1.0; 3]))
-            .ok_or_else(|| format!("invalid blueprint item[{index}] scale"))?;
-        let angles = scope(field(item, "m_rotation"))
-            .and_then(|values| {
-                Some([
-                    float(values, "pitch", 0.0)?,
-                    float(values, "yaw", 0.0)?,
-                    float(values, "roll", 0.0)?,
-                ])
-            })
-            .ok_or_else(|| format!("invalid blueprint item[{index}] rotation"))?;
-        // Blueprint pitch is authored around the upright Z axis. A 180-degree
-        // fence repeat must reverse its horizontal run without turning the
-        // upright spear and rails underneath the level.
-        let (sp, cp) = angles[0].to_radians().sin_cos();
-        let (sy, cy) = angles[1].to_radians().sin_cos();
-        let (sr, cr) = angles[2].to_radians().sin_cos();
-        let local = [
-            [cp * cy, sp * cy, -sy],
-            [cp * sy * sr - sp * cr, sp * sy * sr + cp * cr, cy * sr],
-            [cp * sy * cr + sp * sr, sp * sy * cr - cp * sr, cy * cr],
-        ];
-        let position = std::array::from_fn(|axis| {
-            parent.position[axis]
-                + (0..3)
-                    .map(|column| {
-                        parent.rotation[column][axis] * parent.scale[column] * translation[column]
-                    })
-                    .sum::<f32>()
-        });
-        let rotation = std::array::from_fn(|column| {
-            std::array::from_fn(|axis| {
-                (0..3)
-                    .map(|basis| {
-                        parent.rotation[basis][axis]
-                            * parent.scale[basis]
-                            * local[column][basis]
-                            * child_scale[column]
-                    })
-                    .sum::<f32>()
-            })
-        });
-        children.push(PlacedModel {
-            id: format!("{}#blueprint[{index}]", parent.id),
-            resource_path,
-            position,
-            scale: [1.0; 3],
-            rotation,
-            custom_materials: Vec::new(),
-            // Blueprint maxVisibleRangeVec ownership is not this parent's scalar.
-            max_visible_range: None,
-        });
-    }
-    Ok(children)
+/// Expand authored submodels through their parent's complete affine transform.
+/// Pure source-reader entry; production batches use blueprint::Sources.
+pub fn expand_blueprint(parent: &PlacedModel, declaration: &str) -> Result<Vec<PlacedModel>, String> {
+    Ok(blueprint::Blueprint::parse(declaration)?.expand(parent))
 }
 
 pub fn player_start(document: &Document) -> Option<PlayerStart> {

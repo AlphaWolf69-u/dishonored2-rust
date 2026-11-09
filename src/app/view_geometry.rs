@@ -490,6 +490,7 @@ pub(super) fn expanded_model_placements(
     placements: &[entities::PlacedModel],
     catalog: &archive::Catalog,
 ) -> Vec<entities::PlacedModel> {
+    let mut sources = entities::blueprint::Sources::new(catalog);
     let mut expanded = placements.to_vec();
     let mut index = 0;
     while index < expanded.len() {
@@ -498,21 +499,10 @@ pub(super) fn expanded_model_placements(
             if placement.id.matches("#blueprint[").count() >= 16 {
                 eprintln!("Blueprint nesting exceeds 16: {}", placement.id);
             } else {
-                match catalog.read(&placement.resource_path) {
-                    Ok(Some(bytes)) => match entities::expand_blueprint(
-                        placement,
-                        &String::from_utf8_lossy(&bytes),
-                    ) {
-                        Ok(children) => expanded.extend(children),
-                        Err(error) => eprintln!(
-                            "Blueprint parse failed {}: {error}",
-                            placement.resource_path
-                        ),
-                    },
+                match sources.expand(placement) {
+                    Ok(Some(children)) => expanded.extend(children),
                     Ok(None) => eprintln!("Blueprint not indexed: {}", placement.resource_path),
-                    Err(error) => {
-                        eprintln!("Blueprint read failed {}: {error}", placement.resource_path)
-                    }
+                    Err(error) => eprintln!("Blueprint expansion failed {}: {error}", placement.resource_path),
                 }
             }
         }

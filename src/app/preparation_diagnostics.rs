@@ -93,6 +93,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         crate::edge_skeleton::release_unused();
         result?;
         eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=released");
+        if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Blueprint preparation") {
+            eprintln!("BLUEPRINT_MEMORY phase=level-released step={step} bytes={bytes}");
+        }
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Motion scene resources") {
             eprintln!("MOTION_SCENE_MEMORY phase=level-released step={step} bytes={bytes}");
         }
@@ -120,6 +123,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Blueprint preparation") {
+        eprintln!("BLUEPRINT_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Motion scene resources") {
         eprintln!("MOTION_SCENE_MEMORY phase=catalog-released bytes={bytes}");
     }
