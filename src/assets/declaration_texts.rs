@@ -3,6 +3,47 @@
 use crate::assets::archive::Catalog;
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
+// Archive source buffers reserve an extra byte for oversized-stream detection.
+// The native lexer rules remain in entities::declaration_text (140135f70).
+static HANDOFF_MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+static HANDOFF_STATS: [std::sync::atomic::AtomicU64; 6] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+fn owned_text(bytes: Vec<u8>) -> String {
+    let (copy, trace) = *HANDOFF_MODE.get_or_init(|| (
+        std::env::var("DH2_DEBUG_COPY_CONTACT_TEXT").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_CONTACT_HANDOFF").as_deref() == Ok("1"),
+    ));
+    let started = trace.then(crate::loading::thread_cycles).flatten();
+    let input_len = bytes.len();
+    let input_pointer = bytes.as_ptr();
+    let mut direct = false;
+    let text = if copy || bytes.iter().any(|&byte|
+        byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace())) {
+        crate::entities::declaration_text(&bytes).into_owned()
+    } else {
+        direct = true;
+        let mut text = String::from_utf8(bytes).expect("validated ASCII declaration source");
+        // Match the former retained capacity instead of pinning the probe byte.
+        text.shrink_to_fit();
+        text
+    };
+    if trace {
+        let cycles = started.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        for (counter, value) in HANDOFF_STATS.iter().zip([
+            1, input_len as u64, u64::from(direct),
+            u64::from(direct && text.as_ptr() == input_pointer), text.capacity() as u64, cycles,
+        ]) { counter.fetch_add(value, std::sync::atomic::Ordering::Relaxed); }
+    }
+    text
+}
+pub(crate) fn report_text_handoff(phase: &str) {
+    if HANDOFF_MODE.get().is_none_or(|&(_, trace)| !trace) { return; }
+    let [calls, bytes, direct, same_buffer, retained_capacity, cycles] =
+        std::array::from_fn(|index| HANDOFF_STATS[index].load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("DECLARATION_TEXT_HANDOFF phase={phase} calls={calls} source_bytes={bytes} direct={direct} same_buffer={same_buffer} retained_capacity={retained_capacity} cycles={cycles}");
+}
+
 pub(crate) type TextMap = HashMap<String, String>;
 #[derive(Default)]
 pub(crate) struct DeclarationTexts {
@@ -103,7 +144,7 @@ impl PhysicsSeed {
         stats.reads += 1;
         let bytes = catalog.read(path).map_err(|error| error.to_string())?;
         stats.bytes += bytes.as_ref().map_or(0, Vec::len);
-        let text = bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned());
+        let text = bytes.map(|bytes| owned_text(bytes));
         if self.enabled {
             if let Some(value) = &text {
                 let key = key.into_owned();
@@ -151,7 +192,7 @@ pub(crate) fn read_common_or_catalog(catalog: &Catalog, path: &str) -> Result<Op
         }
     }
     catalog.read(path)
-        .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+        .map(|bytes| bytes.map(|bytes| owned_text(bytes)))
         .map_err(|error| error.to_string())
 }
 
@@ -163,7 +204,7 @@ fn read_text(
     stats.reads += 1;
     let bytes = catalog.read(path).map_err(|error| error.to_string())?;
     stats.bytes += bytes.as_ref().map_or(0, Vec::len);
-    Ok(bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+    Ok(bytes.map(|bytes| owned_text(bytes)))
 }
 
 pub(crate) fn read(
@@ -176,7 +217,7 @@ pub(crate) fn read(
     }
     catalog
         .read(path)
-        .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+        .map(|bytes| bytes.map(|bytes| owned_text(bytes)))
         .map_err(|error| error.to_string())
 }
 
