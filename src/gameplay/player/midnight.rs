@@ -47,6 +47,40 @@ pub fn prepare_sounds(
     casting: &[(&str, &str, Emitter)],
     mut read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Vec<Vec<PreparedSound>>, String> {
+    prepare_sounds_using(decl, casting, |name| {
+        let resource = format!("generated/decls/soundevent/{name}.decl");
+        let source = read(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
+        crate::assets::wwise::declared_event_id(&source).map_err(|e| format!("{resource}: {e}"))
+    })
+}
+
+/// The production acquisition path shares the same scoped sound-event owner
+/// as entity/FX sounds. SFX property copies retain a declaration pointer in
+///140188490; scheduled playback here keeps its existing copied engine ID.
+pub(crate) fn prepare_sounds_owned(
+    catalog: &crate::archive::Catalog,
+    decl: &MidnightScene,
+    casting: &[(&str, &str, Emitter)],
+) -> Result<Vec<Vec<PreparedSound>>, String> {
+    if std::env::var("DH2_DEBUG_SEPARATE_MIDNIGHT_SOUND_EVENTS").as_deref() == Ok("1") {
+        return prepare_sounds(decl, casting, |path| {
+            Ok(catalog.read(path).map_err(|error| error.to_string())?
+                .map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+        });
+    }
+    prepare_sounds_using(decl, casting, |name| {
+        crate::assets::wwise::event_resources::acquire_with(catalog, name, |path|
+            crate::assets::declaration_texts::read_common_or_catalog(catalog, path))
+            .map(|event| event.id)
+    })
+}
+
+fn prepare_sounds_using(
+    decl: &MidnightScene,
+    casting: &[(&str, &str, Emitter)],
+    mut resolve: impl FnMut(&str) -> Result<u32, String>,
+) -> Result<Vec<Vec<PreparedSound>>, String> {
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
     let mut ids = std::collections::HashMap::new();
     let mut sounds = vec![Vec::new(); decl.scenes.len()];
     for (index, scene) in decl.scenes.iter().enumerate() {
@@ -57,9 +91,8 @@ pub fn prepare_sounds(
                 let event = match ids.get(&key.event) {
                     Some(&event) => event,
                     None => {
-                        let resource = format!("generated/decls/soundevent/{}.decl", key.event);
-                        let source = read(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
-                        let event = crate::assets::wwise::declared_event_id(&source).map_err(|e| format!("{resource}: {e}"))?;
+                        let event = resolve(&key.event)?;
+                        if trace { eprintln!("MIDNIGHT_SOUND_RESOLVE reference={} id={event}", key.event); }
                         ids.insert(key.event.clone(), event);
                         event
                     }

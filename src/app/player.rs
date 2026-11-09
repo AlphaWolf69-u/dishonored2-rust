@@ -15,7 +15,7 @@ use crate::gameplay::player::body::{Body, BodySkeleton};
 use crate::gameplay::player::camera::CameraDecl;
 use crate::gameplay::player::character_proxy::{PlayerWorld, RayHit, WorldHit};
 use crate::gameplay::player::controller::{ActionEvent, LookSettings, MOUSE_MOVE_KEY};
-use crate::gameplay::player::midnight::{prepare_sounds, Midnight, PreparedScene};
+use crate::gameplay::player::midnight::{prepare_sounds_owned, Midnight, PreparedScene};
 use crate::gameplay::player::states::{scene_paths, Scenes};
 use crate::gameplay::player::{decls, Player, PlayerSetup};
 use crate::gameplay::shape_cast;
@@ -277,7 +277,7 @@ fn load_body(
         let resource = format!("generated/decls/midnightscene/{path}.decl");
         let source = text(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
         let decl = crate::entities::midnight::parse(&source).map_err(|e| format!("{resource}: {e}"))?;
-        let sounds = prepare_sounds(&decl, &casting, |path| text_of(catalog, path))?;
+        let sounds = prepare_sounds_owned(catalog, &decl, &casting)?;
         let count = decl.scenes.len();
         let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
         let mut next = Some(prepared.decl.first);
