@@ -601,18 +601,6 @@ pub(super) fn prepare_local_shadow_owner(
             bevy::render::render_resource::TextureFormat::Depth24PlusStencil8
         }
     };
-    let mut image = |extent: [u32; 3]| -> Result<Handle<Image>, String> {
-        Ok(images.add(shadow_pipeline::shadow_depth_image(
-            bevy::render::render_resource::Extent3d {
-                width: extent[0],
-                height: extent[1],
-                depth_or_array_layers: extent[2],
-            },
-            format,
-        )?))
-    };
-    let atlas_image = image(settings.atlas)?;
-    let cache_image = image(settings.cache)?;
     let roots = vec![
         [
             0,
@@ -695,6 +683,18 @@ pub(super) fn prepare_local_shadow_owner(
         precomputed_world_casters.len(),
         topology.words[1]
     );
+    let mut image = |extent: [u32; 3]| -> Result<Handle<Image>, String> {
+        Ok(images.add(shadow_pipeline::shadow_depth_image(
+            bevy::render::render_resource::Extent3d {
+                width: extent[0],
+                height: extent[1],
+                depth_or_array_layers: extent[2],
+            },
+            format,
+        )?))
+    };
+    let atlas_image = image(settings.atlas)?;
+    let cache_image = image(settings.cache)?;
     Ok(LocalShadowOwner {
         settings,
         atlas_image,

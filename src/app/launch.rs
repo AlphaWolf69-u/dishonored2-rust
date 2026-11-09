@@ -640,10 +640,17 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         app.insert_resource(prepared_images);
     }
-    if env::var("DH2_DEBUG_RESIZE_RESIDENCY").as_deref() == Ok("1") {
+    if env::var("DH2_DEBUG_QUALITY_RESIDENCY").as_deref() == Ok("1") {
+        app.add_systems(PostUpdate, super::resource_diagnostics::observe_quality
+            .after(super::fog_scene::publish_fog_frame)
+            .after(shadow_updates::publish_parallel_shadow_frame)
+            .after(local_shadow_updates::publish_local_shadow_draws)
+            .run_if(super::loading_screen::is_playing));
+    } else if env::var("DH2_DEBUG_RESIZE_RESIDENCY").as_deref() == Ok("1") {
         app.add_systems(PostUpdate, super::resource_diagnostics::observe_resize
             .run_if(super::loading_screen::is_playing));
     }
+    app.add_systems(First, super::shadow_preparation::refresh_shadow_settings);
     super::loading_screen::install(
         &mut app,
         loading_schedules,

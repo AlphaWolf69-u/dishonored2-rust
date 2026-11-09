@@ -246,6 +246,58 @@ pub fn shadow_settings(source: &str) -> Result<ShadowSettings, String> {
     })
 }
 
+/// 50ff40 copies the selected menu row into these live CVars. Render owners
+/// consume the resulting values, including direct overrides, rather than a
+/// second lookup of the row captured when the level was prepared.
+pub fn shadow_quality_settings(
+    source: &str,
+    quality: &mut crate::assets::entities::ShadowQualitySettings,
+) -> Result<(), String> {
+    let float = |name: &str, fallback| -> Result<f32, String> {
+        Ok(quoted_setting(source, name)?
+            .map(float_cvar)
+            .unwrap_or(fallback))
+    };
+    let integer = |name: &str, fallback| -> Result<i32, String> {
+        Ok(quoted_setting(source, name)?
+            .map(integer_cvar)
+            .unwrap_or(fallback))
+    };
+    quality.cull_distance = float("r_shadowCullDistance", quality.cull_distance)?;
+    quality.parallel_partial_dynamic_update = Some(
+        integer(
+            "r_shadowParallelPartialDynaUpdate",
+            i32::from(quality.parallel_partial_dynamic_update.unwrap_or(true)),
+        )? != 0,
+    );
+    quality.local_partial_dynamic_threshold = float(
+        "r_shadowSpotAndOmniPartialUpdateDynaThreshold",
+        quality.local_partial_dynamic_threshold,
+    )?;
+    quality.local_partial_squared_distance = float(
+        "r_shadowSpotAndOmniPartialUpdateDynaSqrDistanceThreshold",
+        quality.local_partial_squared_distance,
+    )?;
+    quality.parallel_resolution_divider = integer(
+        "r_shadowParallelResolutionDividerLevel",
+        quality.parallel_resolution_divider as i32,
+    )? as u32;
+    quality.local_low_resolution_divider = integer(
+        "r_shadowSpotAndOmniLowResolutionDividerEnabled",
+        i32::from(quality.local_low_resolution_divider),
+    )? != 0;
+    quality.depth_32_bits = integer("r_shadows32Bits", i32::from(quality.depth_32_bits))? != 0;
+    quality.parallel_slice_count = integer(
+        "r_shadowParallelSliceCnt",
+        quality.parallel_slice_count as i32,
+    )? as u32;
+    if let Some(fars) = quoted_multi_value(source, "r_shadowCascadeFars")?.and_then(four_float_cvar)
+    {
+        quality.cascade_fars = fars;
+    }
+    Ok(())
+}
+
 /// Native local atlas/cache registrations: 141372e10..141372eb0 and
 /// 141377730..141377960. These are startup values; preset low-resolution
 /// division remains a separate quality-owner input.

@@ -183,6 +183,36 @@ counted as audited implementations. The table records ownership findings; it is 
 Rows marked partial/under measurement still require the stated runtime or
 original-code evidence before claiming a complete, correct lifecycle.
 
+Live quality replacement (source written; coordinated build and production
+observation pending): native `5120d0 -> 511a70` applies changed widgets and
+`50ff40` writes the shadow row into live CVars; fog/blur case 14 writes
+`r_downsampleQuality`. These paths do not reload the level. The host previously
+refreshed lens settings but retained the level's fog settings and shadow
+quality/dimensions. Fog now refreshes from Console generation and republishes
+changed settings while gameplay is paused. Shadow preparation and refresh use
+the same effective current CVar projection and cascade-far fallback. Only changed
+dimensions/formats/slice counts replace directional/local images and invalidate
+their completion identities before receiver readiness. Parameter/culling-only
+updates retain the completed atlas and coherent receiver until the next ordinary
+submission; local cache policy keeps its existing allocation identities. Local image allocation follows
+fallible source preparation; a busy program owner retries without retiring the
+current generation. The local GPU owner now releases obsolete source textures,
+copy state and world bindings when their actual image IDs retire, while keeping
+reusable device pipeline variants. No extra configuration or GPU work occurs on
+frames with unchanged settings.
+
+The opt-in `DH2_DEBUG_QUALITY_RESIDENCY=1` observation extends the existing
+allocator reporter: fixed-size A/B/C/A/B/C/A changes through the same Console
+owner, fog downsample 1/2 and native shadow depth/divider/slice controls, 120
+ready frames per sample, exact directional/local completion identities, original
+Console values restored, no config-file writes. Compare repeated A states and
+matching B/C states by live allocation labels/counts/bytes and unchanged streamed
+image payload, separately from allocator-reserved bytes/blocks. A warm pipeline
+or reserved block plateau is reusable device capacity, not evidence of obsolete
+world targets. Format and dimension keys are present in fog/lens/camera/shadow
+owners; single-sample admission remains explicit. This source repair makes no
+claim of measured byte savings or complete physical driver-cache accounting.
+
 ## Audit result and remaining gaps
 
 The initial two measured corrections are duplicate particle image

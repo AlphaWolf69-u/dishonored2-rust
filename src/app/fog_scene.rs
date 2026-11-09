@@ -358,6 +358,7 @@ pub(super) struct FogMotion {
     previous_position: Option<Vec3>,
     revision: u64,
     settings: crate::platform::game_settings::FogRenderSettings,
+    settings_generation: u64,
 }
 impl FogMotion {
     pub(super) fn load() -> Result<Self, String> {
@@ -371,6 +372,7 @@ impl FogMotion {
             previous_position: None,
             revision: 0,
             settings,
+            settings_generation: crate::platform::console::shared().generation(),
         })
     }
 }
@@ -401,9 +403,17 @@ pub(super) fn publish_fog_frame(
         return;
     };
     ray_sources.0 = Some(fog.ray_program);
+    let generation = crate::platform::console::shared().generation();
+    let mut settings_changed = false;
+    if generation != motion.settings_generation {
+        match crate::platform::game_settings::read_fog_render_settings() {
+            Ok((_, settings)) => { settings_changed = settings != motion.settings; motion.settings = settings; motion.settings_generation = generation; }
+            Err(error) => { output.0 = None; ray_sources.0 = None; error!("Fog settings unavailable: {error}"); return; }
+        }
+    }
     let advanced = clock.advanced();
     // Loading can hold the simulation at time zero before any view exists.
-    if !advanced && output.0.is_some() { return; }
+    if !advanced && !settings_changed && output.0.is_some() { return; }
     output.0 = None;
     material.object_frame = None;
     let result = (|| -> Result<FogFrame, String> {

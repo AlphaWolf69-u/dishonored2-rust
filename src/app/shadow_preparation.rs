@@ -724,6 +724,13 @@ impl ParallelShadowOwner {
         scene: &SceneData,
         images: &mut (impl AssetWrite<Image> + ?Sized),
     ) -> Result<Self, String> {
+        Self::with_target(scene, images, None)
+    }
+
+    fn with_target(
+        scene: &SceneData, images: &mut (impl AssetWrite<Image> + ?Sized),
+        retained_target: Option<Handle<Image>>,
+    ) -> Result<Self, String> {
         let dimensions = scene
             .shadow_target_dimensions
             .ok_or("shadow target settings are unresolved")?;
@@ -791,14 +798,18 @@ impl ParallelShadowOwner {
         };
         // Resolve all source-dependent inputs before mutating Assets: an error
         // must not leave a new, unused atlas behind on every initialization.
-        let target_image = images.add(shadow_pipeline::shadow_depth_image(
-            bevy::render::render_resource::Extent3d {
-                width: dimensions.width,
-                height: dimensions.height,
-                depth_or_array_layers: dimensions.layers,
-            },
-            format,
-        )?);
+        let target_image = if let Some(target) = retained_target {
+            target
+        } else {
+            images.add(shadow_pipeline::shadow_depth_image(
+                bevy::render::render_resource::Extent3d {
+                    width: dimensions.width,
+                    height: dimensions.height,
+                    depth_or_array_layers: dimensions.layers,
+                },
+                format,
+            )?)
+        };
         Ok(Self {
             target_image,
             dimensions,
@@ -1782,6 +1793,158 @@ pub(super) fn publish_initial_whole_view_depth(
             }
             frame.state = shadow_pass::ShadowSceneState::Unavailable(message);
         }
+    }
+}
+
+/// The menu's 511a70/50ff40 apply path changes live CVars, without
+/// reloading the level. Replace the existing owners before any view publishes.
+/// Console generation avoids parsing/configuration work on unchanged frames.
+pub(super) fn refresh_shadow_settings(world: &mut World, mut generation: Local<Option<u64>>) {
+    let shared = crate::platform::console::shared();
+    let current = shared.generation();
+    let Some(scene) = world.get_resource_ref::<SceneData>() else {
+        return;
+    };
+    if *generation == Some(current) && !scene.is_added() {
+        return;
+    }
+    *generation = Some(current);
+    let result = world.resource_scope(|world, mut scene: Mut<SceneData>| -> Result<(), String> {
+        let source = shared.cvar_text();
+        let settings = game_settings::shadow_settings(&source)?;
+        let local_settings = game_settings::local_shadow_settings(&source)?;
+        // The selected installed row established admission at level load;
+        // 50ff40's actual current outputs are authoritative after that boundary.
+        let Some(mut quality) = scene.shadow_quality.clone() else { return Ok(()) };
+        game_settings::shadow_quality_settings(&source, &mut quality)?;
+        let dimensions = shadow_target_dimensions(settings.parallel_slice_size, &quality)?;
+        let cascade_fars = Some(settings.cascade_fars.unwrap_or(quality.cascade_fars));
+        let parallel_changed = scene.shadow_quality.as_ref().is_some_and(|old|
+                old.cull_distance != quality.cull_distance
+                || old.parallel_partial_dynamic_update != quality.parallel_partial_dynamic_update
+                || old.parallel_resolution_divider != quality.parallel_resolution_divider
+                || old.depth_32_bits != quality.depth_32_bits
+                || old.parallel_slice_count != quality.parallel_slice_count
+                || old.cascade_fars != quality.cascade_fars)
+            || scene.shadow_target_dimensions != Some(dimensions)
+            || scene.shadow_depth_bias_clamp != Some(settings.depth_bias_clamp)
+            || scene.shadow_sort_ccw != Some(settings.sort_shadows_ccw)
+            || scene.shadow_cascade_controls != Some(settings.cascade_controls)
+            || scene.shadow_cascade_fars != cascade_fars;
+        let local_changed = world.get_resource::<local_shadow_updates::LocalShadowOwner>().is_some_and(|owner| owner.settings != local_settings)
+            || scene.shadow_depth_bias_clamp != Some(settings.depth_bias_clamp)
+            || scene.shadow_quality.as_ref().is_some_and(|old|
+                old.depth_32_bits != quality.depth_32_bits
+                || old.local_low_resolution_divider != quality.local_low_resolution_divider
+                || old.local_partial_dynamic_threshold != quality.local_partial_dynamic_threshold
+                || old.local_partial_squared_distance != quality.local_partial_squared_distance);
+        if !parallel_changed && !local_changed { return Ok(()) }
+        let retained_target = world.get_resource::<ParallelShadowOwner>()
+            .filter(|owner| owner.dimensions == dimensions).map(|owner| owner.target_image.clone());
+        let parallel_reallocate = retained_target.is_none();
+        let local_reallocate = world.get_resource::<local_shadow_updates::LocalShadowOwner>().is_some_and(|owner|
+            owner.settings.atlas != local_settings.atlas || owner.settings.cache != local_settings.cache)
+            || scene.shadow_quality.as_ref().is_some_and(|old| old.depth_32_bits != quality.depth_32_bits);
+        let previous = (scene.shadow_quality_preset, scene.shadow_quality.clone(),
+            scene.shadow_target_dimensions, scene.shadow_depth_bias_clamp,
+            scene.shadow_sort_ccw, scene.shadow_cascade_controls, scene.shadow_cascade_fars);
+        scene.shadow_quality_preset = settings.quality_preset;
+        scene.shadow_quality = Some(quality);
+        scene.shadow_target_dimensions = Some(dimensions);
+        scene.shadow_depth_bias_clamp = Some(settings.depth_bias_clamp);
+        scene.shadow_sort_ccw = Some(settings.sort_shadows_ccw);
+        scene.shadow_cascade_controls = Some(settings.cascade_controls);
+        scene.shadow_cascade_fars = cascade_fars;
+        let replaced = world.resource_scope(|world, mut images: Mut<Assets<Image>>| -> Result<(), String> {
+            // Construct both replacements before retiring either admitted owner.
+            // Local preparation resolves its program/query inputs before adding
+            // images, so a busy worker leaves the current generation untouched.
+            let local = if local_reallocate {
+                Some(world.resource_scope(|world, mut programs: Mut<super::ProgramCacheSource>| {
+                    local_shadow_updates::prepare_local_shadow_owner(&scene,
+                        world.get_resource::<super::TomeWorld>(), world.resource::<super::ViewSettings>(),
+                        &mut *images, &mut programs)
+                })?)
+            } else { None };
+            let local_parameters = if local_changed && !local_reallocate {
+                let parameters = scene.environment_render_parameters.as_ref().ok_or("local shadow environment parameters are absent")?;
+                let depth_32_bits = scene.shadow_quality.as_ref().ok_or("local shadow quality is absent")?.depth_32_bits;
+                Some((render_shadow::local_hardware_bias(parameters, 0, depth_32_bits, settings.depth_bias_clamp)?,
+                    render_shadow::local_hardware_bias(parameters, 2, depth_32_bits, settings.depth_bias_clamp)?))
+            } else { None };
+            let parallel = if parallel_changed {
+                match ParallelShadowOwner::with_target(&scene, &mut *images, retained_target) {
+                    Ok(owner) => Some(owner),
+                    Err(error) => {
+                        if let Some(owner) = local {
+                            images.remove(owner.atlas_image.id());
+                            images.remove(owner.cache_image.id());
+                        }
+                        return Err(error);
+                    }
+                }
+            } else { None };
+            if let Some(owner) = parallel {
+                if let Some(old) = world.remove_resource::<ParallelShadowOwner>() {
+                    if old.target_image.id() != owner.target_image.id() { images.remove(old.target_image.id()); }
+                }
+                world.insert_resource(owner);
+                world.insert_resource(shadow_updates::ParallelShadowCpu::default());
+                world.insert_resource(shadow_updates::ParallelWorldDraws::default());
+                world.insert_resource(shadow_updates::ParallelModelDraws::default());
+                if parallel_reallocate {
+                    let mut frame = world.resource_mut::<shadow_pass::ShadowSceneFrame>();
+                    // Keep revision monotonic: only a completed replacement
+                    // allocation can authorize this generation's receiver.
+                    frame.state = shadow_pass::ShadowSceneState::Unavailable("shadow settings changed; replacement whole-view depth pending".into());
+                    world.insert_resource(shadow_pass::ShadowSceneCompletion::default());
+                }
+                // Parameter/culling-only changes retain the coherent completed
+                // atlas/receiver until ordinary preparation publishes its next
+                // complete submission. They never allocate a new GPU target.
+            }
+            if let Some(owner) = local {
+                if let Some(old) = world.remove_resource::<local_shadow_updates::LocalShadowOwner>() {
+                    images.remove(old.atlas_image.id());
+                    images.remove(old.cache_image.id());
+                }
+                world.insert_resource(owner);
+                world.insert_resource(local_shadow_updates::LocalShadowCpu::default());
+                world.insert_resource(local_shadow_updates::LocalShadowDraws::default());
+                world.insert_resource(shadow_pass::LocalShadowSceneFrame::default());
+                world.insert_resource(shadow_pass::LocalShadowCompletion::default());
+            }
+            else if let Some((point, spot)) = local_parameters {
+                if let Some(mut owner) = world.get_resource_mut::<local_shadow_updates::LocalShadowOwner>() {
+                    owner.hardware_bias_point = point;
+                    owner.hardware_bias_spot = spot;
+                    owner.settings = local_settings;
+                }
+            }
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("MEMORY shadow settings replacement: generation={current} parallel={parallel_changed} local={local_changed} parallel_reallocated={parallel_reallocate} local_reallocated={local_reallocate} dimensions={dimensions:?} local_settings={local_settings:?}");
+            }
+            Ok(())
+        });
+        if replaced.is_err() {
+            (scene.shadow_quality_preset, scene.shadow_quality, scene.shadow_target_dimensions,
+                scene.shadow_depth_bias_clamp, scene.shadow_sort_ccw,
+                scene.shadow_cascade_controls, scene.shadow_cascade_fars) = previous;
+        }
+        replaced
+    });
+    if let Err(error) = result {
+        if error == "program cache is busy" {
+            *generation = None;
+            return;
+        }
+        // Unsupported settings are never presented as a successfully applied
+        // quality while sampling a previous generation's allocation.
+        error!("Shadow settings apply failed: {error}");
+        world.resource_mut::<shadow_pass::ShadowSceneFrame>().state =
+            shadow_pass::ShadowSceneState::Unavailable(error);
+        world.insert_resource(shadow_pass::LocalShadowSceneFrame::default());
+        world.write_message(AppExit::error());
     }
 }
 

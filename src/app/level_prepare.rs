@@ -286,8 +286,12 @@ pub(super) fn prepare_level(
             )),
             Some(catalog),
         ) => {
-            let settings = super::launch::load_installed_shadow_quality(catalog, preset)
+            let mut settings = super::launch::load_installed_shadow_quality(catalog, preset)
                 .map_err(std::io::Error::other)?;
+            if let Some(quality) = settings.as_mut() {
+                game_settings::shadow_quality_settings(&crate::platform::console::shared().cvar_text(), quality)
+                    .map_err(std::io::Error::other)?;
+            }
             let target = settings
                 .as_ref()
                 .map(|quality| shadow_target_dimensions(parallel_slice_size, quality))

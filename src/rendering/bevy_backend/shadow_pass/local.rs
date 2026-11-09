@@ -66,6 +66,7 @@ pub struct ShadowCaptureReadiness(pub Arc<std::sync::atomic::AtomicU32>);
 struct LocalGpu {
     programs: ShadowSceneGpu,
     arrays: Option<(ShadowDepthArray, ShadowDepthArray)>,
+    source_images: Option<(AssetId<Image>, AssetId<Image>)>,
     copy: Option<([u32; 9], ShadowDepthCopy)>,
     valid: HashMap<u32, bool>,
     receiver_error: Option<String>,
@@ -75,13 +76,20 @@ struct LocalGpu {
 }
 
 pub(super) fn release_level(world: &mut World) {
-    let mut gpu = world.resource_mut::<LocalGpu>();
-    gpu.programs.release_level();
-    gpu.arrays = None;
-    gpu.valid.clear();
-    gpu.retained_atlas = None;
-    gpu.receiver_error = None;
-    gpu.receiver_reported = false;
+    world.resource_mut::<LocalGpu>().release_sources();
+}
+
+impl LocalGpu {
+    fn release_sources(&mut self) {
+        self.programs.release_level();
+        self.arrays = None;
+        self.source_images = None;
+        self.copy = None;
+        self.valid.clear();
+        self.retained_atlas = None;
+        self.receiver_error = None;
+        self.receiver_reported = false;
+    }
 }
 
 /// Atlas pixels can survive an idle frame only after a successful submission
@@ -342,11 +350,14 @@ fn prepare(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut gpu: ResMut<LocalGpu>,
+    images: Res<RenderAssets<GpuImage>>,
 ) {
+    if gpu.source_images.is_some_and(|(atlas, cache)| images.get(atlas).is_none() || images.get(cache).is_none()) { gpu.release_sources(); }
     let Some(frame) = &frame.0 else {
         return;
     };
-    if gpu.programs.last_revision == Some(frame.revision) {
+    if gpu.programs.last_revision == Some(frame.revision)
+        && gpu.source_images == Some((frame.atlas.id(), frame.cache.id())) {
         return;
     }
     upload_shadow_uniform_ring(&frame.layers, &device, &queue, &mut gpu.programs);
@@ -373,6 +384,11 @@ fn draw(
     profile: Option<Res<crate::frame_profile::CpuFrameProfile>>,
 ) {
     let _span = profile.as_deref().map(|p| p.measure(28));
+    // Removed host assets cannot remain resident through the last successful
+    // submission while the replacement waits for its real casters/programs.
+    if gpu.source_images.is_some_and(|(atlas, cache)| images.get(atlas).is_none() || images.get(cache).is_none()) {
+        gpu.release_sources();
+    }
     let sampling = sampling
         .as_deref()
         .and_then(|s| buffers.get(s.buffer.id()).map(|b| (s, b)));
@@ -382,7 +398,8 @@ fn draw(
         }
         return;
     };
-    if gpu.programs.last_revision == Some(frame.revision) {
+    if gpu.programs.last_revision == Some(frame.revision)
+        && gpu.source_images == Some((frame.atlas.id(), frame.cache.id())) {
         return;
     }
     // Every exit before this frame's receiver write publishes no lights.
@@ -427,6 +444,7 @@ fn draw(
         match result {
             Ok(arrays) => {
                 gpu.arrays = Some(arrays);
+                gpu.source_images = Some((frame.atlas.id(), frame.cache.id()));
                 gpu.valid.clear();
                 gpu.copy = None;
             }
