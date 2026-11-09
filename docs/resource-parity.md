@@ -4513,3 +4513,32 @@ boundaries. These are bevy_backend lifetime repairs, not changes to decal
 projection or original effect/tail rules. Evidence:
 DH2-pause/artifacts/decal-lifetime-evidence.md; runtime bytes and affected
 CPU cost remain to be observed after the complete batch builds.
+
+Working-client CPU acquisition observations (2026-11-09): build33cfa392,
+SHA256 f1f36a1d2dd05dd88fc54e8c80d4577e6b66074a94b95b05fefbf193de89652a,
+completed Edge of the World -> Dust -> Edge of the World in both baseline and
+optimized modes of the same binary, exit0. Every batch matched the prior
+prediction: relevant body/listener reads6 ->4 and retained default-state
+records80 ->14. Their recursively counted owned capacities were85,134 ->35,220
+bytes, including the retained outer Vec allocation:49,914 fewer temporary
+setup bytes per batch, not a gameplay-RSS or allocator-commitment claim.
+All nine body/arm rig source and decoded fingerprints matched. No whole-CPU,
+walking, GPU or appearance improvement is inferred from these counts.
+
+Buildd74cb237 (SHA256 b278539ae09c38ef9d23392229decdf91d923a11d5344607d0e0adb8e2538a3c)
+then completed the same three CPU loading/release batches, exit0, after the
+metadata-residency, decal and quality source repairs. Each level purge kept
+exactly51 common MD6 headers and six common inventory configuration headers;
+the actual base collection reused its loaded identity while map-scoped Corvo
+loadout/collection generations released and were reacquired. The three
+Level0 Corvo model declarations still acquired cold in each batch, as
+predicted. This observes CPU acquisition/purge only: unpublished bundles do
+not exercise the renderer, quality transitions, active decal tails or live
+inventory carryover. Those acceptance requirements remain separate.
+
+Completed baseline evidence is preserved in the main checkout independently
+of worktree cleanup: artifacts/resource-lifecycle-scope-20261109/, including
+the comparison JSON, both complete logs, build provenance and installed
+header-selection/source packets. Newer CPU run:
+artifacts/cpu-resource-loading-scoped-20261109/ in the integration checkout.
+No tests, visual inspection, game input or second game window were used.
