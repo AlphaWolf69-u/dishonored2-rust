@@ -11,13 +11,19 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 type Result<T> = std::result::Result<T, String>;
 mod water;
 mod boat;
 mod parameters;
-pub(crate) use parameters::retire_catalog;
+pub(crate) fn retire_catalog(catalog: u64) -> usize {
+    let parameters = parameters::retire_catalog(catalog);
+    let mut indices = INDICES.lock().unwrap_or_else(|error| error.into_inner());
+    let before = indices.len();
+    indices.retain(|_, entry| entry.current.strong_count() != 0);
+    parameters + before - indices.len()
+}
 pub use water::{CachedWaterDepthClass, CachedWaterDepthSource};
 const VERSION: u32 = 14;
 
@@ -81,6 +87,18 @@ pub struct ShaderIndex {
     pub stages: Vec<CachedStageIndex>,
     pub stage_counts: [u32; 2],
 }
+impl Drop for ShaderIndex {
+    fn drop(&mut self) {
+        // A library may outlive its catalog. Its final release must also
+        // retire this generation's weak lookup without removing a replacement.
+        // Index eviction can already hold this mutex, hence the cold try_lock.
+        if let Ok(mut indices) = INDICES.try_lock() {
+            let identity = self as *const Self;
+            indices.retain(|_, entry| entry.current.as_ptr() != identity
+                || entry.current.strong_count() != 0);
+        }
+    }
+}
 
 impl std::ops::Deref for ShaderCache {
     type Target = ShaderIndex;
@@ -88,7 +106,12 @@ impl std::ops::Deref for ShaderCache {
 }
 
 type IndexKey = (std::path::PathBuf, ShaderCacheBackend);
-static INDICES: LazyLock<Mutex<HashMap<IndexKey, Arc<ShaderIndex>>>> = LazyLock::new(Default::default);
+struct IndexEntry {
+    current: Weak<ShaderIndex>,
+    // Same-build observation of the former process-wide strong cache.
+    _debug_resident: Option<Arc<ShaderIndex>>,
+}
+static INDICES: LazyLock<Mutex<HashMap<IndexKey, IndexEntry>>> = LazyLock::new(Default::default);
 
 fn name_key(name: &[u8]) -> Vec<u8> {
     name.iter()
@@ -157,10 +180,10 @@ impl ShaderCache {
         };
         let key = (base.to_owned(), backend);
         let mut indices = INDICES.lock().unwrap_or_else(|error| error.into_inner());
-        indices.retain(|(installation, _), _| installation == base);
+        indices.retain(|(installation, _), entry| installation == base && entry.current.strong_count() != 0);
         let shared = std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
-        if let Some(index) = indices.get(&key).filter(|_| shared) {
-            let cache = Self { index: index.clone(), definitions: open("rpd")?, variants: open("rpvd")?, bytecode: open("ucd")? };
+        if let Some(index) = indices.get(&key).filter(|_| shared).and_then(|entry| entry.current.upgrade()) {
+            let cache = Self { index, definitions: open("rpd")?, variants: open("rpvd")?, bytecode: open("ucd")? };
             cache.report_index(true, 0, started);
             return Ok(cache);
         }
@@ -175,7 +198,13 @@ impl ShaderCache {
             open("rpvd")?,
             open("ucd")?,
         )?;
-        if shared { indices.insert(key, cache.index.clone()); }
+        if shared {
+            indices.insert(key, IndexEntry {
+                current: Arc::downgrade(&cache.index),
+                _debug_resident: (std::env::var("DH2_DEBUG_RETAIN_SHADER_INDEX").as_deref() == Ok("1"))
+                    .then(|| cache.index.clone()),
+            });
+        }
         cache.report_index(false, bytes, started);
         Ok(cache)
     }
@@ -196,6 +225,7 @@ impl ShaderCache {
         variants: File,
         bytecode: File,
     ) -> Result<Self> {
+        let _tag = crate::platform::allocation_tags::tag("shader cache index");
         let mut strings = Cursor::new(strings)?;
         let mut names = Vec::new();
         for _ in 0..strings.u16()? {
@@ -425,6 +455,13 @@ impl ProgramLibrary {
     ) -> Result<Self> {
         let cache = ShaderCache::open(base, backend)?;
         let parameters = parameters::acquire(base, catalog)?;
+        if std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1") {
+            // Host lifetime for the original engine-global cache (140064e00,
+            // 1402c8d50): reusable between maps, retired with this session.
+            catalog.shader_indices.get_or_init(Default::default).lock()
+                .map_err(|_| "shader-index session owner is poisoned")?
+                .entry(backend).or_insert_with(|| cache.index.clone());
+        }
         Ok(Self {
             cache,
             parameter_kinds: parameters.kinds,

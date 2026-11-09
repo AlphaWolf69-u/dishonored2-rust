@@ -85,6 +85,8 @@ pub struct Catalog {
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
+    pub(crate) shader_indices: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<
+        crate::assets::shader_cache::ShaderCacheBackend, std::sync::Arc<crate::assets::shader_cache::ShaderIndex>>>>,
     /// Inventory/history leases can outlive a map's item acquisition table.
     pub(crate) pickable_sources: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::inventory_item::PickableSources>>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
@@ -120,6 +122,7 @@ impl Drop for Catalog {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
         self.particle_resources.take();
+        self.shader_indices.take();
         // Host read accounting belongs to this immutable archive namespace;
         // releasing it must not leave credits for a later Catalog identity.
         let animations = crate::assets::edge_animation::retire_catalog(
@@ -346,6 +349,7 @@ impl Catalog {
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             particle_resources: Default::default(),
+            shader_indices: Default::default(),
             pickable_sources: Default::default(),
             containers: Default::default(),
             header_order: Default::default(),
