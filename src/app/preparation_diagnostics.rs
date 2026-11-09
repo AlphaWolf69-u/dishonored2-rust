@@ -27,6 +27,16 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             let mut prepared = super::level_prepare::prepare_level(
                 base.to_owned(), catalog.clone(), level, true, || false,
             )?;
+            // Exercise the actual contact source owner too when measuring its
+            // handoff, rather than just the earlier physics-material subset.
+            let contact_texts = if std::env::var("DH2_DEBUG_CPU_CONTACT_TEXTS").as_deref() == Ok("1") {
+                let seed = prepared.take_resource::<super::level_prepare::PreparedPhysicsTexts>()
+                    .ok_or("prepared physics text seed is absent")?;
+                let map = crate::gameplay::map_info::current_map().ok_or("current map is absent")?;
+                let language = crate::assets::lang::read_text_language(base).map_err(std::io::Error::other)?;
+                Some(crate::assets::declaration_texts::acquire(base, &catalog, &map, language, seed.0)
+                    .map_err(std::io::Error::other)?)
+            } else { None };
             // This is the same body/setup acquisition used by setup::prepare.
             // Rendering arms, GPU uploads and frame updates are not exercised.
             let mut declarations = crate::entities::player::DeclarationSource::default();
@@ -64,6 +74,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 resources.retire_unused();
             }
             drop(prepared);
+            if let Some(texts) = contact_texts { texts.release_level_history(); }
             Ok(())
         })();
         // No renderer owns these unpublished CPU batches. Their consumers

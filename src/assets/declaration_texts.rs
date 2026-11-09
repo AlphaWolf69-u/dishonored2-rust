@@ -22,10 +22,9 @@ fn owned_text(bytes: Vec<u8>) -> String {
         crate::entities::declaration_text(&bytes).into_owned()
     } else {
         direct = true;
-        let mut text = String::from_utf8(bytes).expect("validated ASCII declaration source");
-        // Match the former retained capacity instead of pinning the probe byte.
-        text.shrink_to_fit();
-        text
+        // Keep the archive reader's existing one-byte spare reservation.
+        // Shrinking it moves the allocation on the measured Windows heap.
+        String::from_utf8(bytes).expect("validated ASCII declaration source")
     };
     if trace {
         let cycles = started.zip(crate::loading::thread_cycles())

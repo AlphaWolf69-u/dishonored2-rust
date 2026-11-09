@@ -4982,7 +4982,7 @@ seven-step quality routes with exit0 and no validation/panic/allocation-leak
 errors. Initial live sampler buffers fall1,693 ->30, with
 110,952,448 ->1,966,080 allocation bytes:108,986,368 bytes (103.9375MiB)
 removed. All other initial allocator bytes match exactly at3,178,823,680.
-Later snapshots retain28–30 sampler buffers, matching the predicted10–64
+Later snapshots retain28â€“30 sampler buffers, matching the predicted10â€“64
 range; sizes, indices, descriptor lengths and draw/shader code are unchanged.
 Acquisition-only means over138,300 /140,776 actual calls fall5,250.144 ->
 115.883ns (45.31x); medians3,000 ->100ns. Shared requests reuse140,270 times
@@ -5091,3 +5091,7 @@ Normal-client default sharing also completed all four loads and exited 0 with gr
 The existing declaration_text reader already preserves the signed-byte lexer behavior of 140135f70/140135ff0/140136028. Its caller in declaration_texts then allocates a separate String while still owning the archive Vec. Transfer that Vec into String for ordinary ASCII input; preserve the exact existing normalization path for non-ASCII, special control bytes and NUL termination. Shrink the archive's one-probe-byte reservation to the former retained String capacity. This changes host staging ownership, not declaration parsing, source formats or resource caching.
 
 Prediction: ordinary ASCII handoffs remove their explicit second text allocation/copy, with the archive buffer usually staying at the same address even when shrunk. Retained string capacities and ordered declaration fingerprints must match the copy control. Shrink/reallocation cost may offset the saving, so compare only this handoff function's thread cycles over actual loading requests in the same release executable. No whole-frame, RSS, in-game resident-byte or zero-total-allocation claim is made. Preserve the change only if affected-function observations support the predicted benefit.
+
+First handoff observation correction: source 0ca5c2ad built and both release CPU observations exited 0, but the route only reached 198 physics text handoffs / 13,745 bytes over four loads; the renderer-side contact acquisition was absent. The archive-to-string shrink moved the buffer in all 198 owned cases, contradicting the predicted usual in-place handoff. The measured 311,181 -> 281,502 total thread cycles from that small subset is not accepted as a class-wide performance result.
+
+The owner now retains the existing archive allocation instead of forcing a shrink/reallocation. Prediction: ordinary ASCII handoffs reuse their buffer address, remove the second allocation/copy, preserve text length and fingerprints, and retain only the archive's existing one-byte spare capacity per retained source. This small measured-capacity tradeoff is explicit; no resident-memory saving is claimed. The CPU observer now optionally calls the exact contact declaration source owner with its real prepared physics-text seed, exercising the missing class volume. A fresh same-executable release comparison is required before acceptance.
