@@ -5,9 +5,9 @@
 //! additive FUN_1412e4c70) through the command executor (FUN_14024b600).
 //!
 //! `locoBobAdditives = body ⊕ bobAmount·bob ⊕ additives`, then the root's
-//! lean layers (`body.rs`). The jump/land additives node
-//! (arkAnimTreeNode_AnimBasic), midnight scenes, grapple and versus are not
-//! ported; an empty midnight passes the pose through unchanged.
+//! lean layers (`body.rs`). Supported AnimBasic additives are implemented
+//! here; Midnight playback lives in player::midnight. Grapple and versus
+//! remain separate integrations.
 use crate::edge_animation::{slerp, EdgeAnimation};
 use crate::edge_skeleton::JointRestPose;
 use std::collections::HashMap;
@@ -522,19 +522,36 @@ struct BasicClip {
 /// arkAnimTreeNode_AnimBasic (vtable 0x141c4bce8, update FUN_1406e3de0):
 /// up to four clips, newest first, each fading linearly, folded as a
 /// blendarray of pause leaves.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct AnimBasicNode {
-    pub items: Vec<AnimBasicItem>,
+    /// Host: model-resolved immutable metadata shared by template/instances.
+    /// Playback below remains per node (1406e4af0/1406e51d0).
+    pub items: std::sync::Arc<[AnimBasicItem]>,
     /// `m_stopBlendOutDuration`.
     pub stop_blend_out: f32,
     clips: Vec<BasicClip>,
     deferred: Option<AnimBasicCommand>,
 }
 
+impl Clone for AnimBasicNode {
+    fn clone(&self) -> Self {
+        let items = if std::env::var("DH2_DEBUG_SEPARATE_ANIMBASIC_ITEMS").as_deref() == Ok("1") {
+            let _tag = crate::platform::allocation_tags::tag("AnimBasic item definitions");
+            self.items.to_vec().into()
+        } else { std::sync::Arc::clone(&self.items) };
+        Self { items, stop_blend_out: self.stop_blend_out,
+            clips: self.clips.clone(), deferred: self.deferred }
+    }
+}
+
 /// EPS_END (DAT_14231c520).
 const END_MARGIN: f32 = 0.001;
 
 impl AnimBasicNode {
+    pub fn from_items(items: Vec<AnimBasicItem>, stop_blend_out: f32) -> Self {
+        Self { items: items.into(), stop_blend_out, clips: Vec::new(), deferred: None }
+    }
+
     /// The newest clip's item, local time and playback flag without allocating.
     pub fn current_clip(&self) -> Option<(usize, f32, bool)> {
         self.clips.first().map(|clip| (clip.item, clip.time, clip.playing))

@@ -46,6 +46,9 @@ impl PreparedLevel {
         });
         self
     }
+    pub(super) fn get_resource<R: Resource>(&self) -> Option<&R> {
+        self.resources.iter().find_map(|resource| resource.value.downcast_ref::<R>())
+    }
     pub(super) fn take_resource<R: Resource>(&mut self) -> Option<R> {
         let index = self.resources.iter().position(|resource| resource.kind == std::any::TypeId::of::<R>())?;
         Some(*self.resources.swap_remove(index).value.downcast::<R>().unwrap())

@@ -9,6 +9,28 @@ struct Asset {
     rig: BasicRig,
     model: Arc<crate::bmd6::ModelInfo>,
 }
+impl Asset {
+    fn load(catalog: &crate::archive::Catalog, path: &str) -> Result<Arc<Self>, String> {
+        let declaration = crate::bmd6::declaration_path(path).ok_or("usable model is not a compiled MD6")?;
+        let rig_name = declaration.strip_prefix("generated/decls/md6def/")
+            .and_then(|name| name.strip_suffix(".decl"))
+            .ok_or("usable MD6 declaration path is invalid")?;
+        let rig = BasicRig::load(catalog, rig_name)?;
+        let model = crate::bmd6::ModelSources::new(catalog).acquire(catalog, path)?;
+        Ok(Arc::new(Self { rig, model }))
+    }
+    fn instantiate(&self) -> AnimBasicNode { self.rig.template.clone() }
+}
+
+fn animated_actor(interactions: &super::interactions::Interactions,
+    placement: &crate::entities::PlacedModel) -> Option<usize> {
+    let &actor = interactions.actor_by_entity.get(&placement.id)?;
+    (crate::bmd6::declaration_path(&placement.resource_path).is_some()
+        && interactions.actors[actor].definition.steps.iter()
+            .any(|state| state.animation.is_some() || state.transition_animation.is_some()))
+        .then_some(actor)
+}
+
 struct Placement {
     actor: usize,
     model: String,
@@ -60,9 +82,7 @@ pub(super) fn advance(
         let physics = machinery.as_ref().map(|m| m.deformed_placements()).unwrap_or_default();
         let shadow_sources: HashMap<_, _> = sources.0.iter().enumerate().map(|(index, source)| (source.placement, index)).collect();
         for (index, placement) in placements.0.iter().enumerate() {
-            let Some(&actor) = interactions.actor_by_entity.get(&placement.id) else { continue };
-            if crate::bmd6::declaration_path(&placement.resource_path).is_none() || !interactions.actors[actor].definition.steps.iter()
-                .any(|state| state.animation.is_some() || state.transition_animation.is_some()) { continue; }
+            let Some(actor) = animated_actor(&interactions, placement) else { continue };
             owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), source_index: shadow_sources.get(&index).copied(), asset: None,
                 node: None, publication: Default::default(), requested: false, failed: false, command: None,
                 initialized: false, physics_owned: physics.contains(&index), animation_pose: None });
@@ -91,19 +111,13 @@ pub(super) fn advance(
         let key = if interactions.catalog.has_overlays() { format!("{model}#{index}") } else { model.clone() };
         if let Some(asset) = owner.lookup.get(&key).and_then(Weak::upgrade) {
             let slot = owner.placements.get_mut(&index).unwrap();
-            slot.node = Some(asset.rig.template.clone());
+            slot.node = Some(asset.instantiate());
             slot.asset = Some(asset);
         } else if !owner.loading.contains_key(&key) {
             let catalog = interactions.catalog.clone();
             let path = model.clone();
             owner.loading.insert(key, std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
-                let declaration = crate::bmd6::declaration_path(&path).ok_or("usable model is not a compiled MD6")?;
-                let rig_name = declaration.strip_prefix("generated/decls/md6def/")
-                    .and_then(|name| name.strip_suffix(".decl"))
-                    .ok_or("usable MD6 declaration path is invalid")?;
-                let rig = BasicRig::load(&catalog, rig_name)?;
-                let model = crate::bmd6::ModelSources::new(&catalog).acquire(&catalog, &path)?;
-                Ok(Arc::new(Asset { rig, model }))
+                Asset::load(&catalog, &path)
             })));
         }
     }
@@ -124,7 +138,7 @@ pub(super) fn advance(
                 for (&index, slot) in &mut owner.placements {
                     let matches = if interactions.catalog.has_overlays() { key == format!("{}#{index}", slot.model) } else { key == slot.model };
                     if slot.requested && slot.asset.is_none() && matches {
-                        slot.node = Some(asset.rig.template.clone());
+                        slot.node = Some(asset.instantiate());
                         slot.asset = Some(asset.clone());
                     }
                 }
@@ -235,4 +249,44 @@ pub(super) fn advance(
             slot.initialized = false;
         }
     }
+}
+
+
+/// Observe the same acquisition/instance constructors for authored animated
+/// root placements. No frames, commands, visibility or gameplay are simulated.
+pub(super) fn observe_resources(catalog: &crate::archive::Catalog,
+    interactions: &super::interactions::Interactions,
+    placements: &[crate::entities::PlacedModel]) {
+    let mut assets = HashMap::<String, Result<Arc<Asset>, String>>::new();
+    let mut nodes = Vec::new();
+    let mut failures = 0;
+    for (index, placement) in placements.iter().enumerate() {
+        if animated_actor(interactions, placement).is_none() { continue; }
+        let path = &placement.resource_path;
+        let key = if catalog.has_overlays() { format!("{path}#{index}") } else { path.clone() };
+        let asset = assets.entry(key).or_insert_with(|| Asset::load(catalog, path));
+        match asset {
+            Ok(asset) => {
+                let node = asset.instantiate();
+                eprintln!("ANIMBASIC_INSTANCE entity={} path={path} items={} signature={}",
+                    placement.id, node.items.len(), blake3::hash(format!("{node:?}").as_bytes()));
+                nodes.push(node);
+            }
+            Err(error) => { failures += 1; eprintln!("ANIMBASIC_INSTANCE_FAILURE path={path} error={error}"); }
+        }
+    }
+    let mut unique = std::collections::HashSet::new();
+    let mut aliases = 0;
+    let mut logical_payload_bytes = 0;
+    for node in nodes.iter().chain(assets.values().filter_map(|asset|
+        asset.as_ref().ok().map(|asset| &asset.rig.template))) {
+        if unique.insert((node.items.as_ptr() as usize, node.items.len())) {
+            aliases += node.items.len();
+            logical_payload_bytes += 2 * std::mem::size_of::<usize>()
+                + node.items.len() * std::mem::size_of::<crate::gameplay::player::animation::AnimBasicItem>()
+                + node.items.iter().map(|item| item.alias.capacity()).sum::<usize>();
+        }
+    }
+    eprintln!("ANIMBASIC_ITEM_STORAGE assets={} instances={} failures={failures} unique_lists={} aliases={aliases} logical_payload_bytes={logical_payload_bytes}",
+        assets.len(), nodes.len(), unique.len());
 }

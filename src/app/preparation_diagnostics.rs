@@ -46,6 +46,12 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 Some(crate::assets::declaration_texts::acquire(base, &catalog, &map, language, seed.0)
                     .map_err(std::io::Error::other)?)
             } else { None };
+            if std::env::var("DH2_DEBUG_CPU_USABLE_ANIMATION_RESOURCES").as_deref() == Ok("1") {
+                let interactions = prepared.get_resource::<super::interactions::Interactions>()
+                    .ok_or("prepared interactions are absent")?;
+                let scene = prepared.get_resource::<super::SceneData>().ok_or("prepared scene is absent")?;
+                super::usable_animation::observe_resources(&catalog, interactions, &scene.placed_models);
+            }
             // This is the same body/setup acquisition used by setup::prepare.
             // Rendering arms, GPU uploads and frame updates are not exercised.
             let mut declarations = crate::entities::player::DeclarationSource::default();
@@ -135,6 +141,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("AnimBasic item definitions") {
+        eprintln!("ANIMBASIC_ITEM_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Option section resources") {
         eprintln!("OPTIONS_RESOURCE_MEMORY phase=catalog-released bytes={bytes}");
     }

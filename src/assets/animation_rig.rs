@@ -416,13 +416,13 @@ impl Clips<'_> {
 /// An md6's animBasic list as an AnimBasicNode.
 pub fn anim_basic(clips: &mut Clips, fields: &[(String, crate::entities::Value)]) -> Result<crate::gameplay::player::animation::AnimBasicNode, String> {
     use crate::gameplay::player::animation::{AnimBasicItem, AnimBasicNode};
+    let _tag = crate::platform::allocation_tags::tag("AnimBasic item definitions");
     let (list, stop_blend_out) = decls::anim_basic_list(fields)?;
-    let mut node = AnimBasicNode::default();
-    node.stop_blend_out = stop_blend_out;
+    let mut items = Vec::with_capacity(list.len());
     for (alias, blend_in, blend_out) in list {
-        node.items.push(AnimBasicItem { clip: clips.clip(&alias)?, alias, blend_in, blend_out });
+        items.push(AnimBasicItem { clip: clips.clip(&alias)?, alias, blend_in, blend_out });
     }
-    Ok(node)
+    Ok(AnimBasicNode::from_items(items, stop_blend_out))
 }
 
 /// Immutable model-specific data shared by usable instances. The individual
