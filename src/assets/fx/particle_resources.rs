@@ -7,6 +7,8 @@ use std::{collections::HashMap, sync::{Arc, Mutex, Weak}};
 
 struct Entry<T> {
     marker: u8,
+    bootstrap_phase: bool,
+    map_preload_override: bool,
     retired: bool,
     current: Weak<T>,
     resident: Option<Arc<T>>,
@@ -14,7 +16,8 @@ struct Entry<T> {
 }
 impl<T> Entry<T> {
     fn new(marker: u8) -> Self {
-        Self { marker, retired: false, current: Weak::new(), resident: None, failure: None }
+        Self { marker, bootstrap_phase: marker == 2, map_preload_override: false,
+            retired: false, current: Weak::new(), resident: None, failure: None }
     }
 }
 struct Registry<T> { entries: HashMap<String, Entry<T>> }
@@ -26,14 +29,18 @@ impl<T> Registry<T> {
         let entry = self.entries.entry(path.to_owned()).or_insert_with(|| Entry::new(marker));
         if entry.retired {
             entry.marker = marker;
+            entry.bootstrap_phase = marker == 2;
+            entry.map_preload_override = false;
             entry.retired = false;
             entry.resident = entry.current.upgrade();
         }
-        if persistent { entry.marker = 1; }
+        if persistent { entry.marker = 1; entry.map_preload_override = true; }
     }
     fn promote_bootstrap(&mut self) {
         for entry in self.entries.values_mut() {
             entry.marker = 2;
+            entry.bootstrap_phase = true;
+            entry.map_preload_override = false;
             entry.retired = false;
             if entry.resident.is_none() { entry.resident = entry.current.upgrade(); }
         }
@@ -43,13 +50,25 @@ impl<T> Registry<T> {
         let entry = self.entries.entry(path.to_owned()).or_insert_with(|| Entry::new(inherited_marker));
         // A request after purge rejoins a still-live generation in the new
         // caller's scope; a previous map's marker must not be resurrected.
-        if entry.retired { entry.marker = inherited_marker; entry.retired = false; }
+        if entry.retired {
+            entry.marker = inherited_marker;
+            entry.bootstrap_phase = inherited_marker == 2;
+            entry.map_preload_override = false;
+            entry.retired = false;
+        }
+        // A deferred bootstrap parent's dependencies were originally acquired
+        // before map preload. Replay that promotion without overwriting a
+        // later explicit map marker (the same phase rule as AnimSet children).
+        if inherited_marker == 2 {
+            entry.bootstrap_phase = true;
+            if !entry.map_preload_override { entry.marker = 2; }
+        }
         if let Some(error) = &entry.failure { return Err(error.clone()); }
         if let Some(value) = entry.current.upgrade() {
             entry.resident = Some(value.clone());
             return Ok(value);
         }
-        match load(entry.marker) {
+        match load(if entry.bootstrap_phase { 2 } else { entry.marker }) {
             Ok(value) => {
                 entry.current = Arc::downgrade(&value);
                 entry.resident = Some(value.clone());
@@ -129,7 +148,10 @@ pub(crate) fn declaration(catalog: &Catalog, path: &str, shared: bool,
     // Editable generations remain exclusively leased by their actual users;
     // neither their successful payload nor an earlier error is cached here.
     if !share(catalog, shared) { return load(0); }
-    owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?.acquire(&key(path), 0, load)
+    // FX descriptors store suffixless declaration names; preload manifests
+    // carry archive paths. Both must address the exact same header/history key.
+    let resource = format!("generated/decls/particledt/{}.decl", key(path));
+    owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?.acquire(&resource, 0, load)
 }
 pub(crate) fn model(catalog: &Catalog, path: &str, marker: u8, shared: bool,
     load: impl FnOnce() -> Result<Arc<ParticleModel>, String>) -> Result<Arc<ParticleModel>, String> {
