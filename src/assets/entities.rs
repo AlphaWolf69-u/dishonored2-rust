@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
 pub use components::scheduling_bindings as component_scheduling;
+pub(crate) use components::overlay_owned;
 pub mod wind;
 pub mod machinery;
 pub mod physics_material;

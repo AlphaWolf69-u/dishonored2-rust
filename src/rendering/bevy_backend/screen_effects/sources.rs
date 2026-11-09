@@ -3,7 +3,7 @@ use crate::{
     assets::fx::screen_quad::{screen_quad, ScreenQuadStage},
     gameplay::{
         effects::{environment::EnvironmentEffectDefinition, timing::EffectTimingRanges},
-        options::decl::{atom, list_items, read_edit, scope},
+        options::decl::{atom, list_items, scope},
     },
     rendering::screen_distortion::ScreenDistortionMaterial,
     shader_cache::ProgramLibrary,
@@ -73,8 +73,7 @@ impl ScreenEffectSources {
         let mut materials = Vec::new();
         let mut indices = HashMap::<String, usize>::new();
         let mut load = |effect: &str| -> Result<EffectDefinition, String> {
-            let mut read = |p: &str| catalog.read(p).ok().flatten();
-            let fields = read_edit(&mut read, "fx", effect)?;
+            let fields = crate::assets::fx::declaration::read(catalog, effect)?;
             let mut groups = Vec::new();
             for group in scope(&fields, "m_groups").into_iter().flat_map(list_items) {
                 let crate::entities::Value::Scope(fields) = group else {

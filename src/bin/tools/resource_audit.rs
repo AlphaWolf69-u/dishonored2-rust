@@ -267,7 +267,7 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             }
             env::remove_var("DH2_DEBUG_EAGER_FONT_OUTLINES");
         }
-        "inspect-fx-resources" => {
+        "inspect-fx-resources" | "inspect-fx-definitions" => {
             use dishonored2_rust::{
                 assets::entities::effects,
                 rendering::particles::{
@@ -275,13 +275,16 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 },
             };
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
-            let path = args
-                .get(0)
-                .ok_or("inspect-fx-resources requires an entities resource path")?;
-            let bytes = catalog.read(path)?.ok_or("entities resource absent")?;
-            let document = entities::parse(&entities::declaration_text(&bytes))?;
-            let graphs = effects::load(&document)?;
-            let actors = effects::actors::load(&document, &catalog);
+            let named = command == "inspect-fx-definitions";
+            let (graphs, actors) = if named {
+                if args.is_empty() { return Err("inspect-fx-definitions requires installed FX names".into()); }
+                (Vec::new(), Vec::new())
+            } else {
+                let path = args.first().ok_or("inspect-fx-resources requires an entities resource path")?;
+                let bytes = catalog.read(path)?.ok_or("entities resource absent")?;
+                let document = entities::parse(&entities::declaration_text(&bytes))?;
+                (effects::load(&document)?, effects::actors::load(&document, &catalog))
+            };
             let mut programs = dishonored2_rust::shader_cache::ProgramLibrary::open(
                 base,
                 dishonored2_rust::shader_cache::ShaderCacheBackend::Pc,
@@ -290,13 +293,25 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             let mut resources = ParticleResources::default();
             resources.debug_set_sharing(args.get(1).is_none_or(|mode| mode != "unshared"));
             let started = std::time::Instant::now();
-            let sources = WorldFxSources::load_shared(
-                &graphs,
-                &actors,
-                &catalog,
-                &mut programs,
-                &mut resources,
-            );
+            let sources = if named {
+                WorldFxSources::load_named_shared(args.to_vec(), &catalog, &mut programs, &mut resources)
+            } else {
+                WorldFxSources::load_shared(&graphs, &actors, &catalog, &mut programs, &mut resources)
+            };
+            let acquisition_elapsed = started.elapsed();
+            if named {
+                let mut definitions = sources.effects.iter().collect::<Vec<_>>();
+                definitions.sort_by_key(|(name, _)| *name);
+                for (name, definition) in definitions {
+                    match definition {
+                        Ok(definition) => println!("fx_definition name={name} groups={} particles={} sounds={} decals={}",
+                            definition.groups.len(), definition.groups.iter().map(|group| group.particles.len()).sum::<usize>(),
+                            definition.groups.iter().map(|group| group.sounds.len()).sum::<usize>(),
+                            definition.groups.iter().map(|group| group.decals.len()).sum::<usize>()),
+                        Err(error) => println!("fx_definition name={name} unavailable={error}"),
+                    }
+                }
+            }
             let mut decal_effects = sources.effects.iter().filter_map(|(name, effect)|
                 effect.as_ref().ok().filter(|effect| effect.groups.iter().any(|group| !group.decals.is_empty()))
                     .map(|effect| (name, effect))).collect::<Vec<_>>();
@@ -310,7 +325,7 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 }
             }
             println!("acquisition_ms={} declaration_requests={} declaration_reads={} model_reads={} field_image_reads={} material_reads={} deferred_syntax_bytes={} deferred_admission_bytes={}",
-                started.elapsed().as_millis(), resources.declaration_requests, resources.declaration_reads,
+                acquisition_elapsed.as_millis(), resources.declaration_requests, resources.declaration_reads,
                 resources.model_reads, resources.field_image_reads, resources.material_reads,
                 sources.deferred_syntax_bytes, sources.deferred_admission_bytes);
             let mut instances =
@@ -339,7 +354,7 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             drop(resources);
             for (tag, bytes) in dishonored2_rust::platform::allocation_tags::report()
                 .into_iter()
-                .filter(|(tag, _)| tag.starts_with("particle ") || tag.starts_with("FX graph "))
+                .filter(|(tag, _)| tag.starts_with("particle ") || tag.starts_with("FX "))
             {
                 println!("allocation_tag={tag:?} live_bytes={bytes}");
             }
