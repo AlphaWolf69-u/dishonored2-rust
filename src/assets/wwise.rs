@@ -969,7 +969,7 @@ pub(crate) fn report_stream_diagnostics() {
 pub(crate) fn retire_stream_diagnostics() {
     let (track, metrics) = stream_diagnostic_mode();
     if std::env::var("DH2_DEBUG_RETAIN_STREAMED_MEDIA_DIAGNOSTICS").as_deref() == Ok("1") { return; }
-    if track { retire_cache(&STREAMED_MEDIA, "stream-diagnostics"); }
+    if track { retire_cache(&STREAMED_MEDIA, "stream-diagnostics", |cache| (cache.len(), cache.capacity()), |cache| cache.clear()); }
     if metrics {
         use std::sync::atomic::Ordering::Relaxed;
         STREAM_DIAGNOSTIC_REQUESTS.store(0, Relaxed);
