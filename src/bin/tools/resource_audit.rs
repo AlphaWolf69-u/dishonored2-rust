@@ -9,6 +9,12 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-scene-preparation" => {
+            #[cfg(feature = "game")]
+            dishonored2_rust::app::inspect_scene_preparation(base, args)?;
+            #[cfg(not(feature = "game"))]
+            return Err("inspect-scene-preparation requires the game feature".into());
+        }
         "inspect-cpu-preparation" => {
             #[cfg(feature = "game")]
             dishonored2_rust::app::inspect_cpu_preparation(base, args)?;

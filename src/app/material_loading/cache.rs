@@ -71,6 +71,18 @@ impl MaterialCache {
         }
     }
 
+    /// End the caster-to-material source handoff before retaining this cache.
+    /// All future requests use the typed entries or acquire their own source.
+    pub(in crate::app) fn retire_staged_source(&mut self) {
+        let retain = std::env::var("DH2_DEBUG_RETAIN_MATERIAL_STAGING").as_deref() == Ok("1");
+        let before = self.pending_source.as_ref().map_or(0, |(name, bytes)| name.capacity() + bytes.capacity());
+        if !retain { self.pending_source = None; }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            let after = self.pending_source.as_ref().map_or(0, |(name, bytes)| name.capacity() + bytes.capacity());
+            eprintln!("MATERIAL_SOURCE_RETIRE retain={retain} before_bytes={before} after_bytes={after}");
+        }
+    }
+
     pub(in crate::app) fn report_source_handoff(&self) {
         if trace_source() {
             eprintln!("MEMORY material source handoff: matches={} bytes={} max_capacity={} signature={:08x} admission={:08x} resolved={:08x}",

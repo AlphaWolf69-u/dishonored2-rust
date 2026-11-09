@@ -1933,6 +1933,7 @@ pub(super) fn prepare(
         commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images, &ocean_inline_slots)
             .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
     }
+    resolver.cache.retire_staged_source();
     resolver.cache.report_source_handoff();
     resolver.cache.report_runtime_retention();
     commands.insert_resource(super::runtime_materials::RuntimeMaterialOwner {

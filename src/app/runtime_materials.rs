@@ -302,6 +302,7 @@ impl MaterialWork {
         if self.cancelled.load(Ordering::Acquire) || self.superseded.load(Ordering::Acquire) {
             return Err("material request cancelled".into());
         }
+        resolver.cache.retire_staged_source();
         resolver.cache.disable_dependency_trace();
         let cache = std::mem::take(&mut resolver.cache);
         let image_paths = std::mem::take(&mut resolver.diffuse_image_paths);
