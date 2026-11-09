@@ -84,6 +84,7 @@ pub struct Catalog {
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
     /// Inventory/history leases can outlive a map's item acquisition table.
     pub(crate) pickable_sources: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::inventory_item::PickableSources>>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
@@ -118,6 +119,7 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        self.particle_resources.take();
         // Host read accounting belongs to this immutable archive namespace;
         // releasing it must not leave credits for a later Catalog identity.
         let animations = crate::assets::edge_animation::retire_catalog(
@@ -174,6 +176,7 @@ impl Catalog {
         self.release_md6_level();
         self.release_animset_level();
         self.release_parameter_block_level();
+        crate::assets::fx::particle_resources::release_marker(self, 0);
         self.release_pickable_level();
     }
     /// Trim dead level AnimSet identities without dropping the session root
@@ -342,6 +345,7 @@ impl Catalog {
             preload_map: Default::default(),
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
+            particle_resources: Default::default(),
             pickable_sources: Default::default(),
             containers: Default::default(),
             header_order: Default::default(),

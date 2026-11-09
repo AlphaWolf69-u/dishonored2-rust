@@ -24,7 +24,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 crate::gameplay::map_info::set_current_map(&format!("{map}.map"));
             }
             eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=begin");
-            let prepared = super::level_prepare::prepare_level(
+            let mut prepared = super::level_prepare::prepare_level(
                 base.to_owned(), catalog.clone(), level, true, || false,
             )?;
             // This is the same body/setup acquisition used by setup::prepare.
@@ -35,6 +35,34 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             )?;
             drop(player);
             drop(declarations);
+            if std::env::var("DH2_DEBUG_CPU_PARTICLE_RESOURCES").as_deref() == Ok("1") {
+                // The same already-prepared graphs and shader library feed
+                // setup::prepare. No fabricated FX or renderer is introduced.
+                let graphs = prepared.take_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>()
+                    .ok_or("prepared effect definitions are absent")?;
+                let programs = prepared.take_resource::<super::ProgramCacheSource>()
+                    .ok_or("prepared program library is absent")?;
+                let mut programs = programs.0.lock().map_err(|_| "program library is poisoned")?;
+                let programs = programs.as_mut().map_err(|error| std::io::Error::other(error.clone()))?;
+                let mut resources = crate::rendering::particles::definition::ParticleResources::default();
+                let sources = crate::rendering::particles::world_sources::WorldFxSources::load_shared(
+                    &graphs.graphs, &graphs.actors, &catalog, programs, &mut resources,
+                );
+                let mut instances = crate::gameplay::effects::instances::FxGraphInstances::new(
+                    &graphs.graphs, &sources.declarations, 0,
+                );
+                let errors = instances.loading_end();
+                let mut digest = blake3::Hasher::new();
+                for &(instance, node, port) in &instances.events {
+                    digest.update(instances.owner(instance).as_bytes());
+                    digest.update(&node.to_le_bytes()); digest.update(&port.to_le_bytes());
+                }
+                eprintln!("PARTICLE_CPU_PREPARATION step={step} level={name} declaration_requests={} declaration_reads={} model_reads={} field_reads={} effects={} failures={} events={} graph_errors={} event_hash={}",
+                    resources.declaration_requests, resources.declaration_reads, resources.model_reads, resources.field_image_reads,
+                    sources.effects.len(), sources.effects.values().filter(|effect| effect.is_err()).count(),
+                    instances.events.len(), errors.len(), digest.finalize());
+                resources.retire_unused();
+            }
             drop(prepared);
             Ok(())
         })();
@@ -47,8 +75,14 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("inventory-item-owner") {
             eprintln!("PICKABLE_MEMORY phase=level-released step={step} bytes={bytes}");
         }
+        if let Some(bytes) = crate::platform::allocation_tags::live_bytes("particle definitions") {
+            eprintln!("PARTICLE_MEMORY phase=level-released step={step} bytes={bytes}");
+        }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("particle definitions") {
+        eprintln!("PARTICLE_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("inventory-item-owner") {
         eprintln!("PICKABLE_MEMORY phase=catalog-released bytes={bytes}");
     }

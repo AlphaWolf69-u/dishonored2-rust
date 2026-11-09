@@ -15,7 +15,8 @@ use std::{
     sync::{Arc, Weak},
 };
 
-/// Level-scoped acquisition owner, shared by player and world effects. The
+/// Level-scoped fast lookup table, shared by player and world effects.
+/// Catalog resource identities own declaration and PMODEL residency. The
 /// original declarations/resources are immutable; only emitters own simulation
 /// state. These host caches never share a particle's age, RNG or pool slot.
 pub struct ParticleResources {
@@ -102,6 +103,21 @@ impl ParticleResources {
     pub fn debug_set_sharing(&mut self, shared: bool) {
         self.shared = shared;
     }
+    fn model(&mut self, catalog: &Catalog, resource: &str, marker: u8) -> Result<(), String> {
+        if self.models.contains_key(resource) { return Ok(()); }
+        let model = crate::assets::fx::particle_resources::model(catalog, resource, marker, self.shared, || {
+            let history = self.model_history.get_or_insert_with(crate::assets::particle_model::HistoryLease::acquire).clone();
+            self.model_reads += 1;
+            let bytes = catalog.read(resource).map_err(|error| format!("{resource}: {error}"))?
+                .ok_or_else(|| format!("missing particle model {resource}"))?;
+            let mut model = crate::assets::particle_model::parse(&bytes)
+                .map_err(|error| format!("{resource}: {error}"))?;
+            model.history = Some(history);
+            Ok(Arc::new(model))
+        })?;
+        self.models.insert(resource.to_owned(), model);
+        Ok(())
+    }
     fn declaration(
         &mut self,
         catalog: &Catalog,
@@ -114,12 +130,11 @@ impl ParticleResources {
                 return loaded.clone();
             }
         }
-        let history = self.history.get_or_insert_with(particle_declaration::HistoryLease::acquire).clone();
-        self.declaration_reads += 1;
-        let _tag = crate::platform::allocation_tags::tag("particle definitions");
-        let loaded = (|| {
-            // Use the same fallible-reader adapter as WorldSources: missing
-            // files and archive IO errors must retain their distinct causes.
+        let loaded = crate::assets::fx::particle_resources::declaration(catalog, path, self.shared, |marker| {
+            let history = self.history.get_or_insert_with(particle_declaration::HistoryLease::acquire).clone();
+            self.declaration_reads += 1;
+            let _tag = crate::platform::allocation_tags::tag("particle definitions");
+            // Preserve archive IO failures distinctly from absent declarations.
             let mut read_error = None;
             let mut read = |path: &str| match catalog.read(path) {
                 Ok(bytes) => bytes,
@@ -148,18 +163,14 @@ impl ParticleResources {
                             .image_resource(source)
                             .ok_or_else(|| format!("missing field image alias {source}"))?;
                         if !self.field_images.contains_key(resource) {
-                            self.field_image_reads += 1;
-                            let bytes = catalog
-                                .read(resource)
-                                .map_err(|error| format!("{resource}: {error}"))?
-                                .ok_or_else(|| format!("missing field image {resource}"))?;
-                            self.field_images.insert(
-                                resource.to_owned(),
-                                Arc::new(
-                                    crate::assets::fx::particle_field::FieldPixels::read(&bytes)
-                                        .map_err(|error| format!("{resource}: {error}"))?,
-                                ),
-                            );
+                            let pixels = crate::assets::fx::particle_resources::field(catalog, resource, self.shared, || {
+                                self.field_image_reads += 1;
+                                let bytes = catalog.read(resource).map_err(|error| format!("{resource}: {error}"))?
+                                    .ok_or_else(|| format!("missing field image {resource}"))?;
+                                Ok(Arc::new(crate::assets::fx::particle_field::FieldPixels::read(&bytes)
+                                    .map_err(|error| format!("{resource}: {error}"))?))
+                            })?;
+                            self.field_images.insert(resource.to_owned(), pixels);
                         }
                         texture.pixels = Some(self.field_images[resource].clone());
                     }
@@ -170,51 +181,19 @@ impl ParticleResources {
                 ] {
                     let Some(source) = source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
-                    if !self.models.contains_key(&resource) {
-                        let history = self.model_history.get_or_insert_with(crate::assets::particle_model::HistoryLease::acquire).clone();
-                        self.model_reads += 1;
-                        let bytes = catalog
-                            .read(&resource)
-                            .map_err(|error| format!("{resource}: {error}"))?
-                            .ok_or_else(|| format!("missing particle emission mesh {resource}"))?;
-                        self.models.insert(
-                            resource.clone(),
-                            Arc::new({
-                                let mut model = crate::assets::particle_model::parse(&bytes)
-                                    .map_err(|error| format!("{resource}: {error}"))?;
-                                model.history = Some(history);
-                                model
-                            }),
-                        );
-                    }
+                    self.model(catalog, &resource, marker)?;
                     *model = Some(self.models[&resource].clone());
                 }
                 for mesh in &mut stage.meshes {
                     let Some(source) = &mesh.source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
-                    if !self.models.contains_key(&resource) {
-                        let history = self.model_history.get_or_insert_with(crate::assets::particle_model::HistoryLease::acquire).clone();
-                        self.model_reads += 1;
-                        let bytes = catalog
-                            .read(&resource)
-                            .map_err(|error| format!("{resource}: {error}"))?
-                            .ok_or_else(|| format!("missing particle render mesh {resource}"))?;
-                        self.models.insert(
-                            resource.clone(),
-                            Arc::new({
-                                let mut model = crate::assets::particle_model::parse(&bytes)
-                                    .map_err(|error| format!("{resource}: {error}"))?;
-                                model.history = Some(history);
-                                model
-                            }),
-                        );
-                    }
+                    self.model(catalog, &resource, marker)?;
                     mesh.model = Some(self.models[&resource].clone());
                 }
             }
 
             Ok(Arc::new(declaration))
-        })();
+        });
         self.declarations.insert(key, loaded.clone());
         loaded
     }
