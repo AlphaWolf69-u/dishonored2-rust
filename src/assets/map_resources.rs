@@ -352,6 +352,7 @@ impl LevelList {
             crate::edge_animation::residency::promote_bootstrap_records(catalog)?;
             crate::assets::animation_rig::animset::promote_bootstrap_records(catalog)?;
             crate::assets::animation_rig::declaration::promote_bootstrap_records(catalog)?;
+            crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
             Ok(count)
         }).as_ref().map_err(Clone::clone)?;
         let mut previous = catalog.animation_preload_map.lock()
@@ -360,6 +361,7 @@ impl LevelList {
         // com_usePersistentHeap. 062bd0 then gives its inverse to 0410f0,
         // which purges marker1 for a different map or disabled persistence.
         if !persistent_heap || previous.as_deref() != Some(map) {
+            crate::assets::inventory_item::configuration::release_persistent(catalog);
             crate::edge_animation::release_marker(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
             crate::assets::animation_rig::animset::release_scoped(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
             crate::assets::animation_rig::declaration::release_marker(catalog,
@@ -405,7 +407,15 @@ impl LevelList {
             if !header.mask.iter().zip(&layers).any(|(mask, selected)| mask & selected != 0)
                 || header.flags & 0x20 != 0 { return Ok(()); }
             if [".sbcm", ".tbcm", ".bwm"].iter().any(|suffix| resource.path.contains(suffix)) { return Ok(()); }
-            if resource.kind.eq_ignore_ascii_case("anim") {
+            if resource.kind.eq_ignore_ascii_case("inventoryLoadout")
+                || resource.kind.eq_ignore_ascii_case("inventoryItemCollection") {
+                // Gate by the existing kind before normalizing a path: other
+                // resource families make no inventory allocation or lookup.
+                if !crate::assets::inventory_item::configuration::register_header(catalog, &resource.path)? {
+                    return Err(format!("invalid inventory declaration resource {}", resource.path));
+                }
+                // Neither class belongs to 0661e0's heap-1 promotion list.
+            } else if resource.kind.eq_ignore_ascii_case("anim") {
                 crate::edge_animation::register_lazy_preload(catalog, &resource.path, context, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("animset") {
                 crate::assets::animation_rig::animset::register_lazy_preload(catalog, &resource.path,

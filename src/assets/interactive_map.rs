@@ -18,10 +18,7 @@ pub struct Map {
 /// Resolve the item and map component inheritance on demand; callers retain
 /// the metadata only for the presentation, not the source declaration trees.
 pub fn resolve(catalog: &Catalog, item: &str) -> Result<Option<Map>, String> {
-    let read = |path: &str| -> Result<Option<String>, String> {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| entities::declaration_text(&bytes).into_owned()))
-    };
-    let fields = entities::player::resolved_decl("inventoryitem", item, read)?;
+    let fields = crate::assets::inventory_item::item_fields(catalog, item)?;
     resolve_fields(catalog, item, &fields)
 }
 

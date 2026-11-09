@@ -1,9 +1,10 @@
 //! Inventory item declarations used by readable interactions.
-//! The source declaration is acquired on demand and is not retained.
+//! Catalog-owned identities serve typed consumers; temporary generic fields
+//! retain read-generation leases rather than another declaration cache.
 use crate::assets::{archive::Catalog, entities::{self, Value}};
-use std::collections::HashMap;
 mod sources;
-pub use sources::{PickableItem, PickableReadable, PickableOtherKind, PickableSources, PickableSourceLease};
+pub(crate) mod configuration;
+pub use sources::{PickableItem, PickableReadable, PickableOtherKind, PickableSources, PickableSourceLease, ItemFields};
 
 #[derive(Clone, Debug)]
 pub struct Readable {
@@ -79,121 +80,34 @@ pub fn modifiers_fields(item: &str, fields: &[(String, Value)]) -> Result<ItemMo
 /// 140617930 applies the character inventory component's default loadout
 /// when there is no restored inventory, before any gameflow loadout.
 pub fn default_loadout(catalog: &Catalog, character: &str) -> Result<Vec<(String, u32)>, String> {
-    let read = |path: &str| -> Result<Option<String>, String> {
+    let entity = format!("models/characters/player/{character}/body.def");
+    let component = entities::player::entity_component(&entity, "cpntinventory", |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
             .map(|bytes| entities::declaration_text(&bytes).into_owned()))
-    };
-    let entity = format!("models/characters/player/{character}/body.def");
-    let component = entities::player::entity_component(&entity, "cpntinventory", |path| read(path))?
-        .ok_or_else(|| format!("{entity} has no inventory component"))?;
-    let Some(name) = atom(&component, "m_defaultLoadout").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")) else {
-        return Ok(Vec::new());
-    };
-    let mut next = Some(name.to_owned());
-    let mut chain = Vec::new();
-    while let Some(name) = next.take() {
-        if chain.len() >= 32 || chain.iter().any(|(previous, _): &(String, Vec<(String, Value)>)| previous == &name) {
-            return Err(format!("inventory loadout inheritance cycle or excessive depth: {name}"));
-        }
-        let path = format!("generated/decls/inventoryloadout/{name}.decl");
-        let source = read(&path)?.ok_or_else(|| format!("inventory loadout missing: {path}"))?;
-        let fields = entities::parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
-        next = atom(&fields, "inherit").map(str::to_owned);
-        chain.push((name, fields));
-    }
-    let mut entries: Vec<(String, Option<String>, Option<u32>)> = Vec::new();
-    for (_, fields) in chain.iter().rev() {
-        let Some(Value::Scope(edit)) = fields.iter().find(|(key, _)| key == "edit").map(|(_, value)| value) else { continue };
-        let Some(Value::Scope(items)) = edit.iter().find(|(key, _)| key == "m_items").map(|(_, value)| value) else { continue };
-        for (key, value) in items {
-            if let Some(id) = key.strip_prefix("item_remove[").and_then(|s| s.strip_suffix(']')) {
-                entries.retain(|entry| entry.0 != id); continue;
-            }
-            let Some(id) = key.strip_prefix("item_add[").or_else(|| key.strip_prefix("item_override["))
-                .and_then(|s| s.strip_suffix(']')) else { continue };
-            let Value::Scope(fields) = value else { return Err("inventory loadout item is not a scope".into()) };
-            let index = entries.iter().position(|entry| entry.0 == id).unwrap_or_else(|| {
-                entries.push((id.to_owned(), None, None)); entries.len() - 1
-            });
-            if let Some(path) = atom(fields, "m_decl") { entries[index].1 = Some(path.to_owned()); }
-            if let Some(quantity) = atom(fields, "m_quantity") {
-                entries[index].2 = Some(quantity.parse().map_err(|_| format!("invalid loadout quantity {quantity}"))?);
-            }
-        }
-    }
-    entries.into_iter().filter_map(|(_, path, quantity)| path.filter(|path| !path.eq_ignore_ascii_case("NULL"))
-        .map(|path| quantity.map(|quantity| (path, quantity)).ok_or_else(|| "loadout item quantity missing".to_owned())))
-        .collect()
+    })?.ok_or_else(|| format!("{entity} has no inventory component"))?;
+    let Some(name) = atom(&component, "m_defaultLoadout").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")) else { return Ok(Vec::new()) };
+    let sources = PickableSourceLease::for_catalog(catalog)?;
+    let declaration = sources.0.lock().map_err(|_| "inventory declaration owner is poisoned")?.configurations.loadout(catalog, name)?;
+    // The existing initial-inventory host consumes quantities once. The
+    // class owner retains the selected declaration and its source flags.
+    Ok(declaration.assignments().map(|(name, quantity)| (name.to_owned(), quantity.max(0) as u32)).collect())
 }
 
-/// Per-item maximums from the selected player's inventory collection. Only
-/// overrides for relevant readable items are kept after preparation.
-pub struct ReadableLimits {
-    default: u32,
-    overrides: HashMap<String, u32>,
-}
+/// Share the selected collection declaration with the actual consumer.
+/// The native first-entry rule and signed/default maxima live in its owner.
+pub struct ReadableLimits { declaration: std::sync::Arc<configuration::Definition> }
 impl ReadableLimits {
-    pub fn maximum(&self, item: &str) -> u32 {
-        if item.bytes().all(|byte| !byte.is_ascii_uppercase()) {
-            self.overrides.get(item).copied().unwrap_or(self.default)
-        } else {
-            self.overrides.get(&item.to_ascii_lowercase()).copied().unwrap_or(self.default)
-        }
-    }
-    /// 140617300 gives every inventory item either its collection override or
-    /// the collection type's default (0/1, enum 1419feba0).
-    pub fn load(catalog: &Catalog, character: &str, wanted: impl Iterator<Item = String>) -> Result<Self, String> {
-        let wanted: std::collections::HashSet<String> = wanted.map(|s| s.to_ascii_lowercase()).collect();
+    pub fn maximum(&self, item: &str) -> u32 { self.declaration.maximum(item) }
+    pub fn load(catalog: &Catalog, character: &str, _wanted: impl Iterator<Item = String>) -> Result<Self, String> {
         let entity = format!("models/characters/player/{character}/body.def");
-        let read = |path: &str| -> Result<Option<String>, String> {
-            Ok(catalog.read(path).map_err(|e| e.to_string())?
+        let component = entities::player::entity_component(&entity, "cpntinventory", |path| {
+            Ok(catalog.read(path).map_err(|error| error.to_string())?
                 .map(|bytes| entities::declaration_text(&bytes).into_owned()))
-        };
-        let inventory = entities::player::entity_component(&entity, "cpntinventory", |path| read(path))?
-            .ok_or_else(|| format!("{entity} has no inventory component"))?;
-        let mut next = Some(atom(&inventory, "m_collection").ok_or("inventory collection is absent")?.to_owned());
-        let mut chain = Vec::new();
-        while let Some(name) = next.take() {
-            if chain.len() >= 32 || chain.iter().any(|(previous, _): &(String, Vec<(String, Value)>)| previous == &name) {
-                return Err(format!("inventory collection inheritance cycle or excessive depth: {name}"));
-            }
-            let path = format!("generated/decls/inventoryitemcollection/{name}.decl");
-            let source = read(&path)?.ok_or_else(|| format!("inventory collection missing: {path}"))?;
-            let fields = entities::parse_declaration(&source).map_err(|e| format!("{path}: {e}"))?;
-            next = atom(&fields, "inherit").map(str::to_owned);
-            chain.push((name, fields));
-        }
-        let mut default = 0;
-        let mut entries: HashMap<String, (Option<String>, Option<u32>)> = HashMap::new();
-        for (_, fields) in chain.iter().rev() {
-            let Some(Value::Scope(edit)) = fields.iter().find(|(key, _)| key == "edit").map(|(_, v)| v) else { continue };
-            if let Some(value) = atom(edit, "m_type") {
-                default = match value { "ICT_DEFAULT_NOITEM" | "0" => 0, "ICT_DEFAULT_ONEITEM" | "1" => 1,
-                    _ => return Err(format!("unknown inventory collection type {value}")) };
-            }
-            let Some(Value::Scope(items)) = edit.iter().find(|(key, _)| key == "m_items").map(|(_, v)| v) else { continue };
-            for (key, value) in items {
-                if let Some(id) = key.strip_prefix("item_remove[").and_then(|s| s.strip_suffix(']')) {
-                    entries.remove(id); continue;
-                }
-                let Some(id) = key.strip_prefix("item_add[").or_else(|| key.strip_prefix("item_override["))
-                    .and_then(|s| s.strip_suffix(']')) else { continue };
-                let Value::Scope(fields) = value else { return Err("inventory collection entry is not a scope".into()) };
-                let entry = entries.entry(id.to_owned()).or_default();
-                if let Some(item) = atom(fields, "m_item") { entry.0 = Some(item.to_ascii_lowercase()); }
-                if let Some(quantity) = atom(fields, "m_maxQuantity") {
-                    entry.1 = Some(quantity.parse().map_err(|_| format!("invalid maximum quantity {quantity}"))?);
-                }
-            }
-        }
-        let mut overrides = HashMap::new();
-        for (_, (item, maximum)) in entries {
-            let Some(item) = item else { continue };
-            if wanted.contains(&item) {
-                overrides.insert(item, maximum.ok_or("inventory item maximum is absent")?);
-            }
-        }
-        Ok(Self { default, overrides })
+        })?.ok_or_else(|| format!("{entity} has no inventory component"))?;
+        let name = atom(&component, "m_collection").ok_or("inventory collection is absent")?;
+        let sources = PickableSourceLease::for_catalog(catalog)?;
+        let declaration = sources.0.lock().map_err(|_| "inventory declaration owner is poisoned")?.configurations.collection(catalog, name)?;
+        Ok(Self { declaration })
     }
 }
 
@@ -237,11 +151,10 @@ pub fn readable(catalog: &Catalog, item: &str) -> Result<Option<Readable>, Strin
 }
 
 /// Resolve once, then pass these same fields to the note or map reader.
-pub fn item_fields(catalog: &Catalog, item: &str) -> Result<Vec<(String, Value)>, String> {
-    entities::player::resolved_decl("inventoryitem", item, |path| {
-        Ok(catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
-    })
+pub fn item_fields(catalog: &Catalog, item: &str) -> Result<ItemFields, String> {
+    let sources = PickableSourceLease::for_catalog(catalog)?;
+    let fields = sources.0.lock().map_err(|_| "inventory source owner is poisoned")?.read_fields(catalog, item)?;
+    Ok(fields)
 }
 
 pub fn readable_fields(fields: &[(String, Value)]) -> Result<Option<Readable>, String> {

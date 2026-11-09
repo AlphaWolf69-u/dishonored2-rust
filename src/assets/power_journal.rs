@@ -140,9 +140,7 @@ fn upgrades(catalog: &Catalog, fields: &[(String, Value)], mapping: &HashMap<Str
         let Some(id) = atom(entry, "m_upgradeId").map(str::to_owned) else { continue };
         let item = mapping.get(&id).cloned();
         let info = if let Some(item) = &item {
-            let fields = entities::player::resolved_decl("inventoryitem", item, |path| {
-                Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| entities::declaration_text(&bytes).into_owned()))
-            })?;
+            let fields = crate::assets::inventory_item::item_fields(catalog, item)?;
             Some(UpgradeInfo { name: value_text(&fields, "m_name"), description: value_text(&fields, "m_description"),
                 tips: value_text(&fields, "m_strategicTips"), image: image(&fields, "m_journalImage"),
                 rune_cost: atom(&fields, "m_runeCost").and_then(|v| v.parse().ok()).unwrap_or(1) })
@@ -174,7 +172,7 @@ pub fn definitions<'a>(catalog: &Catalog, character: &str, items: impl IntoItera
     let rune = atom(&system, "m_rune").unwrap_or("").to_owned();
     let mut result = Vec::new();
     for item in items {
-        let fields = entities::player::resolved_decl("inventoryitem", item, read)?;
+        let fields = crate::assets::inventory_item::item_fields(catalog, item)?;
         if atom(&fields, "m_type") != Some("TYPE_POWER") { continue; }
         let Some(entity) = atom(&fields, "m_equipment") else { continue };
         let components = entities::player::entity_components_with_prefix(entity, "cpntpower", read)?;

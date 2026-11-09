@@ -108,6 +108,9 @@ pub struct Catalog {
 
 impl Drop for Catalog {
     fn drop(&mut self) {
+        if let Some(owner) = self.pickable_sources.get() {
+            owner.lock().unwrap_or_else(|error| error.into_inner()).release_session(self);
+        }
         if let Some(owner) = self.parameter_blocks.get() {
             owner.lock().unwrap_or_else(|error| error.into_inner()).release_session();
         }
@@ -162,7 +165,7 @@ impl Catalog {
 
     pub(crate) fn release_pickable_level(&self) {
         if let Some(owner) = self.pickable_sources.get() {
-            owner.lock().unwrap_or_else(|error| error.into_inner()).retire_unused();
+            owner.lock().unwrap_or_else(|error| error.into_inner()).release_level(self);
         }
     }
     /// Trim dead level AnimSet identities without dropping the session root
