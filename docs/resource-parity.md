@@ -4785,6 +4785,18 @@ Swimming exit qualification follow-up: 889f10 also adds the negation of a negati
 
 ### Journal construction and readable focus repair (2026-11-09)
 
+Release acceptance: main85690fa6 built both game and tools successfully with
+unchanged committed source. Game SHA256cb2d17eb26bc02f17134122fe5de24341b1250652a59bd8268bab16b2156ffcf.
+The existing installed-movie resource inspection admitted and drew
+ui/journal.iggy with exit0, removing the reported lib_gamepadButton construction
+failure. Closed VM diagnostics report tracked62245/live53472/remaining0, and
+Catalog read-history namespaces end at0. Build and admission provenance are
+main artifacts/reported-ui-swim-fixes-20261109-*. No gameplay input, image
+inspection or new tests were used. Cursor restoration and shore-exit changes
+are compiled; their human gameplay confirmation remains outstanding. The user
+requested stopping after this batch; progression and ambient-animation WIP is
+preserved in the canonical checkout/artifacts and is not claimed finished.
+
 The production Journal request reached `JournalScene()` but failed with
 `unknown class lib_gamepadButton` (sessions 1794196598384-6244 and
 1794196445508-28856). Installed `ui/journal.iggy` has 11 direct imports;
