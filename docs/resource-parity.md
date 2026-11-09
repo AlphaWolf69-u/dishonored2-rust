@@ -14,6 +14,22 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 ## Classes
 
+### GPU heap occupancy attribution (2026-11-09)
+
+Prediction before extending the existing opt-in allocator snapshot: prior
+quality replacement reports show stable live allocation bytes but1GiB more
+reserved heap capacity. The current totals cannot distinguish empty warm
+blocks from free space stranded among live allocations. Report each existing
+allocator block's capacity, allocated bytes and allocation count, plus label
+groups within that block and total empty-block capacity. These are direct
+reads of the same AllocatorReport; no resources, graphics passes or normal
+frame work are added. Do not infer that all reserved-minus-live bytes are
+empty heaps. Pinned gpu-allocator0.28.0's D3D12 MemoryType::free destroys an
+empty general block when another general block of that type remains, retaining
+the last general block for reuse. Attribution will determine how much of the
+observed capacity is that explicit warm-pool policy versus fragmentation.
+No new memory or CPU improvement is claimed by this diagnostic addition.
+
 ### MD6 cold-load/purge serialization (2026-11-09)
 
 Prediction before the owner change: cold declaration loads release their

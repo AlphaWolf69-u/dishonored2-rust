@@ -107,6 +107,31 @@ fn allocator_snapshot(device: &RenderDevice, kind: &str, sample: usize) -> bool 
         for (name, (bytes, count)) in groups {
             eprintln!("MEMORY {kind} allocation group: sample={} name={name:?} bytes={bytes} count={count}", sample);
         }
+        let mut empty_bytes = 0u64;
+        let mut empty_blocks = 0usize;
+        for (index, block) in report.blocks.iter().enumerate() {
+            let Some(allocations) = report.allocations.get(block.allocations.clone()) else {
+                eprintln!("MEMORY {kind} allocation block unavailable: sample={sample} block={index}");
+                return false;
+            };
+            let bytes: u64 = allocations.iter().map(|allocation| allocation.size).sum();
+            eprintln!("MEMORY {kind} allocation block: sample={sample} block={index} reserved_bytes={} allocated_bytes={bytes} allocations={}",
+                block.size, allocations.len());
+            if allocations.is_empty() {
+                empty_bytes += block.size;
+                empty_blocks += 1;
+            }
+            let mut groups = std::collections::BTreeMap::<&str, (u64, usize)>::new();
+            for allocation in allocations {
+                let group = groups.entry(allocation.name.as_str()).or_default();
+                group.0 += allocation.size;
+                group.1 += 1;
+            }
+            for (name, (bytes, count)) in groups {
+                eprintln!("MEMORY {kind} allocation block group: sample={sample} block={index} name={name:?} bytes={bytes} count={count}");
+            }
+        }
+        eprintln!("MEMORY {kind} empty allocation blocks: sample={sample} blocks={empty_blocks} reserved_bytes={empty_bytes}");
     } else {
         eprintln!("MEMORY {kind} allocator unavailable: sample={}", sample);
         return false;
