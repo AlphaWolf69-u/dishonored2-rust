@@ -4885,3 +4885,36 @@ storage sizes are unchanged. This is a lifetime correctness correction, with
 no claimed CPU or memory saving and no additional per-frame work. Original
 registry evidence is the existing 0607f0/24f2a0 ownership port and 060180 source
 capture artifacts/ghidra-tool-output/f30f285a83aa769ac4a62c81.json in main.
+
+### D3D12 immutable sampler-index ownership: prediction (2026-11-09)
+
+Completed main6b15daea EotW quality A/B/C/A/B/C/A capture exits0. Live
+allocator payload remains around3.28GB at full settings, but reservation grows
+4,064,280,576 ->5,138,022,400 bytes. All heaps contain live allocations: zero
+empty warm-block bytes at every snapshot. Sample0 has1,698 internal sampler
+index buffers /111,280,128 allocation bytes; sample6 has1,664 /109,051,904.
+These immutable StructuredBuffer<uint> values are wgpu's D3D12 sampler-heap
+indirection, absent from the game's direct D3D11 binding model; this is an
+explicit backend ownership improvement, not a game resource format change.
+
+Before implementation: share identical index sequences in a device-owned
+weak lookup. Each binding group retains the actual buffer lease, so only
+the last GPU-retired group frees it; error rollback frees only an unshared
+new buffer. Pending/in-flight groups retain their leases. No sampler,
+descriptor, shader, image, mip, pass or draw is changed. Expected unique live
+sequences are a small fraction of the current1,698 group allocations (about
+10–64,97–99% fewer buffers); exact unique sequence counts will replace that
+estimate. All other allocations should remain comparable. Isolated
+sampler-buffer acquisition CPU cost should fall because repeat groups skip
+resource allocation, mapping and copy. The weak lookup is pruned on misses
+and dies with its device. Predict no resource payload held after its last
+group retires. This does not predict eliminating the separate device-local
+texture-heap fragmentation visible in the same capture.
+
+Use DH2_DEBUG_SEPARATE_SAMPLER_INDEX_BUFFERS=1 for the previous behavior in
+the same release executable, and DH2_DEBUG_SAMPLER_INDEX_BUFFERS=1 for
+acquisition-only timing/count records. Retain measurements before claiming
+a CPU/VRAM reduction. Baseline is main artifacts/resource-quality-blocks-
+20261109/{result.json,stderr.log,blocks.json}; original whole-device EotW
+baseline remains tests/fixtures/original_eotw_budget.txt, not a matching
+per-buffer budget.

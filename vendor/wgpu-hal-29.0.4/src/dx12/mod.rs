@@ -771,6 +771,9 @@ pub struct Device {
     null_rtv_handle: descriptor::Handle,
     mem_allocator: Allocator,
     shader_cache: Mutex<ShaderCache>,
+    // Host backend: immutable sampler-index sequences share one allocation.
+    // Weak lookup; GPU-retired bind groups retain the actual resource leases.
+    sampler_index_buffers: Mutex<HashMap<Vec<sampler::SamplerIndex>, alloc::sync::Weak<SamplerIndexBuffer>>>,
     // Cached IDxcBlob/ID3DBlob values must release before the compiler DLL.
     // Temporary compiled blobs only exist under a live Device borrow.
     compiler_container: Arc<shader_compilation::CompilerContainer>,
@@ -1132,7 +1135,7 @@ struct SamplerIndexBuffer {
 #[derive(Debug)]
 pub struct BindGroup {
     handle_views: Option<descriptor::DualHandle>,
-    sampler_index_buffer: Option<SamplerIndexBuffer>,
+    sampler_index_buffer: Option<Arc<SamplerIndexBuffer>>,
     dynamic_buffers: Vec<DynamicBuffer>,
 }
 

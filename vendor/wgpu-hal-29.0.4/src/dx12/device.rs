@@ -229,6 +229,7 @@ impl super::Device {
             mem_allocator,
             compiler_container,
             shader_cache: Default::default(),
+            sampler_index_buffers: Default::default(),
             counters: Default::default(),
         })
     }
@@ -1764,44 +1765,70 @@ impl crate::Device for super::Device {
         }
 
         let mut sampler_index_buffer = if !sampler_indexes.is_empty() {
-            let buffer_size = (sampler_indexes.len() * size_of::<u32>()) as u64;
+            // Backend reuse of immutable indirection data. This does not
+            // retain samplers or alter their global heap indices.
+            static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+            let (separate, trace) = *MODE.get_or_init(|| (
+                std::env::var("DH2_DEBUG_SEPARATE_SAMPLER_INDEX_BUFFERS").as_deref() == Ok("1"),
+                std::env::var("DH2_DEBUG_SAMPLER_INDEX_BUFFERS").as_deref() == Ok("1"),
+            ));
+            let started = trace.then(Instant::now);
+            let mut cached = (!separate).then(|| self.sampler_index_buffers.lock());
+            let existing = cached.as_ref().and_then(|cache| cache.get(&sampler_indexes))
+                .and_then(alloc::sync::Weak::upgrade);
+            let reused = existing.is_some();
+            let sampler_buffer = if let Some(buffer) = existing { buffer } else {
+                let buffer_size = (sampler_indexes.len() * size_of::<u32>()) as u64;
 
-            let label = if let Some(label) = desc.label {
-                Cow::Owned(format!("{label} (Internal Sampler Index Buffer)"))
-            } else {
-                Cow::Borrowed("Internal Sampler Index Buffer")
+                let label = if let Some(label) = desc.label {
+                    Cow::Owned(format!("{label} (Internal Sampler Index Buffer)"))
+                } else {
+                    Cow::Borrowed("Internal Sampler Index Buffer")
+                };
+
+                let buffer_desc = crate::BufferDescriptor {
+                    label: Some(&label),
+                    size: buffer_size,
+                    usage: wgt::BufferUses::STORAGE_READ_ONLY | wgt::BufferUses::MAP_WRITE,
+                    // D3D12 backend doesn't care about the memory flags
+                    memory_flags: crate::MemoryFlags::empty(),
+                };
+
+                let (buffer, allocation) =
+                    suballocation::DeviceAllocationContext::from(self).create_buffer(&buffer_desc)?;
+
+                let mut mapping = ptr::null_mut::<ffi::c_void>();
+                if let Err(error) = unsafe { buffer.Map(0, None, Some(&mut mapping)) }.into_device_result("Map") {
+                    suballocation::DeviceAllocationContext::from(self).rollback_resource(buffer, allocation);
+                    return Err(error);
+                }
+
+                assert!(!mapping.is_null());
+                assert_eq!(mapping as usize % 4, 0);
+
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        sampler_indexes.as_ptr(),
+                        mapping.cast(),
+                        sampler_indexes.len(),
+                    )
+                };
+
+                // The unmapping is not needed, as all memory is coherent in d3d12, but lets be nice to our address space.
+                unsafe { buffer.Unmap(0, None) };
+
+                let shared = Arc::new(super::SamplerIndexBuffer { buffer, allocation });
+                if let Some(cache) = cached.as_mut() {
+                    cache.retain(|_, buffer| buffer.strong_count() != 0);
+                    cache.insert(sampler_indexes.clone(), Arc::downgrade(&shared));
+                }
+                shared
             };
-
-            let buffer_desc = crate::BufferDescriptor {
-                label: Some(&label),
-                size: buffer_size,
-                usage: wgt::BufferUses::STORAGE_READ_ONLY | wgt::BufferUses::MAP_WRITE,
-                // D3D12 backend doesn't care about the memory flags
-                memory_flags: crate::MemoryFlags::empty(),
-            };
-
-            let (buffer, allocation) =
-                suballocation::DeviceAllocationContext::from(self).create_buffer(&buffer_desc)?;
-
-            let mut mapping = ptr::null_mut::<ffi::c_void>();
-            if let Err(error) = unsafe { buffer.Map(0, None, Some(&mut mapping)) }.into_device_result("Map") {
-                suballocation::DeviceAllocationContext::from(self).rollback_resource(buffer, allocation);
-                return Err(error);
+            drop(cached);
+            if let Some(started) = started {
+                let nanos = started.elapsed().as_nanos();
+                eprintln!("MEMORY sampler index acquire: reused={reused} indexes={} nanos={nanos}", sampler_indexes.len());
             }
-
-            assert!(!mapping.is_null());
-            assert_eq!(mapping as usize % 4, 0);
-
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    sampler_indexes.as_ptr(),
-                    mapping.cast(),
-                    sampler_indexes.len(),
-                )
-            };
-
-            // The unmapping is not needed, as all memory is coherent in d3d12, but lets be nice to our address space.
-            unsafe { buffer.Unmap(0, None) };
 
             let srv_desc = Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC {
                 Format: Dxgi::Common::DXGI_FORMAT_UNKNOWN,
@@ -1823,12 +1850,12 @@ impl crate::Device for super::Device {
 
             unsafe {
                 self.raw
-                    .CreateShaderResourceView(&buffer, Some(&srv_desc), srv)
+                    .CreateShaderResourceView(&sampler_buffer.buffer, Some(&srv_desc), srv)
             };
 
             cpu_views.as_mut().unwrap().stage.push(srv);
 
-            Some(super::SamplerIndexBuffer { buffer, allocation })
+            Some(sampler_buffer)
         } else {
             None
         };
@@ -1845,7 +1872,7 @@ impl crate::Device for super::Device {
                 } {
                     Ok(dual) => dual,
                     Err(error) => {
-                        if let Some(sampler) = sampler_index_buffer.take() {
+                        if let Some(sampler) = sampler_index_buffer.take().and_then(Arc::into_inner) {
                             suballocation::DeviceAllocationContext::from(self)
                                 .rollback_resource(sampler.buffer, sampler.allocation);
                         }
@@ -1871,7 +1898,9 @@ impl crate::Device for super::Device {
             self.shared.heap_views.free_slice(dual);
         }
 
-        if let Some(sampler_buffer) = group.sampler_index_buffer {
+        // into_inner elects exactly one final owner even when several GPU-
+        // retired groups release concurrently; try_unwrap().ok() would not.
+        if let Some(sampler_buffer) = group.sampler_index_buffer.and_then(Arc::into_inner) {
             suballocation::DeviceAllocationContext::from(self)
                 .free_resource(sampler_buffer.buffer, sampler_buffer.allocation);
         }
