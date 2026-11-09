@@ -7,7 +7,7 @@ use crate::{
         Value,
     },
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 /// Keep the reflected variable record intact until its runtime type consumes
 /// it. Entity lists and other values must not be coerced into scalar defaults.
@@ -34,8 +34,9 @@ pub fn instance_declaration(node: &Node) -> Option<&str> {
 impl FxDeclarations {
     pub fn load(roots: &[Arc<FxGraph>], catalog: &Catalog) -> Self {
         let mut declarations = Self::default();
+        let mut bootstrap_dependencies = HashSet::new();
         for graph in roots {
-            declarations.load_dependencies(graph, catalog);
+            declarations.load_dependencies(graph, catalog, 0, &mut bootstrap_dependencies);
         }
         declarations
     }
@@ -48,25 +49,73 @@ impl FxDeclarations {
         self.declarations[*index].as_ref().map_err(Clone::clone)
     }
 
-    fn load_dependencies(&mut self, graph: &FxGraph, catalog: &Catalog) {
+    fn load_dependencies(&mut self, graph: &FxGraph, catalog: &Catalog, inherited_scope: u8,
+        bootstrap_dependencies: &mut HashSet<String>) {
         for name in graph.nodes.iter().filter_map(instance_declaration) {
             if self.indices.contains_key(name) {
+                // A graph reached later through a deferred bootstrap parent
+                // must propagate that earlier phase too. Reserve the visit
+                // before recursing, including when declarations form a cycle.
+                if inherited_scope == 2 && bootstrap_dependencies.insert(name.to_owned()) {
+                    if let Ok((declaration, scope)) = acquire_declaration(catalog, name, 2) {
+                        self.load_dependencies(&declaration, catalog, scope, bootstrap_dependencies);
+                    }
+                }
                 continue;
             }
             let index = self.declarations.len();
-            // Reserve identity before reading dependencies. Repeated references
-            // share immutable data, including recursive declaration references;
-            // runtime instances retain their own node/variable/queue state.
             self.indices.insert(name.to_owned(), index);
-            self.declarations.push(Err(format!(
-                "Kiscule declaration is being prepared: {name}"
-            )));
-            let parsed = read_declaration(catalog, name);
-            if let Ok(declaration) = &parsed {
-                self.load_dependencies(declaration, catalog);
-            }
-            self.declarations[index] = parsed.map(Arc::new).map_err(|error| format!("{name}: {error}"));
+            self.declarations.push(Err(format!("Kiscule declaration is being prepared: {name}")));
+            let parsed = acquire_declaration(catalog, name, inherited_scope).map(|(declaration, scope)| {
+                if scope == 2 { bootstrap_dependencies.insert(name.to_owned()); }
+                self.load_dependencies(&declaration, catalog, scope, bootstrap_dependencies);
+                declaration
+            });
+            self.declarations[index] = parsed.map_err(|error| format!("{name}: {error}"));
         }
+    }
+}
+
+fn resource_path(name: &str) -> String {
+    format!("generated/decls/kiscule/{}.decl", name.replace('\\', "/").to_ascii_lowercase())
+}
+fn acquire_declaration(catalog: &Catalog, name: &str, inherited_scope: u8)
+    -> Result<(Arc<FxGraph>, u8), String> {
+    let path = resource_path(name);
+    let shared = !catalog.has_overlays()
+        && std::env::var("DH2_DEBUG_SEPARATE_GRAPH_RESOURCES").as_deref() != Ok("1");
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    if !shared {
+        if trace { eprintln!("FX_GRAPH_ACQUIRE path={path} decoded=true shared=false scope={inherited_scope}"); }
+        return read_declaration(catalog, name).map(|graph| (Arc::new(graph), inherited_scope));
+    }
+    let mut registry = catalog.kiscule_resources.get_or_init(Default::default).lock()
+        .map_err(|_| "Kiscule resource registry is poisoned")?;
+    let mut decoded = false;
+    let value = registry.acquire(&path, inherited_scope, |_| {
+        decoded = true;
+        read_declaration(catalog, name).map(Arc::new)
+    });
+    let scope = registry.producer_scope(&path);
+    if trace { eprintln!("FX_GRAPH_ACQUIRE path={path} decoded={decoded} shared=true scope={scope}"); }
+    value.map(|graph| (graph, scope))
+}
+
+pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8, persistent: bool) -> Result<(), String> {
+    let path = path.replace('\\', "/").to_ascii_lowercase();
+    catalog.kiscule_resources.get_or_init(Default::default).lock()
+        .map_err(|_| "Kiscule resource registry is poisoned")?.register(&path, marker, persistent);
+    Ok(())
+}
+pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
+    if let Some(registry) = catalog.kiscule_resources.get() {
+        registry.lock().map_err(|_| "Kiscule resource registry is poisoned")?.promote_bootstrap();
+    }
+    Ok(())
+}
+pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
+    if let Some(registry) = catalog.kiscule_resources.get() {
+        registry.lock().unwrap_or_else(|error| error.into_inner()).release(catalog.identity(), "kiscule", marker);
     }
 }
 

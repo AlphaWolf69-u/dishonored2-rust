@@ -84,6 +84,7 @@ pub struct Catalog {
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    pub(crate) kiscule_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::effects::FxGraph>>>,
     pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
     pub(crate) shader_indices: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<
         crate::assets::shader_cache::ShaderCacheBackend, std::sync::Arc<crate::assets::shader_cache::ShaderIndex>>>>,
@@ -121,6 +122,7 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        self.kiscule_resources.take();
         self.particle_resources.take();
         self.shader_indices.take();
         // Host read accounting belongs to this immutable archive namespace;
@@ -179,6 +181,7 @@ impl Catalog {
         self.release_md6_level();
         self.release_animset_level();
         self.release_parameter_block_level();
+        crate::assets::entities::effects::declarations::release_marker(self, 0);
         crate::assets::fx::particle_resources::release_marker(self, 0);
         self.release_pickable_level();
     }
@@ -348,6 +351,7 @@ impl Catalog {
             preload_map: Default::default(),
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
+            kiscule_resources: Default::default(),
             particle_resources: Default::default(),
             shader_indices: Default::default(),
             pickable_sources: Default::default(),

@@ -61,6 +61,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
         || kind.eq_ignore_ascii_case("inventoryitem")
         || kind.eq_ignore_ascii_case("particledt") || kind.eq_ignore_ascii_case("staticParticleModel")
+        || kind.eq_ignore_ascii_case("kiscule")
 }
 
 /// One resource of a load list.
@@ -360,6 +361,7 @@ impl LevelList {
             crate::assets::animation_rig::declaration::promote_bootstrap_records(catalog)?;
             crate::assets::parm_block::promote_bootstrap(catalog)?;
             crate::assets::fx::particle_resources::promote_bootstrap(catalog)?;
+            crate::assets::entities::effects::declarations::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
             Ok(count)
@@ -372,6 +374,7 @@ impl LevelList {
         if !persistent_heap || previous.as_deref() != Some(map) {
             crate::assets::parm_block::release_marker(catalog, 1);
             crate::assets::fx::particle_resources::release_marker(catalog, 1);
+            crate::assets::entities::effects::declarations::release_marker(catalog, 1);
             crate::assets::inventory_item::configuration::release_persistent(catalog);
             crate::edge_animation::release_marker(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
             crate::assets::animation_rig::animset::release_scoped(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
@@ -431,6 +434,9 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("animset") {
                 crate::assets::animation_rig::animset::register_lazy_preload(catalog, &resource.path,
                     context, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("kiscule") {
+                crate::assets::entities::effects::declarations::register_preload(catalog,
+                    &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("particledt")
                 || resource.kind.eq_ignore_ascii_case("staticParticleModel") {
                 crate::assets::fx::particle_resources::register_preload(catalog, &resource.kind,
