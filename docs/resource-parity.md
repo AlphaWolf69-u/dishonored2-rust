@@ -4852,7 +4852,8 @@ on the ledge during upward player motion and select the authored hand tracks.
 No collision or animation owner is added.
 
 The missing surface-swim branch of 3bb790 now supplies water-plane Z minus
-standing step height as the mantle query origin, while submerged and ordinary
+standing step height as the mantle query origin; 3bb860 also starts its 13-ray
+ladder at zero instead of the ordinary minimum height. Submerged and ordinary
 queries retain the physics origin. Controller+2a0 is swimming-subobject+48
 (88b2f0 writes the water plane); physics+b0 is standing step height. Both query
 issuance/results and mantle height classification use this same origin. In

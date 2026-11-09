@@ -610,6 +610,7 @@ pub struct MantleSensor {
     /// The body the destination ray hit (0: the level, as idWorldspawn).
     pub destination_body: u32,
     query_origin: Vec3,
+    surface_swimming: bool,
     /// m_forwardCollisionResults (+0x6c): a missed ray clears only its
     /// collision flag, keeping the rest from earlier frames.
     forward_results: [ForwardRay; 13],
@@ -642,14 +643,20 @@ impl MantleSensor {
             destination_axis: Mat3::IDENTITY,
             destination_body: 0,
             query_origin: physics.position(),
+            surface_swimming: false,
             forward_results: [ForwardRay::default(); 13],
             pending: None,
         }
     }
 
+    /// FUN_1403bb860: surface swimming starts the ray ladder at zero.
+    fn minimum_height(&self) -> f32 {
+        if self.surface_swimming { 0.0 } else { self.decl.forward_cast_height_min }
+    }
+
     /// FUN_1403bb8d0.
     fn step(&self) -> f32 {
-        (self.decl.forward_cast_height_max - self.decl.forward_cast_height_min) / 12.0
+        (self.decl.forward_cast_height_max - self.minimum_height()) / 12.0
     }
 
     /// Issue from the prior stage's state, then consume this frame's resolved
@@ -659,6 +666,7 @@ impl MantleSensor {
     pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, surface: Option<f32>) {
         if !self.enabled { return; }
         self.query_origin = physics.position();
+        self.surface_swimming = surface.is_some();
         if let Some(surface) = surface {
             self.query_origin.z = surface - physics.posture_settings(POSTURE_STANDING).step_height;
         }
@@ -685,7 +693,7 @@ impl MantleSensor {
         self.destination = Vec3::ZERO;
         let step = self.step();
         if let Some(rays) = q.rays {
-            let h0 = d.forward_cast_height_min;
+            let h0 = self.minimum_height();
             let ceil = physics.ceil_distance;
             for (i, (r, hit)) in self.forward_results.iter_mut().zip(rays).enumerate() {
                 let z = origin.z + h0 + i as f32 * step;
@@ -798,7 +806,7 @@ impl MantleSensor {
             let length = d.max_distance_from_wall + (d.wall_angle_max * 0.017453292).tan() * step;
             q.rays = Some(
                 (0..13)
-                    .map(|i| world.cast_ray(mask, origin + Vec3::Z * (d.forward_cast_height_min + i as f32 * step), self.search_direction, length))
+                    .map(|i| world.cast_ray(mask, origin + Vec3::Z * (self.minimum_height() + i as f32 * step), self.search_direction, length))
                     .collect(),
             );
         }
