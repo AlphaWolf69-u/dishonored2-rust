@@ -14,6 +14,37 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 ## Classes
 
+### Main window-close and UI-readiness acceptance (2026-11-09)
+
+Main sourceb12e6bfc built cleanly with game/release, unchanged source before
+and after compilation; binary SHA256850a0842a7a392bc980dff90442e2d0293decb8453f29891178229fd776346aa.
+The normal production client loaded EotW, completed its actual forward/shadow
+loading gates and closed its loading movie at29.325s. A WM_CLOSE sent to its
+real gameplay window then completed with exit0. This supersedes the earlier
+development observer result, which left two visible handles ambiguous and did
+not retain an exit code after manual close. No second client was running.
+The new release covers the original DLL lifetime failure through the actual
+window-close path; it does not claim arbitrary GPU-error recovery.
+
+Opt-in session diagnostics recorded52 admitted READ_NOTE declarations,
+HUD request/worker ready/accepted for epoch0 at30fps, then READ_NOTE
+availability=true with actual GameLogic state1. No Journal or INTERACT input
+was simulated, so movie entry, readable presentation and swimming appearance
+are still not human-verified by this run. The exact session log is
+target/release/logs/session-1794192970888-23144.log; production artifacts are
+in main artifacts/runtime-main-window-close-20261109/ and its completed build
+provenance resource-runtime-journal-20261109-build-provenance.json.
+
+Pblock acquisition evidence from that same client:35 header events resolve
+to34 unique resource paths and the final registry contains34 records, so the
+observed duplicate did not create another header. Bootstrap promotion covered
+28 records. Session teardown reports0 live pblock generations,0 remaining
+Catalog consumers and0 read-history namespaces. No pblock payload was acquired
+on this route; these counts verify registration/deduplication and session
+release only, not retained payloads, different-map purge or failure caching.
+The later model-depth, pblock-failure and inventory-item changes are separate
+integration commits and are not included in this release acceptance.
+
 ### Backend runtime and loading-publication retirement (2026-11-09)
 
 `host:` the original renderer uses D3D11; the rewrite's vendored wgpu D3D12
