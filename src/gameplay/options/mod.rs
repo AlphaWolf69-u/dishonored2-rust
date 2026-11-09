@@ -161,6 +161,9 @@ pub enum Effect {
 /// Reads the decls `ui/gamelogic/pause/sections/options` names, in
 /// `arkOptionMenuItem_t` order (`FUN_140516d70`).
 pub fn read(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, console: &mut Console) -> Result<Options> {
+    let _tag = crate::platform::allocation_tags::tag("Option section resources");
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    let retain_syntax = std::env::var("DH2_DEBUG_RETAIN_OPTION_SYNTAX").as_deref() == Ok("1");
     let pause = decl::read_edit(read, "pausemenusectionoptions", "ui/gamelogic/pause/sections/options.pausemenusectionoptions")?;
     let defs = decl::scope(&pause, "m_optionsDefs").ok_or("options decl without m_optionsDefs")?;
     let mut sections = Vec::new();
@@ -174,13 +177,24 @@ pub fn read(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, console: &mut Console
             GAMEPLAY => ("menusectionoptiongameplay", tables::GAMEPLAY_SETTINGS),
             _ => continue,
         };
-        let decl = decl::section(decl::read_edit(read, kind_name, name)?, settings);
+        let mut decl = decl::section(decl::read_edit(read, kind_name, name)?, settings);
         let kind = match id {
             CONTROLS => Kind::Controls(controls::State::new(&decl)),
             VISUALS => Kind::Visuals(visuals::State::new(&decl, console)),
             AUDIO => Kind::Audio,
             _ => Kind::Gameplay(gameplay::State::new(read)?),
         };
+        // These constructors are the last readers of parser syntax. The
+        // live section owns typed settings, presets and quality tables only.
+        let syntax_before = trace.then(|| crate::entities::fields_storage_bytes(&decl.edit));
+        if !retain_syntax { decl.edit = Vec::new(); }
+        if let Some(before) = syntax_before {
+            let after = crate::entities::fields_storage_bytes(&decl.edit);
+            let typed = format!("{:?}", (id, decl.label, &decl.screen_class_name,
+                &decl.categories, &decl.settings, &kind));
+            eprintln!("OPTIONS_SECTION_SOURCE id={id} kind={kind_name} syntax_before={before} syntax_after={after} signature={}", blake3::hash(typed.as_bytes()));
+            eprintln!("OPTIONS_SECTION_TYPED id={id} data={typed}");
+        }
         sections.push((id, Section { id, decl, kind, filled: false }));
     }
     sections.sort_by_key(|s| s.0);

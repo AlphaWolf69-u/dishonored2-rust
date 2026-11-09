@@ -54,6 +54,15 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             )?;
             drop(player);
             drop(declarations);
+            if std::env::var("DH2_DEBUG_CPU_OPTIONS_RESOURCES").as_deref() == Ok("1") {
+                // Actual options acquisition without a movie, window, callbacks
+                // or config writes. Preset initialization changes this copy only.
+                let mut console = crate::platform::console::shared().read().clone();
+                let options = crate::gameplay::options::read(&mut |path| catalog.read(path).ok().flatten(), &mut console)?;
+                let values: Vec<_> = console.cvars.list.iter().map(|value| (&value.name, &value.value)).collect();
+                eprintln!("OPTIONS_RESOURCE_PREPARATION step={step} sections={} console_signature={}", options.sections.len(), blake3::hash(format!("{values:?}").as_bytes()));
+                drop(options);
+            }
             if std::env::var("DH2_DEBUG_CPU_PARTICLE_RESOURCES").as_deref() == Ok("1") {
                 // The same already-prepared graphs and shader library feed
                 // setup::prepare. No fabricated FX or renderer is introduced.
@@ -126,6 +135,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Option section resources") {
+        eprintln!("OPTIONS_RESOURCE_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Blueprint preparation") {
         eprintln!("BLUEPRINT_MEMORY phase=catalog-released bytes={bytes}");
     }

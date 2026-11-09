@@ -1787,6 +1787,16 @@ pub fn has_key(fields: &[(String, Value)], wanted: &str) -> bool {
     })
 }
 
+/// Logical owned parser-tree storage, including backing capacity. Diagnostic
+/// metadata only: excludes allocator headers, shared resources and process RSS.
+pub(crate) fn fields_storage_bytes(fields: &Vec<(String, Value)>) -> usize {
+    fields.capacity() * std::mem::size_of::<(String, Value)>()
+        + fields.iter().map(|(name, value)| name.capacity() + match value {
+            Value::Atom(text) => text.capacity(),
+            Value::Scope(fields) => fields_storage_bytes(fields),
+        }).sum::<usize>()
+}
+
 fn field<'a>(fields: &'a [(String, Value)], wanted: &str) -> Option<&'a Value> {
     fields
         .iter()

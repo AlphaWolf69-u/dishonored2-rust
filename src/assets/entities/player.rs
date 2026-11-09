@@ -110,15 +110,8 @@ impl DeclarationSource {
 /// Owned capacities for this temporary subtree, including retained vector
 /// backing; excludes allocator metadata, shared sources and process RSS.
 fn state_tree_capacity(states: &Vec<(String, Vec<(String, Value)>)>) -> usize {
-    fn fields_capacity(fields: &Vec<(String, Value)>) -> usize {
-        fields.capacity() * std::mem::size_of::<(String, Value)>()
-            + fields.iter().map(|(name, value)| name.capacity() + match value {
-                Value::Atom(text) => text.capacity(),
-                Value::Scope(fields) => fields_capacity(fields),
-            }).sum::<usize>()
-    }
     states.capacity() * std::mem::size_of::<(String, Vec<(String, Value)>)>()
-        + states.iter().map(|(kind, fields)| kind.capacity() + fields_capacity(fields)).sum::<usize>()
+        + states.iter().map(|(kind, fields)| kind.capacity() + super::fields_storage_bytes(fields)).sum::<usize>()
 }
 
 /// Narrow setup diagnostic: only the exact sources shared by body and listener.

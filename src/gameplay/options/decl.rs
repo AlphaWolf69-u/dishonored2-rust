@@ -90,8 +90,8 @@ impl Default for Setting {
     }
 }
 
-/// `arkDeclMenuSectionOption`: the common part; `edit` keeps the
-/// subclass fields for the section that reads them.
+/// `arkDeclMenuSectionOption`: typed base fields plus parser staging used
+/// while constructing subclass state. The live options owner retires staging.
 #[derive(Clone, Debug, Default)]
 pub struct SectionDecl {
     pub label: u32,
@@ -100,6 +100,7 @@ pub struct SectionDecl {
     pub categories: Vec<[u32; 7]>,
     /// Indexed by the section's setting enum.
     pub settings: Vec<Setting>,
+    /// Parser staging; options::read retires it after subclass initialization.
     pub edit: Fields,
 }
 
