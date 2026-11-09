@@ -100,7 +100,7 @@ fn run() -> Result<()> {
     // These owners open the canonical packed Catalog themselves. Do not keep
     // a second, fully expanded table of every index record beside them.
     match args[1].as_str() {
-        "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" | "inspect-fx-definitions" | "inspect-material-program" | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation" | "inspect-scene-preparation" | "inspect-scene-publication" => {
+        "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" | "inspect-fx-definitions" | "inspect-material-program" | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation" | "inspect-scene-preparation" | "inspect-scene-publication" | "inspect-scene-gpu-resources" => {
             return resource_audit::run(&args[1], base, &args[3..]);
         }
         _ => {}

@@ -61,7 +61,7 @@ mod load_timing;
 mod resource_diagnostics;
 mod preparation_diagnostics;
 mod scene_acquisition_diagnostics;
-pub use scene_acquisition_diagnostics::{inspect_scene_preparation, inspect_scene_publication};
+pub use scene_acquisition_diagnostics::{inspect_scene_preparation, inspect_scene_publication, inspect_scene_gpu_resources};
 pub use preparation_diagnostics::inspect_cpu_preparation;
 mod level_lifetime;
 mod setup_commands;
