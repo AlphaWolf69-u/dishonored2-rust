@@ -4446,3 +4446,19 @@ Lifecycle evidence: primary vtables141b9a2b8 (collection) and141b9a418 (loadout)
 Inventoryitem read-history retirement is part of that same owner. Each successful generic/typed item parse records its exact normalized root and inherited paths with a weak read-generation lease. Typed PickableItem, admitted inventory/history/movie Arcs, and temporary generic ItemFields projections retain that lease. Editable requests still bypass reuse, but every old/new live generation remains counted. At level/session purge the owner forgets only dead paths absent from all surviving generations; the class mutex also prevents retirement during its in-flight reads. Map/power metadata readers now acquire generic fields through that same owner. Generic declaration trees are not retained in every typed item, and no second payload cache is introduced. Catalog namespace retirement remains authoritative when the session itself ends.
 
 Prediction for coordinated validation: noninventory header requests make zero inventory path allocations/lookups because dispatch gates on resource.kind first. Repeated immutable collection/loadout acquisitions reuse one declaration identity and perform zero source reads/parses while resident; repeated Journal opens continue to use retained item Arcs directly. Initial loading still needs the actual selected1+2 files when cold. Setup acquisitions perform no scan of all live item generations; read-history cleanup is linear in tracked generations/paths at actual purge boundaries, with no per-frame work. New resource headers/full typed collection storage are explicit ownership overhead, so no RAM/CPU/GPU saving is claimed without measurements. Existing DH2_DEBUG_PICKABLE_RESOURCES reports configuration acquisition/reuse/release/purge and item generation/path retirement; debug allocation attribution uses inventory-configuration-owner. Evidence: artifacts/inventory-loadout-collection-installed-audit.json (83 loadouts/34 collections, no read failures), inventory-resource-preload-source.c and inventory-configuration-lifecycle-evidence.json. Unsupported malformed-declaration/default-file fallback remains an explicit error rather than a fabricated default. Coordinated compilation and production scope/read-count validation are pending; no tests, independent builds, visuals or game input were used.
+
+Header admission completion (2026-11-09): the first combined client compilation
+at d211b08b passed, but source review found that five upstream manifest stages
+still selected only animation kinds. Both primary HeaderSelection construction
+and reuse-only index selection now use one preload-declaration predicate,
+including inventory collections/loadouts. This is necessary for the actual
+common bootstrap promotion; a full primary resource list alone did not publish
+their headers. The installed-data audit found 112 collection and 453 loadout
+header occurrences in 30 primary manifests (117 unique configuration paths),
+plus 187 collection and 286 loadout occurrences in 33 active reuse passes,
+with zero read/selection errors. Common contributes three headers of each
+class; Edge of the World low-chaos primary contributes 4/19 and its active
+reuse pass 7/12. Original 0661e0 applies the same class dispatch in both passes.
+This adds required header metadata, not speculative payload loading or a
+claimed memory saving. Evidence: artifacts/inventory-header-selection-fix/
+installed-audit.json. Runtime scope acceptance remains a distinct requirement.

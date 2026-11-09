@@ -52,6 +52,15 @@ fn retire_level_lists(catalog: u64) -> usize {
 const HEADER: usize = 12;
 const ENTRY: usize = 28;
 
+/// 0661e0 uses the same declaration-family admission for primary/reuse
+/// records, masks, and HeaderSelection publication. Keep these stages in
+/// agreement as each real class owner joins the existing preload pass.
+fn preload_declaration_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("anim") || kind.eq_ignore_ascii_case("animset")
+        || kind.eq_ignore_ascii_case("md6def") || kind.eq_ignore_ascii_case("inventoryLoadout")
+        || kind.eq_ignore_ascii_case("inventoryItemCollection")
+}
+
 /// One resource of a load list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resource {
@@ -168,8 +177,7 @@ fn load_manifest(base: &Path, catalog: &Catalog, manifest: &str, language: &str,
     let path = index::slot_index_path(base, group, slot).map_err(|e| e.to_string())?;
     let mut ordinal = 0u32;
     index::visit_file_ids(&path, group, &wanted, |r| {
-        if !headers_only || r.kind.eq_ignore_ascii_case("anim") || r.kind.eq_ignore_ascii_case("animset")
-            || r.kind.eq_ignore_ascii_case("md6def") {
+        if !headers_only || preload_declaration_kind(&r.kind) {
             records.entry(r.id).or_default().push((ordinal, r));
         }
         ordinal += 1;
@@ -203,8 +211,7 @@ fn load_manifest_batch(base: &Path, catalog: &Catalog, language: &str,
         let full_ids = &selection.full_ids;
         let records = &mut selection.records;
         index::visit_file_ids(path, *group, &selection.ids, |record| {
-            if full_ids.contains(&record.id) || record.kind.eq_ignore_ascii_case("anim")
-                || record.kind.eq_ignore_ascii_case("animset") || record.kind.eq_ignore_ascii_case("md6def") {
+            if full_ids.contains(&record.id) || preload_declaration_kind(&record.kind) {
                 records.entry(record.id).or_default().push((ordinal, record));
             }
             ordinal += 1;
@@ -229,8 +236,7 @@ fn materialize_manifest(catalog: &Catalog, manifest: &str, language: &str, heade
     let mut masks: HashMap<u32, [u8; 24]> = HashMap::new();
     for (index, id) in requested.iter().copied().enumerate() {
         if !records.get(&id).is_some_and(|entries| entries.iter().any(|(_, entry)|
-            entry.kind.eq_ignore_ascii_case("anim") || entry.kind.eq_ignore_ascii_case("animset")
-                || entry.kind.eq_ignore_ascii_case("md6def"))) { continue; }
+            preload_declaration_kind(&entry.kind))) { continue; }
         let mask = &bytes[HEADER + index * ENTRY + 4..HEADER + (index + 1) * ENTRY];
         let combined = masks.entry(id).or_insert([0; 24]);
         for (destination, source) in combined.iter_mut().zip(mask) { *destination |= *source; }
@@ -250,8 +256,7 @@ fn materialize_manifest(catalog: &Catalog, manifest: &str, language: &str, heade
             continue;
         };
         let eligible: Vec<&(u32, IndexEntry)> = entries.iter().filter(|(_, entry)| !headers_only
-            || entry.kind.eq_ignore_ascii_case("anim") || entry.kind.eq_ignore_ascii_case("animset")
-            || entry.kind.eq_ignore_ascii_case("md6def")).collect();
+            || preload_declaration_kind(&entry.kind)).collect();
         let chosen: Vec<&(u32, IndexEntry)> = if eligible.iter().any(|(_, e)| e.path.contains("/localized/")) {
             eligible.into_iter().filter(|(_, e)| e.path.contains(&localized)).collect()
         } else {
@@ -261,8 +266,7 @@ fn materialize_manifest(catalog: &Catalog, manifest: &str, language: &str, heade
             let mut path = e.path.clone();
             path.make_ascii_lowercase();
             if path.contains('\\') { path = path.replace('\\', "/"); }
-            if e.kind.eq_ignore_ascii_case("anim") || e.kind.eq_ignore_ascii_case("animset")
-                || e.kind.eq_ignore_ascii_case("md6def") {
+            if preload_declaration_kind(&e.kind) {
                 let resource = u32::try_from(list.len()).map_err(|_| "manifest resource list is too large")?;
                 headers.push((*ordinal, HeaderSelection { resource, mask: masks[&id], flags: e.flags }));
             }
