@@ -56,7 +56,7 @@ impl PreparedLevel {
     pub(super) fn on_publish(&mut self, publish: impl FnOnce(&mut World) + Send + Sync + 'static) {
         self.publications.push(Box::new(publish));
     }
-    fn publish(self, world: &mut World) {
+    pub(super) fn publish(self, world: &mut World) {
         for resource in self.resources { (resource.publish)(resource.value, world); }
         for publish in self.publications { publish(world); }
     }

@@ -93,7 +93,7 @@ pub(super) fn observe_resize(
     }
 }
 
-fn allocator_snapshot(device: &RenderDevice, kind: &str, sample: usize) -> bool {
+pub(super) fn allocator_snapshot(device: &RenderDevice, kind: &str, sample: usize) -> bool {
     if let Some(report) = device.wgpu_device().generate_allocator_report() {
         eprintln!("MEMORY {kind} allocator: sample={} allocated_bytes={} reserved_bytes={} blocks={} allocations={}",
             sample, report.total_allocated_bytes, report.total_reserved_bytes,

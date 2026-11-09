@@ -1,11 +1,44 @@
 //! Actual scene-worker resource acquisition without a window or game frames.
 //! No application runner/update is invoked: queued entities and audio never play.
 use super::*;
-use bevy::prelude::*;
+use bevy::{ecs::system::RunSystemOnce, prelude::*};
 
 pub fn inspect_scene_preparation(
     base: &std::path::Path,
     levels: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    inspect_scene_resources(base, levels, false)
+}
+
+pub fn inspect_scene_publication(
+    base: &std::path::Path,
+    levels: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    inspect_scene_resources(base, levels, true)
+}
+
+fn resource_snapshot(world: &World, step: usize, phase: &str) {
+    eprintln!(
+        "RESOURCE_SCENE_ASSETS step={step} phase={phase} meshes={} images={} probes={} decals={} skies={} buffers={}",
+        world.resource::<Assets<Mesh>>().len(),
+        world.resource::<Assets<Image>>().len(),
+        world.resource::<Assets<ProbeMaterial>>().len(),
+        world.resource::<Assets<DecalMaterial>>().len(),
+        world
+            .resource::<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>()
+            .len(),
+        world.resource::<Assets<ShaderBuffer>>().len()
+    );
+    for (name, bytes) in crate::platform::allocation_tags::report() {
+        eprintln!("RESOURCE_SCENE_HEAP step={step} phase={phase} tag={name:?} bytes={bytes}");
+    }
+    super::resource_diagnostics::allocator_snapshot(world.resource::<RenderDevice>(), phase, step);
+}
+
+fn inspect_scene_resources(
+    base: &std::path::Path,
+    levels: &[String],
+    publish: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if levels.is_empty() {
         return Err("inspect-scene-preparation requires level names".into());
@@ -53,6 +86,12 @@ pub fn inspect_scene_preparation(
             .init_resource::<super::resident_images::ResidentImages>();
         app.finish();
         app.cleanup();
+        let resident = app
+            .world()
+            .resource::<super::resident_images::ResidentImages>()
+            .clone();
+        app.insert_resource(super::resident_images::UiImages::new(resident));
+        resource_snapshot(app.world(), step, "before-preparation");
         let mut prepared = super::level_prepare::prepare_level(
             base.to_owned(),
             catalog.clone(),
@@ -70,12 +109,49 @@ pub fn inspect_scene_preparation(
             inputs.meshes.len(),
             inputs.buffers.len()
         );
-        drop(prepared);
+        resource_snapshot(app.world(), step, "prepared");
+        if publish {
+            let (mut lifetime, before) =
+                super::level_lifetime::LevelLifetime::begin(app.world_mut(), catalog.clone());
+            prepared.publish(app.world_mut());
+            lifetime.published(app.world(), &before);
+            resource_snapshot(app.world(), step, "published");
+            // No render/gameplay update has run, so no outgoing GPU frame
+            // exists to acknowledge. Use the actual main-world teardown.
+            lifetime.clear(app.world_mut())?;
+            resource_snapshot(app.world(), step, "level-cleared");
+            // These are the registered asset owner's real handle-drop
+            // consumers, in dependency order; no application schedule runs.
+            app.world_mut()
+                .run_system_once(Assets::<ProbeMaterial>::track_assets)?;
+            app.world_mut()
+                .run_system_once(Assets::<DecalMaterial>::track_assets)?;
+            app.world_mut().run_system_once(
+                Assets::<crate::rendering::bevy_backend::sky_mask::SkyMaterial>::track_assets,
+            )?;
+            app.world_mut()
+                .run_system_once(Assets::<Mesh>::track_assets)?;
+            app.world_mut()
+                .run_system_once(Assets::<ShaderBuffer>::track_assets)?;
+            app.world_mut()
+                .run_system_once(Assets::<Image>::track_assets)?;
+            resource_snapshot(app.world(), step, "asset-handles-tracked");
+        } else {
+            drop(prepared);
+        }
         drop(app);
+        for (tag, bytes) in crate::platform::allocation_tags::report() {
+            eprintln!(
+                "RESOURCE_SCENE_HEAP step={step} phase=host-released tag={tag:?} bytes={bytes}"
+            );
+        }
         catalog.release_level_resources();
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
     drop(catalog);
     drop(session);
+    for (tag, bytes) in crate::platform::allocation_tags::report() {
+        eprintln!("RESOURCE_SCENE_HEAP phase=session-released tag={tag:?} bytes={bytes}");
+    }
     Ok(())
 }
