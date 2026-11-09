@@ -5005,3 +5005,33 @@ missing-player-states and pause-only labels were stale. Unread indexed kinds
 are not presented as implemented gameplay. Owner coverage is recorded in
 artifacts/consumed-resource-owner-audit-20261109.json; it distinguishes this
 coverage result from complete native parity of unimplemented systems.
+
+### Animation preload override and deferred initialization (2026-11-09)
+
+Prediction before implementation: source0661e0's selected-kind pass calls
+0607f0, then explicitly writes resource+24=1 even if lookup returned an
+existing record (resource-preload-return-flow-fixed.c). Current clip/AnimSet
+registration supplies heap1 only to creation, leaving existing bootstrap
+marker2 records permanent. Apply the separate explicit write to these two
+classes, as the parameter-block owner already does. Expect matching marker1
+records to release at a different-map/disabled-persistence sweep instead of
+remaining permanent; same-map reuse remains intact. This is a purge-policy
+correction, not a claimed byte/CPU saving before observation.
+
+Host deferred payload construction must retain its original bootstrap phase
+independently of the record's later marker. Keep that phase on AnimSet headers
+and record an explicit map-preload override on clip snapshots. Deferred
+bootstrap force-load promotion may mark a newly discovered child permanent,
+but must not overwrite a later explicit map-preload marker1. Serialize that
+check/write with the existing clip snapshot mutex. This adds no frame work,
+no extra source reads or new cache, and preserves clip/rig content.
+
+Final prior-batch validation: main304121ad compiled the normal game and tools
+in release with unchanged clean source, then its CPU preparation route
+EotW/Dust/EotW exited0. The three body/left-arm/right-arm rig signatures
+remain9090571c /efe8e864 /f341fde2 at all three loads, and item/pblock
+retirement completes. Exact build/observation evidence is in main artifacts/
+lifecycle-audit-final-20261109-build-provenance.json and lifecycle-audit-final-
+cpu-20261109/result.json. This closes compilation and ordinary load/unload
+validation for the particle-failure/overlay-acquisition batch; it does not
+claim fault-injection or a complete editor hot-reload appearance check.

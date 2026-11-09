@@ -68,11 +68,14 @@ struct Entry {
     weak: Weak<AnimSet>,
     // Editable and diagnostic acquisitions can coexist with older actors.
     previous: Vec<Weak<AnimSet>>,
-    // None denotes the pre-existing host weak-cache policy; scoped records
-    // retain the marker chosen when their actual header was first created.
+    // None denotes the pre-existing host weak-cache policy. Scoped records
+    // change marker only at explicit preload/bootstrap producers.
     marker: Option<u8>,
     /// Host demand decoding preserves the phase of 0661e0's eager parse.
     preload_context: Option<crate::edge_animation::CreationContext>,
+    // Deferred construction belongs to the bootstrap phase even when a
+    // subsequent map preload explicitly changes this header's marker to 1.
+    bootstrap_phase: bool,
 }
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -152,7 +155,9 @@ pub(crate) fn promote_bootstrap(catalog: &Catalog, path: &str) -> Result<bool, S
     let path = path.replace('\\', "/").to_ascii_lowercase();
     let registry = catalog.animset_declarations.lock().map_err(|_| "AnimSet declaration owner is poisoned")?;
     let Some(header) = registry.entries.get(&path) else { return Ok(false); };
-    header.lock().map_err(|_| "AnimSet resource record is poisoned")?.marker = Some(2);
+    let mut entry = header.lock().map_err(|_| "AnimSet resource record is poisoned")?;
+    entry.marker = Some(2);
+    entry.bootstrap_phase = true;
     Ok(true)
 }
 
@@ -184,17 +189,18 @@ fn report(set: &Arc<AnimSet>, reused: bool, pinned: bool) {
 }
 
 /// Register the declaration header without parsing it, preserving the
-/// original creation marker when a header already exists.
+/// original creation marker unless the selected-kind pass explicitly writes 1.
 pub(crate) fn register_lazy_preload(catalog: &Catalog, path: &str,
     context: crate::edge_animation::CreationContext, persistent_kind: bool) -> Result<(), String> {
     let context = if persistent_kind { crate::edge_animation::CreationContext::PersistentHeap } else { context };
     let path = path.replace('\\', "/").to_ascii_lowercase();
     let mut registry = catalog.animset_declarations.lock().map_err(|_| "AnimSet declaration owner is poisoned")?;
-    if !registry.entries.contains_key(&path) {
-        let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
-        registry.entries.insert(path, Arc::new(Mutex::new(Entry {
-            marker: Some(context as u8), preload_context: Some(context), ..Entry::default()
-        })));
+    let _tag = cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("animset-owner"));
+    let header = registry.entries.entry(path).or_insert_with(|| Arc::new(Mutex::new(Entry {
+        marker: Some(context as u8), preload_context: Some(context), ..Entry::default()
+    })));
+    if persistent_kind {
+        header.lock().map_err(|_| "AnimSet declaration record is poisoned")?.marker = Some(1);
     }
     Ok(())
 }
@@ -203,7 +209,9 @@ pub(crate) fn register_lazy_preload(catalog: &Catalog, path: &str,
 pub(crate) fn promote_bootstrap_records(catalog: &Catalog) -> Result<(), String> {
     let registry = catalog.animset_declarations.lock().map_err(|_| "AnimSet declaration owner is poisoned")?;
     for header in registry.entries.values() {
-        header.lock().map_err(|_| "AnimSet declaration record is poisoned")?.marker = Some(2);
+        let mut entry = header.lock().map_err(|_| "AnimSet declaration record is poisoned")?;
+        entry.marker = Some(2);
+        entry.bootstrap_phase = true;
     }
     Ok(())
 }
@@ -243,7 +251,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
     // Serialize one declaration, never the whole class, across that work.
     let mut entry = header.lock().map_err(|_| "AnimSet resource record is poisoned")?;
     let context = entry.preload_context.or(context);
-    let completed_bootstrap = entry.preload_context.is_some() && entry.marker == Some(2);
+    let completed_bootstrap = entry.preload_context.is_some() && entry.bootstrap_phase;
     if !mutable && !separate {
         if let Some(set) = entry.weak.upgrade() {
             report(&set, true, false);

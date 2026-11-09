@@ -13,6 +13,9 @@ struct Snapshot {
     signature: u32,
     source_bytes: usize,
     retain_until_purge: bool,
+    // Host ordering for deferred bootstrap loads: a later explicit map
+    // preload write takes precedence over the earlier bootstrap promotion.
+    map_preload_override: bool,
     failure: Option<Arc<str>>,
     previous: Vec<Weak<AnimationData>>,
 }
@@ -175,24 +178,51 @@ pub(crate) fn register_lazy_in_context(catalog: &Catalog, name: &str, context: C
     create(catalog, &path, Some(ResourceScope::Level), Some(context)).map(drop)
 }
 
-/// The 0661e0 header pass temporarily enters heap 1 for its selected kinds.
-/// This affects only a newly constructed record; an existing header retains
-/// its creation marker. The caller supplies the source's actual decision.
+/// 0661e0 enters heap 1 for selected kinds, then explicitly writes marker
+/// 1 on the returned header, including an already registered identity.
 pub(crate) fn register_lazy_preload(catalog: &Catalog, name: &str, context: CreationContext,
     persistent_kind: bool) -> Result<(), String> {
     let context = if persistent_kind { CreationContext::PersistentHeap } else { context };
-    register_lazy_in_context(catalog, name, context)
+    let path = normalize(name);
+    let record = create(catalog, &path, Some(ResourceScope::Level), Some(context))?;
+    if persistent_kind {
+        let before = tracing().then(|| record.marker.load(Ordering::Relaxed));
+        mark_persistent(&record);
+        if let Some(before) = before.filter(|marker| *marker != 1) {
+            eprintln!("ANIMATION_PRELOAD_OVERRIDE path={path} before={before} marker=1");
+        }
+    }
+    Ok(())
+}
+
+fn mark_persistent(record: &Record) {
+    let mut snapshot = record.snapshot.lock().unwrap_or_else(|error| error.into_inner());
+    snapshot.map_preload_override = true;
+    record.marker.store(1, Ordering::Relaxed);
+    snapshot.retain_until_purge = true;
+    if snapshot.pinned.is_none() { snapshot.pinned = snapshot.weak.upgrade().map(EdgeAnimation); }
 }
 
 /// Explicit marker writes made by the preload and bootstrap producers.
-pub(crate) fn mark_preload_persistent(lease: &ResourceLease) { lease.record.marker.store(1, Ordering::Relaxed); }
-pub(crate) fn promote_bootstrap(lease: &ResourceLease) { lease.record.marker.store(2, Ordering::Relaxed); }
+pub(crate) fn mark_preload_persistent(lease: &ResourceLease) { mark_persistent(&lease.record); }
+pub(crate) fn promote_bootstrap(lease: &ResourceLease) {
+    let mut snapshot = lease.record.snapshot.lock().unwrap_or_else(|error| error.into_inner());
+    snapshot.map_preload_override = false;
+    lease.record.marker.store(2, Ordering::Relaxed);
+    snapshot.retain_until_purge = true;
+    if snapshot.pinned.is_none() { snapshot.pinned = snapshot.weak.upgrade().map(EdgeAnimation); }
+}
 
 /// 060b60 also visits unloaded registered headers. Promotion must not load
 /// their payload or create a record that was absent from the bootstrap list.
 pub(crate) fn promote_existing_bootstrap(catalog: &Catalog, name: &str) -> Result<bool, String> {
     let Some(record) = existing(catalog, &normalize(name))? else { return Ok(false) };
-    record.marker.store(2, Ordering::Relaxed);
+    let mut snapshot = record.snapshot.lock().map_err(|_| "animation resource record is poisoned")?;
+    if !snapshot.map_preload_override {
+        record.marker.store(2, Ordering::Relaxed);
+        snapshot.retain_until_purge = true;
+        if snapshot.pinned.is_none() { snapshot.pinned = snapshot.weak.upgrade().map(EdgeAnimation); }
+    }
     Ok(true)
 }
 
@@ -202,8 +232,9 @@ pub(crate) fn promote_bootstrap_records(catalog: &Catalog) -> Result<(), String>
     let current = catalog.animation_resources.lock().map_err(|_| "animation resource owner is poisoned")?;
     if let Some(owner) = current.as_ref() {
         for record in owner.records.values() {
-            record.marker.store(2, Ordering::Relaxed);
             let mut snapshot = record.snapshot.lock().map_err(|_| "animation resource record is poisoned")?;
+            snapshot.map_preload_override = false;
+            record.marker.store(2, Ordering::Relaxed);
             snapshot.retain_until_purge = true;
             if snapshot.pinned.is_none() {
                 snapshot.pinned = snapshot.weak.upgrade().map(EdgeAnimation);
@@ -358,16 +389,25 @@ pub(crate) fn force_load_in_context(catalog: &Catalog, name: &str, context: Crea
 pub(crate) fn release_marker(catalog: &Catalog, marker: PurgeMarker) {
     let mut current = catalog.animation_resources.lock().unwrap_or_else(|error| error.into_inner());
     let Some(owner) = current.as_mut() else { return };
+    let before = owner.records.len();
+    let (mut matched, mut pins, mut live) = (0usize, 0usize, 0usize);
     owner.records.retain(|path, record| {
         if record.marker.load(Ordering::Relaxed) != marker as u8 { return true; }
+        matched += 1;
         let mut snapshot = record.snapshot.lock().unwrap_or_else(|error| error.into_inner());
         snapshot.previous.retain(|generation| generation.strong_count() != 0);
         snapshot.retain_until_purge = false;
+        pins += usize::from(snapshot.pinned.is_some());
         snapshot.pinned = None;
         let keep = Arc::strong_count(record) > 1 || snapshot.weak.strong_count() != 0 || !snapshot.previous.is_empty();
+        live += usize::from(keep);
         if !keep { let _ = crate::loading::forget(catalog.identity(), "anim", path); }
         keep
     });
+    if tracing() {
+        eprintln!("ANIMATION_MARKER_PURGE catalog={} marker={} matched={matched} resident_pins_removed={pins} removed={} retained_live={live}",
+            catalog.identity(), marker as u8, before - owner.records.len());
+    }
 }
 
 pub(crate) fn release_level(catalog: &Catalog) {
