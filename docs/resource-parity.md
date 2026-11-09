@@ -4982,7 +4982,7 @@ seven-step quality routes with exit0 and no validation/panic/allocation-leak
 errors. Initial live sampler buffers fall1,693 ->30, with
 110,952,448 ->1,966,080 allocation bytes:108,986,368 bytes (103.9375MiB)
 removed. All other initial allocator bytes match exactly at3,178,823,680.
-Later snapshots retain28–30 sampler buffers, matching the predicted10–64
+Later snapshots retain28â€“30 sampler buffers, matching the predicted10â€“64
 range; sizes, indices, descriptor lengths and draw/shader code are unchanged.
 Acquisition-only means over138,300 /140,776 actual calls fall5,250.144 ->
 115.883ns (45.31x); medians3,000 ->100ns. Shared requests reuse140,270 times
@@ -5093,3 +5093,5 @@ Original FX registration is 1413630d0; its base parser 140022fd0 acquires the na
 Prediction before implementation: all four consumers request FX fields through assets::fx::declaration. Inherited definitions acquire their ancestor sources and preserve inherited groups before child edits. Non-inherited definitions and recorded map graph/rig fingerprints should remain unchanged. Parent/source syntax lives only during acquisition; callers retain their existing typed definitions and Arc resources. No new resident generic field cache, GPU pass, per-frame lookup or unimplemented effect activation is introduced. Ordinary source reads may use the existing immutable common-text owner; editable overlays continue to bypass it. This is missing resource ancestry acquisition, not a CPU-performance or RAM-saving claim.
 
 The shared partial-edit merger now removes inherited item[n] slots beyond an explicitly reduced num before applying child fields, matching reflected list resize 14098c270 (the existing executed-list fixture records 512 original resize cases). No tests or original probe were run for this change. This addresses serialized item-array shrink, without changing other field merging. Original acquisition/build observations are pending for this coherent batch.
+
+The existing resource observation command now accepts explicitly named installed FX via inspect-fx-definitions, feeding the normal WorldFxSources acquisition owner without a scene or fabricated effect. It reports prepared group/family counts and exact acquisition failure causes. The old command's acquisition timer is captured before printing decal metadata, excluding diagnostic output IO from its reported load interval. This is an observation entry, not a test or gameplay override.
