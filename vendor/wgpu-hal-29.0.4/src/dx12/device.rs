@@ -1763,7 +1763,7 @@ impl crate::Device for super::Device {
             }
         }
 
-        let sampler_index_buffer = if !sampler_indexes.is_empty() {
+        let mut sampler_index_buffer = if !sampler_indexes.is_empty() {
             let buffer_size = (sampler_indexes.len() * size_of::<u32>()) as u64;
 
             let label = if let Some(label) = desc.label {
@@ -1784,7 +1784,10 @@ impl crate::Device for super::Device {
                 suballocation::DeviceAllocationContext::from(self).create_buffer(&buffer_desc)?;
 
             let mut mapping = ptr::null_mut::<ffi::c_void>();
-            unsafe { buffer.Map(0, None, Some(&mut mapping)) }.into_device_result("Map")?;
+            if let Err(error) = unsafe { buffer.Map(0, None, Some(&mut mapping)) }.into_device_result("Map") {
+                suballocation::DeviceAllocationContext::from(self).rollback_resource(buffer, allocation);
+                return Err(error);
+            }
 
             assert!(!mapping.is_null());
             assert_eq!(mapping as usize % 4, 0);
@@ -1832,14 +1835,23 @@ impl crate::Device for super::Device {
 
         let handle_views = match cpu_views {
             Some(inner) => {
-                let dual = unsafe {
+                let dual = match unsafe {
                     descriptor::upload(
                         &self.raw,
                         &inner,
                         &self.shared.heap_views,
                         &desc.layout.copy_counts,
                     )
-                }?;
+                } {
+                    Ok(dual) => dual,
+                    Err(error) => {
+                        if let Some(sampler) = sampler_index_buffer.take() {
+                            suballocation::DeviceAllocationContext::from(self)
+                                .rollback_resource(sampler.buffer, sampler.allocation);
+                        }
+                        return Err(error);
+                    }
+                };
                 Some(dual)
             }
             None => None,

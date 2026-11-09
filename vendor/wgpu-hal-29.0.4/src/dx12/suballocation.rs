@@ -194,9 +194,7 @@ impl<'a> DeviceAllocationContext<'a> {
             self.create_committed_buffer(raw_desc, location)?
         };
 
-        if let Some(label) = desc.label {
-            resource.set_name(label)?;
-        }
+        let (resource, allocation) = self.name_resource(resource, allocation, desc.label)?;
 
         self.counters.buffer_memory.add(allocation.size() as isize);
 
@@ -218,9 +216,7 @@ impl<'a> DeviceAllocationContext<'a> {
             self.create_committed_texture(desc, raw_desc)?
         };
 
-        if let Some(label) = desc.label {
-            resource.set_name(label)?;
-        }
+        let (resource, allocation) = self.name_resource(resource, allocation, desc.label)?;
 
         self.counters.texture_memory.add(allocation.size() as isize);
 
@@ -242,15 +238,80 @@ impl<'a> DeviceAllocationContext<'a> {
             self.create_committed_acceleration_structure(desc, raw_desc)?
         };
 
-        if let Some(label) = desc.label {
-            resource.set_name(label)?;
-        }
+        let (resource, allocation) = self.name_resource(resource, allocation, desc.label)?;
 
         self.counters
             .acceleration_structure_memory
             .add(allocation.size() as isize);
 
         Ok((resource, allocation))
+    }
+
+    /// Naming occurs before accounting. On failure release the COM object
+    /// before returning an unaccounted placed range to its allocator.
+    fn name_resource(
+        &self,
+        resource: Direct3D12::ID3D12Resource,
+        allocation: Allocation,
+        label: Option<&str>,
+    ) -> Result<(Direct3D12::ID3D12Resource, Allocation), crate::DeviceError> {
+        if let Some(label) = label {
+            if let Err(error) = resource.set_name(label) {
+                drop(resource);
+                if let AllocationInner::Placed { inner } = allocation.inner {
+                    if let Err(free_error) = self.mem_allocator.inner.lock().free(inner) {
+                        log::error!("Failed to roll back DX12 allocation after SetName: {free_error}");
+                    }
+                }
+                return Err(error);
+            }
+        }
+        Ok((resource, allocation))
+    }
+
+    /// The allocator has reserved a range, but no HAL counter is charged yet.
+    /// A failed call may still have written an output COM pointer.
+    fn finish_placed(
+        allocator: &mut gpu_allocator::d3d12::Allocator,
+        allocation: gpu_allocator::d3d12::Allocation,
+        resource: Option<Direct3D12::ID3D12Resource>,
+        status: Result<(), crate::DeviceError>,
+        ty: AllocationType,
+    ) -> Result<(Direct3D12::ID3D12Resource, Allocation), crate::DeviceError> {
+        let error = match status {
+            Err(error) => Some(error),
+            Ok(()) if resource.is_none() => Some(crate::DeviceError::Unexpected),
+            Ok(()) => None,
+        };
+        if let Some(error) = error {
+            drop(resource);
+            if let Err(free_error) = allocator.free(allocation) {
+                log::error!("Failed to roll back DX12 placed allocation: {free_error}");
+            }
+            return Err(error);
+        }
+        Ok((resource.expect("successful placed resource"), Allocation::placed(allocation, ty)))
+    }
+
+    /// A later owner failed after create_* charged its memory counter.
+    /// Preserve that failure even if returning the placed range also fails.
+    pub(crate) fn rollback_resource(
+        &self,
+        resource: Direct3D12::ID3D12Resource,
+        allocation: Allocation,
+    ) {
+        drop(resource);
+        let counter = match allocation.ty {
+            AllocationType::Buffer => &self.counters.buffer_memory,
+            AllocationType::Texture => &self.counters.texture_memory,
+            AllocationType::AccelerationStructure => &self.counters.acceleration_structure_memory,
+        };
+        counter.sub(allocation.size() as isize);
+        if let AllocationInner::Placed { inner } = allocation.inner {
+            if let Err(free_error) = self.mem_allocator.inner.lock().free(inner) {
+                log::error!("Failed to roll back accounted DX12 allocation: {free_error}");
+            }
+        }
     }
 
     //////////////////////////
@@ -306,7 +367,7 @@ impl<'a> DeviceAllocationContext<'a> {
 
         let allocation = allocator.allocate(&allocation_desc)?;
         let mut resource = None;
-        unsafe {
+        let status = unsafe {
             self.raw.CreatePlacedResource(
                 allocation.heap(),
                 allocation.offset(),
@@ -316,12 +377,8 @@ impl<'a> DeviceAllocationContext<'a> {
                 &mut resource,
             )
         }
-        .into_device_result("Placed buffer creation")?;
-
-        let resource = resource.ok_or(crate::DeviceError::Unexpected)?;
-        let wrapped_allocation = Allocation::placed(allocation, AllocationType::Buffer);
-
-        Ok((resource, wrapped_allocation))
+        .into_device_result("Placed buffer creation");
+        Self::finish_placed(&mut allocator, allocation, resource, status, AllocationType::Buffer)
     }
 
     fn create_placed_texture(
@@ -345,7 +402,7 @@ impl<'a> DeviceAllocationContext<'a> {
 
         let allocation = allocator.allocate(&allocation_desc)?;
         let mut resource = None;
-        unsafe {
+        let status = unsafe {
             self.raw.CreatePlacedResource(
                 allocation.heap(),
                 allocation.offset(),
@@ -355,12 +412,8 @@ impl<'a> DeviceAllocationContext<'a> {
                 &mut resource,
             )
         }
-        .into_device_result("Placed texture creation")?;
-
-        let resource = resource.ok_or(crate::DeviceError::Unexpected)?;
-        let wrapped_allocation = Allocation::placed(allocation, AllocationType::Texture);
-
-        Ok((resource, wrapped_allocation))
+        .into_device_result("Placed texture creation");
+        Self::finish_placed(&mut allocator, allocation, resource, status, AllocationType::Texture)
     }
 
     fn create_placed_acceleration_structure(
@@ -384,7 +437,7 @@ impl<'a> DeviceAllocationContext<'a> {
 
         let allocation = allocator.allocate(&allocation_desc)?;
         let mut resource = None;
-        unsafe {
+        let status = unsafe {
             self.raw.CreatePlacedResource(
                 allocation.heap(),
                 allocation.offset(),
@@ -394,13 +447,8 @@ impl<'a> DeviceAllocationContext<'a> {
                 &mut resource,
             )
         }
-        .into_device_result("Placed acceleration structure creation")?;
-
-        let resource = resource.ok_or(crate::DeviceError::Unexpected)?;
-        let wrapped_allocation =
-            Allocation::placed(allocation, AllocationType::AccelerationStructure);
-
-        Ok((resource, wrapped_allocation))
+        .into_device_result("Placed acceleration structure creation");
+        Self::finish_placed(&mut allocator, allocation, resource, status, AllocationType::AccelerationStructure)
     }
 
     /////////////////////////////////
