@@ -20,7 +20,8 @@ pub fn inspect_scene_preparation(
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=begin");
         // A fresh host per sample avoids claiming reuse of unpublished assets.
         // The real worker prepares its normal asset batches; dropping the
-        // unpublished result also exercises cancellation/abandoned acquisition.
+        // unpublished result observes completed-but-unpublished acquisition
+        // retirement; it does not simulate mid-read cancellation or game frames.
         let mut app = App::new();
         app.add_plugins(
             DefaultPlugins
