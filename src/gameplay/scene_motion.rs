@@ -421,6 +421,8 @@ impl SceneMotion {
         let mut leases = 0;
         let mut payload_bytes = 0;
         let mut digest = blake3::Hasher::new();
+        let mut poses = blake3::Hasher::new();
+        let mut rates = Vec::new();
         let mut record = |clip: &Arc<MotionClip>| {
             leases += 1;
             if unique.insert(Arc::as_ptr(clip)) {
@@ -442,13 +444,17 @@ impl SceneMotion {
             }
             for playback in &graph.playing {
                 record(&playback.clip);
-                digest.update(format!("{:?}", (playback.node, playback.placement, playback.group,
-                    playback.rate, playback.time_ms, playback.position, playback.basis, playback.delta())).as_bytes());
+                // Rate is sampled from the live performance-counter RNG at
+                // scene creation. Report it separately; it is not a source
+                // identity or initial pose, and must not be frozen for a check.
+                rates.push(playback.rate);
+                poses.update(format!("{:?}", (playback.node, playback.placement, playback.group,
+                    playback.time_ms, playback.position, playback.basis, playback.delta())).as_bytes());
             }
         }
         let tag_context_bytes = crate::platform::allocation_tags::live_bytes("Motion scene resources");
-        eprintln!("MOTION_SCENE_STORAGE graphs={} playing={} leases={leases} unique_clips={} logical_payload_bytes={payload_bytes} signature={} tag_context_bytes={tag_context_bytes:?}",
-            self.graphs.len(), self.playing_count(), unique.len(), digest.finalize());
+        eprintln!("MOTION_SCENE_STORAGE graphs={} playing={} leases={leases} unique_clips={} logical_payload_bytes={payload_bytes} definition_signature={} initial_pose_signature={} runtime_rates={rates:?} tag_context_bytes={tag_context_bytes:?}",
+            self.graphs.len(), self.playing_count(), unique.len(), digest.finalize(), poses.finalize());
     }
     pub fn playing_count(&self) -> usize {
         self.graphs.iter().map(|g| g.playing.len()).sum()

@@ -2217,3 +2217,6 @@ allocation-domain and GPU-fence evidence before implementation: releasing
 these live owners to force an empty heap would invalidate rendering. Potential
 recoverable capacity is bounded by the roughly1GiB reservation growth on this
 route, not a predicted guaranteed saving; no compaction change was made.
+
+
+Autonomous motion event dispatch (2026-11-09): RunningGraph::execute clones the complete selected Node (parameters/ports/links) to separate its borrow from mutable variables/playback. The estimated removable work is one owned node-tree clone per dispatched graph event; SceneMotion::step performs none of these copies, so no steady per-frame gain is predicted. This remains deferred while the current batch corrects actual source ownership: safely splitting immutable graph access from mutable state would widen that change, and its event-frequency/copy-size cost has not been measured. Scene source-key parsing now borrows parameters instead of a throwaway to_vec; immutable curves are leased across graph/playback. No remaining per-frame resource acquisition/upload was found in this motion owner.

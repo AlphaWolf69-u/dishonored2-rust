@@ -120,6 +120,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Motion scene resources") {
+        eprintln!("MOTION_SCENE_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Render parameter resources") {
         eprintln!("RENDER_PARAMETER_MEMORY phase=catalog-released bytes={bytes}");
     }
