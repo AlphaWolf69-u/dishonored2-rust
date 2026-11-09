@@ -85,6 +85,7 @@ pub struct Catalog {
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
+    pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
     pub(crate) sound_auxiliary_buses: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<u32>>>,
     pub(crate) sound_events: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::SoundEventDeclaration>>>,
     pub(crate) kiscule_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::effects::FxGraph>>>,
@@ -129,6 +130,8 @@ impl Drop for Catalog {
         crate::assets::wwise::event_resources::report_retirement(self);
         self.mass_resources.take();
         crate::assets::wwise::auxiliary_resources::report_retirement(self);
+        crate::assets::wwise::rtpc_resources::report_retirement(self);
+        self.sound_rtpcs.take();
         self.sound_auxiliary_buses.take();
         self.sound_events.take();
         self.kiscule_resources.take();
@@ -194,6 +197,7 @@ impl Catalog {
         crate::assets::fx::particle_resources::release_marker(self, 0);
         crate::assets::wwise::event_resources::release_marker(self, 0);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
+        crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
         self.release_pickable_level();
     }
@@ -364,6 +368,7 @@ impl Catalog {
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
+            sound_rtpcs: Default::default(),
             sound_auxiliary_buses: Default::default(),
             sound_events: Default::default(),
             kiscule_resources: Default::default(),

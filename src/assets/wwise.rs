@@ -13,6 +13,7 @@ pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
 pub mod event_resources;
 pub mod auxiliary_resources;
+pub mod rtpc_resources;
 mod playback;
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;
@@ -64,15 +65,19 @@ pub struct RtpcDeclaration {
 
 impl RtpcDeclaration {
     pub fn parse(source: &str) -> io::Result<Self> {
-        use crate::entities::scene_motion::{atom, child};
+        use crate::entities::scene_motion::child;
         let fields = crate::entities::parse_declaration(source).map_err(invalid_owned)?;
-        let edit = child(&fields, "edit");
+        Self::from_fields(child(&fields, "edit"))
+    }
+
+    pub fn from_fields(edit: &[(String, crate::entities::Value)]) -> io::Result<Self> {
+        use crate::entities::scene_motion::atom;
         let number = |key: &str| -> io::Result<f32> {
             let value = atom(edit, key).map(|value| value.parse::<f32>()).transpose()
                 .map_err(|error| invalid_owned(format!("invalid sound RTPC {key}: {error}")))?.unwrap_or(0.0);
             if value.is_finite() { Ok(value) } else { Err(invalid("non-finite sound RTPC value")) }
         };
-        let declaration = Self { id: declared_rtpc_id(source)?, default_value: number("m_defaultValue")?,
+        let declaration = Self { id: engine_id_from_fields(edit, "m_engineID")?, default_value: number("m_defaultValue")?,
             min: number("m_minValue")?, max: number("m_maxValue")? };
         if declaration.min > declaration.max { return Err(invalid("reversed sound RTPC limits")); }
         Ok(declaration)

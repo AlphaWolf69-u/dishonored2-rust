@@ -61,7 +61,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
         || kind.eq_ignore_ascii_case("inventoryitem")
         || kind.eq_ignore_ascii_case("particledt") || kind.eq_ignore_ascii_case("staticParticleModel")
-        || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus")
+        || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus") || kind.eq_ignore_ascii_case("soundrtpc")
         || kind.eq_ignore_ascii_case("massprops")
 }
 
@@ -364,6 +364,7 @@ impl LevelList {
             crate::assets::fx::particle_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::event_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::auxiliary_resources::promote_bootstrap(catalog)?;
+            crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
             crate::assets::physworld::mass::resources::promote_bootstrap(catalog)?;
             crate::assets::entities::effects::declarations::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::promote_bootstrap(catalog)?;
@@ -380,6 +381,7 @@ impl LevelList {
             crate::assets::fx::particle_resources::release_marker(catalog, 1);
             crate::assets::wwise::event_resources::release_marker(catalog, 1);
             crate::assets::wwise::auxiliary_resources::release_marker(catalog, 1);
+            crate::assets::wwise::rtpc_resources::release_marker(catalog, 1);
             crate::assets::physworld::mass::resources::release_marker(catalog, 1);
             crate::assets::entities::effects::declarations::release_marker(catalog, 1);
             crate::assets::inventory_item::configuration::release_persistent(catalog);
@@ -443,6 +445,9 @@ impl LevelList {
                     context, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("massprops") {
                 crate::assets::physworld::mass::resources::register_preload(catalog,
+                    &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("soundrtpc") {
+                crate::assets::wwise::rtpc_resources::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("soundauxbus") {
                 crate::assets::wwise::auxiliary_resources::register_preload(catalog,

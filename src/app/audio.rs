@@ -558,21 +558,20 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
         let fields = crate::entities::parse_declaration(&crate::entities::declaration_text(&source))?;
         use crate::entities::scene_motion::{atom, child};
         let mut bindings = Vec::new();
+        let rtpc = |name: &str| crate::assets::wwise::rtpc_resources::acquire_with(&catalog, name,
+            |path| crate::assets::declaration_texts::read_common_or_catalog(&catalog, path));
         for (field, cvar) in [
             ("m_RTPC_MasterVolume", "s_MasterBus_Gain"), ("m_RTPC_EffectsVolume", "s_SFX_Gain"),
             ("m_RTPC_SpeechVolume", "s_Voices_Gain"), ("m_RTPC_MusicVolume", "s_Music_Gain"),
             ("m_RTPC_VideoVolume", "s_Video_Gain"),
         ] {
             let path = atom(child(&fields, "edit"), field).ok_or("sound engine volume RTPC is absent")?;
-            let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("volume RTPC declaration is absent")?;
-            bindings.push((crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?, cvar));
+            bindings.push((rtpc(path)?.id, cvar));
         }
         let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
-        let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("sound time-dilation declaration is absent")?;
-        let time_dilation = crate::assets::wwise::declared_rtpc_id(&crate::entities::declaration_text(&source))?;
+        let time_dilation = rtpc(path)?.id;
         let path = atom(child(&fields, "edit"), "m_RTPC_PhysicsScale").ok_or("physics sound RTPC is absent")?;
-        let source = catalog.read(&format!("generated/decls/soundrtpc/{path}.decl"))?.ok_or("physics sound RTPC declaration is absent")?;
-        let physics_scale = crate::assets::wwise::RtpcDeclaration::parse(&crate::entities::declaration_text(&source))?;
+        let physics_scale = *rtpc(path)?;
         Ok(Some((output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation, physics_scale)))
     })();
     match result {
