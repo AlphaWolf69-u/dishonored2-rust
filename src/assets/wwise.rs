@@ -14,6 +14,7 @@ mod declaration;
 pub mod event_resources;
 pub mod auxiliary_resources;
 pub mod rtpc_resources;
+pub mod engine_controls;
 mod playback;
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;

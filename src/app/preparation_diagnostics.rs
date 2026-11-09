@@ -17,6 +17,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
     task_host.add_plugins(bevy::app::TaskPoolPlugin::default());
     let catalog = Arc::new(Catalog::open(base)?);
     let _audio_session = super::audio::AudioSession::begin()?;
+    let mut engine_controls = None;
     for (step, name) in levels.iter().enumerate() {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let level = LevelResources::resolve(&catalog, name)?;
@@ -27,6 +28,14 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             let mut prepared = super::level_prepare::prepare_level(
                 base.to_owned(), catalog.clone(), level, true, || false,
             )?;
+            // AudioMix initializes these once per session after map preload.
+            // Observe the same resource owner, without a device or audio output.
+            if engine_controls.is_none()
+                && std::env::var("DH2_DEBUG_CPU_AUDIO_CONTROLS").as_deref() == Ok("1") {
+                let controls = crate::assets::wwise::engine_controls::EngineControls::acquire(&catalog)?;
+                eprintln!("SOUND_ENGINE_CONTROLS values={controls:?}");
+                engine_controls = Some(controls);
+            }
             // Exercise the actual contact source owner too when measuring its
             // handoff, rather than just the earlier physics-material subset.
             let contact_texts = if std::env::var("DH2_DEBUG_CPU_CONTACT_TEXTS").as_deref() == Ok("1") {

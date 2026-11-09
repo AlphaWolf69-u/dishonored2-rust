@@ -553,26 +553,12 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
         }
         if mix.mixer.is_some() { return Ok(None); }
         let catalog = crate::archive::Catalog::shared(&base)?;
-        let source = catalog.read("generated/decls/soundengineinternals/default.soundengineinternals.decl")?
-            .ok_or("sound engine internals declaration is absent")?;
-        let fields = crate::entities::parse_declaration(&crate::entities::declaration_text(&source))?;
-        use crate::entities::scene_motion::{atom, child};
-        let mut bindings = Vec::new();
-        let rtpc = |name: &str| crate::assets::wwise::rtpc_resources::acquire_with(&catalog, name,
-            |path| crate::assets::declaration_texts::read_common_or_catalog(&catalog, path));
-        for (field, cvar) in [
-            ("m_RTPC_MasterVolume", "s_MasterBus_Gain"), ("m_RTPC_EffectsVolume", "s_SFX_Gain"),
-            ("m_RTPC_SpeechVolume", "s_Voices_Gain"), ("m_RTPC_MusicVolume", "s_Music_Gain"),
-            ("m_RTPC_VideoVolume", "s_Video_Gain"),
-        ] {
-            let path = atom(child(&fields, "edit"), field).ok_or("sound engine volume RTPC is absent")?;
-            bindings.push((rtpc(path)?.id, cvar));
-        }
-        let path = atom(child(&fields, "edit"), "m_RTPC_TimeDilation").ok_or("sound time-dilation RTPC is absent")?;
-        let time_dilation = rtpc(path)?.id;
-        let path = atom(child(&fields, "edit"), "m_RTPC_PhysicsScale").ok_or("physics sound RTPC is absent")?;
-        let physics_scale = *rtpc(path)?;
-        Ok(Some((output_mix.ok_or("Wwise initialization mix is absent")?, bindings, time_dilation, physics_scale)))
+        let controls = crate::assets::wwise::engine_controls::EngineControls::acquire(&catalog)?;
+        let bindings = controls.volumes.into_iter().zip([
+            "s_MasterBus_Gain", "s_SFX_Gain", "s_Voices_Gain", "s_Music_Gain", "s_Video_Gain",
+        ]).collect::<Vec<_>>();
+        Ok(Some((output_mix.ok_or("Wwise initialization mix is absent")?, bindings,
+            controls.time_dilation, controls.physics_scale)))
     })();
     match result {
         Ok(Some((output_mix, bindings, time_dilation, physics_scale))) => {
