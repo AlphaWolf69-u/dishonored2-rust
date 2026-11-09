@@ -93,6 +93,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         crate::edge_skeleton::release_unused();
         result?;
         eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=released");
+        if let Some((labels, bytes)) = crate::platform::allocation_tags::phase_label_storage() {
+            eprintln!("AUDIT_PHASE_LABELS step={step} labels={labels} payload_bytes={bytes}");
+        }
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Blueprint preparation") {
             eprintln!("BLUEPRINT_MEMORY phase=level-released step={step} bytes={bytes}");
         }

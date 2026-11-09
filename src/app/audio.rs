@@ -648,7 +648,7 @@ fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<
     let count = prepare_all(registry, &events, acquisition_pool);
     registry.preloaded = true;
     crate::loading::complete(LISTED_SOUNDS_GATE);
-    super::load_timing::mark(&format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
+    super::load_timing::mark_detail("sound events", &format!("sound events: {count} of {} listed prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
 }
 
 /// Level loading gates of this plugin.
@@ -732,7 +732,7 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
     let count = prepare_all(&mut registry, &events, None);
     registry.level_prepared = true;
     crate::loading::complete(LEVEL_SOUNDS_GATE);
-    super::load_timing::mark(&format!("level sounds: {count} more of {} emitter and FX events prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
+    super::load_timing::mark_detail("level sounds", &format!("level sounds: {count} more of {} emitter and FX events prepared in {:.1}s", events.len(), started.elapsed().as_secs_f64()));
 }
 
 fn play_events(

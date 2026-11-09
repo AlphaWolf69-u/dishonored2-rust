@@ -6,7 +6,7 @@
 //! feature, [`tag`] is free and [`report`] is empty.
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-const TAGS: usize = 64;
+const TAGS: usize = u8::MAX as usize + 1;
 static LIVE: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
 #[cfg(feature = "debug_allocations")]
 static RESERVED: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
@@ -49,6 +49,36 @@ pub fn tag(name: &'static str) -> Guard {
     Guard(CURRENT.try_with(|c| c.replace(index)).unwrap_or(0))
 }
 
+/// Permanently select a stable loading-phase context on this thread. Labels
+/// are process diagnostic metadata: intern each category once, rather than
+/// leaking a new string on every marker or embedding varying counts/timings.
+pub fn enter_phase(phase: &'static str) {
+    if !cfg!(feature = "debug_allocations") { return; }
+    let untagged = tag("untagged");
+    let index = {
+        let mut names = NAMES.lock().unwrap();
+        match names.iter().position(|name| name.strip_prefix("after ") == Some(phase)) {
+            Some(index) => index,
+            None if names.len() < TAGS => {
+                names.push(Box::leak(format!("after {phase}").into_boxed_str()));
+                names.len() - 1
+            }
+            None => 0,
+        }
+    } as u8;
+    drop(untagged);
+    let _ = CURRENT.try_with(|current| current.set(index));
+}
+
+/// Interned heap-label payload only; static owner labels and the registry
+/// vector are separate metadata. Used by real repeated-load observations.
+pub fn phase_label_storage() -> Option<(usize, usize)> {
+    if !cfg!(feature = "debug_allocations") { return None; }
+    let names = NAMES.lock().unwrap_or_else(|error| error.into_inner());
+    Some(names.iter().filter(|name| name.starts_with("after "))
+        .fold((0, 0), |(count, bytes), name| (count + 1, bytes + name.len())))
+}
+
 /// Live bytes per tag, largest first.
 pub fn report() -> Vec<(&'static str, isize)> {
     let names = NAMES.lock().unwrap();
@@ -58,12 +88,13 @@ pub fn report() -> Vec<(&'static str, isize)> {
 }
 
 /// Read one diagnostic allocation tag without allocating a report snapshot.
-/// None means this binary was built without the tracking allocator.
+/// None means tracking is disabled or this name has not been registered;
+/// an unobserved/overflowed context must not look like verified zero bytes.
 pub fn live_bytes(name: &str) -> Option<isize> {
     if !cfg!(feature = "debug_allocations") { return None; }
     let names = NAMES.lock().unwrap_or_else(|error| error.into_inner());
-    Some(names.iter().position(|candidate| *candidate == name)
-        .map_or(0, |index| LIVE[index].load(Ordering::Relaxed)))
+    names.iter().position(|candidate| *candidate == name)
+        .map(|index| LIVE[index].load(Ordering::Relaxed))
 }
 
 /// Bytes requested from the diagnostic allocator's System backend, including
@@ -72,8 +103,8 @@ pub fn live_reserved_bytes(name: &str) -> Option<isize> {
     #[cfg(feature = "debug_allocations")]
     {
         let names = NAMES.lock().unwrap_or_else(|error| error.into_inner());
-        Some(names.iter().position(|candidate| *candidate == name)
-            .map_or(0, |index| RESERVED[index].load(Ordering::Relaxed)))
+        names.iter().position(|candidate| *candidate == name)
+            .map(|index| RESERVED[index].load(Ordering::Relaxed))
     }
     #[cfg(not(feature = "debug_allocations"))]
     { let _ = name; None }

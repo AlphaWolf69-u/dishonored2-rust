@@ -20,7 +20,10 @@ impl Drop for Span {
     }
 }
 
-pub(super) fn mark(phase: &str) {
+pub(super) fn mark(phase: &'static str) { mark_detail(phase, phase); }
+
+/// Variable detail is logged but never becomes an allocation-tag identity.
+pub(super) fn mark_detail(category: &'static str, phase: &str) {
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
         return;
     }
@@ -35,9 +38,7 @@ pub(super) fn mark(phase: &str) {
         eprintln!("LOAD heap: {}", tags.join(", "));
     }
     // This thread's later allocations belong to the phase after this mark.
-    if cfg!(feature = "debug_allocations") {
-        std::mem::forget(crate::platform::allocation_tags::tag(Box::leak(format!("after {phase}").into_boxed_str())));
-    }
+    crate::platform::allocation_tags::enter_phase(category);
     *last = now;
 }
 
@@ -65,7 +66,7 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     }
     if *stable == 60 {
         *settled = true;
-        mark(&format!("streaming settled ({now} of {} images resident)", scene.diffuse_image_handles.len()));
+        mark_detail("streaming settled", &format!("streaming settled ({now} of {} images resident)", scene.diffuse_image_handles.len()));
         gpu_allocations(device.as_deref());
     }
 }
