@@ -1,5 +1,6 @@
 //! Parser for textual `.entities` files. Unknown fields remain in the tree.
 pub mod blueprint;
+mod light_sources;
 use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
@@ -1900,8 +1901,18 @@ fn inherited_light_edits(
 /// types stay out of the render list instead of being assigned a guessed type.
 pub fn placed_lights_with_inheritance(
     document: &Document,
-    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+    read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Vec<PlacedLight>, String> {
+    placed_lights_from_sources(document, read, false)
+}
+
+pub(crate) fn placed_lights_from_sources(
+    document: &Document,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+    reuse: bool,
+) -> Result<Vec<PlacedLight>, String> {
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    let mut sources = light_sources::Sources::default();
     let mut result = Vec::new();
     for definition in &document.definitions {
         if definition.kind != "entity" || light_atom(&definition.fields, "class") != Some("idLight")
@@ -1916,12 +1927,18 @@ pub fn placed_lights_with_inheritance(
         {
             continue;
         }
-        let mut edits = if let Some(parent) = light_atom(&definition.fields, "inherit") {
-            inherited_light_edits(parent, 0, &mut read)?
-        } else {
-            Vec::new()
-        };
-        edits.push(edit.to_vec());
+        let parent = light_atom(&definition.fields, "inherit");
+        let inherited = if reuse {
+            parent.map(|parent| sources.acquire(parent, 0, &mut read)).transpose()?
+        } else { None };
+        let separate = if !reuse {
+            let _tag = crate::platform::allocation_tags::tag("Light declaration sources");
+            parent.map(|parent| inherited_light_edits(parent, 0, &mut read)).transpose()?.unwrap_or_default()
+        } else { Vec::new() };
+        let mut edits = Vec::new();
+        if let Some(inherited) = &inherited { inherited.append(&mut edits); }
+        else { edits.extend(separate.iter().map(Vec::as_slice)); }
+        edits.push(edit);
         let last = |name: &str| -> Result<Option<&str>, String> {
             match edits
                 .iter()
@@ -2091,6 +2108,7 @@ pub fn placed_lights_with_inheritance(
             reflector_preset: last("m_reflectorPreset")?.map(str::to_owned),
         });
     }
+    sources.retire(trace);
     Ok(result)
 }
 

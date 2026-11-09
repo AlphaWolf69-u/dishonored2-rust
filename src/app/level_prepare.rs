@@ -336,19 +336,29 @@ pub(super) fn prepare_level(
         .transpose()
         .map_err(std::io::Error::other)?
         .flatten();
+    let mut light_source_reads = 0usize;
+    let mut light_source_bytes = 0usize;
+    let reuse_light_sources = catalog.as_ref().is_some_and(|catalog| !catalog.has_overlays())
+        && std::env::var("DH2_DEBUG_SEPARATE_LIGHT_SOURCES").as_deref() != Ok("1");
     let placed_lights = entity_document
         .as_ref()
         .map(|document| {
-            entities::placed_lights_with_inheritance(document, |resource| {
+            entities::placed_lights_from_sources(document, |resource| {
                 let Some(catalog) = catalog.as_ref() else {
                     return Ok(None);
                 };
                 let bytes = catalog.read(resource).map_err(|error| error.to_string())?;
+                light_source_reads += 1;
+                light_source_bytes += bytes.as_ref().map_or(0, Vec::len);
                 Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
-            })
+            }, reuse_light_sources)
         })
         .transpose()?
         .unwrap_or_default();
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("LIGHT_SOURCE_PREPARATION reads={light_source_reads} source_bytes={light_source_bytes} lights={} signature={}",
+            placed_lights.len(), blake3::hash(format!("{placed_lights:?}").as_bytes()));
+    }
     let world_environment = entity_document
         .as_ref()
         .and_then(entities::world_environment);

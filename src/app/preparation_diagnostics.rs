@@ -145,6 +145,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Light declaration sources") {
+        eprintln!("LIGHT_SOURCE_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Difficulty declarations") {
         eprintln!("DIFFICULTY_MEMORY phase=catalog-released bytes={bytes}");
     }
