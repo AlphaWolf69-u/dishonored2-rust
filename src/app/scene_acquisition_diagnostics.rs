@@ -17,6 +17,17 @@ pub fn inspect_scene_publication(
     inspect_scene_resources(base, levels, true)
 }
 
+fn track_assets<A: bevy::asset::Asset>(world: &mut World) -> Result<(), std::io::Error> {
+    world
+        .run_system_once(Assets::<A>::track_assets)
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "{} handle retirement: {error:?}",
+                std::any::type_name::<A>()
+            ))
+        })
+}
+
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
     eprintln!(
         "RESOURCE_SCENE_ASSETS step={step} phase={phase} meshes={} images={} probes={} decals={} skies={} buffers={}",
@@ -122,19 +133,12 @@ fn inspect_scene_resources(
             resource_snapshot(app.world(), step, "level-cleared");
             // These are the registered asset owner's real handle-drop
             // consumers, in dependency order; no application schedule runs.
-            app.world_mut()
-                .run_system_once(Assets::<ProbeMaterial>::track_assets)?;
-            app.world_mut()
-                .run_system_once(Assets::<DecalMaterial>::track_assets)?;
-            app.world_mut().run_system_once(
-                Assets::<crate::rendering::bevy_backend::sky_mask::SkyMaterial>::track_assets,
-            )?;
-            app.world_mut()
-                .run_system_once(Assets::<Mesh>::track_assets)?;
-            app.world_mut()
-                .run_system_once(Assets::<ShaderBuffer>::track_assets)?;
-            app.world_mut()
-                .run_system_once(Assets::<Image>::track_assets)?;
+            track_assets::<ProbeMaterial>(app.world_mut())?;
+            track_assets::<DecalMaterial>(app.world_mut())?;
+            track_assets::<crate::rendering::bevy_backend::sky_mask::SkyMaterial>(app.world_mut())?;
+            track_assets::<Mesh>(app.world_mut())?;
+            track_assets::<ShaderBuffer>(app.world_mut())?;
+            track_assets::<Image>(app.world_mut())?;
             resource_snapshot(app.world(), step, "asset-handles-tracked");
         } else {
             drop(prepared);
