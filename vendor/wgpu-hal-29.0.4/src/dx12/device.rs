@@ -61,7 +61,7 @@ impl super::Device {
         }
 
         let mem_allocator =
-            suballocation::Allocator::new(&raw, memory_hints, memory_budget_thresholds)?;
+            suballocation::Allocator::new(&raw, memory_hints, memory_budget_thresholds, library)?;
 
         let idle_fence: Direct3D12::ID3D12Fence = unsafe {
             profiling::scope!("ID3D12Device::CreateFence");
@@ -180,6 +180,7 @@ impl super::Device {
             )?,
             sampler_heap: super::sampler::SamplerHeap::new(&raw, &private_caps)?,
             private_caps,
+            _library: Arc::clone(library),
         };
 
         let mut rtv_pool =

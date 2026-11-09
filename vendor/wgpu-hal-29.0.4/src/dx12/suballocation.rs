@@ -67,6 +67,9 @@ pub(crate) struct Allocator {
     device_memblock_size: u64,
     host_memblock_size: u64,
     pub memory_budget_thresholds: wgt::MemoryBudgetThresholds,
+    // Every clone owns both references. Its allocator/device/heaps are dropped
+    // before this runtime lease, including the last clone held by an encoder.
+    _library: Arc<super::D3D12Lib>,
 }
 
 impl Allocator {
@@ -74,6 +77,7 @@ impl Allocator {
         raw: &Direct3D12::ID3D12Device,
         memory_hints: &wgt::MemoryHints,
         memory_budget_thresholds: wgt::MemoryBudgetThresholds,
+        library: &Arc<super::D3D12Lib>,
     ) -> Result<Self, crate::DeviceError> {
         let allocation_sizes = AllocationSizes::from_memory_hints(memory_hints);
         let device_memblock_size = allocation_sizes.min_device_memblock_size;
@@ -94,6 +98,7 @@ impl Allocator {
             device_memblock_size,
             host_memblock_size,
             memory_budget_thresholds,
+            _library: Arc::clone(library),
         })
     }
 

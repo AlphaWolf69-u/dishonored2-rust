@@ -14,6 +14,44 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 ## Classes
 
+### Backend runtime and loading-publication retirement (2026-11-09)
+
+`host:` the original renderer uses D3D11; the rewrite's vendored wgpu D3D12
+backend owns its own dynamically loaded runtime and COM objects. A normal main
+release session at source4e7683a2 crashed with an access violation in
+D3D12Core.dll+0x150fe reading0x7ffd6aab7038. The saved dump's unloaded-module
+stream places that address inside d3d12.dll (base0x7ffd6aaa0000,size151552),
+while D3D12Core.dll remains loaded. Device declared its runtime lease before
+its allocator and shader owners, so Rust could unload the library before
+those owners released their COM objects. The previous Instance factory-order
+fix alone did not cover Device destruction or independently retained owners.
+
+Prediction: moving Device's runtime leases after every native owner and
+retaining a last-field runtime lease in the existing shared command-list,
+allocator, queue and swap-chain owners prevents this unload-before-Release
+failure. CommandEncoder releases its shared owner last, after its own lists,
+descriptors and intermediate buffers. DirectComposition's surface state also
+retains its library after its COM objects. All leases release with their real
+owners; no process pin, new cache or permanent retention is introduced. There
+is no per-frame work or rendered-output change. Device/queue/swap-chain and
+allocator/encoder creation gains a bounded Arc ownership operation; no CPU or
+RAM improvement is claimed. Compilation and normal window-close acceptance
+are still required; the earlier automatic AppExit run did not cover this
+observed shutdown failure. Evidence: artifacts/resource-main-normal-20261109/
+{crash-raw.json,crash-modules.json} in the main checkout and the Windows dump
+dishonored2-rust.exe.23080.dmp.
+
+At the acknowledged outgoing-world boundary, LevelLifetime also resets
+SceneGpuInputs and SceneImageRequests through their existing owners. These
+plugin resources predate the scene snapshot and otherwise retain old
+AssetId-vector capacity until the next scene setup. AssetIds do not retain
+assets, so this is metadata retirement, not a texture/mesh leak claim. The
+SceneImageRequests resource stays registered to preserve deferred-upload
+behavior; phase/generation reset cannot admit the destination world early.
+Existing load-timing diagnostics report retired counts, capacities and Arc
+owners. No per-frame scan or GPU work is added. Transition acceptance remains
+required with the coherent backend batch.
+
 ### Resource manager (all classes)
 
 | Original | Behavior | Status |

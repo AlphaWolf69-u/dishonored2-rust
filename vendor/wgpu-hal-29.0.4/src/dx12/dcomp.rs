@@ -88,6 +88,8 @@ pub struct InnerState {
     pub device: DirectComposition::IDCompositionDevice,
     // Must be kept alive but is otherwise unused after initialization.
     pub _target: DirectComposition::IDCompositionTarget,
+    // The surface can outlive the device that initialized its composition state.
+    _library: Arc<DCompLib>,
 }
 
 impl InnerState {
@@ -115,6 +117,7 @@ impl InnerState {
             visual,
             device: dcomp_device,
             _target: target,
+            _library: Arc::clone(lib),
         })
     }
 }

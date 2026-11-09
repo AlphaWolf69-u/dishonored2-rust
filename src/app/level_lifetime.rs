@@ -119,6 +119,18 @@ impl LevelLifetime {
 /// Reset their map payloads while retaining the plugins/device themselves.
 fn reset_scene_publications(world: &mut World) {
     use crate::rendering::bevy_backend as backend;
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        if let Some(inputs) = world.get_resource::<super::scene_preparation::SceneGpuInputs>() {
+            let bytes = inputs.images.capacity() * std::mem::size_of::<bevy::asset::AssetId<Image>>()
+                + inputs.meshes.capacity() * std::mem::size_of::<bevy::asset::AssetId<Mesh>>()
+                + inputs.buffers.capacity() * std::mem::size_of::<bevy::asset::AssetId<bevy::render::storage::ShaderBuffer>>();
+            eprintln!("MEMORY scene GPU IDs retired: images={} meshes={} buffers={} capacity_bytes={} owners={}/{}/{}",
+                inputs.images.len(), inputs.meshes.len(), inputs.buffers.len(), bytes,
+                std::sync::Arc::strong_count(&inputs.images), std::sync::Arc::strong_count(&inputs.meshes),
+                std::sync::Arc::strong_count(&inputs.buffers));
+        }
+    }
+    super::loading_screen::retire_scene_image_requests(world);
     if std::env::var_os("DH2_TRACE_DECALS").is_some() {
         let handles = world.get_resource::<super::projected_decals::GeometryLayouts>()
             .map_or(0, super::projected_decals::GeometryLayouts::sample_handle_count);
@@ -127,6 +139,7 @@ fn reset_scene_publications(world: &mut World) {
     macro_rules! reset { ($($ty:ty),* $(,)?) => { $(world.insert_resource(<$ty>::default());)* }; }
     reset!(
         super::scene_queue::VisibleSceneInstances,
+        super::scene_preparation::SceneGpuInputs,
         super::visibility_queries::EarlyTomeQuery,
         super::world_instances::WorldMatrices,
         super::shadow_updates::ParallelShadowCpu,

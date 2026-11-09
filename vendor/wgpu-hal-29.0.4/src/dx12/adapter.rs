@@ -1066,6 +1066,7 @@ impl crate::Adapter for super::Adapter {
             queue: super::Queue {
                 raw: queue,
                 temp_lists: Mutex::new(Vec::new()),
+                _library: Arc::clone(&self.library),
             },
         })
     }

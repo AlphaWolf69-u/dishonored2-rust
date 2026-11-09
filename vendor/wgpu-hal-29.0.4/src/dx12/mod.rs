@@ -603,6 +603,9 @@ struct SwapChain {
     present_mode: wgt::PresentMode,
     format: wgt::TextureFormat,
     size: wgt::Extent3d,
+    // DXGI retains D3D12 resources/queues even if the HAL device is gone.
+    // Keep the runtime loaded until all fields above have released their COM objects.
+    _library: Arc<D3D12Lib>,
 }
 
 enum SurfaceTarget {
@@ -745,6 +748,8 @@ struct DeviceShared {
     heap_views: descriptor::GeneralHeap,
     sampler_heap: sampler::SamplerHeap,
     private_caps: PrivateCapabilities,
+    // Encoders can retain this owner beyond Device destruction.
+    _library: Arc<D3D12Lib>,
 }
 
 unsafe impl Send for DeviceShared {}
@@ -761,9 +766,6 @@ pub struct Device {
     rtv_pool: Arc<Mutex<descriptor::CpuPool>>,
     dsv_pool: Mutex<descriptor::CpuPool>,
     srv_uav_pool: Mutex<descriptor::CpuPool>,
-    // library
-    library: Arc<D3D12Lib>,
-    dcomp_lib: Arc<DCompLib>,
     #[cfg(feature = "renderdoc")]
     render_doc: auxil::renderdoc::RenderDoc,
     null_rtv_handle: descriptor::Handle,
@@ -771,6 +773,10 @@ pub struct Device {
     compiler_container: Arc<shader_compilation::CompilerContainer>,
     shader_cache: Mutex<ShaderCache>,
     counters: Arc<wgt::HalCounters>,
+    // Rust drops fields in declaration order. Allocator heaps, shader objects
+    // and all other COM owners must release before their runtime is unloaded.
+    library: Arc<D3D12Lib>,
+    dcomp_lib: Arc<DCompLib>,
 }
 
 impl Drop for Device {
@@ -793,6 +799,7 @@ unsafe impl Sync for Device {}
 pub struct Queue {
     raw: Direct3D12::ID3D12CommandQueue,
     temp_lists: Mutex<Vec<Option<Direct3D12::ID3D12CommandList>>>,
+    _library: Arc<D3D12Lib>,
 }
 
 impl Queue {
@@ -909,7 +916,6 @@ impl PassState {
 pub struct CommandEncoder {
     allocator: Option<Direct3D12::ID3D12CommandAllocator>,
     device: Direct3D12::ID3D12Device,
-    shared: Arc<DeviceShared>,
     mem_allocator: Allocator,
 
     rtv_pool: Arc<Mutex<descriptor::CpuPool>>,
@@ -929,6 +935,9 @@ pub struct CommandEncoder {
     end_of_pass_timer_query: Option<(Direct3D12::ID3D12QueryHeap, u32)>,
 
     counters: Arc<wgt::HalCounters>,
+    // Last: pooled lists, descriptors and intermediate resources above use
+    // the runtime retained by DeviceShared even after Device has been dropped.
+    shared: Arc<DeviceShared>,
 }
 
 unsafe impl Send for CommandEncoder {}
@@ -1572,6 +1581,7 @@ impl crate::Surface for Surface {
             present_mode: config.present_mode,
             format: config.format,
             size: config.extent,
+            _library: Arc::clone(&device.library),
         });
 
         Ok(())

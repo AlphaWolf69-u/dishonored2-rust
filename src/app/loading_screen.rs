@@ -780,6 +780,19 @@ struct SceneImageRequests {
     images: Arc<Vec<bevy::asset::AssetId<Image>>>,
 }
 
+/// The outgoing render publication has been acknowledged. Keep the plugin
+/// resource present, but release the completed phase's old world ID list.
+pub(super) fn retire_scene_image_requests(world: &mut World) {
+    let Some(mut request) = world.get_resource_mut::<SceneImageRequests>() else { return };
+    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        eprintln!("MEMORY loading image IDs retired: phase={} generation={} records={} capacity_bytes={} owners={}",
+            request.phase, request.generation, request.images.len(),
+            request.images.capacity() * std::mem::size_of::<bevy::asset::AssetId<Image>>(),
+            Arc::strong_count(&request.images));
+    }
+    *request = SceneImageRequests::default();
+}
+
 pub(super) fn image_uploads_deferred(world: &World) -> bool {
     world.contains_resource::<SceneImageRequests>()
 }

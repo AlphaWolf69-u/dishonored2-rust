@@ -195,6 +195,7 @@ impl Composited {
             present_mode: config.present_mode,
             format: config.format,
             size: config.extent,
+            _library: alloc::sync::Arc::clone(&device.library),
             composited: Some(Self {
                 context,
                 backbuffer,
