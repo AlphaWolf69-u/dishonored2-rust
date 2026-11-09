@@ -21,6 +21,9 @@ pub(super) struct GeometryLayouts {
     ids: HashMap<AssetId<Mesh>, u32>,
     samples: Vec<(u32, bool, Handle<Mesh>, bool)>,
 }
+impl GeometryLayouts {
+    pub(super) fn sample_handle_count(&self) -> usize { self.samples.len() }
+}
 
 struct RuntimeDecalProxySet {
     _prepared: super::runtime_materials::PreparedDecal,
@@ -252,7 +255,6 @@ pub(super) fn publish_runtime(
     if request.prepared.is_empty() && state.owned.is_empty() && state.owns_scene_geometry {
         scene.tree = None;
         scene.receiver_range_ends = [0; 2];
-        if let Some(cube) = state.cube.take() { meshes.remove(cube.id()); }
         state.owns_scene_geometry = false;
     }
     let mut expected = Vec::new();
@@ -293,6 +295,18 @@ pub(super) fn publish_runtime(
             [usize::from(item.world)] = Some(item.program.clone());
         expected.extend(entities.iter().copied());
         state.owned.insert(key, RuntimeDecalProxySet { _prepared: item.clone(), entities });
+    }
+    // Only owned dynamic depth-box proxies use this cube. Static proxies have
+    // their own setup mesh, and other dynamic projections borrow receivers.
+    // Check after publishing replacements to avoid dropping a needed cube.
+    if state.cube.is_some() && !state.owned.values().any(|item| item._prepared.program.kind == crate::rendering::decals::material::ProjectionKind::DepthBox) {
+        if let Some(cube) = state.cube.take() {
+            let removed = meshes.remove(cube.id()).is_some();
+            if std::env::var_os("DH2_TRACE_DECALS").is_some() {
+                eprintln!("DECAL_LIFETIME dynamic_depth_cube_retired asset_removed={} static_scene={} remaining_dynamic={}",
+                    removed, !state.owns_scene_geometry && scene.tree.is_some(), state.owned.len());
+            }
+        }
     }
     readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
         generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(), failed: request.failed.clone(),

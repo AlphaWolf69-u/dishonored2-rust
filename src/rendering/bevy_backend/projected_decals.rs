@@ -228,6 +228,7 @@ struct DecalGpu {
     previous: Vec<bevy::render::sync_world::MainEntity>,
     bindings: std::collections::HashMap<BufferId, BindGroup>,
     identities: Option<(BufferId, BufferId, BufferId)>,
+    skin_buffers: Option<(BufferId, BufferId)>,
     bilinear: Option<Sampler>,
     // Physical slot identity and immutable probe-bank identity bound the cache.
     lighting: std::collections::HashMap<u32, (u64, usize, [f32; 3], [[f32; 4]; 9])>,
@@ -238,6 +239,7 @@ pub(super) fn release_level(world: &mut World) {
     let bindings = gpu.bindings.len();
     gpu.bindings.clear();
     gpu.identities = None;
+    gpu.skin_buffers = None;
     gpu.previous.clear();
     gpu.receiver_indices.clear();
     gpu.world_target_floors.clear();
@@ -278,6 +280,20 @@ fn prepare(
     for entity in gpu.previous.drain(..) {
         draws.entities.remove(&entity);
         draws.bind_groups.remove(&entity);
+    }
+    // SkinUniforms can replace both buffers even in a frame without any
+    // projected draws. Drop groups for old buffers once per identity change.
+    let skin_buffers = (skins.current_buffer.id(), skins.prev_buffer.id());
+    // The renderer normally swaps current/previous every frame; that is the
+    // same pair and must not trigger a scan.
+    if !gpu.skin_buffers.is_some_and(|old| old == skin_buffers || old == (skin_buffers.1, skin_buffers.0)) {
+        let before = gpu.bindings.len();
+        gpu.bindings.retain(|id, _| *id == skin_buffers.0 || *id == skin_buffers.1);
+        gpu.skin_buffers = Some(skin_buffers);
+        let retired = before - gpu.bindings.len();
+        if retired != 0 && std::env::var_os("DH2_TRACE_DECALS").is_some() {
+            eprintln!("DECAL_LIFETIME skin_buffer_groups_retired={retired}");
+        }
     }
     for (entity, _) in &proxies {
         gpu.previous.push(*entity);
@@ -520,8 +536,6 @@ fn prepare(
             gpu.bindings.clear();
             gpu.identities = Some(identities);
         }
-        gpu.bindings
-            .retain(|id, _| *id == skins.current_buffer.id() || *id == skins.prev_buffer.id());
         let sampler = gpu
             .bilinear
             .get_or_insert_with(|| super::shadow_pipeline::shadow_alpha_sampler(&device));

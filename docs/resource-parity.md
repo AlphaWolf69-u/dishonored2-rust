@@ -4477,3 +4477,39 @@ render-publication, inventory-carryover or gameplay acceptance. The command
 reports actual production errors and counts; it supplies no invented expected
 values and is not a test suite. No CPU/GPU timing or memory gain is claimed by
 this observation entry point.
+
+MD6 parsed-payload residency (2026-11-09): the registered record previously
+held only a Weak generation. Dropping the last host Rig could therefore
+discard successfully loaded metadata before 060180, while non-loading
+193500/198940/060630 lookup still found the admitted header; peek_model then
+reported an evicted loaded declaration instead of returning its real fields.
+The existing Snapshot now retains its current loaded generation until the
+record's exact purge marker is selected. Matching payloads release together
+before dead-header checks, so inherited parent leases do not depend on map
+iteration order. External generations remain safe and unused lazy headers
+still acquire no payload. The added Option<Arc> is one pointer per record;
+there is no second parsed copy or per-frame lookup. This is lifecycle parity,
+not a claimed memory saving. The observed working CPU route loads three
+Level0 Corvo model declarations per batch, so its cold-read count is expected
+to remain unchanged. Permanent metadata, once genuinely loaded, must remain
+available until session release. Production confirmation of the new release
+ordering follows the coordinated build.
+
+Decal host reference retirement (2026-11-09): GeometryLayouts is a
+plugin-created resource replaced during scene preparation, so its sample
+Mesh handles were outside the level-created resource list. The acknowledged
+world reset now clears it alongside other scene publications. Dynamic
+depth-box cube ownership now ends after the last actual dynamic depth-box
+proxy, independently of a static receiver tree or surviving planar decals.
+Static geometry and live/fading proxy leases remain with their existing
+owners. The existing decal skin bind-group cache also drops old buffer
+references when SkinUniforms replaces the pair, including frames with no
+decal draws; ordinary current/previous swaps do not trigger a retain scan.
+The extra pair comparison is bounded CPU work and is not a measured timing
+gain. Prediction: no additional GPU work/uploads, outgoing layout samples
+retain zero mesh handles after reset, and obsolete cube/skin references
+retire at those actual owner boundaries. DH2_TRACE_DECALS records the
+boundaries. These are bevy_backend lifetime repairs, not changes to decal
+projection or original effect/tail rules. Evidence:
+DH2-pause/artifacts/decal-lifetime-evidence.md; runtime bytes and affected
+CPU cost remain to be observed after the complete batch builds.

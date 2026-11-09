@@ -35,6 +35,9 @@ struct Record {
 #[derive(Default)]
 struct Snapshot {
     value: Weak<Declaration>,
+    // Native loaded fields belong to the registered resource until 060180,
+    // not merely until the last host Rig happens to release its Arc.
+    resident: Option<Arc<Declaration>>,
     previous: Vec<Weak<Declaration>>,
     attempted: bool,
     absent: bool,
@@ -149,8 +152,9 @@ impl Lease {
         });
         if cycle { return Err(format!("MD6 inheritance cycle at {}", self.path)); }
         if !fresh {
-            let value = self.record.value.lock().map_err(|_| "MD6 declaration record is poisoned")?;
+            let mut value = self.record.value.lock().map_err(|_| "MD6 declaration record is poisoned")?;
             if let Some(cached) = value.value.upgrade() {
+                if value.resident.is_none() { value.resident = Some(cached.clone()); }
                 if tracing() { eprintln!("MD6_DECL_ACQUIRE path={} identity={:p} reused=1 source_bytes={} tokens={}",
                     self.path, Arc::as_ptr(&cached), cached.source_bytes, cached.tokens.len()); }
                 return Ok(Some(cached));
@@ -170,6 +174,7 @@ impl Lease {
         let mut value = self.record.value.lock().map_err(|_| "MD6 declaration record is poisoned")?;
         if !fresh {
             if let Some(cached) = value.value.upgrade() {
+                if value.resident.is_none() { value.resident = Some(cached.clone()); }
                 if tracing() { eprintln!("MD6_DECL_ACQUIRE path={} identity={:p} reused=1 source_bytes={} tokens={}",
                     self.path, Arc::as_ptr(&cached), cached.source_bytes, cached.tokens.len()); }
                 return Ok(Some(cached));
@@ -193,6 +198,7 @@ impl Lease {
         let Some(bytes) = catalog.read(&self.path).map_err(|error| error.to_string())? else {
             let mut value = self.record.value.lock().map_err(|_| "MD6 declaration record is poisoned")?;
             value.value = Weak::new();
+            value.resident = None;
             value.attempted = true;
             value.absent = true;
             value.failure = None;
@@ -207,6 +213,7 @@ impl Lease {
                 let parsed = Arc::new(parsed);
                 value.attempted = true;
                 value.value = Arc::downgrade(&parsed);
+                value.resident = Some(parsed.clone());
                 value.absent = false;
                 value.failure = None;
                 if tracing() { eprintln!("MD6_DECL_ACQUIRE path={} identity={:p} reused=0 source_bytes={} tokens={}",
@@ -215,6 +222,7 @@ impl Lease {
             }
             Err(error) => {
                 value.value = Weak::new();
+                value.resident = None;
                 value.attempted = true;
                 value.absent = false;
                 value.failure = Some(Arc::from(error.as_str()));
@@ -383,6 +391,12 @@ pub(crate) fn release_level(catalog: &Catalog) {
 pub(crate) fn release_marker(catalog: &Catalog, marker: PurgeMarker) {
     let mut registry = catalog.md6_declarations.lock().unwrap_or_else(|error| error.into_inner());
     let before = registry.records.len();
+    // Release matching payloads together: a child declaration can retain an
+    // ancestor's metadata/record. Checking parents before dropping children
+    // would preserve dead headers merely because of hash iteration order.
+    for record in registry.records.values().filter(|record| record.scope.load(Ordering::Relaxed) == marker as u8) {
+        record.value.lock().unwrap_or_else(|error| error.into_inner()).resident = None;
+    }
     registry.records.retain(|path, record| {
         if record.scope.load(Ordering::Relaxed) != marker as u8 { return true; }
         let mut snapshot = record.value.lock().unwrap_or_else(|error| error.into_inner());

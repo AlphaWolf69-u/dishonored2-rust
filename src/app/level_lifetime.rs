@@ -119,6 +119,11 @@ impl LevelLifetime {
 /// Reset their map payloads while retaining the plugins/device themselves.
 fn reset_scene_publications(world: &mut World) {
     use crate::rendering::bevy_backend as backend;
+    if std::env::var_os("DH2_TRACE_DECALS").is_some() {
+        let handles = world.get_resource::<super::projected_decals::GeometryLayouts>()
+            .map_or(0, super::projected_decals::GeometryLayouts::sample_handle_count);
+        eprintln!("DECAL_LIFETIME world_layout_retired sample_mesh_handles={handles}");
+    }
     macro_rules! reset { ($($ty:ty),* $(,)?) => { $(world.insert_resource(<$ty>::default());)* }; }
     reset!(
         super::scene_queue::VisibleSceneInstances,
@@ -172,6 +177,7 @@ fn reset_scene_publications(world: &mut World) {
         backend::coarse_depth::CoarseDepthMailbox,
         backend::projected_decals::DecalScene,
         backend::projected_decals::DynamicProxyReadiness,
+        super::projected_decals::GeometryLayouts,
         super::material_loading::alpha::AlphaDepthMaterials,
     );
     super::audio::begin_level(world);
