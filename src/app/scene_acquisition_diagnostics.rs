@@ -94,6 +94,19 @@ fn gpu_snapshot(app: &App, step: usize, phase: &str) {
         world.resource::<RenderAssets<RenderMesh>>().iter().count(),
         world.resource::<RenderAssets<GpuShaderBuffer>>().iter().count(),
         world.resource::<RenderAssets<crate::rendering::bevy_backend::sky_mask::GpuSkyMaterial>>().iter().count());
+    if matches!(phase, "before-preparation" | "after-gpu-removal") {
+        let allocator = world.resource::<bevy::render::mesh::allocator::MeshAllocator>();
+        for (id, mesh) in world.resource::<RenderAssets<RenderMesh>>().iter() {
+            let vertex = allocator.mesh_vertex_slice(&id).map(|slice| (slice.range, slice.buffer.size()));
+            let index = allocator.mesh_index_slice(&id).map(|slice| (slice.range, slice.buffer.size()));
+            eprintln!("RESOURCE_SCENE_GPU_MESH step={step} phase={phase} id={id:?} vertices={} vertex={vertex:?} index={index:?}", mesh.vertex_count);
+        }
+        for (id, image) in world.resource::<RenderAssets<GpuImage>>().iter() {
+            let descriptor = &image.texture_descriptor;
+            eprintln!("RESOURCE_SCENE_GPU_IMAGE step={step} phase={phase} id={id:?} size={:?} format={:?} label={:?}",
+                descriptor.size, descriptor.format, descriptor.label);
+        }
+    }
     super::resource_diagnostics::allocator_snapshot(app.world().resource::<RenderDevice>(), phase, step);
 }
 
@@ -148,8 +161,7 @@ fn inspect_scene_resources(
         // unpublished result observes completed-but-unpublished acquisition
         // retirement; it does not simulate mid-read cancellation or game frames.
         let mut app = App::new();
-        app.add_plugins(
-            DefaultPlugins
+        let mut plugins = DefaultPlugins
                 .set(bevy::window::WindowPlugin {
                     primary_window: None,
                     exit_condition: bevy::window::ExitCondition::DontExit,
@@ -169,8 +181,11 @@ fn inspect_scene_resources(
                 })
                 .disable::<bevy::audio::AudioPlugin>()
                 .disable::<bevy::winit::WinitPlugin>()
-                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
-        );
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>();
+        // Log/tracing subscribers are process-wide; later independent hosts
+        // reuse the first host's subscriber rather than registering it again.
+        if step != 0 { plugins = plugins.disable::<bevy::log::LogPlugin>(); }
+        app.add_plugins(plugins);
         app.add_plugins(MaterialPlugin::<ProbeMaterial>::default())
             .add_plugins(MaterialPlugin::<DecalMaterial>::default())
             .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin)
@@ -184,6 +199,11 @@ fn inspect_scene_resources(
             .resource::<super::resident_images::ResidentImages>()
             .clone();
         app.insert_resource(super::resident_images::UiImages::new(resident));
+        if mode == Mode::Upload {
+            let inputs = gpu_inputs(app.world());
+            upload_assets(&mut app, &inputs)?;
+            gpu_snapshot(&app, step, "before-preparation");
+        }
         resource_snapshot(app.world(), step, "before-preparation");
         let mut prepared = super::level_prepare::prepare_level(
             base.to_owned(),
