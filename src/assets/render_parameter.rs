@@ -70,32 +70,33 @@ pub(crate) fn report(catalog: &Catalog, phase: &str) {
     if let Some(owner) = catalog.render_parameters.get() {
         let entries = owner.entries.lock().unwrap_or_else(|error| error.into_inner());
         let mut source_bytes = 0; let mut source_capacity = 0; let mut metadata = 0; let mut floating = 0;
-        // Requested storage on this host, excluding hash control bytes and
-        // allocator rounding. Node and key share each Arc<str> allocation.
+        // Logical storage on this host, excluding hash spare/control buckets
+        // beyond usable capacity and allocator rounding. Node and key share each Arc<str> allocation.
         let arc_node = std::alloc::Layout::new::<[usize; 2]>()
             .extend(std::alloc::Layout::new::<Parameter>()).expect("parameter Arc layout")
             .0.pad_to_align().size();
-        let mut requested_bytes = entries.capacity()
+        let mut logical_storage_bytes = entries.capacity()
             * std::mem::size_of::<(Arc<str>, Result<Arc<Parameter>, String>)>();
         for (path, value) in entries.iter() {
-            requested_bytes += (2 * std::mem::size_of::<usize>() + path.len())
+            logical_storage_bytes += (2 * std::mem::size_of::<usize>() + path.len())
                 .next_multiple_of(std::mem::align_of::<usize>());
             match value {
-                Err(error) => requested_bytes += error.capacity(),
+                Err(error) => logical_storage_bytes += error.capacity(),
                 Ok(value) => {
                     source_bytes += value.bytes.len(); source_capacity += value.bytes.capacity();
-                    requested_bytes += arc_node + value.bytes.capacity();
+                    logical_storage_bytes += arc_node + value.bytes.capacity();
                     if let Some(parsed) = value.parsed.get() {
-                        requested_bytes += std::mem::size_of::<Parsed>();
+                        logical_storage_bytes += std::mem::size_of::<Parsed>();
                         metadata += usize::from(parsed.metadata.get().is_some());
                         floating += usize::from(parsed.floating.get().is_some());
-                        if let Some(Err(error)) = parsed.metadata.get() { requested_bytes += error.capacity(); }
-                        if let Some(Err(error)) = parsed.floating.get() { requested_bytes += error.capacity(); }
+                        if let Some(Err(error)) = parsed.metadata.get() { logical_storage_bytes += error.capacity(); }
+                        if let Some(Err(error)) = parsed.floating.get() { logical_storage_bytes += error.capacity(); }
                     }
                 }
             }
         }
-        eprintln!("RENDER_PARAMETER_STORAGE catalog={} phase={phase} records={} source_bytes={source_bytes} source_capacity={source_capacity} requested_bytes={requested_bytes} metadata={metadata} floating={floating}", catalog.identity(), entries.len());
+        let tag_context_bytes = crate::platform::allocation_tags::live_bytes("Render parameter resources");
+        eprintln!("RENDER_PARAMETER_STORAGE catalog={} phase={phase} records={} source_bytes={source_bytes} source_capacity={source_capacity} logical_storage_bytes={logical_storage_bytes} metadata={metadata} floating={floating} tag_context_bytes={tag_context_bytes:?}", catalog.identity(), entries.len());
     }
 }
 
