@@ -19,6 +19,8 @@ mod playback;
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;
 pub(crate) use property_chains::retire_diagnostics as retire_property_diagnostics;
+mod retirement;
+pub(crate) use retirement::retire_cache;
 mod media_bytes;
 mod stream;
 pub(crate) mod stream_io;
@@ -962,6 +964,18 @@ pub(crate) fn report_stream_diagnostics() {
     eprintln!("MEMORY stream diagnostic table: requests={} inserts={} entries={} signature={:016x}",
         STREAM_DIAGNOSTIC_REQUESTS.load(Relaxed), STREAM_DIAGNOSTIC_INSERTS.load(Relaxed),
         STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).len(), STREAM_DIAGNOSTIC_SIGNATURE.load(Relaxed));
+}
+
+pub(crate) fn retire_stream_diagnostics() {
+    let (track, metrics) = stream_diagnostic_mode();
+    if std::env::var("DH2_DEBUG_RETAIN_STREAMED_MEDIA_DIAGNOSTICS").as_deref() == Ok("1") { return; }
+    if track { retire_cache(&STREAMED_MEDIA, "stream-diagnostics"); }
+    if metrics {
+        use std::sync::atomic::Ordering::Relaxed;
+        STREAM_DIAGNOSTIC_REQUESTS.store(0, Relaxed);
+        STREAM_DIAGNOSTIC_INSERTS.store(0, Relaxed);
+        STREAM_DIAGNOSTIC_SIGNATURE.store(0, Relaxed);
+    }
 }
 
 fn media_from_sound(

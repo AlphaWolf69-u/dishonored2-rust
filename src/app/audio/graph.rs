@@ -307,14 +307,8 @@ pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) -> u64 {
 /// Final session retirement releases the cache's ownership, even if an
 /// outgoing decoder still holds its own immutable media/header lease.
 pub(super) fn retire_session_media() -> (usize, usize) {
-    let mut media = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
-    let media_count = media.len();
-    media.clear();
-    drop(media);
-    let mut streamed = STREAMED.lock().unwrap_or_else(|e| e.into_inner());
-    let stream_count = streamed.len();
-    streamed.clear();
-    drop(streamed);
+    let media_count = crate::assets::wwise::retire_cache(&MEDIA, "media");
+    let stream_count = crate::assets::wwise::retire_cache(&STREAMED, "streamed");
     crate::assets::wwise::retire_headers();
     (media_count, stream_count)
 }

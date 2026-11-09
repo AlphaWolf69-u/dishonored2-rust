@@ -100,6 +100,7 @@ impl Drop for Session {
         // No admitted producer can republish into these process-wide maps.
         let (media, streams) = super::graph::retire_session_media();
         crate::assets::wwise::retire_property_diagnostics();
+        crate::assets::wwise::retire_stream_diagnostics();
         if let Some(elapsed) = elapsed {
             eprintln!("AUDIO_SESSION jobs={} peak={} handle_acquire_ms={:.3} shutdown_wait_ms={:.3} retired_media={media} retired_streams={streams}",
                 self.0.acquired.load(Ordering::Relaxed), self.0.peak.load(Ordering::Relaxed),

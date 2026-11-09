@@ -126,14 +126,8 @@ static SETUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<Se
 /// holds a header. Those decoder Arcs remain valid until their own retirement.
 pub(crate) fn retire_headers() {
     if std::env::var("DH2_DEBUG_RETAIN_SOUND_HEADERS").as_deref() == Ok("1") { return; }
-    let mut headers = WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner());
-    let header_count = headers.len();
-    headers.clear();
-    drop(headers);
-    let mut setups = SETUPS.lock().unwrap_or_else(|e| e.into_inner());
-    let setup_count = setups.len();
-    setups.clear();
-    drop(setups);
+    let header_count = super::retire_cache(&WWISE_HEADERS, "headers");
+    let setup_count = super::retire_cache(&SETUPS, "setups");
     if std::env::var("DH2_DEBUG_AUDIO_RESOURCES").as_deref() == Ok("1") {
         eprintln!("AUDIO_SESSION_HEADERS retired_headers={header_count} retired_setups={setup_count} remaining_headers=0 remaining_setups=0");
     }
