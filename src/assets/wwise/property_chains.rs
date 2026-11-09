@@ -1,6 +1,7 @@
 //! Host sharing of immutable actor property chains. Actor registration and
 //! property decoding follow 1410f2370 / 1410de430 / 1410deb00; voice state is
-//! deliberately outside this owner. Diagnostics retain only weak references.
+//! deliberately outside this owner. Diagnostic weak references retire with the
+//! audio session: a dead Arc slice's allocation remains until its last weak drops.
 use super::NodeProperties;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::collections::BTreeMap;
@@ -81,4 +82,24 @@ pub(crate) fn capture() {
     }
     eprintln!("MEMORY sound property chains: created={} created_bytes={} live={live} live_bytes={live_bytes} live_nodes={nodes} requests={} identities={} fingerprint={:08x}",
         diagnostics.created, diagnostics.created_bytes, diagnostics.requests.values().sum::<u64>(), diagnostics.requests.len(), crc.sum());
+}
+
+/// Host diagnostic metadata must not outlive the session it measures.
+pub(crate) fn retire_diagnostics() {
+    if !tracing() { return; }
+    // Same-binary control for observing the former shutdown retention.
+    if std::env::var("DH2_DEBUG_RETAIN_SOUND_PROPERTY_DIAGNOSTICS").as_deref() == Ok("1") {
+        return;
+    }
+    let retired = DIAGNOSTICS.lock().unwrap().take();
+    if let Some(retired) = retired {
+        let dead = retired.allocations.iter().filter(|weak| weak.strong_count() == 0);
+        let (dead_chains, dead_slice_bytes) = dead.fold((0, 0), |(count, bytes), weak| {
+            (count + 1, bytes + 2 * std::mem::size_of::<usize>()
+                + weak.as_ptr().len() * std::mem::size_of::<NodeProperties>())
+        });
+        let identities = retired.requests.len();
+        drop(retired);
+        eprintln!("MEMORY sound property diagnostics release: dead_chains={dead_chains} dead_slice_bytes={dead_slice_bytes} identities={identities}");
+    }
 }

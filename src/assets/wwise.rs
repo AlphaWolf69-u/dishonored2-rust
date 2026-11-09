@@ -18,6 +18,7 @@ pub mod engine_controls;
 mod playback;
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;
+pub(crate) use property_chains::retire_diagnostics as retire_property_diagnostics;
 mod media_bytes;
 mod stream;
 pub(crate) mod stream_io;
