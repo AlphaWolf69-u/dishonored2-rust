@@ -49,7 +49,7 @@ fn render_epoch(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     app.world_mut().run_schedule(First);
     app.world_mut().run_schedule(PreUpdate);
     app.world_mut().run_schedule(PostUpdate);
-    app.update_subapp_by_label(RenderApp);
+    app.update_sub_app_by_label(RenderApp);
     let submitted = app.world().resource::<RenderQueue>().submit([]);
     app.world().resource::<RenderDevice>().poll(
         bevy::render::render_resource::PollType::Wait {
