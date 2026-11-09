@@ -609,6 +609,7 @@ pub struct MantleSensor {
     pub destination_axis: Mat3,
     /// The body the destination ray hit (0: the level, as idWorldspawn).
     pub destination_body: u32,
+    query_origin: Vec3,
     /// m_forwardCollisionResults (+0x6c): a missed ray clears only its
     /// collision flag, keeping the rest from earlier frames.
     forward_results: [ForwardRay; 13],
@@ -640,6 +641,7 @@ impl MantleSensor {
             destination: Vec3::ZERO,
             destination_axis: Mat3::IDENTITY,
             destination_body: 0,
+            query_origin: physics.position(),
             forward_results: [ForwardRay::default(); 13],
             pending: None,
         }
@@ -652,19 +654,22 @@ impl MantleSensor {
 
     /// Issue from the prior stage's state, then consume this frame's resolved
     /// queries, matching QUERY_PHYSICS → wait → DEFAULT.
-    /// `velocity_z` is the entity's vertical velocity.
-    pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, dt: f32, velocity_z: f32) {
-        if !self.enabled {
-            return;
+    /// 1403bb790: surface swimmers search from the water plane minus the
+    /// standing step height, rather than their submerged physics origin.
+    pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, surface: Option<f32>) {
+        if !self.enabled { return; }
+        self.query_origin = physics.position();
+        if let Some(surface) = surface {
+            self.query_origin.z = surface - physics.posture_settings(POSTURE_STANDING).step_height;
         }
         self.issue(world, physics);
         let q = self.pending.take().unwrap_or_default();
-        self.results(world, physics, q, dt, velocity_z);
+        self.results(world, physics, q);
     }
 
-    fn results(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, q: MantleQueries, dt: f32, velocity_z: f32) {
+    fn results(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, q: MantleQueries) {
         let d = self.decl;
-        let origin = physics.position();
+        let origin = self.query_origin;
         let forward = physics.axis().x_axis;
         if let Some([left, right]) = q.hands {
             self.use_left_hand = left;
@@ -707,8 +712,10 @@ impl MantleSensor {
                 if let Some(hit) = world.cast_ray(QueryFilter::layers(self.decl.collision_mask, PLAYER_FLAG), start, -Vec3::Z, 2.0 * step) {
                     let surface = WorldHit { position: hit.position, normal: hit.normal, value: 0.0, body: hit.body, key: hit.key };
                     if world.surface(&surface).allow_mantle {
-                        let rise = if velocity_z > 0.0 { dt * velocity_z } else { 0.0 };
-                        self.destination = Vec3::new(hit.position.x, hit.position.y, hit.position.z + 0.01 + rise);
+                        // 1403bcb00 uses the hit owner's positive vertical
+                        // displacement, not the player's. This host admits
+                        // static collision bodies (GameCollision), hence zero.
+                        self.destination = Vec3::new(hit.position.x, hit.position.y, hit.position.z + 0.01);
                         self.destination_body = hit.body;
                     }
                 }
@@ -766,7 +773,7 @@ impl MantleSensor {
 
     fn issue(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics) {
         let d = self.decl;
-        let origin = physics.position();
+        let origin = self.query_origin;
         let forward = physics.axis().x_axis;
         let mask = QueryFilter::layers(d.collision_mask, PLAYER_FLAG);
         // ShapeCastForward_Deferred FUN_1403bbf00 adds INTERACTABLE.
@@ -808,8 +815,8 @@ impl MantleSensor {
     }
 
     /// FUN_1403bca70 / FUN_1403bcab0.
-    pub fn height(&self, origin: Vec3) -> MantleHeight {
-        let h = self.destination.z - origin.z;
+    pub fn height(&self) -> MantleHeight {
+        let h = self.destination.z - self.query_origin.z;
         if h >= self.decl.high_mantle_height {
             MantleHeight::High
         } else if self.decl.mid_mantle_height <= h {

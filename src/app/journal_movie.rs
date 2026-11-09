@@ -80,6 +80,7 @@ pub(super) struct Movie {
     maps: Vec<JournalItem>,
     audiographs: Vec<JournalItem>,
     purchase_object: Option<crate::flash::avm2::object::Obj>,
+    focused: bool,
     _residency: Option<super::pause_menu::MovieResidency>,
 }
 
@@ -363,6 +364,7 @@ impl Movie {
             maps,
             audiographs,
             purchase_object: None,
+            focused: false,
             _residency: residency,
         })
     }
@@ -444,6 +446,17 @@ impl Movie {
         let mut actions = Vec::new();
         for (name, args) in self.player.take_notifications() {
             use crate::flash::avm2::value::{Value, to_uint32};
+            // UIScene.focused creates its cursor before returning the focus
+            // notification (035020/034fe0). Route input only while this movie
+            // owns focus, as the shared Iggy input stack does.
+            if name == "SetFlashFocus" {
+                self.player.call_path_method("controllerTypeHandler", "_C_UpdateControllerType",
+                    &[pause_state::controller_type().into()])
+                    .map_err(|e| self.player.describe(&e))?;
+                self.focused = true;
+                continue;
+            }
+            if name == "KillFlashFocus" { self.focused = false; continue; }
             if name == "OnJournalDisabled" {
                 closed = true;
                 continue;
@@ -562,6 +575,7 @@ impl Movie {
     }
 
     pub(super) fn key(&mut self, down: bool, vk: u32) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         self.player
             .key_event(down, vk, 0)
@@ -569,6 +583,7 @@ impl Movie {
     }
 
     pub(super) fn cursor(&mut self, x: f64, y: f64) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         self.player
             .set_value("mouseCursor.x", x.into())
@@ -578,6 +593,7 @@ impl Movie {
     }
 
     pub(super) fn button(&mut self, down: bool, button: u8) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         let result = if button < 3 {
             self.player.mouse_button(button, down)
@@ -601,6 +617,7 @@ impl Movie {
     }
 
     pub(super) fn wheel(&mut self, delta: i32) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         self.player
             .mouse_wheel(delta)

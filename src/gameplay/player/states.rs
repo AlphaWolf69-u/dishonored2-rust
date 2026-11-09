@@ -2064,7 +2064,7 @@ impl StateMachine {
         frame.mantle_sensor.last_selected_hands = Some([frame.mantle_sensor.use_left_hand, frame.mantle_sensor.use_right_hand]);
         let sensor = &*frame.mantle_sensor;
         let Some((final_posture, final_state)) = sensor.final_posture() else { return };
-        let height = sensor.height(frame.origin);
+        let height = sensor.height();
         let destination = sensor.destination;
         let axis = sensor.destination_axis.x_axis;
         let destination_yaw = axis.y.atan2(axis.x);

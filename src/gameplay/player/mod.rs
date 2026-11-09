@@ -426,7 +426,9 @@ impl Player {
         let sliding = self.machine.is_active(StateId::SLIDING);
         self.autocrouch.update(world, &self.physics, self.requests.linear_priority0, dt, sliding);
         self.lean_sensor.update(world, self.camera.eye, self.physics.position(), self.physics.axis());
-        self.mantle_sensor.update(world, &self.physics, dt, self.physics.velocity.z);
+        let mantle_surface = self.swimming_contact.filter(|water|
+            self.swimming_active && self.camera.eye.z > water.head).map(|water| water.plane);
+        self.mantle_sensor.update(world, &self.physics, mantle_surface);
         self.vault_sensor.update(world, &self.physics, dt);
         self.catfall_sensor.update(world, &self.physics);
         if !self.health.is_dead() { self.controller.think(settings, frame_delta); }

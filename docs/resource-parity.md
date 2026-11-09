@@ -4829,3 +4829,38 @@ test, client input or visual inspection was performed. Production admission
 must be checked with the existing `inspect-ui-fonts ui/journal.iggy` tool route
 (real `Player::load_installed`) after the coordinated build, followed by actual
 human interaction before claiming the report resolved.
+
+### Journal focus and mantle corrections (2026-11-09)
+
+Journal keeps its existing per-open Player/library/image owner. The installed
+JournalScene._onOpened sets UIScene.focused only after the opening transition;
+UIScene.focused creates the cursor and sends SetFlashFocus/ KillFlashFocus
+(035020 / 034fe0). Journal now consumes those callbacks and gates keyboard,
+cursor, button and wheel delivery like READ_NOTE. Prediction: cursor input
+during the opening transition no longer dereferences a null cursor handler or
+drops the movie; normal input begins when the authored movie takes focus.
+No resource cache, extra tick, image decoding or allocation is introduced.
+Evidence: installed ui/journal.iggy JournalScene and UIScene bytecode retained
+in artifacts/journal-open-script.txt and journal-scene-input.txt.
+
+Mantle target height restores the correction accepted on the earlier branch
+(fdc800c9): 3bcb00 adds the hit entity's positive vertical displacement, not
+the player's jump displacement. The current GameCollision player host models
+its collision bodies as static, hence this displacement is zero; moving-body
+velocity ownership remains outside that host. Prediction: the hand boxes stay
+on the ledge during upward player motion and select the authored hand tracks.
+No collision or animation owner is added.
+
+The missing surface-swim branch of 3bb790 now supplies water-plane Z minus
+standing step height as the mantle query origin, while submerged and ordinary
+queries retain the physics origin. Controller+2a0 is swimming-subobject+48
+(88b2f0 writes the water plane); physics+b0 is standing step height. Both query
+issuance/results and mantle height classification use this same origin. In
+the reported pier capture the physical origin is about -1.406 m and the top
+is 1.250 m, beyond the 2 m search. A 0.122 m water plane and 0.3 m standing
+step put the search origin at -0.178 m and the ledge at 1.428 m above it.
+Prediction: the ledge enters the existing search and SwimMantle admission,
+without increasing search distance, adding casts, changing surface-swim arm
+visibility or changing level collision. Existing fixed-size sensor ownership
+and level teardown remain unchanged. Compilation is recorded with the build;
+these source-backed predictions are not a new human appearance acceptance.
