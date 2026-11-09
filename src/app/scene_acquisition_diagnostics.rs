@@ -1,20 +1,100 @@
 //! Actual scene-worker resource acquisition without a window or game frames.
-//! No application runner/update is invoked: queued entities and audio never play.
+//! No application runner/update is invoked. Optional render epochs upload and
+//! retire real assets with cameras disabled; gameplay and audio never run.
 use super::*;
-use bevy::{ecs::system::RunSystemOnce, prelude::*};
+use bevy::{ecs::system::RunSystemOnce, prelude::*, render::{
+    mesh::RenderMesh, render_asset::RenderAssets, renderer::RenderQueue,
+    storage::GpuShaderBuffer, texture::GpuImage, RenderApp,
+}};
 
 pub fn inspect_scene_preparation(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    inspect_scene_resources(base, levels, false)
+    inspect_scene_resources(base, levels, Mode::Prepare)
 }
 
 pub fn inspect_scene_publication(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    inspect_scene_resources(base, levels, true)
+    inspect_scene_resources(base, levels, Mode::Publish)
+}
+
+pub fn inspect_scene_gpu_resources(
+    base: &std::path::Path,
+    levels: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    inspect_scene_resources(base, levels, Mode::Upload)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode { Prepare, Publish, Upload }
+
+fn gpu_inputs(world: &World) -> super::scene_preparation::SceneGpuInputs {
+    super::scene_preparation::SceneGpuInputs {
+        images: std::sync::Arc::new(world.resource::<Assets<Image>>().iter()
+            .filter_map(|(id, image)| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD).then_some(id)).collect()),
+        meshes: std::sync::Arc::new(world.resource::<Assets<Mesh>>().iter()
+            .filter_map(|(id, mesh)| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD).then_some(id)).collect()),
+        buffers: std::sync::Arc::new(world.resource::<Assets<ShaderBuffer>>().iter()
+            .filter_map(|(id, buffer)| buffer.asset_usage.contains(RenderAssetUsages::RENDER_WORLD).then_some(id)).collect()),
+    }
+}
+
+fn render_epoch(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+    // First drains the render-time channel and maintains event buffers.
+    // Pre/PostUpdate run only host asset/transform maintenance: this host has
+    // no gameplay, sound playback or window systems installed.
+    app.world_mut().run_schedule(First);
+    app.world_mut().run_schedule(PreUpdate);
+    app.world_mut().run_schedule(PostUpdate);
+    app.update_sub_app_by_label(RenderApp);
+    let submitted = app.world().resource::<RenderQueue>().submit([]);
+    app.world().resource::<RenderDevice>().poll(
+        bevy::render::render_resource::PollType::Wait {
+            submission_index: Some(submitted), timeout: None,
+        },
+    )?;
+    Ok(())
+}
+
+fn upload_assets(app: &mut App, inputs: &super::scene_preparation::SceneGpuInputs)
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    let started = std::time::Instant::now();
+    let mut previous = None;
+    loop {
+        render_epoch(app)?;
+        let world = app.sub_app(RenderApp).world();
+        let images = world.resource::<RenderAssets<GpuImage>>();
+        let meshes = world.resource::<RenderAssets<RenderMesh>>();
+        let buffers = world.resource::<RenderAssets<GpuShaderBuffer>>();
+        let missing = (
+            inputs.images.iter().filter(|id| images.get(**id).is_none()).count(),
+            inputs.meshes.iter().filter(|id| meshes.get(**id).is_none()).count(),
+            inputs.buffers.iter().filter(|id| buffers.get(**id).is_none()).count(),
+        );
+        if previous != Some(missing) {
+            eprintln!("RESOURCE_SCENE_GPU_PENDING images={} meshes={} buffers={}", missing.0, missing.1, missing.2);
+            previous = Some(missing);
+        }
+        if missing == (0, 0, 0) { return Ok(()); }
+        // Safety deadline for this observation, never a loading-ready rule.
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            return Err(format!("GPU acquisition observation timed out with {missing:?} pending assets").into());
+        }
+    }
+}
+
+fn gpu_snapshot(app: &App, step: usize, phase: &str) {
+    let world = app.sub_app(RenderApp).world();
+    eprintln!("RESOURCE_SCENE_GPU step={step} phase={phase} images={} meshes={} buffers={} skies={}",
+        world.resource::<RenderAssets<GpuImage>>().iter().count(),
+        world.resource::<RenderAssets<RenderMesh>>().iter().count(),
+        world.resource::<RenderAssets<GpuShaderBuffer>>().iter().count(),
+        world.resource::<RenderAssets<crate::rendering::bevy_backend::sky_mask::GpuSkyMaterial>>().iter().count());
+    super::resource_diagnostics::allocator_snapshot(app.world().resource::<RenderDevice>(), phase, step);
 }
 
 fn track_assets<A: bevy::asset::Asset>(world: &mut World) -> Result<(), std::io::Error> {
@@ -49,7 +129,7 @@ fn resource_snapshot(world: &World, step: usize, phase: &str) {
 fn inspect_scene_resources(
     base: &std::path::Path,
     levels: &[String],
-    publish: bool,
+    mode: Mode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if levels.is_empty() {
         return Err("inspect-scene-preparation requires level names".into());
@@ -87,15 +167,16 @@ fn inspect_scene_resources(
                     )),
                     ..default()
                 })
+                .disable::<bevy::audio::AudioPlugin>()
                 .disable::<bevy::winit::WinitPlugin>()
                 .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
         );
         app.add_plugins(MaterialPlugin::<ProbeMaterial>::default())
             .add_plugins(MaterialPlugin::<DecalMaterial>::default())
             .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin)
-            .add_plugins(super::audio::SoundPlugin)
             .init_resource::<super::texture_streaming::SharedImages>()
             .init_resource::<super::resident_images::ResidentImages>();
+        super::audio::initialize_resources(&mut app);
         app.finish();
         app.cleanup();
         let resident = app
@@ -122,14 +203,26 @@ fn inspect_scene_resources(
             inputs.buffers.len()
         );
         resource_snapshot(app.world(), step, "prepared");
-        if publish {
+        if mode != Mode::Prepare {
             let (mut lifetime, before) =
                 super::level_lifetime::LevelLifetime::begin(app.world_mut(), catalog.clone());
             prepared.publish(app.world_mut());
             lifetime.published(app.world(), &before);
             resource_snapshot(app.world(), step, "published");
-            // No render/gameplay update has run, so no outgoing GPU frame
-            // exists to acknowledge. Use the actual main-world teardown.
+            if mode == Mode::Upload {
+                // Only asset upload/removal is observed. No camera produces a
+                // view, and no gameplay or audio systems were registered.
+                let mut cameras = app.world_mut().query::<&mut Camera>();
+                for mut camera in cameras.iter_mut(app.world_mut()) {
+                    camera.is_active = false;
+                }
+                let inputs = gpu_inputs(app.world());
+                upload_assets(&mut app, &inputs)?;
+                gpu_snapshot(&app, step, "uploaded");
+            }
+            // No camera/view frame was produced. Upload mode completed its
+            // asset queue work above; view-pass owners were not installed.
+            // Use the actual main-world teardown and asset-removal owners.
             lifetime.clear(app.world_mut())?;
             resource_snapshot(app.world(), step, "level-cleared");
             // These are the registered asset owner's real handle-drop
@@ -141,6 +234,15 @@ fn inspect_scene_resources(
             track_assets::<ShaderBuffer>(app.world_mut())?;
             track_assets::<Image>(app.world_mut())?;
             resource_snapshot(app.world(), step, "asset-handles-tracked");
+            if mode == Mode::Upload {
+                // GPU material removal releases image handles; the following
+                // tracking epoch removes those images, then consumes removal
+                // events. Record actual final ownership rather than asserting
+                // that every remaining asset is a map leak.
+                for _ in 0..3 { render_epoch(&mut app)?; }
+                gpu_snapshot(&app, step, "after-gpu-removal");
+                resource_snapshot(app.world(), step, "after-gpu-removal");
+            }
         } else {
             drop(prepared);
         }

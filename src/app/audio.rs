@@ -398,32 +398,44 @@ pub(super) fn begin_level(world: &mut World) {
     world.resource_mut::<Messages<ContactSound>>().clear();
 }
 
+/// Acquisition owners without gameplay schedules or an audio output device.
+/// The client and windowless resource observations use the same initialization.
+pub(super) fn initialize_resources(app: &mut App) {
+    if !app.world().contains_resource::<Assets<graph::ScheduledAudio>>() {
+        app.init_asset::<graph::ScheduledAudio>();
+    }
+    if !app.world().contains_resource::<Assets<bevy_backend::OutputAudio>>() {
+        app.init_asset::<bevy_backend::OutputAudio>();
+    }
+    crate::loading::gate(LISTED_SOUNDS_GATE);
+    crate::loading::gate(LEVEL_SOUNDS_GATE);
+    app.add_message::<SoundEvent>()
+        .add_message::<ContactSound>()
+        .init_resource::<contacts::ContactSounds>()
+        .init_resource::<objects::EffectObjects>()
+        .init_resource::<effects::EffectAudio>()
+        .init_resource::<WwiseRegistry>()
+        .init_resource::<acquisition::SourceJobs>()
+        .init_resource::<PendingSounds>()
+        .init_resource::<SoundCompletions>()
+        .init_resource::<SoundDecodeQueue>()
+        .init_resource::<AudioMix>()
+        .init_resource::<bevy_backend::Engine>()
+        .init_resource::<spatial::Scene>();
+    let source_jobs = Arc::downgrade(&app.world().resource::<acquisition::SourceJobs>().0);
+    let mut registry = app.world_mut().resource_mut::<WwiseRegistry>();
+    registry.source_jobs = source_jobs;
+    registry.media_generation = graph::retain_media(&Default::default());
+}
+
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         if !app.is_plugin_added::<AudioAssetsPlugin>() { app.add_plugins(AudioAssetsPlugin); }
-        crate::loading::gate(LISTED_SOUNDS_GATE);
-        crate::loading::gate(LEVEL_SOUNDS_GATE);
-        app.add_message::<SoundEvent>()
-            .add_message::<ContactSound>()
-            .init_resource::<contacts::ContactSounds>()
-            .init_resource::<objects::EffectObjects>()
-            .init_resource::<effects::EffectAudio>()
-            .init_resource::<WwiseRegistry>()
-            .init_resource::<acquisition::SourceJobs>()
-            .init_resource::<PendingSounds>()
-            .init_resource::<SoundCompletions>()
-            .init_resource::<SoundDecodeQueue>()
-            .init_resource::<AudioMix>()
-            .init_resource::<bevy_backend::Engine>()
-            .init_resource::<spatial::Scene>()
-            .add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
+        initialize_resources(app);
+        app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
             .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
                 .chain().after(super::model_motion::publish_model_poses));
-        let source_jobs = Arc::downgrade(&app.world().resource::<acquisition::SourceJobs>().0);
-        let mut registry = app.world_mut().resource_mut::<WwiseRegistry>();
-        registry.source_jobs = source_jobs;
-        registry.media_generation = graph::retain_media(&Default::default());
     }
 }
 
