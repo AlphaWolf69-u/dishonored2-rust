@@ -47,7 +47,16 @@ impl Drop for Retire {
     fn drop(&mut self) {
         let (Some(registry), Some(entry)) = (REGISTRY.get(), self.entry.upgrade()) else { return };
         let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
-        if Arc::strong_count(&entry) == 2 && registry.get(&self.key).is_some_and(|e| Arc::ptr_eq(e, &entry)) { registry.remove(&self.key); }
+        // A previous payload's destructor may run after this same header has
+        // begun loading, or already published, a replacement. Header Arc
+        // counts do not identify that live generation. Match the registry's
+        // payload state too; a busy entry is reaped by release_unused later.
+        let unused = entry.state.try_lock().is_ok_and(|state| matches!(&*state,
+            State::Ready { weak, handoff: None, pending: 0 } if weak.strong_count() == 0));
+        if unused && Arc::strong_count(&entry) == 2
+            && registry.get(&self.key).is_some_and(|e| Arc::ptr_eq(e, &entry)) {
+            registry.remove(&self.key);
+        }
     }
 }
 fn discard_empty(key: &Key, entry: &Arc<Entry>) {

@@ -4865,3 +4865,23 @@ without increasing search distance, adding casts, changing surface-swim arm
 visibility or changing level collision. Existing fixed-size sensor ownership
 and level teardown remain unchanged. Compilation is recorded with the build;
 these source-backed predictions are not a new human appearance acceptance.
+
+### Shared skeleton retirement race (2026-11-09)
+
+Prediction before the correction: EdgeSkeleton's final release currently
+checks the header Arc count and name-table entry, but not the header's
+payload state. An old payload destructor can pause while another thread
+reuses that header, finishes decoding its replacement, and returns it. The
+old destructor then removes the live replacement's lookup, allowing duplicate
+reads/decodes and breaking the one-live-identity guarantee of 0607f0/05feb0.
+060180 already serializes source registry removal with lookup. The Rust host
+will additionally inspect the existing entry state under the registry lock:
+only an unleased Ready generation may be removed; Loading and live Ready
+generations remain. A busy state mutex leaves cleanup to the existing level
+sweep rather than blocking/reentering a destructor. Expected result: a final
+release cannot unregister a concurrently acquired replacement; ordinary
+acquisition, decoded bytes, GPU upload, query/animation paths and registry
+storage sizes are unchanged. This is a lifetime correctness correction, with
+no claimed CPU or memory saving and no additional per-frame work. Original
+registry evidence is the existing 0607f0/24f2a0 ownership port and 060180 source
+capture artifacts/ghidra-tool-output/f30f285a83aa769ac4a62c81.json in main.
