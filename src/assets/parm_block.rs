@@ -324,6 +324,7 @@ struct Entry {
     current: Weak<ParmBlock>,
     previous: Vec<Weak<ParmBlock>>,
     resident: Option<Arc<ParmBlock>>,
+    failure: Option<Arc<str>>,
     /// None is the pre-existing host acquisition policy, whose native heap
     /// context is not supplied by the particle/material caller.
     marker: Option<u8>,
@@ -331,10 +332,11 @@ struct Entry {
 }
 impl Entry {
     fn new(marker: Option<u8>) -> Self {
-        Self { current: Weak::new(), previous: Vec::new(), resident: None, marker, retired: false }
+        Self { current: Weak::new(), previous: Vec::new(), resident: None, failure: None, marker, retired: false }
     }
     fn retain_acquired(&mut self, block: &Arc<ParmBlock>) {
         if self.retired { self.marker = None; self.retired = false; }
+        self.failure = None;
         self.resident = Some(block.clone());
     }
 }
@@ -381,6 +383,7 @@ impl Registry {
                 resident += usize::from(entry.resident.is_some());
                 entry.retired = true;
                 entry.resident = None;
+                entry.failure = None;
             }
         }
         self.retire_unused(catalog);
@@ -507,6 +510,11 @@ impl ParmBlockSources {
         // another pblock. Only this resource is locked across its read/parse.
         let mut entry = header.lock().map_err(|_| "parameter-block record is poisoned")?;
         if shared {
+            // 05feb0/05ede0 retain a failed immutable load on its actual
+            // admitted header. Editable generations deliberately retry.
+            if let Some(error) = &entry.failure { return Err(error.to_string()); }
+        }
+        if shared {
             if let Some(block) = entry.current.upgrade() {
                 entry.retain_acquired(&block);
                 if trace {
@@ -522,15 +530,22 @@ impl ParmBlockSources {
         // Protect the read while it is in flight, but do not leave the cache
         // owning an otherwise unused scope if IO or parsing fails.
         let history = self.history.clone().unwrap_or_else(HistoryLease::acquire);
-        let bytes = catalog
-            .read(&resource)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("parameter block absent: {resource}"))?;
-        let mut block = parse(&bytes, metadata)?;
+        let loaded = (|| {
+            let bytes = catalog.read(&resource).map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("parameter block absent: {resource}"))?;
+            Ok::<_, String>((parse(&bytes, metadata)?, bytes.len()))
+        })();
+        let (mut block, source_bytes) = match loaded {
+            Ok(value) => value,
+            Err(error) => {
+                if shared { entry.failure = Some(Arc::from(error.as_str())); }
+                return Err(error);
+            }
+        };
         if trace {
             let cycles = started.zip(crate::loading::thread_cycles())
                 .map_or(0, |(start, end)| end.saturating_sub(start));
-            eprintln!("MEMORY particle parameter block: reused=0 source_bytes={} assignments={} cycles={cycles}", bytes.len(), block.assignments.len());
+            eprintln!("MEMORY particle parameter block: reused=0 source_bytes={source_bytes} assignments={} cycles={cycles}", block.assignments.len());
         }
         self.history.get_or_insert_with(|| history.clone());
         block._history = Some(history);

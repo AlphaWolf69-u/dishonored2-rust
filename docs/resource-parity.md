@@ -111,6 +111,24 @@ resource lookup/purge boundary (`1400607f0`/`140060180`) have source evidence;
 this does not certify every declaration subtype or unconsumed system. Generic
 rows below remain incomplete until their own lifecycle has been traced.
 
+### Parameter-block failed acquisition (2026-11-09)
+
+Prediction before changing the owner:05feb0 clears the lazy-load flag before
+05ede0 runs;05ede0 records a failure on the admitted resource, and0607f0
+consults that same record instead of retrying immutable failed acquisition
+every time. Retain one failure string on the existing pblock header, reuse it
+for unchanged installed acquisition, and clear it at that header's actual
+purge or successful editable generation. No new table or read is introduced;
+successful payloads and per-instance assignments stay unchanged. The host
+continues propagating its existing explicit Result error rather than inventing
+the original class's default-object callback. No valid-asset performance gain
+is predicted; repeated identical failures should perform one read/parse per
+admitted scope rather than one per request. Additional header storage is one
+optional Arc. Native captures: main artifacts/ghidra-tool-output/
+39eaa055c05163e9d9b9ccaa.json and1e49766b3d647c779ec2cad6.json. This code
+follow-up is not in the already-frozen main build; runtime failure acceptance
+is not supplied by successful acquisitions.
+
 ### MD6 parent-chain admission follow-up (2026-11-09)
 
 Prediction before changing the resolvers: Rig acquisition and compiled-mesh
