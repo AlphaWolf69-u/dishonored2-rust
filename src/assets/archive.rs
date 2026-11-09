@@ -85,6 +85,8 @@ pub struct Catalog {
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
+    pub(crate) difficulty_definitions: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Definition>>>,
+    pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
     pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
     pub(crate) sound_auxiliary_buses: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<u32>>>,
     pub(crate) sound_events: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::SoundEventDeclaration>>>,
@@ -132,6 +134,9 @@ impl Drop for Catalog {
         self.mass_resources.take();
         crate::assets::wwise::auxiliary_resources::report_retirement(self);
         crate::assets::wwise::rtpc_resources::report_retirement(self);
+        crate::assets::difficulty::report_retirement(self);
+        self.difficulty_definitions.take();
+        self.difficulty_presets.take();
         self.sound_rtpcs.take();
         self.sound_auxiliary_buses.take();
         self.sound_events.take();
@@ -201,6 +206,7 @@ impl Catalog {
         crate::assets::wwise::event_resources::release_marker(self, 0);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
+        crate::assets::difficulty::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
         self.release_pickable_level();
     }
@@ -371,6 +377,8 @@ impl Catalog {
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
+            difficulty_definitions: Default::default(),
+            difficulty_presets: Default::default(),
             sound_rtpcs: Default::default(),
             sound_auxiliary_buses: Default::default(),
             sound_events: Default::default(),

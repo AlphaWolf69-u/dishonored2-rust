@@ -63,6 +63,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("particledt") || kind.eq_ignore_ascii_case("staticParticleModel")
         || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus") || kind.eq_ignore_ascii_case("soundrtpc")
         || kind.eq_ignore_ascii_case("massprops")
+        || kind.eq_ignore_ascii_case("difficultyManager") || kind.eq_ignore_ascii_case("difficultyPreset")
 }
 
 /// One resource of a load list.
@@ -365,6 +366,7 @@ impl LevelList {
             crate::assets::wwise::event_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::auxiliary_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
+            crate::assets::difficulty::promote_bootstrap(catalog)?;
             crate::assets::physworld::mass::resources::promote_bootstrap(catalog)?;
             crate::assets::entities::effects::declarations::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::promote_bootstrap(catalog)?;
@@ -443,6 +445,8 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("animset") {
                 crate::assets::animation_rig::animset::register_lazy_preload(catalog, &resource.path,
                     context, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("difficultyManager") || resource.kind.eq_ignore_ascii_case("difficultyPreset") {
+                crate::assets::difficulty::register_preload(catalog, &resource.kind, &resource.path, context as u8)?;
             } else if resource.kind.eq_ignore_ascii_case("massprops") {
                 crate::assets::physworld::mass::resources::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;

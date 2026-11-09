@@ -139,31 +139,16 @@ const CUSTOM_KEYS: [(usize, &str); 22] = [
 /// preset (`FUN_141387350`) defaults.
 const PRESET_DEFAULTS: [i32; VALUES] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0];
 
-#[derive(Clone, Debug)]
-pub struct Preset {
-    pub name: u32,
-    pub values: [i32; VALUES],
-}
-
-/// `uiSlotInformation_t` (0x24) and `m_difficultyStepper`.
-#[derive(Clone, Debug, Default)]
-pub struct Slot {
-    pub label: u32,
-    pub category: u32,
-    pub description: u32,
-    pub values_description: u32,
-    pub levels: [u32; 3],
-    pub availability: i32,
-    pub priority: i32,
-}
+pub use crate::assets::difficulty::{Preset, Slot};
+use std::sync::Arc;
 
 /// `arkDifficultyManager` and its decl.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Manager {
-    pub presets: Vec<Preset>,
+    pub presets: Arc<[Preset]>,
     pub custom_name: u32,
     pub stepper: Slot,
-    pub slots: Vec<Slot>,
+    pub slots: Arc<[Slot]>,
     /// `DAT_1439889f0`: the custom preset.
     pub custom: [i32; VALUES],
     /// `mgr+4`.
@@ -174,6 +159,21 @@ pub struct Manager {
     /// m_damageAmountFront (140647ff0), indexed by enemy-damage level.
     pub incoming_damage_factors: [f32; 3],
     pub health_regen_amount_scale: f32,
+    /// Retain the exact declaration generation independently of registry purge.
+    _definition: Arc<crate::assets::difficulty::Definition>,
+}
+
+// Preserve the semantic diagnostic view; generation leases are ownership,
+// not additional difficulty settings.
+impl std::fmt::Debug for Manager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Manager").field("presets", &self.presets)
+            .field("custom_name", &self.custom_name).field("stepper", &self.stepper)
+            .field("slots", &self.slots).field("custom", &self.custom).field("current", &self.current)
+            .field("limited_lean_factors", &self.limited_lean_factors)
+            .field("incoming_damage_factors", &self.incoming_damage_factors)
+            .field("health_regen_amount_scale", &self.health_regen_amount_scale).finish()
+    }
 }
 
 fn slot(fields: &[(String, DeclValue)]) -> Slot {
@@ -209,18 +209,40 @@ fn campaign_key(profile: &BTreeMap<String, String>, name: &str) -> String {
 impl Manager {
 
     pub fn read(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<Manager> {
+        Ok(Self::from_definition(Arc::new(Self::read_definition(read, None, 0)?)))
+    }
+    pub fn acquire(catalog: &crate::archive::Catalog, read: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<Manager> {
+        let definition = crate::assets::difficulty::acquire_manager(catalog,
+            |marker| Self::read_definition(read, Some(catalog), marker))?;
+        Ok(Self::from_definition(definition))
+    }
+    fn from_definition(definition: Arc<crate::assets::difficulty::Definition>) -> Self {
+        Self { presets: definition.presets.clone(), custom_name: definition.custom_name,
+            stepper: definition.stepper.clone(), slots: definition.slots.clone(),
+            limited_lean_factors: definition.limited_lean_factors,
+            incoming_damage_factors: definition.incoming_damage_factors,
+            health_regen_amount_scale: definition.health_regen_amount_scale,
+            custom: PRESET_DEFAULTS, current: 0, _definition: definition }
+    }
+    fn read_definition(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, catalog: Option<&crate::archive::Catalog>, marker: u8)
+        -> Result<crate::assets::difficulty::Definition> {
         let edit = decl::read_edit(read, "difficultymanager", "difficulty/difficultysettings.difficultymanager")?;
         let mut presets = Vec::new();
+        let mut preset_leases = Vec::new();
         for item in decl::scope(&edit, "m_presets").map(decl::list_items).unwrap_or_default() {
             let DeclValue::Atom(name) = item else { continue };
             let name = decl::unquote(name);
-            let kind = "difficultypreset";
-            let p = decl::read_edit(read, kind, name)?;
-            let mut values = PRESET_DEFAULTS;
-            for (i, field) in PRESET_FIELDS.iter().enumerate() {
-                values[i] = level(&p, field, values[i]);
-            }
-            presets.push(Preset { name: decl::string_id(&p, "m_presetName"), values });
+            let mut parse = || {
+                let p = decl::read_edit(read, "difficultypreset", name)?;
+                let mut values = PRESET_DEFAULTS;
+                for (i, field) in PRESET_FIELDS.iter().enumerate() { values[i] = level(&p, field, values[i]); }
+                Ok(Preset { name: decl::string_id(&p, "m_presetName"), values })
+            };
+            if let Some(catalog) = catalog {
+                let value = crate::assets::difficulty::acquire_preset(catalog, name, marker, parse)?;
+                presets.push((*value).clone());
+                preset_leases.push(value);
+            } else { presets.push(parse()?); }
         }
         let parameters = decl::scope(&edit, "m_parameters").unwrap_or(&[]);
         let limited_lean_factors =
@@ -232,20 +254,19 @@ impl Manager {
             decl::float(damage, "m_multiplierLvl3", 1.5),
         ];
         let ui = decl::scope(&edit, "m_uiInformation").unwrap_or(&[]);
-        let slots = SLOT_FIELDS[..ROWS + 1]
+        let slots: Vec<Slot> = SLOT_FIELDS[..ROWS + 1]
             .iter()
             .map(|f| decl::scope(ui, if f.is_empty() { "m_mergeHealthMana" } else { f }).map(slot).unwrap_or_default())
             .collect();
-        Ok(Manager {
-            presets,
+        Ok(crate::assets::difficulty::Definition {
+            presets: presets.into(),
             custom_name: decl::string_id(ui, "m_customDifficultyName"),
             stepper: decl::scope(ui, "m_difficultyStepper").map(slot).unwrap_or_default(),
-            slots,
-            custom: PRESET_DEFAULTS,
-            current: 0,
+            slots: slots.into(),
             limited_lean_factors,
             incoming_damage_factors,
             health_regen_amount_scale: decl::float(parameters, "m_healthRegenAmountScale", 1.0),
+            preset_leases,
         })
     }
 
@@ -353,7 +374,10 @@ pub struct State {
 
 impl State {
     pub fn new(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<State> {
-        let manager = Manager::read(read)?;
+        Self::with_resources(None, read)
+    }
+    pub(super) fn with_resources(catalog: Option<&crate::archive::Catalog>, read: &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<State> {
+        let manager = if let Some(catalog) = catalog { Manager::acquire(catalog, read)? } else { Manager::read(read)? };
         let mut sorted: Vec<usize> = (0..ROWS).collect();
         id_sort_quick(&mut sorted, |&a, &b| manager.slots[a].priority - manager.slots[b].priority);
         Ok(State { manager: Some(manager), difficulty: Difficulty { sorted, committed: vec![0; ROWS + 1], modified: false } })

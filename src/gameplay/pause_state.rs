@@ -483,7 +483,7 @@ pub fn current_state(player: &Player, language: &str, catalog: &crate::assets::a
 /// creates them with the game, so the client reads them before the open.
 pub fn read_options(catalog: &crate::assets::archive::Catalog) -> std::result::Result<Options, String> {
     let mut read = |path: &str| catalog.read(path).ok().flatten();
-    Ok(console::shared().write(|console| options::read(&mut read, console))?)
+    Ok(console::shared().write(|console| options::read_with_resources(Some(catalog), &mut read, console))?)
 }
 
 /// The chapter header's values (`FUN_1404f3640`).

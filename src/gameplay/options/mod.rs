@@ -161,6 +161,9 @@ pub enum Effect {
 /// Reads the decls `ui/gamelogic/pause/sections/options` names, in
 /// `arkOptionMenuItem_t` order (`FUN_140516d70`).
 pub fn read(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, console: &mut Console) -> Result<Options> {
+    read_with_resources(None, read, console)
+}
+pub fn read_with_resources(catalog: Option<&crate::archive::Catalog>, read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, console: &mut Console) -> Result<Options> {
     let _tag = crate::platform::allocation_tags::tag("Option section resources");
     let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
     let retain_syntax = std::env::var("DH2_DEBUG_RETAIN_OPTION_SYNTAX").as_deref() == Ok("1");
@@ -182,7 +185,7 @@ pub fn read(read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, console: &mut Console
             CONTROLS => Kind::Controls(controls::State::new(&decl)),
             VISUALS => Kind::Visuals(visuals::State::new(&decl, console)),
             AUDIO => Kind::Audio,
-            _ => Kind::Gameplay(gameplay::State::new(read)?),
+            _ => Kind::Gameplay(gameplay::State::with_resources(catalog, read)?),
         };
         // These constructors are the last readers of parser syntax. The
         // live section owns typed settings, presets and quality tables only.

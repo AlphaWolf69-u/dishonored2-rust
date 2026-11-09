@@ -401,7 +401,7 @@ pub(super) struct PlayerState {
 /// the current preset from `ark_difficulty_current` and the profile's
 /// custom values.
 pub(super) fn load_difficulty(catalog: &Catalog) -> Option<DifficultyManager> {
-    let mut manager = DifficultyManager::read(&mut |path| catalog.read(path).ok().flatten())
+    let mut manager = DifficultyManager::acquire(catalog, &mut |path| catalog.read(path).ok().flatten())
         .map_err(|error| eprintln!("Difficulty manager unavailable, lean unlimited: {error}"))
         .ok()?;
     manager.current = console::shared().read().cvars.int("ark_difficulty_current").unwrap_or(0);

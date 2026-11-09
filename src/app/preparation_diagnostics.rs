@@ -60,11 +60,15 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             )?;
             drop(player);
             drop(declarations);
+            if std::env::var("DH2_DEBUG_CPU_DIFFICULTY_RESOURCES").as_deref() == Ok("1") {
+                let manager = super::player::load_difficulty(&catalog).ok_or("player difficulty acquisition failed")?;
+                eprintln!("DIFFICULTY_PLAYER_INPUTS signature={}", blake3::hash(format!("{manager:?}").as_bytes()));
+            }
             if std::env::var("DH2_DEBUG_CPU_OPTIONS_RESOURCES").as_deref() == Ok("1") {
                 // Actual options acquisition without a movie, window, callbacks
                 // or config writes. Preset initialization changes this copy only.
                 let mut console = crate::platform::console::shared().read().clone();
-                let options = crate::gameplay::options::read(&mut |path| catalog.read(path).ok().flatten(), &mut console)?;
+                let options = crate::gameplay::options::read_with_resources(Some(&catalog), &mut |path| catalog.read(path).ok().flatten(), &mut console)?;
                 let values: Vec<_> = console.cvars.list.iter().map(|value| (&value.name, &value.value)).collect();
                 eprintln!("OPTIONS_RESOURCE_PREPARATION step={step} sections={} console_signature={}", options.sections.len(), blake3::hash(format!("{values:?}").as_bytes()));
                 drop(options);
@@ -141,6 +145,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Difficulty declarations") {
+        eprintln!("DIFFICULTY_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("AnimBasic item definitions") {
         eprintln!("ANIMBASIC_ITEM_MEMORY phase=catalog-released bytes={bytes}");
     }
