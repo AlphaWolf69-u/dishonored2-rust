@@ -1,4 +1,5 @@
-//! Supported sound-engine initialization inputs. The AudioMix session keeps
+//! Supported sound-engine initialization inputs (registration141352010,
+//! constructor1400c84d0/destructor1400c88c0). The AudioMix session keeps
 //! copied control IDs/ranges across maps; source syntax has no playback use.
 use crate::archive::Catalog;
 use super::RtpcDeclaration;
