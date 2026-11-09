@@ -13,19 +13,24 @@ pub(crate) struct Owner {
 pub(crate) struct Parameter {
     path: Arc<str>,
     bytes: Vec<u8>,
+    parsed: OnceLock<Box<Parsed>>,
+}
+#[derive(Default)]
+struct Parsed {
     metadata: OnceLock<Result<crate::render_program::ParameterMetadata, String>>,
     floating: OnceLock<Result<[u32; 4], String>>,
 }
 impl Parameter {
+    fn parsed(&self) -> &Parsed { self.parsed.get_or_init(|| Box::new(Parsed::default())) }
     pub(crate) fn bytes(&self) -> &[u8] { &self.bytes }
     pub(crate) fn text(&self) -> Cow<'_, str> { crate::entities::declaration_text(&self.bytes) }
     pub(crate) fn metadata(&self) -> Result<crate::render_program::ParameterMetadata, String> {
-        self.metadata.get_or_init(|| parse_metadata(&self.path, &self.bytes)).clone()
+        self.parsed().metadata.get_or_init(|| parse_metadata(&self.path, &self.bytes)).clone()
     }
     /// Preserve ProgramLibrary's existing lossy-UTF8 initializer path. Other
     /// readers keep their existing native-byte text conversion via text().
     pub(crate) fn floating_words(&self) -> Result<[u32; 4], String> {
-        self.floating.get_or_init(|| crate::entities::declaration_float_vector_default(
+        self.parsed().floating.get_or_init(|| crate::entities::declaration_float_vector_default(
             &String::from_utf8_lossy(&self.bytes)).map_err(|error| format!("{}: {error}", self.path))).clone()
     }
 }
@@ -40,7 +45,7 @@ pub(crate) fn acquire(catalog: &Catalog, name: &str) -> Result<Arc<Parameter>, S
         read = true;
         let bytes = catalog.read(&path).map_err(|error| format!("{path}: {error}"))?
             .ok_or_else(|| format!("missing render-parameter declaration {path}"))?;
-        Ok(Arc::new(Parameter { path, bytes, metadata: OnceLock::new(), floating: OnceLock::new() }))
+        Ok(Arc::new(Parameter { path, bytes, parsed: OnceLock::new() }))
     };
     let result = if shared {
         let mut entries = catalog.render_parameters.get_or_init(Owner::default).entries.lock()
@@ -79,11 +84,14 @@ pub(crate) fn report(catalog: &Catalog, phase: &str) {
                 Err(error) => requested_bytes += error.capacity(),
                 Ok(value) => {
                     source_bytes += value.bytes.len(); source_capacity += value.bytes.capacity();
-                    metadata += usize::from(value.metadata.get().is_some());
-                    floating += usize::from(value.floating.get().is_some());
                     requested_bytes += arc_node + value.bytes.capacity();
-                    if let Some(Err(error)) = value.metadata.get() { requested_bytes += error.capacity(); }
-                    if let Some(Err(error)) = value.floating.get() { requested_bytes += error.capacity(); }
+                    if let Some(parsed) = value.parsed.get() {
+                        requested_bytes += std::mem::size_of::<Parsed>();
+                        metadata += usize::from(parsed.metadata.get().is_some());
+                        floating += usize::from(parsed.floating.get().is_some());
+                        if let Some(Err(error)) = parsed.metadata.get() { requested_bytes += error.capacity(); }
+                        if let Some(Err(error)) = parsed.floating.get() { requested_bytes += error.capacity(); }
+                    }
                 }
             }
         }
