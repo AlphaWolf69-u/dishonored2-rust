@@ -1,7 +1,7 @@
 //! Host scheduling for the sound portion of material-contact FX. Definitions,
 //! ancestry and event IDs are read from the installation and cached by name.
 use super::{AudioTarget, SoundEvent};
-use crate::{archive::Catalog, assets::{entities::{contacts::{material_chain, ContactDatabase}, player::resolved_decl, Value}, fx},
+use crate::{archive::Catalog, assets::{entities::{contacts::{material_chain, ContactDatabase}, Value}, fx},
     gameplay::{effects::{groups::sample_offsets, sound::{sample_position, SoundEffect, SoundEvent as TimedEvent}, timing::EffectTimingRanges},
         game_clock_runtime::{ClockRuntime, GamePaused}, sound::{Contact, Emitter, Request}}};
 use bevy::prelude::*;
@@ -61,7 +61,7 @@ impl Definitions {
         };
         if let Some(groups) = self.effects.get(effect) { return Ok(groups.clone()); }
         let effect = effect.to_owned();
-        let fields = resolved_decl("fx", &effect, |path| declaration_texts::read(&self.catalog, &self.texts, path))?;
+        let fields = fx::declaration::read_with(&effect, |path| declaration_texts::read(&self.catalog, &self.texts, path))?;
         let mut groups = Vec::new();
         for item in list_items(child(&fields, "m_groups")) {
             let Value::Scope(fields) = item else { return Err(format!("{effect}: invalid FX group")) };

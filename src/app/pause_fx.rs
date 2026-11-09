@@ -40,7 +40,7 @@ pub(super) fn load(catalog: &Catalog) -> Result<ScreenFx, String> {
     let mut read = |p: &str| catalog.read(p).ok().flatten();
     let state = read_edit(&mut read, "gamelogicstatepause", PAUSE_STATE)?;
     let name = atom(&state, "m_screenFX").ok_or("the pause state has no m_screenFX")?.to_string();
-    let edit = read_edit(&mut read, "fx", &name)?;
+    let edit = crate::assets::fx::declaration::read(catalog, &name)?;
     let groups = scope(&edit, "m_groups").ok_or_else(|| format!("{name} has no m_groups"))?;
     for group in list_items(groups) {
         let crate::assets::entities::Value::Scope(fields) = group else { continue };

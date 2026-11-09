@@ -138,6 +138,13 @@ pub(super) fn atom<'a>(fields: &'a [(String, Value)], key: &str) -> Option<&'a s
 }
 
 pub(super) fn overlay(base: &mut Fields, local: &[(String, Value)]) {
+    // 140022fd0 copies the parent before child edits; 14098c270 resizes
+    // reflected lists before reading their items. Remove inherited slots
+    // beyond an explicitly reduced count before merging the item fields.
+    if let Some(count) = atom(local, "num").and_then(|count| count.parse::<usize>().ok()) {
+        base.retain(|(name, _)| name.strip_prefix("item[").and_then(|name| name.strip_suffix(']'))
+            .and_then(|index| index.parse::<usize>().ok()).is_none_or(|index| index < count));
+    }
     for (key, value) in local {
         if let Some((_, previous)) = base.iter_mut().find(|(name, _)| name == key) {
             if let (Value::Scope(previous), Value::Scope(local)) = (&mut *previous, value) {

@@ -7,7 +7,7 @@ use crate::{
         entities::{effects::FxGraph, Value},
         fx::EffectGroupAsset,
     },
-    gameplay::options::decl::{atom, list_items, read_edit, scope},
+    gameplay::options::decl::{atom, list_items, scope},
     shader_cache::ProgramLibrary,
 };
 use hashbrown::HashMap;
@@ -314,19 +314,7 @@ impl WorldFxSources {
             }
             let mut children = Vec::new();
             let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
-                let mut read_error = None;
-                let mut read = |path: &str| match catalog.read(path) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        read_error = Some(format!("{path}: {error}"));
-                        None
-                    }
-                };
-                let fields = read_edit(&mut read, "fx", name);
-                if let Some(error) = read_error {
-                    return Err(error);
-                }
-                let fields = fields?;
+                let fields = crate::assets::fx::declaration::read(catalog, name)?;
                 let mut groups = Vec::new();
                 let group_fields = descriptor_fields(scope(&fields, "m_groups").unwrap_or(&[]))?;
                 for fields in &group_fields {
