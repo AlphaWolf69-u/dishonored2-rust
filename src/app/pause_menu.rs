@@ -24,6 +24,18 @@ use std::sync::{Arc, Mutex};
 
 /// `GBA_PAUSE`.
 const PAUSE_ACTION: i32 = 43;
+
+/// Bounded host diagnostics: only request/readiness transitions call this;
+/// disabled runs do no formatting, resource scans, or file writes.
+pub(super) fn readable_ui_diagnostics_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("DH2_TRACE_READABLE_UI").as_deref() == Ok("1"))
+}
+pub(super) fn trace_readable_ui(message: impl FnOnce() -> String) {
+    if readable_ui_diagnostics_enabled() {
+        crate::platform::client_diagnostics::record(&format!("Readable UI: {}", message()));
+    }
+}
 mod journal;
 pub(super) use journal::presentation as readable_presentation;
 
@@ -551,6 +563,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             Command::Modal(command) => modal.command(command, &mut generation, &outbox),
             Command::Shutdown => return,
             Command::StartHud { screen, epoch } => {
+                trace_readable_ui(|| format!("HUD worker loading epoch={epoch}"));
                 hud_epoch = epoch;
                 generation += 1;
                 let result = installed_catalog().and_then(|catalog| {
@@ -559,7 +572,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     super::hud_movie::HudMovie::load(&catalog, language, screen, generation)
                 });
                 match result {
-                    Ok(movie) => { let _ = outbox.send(Event::HudReady(epoch, movie.interval(), movie.starting_powers())); hud = Some(movie); }
+                    Ok(movie) => { trace_readable_ui(|| format!("HUD worker ready epoch={epoch} interval={}", movie.interval())); let _ = outbox.send(Event::HudReady(epoch, movie.interval(), movie.starting_powers())); hud = Some(movie); }
                     Err(error) => { let _ = outbox.send(Event::HudFailed(epoch, error)); }
                 }
             }
@@ -839,7 +852,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
 pub fn update_pause_menu(
     mut menu: NonSendMut<PauseMenu>,
     loading: Res<super::loading_screen::Acquisition>,
-    mut keys: MessageReader<KeyboardInput>,
+    input_events: (MessageReader<KeyboardInput>, MessageReader<bevy::input::gamepad::GamepadButtonStateChangedEvent>),
     mut buttons: MessageReader<MouseButtonInput>,
     mut wheels: MessageReader<MouseWheel>,
     time: Res<Time>,
@@ -855,6 +868,7 @@ pub fn update_pause_menu(
     mut journal_data: journal::Data,
 ) {
     let menu = &mut *menu;
+    let (mut keys, mut gamepad) = input_events;
     let (focused, mut player_state, mut documents) = hud_data;
     let modal_screen = windows.iter().next().map_or((1920,1080), |window| pause_state::screen_size((window.physical_width(),window.physical_height()), (window.physical_width(),window.physical_height())));
     if !super::loading_screen::is_loading(&loading) {
@@ -865,8 +879,12 @@ pub fn update_pause_menu(
     }
     let hud_starting = !super::loading_screen::is_loading(&loading) && !menu.hud_started;
     if hud_starting {
+        trace_readable_ui(|| format!("HUD requested epoch={}", menu.hud_epoch));
         let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
-        let _ = menu.commands.send(Command::StartHud { screen: pause_state::screen_size(size, size), epoch: menu.hud_epoch });
+        if let Err(error) = menu.commands.send(Command::StartHud { screen: pause_state::screen_size(size, size), epoch: menu.hud_epoch }) {
+            menu.hud_failed = true;
+            warn!("HUD request could not reach its worker: {error}");
+        }
         menu.hud_started = true;
     }
     let focus_changed = focused.as_ref().is_some_and(|focus| focus.is_changed())
@@ -985,6 +1003,13 @@ pub fn update_pause_menu(
         }
     }
     for input in keys.read() {
+        if readable_ui_diagnostics_enabled() && !input.repeat && input.state == ButtonState::Pressed {
+            if let Some(key) = super::engine_keys::engine_key(input.key_code) {
+                if crate::platform::console::shared().read().bindings.sets[bindings::IN_GAME][key as usize].action == 44 {
+                    trace_readable_ui(|| format!("Journal keyboard entry key={key:#x} loading={} pause={} modal={:?}", super::loading_screen::is_loading(&loading), menu.open, menu.modal.active));
+                }
+            }
+        }
         if super::loading_screen::is_loading(&loading) { continue; }
         // Engine keyboard events do not repeat.
         if input.repeat {
@@ -1015,6 +1040,17 @@ pub fn update_pause_menu(
             // The prepared player is used up; prepare again after closing.
             menu.prepared_for = None;
         }
+    }
+    // Controller entry uses the same configured action owner as keyboard.
+    // Movie navigation still follows its own supported input callbacks.
+    for event in gamepad.read() {
+        let Some(key) = super::engine_keys::gamepad_key(event.button) else { continue };
+        if event.state != ButtonState::Pressed || menu.open || menu.modal.active.is_some() { continue; }
+        if crate::platform::console::shared().read().bindings.sets[bindings::IN_GAME][key as usize].action != 44 { continue; }
+        trace_readable_ui(|| format!("Journal pad entry key={key:#x} loading={}", super::loading_screen::is_loading(&loading)));
+        if super::loading_screen::is_loading(&loading) { continue; }
+        if let Err(error) = menu.modal.open_journal(menu.hud_epoch, modal_screen, &mut journal_data,
+            documents.as_deref(), &menu.commands) { warn!("Journal: {error}"); }
     }
     if menu.modal.active.is_some() {
         if let Some(window) = windows.iter().next() {
@@ -1130,17 +1166,21 @@ pub fn update_pause_menu(
             }
             Event::HudFrame(_, _, _) => {},
             Event::HudReady(epoch, interval, powers) if epoch == menu.hud_epoch && menu.hud_started && !super::loading_screen::is_loading(&loading) && interval.is_finite() && interval > 0.0 => {
+                trace_readable_ui(|| format!("HUD ready accepted epoch={epoch} interval={interval}"));
                 menu.modal.hud_ready();
                 menu.hud_interval = interval;
                 menu.hud_starting_powers = powers;
                 menu.hud_force = true;
             }
-            Event::HudReady(_, _, _) => {},
+            Event::HudReady(epoch, interval, _) => {
+                trace_readable_ui(|| format!("HUD ready rejected epoch={epoch} current={} started={} loading={} interval={interval}", menu.hud_epoch, menu.hud_started, super::loading_screen::is_loading(&loading)));
+            },
             Event::HudFailed(epoch, error) if epoch == menu.hud_epoch => {
                 menu.hud_in_flight = false;
                 menu.hud_in_flight_force = false;
                 menu.hud_in_flight_before_ready = false;
                 menu.hud_failed = true;
+                trace_readable_ui(|| format!("HUD failed epoch={epoch}: {error}"));
                 warn!("HUD movie unavailable: {error}");
                 if !menu.open && menu.modal.active.is_none() && !super::loading_screen::is_loading(&loading) { frame.0 = None; }
             },

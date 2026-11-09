@@ -3,7 +3,7 @@ use super::*;
 use crate::gameplay::{game_logic::{GameLogic, StateId}, player::read_note::Presentation};
 use super::super::{interaction_focus::{DiscoveredDocuments, DocumentEntry, JournalItem}, journal_movie, readable_movie};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind { Journal, Readable }
 pub(super) struct Snapshot {
     documents: Vec<DocumentEntry>, maps: Vec<JournalItem>, audiographs: Vec<JournalItem>,
@@ -37,12 +37,14 @@ impl Worker {
             match command.operation {
                 Operation::Journal { screen, path, snapshot } => {
                     self.clear(); *generation = generation.wrapping_add(1);
+                    trace_readable_ui(|| format!("Journal movie loading epoch={} path={path} documents={} maps={} audiographs={}", command.epoch, snapshot.documents.len(), snapshot.maps.len(), snapshot.audiographs.len()));
                     self.journal = Some(journal_movie::Movie::load(screen, *generation, &path,
                         snapshot.documents, snapshot.maps, snapshot.audiographs, None, None, snapshot.progress)?);
                     send(Notification::Ready(Kind::Journal));
                 },
                 Operation::Readable { screen, path, presentation } => {
                     *generation = generation.wrapping_add(1);
+                    trace_readable_ui(|| format!("Readable movie loading epoch={} path={path}", command.epoch));
                     self.readable = Some(readable_movie::Movie::load(screen, &presentation, *generation, &path)?);
                     send(Notification::Ready(Kind::Readable));
                 },
@@ -112,7 +114,7 @@ pub(in crate::app) fn presentation(item: &crate::assets::inventory_item::Pickabl
 }
 
 #[derive(Default)]
-pub(super) struct Session { pub active: Option<Kind>, pub ready: bool, pub in_flight: bool, hud_ready: bool, elapsed: f64, cursor: Option<(f64,f64)> }
+pub(super) struct Session { pub active: Option<Kind>, pub ready: bool, pub in_flight: bool, hud_ready: bool, read_admission: Option<bool>, elapsed: f64, cursor: Option<(f64,f64)> }
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Data<'w> {
     logic: Option<ResMut<'w, GameLogic>>,
@@ -123,7 +125,9 @@ impl Session {
     pub fn hud_ready(&mut self) { self.hud_ready = true; }
     pub fn clear(&mut self) { *self = Self::default(); }
     fn send(&self, epoch: u64, operation: Operation, commands: &Sender<super::Command>) {
-        let _ = commands.send(super::Command::Modal(Command { epoch, operation }));
+        if let Err(error) = commands.send(super::Command::Modal(Command { epoch, operation })) {
+            warn!("Journal/reading request could not reach its worker: {error}");
+        }
     }
     pub fn input(&mut self, epoch: u64, operation: Operation, commands: &Sender<super::Command>) {
         if let Operation::Cursor { x, y } = &operation {
@@ -169,7 +173,10 @@ impl Session {
     }
     pub fn open_journal(&mut self, epoch: u64, screen: (i32,i32), data: &mut Data,
         inventory: Option<&DiscoveredDocuments>, commands: &Sender<super::Command>) -> Result<(), String> {
-        if self.active.is_some() || !self.hud_ready { return Ok(()); }
+        trace_readable_ui(|| format!("Journal entry epoch={epoch} hud_ready={} active={:?} logic={:?} journal_decl={}", self.hud_ready, self.active,
+            data.logic.as_deref().and_then(|logic| logic.current()), data.logic.as_deref().is_some_and(|logic| logic.available(StateId::JOURNAL))));
+        if self.active.is_some() { return Ok(()); }
+        if !self.hud_ready { return Err("HUD has not completed initialization".into()); }
         let inventory = inventory.ok_or("Journal inventory owner is absent")?;
         let progress = data.progress.as_deref().cloned();
         let snapshot = Snapshot { documents: inventory.items().to_vec(), maps: inventory.maps().to_vec(),
@@ -185,6 +192,11 @@ impl Session {
             let available = self.hud_ready && !paused && self.active.is_none()
                 && data.logic.as_deref().is_some_and(|logic| logic.available(StateId::READ_NOTE)
                     && logic.current().is_some_and(|current| logic.declaration.rule(current, StateId::READ_NOTE).is_some_and(|rule| rule.allow)));
+            if self.read_admission != Some(available) {
+                trace_readable_ui(|| format!("READ_NOTE availability={available} hud_ready={} paused={paused} active={:?} declaration={} current={:?}", self.hud_ready, self.active,
+                    data.logic.as_deref().is_some_and(|logic| logic.available(StateId::READ_NOTE)), data.logic.as_deref().and_then(|logic| logic.current())));
+                self.read_admission = Some(available);
+            }
             player.set_read_note_admission(available);
         }
         if self.active != Some(Kind::Readable) {
@@ -215,7 +227,7 @@ impl Session {
         frame: &mut FlashUiFrame, commands: &Sender<super::Command>) -> Result<(), String> {
         if event.epoch != epoch { return Ok(()); }
         match event.payload {
-            Notification::Ready(kind) if self.active == Some(kind) => { self.ready = true; },
+            Notification::Ready(kind) if self.active == Some(kind) => { trace_readable_ui(|| format!("Movie ready epoch={epoch} kind={kind:?}")); self.ready = true; },
             Notification::Ready(_) => {},
             Notification::Frame(value) => { self.in_flight = false; if self.active.is_some() { if let Some(value) = value { frame.0 = Some(value); } } },
             Notification::Closed(kind) => {
@@ -230,6 +242,7 @@ impl Session {
                 if self.active.is_none() { frame.0 = None; }
             },
             Notification::Failed(error) => {
+                trace_readable_ui(|| format!("Movie failed epoch={epoch} active={:?}: {error}", self.active));
                 self.active = None; self.ready = false; self.in_flight = false; frame.0 = None;
                 if let Some(player) = player { player.finish_read_note(); }
                 if let Some(requests) = data.requests.as_deref_mut() { requests.failed = requests.failed.wrapping_add(1); }

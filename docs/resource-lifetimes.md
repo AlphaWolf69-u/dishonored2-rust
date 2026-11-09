@@ -425,3 +425,12 @@ held 18 mass entries and two wind entries; their key capacity was 3,852 and
 430 bytes respectively, and the wind templates held 1,008 bytes of vector
 payload. These capacities exclude hash-table and allocator overhead. Targeted
 release measurements covered preparation, not gameplay frame time.
+
+
+### Journal input and availability observation
+
+Host input repair: standard controller button events now use the existing engine-key and IN_GAME binding owners. Configured JOURNAL (action 44, PAD_BACK by default) reaches the existing Journal session; INTERACT uses the same player action queue as keyboard. Unknown controller contacts are not assigned guessed touchpad codes. Movie controller navigation is unchanged.
+
+`DH2_TRACE_READABLE_UI=1` records bounded request/readiness transitions through the existing session diagnostic writer: HUD request/worker completion/acceptance or rejection, keyboard/controller Journal entry and movie load/ready/failure, READ_NOTE declaration count, admission changes, INTERACT entry and item/activation stages. Disabled runs do not format messages, scan declarations, or write diagnostics. HUD initialization and loading/epoch rejection semantics are unchanged: initial StartHud is sent only after Acquisition.finished; a subsequent map request calls begin_level and changes the epoch before event delivery. No valid current-world loading race was demonstrated. Early Journal requests now report missing HUD readiness instead of silently succeeding; disconnected worker sends and cancelled READ_NOTE activation are reported.
+
+Validation: source parsing and context-bearing patch review only; no tests, compilation, client launch or runtime input verification. This closes the definite controller entry omission, not the still-unobserved production availability report. Next observation must show actual input reaching the existing movie owner.

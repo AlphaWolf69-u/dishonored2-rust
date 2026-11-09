@@ -155,3 +155,28 @@ pub fn engine_key(key: KeyCode) -> Option<u32> {
         _ => return None,
     })
 }
+
+/// Host controller buttons to the same engine keys used by configured bindings.
+/// Touchpad contacts need the platform's real contact mapping; Other is not guessed.
+pub fn gamepad_key(button: bevy::input::gamepad::GamepadButton) -> Option<u32> {
+    use bevy::input::gamepad::GamepadButton;
+    Some(match button {
+        GamepadButton::Select => 0xeb,
+        GamepadButton::Start => 0xec,
+        GamepadButton::DPadUp => 0xed,
+        GamepadButton::DPadDown => 0xee,
+        GamepadButton::DPadLeft => 0xef,
+        GamepadButton::DPadRight => 0xf0,
+        GamepadButton::South => 0xf1,
+        GamepadButton::East => 0xf2,
+        GamepadButton::West => 0xf3,
+        GamepadButton::North => 0xf4,
+        GamepadButton::LeftTrigger => 0xf5,
+        GamepadButton::RightTrigger => 0xf6,
+        GamepadButton::LeftTrigger2 => 0xfa,
+        GamepadButton::RightTrigger2 => 0xfb,
+        GamepadButton::LeftThumb => 0xfc,
+        GamepadButton::RightThumb => 0xfd,
+        _ => return None,
+    })
+}

@@ -69,6 +69,7 @@ impl Interactions {
         let sensor = entities::usable::player_sensor(&catalog, character)?;
         let bindings = entities::usable::bindings(document, |path| read(path))?;
         let readable = entities::usable::readable_bindings(document, |path| read(path))?;
+        super::pause_menu::trace_readable_ui(|| format!("READ_NOTE declarations admitted={} character={character}", readable.len()));
         let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character,
             readable.iter().map(|binding| binding.item.clone()).chain(loadout.iter().map(|(path, _)| path.clone()))
                 .chain(list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned)))?);
@@ -156,6 +157,10 @@ pub(super) fn focus_and_interact(
     let held = input.held.contains(&22);
     let pressed = held && !*was_held;
     *was_held = held;
+    if pressed {
+        super::pause_menu::trace_readable_ui(|| format!("INTERACT entry resource={} player_read_note={:?} focus={:?}", interactions.is_some(),
+            player.as_deref().and_then(|runtime| runtime.player.as_ref()).and_then(|player| player.read_note_state_allowed()), focused.current.as_ref().map(|prompt| (&prompt.entity, prompt.locked))));
+    }
     let Some(mut interactions) = interactions else {
         if focused.current.is_some() { focused.current = None; }
         return;
@@ -170,6 +175,7 @@ pub(super) fn focus_and_interact(
         let result = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()).and_then(|player| player.take_read_note_result());
         if let Some(result) = result {
             let (read, expected) = interactions.pending_activation.take().expect("retained read activation");
+            if result.is_err() { warn!("READ_NOTE activation was rejected or cancelled"); }
             if let Ok(presentation) = result {
                 if !Arc::ptr_eq(&presentation, &expected) { warn!("READ_NOTE activation descriptor differs"); return; }
                 let Some(requests) = requests.as_deref_mut() else { warn!("Reading UI request owner is absent"); return };
@@ -197,6 +203,7 @@ pub(super) fn focus_and_interact(
                     None => { warn!("READ_NOTE item has no presentation"); return; },
                 };
                 if accepted && portable { interactions.retire.push(read.entity); }
+                super::pause_menu::trace_readable_ui(|| format!("READ_NOTE activation accepted inventory={accepted} portable={portable}"));
                 requests.open.push_back(presentation);
             }
         }
@@ -206,8 +213,10 @@ pub(super) fn focus_and_interact(
             interactions.pending_read = None;
             match result.and_then(|read| super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation))) {
                 Ok((read,presentation)) => {
+                    super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item acquired path={}", read.path));
                     if let Some(player) = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()) {
                         if player.read_note_state_allowed() == Some(true) && player.request_read_note(presentation.clone()) {
+                            super::pause_menu::trace_readable_ui(|| format!("READ_NOTE activation requested path={}", read.path));
                             interactions.pending_activation = Some((read,presentation));
                         }
                     }
@@ -298,6 +307,7 @@ pub(super) fn focus_and_interact(
     if is_readable {
         if interactions.pending_read.is_none() && interactions.pending_activation.is_none() {
             let item = interactions.readable[index].item.clone();
+            super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
             let entity = interactions.readable[index].entity.clone();
             let catalog = interactions.catalog.clone();
             let sources = interactions.item_sources.clone();

@@ -496,6 +496,7 @@ fn bound(key: u32) -> i32 {
 pub(super) fn sample_player_input(
     mut keys: MessageReader<KeyboardInput>,
     mut buttons: MessageReader<MouseButtonInput>,
+    mut gamepad: MessageReader<bevy::input::gamepad::GamepadButtonStateChangedEvent>,
     motion: Res<AccumulatedMouseMotion>,
     cursor: Single<&CursorOptions>,
     paused: Res<GamePaused>,
@@ -504,6 +505,7 @@ pub(super) fn sample_player_input(
     if paused.0 {
         keys.clear();
         buttons.clear();
+        gamepad.clear();
         return;
     }
     for event in keys.read() {
@@ -518,6 +520,13 @@ pub(super) fn sample_player_input(
     }
     for event in buttons.read() {
         let Some(key) = mouse_button_key(event.button) else { continue };
+        let action = bound(key);
+        if action != 0 {
+            input.push(ActionEvent { action, key, value: [0.0; 2], flags: (event.state == ButtonState::Pressed) as u32 });
+        }
+    }
+    for event in gamepad.read() {
+        let Some(key) = super::engine_keys::gamepad_key(event.button) else { continue };
         let action = bound(key);
         if action != 0 {
             input.push(ActionEvent { action, key, value: [0.0; 2], flags: (event.state == ButtonState::Pressed) as u32 });
