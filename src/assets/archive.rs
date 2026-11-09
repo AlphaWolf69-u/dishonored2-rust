@@ -247,7 +247,16 @@ fn invalid(message: impl Into<String>) -> io::Error {
 use index::archive_path;
 /// One catalog per installation for the whole process: every owner reads the
 /// same index instead of opening its own copy.
-static SHARED: std::sync::Mutex<Option<(PathBuf, std::sync::Arc<Catalog>)>> = std::sync::Mutex::new(None);
+// Host: Windows spelling, junction and short-path aliases must identify one
+// installed archive namespace. Keep only one alternate spelling, not an
+// unbounded alias table, and preserve the ordinary equal-path fast route.
+struct SharedCatalog {
+    requested: PathBuf,
+    catalog: std::sync::Arc<Catalog>,
+    canonical: PathBuf,
+    alias: Option<PathBuf>,
+}
+static SHARED: std::sync::Mutex<Option<SharedCatalog>> = std::sync::Mutex::new(None);
 static NEXT_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Catalog {
@@ -255,25 +264,48 @@ impl Catalog {
     /// consumers still own their Arcs; final retirement follows their release.
     pub(crate) fn release_shared(identity: u64) {
         let retired = SHARED.lock().unwrap_or_else(|e| e.into_inner())
-            .take_if(|(_, catalog)| catalog.identity() == identity);
+            .take_if(|entry| entry.catalog.identity() == identity);
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            if let Some((_, catalog)) = &retired {
-                eprintln!("MEMORY catalog session release: catalog={identity} remaining_consumers={}", std::sync::Arc::strong_count(catalog) - 1);
+            if let Some(entry) = &retired {
+                eprintln!("MEMORY catalog session release: catalog={identity} matching_root=true remaining_consumers={}", std::sync::Arc::strong_count(&entry.catalog) - 1);
+            } else {
+                eprintln!("MEMORY catalog session release: catalog={identity} matching_root=false");
             }
         }
         // Drop outside SHARED: Catalog retirement invokes its resource owners.
         drop(retired);
     }
 
-    /// The process's catalog of `base`, opened on first use.
+    /// The process's catalog of this installed directory, opened on first use.
     pub fn shared(base: &Path) -> Result<std::sync::Arc<Self>> {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((path, catalog)) = shared.as_ref().filter(|(path, _)| path == base) {
-            let _ = path;
-            return Ok(catalog.clone());
+        if let Some(entry) = shared.as_ref().filter(|entry| entry.requested == base) {
+            return Ok(entry.catalog.clone());
+        }
+        static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let separate = *SEPARATE.get_or_init(|| std::env::var("DH2_DEBUG_SEPARATE_CATALOG_ALIASES").as_deref() == Ok("1"));
+        if !separate {
+            if let Some(entry) = shared.as_ref().filter(|entry| entry.alias.as_deref() == Some(base)) {
+                return Ok(entry.catalog.clone());
+            }
+        }
+        let canonical = std::fs::canonicalize(base)?;
+        if !separate {
+            if let Some(entry) = shared.as_mut().filter(|entry| entry.canonical == canonical) {
+                entry.alias = Some(base.to_path_buf());
+                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                    eprintln!("CATALOG_ALIAS_REUSE catalog={} path={base:?} canonical={canonical:?}", entry.catalog.identity());
+                }
+                return Ok(entry.catalog.clone());
+            }
         }
         let catalog = std::sync::Arc::new(Self::open(base)?);
-        *shared = Some((base.to_path_buf(), catalog.clone()));
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("CATALOG_SHARED_CREATE catalog={} path={base:?} canonical={canonical:?}", catalog.identity());
+        }
+        let retired = shared.replace(SharedCatalog { requested: base.to_path_buf(), catalog: catalog.clone(), canonical, alias: None });
+        drop(shared);
+        drop(retired);
         Ok(catalog)
     }
 
