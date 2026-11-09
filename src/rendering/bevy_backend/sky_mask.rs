@@ -26,6 +26,10 @@ impl Plugin for SkyAssetsPlugin {
         app.init_asset::<SkyMaterial>().add_plugins(
             bevy::render::render_asset::RenderAssetPlugin::<GpuSkyMaterial, bevy::render::texture::GpuImage>::default(),
         );
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            use bevy::render::GpuResourceAppExt;
+            render.init_gpu_resource::<SkyProgram>();
+        }
     }
 }
 impl SkyMaterial {

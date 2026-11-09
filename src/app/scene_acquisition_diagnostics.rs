@@ -219,12 +219,10 @@ fn inspect_scene_resources(
                 let inputs = gpu_inputs(app.world());
                 upload_assets(&mut app, &inputs)?;
                 gpu_snapshot(&app, step, "uploaded");
-                crate::rendering::bevy_backend::release_level(
-                    app.sub_app_mut(bevy::render::RenderApp).world_mut(),
-                );
             }
-            // No render/gameplay update has run, so no outgoing GPU frame
-            // exists to acknowledge. Use the actual main-world teardown.
+            // No camera/view frame was produced. Upload mode completed its
+            // asset queue work above; view-pass owners were not installed.
+            // Use the actual main-world teardown and asset-removal owners.
             lifetime.clear(app.world_mut())?;
             resource_snapshot(app.world(), step, "level-cleared");
             // These are the registered asset owner's real handle-drop
