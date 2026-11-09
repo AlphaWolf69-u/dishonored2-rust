@@ -5035,3 +5035,15 @@ lifecycle-audit-final-20261109-build-provenance.json and lifecycle-audit-final-
 cpu-20261109/result.json. This closes compilation and ordinary load/unload
 validation for the particle-failure/overlay-acquisition batch; it does not
 claim fault-injection or a complete editor hot-reload appearance check.
+
+Animation override validation: source30c2b19d compiled cleanly (game + debug
+allocation tools) with unchanged source. Both EotW/Dust/EotW and EotW/EotW
+CPU loading routes exited0. Different-map sweeps match3,969 /4,060 marker1
+clip headers and remove38 resident pins each, with0 retained live records;
+same-map reload performs no marker1 sweep. All three rig fingerprints remain
+9090571c /efe8e864 /f341fde2. Actual decode/reuse counts match the prior
+304121ad route: first load204 /2, subsequent maps38 /166. The sampled map
+headers do not overlap existing marker2 clip headers, so the explicit
+existing-header override itself is source-proven rather than exercised by
+these two routes. No new RAM/CPU improvement is claimed. Detailed observations
+are artifacts/animation-preload-override-observations-20261109.json.
