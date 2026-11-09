@@ -10,7 +10,7 @@ than inferred from whole-frame FPS.
 | Glyph cache R8 storage | Exactly 75% fewer CPU page bytes and GPU texel/upload bytes, with identical coverage and draw count. | `14107b7e0` creates format 6; GDraw format 6 maps to DXGI R8_UNORM (`1402e2c00`). Preserve shader red-channel coverage for all RGBA components. |
 | Shared particle acquisition | One PMODEL/field-image/declaration/material decode per distinct resource in a level, including player and world references. | Capture reference and cache-miss counts before/after; keep descriptor order and per-instance selection/RNG state. |
 | Shared FX graph definitions | Zero definition deep copies per runtime/declaration instance; variables, bindings and queues remain per instance. | Existing `7bc1d0`/`7bb9d0` research and runtime. Count unique definitions and instance references; owner overrides belong to runtime. |
-| Compact deferred FX admission | Retain the exact deferred success/error instead of generic unsupported-family syntax. | First measure retained syntax bytes, then compare admission outcomes, including omitted descriptor defaults and malformed arrays. |
+| Compact deferred FX admission | Closed in ab2cbe97: retain the exact deferred success/error instead of generic unsupported-family syntax. | Installed Dust payload 59,888 ->403 bytes; EotW 0. Enabled/disabled admission, omitted descriptor defaults and malformed-array outcomes are preserved. Current da11487d production capture has 295 borrowed descriptor records and 0 cloned syntax bytes; these are transient selections, not another retained-family tree. |
 
 Original startup/main-menu memory snapshot: IGGY 1,377,682 bytes / 70
 allocations; FONTS 9,178 / 9; PARTICLE 24,613,636 / 2,706; DECL 5,386,056 /
@@ -59,6 +59,20 @@ bytes (not allocator overhead); compact deferred outcomes hold 403. Edge of
 the World has no such retained payload. This is a small absolute saving,
 not a major source of the game's memory footprint. Default descriptor slots,
 enabled/disabled admission and parse errors still take effect when activated.
+
+Re-audit on 2026-11-09 closes original candidate4 rather than repeating it.
+Both canonical and working-client WorldEffectGroup retain only family names
+and `Result<bool, String>` admission outcomes. world_particle_state::admit still
+rejects enabled unsupported families and propagates stored parse errors; it
+does not silently omit an enabled descriptor. Actual Node.params and graph
+variable parameters remain because the runtime reads them for variable, input,
+target-tag and declaration entry/exit behavior. They are not deferred-family
+syntax and are not eligible for replacement with an admission boolean. The
+existing production capture's 295 descriptor records total 0 copied_tree_bytes;
+this confirms borrowed acquisition, not a new residency or timing result.
+Evidence: artifacts/fx-deferred-admission-current-audit.json. No new benchmark,
+cache, test, build, visual inspection or game input was performed.
+
 
 Pause movie acquisition/draw audit: eager and lazy modes produce the same
 252 vertices, 16 batches and CPU-rasterized pixel hash
