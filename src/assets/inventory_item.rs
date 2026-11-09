@@ -5,6 +5,7 @@ use crate::assets::{archive::Catalog, entities::{self, Value}};
 mod sources;
 pub(crate) mod configuration;
 pub use sources::{PickableItem, PickableReadable, PickableOtherKind, PickableSources, PickableSourceLease, ItemFields};
+pub(crate) use sources::{register_preload, promote_bootstrap};
 
 #[derive(Clone, Debug)]
 pub struct Readable {

@@ -59,6 +59,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("anim") || kind.eq_ignore_ascii_case("animset")
         || kind.eq_ignore_ascii_case("md6def") || kind.eq_ignore_ascii_case("inventoryLoadout")
         || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
+        || kind.eq_ignore_ascii_case("inventoryitem")
 }
 
 /// One resource of a load list.
@@ -357,6 +358,7 @@ impl LevelList {
             crate::assets::animation_rig::animset::promote_bootstrap_records(catalog)?;
             crate::assets::animation_rig::declaration::promote_bootstrap_records(catalog)?;
             crate::assets::parm_block::promote_bootstrap(catalog)?;
+            crate::assets::inventory_item::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
             Ok(count)
         }).as_ref().map_err(Clone::clone)?;
@@ -428,6 +430,8 @@ impl LevelList {
                     context, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("pblock") {
                 crate::assets::parm_block::register_preload(catalog, &resource.path, context, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("inventoryitem") {
+                crate::assets::inventory_item::register_preload(catalog, &resource.path, context)?;
             } else {
                 // MD6 is not in 0661e0's list of heap-1 promoted kinds.
                 let context = match context {
