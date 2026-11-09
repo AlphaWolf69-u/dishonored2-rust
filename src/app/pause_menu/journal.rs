@@ -20,6 +20,7 @@ pub(super) struct Event { pub epoch: u64, pub payload: Notification }
 pub(super) enum Notification {
     Ready(Kind), Frame(Option<FlashFrame>), Closed(Kind), Failed(String),
     Actions(Vec<journal_movie::Action>), Presentation(Arc<Presentation>),
+    ScreenFx(bool),
 }
 #[derive(Default)]
 pub(super) struct Worker {
@@ -69,6 +70,7 @@ impl Worker {
                     if let Some(movie) = &mut self.readable {
                         let frame = movie.frame(dt, false)?;
                         for id in frame.sounds { let _ = outbox.send(super::Event::ModalSound(command.epoch, id)); }
+                        if let Some(on) = frame.screen_fx { send(Notification::ScreenFx(on)); }
                         send(Notification::Frame(frame.frame));
                         if frame.closed {
                             self.readable = None;
@@ -229,6 +231,7 @@ impl Session {
         match event.payload {
             Notification::Ready(kind) if self.active == Some(kind) => { trace_readable_ui(|| format!("Movie ready epoch={epoch} kind={kind:?}")); self.ready = true; },
             Notification::Ready(_) => {},
+            Notification::ScreenFx(_) => {}, // Applied by the same epoch-checked UI owner.
             Notification::Frame(value) => { self.in_flight = false; if self.active.is_some() { if let Some(value) = value { frame.0 = Some(value); } } },
             Notification::Closed(kind) => {
                 if let Some(logic) = data.logic.as_deref_mut() { logic.request_finish_current(); logic.commit_finish();

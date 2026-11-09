@@ -30,6 +30,7 @@ pub(super) struct Frame {
     pub frame: Option<FlashFrame>,
     pub closed: bool,
     pub sounds: Vec<u32>,
+    pub screen_fx: Option<bool>,
 }
 
 pub(super) struct Movie {
@@ -41,6 +42,7 @@ pub(super) struct Movie {
     accumulated: f64,
     interval: f64,
     last: Option<FlashFrame>,
+    focused: bool,
     _residency: Option<super::pause_menu::MovieResidency>,
 }
 
@@ -123,6 +125,7 @@ impl Movie {
             accumulated: 0.0,
             interval,
             last: None,
+            focused: false,
             _residency: residency,
         })
     }
@@ -146,8 +149,31 @@ impl Movie {
                 .tick(step)
                 .map_err(|e| self.player.describe(&e))?;
         }
-        let (closed, sounds) =
-            super::pause_menu::movie_notifications(&mut self.player, "OnNotesClosed");
+        let mut closed = false;
+        let mut sounds = Vec::new();
+        let mut screen_fx = None;
+        for (name, args) in self.player.take_notifications() {
+            match name.as_str() {
+                "OnNotesClosed" => closed = true,
+                // 790a00 binds NotesClosing to 791370: remove UI post FX
+                // during the authored close animation, before OnNotesClosed.
+                "NotesClosing" => screen_fx = Some(false),
+                // Common arkIggyFile focus callbacks 035020 / 034fe0.
+                "SetFlashFocus" => {
+                    self.player.call_path_method("controllerTypeHandler", "_C_UpdateControllerType",
+                        &[(crate::gameplay::pause_state::controller_type() as f64).into()])
+                        .map_err(|e| self.player.describe(&e))?;
+                    self.focused = true;
+                }
+                "KillFlashFocus" => self.focused = false,
+                "PostSoundEvent" => {
+                    if let Some(crate::flash::avm2::value::Value::Number(id)) = args.first() {
+                        sounds.push(crate::flash::avm2::value::to_uint32(*id));
+                    }
+                }
+                _ => super::pause_menu::report_unknown_callback("Readable", &name),
+            }
+        }
         if changed {
             self.serial += 1;
             self.last = Some(FlashFrame {
@@ -167,10 +193,12 @@ impl Movie {
             },
             closed,
             sounds,
+            screen_fx,
         })
     }
 
     pub fn key(&mut self, down: bool, vk: u32) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         self.player
             .key_event(down, vk, 0)
@@ -178,6 +206,7 @@ impl Movie {
     }
 
     pub fn cursor(&mut self, x: f64, y: f64) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         self.player
             .set_value("mouseCursor.x", x.into())
@@ -187,6 +216,7 @@ impl Movie {
     }
 
     pub fn mouse_button(&mut self, down: bool, button: u8) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         let result = if button < 3 {
             self.player.mouse_button(button, down)
@@ -210,6 +240,7 @@ impl Movie {
     }
 
     pub fn mouse_wheel(&mut self, delta: i32) -> Result<(), String> {
+        if !self.focused { return Ok(()); }
         self.last = None;
         self.player
             .mouse_wheel(delta)

@@ -245,6 +245,9 @@ pub struct PauseMenu {
     texture_wait: Arc<Mutex<TextureWait>>,
     worker: Option<std::thread::JoinHandle<()>>,
     open: bool,
+    // Host focus handoff: preserve each actual window's game cursor state.
+    cursor_restore: HashMap<Entity, (CursorGrabMode, bool)>,
+    cursor_ui_open: bool,
     modal: journal::Session,
     /// The screen size the next player was last prepared for.
     prepared_for: Option<(i32, i32)>,
@@ -348,7 +351,7 @@ impl Default for PauseMenu {
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
@@ -857,7 +860,7 @@ pub fn update_pause_menu(
     mut wheels: MessageReader<MouseWheel>,
     time: Res<Time>,
     windows: Query<&Window>,
-    mut cursors: Query<&mut CursorOptions>,
+    mut cursors: Query<(Entity, &mut CursorOptions)>,
     mut paused: ResMut<GamePaused>,
     mut frame: ResMut<FlashUiFrame>,
     mut exit: MessageWriter<AppExit>,
@@ -1144,6 +1147,11 @@ pub fn update_pause_menu(
         };
         match event {
             Event::Modal(event) => {
+                if event.epoch == menu.hud_epoch {
+                    if let journal::Notification::ScreenFx(on) = &event.payload {
+                        if let Some(fx) = screen_fx.as_mut() { fx.requested = Some(*on); }
+                    }
+                }
                 if let Err(error) = menu.modal.event(menu.hud_epoch, event, modal_screen, &mut journal_data,
                     documents.as_deref_mut(), player_state.as_deref_mut().and_then(|runtime| runtime.player.as_mut()),
                     &mut frame, &menu.commands) { warn!("Journal/reading UI: {error}"); }
@@ -1254,14 +1262,20 @@ pub fn update_pause_menu(
     let ui_open = menu.open || menu.modal.active.is_some();
     if ui_open != paused.0 && !super::loading_screen::is_loading(&loading) {
         crate::platform::console::shared().write(|c| if ui_open { pause_state::enter(&mut c.cvars) } else { pause_state::exit(&mut c.cvars) });
-        for mut c in &mut cursors {
+    }
+    if ui_open != menu.cursor_ui_open && !super::loading_screen::is_loading(&loading) {
+        for (entity, mut cursor) in &mut cursors {
             if ui_open {
-                c.grab_mode = CursorGrabMode::None;
-                c.visible = false;
-            } else {
-                c.visible = true;
+                menu.cursor_restore.insert(entity, (cursor.grab_mode, cursor.visible));
+                cursor.grab_mode = CursorGrabMode::None;
+                cursor.visible = false;
+            } else if let Some((grab_mode, visible)) = menu.cursor_restore.remove(&entity) {
+                cursor.grab_mode = grab_mode;
+                cursor.visible = visible;
             }
         }
+        if !ui_open { menu.cursor_restore.clear(); }
+        menu.cursor_ui_open = ui_open;
     }
     paused.0 = ui_open || super::loading_screen::is_loading(&loading);
 }

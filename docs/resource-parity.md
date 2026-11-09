@@ -330,7 +330,7 @@ trailing `*` covers a family of kinds.
 | `gamesoundproperties` | none | none: no owner yet |
 | `gameVideoClip` | none | none: no owner yet |
 | `greatestMomentsManager` | none | none: no owner yet |
-| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners) |
+| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; installed imports now acquire their complete authored dependency closure once per player VM through the existing shared source owner, before entry scripts/movie construction; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners) |
 | `image` | `app::texture_streaming`, `app::resident_images`, `assets::texture`, `rendering::bevy_backend` | host: indexed compiled images are acquired through shared scene and resident-view owners; scene mips stream on demand, GPU upload staging is retired, and map images release while reusable common/UI views remain leased. Original acquisition `1402e9ff0` and streamer `14030dbf0` are mapped to the host backend. Scoped loading-history cleanup now removes stale names after level release while preserving reusable image and UI bindings. Full backend fence and device-allocation parity remain partial; see the image sections below |
 | `inventoryitem` | `assets/inventory_item.rs`, `assets/inventory_item/sources.rs` | host: Catalog identity, live readable/history leases and inherited read-generation retirement; ported readable defaults63c510; blocked: full general item/equipment variants |
 | `inventoryItemCollection` | `assets/inventory_item/configuration.rs` | source-written:613ae0 construction, inherited item list, first-occurrence6136e0,613930 destruction; host: scoped Catalog resource records; production verification pending |
@@ -4781,3 +4781,39 @@ Accounted DX12 caller rollback: bind-group construction can fail after its inter
 Swimming shore-exit prediction (2026-11-09): for the supported living player leaving swimming normally, 88a8c0 -> 889f10 -> 88a7a0(4) -> 88a2e0 checks the existing player-physics ground-distance result (+2b0) against the negated standing posture's authored step height (+b0). If the distance is more negative, it sets the player position to the current entity position with Z reduced by ground distance plus that step height, before restoring the previous state-machine mode. 7ff0d0 -> 1b6b10 writes the existing actor/proxy position and does not replace its owner. The existing host switched modes without this correction. The isolated change ports that conditional correction on ordinary supported swim exit, using the already completed ground query and existing standing settings; the separate mantle transition is unchanged. Prediction: on an exit where that exact condition occurs, the position rises by the source amount before the next posture update; other exits have no position change. No claim is made that every reported shore collision has this cause. Native suppresses this branch in additional supported-gameplay cases whose owners the scalar host does not admit. No build, test, game input, or production observation has been performed.
 
 Swimming exit qualification follow-up: 889f10 also adds the negation of a negative completed ground distance to the player's eye-height comparison when Controller+281 says the head is above water and Controller action 14 is held and allowed. The host already tracks this as ACTION_JUMP through the same held-and-allowed masks; the patch uses that input and the same ground result for the existing above-surface exit comparison. The shallow-water and no-contact tests are unchanged. This is a source-based prediction, not a demonstrated fix for a particular shoreline.
+
+
+### Journal construction and readable focus repair (2026-11-09)
+
+The production Journal request reached `JournalScene()` but failed with
+`unknown class lib_gamepadButton` (sessions 1794196598384-6244 and
+1794196445508-28856). Installed `ui/journal.iggy` has 11 direct imports;
+`lib_common.iggy` imports `lib_controller_buttons.swf`, which supplies the
+missing SymbolClass (character 138). The existing loader acquired only direct
+imports. The shared loader now visits each authored import list in order,
+acquires dependencies before executing dependent libraries, and registers each
+resource once in the same player VM. Shared Iggy source leases, VM/library
+retirement and bitmap acquisition remain their existing owners. All 55 installed
+Iggy resources were inspected: no missing dependency paths or import cycles;
+Journal needs 12 unique libraries plus its movie. Cycles report an explicit
+admission error without recursion/depth limits. `141023b00` resolves the loaded
+SymbolClass table; `14002e7a0` provides localized library paths.
+
+Readable callbacks now use the existing worker: common `SetFlashFocus` /
+`KillFlashFocus` (`140035020` / `140034fe0`) retain actual movie focus and update
+controller type on acquisition. `140790a00` registers `NotesClosing` to
+`140791370`, removing the existing UI FX during the authored closing animation;
+`OnNotesClosed` still finishes the mode. FX messages retain world-epoch checks.
+The host modal handoff saves each actual window's cursor capture and visibility,
+then restores that exact state on close or failure; it previously released
+capture on entry and only made the cursor visible on exit. Nested Journal/note
+transitions retain the same handoff until the last modal closes.
+
+Prediction: Journal construction resolves the authored button class, without a
+special class stub or additional cache. A readable close returns mouse capture
+to its pre-open value, and these three supported callbacks no longer report as
+unknown. Rust source parsing and patch applicability are checked; no build,
+test, client input or visual inspection was performed. Production admission
+must be checked with the existing `inspect-ui-fonts ui/journal.iggy` tool route
+(real `Player::load_installed`) after the coordinated build, followed by actual
+human interaction before claiming the report resolved.

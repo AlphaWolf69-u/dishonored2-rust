@@ -233,11 +233,38 @@ impl Player {
         player.state.borrow_mut().strings = Some(strings);
         let library_language = lang::LANGUAGES.iter().position(|(n, _)| *n == lang::library_language(language)).unwrap_or(0);
         player.state.borrow_mut().font_aliases = text_engine::Fonts::language_aliases(library_language as u32);
+        // Iggy resolves imported SymbolClass names from registered libraries
+        // (141023b00); dependencies must exist before a library's entry script
+        // or the movie constructor executes. Walk each authored import list in
+        // order, loading each resource once in this player's VM. Source bytes
+        // still come from the single shared Iggy owner.
         let mut resources = Vec::new();
-        for import in &info.imports {
-            let path = lang::library_resource(&import.library, language);
-            let index = player.load_shared_library(read(&path)?).map_err(|e| format!("{path}: {}", player.describe(&e)))?;
-            resources.push((index, path));
+        let mut loaded = std::collections::HashSet::new();
+        let mut active = std::collections::HashSet::new();
+        let mut pending = Vec::new();
+        active.insert(movie_path.to_ascii_lowercase().replace('\\', "/"));
+        for import in info.imports.iter().rev() {
+            pending.push((lang::library_resource(&import.library, language), None));
+        }
+        while let Some((path, ready)) = pending.pop() {
+            if let Some(file) = ready {
+                let index = player.load_shared_library(file)
+                    .map_err(|e| format!("{path}: {}", player.describe(&e)))?;
+                active.remove(&path);
+                loaded.insert(path.clone());
+                resources.push((index, path));
+                continue;
+            }
+            if loaded.contains(&path) { continue; }
+            if !active.insert(path.clone()) {
+                return Err(format!("{movie_path}: cyclic Iggy library import {path}"));
+            }
+            let file = read(&path)?;
+            let imports = file.movie().map_err(|e| format!("{path}: {e}"))?.imports;
+            pending.push((path, Some(file)));
+            for import in imports.iter().rev() {
+                pending.push((lang::library_resource(&import.library, language), None));
+            }
         }
         player.load_shared_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
         player.initialize_sound_events().map_err(|e| format!("{movie_path} sound events: {}", player.describe(&e)))?;
