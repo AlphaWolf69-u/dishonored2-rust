@@ -45,7 +45,7 @@ impl Definitions {
     }
 
     fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
-        let event = asset.resolve_with(|path| declaration_texts::read(&self.catalog, &self.texts, path))?.map(|event| event.id);
+        let event = asset.resolve_with(&self.catalog, |path| declaration_texts::read(&self.catalog, &self.texts, path))?.map(|event| event.id);
         Ok(TimedEvent { delay: asset.delay, event })
     }
 

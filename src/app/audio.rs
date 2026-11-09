@@ -629,7 +629,7 @@ fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<
         for resource in list.iter().filter(|r| r.kind == "soundevent") {
             let Some(name) = resource.path.strip_prefix("generated/decls/soundevent/").and_then(|p| p.strip_suffix(".decl")) else { continue };
             let asset = crate::assets::fx::SoundEventAsset { delay: [0.0; 2], event: Some(name.to_owned()) };
-            match asset.resolve_with(|path| {
+            match asset.resolve_with(&catalog, |path| {
                 if let Some(value) = declarations.filter(|_| reuse).and_then(|texts| texts.get(path)) {
                     if trace { hits += 1; }
                     return Ok(Some(value.to_owned()));

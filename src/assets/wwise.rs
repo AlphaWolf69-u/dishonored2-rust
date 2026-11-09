@@ -11,6 +11,7 @@ mod vorbis;
 pub use vorbis::VorbisCursor;
 pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
+pub mod event_resources;
 mod playback;
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;

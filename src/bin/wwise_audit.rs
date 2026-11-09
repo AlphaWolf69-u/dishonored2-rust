@@ -222,7 +222,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })?;
                 let detail = dishonored2_rust::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
                     .ok_or("environmental audio detail cvar is absent")?;
-                let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, |path| {
+                let bindings = dishonored2_rust::entities::audio::audio_bindings(&document, &catalog, |path| {
                     catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
                 })?;
                 let mut deferred = 0usize;
@@ -287,7 +287,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let level = LevelResources::resolve(&catalog, &requested)?;
         let bytes = level.read_entities(&catalog)?.ok_or("level has no entity resource")?;
         let document = entities::parse(&String::from_utf8_lossy(&bytes))?;
-        let bindings = entities::audio::audio_bindings(&document, |path| {
+        let bindings = entities::audio::audio_bindings(&document, &catalog, |path| {
             catalog.read(path).map(|value| value.map(|bytes| entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
         })?;
         println!("{}: {} audio components", level.entities, bindings.len());

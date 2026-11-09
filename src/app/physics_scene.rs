@@ -242,7 +242,7 @@ impl PhysicsScene {
                 .map_err(|e| e.to_string())
         };
         let water_bindings = entities::water::water_bindings(document, read)?;
-        let audio_bindings = entities::audio::audio_bindings(document, read)?;
+        let audio_bindings = entities::audio::audio_bindings(document, catalog, read)?;
         let wind_scheduling = entities::component_scheduling(
             document,
             "cpntwind",

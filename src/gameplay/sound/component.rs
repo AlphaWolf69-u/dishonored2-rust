@@ -11,7 +11,7 @@ pub struct Startup {
     pub max_distance: f32,
 }
 impl Startup {
-    pub fn from_events(events: &[Option<SoundEventDeclaration>]) -> Self {
+    pub fn from_events(events: &[Option<std::sync::Arc<SoundEventDeclaration>>]) -> Self {
         let mut state = Self { deferred: !events.is_empty(), ..Self::default() };
         for event in events.iter().flatten() {
             if state.max_distance < event.max_distance { state.max_distance = event.max_distance; }

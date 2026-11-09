@@ -36,7 +36,7 @@ pub struct WorldSoundDefinition {
 /// game-side range, looping, and virtualization settings (1400c4460).
 pub struct WorldSoundEvent {
     pub name: String,
-    pub declaration: crate::assets::wwise::SoundEventDeclaration,
+    pub declaration: Arc<crate::assets::wwise::SoundEventDeclaration>,
 }
 
 impl WorldSoundEvent {
