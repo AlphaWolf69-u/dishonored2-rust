@@ -770,8 +770,10 @@ pub struct Device {
     render_doc: auxil::renderdoc::RenderDoc,
     null_rtv_handle: descriptor::Handle,
     mem_allocator: Allocator,
-    compiler_container: Arc<shader_compilation::CompilerContainer>,
     shader_cache: Mutex<ShaderCache>,
+    // Cached IDxcBlob/ID3DBlob values must release before the compiler DLL.
+    // Temporary compiled blobs only exist under a live Device borrow.
+    compiler_container: Arc<shader_compilation::CompilerContainer>,
     counters: Arc<wgt::HalCounters>,
     // Rust drops fields in declaration order. Allocator heaps, shader objects
     // and all other COM owners must release before their runtime is unloaded.

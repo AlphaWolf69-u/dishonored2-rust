@@ -41,6 +41,13 @@ observed shutdown failure. Evidence: artifacts/resource-main-normal-20261109/
 {crash-raw.json,crash-modules.json} in the main checkout and the Windows dump
 dishonored2-rust.exe.23080.dmp.
 
+The same owner sweep found cached IDxcBlob/ID3DBlob values declared after
+their compiler-container lease. Device now drops the shader cache before
+the compiler container; that container already releases its IDxcCompiler3
+before unloading dxcompiler.dll. Temporary compiled blobs remain confined
+to a live Device borrow. This adjacent order correction adds no allocations,
+reference-count operations or runtime work.
+
 At the acknowledged outgoing-world boundary, LevelLifetime also resets
 SceneGpuInputs and SceneImageRequests through their existing owners. These
 plugin resources predate the scene snapshot and otherwise retain old
@@ -104,6 +111,24 @@ resource lookup/purge boundary (`1400607f0`/`140060180`) have source evidence;
 this does not certify every declaration subtype or unconsumed system. Generic
 rows below remain incomplete until their own lifecycle has been traced.
 
+### Live quality replacement observation (2026-11-09)
+
+Main release4e7683a2 completed the existing production quality observation
+A/B/C/A/B/C/A with exit0. All seven samples retained564,133,888 finer-mip
+bytes and zero stream reservations. Changing the four real CVars replaced the
+directional target between2048x2048x5 depth32 and512x512x4 depth16 and completed
+the local-owner replacement. Actual total live GPU allocations returned from
+3,280,535,552 initially to3,280,338,944 bytes at finalA (196,608 fewer). These
+replacements did not accumulate live GPU allocations in this observation.
+Reserved heap capacity grew from3,795,845,120 to4,869,586,944 bytes. That1GiB
+growth is a separate device-allocator accounting question, not measured live
+texture retention. Most shadow textures lack diagnostic labels, so these
+totals do not independently certify every atlas. Automatic AppExit did not
+certify window shutdown: the subsequent normal session produced the D3D12
+library-lifetime crash described above. Evidence: main artifacts/
+resource-quality-main-20261109/{result.json,allocator-summary.json,stderr.log}.
+No images, gameplay input, tests or frame-time performance claim were used.
+
 ## Kinds
 
 Every kind in the installed load lists has a row (`loading::tests`). A
@@ -165,7 +190,7 @@ trailing `*` covers a family of kinds.
 | `mapInfo` | `gameplay::map_info` | host: session declaration index follows `1400607f0` / `14005feb0`; only requested parsed declarations are retained and aliases share the same immutable identity. A five-level production comparison reduced reads 50 -> 19 and decoded bytes 200,076 -> 77,776 with matching declaration fingerprints. Overlay and read-failure paths retain the existing scan; whole resource-class purge remains partial |
 | `massprops` | `assets::physworld::mass` | host: machinery preparation acquires through the physics mass owner, which reuses decoded immutable mass properties per path and copies them before body-specific mass/axis overrides; the cache is released after preparation. Four map loads reduced reads 287 to 53 and cumulative decoded bytes 163,016 to 30,104; body fingerprints matched. This is not a resident-memory measurement. The broader registry and original persistent-scope behavior remain partial |
 | `material` | `app::material_loading` (material class), `app::runtime_materials` (host preparation) | partial: startup cache ownership is transferred to the level for runtime reuse; worker preparation uses the same resolver and live-world asset providers. Image acquisition failures reject the prepared batch before proxy publication. Runtime requests have separate level-unload and supersession cancellation. Host proxy publication shares the startup bundle and exposes entity IDs for pipeline readiness. The generation admission, image-slot remapping and tail-scoped retirement coordinator is integrated and compiled; four-map default production loads/unloads passed. Explicit dynamic success/failure/cancellation and tail-retirement scenarios remain to be exercised before claiming complete runtime lifecycle coverage (see its class). |
-| `md6Def` | `assets::animation_rig::declaration`, `assets::bmd6` | host: Catalog-owned ordered resource headers, shared immutable declaration generations and retained parent/model references. Creating lookup and existing-only lookup remain distinct; failed/absent loads stay attached to their actual header. Preload registers lazy identities from the actual primary/reuse manifests; bootstrap promotion and map-marker retirement follow060b60/0661e0/0410f0, with dead read history removed after all generations release. Unused declaration payloads remain demand-loaded. This complete owner slice compiles in the canonical checkpoint; the working-host integration requires compilation and production transition acceptance. Joint-helper/pose consumers still have explicit admission limits; no unimplemented consumer is reported as active |
+| `md6Def` | `assets::animation_rig::declaration`, `assets::bmd6` | host: Catalog-owned ordered resource headers, shared immutable declaration generations and retained parent/model references. Creating lookup and existing-only lookup remain distinct; failed/absent loads stay attached to their actual header. Preload registers lazy identities from the actual primary/reuse manifests; bootstrap promotion and map-marker retirement follow060b60/0661e0/0410f0, with dead read history removed after all generations release. Unused declaration payloads remain demand-loaded. The working-host owner compiled and completed the recorded EotW/Dust/EotW production acquisition and retirement at ad376ca0; later CPU-worker observations retain all 51 common MD6 headers without loading unused payloads. This verifies the exercised header/declaration lifecycle, not every joint-helper or pose consumer. Joint-helper/pose consumers still have explicit admission limits; no unimplemented consumer is reported as active |
 | `midnightScene` | `assets::entities::scene_motion`, `app::player` | partial: reads its resources; lifecycle not ported (see its class) |
 | `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); UVs stay f32 (Bevy has no half-float vertex values); world shadow programs read the shared mesh's own position, NORMAL and COLOR (axis swap undone in the shader), so only vegetation (forward wind) and water meshes keep game-space copies; sheared baked instances keep float vertices. Lifecycle not ported (see its class) |
 | `musicManager` | `gameplay::music` | ported: compact inherited definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger update (1406647d0, 1406649b0, 1406634c0), startup/shutdown including request reset (1406637e0, 1406641e0, 14054ced0); blocked: connect this owner to the single entity dispatcher being implemented in the HUD branch and the actual worldspawn audio component, and resolve the alloc-game feature 0x20 gate before activation. No banks, media or GPU resources are duplicated by this owner; sound acquisition/playback stays with the sound class. Source compiled in f25c019; runtime activation remains blocked. Wwise music actors (HIRC 10/12) also require their actual scheduler, so wiring the manager alone will not produce music. |
@@ -4580,3 +4605,7 @@ the comparison JSON, both complete logs, build provenance and installed
 header-selection/source packets. Newer CPU run:
 artifacts/cpu-resource-loading-scoped-20261109/ in the integration checkout.
 No tests, visual inspection, game input or second game window were used.
+
+Parameter-block lifecycle prediction before implementation (2026-11-09): the installed registry has 96 pblock declarations; previous EotW, Dust, Dust-return and EotW observations decoded 0/33, 0/37, 0/31 and 0/33 listed declarations, respectively. 0661e0's audited 36-kind promotion list contains pblock. For each selected unique pblock header, expect one Catalog record and zero payload reads at header registration; repeated rows and reuse/primary duplicates must retain one identity. Bootstrap records promote to marker 2 exactly once. On a persistent same-map reload, marker-1 records and any loaded payload survive; on a different map or disabled persistence marker 1 is purged, while marker 0 retires at level release. A live or in-flight lease keeps its generation valid across purge, and editable generations remain distinct. No per-frame work or new parser is expected. Exact selected-header counts, retained payload bytes, read reuse and production retirement remain unmeasured; no time or memory saving is claimed.
+
+Parameter-block source follow-up: the existing particle/material acquisition API supplies no allocator-heap context, so those directly created headers retain a separate host-unspecified scope and are swept at level retirement; they are not labelled as native marker 0. Actual preload registration supplies the known creation context, explicit map preload promotion writes marker 1, and the one bootstrap promotion writes marker 2. No production acquisition/purge validation has been performed.

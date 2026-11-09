@@ -158,9 +158,7 @@ fn image_program_key(source: &str) -> String {
 
 impl Catalog {
     pub(crate) fn release_parameter_block_level(&self) {
-        if let Some(owner) = self.parameter_blocks.get() {
-            owner.lock().unwrap_or_else(|error| error.into_inner()).retire_unused(self.identity);
-        }
+        crate::assets::parm_block::release_marker(self, 0);
     }
 
     pub(crate) fn release_pickable_level(&self) {

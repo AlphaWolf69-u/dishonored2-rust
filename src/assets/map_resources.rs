@@ -58,7 +58,7 @@ const ENTRY: usize = 28;
 fn preload_declaration_kind(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("anim") || kind.eq_ignore_ascii_case("animset")
         || kind.eq_ignore_ascii_case("md6def") || kind.eq_ignore_ascii_case("inventoryLoadout")
-        || kind.eq_ignore_ascii_case("inventoryItemCollection")
+        || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
 }
 
 /// One resource of a load list.
@@ -356,6 +356,7 @@ impl LevelList {
             crate::edge_animation::residency::promote_bootstrap_records(catalog)?;
             crate::assets::animation_rig::animset::promote_bootstrap_records(catalog)?;
             crate::assets::animation_rig::declaration::promote_bootstrap_records(catalog)?;
+            crate::assets::parm_block::promote_bootstrap(catalog)?;
             crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
             Ok(count)
         }).as_ref().map_err(Clone::clone)?;
@@ -365,6 +366,7 @@ impl LevelList {
         // com_usePersistentHeap. 062bd0 then gives its inverse to 0410f0,
         // which purges marker1 for a different map or disabled persistence.
         if !persistent_heap || previous.as_deref() != Some(map) {
+            crate::assets::parm_block::release_marker(catalog, 1);
             crate::assets::inventory_item::configuration::release_persistent(catalog);
             crate::edge_animation::release_marker(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
             crate::assets::animation_rig::animset::release_scoped(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
@@ -424,6 +426,8 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("animset") {
                 crate::assets::animation_rig::animset::register_lazy_preload(catalog, &resource.path,
                     context, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("pblock") {
+                crate::assets::parm_block::register_preload(catalog, &resource.path, context, promote_preload_kinds)?;
             } else {
                 // MD6 is not in 0661e0's list of heap-1 promoted kinds.
                 let context = match context {

@@ -53,6 +53,9 @@ pub(crate) struct ParmBlock {
     /// assignment to a duplicate parameter (140343670).
     pub assignments: Vec<Assignment>,
     _history: Option<Arc<HistoryLease>>,
+    // A weak back-reference lets a caller-local hit rejoin a record whose
+    // native marker was purged while this exact generation remained leased.
+    header: Weak<Mutex<Entry>>,
 }
 
 impl Drop for ParmBlock {
@@ -271,12 +274,14 @@ fn parse(
         return Ok(ParmBlock {
             assignments: Vec::new(),
             _history: None,
+            header: Weak::new(),
         });
     };
     let Some(list) = scope(edit, "m_pblock")? else {
         return Ok(ParmBlock {
             assignments: Vec::new(),
             _history: None,
+            header: Weak::new(),
         });
     };
     let count = field(list, "num")
@@ -311,25 +316,40 @@ fn parse(
     Ok(ParmBlock {
         assignments,
         _history: None,
+        header: Weak::new(),
     })
 }
 
-#[derive(Default)]
 struct Entry {
     current: Weak<ParmBlock>,
     previous: Vec<Weak<ParmBlock>>,
+    resident: Option<Arc<ParmBlock>>,
+    /// None is the pre-existing host acquisition policy, whose native heap
+    /// context is not supplied by the particle/material caller.
+    marker: Option<u8>,
+    retired: bool,
+}
+impl Entry {
+    fn new(marker: Option<u8>) -> Self {
+        Self { current: Weak::new(), previous: Vec::new(), resident: None, marker, retired: false }
+    }
+    fn retain_acquired(&mut self, block: &Arc<ParmBlock>) {
+        if self.retired { self.marker = None; self.retired = false; }
+        self.resident = Some(block.clone());
+    }
 }
 
 /// 0607f0/05feb0 identity is shared across all consumers in this catalog.
-/// The header never owns a decoded block; actual FX/material leases do.
+/// A decoded generation remains resident until its actual marker is purged;
+/// consumers may retain old generations after that boundary.
 #[derive(Default)]
 pub(crate) struct Registry {
     entries: HashMap<String, Arc<Mutex<Entry>>>,
 }
 impl Registry {
-    fn record(&mut self, path: &str) -> Arc<Mutex<Entry>> {
+    fn record(&mut self, path: &str, marker: Option<u8>) -> Arc<Mutex<Entry>> {
         if let Some(header) = self.entries.get(path) { return header.clone(); }
-        let header = Arc::new(Mutex::new(Entry::default()));
+        let header = Arc::new(Mutex::new(Entry::new(marker)));
         self.entries.insert(path.to_owned(), header.clone());
         header
     }
@@ -341,10 +361,33 @@ impl Registry {
             if Arc::strong_count(header) > 1 { return true; }
             let mut entry = header.lock().unwrap_or_else(|error| error.into_inner());
             entry.previous.retain(|generation| generation.strong_count() != 0);
+            if !entry.retired { return true; }
             if entry.current.strong_count() != 0 || !entry.previous.is_empty() { return true; }
             crate::loading::forget(catalog, "pblock", path);
             false
         });
+    }
+
+    /// 060180 removes only one native marker. Live/in-flight generations
+    /// remain checked by the existing header and weak generation owner.
+    fn release_marker(&mut self, catalog: u64, marker: u8) {
+        let before = self.entries.len();
+        let mut matched = 0usize;
+        let mut resident = 0usize;
+        for header in self.entries.values() {
+            let mut entry = header.lock().unwrap_or_else(|error| error.into_inner());
+            if (entry.marker == Some(marker) || marker == 0 && entry.marker.is_none()) && !entry.retired {
+                matched += 1;
+                resident += usize::from(entry.resident.is_some());
+                entry.retired = true;
+                entry.resident = None;
+            }
+        }
+        self.retire_unused(catalog);
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("PBLOCK_PURGE catalog={catalog} marker={marker} matched={matched} resident_released={resident} removed={} retained={}",
+                before - self.entries.len(), self.entries.len());
+        }
     }
 
     pub(crate) fn release_session(&mut self) {
@@ -357,6 +400,58 @@ impl Registry {
             eprintln!("PBLOCK_REGISTRY_RELEASE records={} live_generations={live}", self.entries.len());
         }
         drop(std::mem::take(&mut self.entries));
+    }
+}
+
+fn resource_path(name: &str) -> String {
+    let normalized = name.replace('\\', "/").to_ascii_lowercase();
+    let path = normalized.strip_prefix("generated/decls/pblock/").unwrap_or(&normalized);
+    let path = path.strip_suffix(".decl").unwrap_or(path);
+    format!("generated/decls/pblock/{path}.decl")
+}
+
+/// 0661e0 registers without payload IO, and explicitly writes marker 1 for
+/// selected pblocks even if the header already existed.
+pub(crate) fn register_preload(catalog: &Catalog, name: &str,
+    context: crate::edge_animation::CreationContext, persistent_kind: bool) -> Result<(), String> {
+    let registry = catalog.parameter_blocks.get_or_init(Default::default);
+    let path = resource_path(name);
+    let mut registry = registry.lock().map_err(|_| "parameter-block registry is poisoned")?;
+    let marker = if persistent_kind { 1 } else { context as u8 };
+    let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1");
+    let reused = trace && registry.entries.contains_key(&path);
+    let header = registry.record(&path, Some(marker));
+    let mut entry = header.lock().map_err(|_| "parameter-block record is poisoned")?;
+    if entry.retired {
+        entry.retired = false;
+        entry.marker = Some(marker);
+        entry.resident = entry.current.upgrade();
+    }
+    if persistent_kind { entry.marker = Some(1); }
+    if trace {
+        eprintln!("PBLOCK_HEADER catalog={} path={path} marker={:?} reused={reused}", catalog.identity(), entry.marker);
+    }
+    Ok(())
+}
+
+pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
+    let Some(registry) = catalog.parameter_blocks.get() else { return Ok(()) };
+    let registry = registry.lock().map_err(|_| "parameter-block registry is poisoned")?;
+    for header in registry.entries.values() {
+        let mut entry = header.lock().map_err(|_| "parameter-block record is poisoned")?;
+        entry.marker = Some(2);
+        entry.retired = false;
+        if entry.resident.is_none() { entry.resident = entry.current.upgrade(); }
+    }
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+        eprintln!("PBLOCK_BOOTSTRAP catalog={} headers={}", catalog.identity(), registry.entries.len());
+    }
+    Ok(())
+}
+
+pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
+    if let Some(registry) = catalog.parameter_blocks.get() {
+        registry.lock().unwrap_or_else(|error| error.into_inner()).release_marker(catalog.identity(), marker);
     }
 }
 
@@ -391,15 +486,12 @@ impl ParmBlockSources {
             self.catalog = catalog.identity();
             self.registry = catalog.parameter_blocks.get_or_init(Default::default).clone();
         }
-        let normalized = name.replace('\\', "/").to_ascii_lowercase();
-        let path = normalized
-            .strip_prefix("generated/decls/pblock/")
-            .unwrap_or(&normalized);
-        let path = path.strip_suffix(".decl").unwrap_or(path);
-        let resource = format!("generated/decls/pblock/{path}.decl");
+        let resource = resource_path(name);
         let shared = !catalog.has_overlays();
         if shared {
             if let Some(block) = self.entries.get(&resource).and_then(Weak::upgrade) {
+                let header = block.header.upgrade().ok_or("parameter-block record is absent")?;
+                header.lock().map_err(|_| "parameter-block record is poisoned")?.retain_acquired(&block);
                 if trace {
                     let cycles = started.zip(crate::loading::thread_cycles())
                         .map_or(0, |(start, end)| end.saturating_sub(start));
@@ -410,12 +502,13 @@ impl ParmBlockSources {
             }
         }
         let header = self.registry.lock().map_err(|_| "parameter-block registry is poisoned")?
-            .record(&resource);
+            .record(&resource, None);
         // Metadata lookup may acquire renderParm declarations, but never
         // another pblock. Only this resource is locked across its read/parse.
         let mut entry = header.lock().map_err(|_| "parameter-block record is poisoned")?;
         if shared {
             if let Some(block) = entry.current.upgrade() {
+                entry.retain_acquired(&block);
                 if trace {
                     let cycles = started.zip(crate::loading::thread_cycles())
                         .map_or(0, |(start, end)| end.saturating_sub(start));
@@ -441,9 +534,11 @@ impl ParmBlockSources {
         }
         self.history.get_or_insert_with(|| history.clone());
         block._history = Some(history);
+        block.header = Arc::downgrade(&header);
         let block = Arc::new(block);
         if trace { eprintln!("PBLOCK_LEASE catalog={} path={resource} identity={:p} reused=false shared_class=true", self.catalog, Arc::as_ptr(&block)); }
         let previous = std::mem::replace(&mut entry.current, Arc::downgrade(&block));
+        entry.retain_acquired(&block);
         entry.previous.retain(|generation| generation.strong_count() != 0);
         if previous.strong_count() != 0 { entry.previous.push(previous); }
         if shared {
