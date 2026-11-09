@@ -556,26 +556,35 @@ impl ProgramLibrary {
                 String::from_utf8_lossy(name)
             ));
         }
-        if !self.float_vector_defaults.contains_key(&key) {
+        // Code resources can be rebound after a declaration changes
+        // (1400606f0). Only the owning immutable namespace may reuse a value.
+        // The common no-overlay hit creates no path and performs no file IO.
+        let shared = catalog.identity() == self.catalog_identity
+            && (!catalog.has_overlays() || std::str::from_utf8(&key).ok().is_some_and(|name|
+                !catalog.has_overlay_file(&format!("generated/decls/renderparm/{name}.decl"))));
+        let read_default = || {
             let path = format!(
                 "generated/decls/renderparm/{}.decl",
                 std::str::from_utf8(&key).map_err(|error| error.to_string())?
             );
-            let result = (|| {
-                let bytes = catalog
-                    .read(&path)
-                    .map_err(|error| format!("{path}: {error}"))?
-                    .ok_or_else(|| format!("missing floating Uniform declaration {path}"))?;
-                crate::entities::declaration_float_vector_default(&String::from_utf8_lossy(&bytes))
-                    .map_err(|error| format!("{path}: {error}"))
-            })();
-            self.float_vector_defaults.insert(key.clone(), result);
-        }
+            let bytes = catalog.read(&path).map_err(|error| format!("{path}: {error}"))?
+                .ok_or_else(|| format!("missing floating Uniform declaration {path}"))?;
+            crate::entities::declaration_float_vector_default(&String::from_utf8_lossy(&bytes))
+                .map_err(|error| format!("{path}: {error}"))
+        };
+        let default = if shared {
+            if let Some(value) = self.float_vector_defaults.get(&key) { value.clone()? }
+            else {
+                let value = read_default();
+                self.float_vector_defaults.insert(key.clone(), value.clone());
+                value?
+            }
+        } else { read_default()? };
         // The parsed header above proves native kind Uniform/subtype float.
         overrides.vector_words(
             &key,
             0x30,
-            self.float_vector_defaults[&key].clone()?,
+            default,
             fallback,
         )
     }
