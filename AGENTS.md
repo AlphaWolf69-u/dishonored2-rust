@@ -21,6 +21,8 @@ Keep this file short and operational. It is not a roadmap or a research log.
 
 ## Running-game research
 
+- Prefer windowless acquisition checks for agent diagnostics. Never automatically restore or focus a diagnostic window, change the display mode, or fight Alt+Tab/minimization. Automatic visible diagnostic launches are disabled following the user's desktop disruption report.
+
 - Agents are explicitly authorized to launch, focus, run, examine, and close the user's installed original Dishonored 2 game and the Rust remake whenever needed for research or verification. No additional permission is required for these actions.
 - Launch the original through Steam AppID `403640`, never directly through `Dishonored2.exe`: a direct launch enters the free trial.
 - Don't try to control the game yourself, ask human to do it for you. Agents may ask the user to load a specific level or save, select a character or difficulty, move to a location, perform an action, or reproduce a sequence when user input or gameplay is needed. Do routine setup and captures yourself where available tools allow it.
