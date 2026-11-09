@@ -428,8 +428,15 @@ pub(super) fn collision_report(
     if let Some(player) = walker {
         report.push_str(&format!("\nSwimming: active={} eye_underwater={} contact={:?}\n",
             player.is_swimming(), player.is_underwater(), player.swimming_contact));
+        if let Some(catalog) = scene.catalog.as_deref() {
+            match swimming_clip_aliases(catalog, player) {
+                Ok(aliases) => report.push_str(&format!("  swimming clip aliases by arm and index: {aliases:?}\n")),
+                Err(error) => report.push_str(&format!("  swimming clip aliases unavailable: {error}\n")),
+            }
+        }
         for (index, arm) in player.body.arms.iter().enumerate() {
             report.push_str(&format!("  arm {index} idle: {}\n", arm.loco.idle_diagnostic()));
+
         }
         report.push_str(&format!(
             "\nPlayer arm state: shown={:?}, mantle hands=[{}, {}] last_selection={:?}, mantle destination={:?}, catfall sensor enabled={} hits=[{}, {}] last_selection={:?}\n",
@@ -575,4 +582,37 @@ pub(super) fn collision_report(
         }
         Err(error) => eprintln!("Collision report write failed: {error}"),
     }
+}
+
+/// Resolve the selected body's existing locomotion declaration only on F8.
+fn swimming_clip_aliases(
+    catalog: &crate::archive::Catalog, player: &crate::gameplay::player::Player,
+) -> Result<Vec<Vec<(usize, String)>>, String> {
+    let rig = crate::assets::animation_rig::Rig::acquire(catalog, player.body_model())?;
+    let name = rig.decl("locomotionDecl").ok_or("body has no locomotion declaration")?;
+    let fields = crate::entities::player::resolved_decl("playerlocomotion", &name, |path| {
+        Ok(catalog.read(path).map_err(|error| error.to_string())?
+            .map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+    })?;
+    let decls = crate::gameplay::player::decls::loco_stances(&fields, ["Empty"; 2])?;
+    let entries = decls.iter().find(|(name, _)| name == "Swimming").map(|(_, entries)| entries);
+    let mut result = Vec::new();
+    for (side, arm) in player.body.arms.iter().enumerate() {
+        let mut aliases = Vec::new();
+        if let (Some(index), Some(name)) = (arm.loco.data.swimming_idle,
+            crate::gameplay::player::decls::loco_arm_idle(&fields, "Swimming", side, "Empty")) {
+            aliases.push((index, name));
+        }
+        if let (Some(entries), Some(sets)) = (entries, arm.loco.data.stances.get("Swimming")) {
+            for entry in entries {
+                if let (Some(Some(set)), Some(names)) = (sets.get(entry.speed), entry.arms.get(side).and_then(Option::as_ref)) {
+                    for (index, name) in set.clips.iter().zip(names) { aliases.push((*index, name.clone())); }
+                }
+            }
+        }
+        aliases.sort();
+        aliases.dedup();
+        result.push(aliases);
+    }
+    Ok(result)
 }

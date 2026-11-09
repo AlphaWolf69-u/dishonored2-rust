@@ -193,6 +193,15 @@ pub struct LocoNode {
 }
 
 impl LocoNode {
+    /// Bounded, allocation-free snapshot for the existing hand history.
+    pub fn swimming_snapshot(&self) -> SwimSnapshot {
+        let mut inputs = [None; 8];
+        for (out, &(clip, weight, _)) in inputs.iter_mut().zip(&self.inputs) {
+            *out = Some((clip, weight));
+        }
+        SwimSnapshot { idle: self.idle.clip, idle_weight: self.idle.weight,
+            idle_elapsed: self.idle.elapsed, progress: self.progress, inputs }
+    }
     /// F8-only description; no formatting or allocation during node updates.
     pub fn idle_diagnostic(&self) -> String {
         format!("stance={:?}->{:?} manager={} move_state={:?} clip={:?} weight={} elapsed={} fade_out={:?}",
@@ -443,6 +452,15 @@ impl LocoNode {
         }
         Ok(Some(pose))
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SwimSnapshot {
+    pub idle: Option<usize>,
+    pub idle_weight: f32,
+    pub idle_elapsed: f32,
+    pub progress: f32,
+    pub inputs: [Option<(usize, f32)>; 8],
 }
 
 /// arkAnimBasicPlayMode_t.

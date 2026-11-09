@@ -111,6 +111,26 @@ resource lookup/purge boundary (`1400607f0`/`140060180`) have source evidence;
 this does not certify every declaration subtype or unconsumed system. Generic
 rows below remain incomplete until their own lifecycle has been traced.
 
+### Swimming hand observation (2026-11-09)
+
+The existing bounded hand history now retains one swimming action alongside
+mantle/catfall. Detailed clip-weight/phase snapshots and geometry remain
+opt-in under DH2_DEBUG_HAND_GEOMETRY; ordinary frames add only bounded swim
+visibility counters, with no formatting or alias-string allocation. F8 resolves
+aliases on demand through the existing selected body Rig/Catalog; no duplicate
+alias cache or animation resource owner is introduced. Histories release with
+the level's existing PlayerArms owner. This is diagnostic coverage, not a
+claimed swimming visual fix or CPU improvement.
+
+Native846450 calls846330(state,0), and846270 Exit calls it with1. The helper
+uses underwater/body state and active arm-ownership masks (802f90): surface
+swimming is not universally hand-hidden across all possible states. The
+currently supported living swim roster, however, has no held-object or0x31/
+0x32 producer and no coexisting left-arm ownership bit, so its surface branch
+hides both hands and its submerged branch shows both. Actual submerged clip
+progress/pose publication still requires production evidence; it must not be
+declared working from source inclusion alone.
+
 ### Journal input availability (2026-11-09)
 
 The existing Journal/READ_NOTE movie and resource owners (78c830/78d290) now

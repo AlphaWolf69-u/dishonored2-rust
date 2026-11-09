@@ -288,6 +288,9 @@ impl Player {
     }
 
     pub fn is_swimming(&self) -> bool { self.swimming_active }
+
+    /// The actual body model selected at player setup, for F8 lookup.
+    pub(crate) fn body_model(&self) -> &str { &self.md6 }
     /// The active mode's states, including when the swimming mode owns them.
     pub fn active_player_states(&self) -> &[StateId] { self.machine.active_states() }
     /// Controller-owned possession state. Possession transitions and saved

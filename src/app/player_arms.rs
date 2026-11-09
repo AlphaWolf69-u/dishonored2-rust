@@ -62,11 +62,21 @@ struct RenderModelHistory {
     skin_error_frames: u32,
     visible_surface_frames: u32,
     maximum_visible_surfaces: u32,
+    swim_surface_visible_frames: u32,
+    swim_underwater_visible_frames: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct RenderActionHistory {
     frames: u32,
+    swim_surface_frames: u32,
+    swim_underwater_frames: u32,
+    swim_first: [Option<crate::gameplay::player::animation::SwimSnapshot>; 2],
+    swim_last: [Option<crate::gameplay::player::animation::SwimSnapshot>; 2],
+    swim_first_underwater: [Option<crate::gameplay::player::animation::SwimSnapshot>; 2],
+    swim_first_moving: [Option<crate::gameplay::player::animation::SwimSnapshot>; 2],
+    swim_phase_advanced: [bool; 2],
+    swim_idle_advanced: [bool; 2],
     // The installed body declaration has at most two arms plus the body.
     models: [RenderModelHistory; 3],
 }
@@ -80,12 +90,12 @@ pub(super) struct PlayerArms {
     /// front of the camera instead of `Player::arms()`; another number sets
     /// that distance in metres (a diagnostic only).
     debug_rest: Option<f32>,
-    action_active: [bool; 2],
-    action_history: [Option<RenderActionHistory>; 2],
+    action_active: [bool; 3],
+    action_history: [Option<RenderActionHistory>; 3],
     /// Opt-in; capture holds at most 64 frames per action/model until the
     /// next matching action or level teardown.
     capture_geometry: bool,
-    action_capture: [super::player_arm_capture::ActionCapture; 2],
+    action_capture: [super::player_arm_capture::ActionCapture; 3],
 }
 
 impl PlayerArms {
@@ -95,9 +105,9 @@ impl PlayerArms {
             "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
             arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
         )).collect();
-        report.push_str(&format!("  renderer action history [mantle, catfall]={:?}\n", self.action_history));
+        report.push_str(&format!("  renderer action history [mantle, catfall, swimming]={:?}\n", self.action_history));
         if self.capture_geometry {
-            for (action, capture) in ["mantle", "catfall"].into_iter().zip(&self.action_capture) {
+            for (action, capture) in ["mantle", "catfall", "swimming"].into_iter().zip(&self.action_capture) {
                 for (index, arm) in self.arms.iter().enumerate() {
                     let surfaces: Vec<_> = arm.surfaces.iter().map(|surface| surface.source_index).collect();
                     report.push_str(&format!("  {action} geometry {}: {}\n", arm.model,
@@ -336,8 +346,8 @@ pub(super) fn load_player_arms(
         debug_rest: std::env::var("DH2_DEBUG_REST_ARMS").ok().and_then(|value| {
             if value == "1" { Some(0.5) } else { value.parse().ok() }
         }),
-        action_active: [false; 2],
-        action_history: [None; 2],
+        action_active: [false; 3],
+        action_history: [None; 3],
         capture_geometry,
         action_capture: Default::default(),
     })
@@ -478,10 +488,13 @@ pub(super) fn update_player_arms(
         }
     };
     let probes = scene.as_ref().and_then(|scene| scene.environment_probes.as_deref());
-    let actions = [crate::gameplay::player::states::StateId::MANTLE,
-        crate::gameplay::player::states::StateId::CATFALL].map(|id|
-        state.as_deref().and_then(|state| state.player.as_ref())
-            .is_some_and(|player| player.machine.is_active(id)));
+    let player = state.as_deref().and_then(|state| state.player.as_ref());
+    let actions = [
+        player.is_some_and(|player| player.machine.is_active(crate::gameplay::player::states::StateId::MANTLE)),
+        player.is_some_and(|player| player.machine.is_active(crate::gameplay::player::states::StateId::CATFALL)),
+        player.is_some_and(|player| player.is_swimming()),
+    ];
+    let record_swim_detail = arms.capture_geometry;
     for (index, active) in actions.into_iter().enumerate() {
         if active {
             if !arms.action_active[index] {
@@ -490,6 +503,30 @@ pub(super) fn update_player_arms(
             }
             if let Some(history) = &mut arms.action_history[index] {
                 history.frames = history.frames.saturating_add(1);
+                if index == 2 {
+                    if let Some(player) = player {
+                        if player.is_underwater() { history.swim_underwater_frames = history.swim_underwater_frames.saturating_add(1); }
+                        else { history.swim_surface_frames = history.swim_surface_frames.saturating_add(1); }
+                        if record_swim_detail {
+                        for (side, arm) in player.body.arms.iter().take(2).enumerate() {
+                            let snapshot = arm.loco.swimming_snapshot();
+                            if history.swim_first[side].is_none() { history.swim_first[side] = Some(snapshot); }
+                            if player.is_underwater() && history.swim_first_underwater[side].is_none() {
+                                history.swim_first_underwater[side] = Some(snapshot);
+                            }
+                            if player.body.speed > 0.001 && history.swim_first_moving[side].is_none() {
+                                history.swim_first_moving[side] = Some(snapshot);
+                            }
+                            if let Some(previous) = history.swim_last[side] {
+                                history.swim_phase_advanced[side] |= previous.progress != snapshot.progress;
+                                history.swim_idle_advanced[side] |= previous.idle == snapshot.idle
+                                    && snapshot.idle.is_some() && previous.idle_elapsed != snapshot.idle_elapsed;
+                            }
+                            history.swim_last[side] = Some(snapshot);
+                        }
+                        }
+                    }
+                }
             }
         }
         arms.action_active[index] = active;
@@ -616,6 +653,13 @@ pub(super) fn update_player_arms(
                 history.skin_error_frames = history.skin_error_frames.saturating_add(u32::from(skin_error));
                 history.visible_surface_frames = history.visible_surface_frames.saturating_add(u32::from(visible_surfaces != 0));
                 history.maximum_visible_surfaces = history.maximum_visible_surfaces.max(visible_surfaces);
+                if index == 2 && visible_surfaces != 0 {
+                    if player.is_some_and(|player| player.is_underwater()) {
+                        history.swim_underwater_visible_frames = history.swim_underwater_visible_frames.saturating_add(1);
+                    } else {
+                        history.swim_surface_visible_frames = history.swim_surface_visible_frames.saturating_add(1);
+                    }
+                }
             }
         }
     }
