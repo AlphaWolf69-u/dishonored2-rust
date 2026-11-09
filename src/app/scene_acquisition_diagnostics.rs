@@ -54,7 +54,8 @@ fn inspect_scene_resources(
     if levels.is_empty() {
         return Err("inspect-scene-preparation requires level names".into());
     }
-    let catalog = Arc::new(archive::Catalog::open(base)?);
+    let catalog = archive::Catalog::shared(base)?;
+    let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
@@ -152,8 +153,9 @@ fn inspect_scene_resources(
         catalog.release_level_resources();
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
-    drop(catalog);
     drop(session);
+    drop(catalog);
+    drop(catalog_session);
     for (tag, bytes) in crate::platform::allocation_tags::report() {
         eprintln!("RESOURCE_SCENE_HEAP phase=session-released tag={tag:?} bytes={bytes}");
     }

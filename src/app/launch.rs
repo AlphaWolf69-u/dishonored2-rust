@@ -17,7 +17,7 @@ use bevy::prelude::*;
 
 /// Host root for the immutable archive namespace. Declared before App so its
 /// world and workers release their leases before this session root retires.
-struct CatalogSession(u64);
+pub(super) struct CatalogSession(pub(super) u64);
 impl Drop for CatalogSession {
     fn drop(&mut self) {
         archive::Catalog::release_shared(self.0);
