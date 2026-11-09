@@ -991,11 +991,8 @@ pub(super) fn surface_sampler_image(catalog: Option<&archive::Catalog>) -> Resul
     // any anisotropic filter to all three2-valued filter fields.
     let mut own_anisotropy = 4.0f32;
     if let Some(catalog) = catalog {
-        let bytes = catalog
-            .read("generated/decls/renderparm/anisotropicsampler.decl")
-            .map_err(|e| e.to_string())?
-            .ok_or("missing native anisotropic sampler")?;
-        for line in entities::declaration_text(&bytes).lines() {
+        let resource = crate::assets::render_parameter::acquire(catalog, "anisotropicsampler")?;
+        for line in resource.text().lines() {
             let mut words = line.split_whitespace();
             let Some(key) = words.next() else {
                 continue;

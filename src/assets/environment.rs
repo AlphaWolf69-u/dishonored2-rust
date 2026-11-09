@@ -33,23 +33,14 @@ impl ParameterSource for ParameterReader<'_> {
     }
 }
 impl ParameterReader<'_> {
-    fn declaration(&self, name: &str) -> Result<String, String> {
-        let path = format!(
-            "generated/decls/renderparm/{}.decl",
-            name.to_ascii_lowercase()
-        );
-        let bytes = self
-            .catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("environment parameter has no registered default: {path}"))?;
-        Ok(entities::declaration_text(&bytes).into_owned())
+    fn declaration(&self, name: &str) -> Result<std::sync::Arc<super::render_parameter::Parameter>, String> {
+        super::render_parameter::acquire(self.catalog, name)
     }
     pub fn vector(&self, name: &str) -> Result<[f32; 4], String> {
         if let Some(value) = self.parameters.vector_parameter(name)? {
             return Ok(value);
         }
-        entities::declaration_float_vector_default(&self.declaration(name)?)
+        entities::declaration_float_vector_default(&self.declaration(name)?.text())
             .map(|v| v.map(f32::from_bits))
             .map_err(|e| format!("{name}: {e}"))
     }
@@ -65,7 +56,8 @@ impl ParameterReader<'_> {
         if let Some(value) = self.parameters.parameter(name) {
             return unsigned_decimal(value.trim_matches('"')).map_err(|e| format!("{name}: {e}"));
         }
-        let text = self.declaration(name)?;
+        let declaration = self.declaration(name)?;
+        let text = declaration.text();
         let tokens = entities::declaration_lexemes(&text)?;
         if tokens.len() < 4
             || tokens[0] != "{"
@@ -80,7 +72,7 @@ impl ParameterReader<'_> {
         if let Some(value) = self.parameters.scalar_parameter(name)? {
             return Ok(value != 0.);
         }
-        entities::declaration_bool_default(&self.declaration(name)?)
+        entities::declaration_bool_default(&self.declaration(name)?.text())
             .map_err(|e| format!("{name}: {e}"))
     }
 
@@ -90,7 +82,8 @@ impl ParameterReader<'_> {
         let value = if let Some(value) = self.parameters.parameter(name) {
             value.trim().trim_matches('"').to_owned()
         } else {
-            let declaration = self.declaration(name)?;
+            let resource = self.declaration(name)?;
+            let declaration = resource.text();
             let tokens = entities::declaration_lexemes(&declaration)?;
             match tokens.as_slice() {
                 ["{", kind, material, "}"] if kind.eq_ignore_ascii_case("Material") => {
@@ -114,7 +107,7 @@ impl ParameterReader<'_> {
             return Ok(value.trim_matches('"').to_owned());
         }
         let declaration = self.declaration(name)?;
-        image_initializer(&declaration).map_err(|error| format!("{name}: {error}"))
+        image_initializer(&declaration.text()).map_err(|error| format!("{name}: {error}"))
     }
 }
 

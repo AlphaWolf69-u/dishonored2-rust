@@ -90,6 +90,7 @@ pub struct Catalog {
     pub(crate) sound_events: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::SoundEventDeclaration>>>,
     pub(crate) kiscule_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::effects::FxGraph>>>,
     pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
+    pub(crate) render_parameters: std::sync::OnceLock<crate::assets::render_parameter::Owner>,
     pub(crate) shader_indices: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<
         crate::assets::shader_cache::ShaderCacheBackend, std::sync::Arc<crate::assets::shader_cache::ShaderIndex>>>>,
     /// Inventory/history leases can outlive a map's item acquisition table.
@@ -136,6 +137,8 @@ impl Drop for Catalog {
         self.sound_events.take();
         self.kiscule_resources.take();
         self.particle_resources.take();
+        crate::assets::render_parameter::report(self, "catalog-retiring");
+        self.render_parameters.take();
         self.shader_indices.take();
         // Host read accounting belongs to this immutable archive namespace;
         // releasing it must not leave credits for a later Catalog identity.
@@ -373,6 +376,7 @@ impl Catalog {
             sound_events: Default::default(),
             kiscule_resources: Default::default(),
             particle_resources: Default::default(),
+            render_parameters: Default::default(),
             shader_indices: Default::default(),
             pickable_sources: Default::default(),
             containers: Default::default(),

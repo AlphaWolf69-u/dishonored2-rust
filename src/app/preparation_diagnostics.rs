@@ -89,6 +89,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         // No renderer owns these unpublished CPU batches. Their consumers
         // above have already dropped, so use the live client's same purge.
         catalog.release_level_resources();
+        crate::assets::render_parameter::report(&catalog, "level-released");
         crate::edge_skeleton::release_unused();
         result?;
         eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=released");
@@ -116,6 +117,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Render parameter resources") {
+        eprintln!("RENDER_PARAMETER_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Mass property resources") {
         eprintln!("MASS_RESOURCE_MEMORY phase=catalog-released bytes={bytes}");
     }

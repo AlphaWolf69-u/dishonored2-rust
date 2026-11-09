@@ -482,8 +482,9 @@ impl ProgramLibrary {
         -> Result<crate::render_program::ParameterMetadata>
     {
         let key = name_key(name.as_bytes());
-        let path = format!("generated/decls/renderparm/{name}.decl");
-        let shared = catalog.identity() == self.catalog_identity && !catalog.has_overlay_file(&path);
+        let shared = catalog.identity() == self.catalog_identity
+            && (!catalog.has_overlays()
+                || !catalog.has_overlay_file(&format!("generated/decls/renderparm/{name}.decl")));
         if shared {
             if let Some(value) = self.parameter_metadata.get(&key) { return Ok(*value); }
         }
@@ -563,14 +564,8 @@ impl ProgramLibrary {
             && (!catalog.has_overlays() || std::str::from_utf8(&key).ok().is_some_and(|name|
                 !catalog.has_overlay_file(&format!("generated/decls/renderparm/{name}.decl"))));
         let read_default = || {
-            let path = format!(
-                "generated/decls/renderparm/{}.decl",
-                std::str::from_utf8(&key).map_err(|error| error.to_string())?
-            );
-            let bytes = catalog.read(&path).map_err(|error| format!("{path}: {error}"))?
-                .ok_or_else(|| format!("missing floating Uniform declaration {path}"))?;
-            crate::entities::declaration_float_vector_default(&String::from_utf8_lossy(&bytes))
-                .map_err(|error| format!("{path}: {error}"))
+            let name = std::str::from_utf8(&key).map_err(|error| error.to_string())?;
+            crate::assets::render_parameter::acquire(catalog, name)?.floating_words()
         };
         let default = if shared {
             if let Some(value) = self.float_vector_defaults.get(&key) { value.clone()? }

@@ -191,12 +191,9 @@ impl MaterialResolver<'_> {
                                 value: crate::render_program::SerializedParameterValue::Words(word),
                             });
                     }
-                    let decl = catalog
-                        .read("generated/decls/renderparm/alpha/blursize.decl")
-                        .map_err(|e| e.to_string())?
-                        .ok_or("missing blur size declaration")?;
+                    let decl = crate::assets::render_parameter::acquire(catalog, "alpha/blursize")?;
                     let default = crate::entities::declaration_uint_default(
-                        &crate::entities::declaration_text(&decl),
+                        &decl.text(),
                     )?;
                     let blur = values.unsigned_integer_value(
                         b"alpha/blursize",

@@ -322,13 +322,10 @@ pub(crate) fn visit_render_parameters(
         else {
             continue;
         };
-        let bytes = catalog
-            .read(&path)
-            .map_err(|error| format!("{path}: {error}"))?
-            .ok_or_else(|| format!("missing render-parameter declaration {path}"))?;
+        let resource = crate::assets::render_parameter::acquire(catalog, name)?;
         // Native type names are ASCII. Legacy byte comments/body text must not
         // reject an otherwise valid header; no body/value is decoded here.
-        let source = String::from_utf8_lossy(&bytes);
+        let source = String::from_utf8_lossy(resource.bytes());
         let kind = render_parameter_kind(&source).map_err(|error| format!("{path}: {error}"))?;
         visit(name.as_bytes(), kind, &source).map_err(|error| format!("{path}: {error}"))?;
     }
