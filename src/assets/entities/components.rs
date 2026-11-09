@@ -137,7 +137,7 @@ pub(super) fn atom<'a>(fields: &'a [(String, Value)], key: &str) -> Option<&'a s
     }
 }
 
-pub(super) fn overlay(base: &mut Fields, local: &[(String, Value)]) {
+fn resize_inherited_items(base: &mut Fields, local: &[(String, Value)]) {
     // 140022fd0 copies the parent before child edits; 14098c270 resizes
     // reflected lists before reading their items. Remove inherited slots
     // beyond an explicitly reduced count before merging the item fields.
@@ -145,6 +145,10 @@ pub(super) fn overlay(base: &mut Fields, local: &[(String, Value)]) {
         base.retain(|(name, _)| name.strip_prefix("item[").and_then(|name| name.strip_suffix(']'))
             .and_then(|index| index.parse::<usize>().ok()).is_none_or(|index| index < count));
     }
+}
+
+pub(super) fn overlay(base: &mut Fields, local: &[(String, Value)]) {
+    resize_inherited_items(base, local);
     for (key, value) in local {
         if let Some((_, previous)) = base.iter_mut().find(|(name, _)| name == key) {
             if let (Value::Scope(previous), Value::Scope(local)) = (&mut *previous, value) {
@@ -154,6 +158,22 @@ pub(super) fn overlay(base: &mut Fields, local: &[(String, Value)]) {
             }
         } else {
             base.push((key.clone(), value.clone()));
+        }
+    }
+}
+
+/// Owned declaration layers need no cloned staging tree after the reader
+/// transfers them. Borrowed component/inline overlays keep their existing API.
+pub(crate) fn overlay_owned(base: &mut Fields, local: Fields) {
+    resize_inherited_items(base, &local);
+    for (key, value) in local {
+        if let Some((_, previous)) = base.iter_mut().find(|(name, _)| *name == key) {
+            match (previous, value) {
+                (Value::Scope(previous), Value::Scope(local)) => overlay_owned(previous, local),
+                (previous, value) => *previous = value,
+            }
+        } else {
+            base.push((key, value));
         }
     }
 }
