@@ -59,6 +59,8 @@ mod particle_surface;
 mod machinery;
 mod load_timing;
 mod resource_diagnostics;
+mod preparation_diagnostics;
+pub use preparation_diagnostics::inspect_cpu_preparation;
 mod level_lifetime;
 mod setup_commands;
 mod scene_preparation;

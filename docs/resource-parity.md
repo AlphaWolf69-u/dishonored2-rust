@@ -4462,3 +4462,18 @@ reuse pass 7/12. Original 0661e0 applies the same class dispatch in both passes.
 This adds required header metadata, not speculative payload loading or a
 claimed memory saving. Evidence: artifacts/inventory-header-selection-fix/
 installed-audit.json. Runtime scope acceptance remains a distinct requirement.
+
+CPU preparation observation (2026-11-09): the game-feature tools command
+`inspect-cpu-preparation` invokes the client's actual level preparation worker
+and player-body setup, drops their unpublished CPU bundles, then invokes the
+same Catalog purge as LevelLifetime after its render acknowledgement. The
+shared purge preserves the existing call order; it adds no per-frame work or
+new ownership/cache policy. No window, renderer, audio playback or settings
+writes are started. Each requested batch includes initial inventory rather
+than manufacturing a restored session. Existing acquisition identities,
+source-read and temporary-state capacity diagnostics can therefore observe
+these CPU owners without replacing the user's open game. This is not GPU,
+render-publication, inventory-carryover or gameplay acceptance. The command
+reports actual production errors and counts; it supplies no invented expected
+values and is not a test suite. No CPU/GPU timing or memory gain is claimed by
+this observation entry point.

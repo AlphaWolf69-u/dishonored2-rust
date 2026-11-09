@@ -108,11 +108,7 @@ impl LevelLifetime {
         drop(material_history);
         drop(skeletal_history);
         if let Some(catalog) = self.catalog.take() {
-            crate::edge_animation::release_level(&catalog);
-            catalog.release_md6_level();
-            catalog.release_animset_level();
-            catalog.release_parameter_block_level();
-            catalog.release_pickable_level();
+            catalog.release_level_resources();
         }
         crate::edge_skeleton::release_unused();
         Ok(())

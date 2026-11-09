@@ -168,6 +168,16 @@ impl Catalog {
             owner.lock().unwrap_or_else(|error| error.into_inner()).release_level(self);
         }
     }
+    /// CPU resource purge after outgoing consumers have released their leases.
+    /// The renderer's publication/fence acknowledgement precedes this call
+    /// in the live client; this does not retire GPU resources on its behalf.
+    pub(crate) fn release_level_resources(&self) {
+        crate::edge_animation::release_level(self);
+        self.release_md6_level();
+        self.release_animset_level();
+        self.release_parameter_block_level();
+        self.release_pickable_level();
+    }
     /// Trim dead level AnimSet identities without dropping the session root
     /// or declarations still retained by live model/scene owners.
     pub(crate) fn release_md6_level(&self) {

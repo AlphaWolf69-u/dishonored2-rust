@@ -9,6 +9,12 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-cpu-preparation" => {
+            #[cfg(feature = "game")]
+            dishonored2_rust::app::inspect_cpu_preparation(base, args)?;
+            #[cfg(not(feature = "game"))]
+            return Err("inspect-cpu-preparation requires the game feature".into());
+        }
         "inspect-world-queries" => {
             let path = args.first().ok_or("inspect-world-queries requires a WORLD resource")?;
             let unshared = args.get(1).is_some_and(|value| value == "unshared");
