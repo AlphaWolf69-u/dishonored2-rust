@@ -500,7 +500,12 @@ impl Player {
             if self.swimming_active {
                 let has_ground = self.physics.ground_distance < f32::MAX
                     || self.physics.ground.state != SupportState::Unsupported;
-                let above_surface = !head_underwater && surface + 0.1 < origin.z + self.swimming_eye_height;
+                // 889f10 raises the exit comparison by a negative ground
+                // distance while jump is held and the head is above water.
+                let ground = self.physics.ground_distance;
+                let jump_ground = if !head_underwater && ground < 0.0
+                    && self.controller.down(controller::ACTION_JUMP) { -ground } else { 0.0 };
+                let above_surface = !head_underwater && surface + 0.1 < origin.z + self.swimming_eye_height + jump_ground;
                 let too_shallow = depth < self.swimming_settings.minimum_depth;
                 !(has_ground && (above_surface || too_shallow)
                     && self.controller.slipping.slope_cos < self.physics.shortest_ground_ray_normal().z)
@@ -510,6 +515,16 @@ impl Player {
             }
         }) };
         if in_water != self.swimming_active && self.swimming_available {
+            if !in_water {
+                // 88a2e0: before restoring the previous mode, keep the
+                // standing shape's step hull above the sampled ground.
+                let step = self.physics.posture_settings(shape::POSTURE_STANDING).step_height;
+                let ground = self.physics.ground_distance;
+                if ground < -step {
+                    self.physics.proxy.position.z -= ground + step;
+                    origin = self.physics.position();
+                }
+            }
             self.machine.leave_mode(&mut frame!());
             std::mem::swap(&mut self.machine, &mut self.swimming_machine);
             self.swimming_active = in_water;
