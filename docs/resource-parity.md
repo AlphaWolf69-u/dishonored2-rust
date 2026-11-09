@@ -111,6 +111,23 @@ resource lookup/purge boundary (`1400607f0`/`140060180`) have source evidence;
 this does not certify every declaration subtype or unconsumed system. Generic
 rows below remain incomplete until their own lifecycle has been traced.
 
+### MD6 parent-chain admission follow-up (2026-11-09)
+
+Prediction before changing the resolvers: Rig acquisition and compiled-mesh
+lookup still reject an acyclic MD6 parent chain after16 declarations even
+though their existing visited-identity sets already reject actual cycles.
+Original1c7c80 calls1c7bf0, which follows parent+0xd8 until a match or null;
+the1c9630 inherit parser acquires the actual parent resource without imposing
+this host depth count. Remove only the arbitrary count in both existing
+resolvers. Installed short chains keep identical visits/reads/results; valid
+long chains stop being rejected solely for depth. Keep actual cycle errors,
+missing-resource behavior and acquisition owners unchanged. No per-frame work,
+new allocation or performance improvement is claimed. Source captures:
+main artifacts/ghidra-tool-output/a21bf560a642b5f40c56ce31.json and
+8a070a8ca224520da6d8c383.json; existing integration artifacts/
+md6-original-parser.c. This follow-up is not part of the already-frozen main
+release build and has no production long-chain acceptance yet.
+
 ### Swimming hand observation (2026-11-09)
 
 The existing bounded hand history now retains one swimming action alongside

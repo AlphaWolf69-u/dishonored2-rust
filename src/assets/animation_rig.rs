@@ -131,7 +131,7 @@ fn load_rig(catalog: &Catalog, model: &str) -> Result<Rig, String> {
     let mut name = model.to_owned();
     let mut md6_bytes = 0usize;
     loop {
-        if layers.len() >= 16 { return Err("MD6 inheritance exceeds 16 declarations".into()); }
+        // 1c7bf0 follows the actual parent chain without a fixed depth limit.
         if !visited.insert(name.clone()) { return Err("MD6 inheritance cycle".into()); }
         let stem = name.strip_suffix(".md6").ok_or("invalid MD6 inherit path")?;
         let md6_path = format!("generated/decls/md6def/{stem}.md6.decl");

@@ -121,7 +121,9 @@ pub fn resolve_compiled_mesh(
     let mut declaration =
         declaration_path(compiled_guess).ok_or("not a compiled MD6 model path")?;
     let mut visited = std::collections::HashSet::new();
-    for _ in 0..16 {
+    // 1c9630 admits the actual inherited declaration; cycle rejection below
+    // protects the host traversal without truncating a valid parent chain.
+    loop {
         if !visited.insert(declaration.clone()) {
             return Err("MD6 inheritance cycle".into());
         }
@@ -142,7 +144,6 @@ pub fn resolve_compiled_mesh(
             .ok_or("invalid MD6 inherit path")?;
         declaration = format!("generated/decls/md6def/{stem}.md6.decl");
     }
-    Err("MD6 inheritance exceeds 16 declarations".into())
 }
 
 pub fn declaration_path(compiled_guess: &str) -> Option<String> {
