@@ -1,5 +1,15 @@
 # Resource duplication audit
 
+Diagnostic entry ownership (2026-11-09): resource-owner inspection commands
+previously expanded every original index record into an additional Vec before
+opening their own canonical packed Catalog. They now dispatch before that
+unneeded raw table is acquired. Commands that inspect historical raw index
+records retain their existing path. This changes tools-only acquisition, not
+gameplay ownership; no resident-byte or CPU-time saving is claimed. The
+33cfa392/d74cb237 CPU preparation captures precede this tools-entry cleanup:
+their scoped read counts and subtree capacities remain valid, but their
+process memory must not be presented as the normal game's footprint.
+
 Work predictions (2026-11-03), before the corresponding ownership/format
 changes. Costs are measured at acquisition and at the affected owner, rather
 than inferred from whole-frame FPS.

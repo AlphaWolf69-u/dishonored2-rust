@@ -97,11 +97,16 @@ fn run() -> Result<()> {
         return Err("Usage: dishonored2-tools <summary|verify|verify-levels|find|extract|inspect-level|inspect-world|export-world-obj> <Dishonored2/base> [query] [output]".into());
     }
     let base = Path::new(&args[2]);
-    let entries = load_catalog(base)?;
+    // These owners open the canonical packed Catalog themselves. Do not keep
+    // a second, fully expanded table of every index record beside them.
     match args[1].as_str() {
         "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" | "inspect-material-program" | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation" => {
-            resource_audit::run(&args[1], base, &args[3..])?;
+            return resource_audit::run(&args[1], base, &args[3..]);
         }
+        _ => {}
+    }
+    let entries = load_catalog(base)?;
+    match args[1].as_str() {
         "summary" => {
             let mut by_group = [0usize; 4];
             let mut by_kind = BTreeMap::<&str, usize>::new();
