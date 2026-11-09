@@ -84,6 +84,7 @@ pub struct Catalog {
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
     pub(crate) sound_events: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::SoundEventDeclaration>>>,
     pub(crate) kiscule_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::effects::FxGraph>>>,
     pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
@@ -123,6 +124,7 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        self.mass_resources.take();
         self.sound_events.take();
         self.kiscule_resources.take();
         self.particle_resources.take();
@@ -186,6 +188,7 @@ impl Catalog {
         crate::assets::entities::effects::declarations::release_marker(self, 0);
         crate::assets::fx::particle_resources::release_marker(self, 0);
         crate::assets::wwise::event_resources::release_marker(self, 0);
+        crate::assets::physworld::mass::resources::release_marker(self, 0);
         self.release_pickable_level();
     }
     /// Trim dead level AnimSet identities without dropping the session root
@@ -354,6 +357,7 @@ impl Catalog {
             preload_map: Default::default(),
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
+            mass_resources: Default::default(),
             sound_events: Default::default(),
             kiscule_resources: Default::default(),
             particle_resources: Default::default(),

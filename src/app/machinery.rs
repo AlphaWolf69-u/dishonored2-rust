@@ -9,7 +9,6 @@ use bevy::prelude::*;
 #[derive(Resource, Default)]
 pub(super) struct AmbientMachinery {
     physics: MachineryWorld,
-    _mass_history: Option<std::sync::Arc<crate::physworld::mass::MassHistoryLease>>,
     scenes: crate::gameplay::scene_motion::SceneMotion,
     /// Per body: its owner's render source, resolved once sources exist.
     sources: Option<Vec<Option<usize>>>,
@@ -50,7 +49,6 @@ impl AmbientMachinery {
         let Some(document) = document else {
             return Ok(Self::default());
         };
-        let mass_history = crate::physworld::mass::MassHistoryLease::acquire();
         let placements = super::expanded_model_placements(placements, catalog);
         let recipes = crate::entities::machinery::recipes::load_with_sources(catalog, document, &placements, texts, shape_sources)?;
         for diagnostic in &recipes.unsupported {
@@ -84,7 +82,6 @@ impl AmbientMachinery {
         info!("Physics systems: {} simulated, {} skinned", world.systems.len(), skins.len());
         Ok(Self {
             physics: world,
-            _mass_history: Some(mass_history),
             scenes,
             sources: None,
             visible_previous,

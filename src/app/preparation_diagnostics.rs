@@ -93,6 +93,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("FX declaration sources") {
             eprintln!("FX_SOURCE_MEMORY phase=level-released step={step} bytes={bytes}");
         }
+        if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Mass property resources") {
+            eprintln!("MASS_RESOURCE_MEMORY phase=level-released step={step} bytes={bytes}");
+        }
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Sound event declarations") {
             eprintln!("SOUND_EVENT_MEMORY phase=level-released step={step} bytes={bytes}");
         }
@@ -104,6 +107,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         }
     }
     drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Mass property resources") {
+        eprintln!("MASS_RESOURCE_MEMORY phase=catalog-released bytes={bytes}");
+    }
     if let Some(bytes) = crate::platform::allocation_tags::live_bytes("Sound event declarations") {
         eprintln!("SOUND_EVENT_MEMORY phase=catalog-released bytes={bytes}");
     }
