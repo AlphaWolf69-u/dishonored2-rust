@@ -88,12 +88,17 @@ impl<T> Registry<T> {
         let record_storage_bytes = self.entries.capacity() * std::mem::size_of::<(String, Entry<T>)>()
             + self.entries.iter().map(|(path, entry)| path.capacity()
                 + entry.failure.as_ref().map_or(0, String::capacity)).sum::<usize>();
+        // Current host ArcInner layout: two usize atomics followed by T,
+        // with the enclosing allocation padded to its alignment.
+        let arc_bytes = std::alloc::Layout::new::<[usize; 2]>()
+            .extend(std::alloc::Layout::new::<T>()).expect("resource Arc layout")
+            .0.pad_to_align().size();
         let mut payloads = 0;
         let mut payload_bytes = 0;
         for entry in self.entries.values() {
             if let Some(value) = entry.current.upgrade() {
                 payloads += 1;
-                payload_bytes += 2 * std::mem::size_of::<usize>() + std::mem::size_of::<T>() + nested_bytes(&value);
+                payload_bytes += arc_bytes + nested_bytes(&value);
             }
         }
         eprintln!("RESOURCE_STORAGE catalog={catalog} kind={kind} phase={phase} records={} record_storage_bytes={record_storage_bytes} payloads={payloads} payload_bytes={payload_bytes}", self.entries.len());

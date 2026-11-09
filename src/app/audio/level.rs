@@ -34,7 +34,7 @@ impl LevelAudio {
         let bytes = catalog.read(&path).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("missing acoustic resource {path}"))?;
         let graph = crate::assets::sound_propagation::Propagation::parse(&bytes).map_err(|error| error.to_string())?;
-        let auxiliary_buses = crate::gameplay::sound::auxiliary::Buses::load(&graph, |path|
+        let auxiliary_buses = crate::gameplay::sound::auxiliary::Buses::load(&graph, catalog, |path|
             catalog.read(path).map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
                 .map_err(|error| error.to_string()))?;
         Ok(Self { world: Arc::new(Mutex::new(AcousticWorld::new(graph, base)?)), objects: HashMap::new(),

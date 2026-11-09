@@ -6,15 +6,13 @@ use hashbrown::HashMap;
 /// Declaration references retained by acoustic zones (1400b9eb0).
 pub struct Buses(HashMap<String, Option<u32>>);
 impl Buses {
-    pub fn load(graph: &Propagation, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Self, String> {
+    pub fn load(graph: &Propagation, catalog: &crate::archive::Catalog, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Self, String> {
         let mut buses = HashMap::new();
         for zone in &graph.zones {
             let name = &zone.auxiliary_bus;
             if buses.contains_key(name) { continue; }
             let bus = if name.is_empty() || name.eq_ignore_ascii_case("NULL") { None } else {
-                let path = format!("generated/decls/soundauxbus/{name}.decl");
-                let source = read(&path)?.ok_or_else(|| format!("missing auxiliary bus declaration {path}"))?;
-                Some(crate::assets::wwise::declared_auxiliary_id(&source).map_err(|error| format!("{path}: {error}"))?)
+                Some(*crate::assets::wwise::auxiliary_resources::acquire_with(catalog, name, &mut read)?)
             };
             buses.insert(name.clone(), bus);
         }

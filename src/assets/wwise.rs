@@ -12,6 +12,7 @@ pub use vorbis::VorbisCursor;
 pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
 pub mod event_resources;
+pub mod auxiliary_resources;
 mod playback;
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;
@@ -84,9 +85,14 @@ impl RtpcDeclaration {
 }
 
 fn declared_engine_id(source: &str, member: &str) -> io::Result<u32> {
-    use crate::entities::scene_motion::{atom, child};
+    use crate::entities::scene_motion::child;
     let fields = crate::entities::parse_declaration(source).map_err(invalid_owned)?;
-    let id = atom(child(child(&fields, "edit"), member), "m_ID")
+    engine_id_from_fields(child(&fields, "edit"), member)
+}
+
+fn engine_id_from_fields(edit: &[(String, crate::entities::Value)], member: &str) -> io::Result<u32> {
+    use crate::entities::scene_motion::{atom, child};
+    let id = atom(child(edit, member), "m_ID")
         .ok_or_else(|| invalid("sound declaration has no engine ID"))?;
     id.parse().map_err(|_| invalid("invalid sound event engine ID"))
 }

@@ -217,7 +217,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             if inspect_audio {
                 use dishonored2_rust::gameplay::sound::{admission::{Admission, Query}, paths, propagation};
                 use dishonored2_rust::gameplay::sound::auxiliary;
-                let auxiliary_buses = auxiliary::Buses::load(&world.graph, |path| {
+                let auxiliary_buses = auxiliary::Buses::load(&world.graph, &catalog, |path| {
                     catalog.read(path).map(|bytes| bytes.map(|bytes| dishonored2_rust::entities::declaration_text(&bytes).into_owned())).map_err(|error| error.to_string())
                 })?;
                 let detail = dishonored2_rust::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
