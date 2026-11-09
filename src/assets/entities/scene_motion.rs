@@ -1,7 +1,7 @@
 //! Authored motion-only scene loops and the entity graphs that start them.
 use super::{field, float, parse_declaration, scope, vector, Document, Value};
 use crate::archive::Catalog;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 pub type Fields = Vec<(String, Value)>;
 #[derive(Clone, Copy, Debug)]
@@ -174,9 +174,20 @@ pub use super::event_graph::{Node, Port};
 pub struct Graph {
     pub owner: String,
     pub nodes: Vec<Node>,
-    pub clips: HashMap<String, MotionClip>,
+    pub clips: HashMap<String, Arc<MotionClip>>,
 }
+/// Host leases replace the declaration pointers copied by1405329c0 and used
+/// by140533460. A graph and its independent playbacks share immutable curves.
+/// The comparison control reproduces the previous deep copies at each lease.
+pub(crate) fn retain_clip(clip: &Arc<MotionClip>) -> Arc<MotionClip> {
+    if std::env::var("DH2_DEBUG_SEPARATE_MOTION_CLIPS").as_deref() == Ok("1") {
+        let _tag = crate::platform::allocation_tags::tag("Motion scene resources");
+        Arc::new((**clip).clone())
+    } else { Arc::clone(clip) }
+}
+
 pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String> {
+    let _tag = crate::platform::allocation_tags::tag("Motion scene resources");
     let mut cache = HashMap::new();
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
@@ -195,18 +206,18 @@ pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String
         let mut nodes = Vec::new();
         let mut clips = HashMap::new();
         for n in items(list) {
-            let params = object(child(n, "m_parameters")).to_vec();
-            if let Some(path) = atom(&params, "m_declMdnt").filter(|p| *p != "NULL") {
+            let params = object(child(n, "m_parameters"));
+            if let Some(path) = atom(params, "m_declMdnt").filter(|p| *p != "NULL") {
                 if !cache.contains_key(path) {
                     let resource = format!("generated/decls/midnightscene/{path}.decl");
                     let clip = catalog
                         .read(&resource)
                         .map_err(|e| e.to_string())?
-                        .and_then(|b| parse_clip(&super::declaration_text(&b)).ok());
+                        .and_then(|b| parse_clip(&super::declaration_text(&b)).ok().map(Arc::new));
                     cache.insert(path.to_owned(), clip);
                 }
                 if let Some(clip) = &cache[path] {
-                    clips.insert(path.to_owned(), clip.clone());
+                    clips.insert(path.to_owned(), retain_clip(clip));
                 }
             }
             nodes.push(super::event_graph::parse_node(n)?);

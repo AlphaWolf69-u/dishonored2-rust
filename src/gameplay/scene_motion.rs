@@ -4,17 +4,17 @@ use super::event_graph::GraphInputs;
 use super::machinery_world::MachineryWorld;
 use super::motion_curve::angle_basis;
 use crate::entities::{
-    scene_motion::{atom, Graph, MotionClip, Node},
+    scene_motion::{atom, retain_clip, Graph, MotionClip, Node},
     PlacedModel,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{collections::{HashMap, HashSet, VecDeque}, sync::Arc};
 
 use crate::random::MwcRandom;
 
 struct Playback {
     node: u32,
     placement: usize,
-    clip: MotionClip,
+    clip: Arc<MotionClip>,
     group: usize,
     rate: f32,
     time_ms: f64,
@@ -284,8 +284,7 @@ impl RunningGraph {
                                 {
                                     return Err("nondefault scene playback".into());
                                 }
-                                let clip = self.graph.clips[atom(&n.params, "m_declMdnt").unwrap()]
-                                    .clone();
+                                let clip = retain_clip(&self.graph.clips[atom(&n.params, "m_declMdnt").unwrap()]);
                                 let rate = self.number_input(&n, "m_playRate", 1., 0)?.max(0.001);
                                 let time = self.number_input(&n, "m_startPosition", 0., 0)?;
                                 if time != 0. {
@@ -309,7 +308,7 @@ impl RunningGraph {
                                         self.playing.push(Playback {
                                             node: id,
                                             placement,
-                                            clip: clip.clone(),
+                                            clip: retain_clip(&clip),
                                             group,
                                             rate,
                                             time_ms: time as f64,
@@ -411,7 +410,45 @@ impl SceneMotion {
             result.diagnostics.extend(run.execute(q, placements));
             result.graphs.push(run);
         }
+        result.report_resources();
         result
+    }
+    /// Observe actual initialized owners, without advancing gameplay or
+    /// constructing a synthetic scene. Logical payload excludes hash buckets.
+    fn report_resources(&self) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        let mut unique = HashSet::new();
+        let mut leases = 0;
+        let mut payload_bytes = 0;
+        let mut digest = blake3::Hasher::new();
+        let mut record = |clip: &Arc<MotionClip>| {
+            leases += 1;
+            if unique.insert(Arc::as_ptr(clip)) {
+                payload_bytes += std::mem::size_of::<MotionClip>()
+                    + clip.groups.capacity() * std::mem::size_of::<crate::entities::scene_motion::MotionGroup>();
+                for group in &clip.groups {
+                    payload_bytes += group.name.capacity()
+                        + group.curve.keys.capacity() * std::mem::size_of::<crate::entities::scene_motion::CurveKey>();
+                }
+            }
+        };
+        for graph in &self.graphs {
+            digest.update(format!("{:?}", (&graph.graph.owner, &graph.graph.nodes)).as_bytes());
+            let mut clips: Vec<_> = graph.graph.clips.iter().collect();
+            clips.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            for (name, clip) in clips {
+                record(clip);
+                digest.update(format!("{name}:{clip:?}").as_bytes());
+            }
+            for playback in &graph.playing {
+                record(&playback.clip);
+                digest.update(format!("{:?}", (playback.node, playback.placement, playback.group,
+                    playback.rate, playback.time_ms, playback.position, playback.basis, playback.delta())).as_bytes());
+            }
+        }
+        let tag_context_bytes = crate::platform::allocation_tags::live_bytes("Motion scene resources");
+        eprintln!("MOTION_SCENE_STORAGE graphs={} playing={} leases={leases} unique_clips={} logical_payload_bytes={payload_bytes} signature={} tag_context_bytes={tag_context_bytes:?}",
+            self.graphs.len(), self.playing_count(), unique.len(), digest.finalize());
     }
     pub fn playing_count(&self) -> usize {
         self.graphs.iter().map(|g| g.playing.len()).sum()
@@ -614,7 +651,7 @@ mod tests {
                 position: w[..3].try_into().unwrap(),
                 basis: std::array::from_fn(|c| std::array::from_fn(|r| w[3 + c * 3 + r])),
                 group: 0,
-                clip: MotionClip {
+                clip: Arc::new(MotionClip {
                     length_ms: 12000,
                     groups: vec![MotionGroup {
                         uid: 1,
@@ -624,7 +661,7 @@ mod tests {
                             keys: vec![key],
                         },
                     }],
-                },
+                }),
             };
             let delta = playback.delta();
             for r in 0..3 {
