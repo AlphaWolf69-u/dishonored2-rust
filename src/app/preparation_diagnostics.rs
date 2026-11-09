@@ -44,6 +44,13 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         crate::edge_skeleton::release_unused();
         result?;
         eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=released");
+        if let Some(bytes) = crate::platform::allocation_tags::live_bytes("inventory-item-owner") {
+            eprintln!("PICKABLE_MEMORY phase=level-released step={step} bytes={bytes}");
+        }
+    }
+    drop(catalog);
+    if let Some(bytes) = crate::platform::allocation_tags::live_bytes("inventory-item-owner") {
+        eprintln!("PICKABLE_MEMORY phase=catalog-released bytes={bytes}");
     }
     Ok(())
 }

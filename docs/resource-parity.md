@@ -14,6 +14,22 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 ## Classes
 
+### Inventory owner allocation attribution (2026-11-09)
+
+Prediction before adding debug attribution: item header/payload/read-generation
+allocations currently inherit a loading-thread tag, so their retained bytes
+cannot be separated from unrelated loading data. Use the existing diagnostic
+allocator's inventory-item-owner tag at the existing acquisition boundaries;
+no new allocator, counters or payload representation is added. Normal release
+code has these guards compiled out. The CPU preparation observer reports the
+tag after each real level purge and after its Catalog drops. Expect retained
+header capacity after each map (900 actual bootstrap items on the observed
+route), then zero owner-tag bytes after session destruction when no item
+leases remain. This is attribution, not an optimization or a claimed saving.
+The existing original EotW RESOURCE baseline is51,830,920 bytes for the whole
+tag, not a directly comparable per-item budget. Actual values remain to be
+collected with the next cohesive source build.
+
 ### Main window-close and UI-readiness acceptance (2026-11-09)
 
 Main sourceb12e6bfc built cleanly with game/release, unchanged source before

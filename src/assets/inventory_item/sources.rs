@@ -1,6 +1,10 @@
 //! 0607f0 item-declaration leases shared by world reading and Journal opens.
 use super::*;
 use std::{collections::{HashMap, HashSet}, ops::Deref, sync::{Arc, Mutex, Weak}};
+
+fn allocation_scope() -> Option<crate::platform::allocation_tags::Guard> {
+    cfg!(feature = "debug_allocations").then(|| crate::platform::allocation_tags::tag("inventory-item-owner"))
+}
 #[derive(Debug)]
 pub struct PickableItem {
     pub path: Arc<str>,
@@ -73,6 +77,7 @@ pub struct PickableSources {
 pub struct PickableSourceLease(pub Arc<Mutex<PickableSources>>);
 impl PickableSourceLease {
     pub(crate) fn for_catalog(catalog: &Catalog) -> Result<Self, String> {
+        let _allocation = allocation_scope();
         let owner = catalog.pickable_sources.get_or_init(|| Arc::new(Mutex::new(
             PickableSources { catalog_identity: Some(catalog.identity()), ..Default::default() }
         ))).clone();
@@ -85,6 +90,7 @@ impl PickableSourceLease {
 /// absent from the 36-kind persistent-promotion table.
 pub(crate) fn register_preload(catalog: &Catalog, path: &str,
     context: crate::edge_animation::CreationContext) -> Result<(), String> {
+    let _allocation = allocation_scope();
     let name = path.strip_prefix("generated/decls/inventoryitem/")
         .and_then(|value| value.strip_suffix(".decl"))
         .ok_or("invalid inventory item manifest resource path")?;
@@ -119,6 +125,7 @@ pub(super) fn tracing() -> bool {
 }
 impl PickableSources {
     pub fn acquire(&mut self, catalog: &Catalog, path: &str) -> Result<Arc<PickableItem>, String> {
+        let _allocation = allocation_scope();
         if self.catalog_identity.is_some_and(|id| id != catalog.identity()) { return Err("item source belongs to another catalog".into()); }
         self.catalog_identity = Some(catalog.identity());
         // Retire generations at the existing level/session purge boundary,
@@ -159,6 +166,7 @@ impl PickableSources {
         Ok(item)
     }
     pub(super) fn read_fields(&mut self, catalog: &Catalog, item: &str) -> Result<ItemFields, String> {
+        let _allocation = allocation_scope();
         if self.catalog_identity.is_some_and(|id| id != catalog.identity()) { return Err("item source belongs to another catalog".into()); }
         self.catalog_identity = Some(catalog.identity());
         let key: Arc<str> = Arc::from(item.replace('\\', "/").to_ascii_lowercase());
