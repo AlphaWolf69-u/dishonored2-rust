@@ -60,6 +60,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("md6def") || kind.eq_ignore_ascii_case("inventoryLoadout")
         || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
         || kind.eq_ignore_ascii_case("inventoryitem")
+        || kind.eq_ignore_ascii_case("particledt") || kind.eq_ignore_ascii_case("staticParticleModel")
 }
 
 /// One resource of a load list.

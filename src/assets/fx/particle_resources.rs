@@ -138,6 +138,11 @@ pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
     let Some(owner) = catalog.particle_resources.get() else { return Ok(()) };
     owner.declarations.lock().map_err(|_| "particle declaration registry is poisoned")?.promote_bootstrap();
     owner.models.lock().map_err(|_| "particle model registry is poisoned")?.promote_bootstrap();
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+        eprintln!("PARTICLE_RESOURCE_BOOTSTRAP catalog={} declarations={} models={}", catalog.identity(),
+            owner.declarations.lock().map_err(|_| "particle declaration registry is poisoned")?.entries.len(),
+            owner.models.lock().map_err(|_| "particle model registry is poisoned")?.entries.len());
+    }
     Ok(())
 }
 pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
