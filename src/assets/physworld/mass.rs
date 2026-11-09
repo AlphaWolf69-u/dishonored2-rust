@@ -202,14 +202,13 @@ impl MassSources {
     }
     pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, path: String)
         -> Result<PrincipalMassProperties, MassSourceError> {
-        let value = if let Some(value) = self.values.get(&path).filter(|_| self.share) {
-            value.clone()
-        } else {
-            let value = resources::acquire(catalog, &path).map_err(MassSourceError::Failed)?;
-            if self.share { self.values.insert(path.clone(), value.clone()); }
-            value
-        };
-        (*value).ok_or(MassSourceError::Missing(path))
+        if let Some(value) = self.values.get(&path).filter(|_| self.share) {
+            return (**value).ok_or(MassSourceError::Missing(path));
+        }
+        let value = resources::acquire(catalog, &path).map_err(MassSourceError::Failed)?;
+        let result = (*value).ok_or_else(|| MassSourceError::Missing(path.clone()));
+        if self.share { self.values.insert(path, value); }
+        result
     }
 }
 #[path = "mass/resources.rs"]
