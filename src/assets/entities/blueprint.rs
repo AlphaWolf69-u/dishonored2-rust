@@ -144,21 +144,23 @@ impl<'a> Sources<'a> {
     pub fn expand(&mut self, parent: &PlacedModel) -> Result<Option<Vec<PlacedModel>>, String> {
         let _tag = crate::platform::allocation_tags::tag("Blueprint preparation");
         self.requests += 1;
-        let path = parent.resource_path.replace('\\', "/").to_ascii_lowercase();
+        let mut path = parent.resource_path.replace('\\', "/");
+        path.make_ascii_lowercase();
         let shared = !self.separate && !self.catalog.has_overlay_file(&path);
-        let load = || -> Result<Option<Blueprint>, String> {
+        let load = |path: &str| -> Result<Option<Blueprint>, String> {
             self.catalog
-                .read(&path)
+                .read(path)
                 .map_err(|error| error.to_string())?
                 .map(|bytes| Blueprint::parse(&String::from_utf8_lossy(&bytes)))
                 .transpose()
         };
         let result = if shared {
-            let definition = match self.definitions.entry(path.clone()) {
+            let definition = match self.definitions.entry(path) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     self.reads += 1;
-                    entry.insert(load())
+                    let definition = load(entry.key());
+                    entry.insert(definition)
                 }
             };
             definition
@@ -167,13 +169,14 @@ impl<'a> Sources<'a> {
                 .map_err(Clone::clone)
         } else {
             self.reads += 1;
-            load().map(|value| value.map(|value| value.expand(parent)))
+            load(&path).map(|value| value.map(|value| value.expand(parent)))
         };
         if self.trace {
             let mut digest = blake3::Hasher::new();
             digest.update(format!("{parent:?}:{result:?}").as_bytes());
             eprintln!(
-                "BLUEPRINT_EXPANSION path={path} shared={shared} signature={} success={}",
+                "BLUEPRINT_EXPANSION path={} shared={shared} signature={} success={}",
+                parent.resource_path,
                 digest.finalize(),
                 result.is_ok()
             );
