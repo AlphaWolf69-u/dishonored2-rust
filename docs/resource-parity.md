@@ -3499,6 +3499,47 @@ and once afterward; Corvo's source reads fell 357 to 119 and Emily's 354 to
 118 per level. Targeted cycle and capacity figures, including their limits,
 are in `optimization-opportunities.md` under player declaration preparation.
 
+The optional body AudioListener now resolves in that same temporary entity
+pass, with its typed settings or deferred error retained until player setup.
+This removes the separate setup traversal of the entity inheritance chain and
+listener declarations. Installed Corvo and Emily each inherit `base/body.def`
+and the base slot points to `audio_listener.cpntaudiolistener`, which inherits
+`audiolistener.cpntaudiolistener`. For either character, the predicted normal
+setup change is six reads to four across the shared bundle and listener lookup:
+the second reads of the character and base body entity definitions disappear,
+while the two listener declarations are still each read once. This is a
+prediction from the installed declarations, not a measurement. For a matched
+same-binary setup measurement, `DH2_PLAYER_DECL_READ_TRACE=1` prints those paths;
+adding `DH2_PLAYER_DECL_READ_BASELINE=1` uses the previous separate listener
+lookup. Count the `PLAYER_DECL_READ` lines per character and compare the
+resulting player/arm/screen behavior before reporting an observed reduction.
+The bundle still drops everything except screen inputs before screen setup and
+does not retain these fields for gameplay. The preparation resolver keys its
+temporary component cache by normalized declaration kind and name, consistent
+with `1400607f0` looking up a name in a declaration-type manager. Player entity,
+component and player MD6 inheritance now detect repeated paths instead of
+rejecting an arbitrary 16-declaration chain; this is host cycle handling, not a
+claim that all native declaration lifecycle or diagnostics have been ported.
+Mutable overlays retain their existing fresh-acquisition behavior. Cache hits
+still clone fields for callers that apply their own overlays.
+The private setup owner also drops default-mode state trees that the existing
+player state consumer cannot use, only after resolving every authored entry.
+The public `player_declarations` result remains complete, the setup classifier
+is the same one used by the state consumer, and source reads, parsing and errors
+remain unchanged. The installed Corvo and Emily modes predict 80 -> 14 retained
+records; no read or parsing reduction is claimed. The temporary resolver cache
+has already been released before this compaction. A same-binary setup run with
+`DH2_PLAYER_STATE_RETAIN_TRACE=1` reports record counts and owned capacities
+before/after; adding `DH2_PLAYER_STATE_RETAIN_BASELINE=1` retains the full list.
+Those capacities include the surviving vector backing, not allocator overhead,
+process RSS or peak memory; actual measurements are pending.
+For comparison, the original state constructor `140853ce0` stores its supplied
+declaration pointer at state +0x18, and `1408644e0` constructs and initializes
+states from the mode's declaration list. Mode teardown `1408645c0` calls each
+state's Deinitialize and destructor, while `140803f50` retires its modes. Those
+observations describe the native owners; the temporary setup bundle here does
+not claim to implement that full managed state lifecycle.
+
 ### Editable declaration, animation and UI resources
 
 The host catalog's editable layers can change their file contents without a

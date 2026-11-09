@@ -154,27 +154,34 @@ pub(super) fn overlay(base: &mut Fields, local: &[(String, Value)]) {
 pub(super) fn component_fields(
     kind: &str,
     name: &str,
-    depth: usize,
+    _depth: usize,
     cache: &mut HashMap<String, Fields>,
     read: &mut impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Fields, String> {
-    if depth > 16 {
-        return Err(format!("component inheritance exceeds 16 at {name}"));
-    }
-    if let Some(fields) = cache.get(name) {
-        return Ok(fields.clone());
-    }
-    let path = format!("generated/decls/{kind}/{name}.decl");
-    let source = read(&path)?.ok_or_else(|| format!("component declaration missing: {path}"))?;
-    let fields = parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
-    let mut resolved = match atom(&fields, "inherit") {
-        Some(parent) => component_fields(kind, parent, depth + 1, cache, read)?,
-        None => Vec::new(),
+    // 0607f0 looks up a name in its declaration-type manager. Key the
+    // preparation cache by that same type and name, not the name alone.
+    // Walk iteratively so valid long chains do not consume the call stack.
+    let first_key = format!("generated/decls/{kind}/{name}.decl").replace('\\', "/").to_ascii_lowercase();
+    if let Some(fields) = cache.get(&first_key) { return Ok(fields.clone()); }
+    let mut layers = Vec::new();
+    let mut active = std::collections::HashSet::new();
+    let mut next = Some(name.to_owned());
+    let mut resolved = loop {
+        let Some(current) = next.take() else { break Vec::new() };
+        let path = format!("generated/decls/{kind}/{current}.decl");
+        let key = path.replace('\\', "/").to_ascii_lowercase();
+        if let Some(fields) = cache.get(&key) { break fields.clone(); }
+        if !active.insert(key.clone()) {
+            return Err(format!("component declaration inheritance cycle at {path}"));
+        }
+        let source = read(&path)?.ok_or_else(|| format!("component declaration missing: {path}"))?;
+        let fields = parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
+        next = atom(&fields, "inherit").map(str::to_owned);
+        layers.push((key, fields));
     };
-    overlay(
-        &mut resolved,
-        scope(field(&fields, "edit")).unwrap_or(&fields),
-    );
-    cache.insert(name.to_owned(), resolved.clone());
+    for (key, fields) in layers.into_iter().rev() {
+        overlay(&mut resolved, scope(field(&fields, "edit")).unwrap_or(&fields));
+        cache.insert(key, resolved.clone());
+    }
     Ok(resolved)
 }

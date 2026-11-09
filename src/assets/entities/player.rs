@@ -11,6 +11,9 @@ use std::collections::HashMap;
 pub struct PlayerDeclarations {
     pub physics: Vec<(String, Value)>,
     pub audio: Vec<(String, Value)>,
+    /// Optional listener resolved in the same ordered entity/source pass.
+    /// Retain errors for the listener consumer, matching the previous lazy read.
+    pub audio_listener: Option<Result<crate::gameplay::sound::listener::Settings, String>>,
     pub camera: Vec<(String, Value)>,
     pub controller: Vec<(String, Value)>,
     pub attributes: Vec<(String, Value)>,
@@ -56,10 +59,26 @@ impl DeclarationSource {
         -> Result<std::borrow::Cow<'a, PlayerDeclarations>, String>
     {
         if !self.matches(catalog, character, true) {
-            let value = player_declarations(character, |path| {
+            let trace = std::env::var_os("DH2_PLAYER_DECL_READ_TRACE").is_some();
+            let baseline = std::env::var_os("DH2_PLAYER_DECL_READ_BASELINE").is_some();
+            let mut value = player_declarations_with_listener(character, Self::can_share(catalog) && !baseline, |path| {
+                if trace && player_listener_trace_path(path) { eprintln!("PLAYER_DECL_READ owner=bundle character={character} path={path}"); }
                 Ok(catalog.read(path).map_err(|error| error.to_string())?
                     .map(|bytes| super::declaration_text(&bytes).into_owned()))
             })?;
+            // Keep the public parser complete, and only compact this private
+            // setup copy after every authored declaration has been resolved.
+            let state_trace = std::env::var_os("DH2_PLAYER_STATE_RETAIN_TRACE").is_some();
+            let state_baseline = std::env::var_os("DH2_PLAYER_STATE_RETAIN_BASELINE").is_some();
+            let before = state_trace.then(|| (value.states.len(), state_tree_capacity(&value.states)));
+            if !state_baseline {
+                value.states.retain(|(kind, _)| crate::gameplay::player::decls::retains_default_state(kind));
+            }
+            if let Some((before_records, before_bytes)) = before {
+                let after_bytes = state_tree_capacity(&value.states);
+                eprintln!("PLAYER_STATE_RETAIN character={character} baseline={} before_records={before_records} retained_records={} before_capacity_bytes={before_bytes} retained_capacity_bytes={after_bytes}",
+                    u8::from(state_baseline), value.states.len());
+            }
             if Self::can_share(catalog) {
                 self.cached = Some((catalog.identity(), character.to_owned(), true, value));
             } else {
@@ -86,6 +105,26 @@ impl DeclarationSource {
         }
         self.cached = Some((id, name, false, value));
     }
+}
+
+/// Owned capacities for this temporary subtree, including retained vector
+/// backing; excludes allocator metadata, shared sources and process RSS.
+fn state_tree_capacity(states: &Vec<(String, Vec<(String, Value)>)>) -> usize {
+    fn fields_capacity(fields: &Vec<(String, Value)>) -> usize {
+        fields.capacity() * std::mem::size_of::<(String, Value)>()
+            + fields.iter().map(|(name, value)| name.capacity() + match value {
+                Value::Atom(text) => text.capacity(),
+                Value::Scope(fields) => fields_capacity(fields),
+            }).sum::<usize>()
+    }
+    states.capacity() * std::mem::size_of::<(String, Vec<(String, Value)>)>()
+        + states.iter().map(|(kind, fields)| kind.capacity() + fields_capacity(fields)).sum::<usize>()
+}
+
+/// Narrow setup diagnostic: only the exact sources shared by body and listener.
+pub(crate) fn player_listener_trace_path(path: &str) -> bool {
+    path.starts_with("generated/decls/entitydef/models/characters/player/") && path.ends_with("/body.def.decl")
+        || path.starts_with("generated/decls/cpntaudiolistener/")
 }
 
 fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
@@ -168,12 +207,13 @@ fn component_key(key: &str) -> Option<&str> {
 /// The entity def chain from the root ancestor to `name`.
 fn entity_chain(name: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<Fields>, String> {
     let mut chain = Vec::new();
+    let mut active = std::collections::HashSet::new();
     let mut next = Some(name.to_owned());
     while let Some(name) = next.take() {
-        if chain.len() > 16 {
-            return Err(format!("entity def inheritance exceeds 16 at {name}"));
-        }
         let path = format!("generated/decls/entitydef/{name}.decl");
+        if !active.insert(path.replace('\\', "/").to_ascii_lowercase()) {
+            return Err(format!("entity def inheritance cycle at {name}"));
+        }
         let source = read(&path)?.ok_or_else(|| format!("entity def missing: {path}"))?;
         let fields = super::parse_declaration(&source).map_err(|error| format!("{path}: {error}"))?;
         next = atom(&fields, "inherit").map(str::to_owned);
@@ -207,6 +247,13 @@ pub fn resolved_decl(kind: &str, name: &str, mut read: impl FnMut(&str) -> Resul
 
 pub fn player_declarations(
     character: &str,
+    read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<PlayerDeclarations, String> {
+    player_declarations_with_listener(character, true, read)
+}
+
+fn player_declarations_with_listener(
+    character: &str, include_listener: bool,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<PlayerDeclarations, String> {
     let entity = format!("models/characters/player/{character}/body.def");
@@ -221,8 +268,19 @@ pub fn player_declarations(
     }
     let mut cache = HashMap::new();
     let mut resolved: HashMap<String, Fields> = HashMap::new();
+    let mut listener_fields: Option<Result<Fields, String>> = None;
     for (_, entry) in &entries {
         let Some(name) = atom(entry, "inheritedDecl") else { continue };
+        if include_listener && kind_of(name) == Some("cpntaudiolistener") {
+            if !listener_fields.as_ref().is_some_and(Result::is_err) {
+                listener_fields = Some(component_fields("cpntaudiolistener", name, 0, &mut cache, &mut read)
+                    .map(|mut fields| {
+                        if let Some(inline) = scope(field(entry, "inlineDecl")) { overlay(&mut fields, inline); }
+                        fields
+                    }));
+            }
+            continue;
+        }
         let Some(kind) = kind_of(name).filter(|kind| PLAYER_COMPONENTS.contains(kind)) else { continue };
         let mut fields = component_fields(kind, name, 0, &mut cache, &mut read)?;
         if let Some(inline) = scope(field(entry, "inlineDecl")) {
@@ -230,6 +288,8 @@ pub fn player_declarations(
         }
         resolved.insert(kind.to_owned(), fields);
     }
+    let audio_listener = listener_fields.map(|fields| fields.and_then(|fields|
+        crate::gameplay::sound::listener::Settings::read(&fields)));
     let mut take = |kind: &str| resolved.remove(kind).ok_or_else(|| format!("{entity} has no {kind} component"));
     let physics = take("cpntplayerphysics")?;
     let audio = take("cpntaudio")?;
@@ -283,7 +343,7 @@ pub fn player_declarations(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }
@@ -341,7 +401,11 @@ pub fn player_view_models(
 fn md6_decl(model: &str, key: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<String>, String> {
     let Some(stem) = model.strip_suffix(".md6") else { return Ok(None) };
     let mut path = format!("generated/decls/md6def/{stem}.md6.decl");
-    for _ in 0..16 {
+    let mut active = std::collections::HashSet::new();
+    loop {
+        if !active.insert(path.replace('\\', "/").to_ascii_lowercase()) {
+            return Err(format!("{model}: md6 declaration inheritance cycle at {path}"));
+        }
         let Some(source) = read(&path)? else { return Ok(None) };
         let tokens = super::declaration_lexemes(&source)?;
         if let Some(i) = tokens.iter().position(|t| *t == key) {
@@ -351,7 +415,6 @@ fn md6_decl(model: &str, key: &str, read: &mut impl FnMut(&str) -> Result<Option
         let Some(parent) = tokens.get(i + 1) else { return Ok(None) };
         path = format!("generated/decls/md6def/{}.md6.decl", parent.trim_matches('"').trim_end_matches(".md6"));
     }
-    Err(format!("{model}: md6 inheritance exceeds 16"))
 }
 
 #[cfg(test)]

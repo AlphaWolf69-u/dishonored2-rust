@@ -330,10 +330,18 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
     let scene_paths = scene_paths(&states);
-    let listener = crate::entities::player::entity_component(
-        &format!("models/characters/player/{}/body.def", character_name(character)), "cpntaudiolistener",
-        |path| text_of(catalog, path),
-    )?.map(|fields| crate::gameplay::sound::listener::Settings::read(&fields)).transpose()?;
+    let listener = if catalog.has_overlays() || std::env::var_os("DH2_PLAYER_DECL_READ_BASELINE").is_some() {
+        let trace = std::env::var_os("DH2_PLAYER_DECL_READ_TRACE").is_some();
+        crate::entities::player::entity_component(
+            &format!("models/characters/player/{}/body.def", character_name(character)), "cpntaudiolistener",
+            |path| {
+                if trace && crate::entities::player::player_listener_trace_path(path) {
+                    eprintln!("PLAYER_DECL_READ owner=listener character={} path={path}", character_name(character));
+                }
+                text_of(catalog, path)
+            },
+        )?.map(|fields| crate::gameplay::sound::listener::Settings::read(&fields)).transpose()?
+    } else { declarations.audio_listener.clone().transpose()? };
     let (mut body, scenes) =
         load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths, listener)?;
     body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;

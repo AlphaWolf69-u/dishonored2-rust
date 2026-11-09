@@ -524,23 +524,55 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
     Ok(accepted)
 }
 
+#[derive(Clone, Copy)]
+enum SupportedDefaultState {
+    Dead, ReadNote, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
+    Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
+}
+
+fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
+    Some(match kind {
+        "playerstatedead" => SupportedDefaultState::Dead,
+        "playerstatereadnote" => SupportedDefaultState::ReadNote,
+        "playerstaterunning" => SupportedDefaultState::Running,
+        "playerstatesneaking" => SupportedDefaultState::Sneaking,
+        "playerstatesprinting" => SupportedDefaultState::Sprinting,
+        "playerstatejumping" => SupportedDefaultState::Jumping,
+        "playerstatefalling" => SupportedDefaultState::Falling,
+        "playerstatesliding" => SupportedDefaultState::Sliding,
+        "playerstateslipping" => SupportedDefaultState::Slipping,
+        "playerstateautocrouch" => SupportedDefaultState::AutoCrouch,
+        "playerstatecatfall" => SupportedDefaultState::CatFall,
+        "playerstatemantle" => SupportedDefaultState::Mantle,
+        "playerstatevault" => SupportedDefaultState::Vault,
+        "playerstateleaning" => SupportedDefaultState::Leaning,
+        _ => return None,
+    })
+}
+
+/// Same classifier used by the actual state consumer and private setup owner.
+pub(crate) fn retains_default_state(kind: &str) -> bool {
+    supported_default_state(kind).is_some()
+}
+
 /// The mode's locomotion state decls; other state kinds are not ported.
 pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
     let mut result = Vec::new();
     for (kind, fields) in &declarations.states {
-        let kind = match kind.as_str() {
-            "playerstatedead" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
-            "playerstatereadnote" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
-            "playerstaterunning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
-            "playerstatesneaking" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
-            "playerstatesprinting" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
+        let Some(supported) = supported_default_state(kind) else { continue };
+        let kind = match supported {
+            SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
+            SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
+            SupportedDefaultState::Running if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
+            SupportedDefaultState::Sneaking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
+            SupportedDefaultState::Sprinting if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
                 let d = SprintingDecl::default();
                 Kind::Sprinting(SprintingDecl {
                     minimum_stick: number(fields, "m_minimumStick", d.minimum_stick)?,
                     minimum_speed: number(fields, "m_minimumSpeed", d.minimum_speed)?,
                 })
             }
-            "playerstatejumping" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Jumping(_))) => {
+            SupportedDefaultState::Jumping if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Jumping(_))) => {
                 let d = JumpingDecl::default();
                 Kind::Jumping(JumpingDecl {
                     min_clear_distance_above: number(fields, "m_minClearDistanceAbove", d.min_clear_distance_above)?,
@@ -555,7 +587,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     super_jump_sound_event: sound_event_id(fields, "m_superJumpSoundEvent"),
                 })
             }
-            "playerstatefalling" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Falling(_))) => {
+            SupportedDefaultState::Falling if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Falling(_))) => {
                 let d = FallingDecl::default();
                 Kind::Falling(FallingDecl {
                     smooth_gravity_adjustment: number(fields, "m_smoothGravityAdjustment", d.smooth_gravity_adjustment)?,
@@ -568,7 +600,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
 
                 })
             }
-            "playerstatesliding" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sliding(_))) => {
+            SupportedDefaultState::Sliding if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sliding(_))) => {
                 let d = SlidingDecl::default();
                 Kind::Sliding(SlidingDecl {
                     in_speed: number(fields, "m_inSpeed", d.in_speed)?,
@@ -583,12 +615,12 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
 
                 })
             }
-            "playerstateslipping" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slipping(_))) => {
+            SupportedDefaultState::Slipping if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slipping(_))) => {
                 let d = SlippingDecl::default();
                 Kind::Slipping(SlippingDecl { gravity_strength: number(fields, "m_gravityStrength", d.gravity_strength)? })
             }
-            "playerstateautocrouch" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::AutoCrouch)) => Kind::AutoCrouch,
-            "playerstatecatfall" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CatFall(_))) => {
+            SupportedDefaultState::AutoCrouch if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::AutoCrouch)) => Kind::AutoCrouch,
+            SupportedDefaultState::CatFall if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CatFall(_))) => {
                 let d = CatFallDecl::default();
                 Kind::CatFall(CatFallDecl {
                     low_damage_midnight: atom(fields, "m_lowDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
@@ -601,7 +633,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     look_at_params: constraint_params(fields, "m_lookAtParams", d.look_at_params)?,
                 })
             }
-            "playerstatemantle" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Mantle(_))) => {
+            SupportedDefaultState::Mantle if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Mantle(_))) => {
                 let d = MantleStateDecl::default();
                 let three = |key: &str| -> [Option<String>; 3] {
                     let list = scope(fields, key).and_then(|s| scope(s, "m_elems")).unwrap_or(&[]);
@@ -615,7 +647,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     low_mantle_duration: number(fields, "m_lowMantleDuration", d.low_mantle_duration)?,
                 })
             }
-            "playerstatevault" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Vault(_))) => {
+            SupportedDefaultState::Vault if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Vault(_))) => {
                 let d = VaultDecl::default();
                 let l = d.limits;
                 let list = |key: &str| -> Vec<String> {
@@ -643,7 +675,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     constraint_params: constraint_params(fields, "m_constraintParams", d.constraint_params)?,
                 })
             }
-            "playerstateleaning" if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Leaning(_))) => {
+            SupportedDefaultState::Leaning if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Leaning(_))) => {
                 let d = LeaningDecl::default();
                 Kind::Leaning(LeaningDecl {
                     lean_speed_gamepad: number(fields, "m_leanSpeedGamepad", d.lean_speed_gamepad)?,
