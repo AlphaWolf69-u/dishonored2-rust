@@ -57,6 +57,15 @@ pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
 }
 pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
     if let Some(owner) = catalog.sound_events.get() {
-        owner.lock().unwrap_or_else(|error| error.into_inner()).release(catalog.identity(), "soundevent", marker);
+        let mut registry = owner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.release(catalog.identity(), "soundevent", marker);
+        registry.report(catalog.identity(), "soundevent", "scope-released", |event| event.game_properties.as_ref().map_or(0, String::capacity));
+    }
+}
+
+pub(crate) fn report_retirement(catalog: &Catalog) {
+    if let Some(owner) = catalog.sound_events.get() {
+        owner.lock().unwrap_or_else(|error| error.into_inner())
+            .report(catalog.identity(), "soundevent", "catalog-retiring", |event| event.game_properties.as_ref().map_or(0, String::capacity));
     }
 }

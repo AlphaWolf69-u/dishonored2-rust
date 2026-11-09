@@ -124,6 +124,8 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        crate::assets::physworld::mass::resources::report_retirement(self);
+        crate::assets::wwise::event_resources::report_retirement(self);
         self.mass_resources.take();
         self.sound_events.take();
         self.kiscule_resources.take();

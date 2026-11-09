@@ -80,6 +80,24 @@ impl<T> Registry<T> {
             Err(error) => { entry.failure = Some(error.clone()); Err(error) }
         }
     }
+    /// Requested storage only: hash control bytes and allocator rounding are
+    /// intentionally excluded. Weak identities do not keep decoded payloads.
+    pub(crate) fn report(&self, catalog: u64, kind: &str, phase: &str,
+        nested_bytes: impl Fn(&T) -> usize) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        let record_storage_bytes = self.entries.capacity() * std::mem::size_of::<(String, Entry<T>)>()
+            + self.entries.iter().map(|(path, entry)| path.capacity()
+                + entry.failure.as_ref().map_or(0, String::capacity)).sum::<usize>();
+        let mut payloads = 0;
+        let mut payload_bytes = 0;
+        for entry in self.entries.values() {
+            if let Some(value) = entry.current.upgrade() {
+                payloads += 1;
+                payload_bytes += 2 * std::mem::size_of::<usize>() + std::mem::size_of::<T>() + nested_bytes(&value);
+            }
+        }
+        eprintln!("RESOURCE_STORAGE catalog={catalog} kind={kind} phase={phase} records={} record_storage_bytes={record_storage_bytes} payloads={payloads} payload_bytes={payload_bytes}", self.entries.len());
+    }
     pub(crate) fn release(&mut self, catalog: u64, kind: &str, marker: u8) {
         let mut released = 0;
         for entry in self.entries.values_mut() {

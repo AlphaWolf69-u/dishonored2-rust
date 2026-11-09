@@ -48,6 +48,15 @@ pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
 }
 pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
     if let Some(owner) = catalog.mass_resources.get() {
-        owner.lock().unwrap_or_else(|error| error.into_inner()).release(catalog.identity(), "massprops", marker);
+        let mut registry = owner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.release(catalog.identity(), "massprops", marker);
+        registry.report(catalog.identity(), "massprops", "scope-released", |_| 0);
+    }
+}
+
+pub(crate) fn report_retirement(catalog: &Catalog) {
+    if let Some(owner) = catalog.mass_resources.get() {
+        owner.lock().unwrap_or_else(|error| error.into_inner())
+            .report(catalog.identity(), "massprops", "catalog-retiring", |_| 0);
     }
 }
