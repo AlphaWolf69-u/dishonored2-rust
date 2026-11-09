@@ -78,6 +78,9 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("particle definitions") {
             eprintln!("PARTICLE_MEMORY phase=level-released step={step} bytes={bytes}");
         }
+        if let Some(bytes) = crate::platform::allocation_tags::live_bytes("FX declaration sources") {
+            eprintln!("FX_SOURCE_MEMORY phase=level-released step={step} bytes={bytes}");
+        }
         if let Some(bytes) = crate::platform::allocation_tags::live_bytes("FX graph definitions") {
             eprintln!("FX_GRAPH_MEMORY phase=level-released step={step} bytes={bytes}");
         }

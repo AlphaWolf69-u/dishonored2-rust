@@ -12,6 +12,7 @@ pub(crate) fn read(catalog: &Catalog, name: &str) -> Result<Fields, String> {
 
 pub(crate) fn read_with(name: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Fields, String> {
+    let _tag = crate::platform::allocation_tags::tag("FX declaration sources");
     let (first, parent) = layer(name, &mut read)?;
     // Ordinary definitions retain the former move-only edit-block path.
     let Some(parent) = parent else { return Ok(first) };

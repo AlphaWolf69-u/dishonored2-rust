@@ -354,7 +354,7 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             drop(resources);
             for (tag, bytes) in dishonored2_rust::platform::allocation_tags::report()
                 .into_iter()
-                .filter(|(tag, _)| tag.starts_with("particle ") || tag.starts_with("FX graph "))
+                .filter(|(tag, _)| tag.starts_with("particle ") || tag.starts_with("FX "))
             {
                 println!("allocation_tag={tag:?} live_bytes={bytes}");
             }
