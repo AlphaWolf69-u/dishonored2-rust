@@ -378,6 +378,9 @@ pub(crate) fn promote(lease: &Lease) {
 
 /// 060b60 visits every registered bootstrap record, not only loaded models.
 pub(crate) fn promote_bootstrap_records(catalog: &Catalog) -> Result<(), String> {
+    // Host: a cold parent-chain load may admit headers before publication.
+    // Finish that existing load before visiting the bootstrap registry.
+    let _loading = catalog.md6_loading.lock().map_err(|_| "MD6 declaration loader is poisoned")?;
     let registry = catalog.md6_declarations.lock().map_err(|_| "MD6 declaration owner is poisoned")?;
     for record in registry.records.values() { record.scope.store(2, Ordering::Relaxed); }
     Ok(())
@@ -389,6 +392,10 @@ pub(crate) fn release_level(catalog: &Catalog) {
 
 /// 060180 selects an exact native marker; live metadata leases remain valid.
 pub(crate) fn release_marker(catalog: &Catalog, marker: PurgeMarker) {
+    // Host: load() releases its record lock for inherited IO/parse. Taking
+    // its existing publication guard first prevents a late load from pinning
+    // an otherwise unused payload after this scope has already been swept.
+    let _loading = catalog.md6_loading.lock().unwrap_or_else(|error| error.into_inner());
     let mut registry = catalog.md6_declarations.lock().unwrap_or_else(|error| error.into_inner());
     let before = registry.records.len();
     // Release matching payloads together: a child declaration can retain an

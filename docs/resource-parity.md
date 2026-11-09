@@ -14,6 +14,24 @@ behavior and improve performance/memory rather than copying inefficiencies.
 
 ## Classes
 
+### MD6 cold-load/purge serialization (2026-11-09)
+
+Prediction before the owner change: cold declaration loads release their
+record mutex while reading/parsing inherited declarations, then republish a
+resident payload under the existing Catalog loader guard. A concurrent marker
+purge currently takes only the registry/record mutexes, so it can clear a
+resident pin before an older in-flight load installs that pin again. Reuse the
+same existing loader guard at marker purge and bootstrap promotion, before
+the registry lock. Cold publication then finishes before the sweep releases
+matching pins, and bootstrap promotion sees its admitted parent headers. Fast
+resident lookup and every frame path remain unchanged; there is one extra
+lock at each actual purge/promotion boundary, with a wait only if a cold load
+is genuinely in flight. Native060180 supplies the exact marker sweep and
+060b60 the bootstrap visit; this synchronization is explicitly a host worker
+mechanism, not a claim those functions contain a native mutex. Source capture:
+main artifacts/ghidra-tool-output/f30f285a83aa769ac4a62c81.json. Valid acquired
+declarations remain leased across purge; no bytes or CPU saving is claimed.
+
 ### Inventory owner allocation attribution (2026-11-09)
 
 Prediction before adding debug attribution: item header/payload/read-generation
