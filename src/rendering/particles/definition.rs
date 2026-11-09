@@ -71,7 +71,12 @@ impl ParticleResources {
     /// residency. Runtime declarations/materials own their required backing.
     pub fn retire_unused(&mut self) {
         let before = (self.declarations.len(), self.materials.len(), self.models.len(), self.field_images.len());
-        self.declarations.retain(|_, value| value.as_ref().is_ok_and(|value| Arc::strong_count(value) > 1));
+        // 0607f0 reuses registered identities, including failed loads. Do not
+        // turn retirement into a retry loop for immutable source failures.
+        self.declarations.retain(|_, value| match value {
+            Ok(value) => Arc::strong_count(value) > 1,
+            Err(_) => true,
+        });
         self.materials.retain(|_, value| value.strong_count() != 0);
         self.models.retain(|_, value| Arc::strong_count(value) > 1);
         self.field_images.retain(|_, value| Arc::strong_count(value) > 1);
@@ -113,8 +118,16 @@ impl ParticleResources {
         self.declaration_reads += 1;
         let _tag = crate::platform::allocation_tags::tag("particle definitions");
         let loaded = (|| {
-            let mut read = |p: &str| catalog.read(p).ok().flatten();
-            let fields = read_edit(&mut read, "particledt", path)?;
+            // Use the same fallible-reader adapter as WorldSources: missing
+            // files and archive IO errors must retain their distinct causes.
+            let mut read_error = None;
+            let mut read = |path: &str| match catalog.read(path) {
+                Ok(bytes) => bytes,
+                Err(error) => { read_error = Some(format!("{path}: {error}")); None }
+            };
+            let fields = read_edit(&mut read, "particledt", path);
+            if let Some(error) = read_error { return Err(error); }
+            let fields = fields?;
             let mut declaration = particle_declaration::declaration(&fields)
                 .map_err(|error| format!("{path}: {error}"))?;
             declaration.history = Some(history);
@@ -233,9 +246,14 @@ impl ParticleDefinition {
                 .get_or_insert_with(|| Box::new(crate::assets::parm_block::ParmBlockSources::new(catalog)))
                 .acquire(catalog, name, |parameter| library.parameter_value_metadata(catalog, parameter))
         }).transpose()?;
-        if !resources.shared {
+        if !resources.shared || catalog.has_overlays() {
+            // Existing emitters retain their Arc generation. Mutable source
+            // requests must not reuse an earlier decoded payload or failure.
+            resources.declarations.clear();
             resources.models.clear();
             resources.field_images.clear();
+            resources.materials.clear();
+            resources.world_materials.clear();
         }
         let declarations = owner
             .declarations

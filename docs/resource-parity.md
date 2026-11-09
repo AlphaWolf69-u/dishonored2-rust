@@ -307,7 +307,7 @@ trailing `*` covers a family of kinds.
 | `contactSystem` | none | none: no owner yet |
 | `ContactSystemDB` | `assets::entities::contacts`, `app::audio::contacts` | host: the common parsed database is shared by catalog identity; level-specific contact chains and sound state stay independent. Four-map clients reduced reads/parses 4 -> 1 with matching 7,407-entry fingerprints; a three-load release acquisition comparison measured 26,196,065 -> 9,042,530 thread cycles. Editable overlays retain separate reads. Original common acquisition is 1400661e0 / 1400607f0; whole-class forced purge remains outside this owner |
 | `curvefloat` | `app::fog_scene`, `app::resident_images` | host: registered fog curves use installed compiled R16F images, shared through the image owner and purged by image scope; `1402edb60`/`1402ade20`/`1402add00`/`1402adf20` generate and upload the original lookup. All 16 indexed curve declarations have matching 4096x1 R16F compiled image names. An original EotW GPU capture matches its installed image in all 4,096 samples; other curves have descriptor/index coverage, not original-output comparisons. Scripted curve producers remain separate |
-| `damage` | none | none: no owner yet |
+| `damage` | `app::player`, `gameplay::player::decls` | host: the supported drowning path resolves inherited source only during player preparation, consumes the water damage/health filters into typed player settings and drops the generic fields; no runtime source reads or retained generic damage tree. Original dispatch/filter consumers are 1404c0cf0 / 140717800 / 140717dc0; other damage consumers are not claimed implemented |
 | `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Renderer residency/unload lifecycle remains partial. |
 | `DevGui_Menu` | none | none: no owner yet |
 | `difficultyManager` | `gameplay::options::gameplay` | partial: reads its resources; lifecycle not ported (see its class) |
@@ -333,8 +333,8 @@ trailing `*` covers a family of kinds.
 | `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; installed imports now acquire their complete authored dependency closure once per player VM through the existing shared source owner, before entry scripts/movie construction; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners) |
 | `image` | `app::texture_streaming`, `app::resident_images`, `assets::texture`, `rendering::bevy_backend` | host: indexed compiled images are acquired through shared scene and resident-view owners; scene mips stream on demand, GPU upload staging is retired, and map images release while reusable common/UI views remain leased. Original acquisition `1402e9ff0` and streamer `14030dbf0` are mapped to the host backend. Scoped loading-history cleanup now removes stale names after level release while preserving reusable image and UI bindings. Full backend fence and device-allocation parity remain partial; see the image sections below |
 | `inventoryitem` | `assets/inventory_item.rs`, `assets/inventory_item/sources.rs` | host: Catalog identity, live readable/history leases and inherited read-generation retirement; ported readable defaults63c510; blocked: full general item/equipment variants |
-| `inventoryItemCollection` | `assets/inventory_item/configuration.rs` | source-written:613ae0 construction, inherited item list, first-occurrence6136e0,613930 destruction; host: scoped Catalog resource records; production verification pending |
-| `inventoryLoadout` | `assets/inventory_item/configuration.rs` | source-written:613b60 construction, signed ordered assignments/flags,613930 destruction; host: scoped Catalog resource records; production verification pending |
+| `inventoryItemCollection` | `assets/inventory_item/configuration.rs` | ported:613ae0 construction, inherited item list, first-occurrence6136e0,613930 destruction; host: scoped Catalog resource records; verified: EotW/Dust/EotW CPU preparation shares bootstrap definitions and releases the item owner at Catalog destruction; gameplay quantities/eligibility are separate |
+| `inventoryLoadout` | `assets/inventory_item/configuration.rs` | ported:613b60 construction, signed ordered assignments/flags,613930 destruction; host: scoped Catalog resource records; verified: EotW/Dust/EotW and same-map CPU preparation acquisition/purge scopes; gameplay equipment variants remain separate |
 | `jointInfo` | none | none: no owner yet |
 | `jumpProfile` | none | none: no owner yet |
 | `kiscule` | `assets::entities::effects::declarations` | partial: level and declaration graph definitions shared by Arc; runtime variables, gate values, owner overrides and queues stay instance-local (`7bc1d0`/`7bb9d0`). Host ownership optimization; full lifecycle not ported |
@@ -386,9 +386,9 @@ trailing `*` covers a family of kinds.
 | `vaultClimb` | none | none: no owner yet |
 | `vaultDrop` | none | none: no owner yet |
 | `cpnt*` | `assets::entities` (components of placed entities) | partial: a few component types read (e.g. `cpntHealthEvolved`); most none |
-| `UI_HUDElement*` | none | none: no HUD |
-| `playerState*` | none | none: player states not ported as decls |
-| `gameLogicState*` | `gameplay::pause_state` (pause only) | partial: pause state only |
+| `UI_HUDElement*` | `app::hud_movie` | host: in-game HUD configuration resolves installed state/HUD declarations on its existing movie worker; typed thresholds, bindings and gauge state live with HudMovie, temporary declaration fields drop after loading, and movie/image/font leases use the shared Flash owners. Supported interaction, breath, health and mana consumers are present; this does not claim all HUD families. Source consumer 14078b550 / 14038f7d0 / 140674be0 |
+| `playerState*` | `assets::entities::player::DeclarationSource`, `gameplay::player::decls`, `gameplay::player::states` | host: ordered inherited mode/state declarations are resolved during player preparation; only supported state trees survive to typed StateDecl/Midnight construction. Setup subtrees release after their last player/arm consumer; mutable state, clocks and clip leases live with the level player. Unimplemented state mechanics are excluded. Generic native registry header/preload phases remain 1400607f0 / 1400661e0; this host does not pin unused state syntax to a session registry |
+| `gameLogicState*` | `gameplay::game_logic`, `app::pause_menu`, `app::loading_movie`, `app::hud_movie` | ported: world-selected transition matrix and stack (140787770 / 1407886c0 / 1407885b0 / 140787510); host: registered in-game, pause, read-note, Journal and map-transition backends retain their actual movie/declaration leases and retire through the existing UI-worker acknowledgement before level support resources drop. This does not register unimplemented states or claim their lifecycles |
 | `mainMenuSection*` | none | none: no main menu |
 | `menuSectionOption*` | `gameplay::options` | partial |
 
@@ -4918,3 +4918,59 @@ a CPU/VRAM reduction. Baseline is main artifacts/resource-quality-blocks-
 20261109/{result.json,stderr.log,blocks.json}; original whole-device EotW
 baseline remains tests/fixtures/original_eotw_budget.txt, not a matching
 per-buffer budget.
+
+### Retained declaration-family audit and allocator result (2026-11-09)
+
+The saved147-consumed-kind audit was compared with current consumers, not
+with the old ledger's unimplemented labels. Its81 missing-owner rows were
+77 playerState variants plus damage and three inventory declaration classes.
+Inventory now has its real scoped class owner. Player state and drowning
+configuration reads are temporary setup data, followed by typed Player/
+StateMachine/scene ownership; they are not absent implementations merely
+because their generic source is discarded. Correct the stale damage, player
+state, HUD and game-logic rows to their actual owner and supported scope. This
+is a source ownership audit, not a claim that unsupported mechanics exist or
+that all native resource classes are complete.
+
+CPU preparation through sourcea7cbcf74, with debug allocation attribution,
+completed EotW/Dust/EotW and exited0. Inventory-item-owner payload bytes after
+each level purge are243,941 /243,941 /243,941, then0 after Catalog destruction;
+900 permanent bootstrap item headers are removed at that destruction. Each
+level purge reports skeleton registry entries0 (retained table capacity7, no
+payload leases). The final parameter-block release reports34 records and0
+live generations. Earlier configuration identities/scopes are preserved in
+artifacts/inventory-lifetime-observations-20261109.json; current allocation
+observations are artifacts/cpu-owner-heap-20261109/{result.json,stderr.log}.
+The original EotW RESOURCE tag is51,830,920 bytes across22,543 allocations;
+it is not a matching item-only byte budget. These figures establish bounded
+observed ownership and session release, without claiming RSS or CPU gains.
+
+### Particle declaration failure lifetime (2026-11-09)
+
+Prediction before the correction: ParticleResources retains Result entries,
+but retire_unused currently deletes every Err, causing the same immutable
+failed declaration to be read/parsed again after cache retirement. Its catalog
+reader also turns an actual IO failure into an absent-file error. Preserve
+the existing error generation until this level-scoped owner drops, and pass
+through the real path-qualified IO error using the same adapter already used
+by WorldSources. Native0607f0/05feb0 return the existing registered resource
+identity instead of reacquiring its source; capture8774b94849d1af0a137e06d5.json
+in main retains this path. Expected result: repeated requests for a failed
+identity reuse its original error across retirement, with no successful-path
+read/parse/upload changes, no new cache, and no per-frame work. Error metadata
+is bounded by actually requested declarations and drops with the existing
+ParticleResources level owner. No CPU/byte saving is claimed on healthy content.
+
+Particle owner mutable-generation qualification: unlike immutable installed
+files, configured overlay sources can change while older effects retain their
+leases. Before the change, the particle declaration/model/field/material
+lookup reused those old decoded generations unconditionally. Follow the
+existing editable-source policy used by MD6/items/resident images: bypass
+these acquisition caches for overlay-enabled catalogs, without changing live
+emitters; image lookup bypasses only an actually overlaid image path. Expected
+result: subsequent acquisitions see fresh overlay source and a corrected
+previous error, while existing consumers retain their exact old generation.
+Normal installed-only acquisition is unchanged. This is a host overlay policy,
+not an assertion about the original editor's reload scheduling or a complete
+scene-renderer hot-reload feature. It adds no work to existing frame updates;
+overlay acquisitions intentionally perform fresh IO/parsing.

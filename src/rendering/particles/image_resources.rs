@@ -96,7 +96,7 @@ impl ParticleImages {
         let path: Arc<str> = crate::material::image_load_resource(catalog, source)
             .ok_or_else(|| format!("particle image unresolved: {source}"))?
             .replace('\\', "/").to_ascii_lowercase().into();
-        if self.shared {
+        if self.shared && !catalog.image_has_overlay(&path) {
             if let Some(image) = self.images.get(&path).and_then(Weak::upgrade) { return Ok(image); }
         }
         let image = if self.scene_images {
@@ -124,7 +124,7 @@ impl ParticleImages {
         let path: Arc<str> = crate::material::image_load_resource(catalog, source)
             .ok_or_else(|| format!("particle volume unresolved: {source}"))?
             .replace('\\', "/").to_ascii_lowercase().into();
-        if self.shared {
+        if self.shared && !catalog.image_has_overlay(&path) {
             if let Some(image) = self.volumes.get(&path).and_then(Weak::upgrade) { return Ok(image); }
         }
         let image = crate::material::load_3d_image(catalog, source)?;
