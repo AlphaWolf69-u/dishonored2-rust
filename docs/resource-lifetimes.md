@@ -9,6 +9,29 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
+## Latest continuation (2026-11-09)
+
+The current production capture reads148 resource kinds; all map to a named
+owner in the parity ledger. This counts resource consumers, not completed
+gameplay systems or all459 indexed resource kinds.
+
+The continuation fixes a shared skeleton retirement race, preserves particle
+declaration failures and real archive errors, and prevents stale overlay
+acquisition generations. The completed three-level CPU loading observation
+leaves243,941 item-owner bytes after each map, then zero after the catalog
+closes; skeleton lookup entries are zero after every unload.
+
+A same-release comparison shares immutable DirectX sampler-index buffers:
+1,693 ->30 live buffers, removing103.9375MiB of allocation payload, with
+unchanged other initial allocator bytes. The measured acquisition-only mean
+falls5.25 ->0.116microseconds. Live binding groups own the buffers; the weak
+device lookup does not pin their payload. Heap reservation still fluctuates
+because other live allocations fragment the heaps. This is no claim of FPS,
+physical VRAM, whole-process RAM or heap-compaction savings.
+
+Detailed source addresses, supported scopes and measurements are in
+resource-parity.md. Unimplemented gameplay resource consumers remain excluded.
+
 ## Particle image ownership: prediction before implementation
 
 Original image registry acquisition (`1400607f0` / `14005feb0`) returns one

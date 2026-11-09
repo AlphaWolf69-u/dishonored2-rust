@@ -326,7 +326,7 @@ trailing `*` covers a family of kinds.
 | `fxactor` | `assets::entities::effects::actors` | partial: reads its resources; lifecycle not ported (see its class) |
 | `fxanimset` | none | none: no owner yet |
 | `gameflowManager` | none | none: no owner yet |
-| `gameLogicManager` | none | none: no owner yet |
+| `gameLogicManager` | `gameplay::game_logic::Declaration`, `app::level_prepare` | ported: worldspawn-selected inherited declaration, initial state and ordered transition matrix (140787770); host: temporary syntax is dropped after conversion to the level-owned typed declaration, which releases with GameLogic after UI-state retirement. Registered backends are listed under gameLogicState*; unsupported states remain unregistered |
 | `gamesoundproperties` | none | none: no owner yet |
 | `gameVideoClip` | none | none: no owner yet |
 | `greatestMomentsManager` | none | none: no owner yet |
@@ -4974,3 +4974,34 @@ Normal installed-only acquisition is unchanged. This is a host overlay policy,
 not an assertion about the original editor's reload scheduling or a complete
 scene-renderer hot-reload feature. It adds no work to existing frame updates;
 overlay acquisitions intentionally perform fresh IO/parsing.
+
+### Sampler-buffer comparison and consumed-class coverage (2026-11-09)
+
+Releasea348ba7e, same executable with separate/shared controls, completed both
+seven-step quality routes with exit0 and no validation/panic/allocation-leak
+errors. Initial live sampler buffers fall1,693 ->30, with
+110,952,448 ->1,966,080 allocation bytes:108,986,368 bytes (103.9375MiB)
+removed. All other initial allocator bytes match exactly at3,178,823,680.
+Later snapshots retain28–30 sampler buffers, matching the predicted10–64
+range; sizes, indices, descriptor lengths and draw/shader code are unchanged.
+Acquisition-only means over138,300 /140,776 actual calls fall5,250.144 ->
+115.883ns (45.31x); medians3,000 ->100ns. Shared requests reuse140,270 times
+and create506 buffers cumulatively; dead buffers are not pinned for reuse.
+Instrumentation/log output is outside the measured acquisition interval.
+This is not an FPS, render-pass GPU-time or process-RSS result.
+
+Reserved heaps do not show a reliable saving: initial reservation is
+4,064,280,576 bytes in both modes; final reservation is4,869,586,944 /
+5,003,804,672, while live sampler allocations remain about104MiB lower.
+Mixed live allocation fragmentation remains an independent optimization
+opportunity; no heap-compaction improvement is inferred from this change.
+Source and exact measurements: main artifacts/sampler-owner-comparison-
+20261109.json and sampler-owner-{separate,shared}-20261109/{result.json,stderr.log}.
+
+The fresh production coverage report contains148 actually read resource kinds,
+including the game-logic manager absent from the old metadata audit. Each
+now maps to its actual named owner in the ledger; the old missing-HUD,
+missing-player-states and pause-only labels were stale. Unread indexed kinds
+are not presented as implemented gameplay. Owner coverage is recorded in
+artifacts/consumed-resource-owner-audit-20261109.json; it distinguishes this
+coverage result from complete native parity of unimplemented systems.

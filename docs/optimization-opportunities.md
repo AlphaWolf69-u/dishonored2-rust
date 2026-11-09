@@ -2204,3 +2204,16 @@ prediction: zero remaining catalog users at root release, followed by cache
 and read-history destruction with zero remaining catalog histories. It does
 not establish an RSS saving or faster menu acquisition; the extra named-image
 cancellation bookkeeping is not presented as a CPU optimization.
+
+
+D3D12 mixed-lifetime heap fragmentation (2026-11-09): the completed seven-
+quality route has no empty heaps, but reservation grows while live bytes
+remain bounded. Sampler-index sharing removes103.94MiB of live allocation
+payload and cuts acquisition-only mean cost45.3x, but does not compact the
+remaining heaps. Main artifacts/resource-quality-blocks-20261109/blocks.json
+attributes the free space to heaps pinned by live textures, material uniforms
+and other input buffers. A relocation/segregation design needs its own
+allocation-domain and GPU-fence evidence before implementation: releasing
+these live owners to force an empty heap would invalidate rendering. Potential
+recoverable capacity is bounded by the roughly1GiB reservation growth on this
+route, not a predicted guaranteed saving; no compaction change was made.
