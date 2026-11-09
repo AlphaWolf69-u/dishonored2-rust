@@ -341,10 +341,10 @@ impl LevelList {
     /// existing bootstrap identities through 060b60. Host: payloads retain
     /// demand loading instead of eagerly decoding unused animation resources.
     /// Installed lists have no named/default layers and only the global bit.
-    pub(crate) fn register_animation_headers(&self, catalog: &Catalog, map: &str,
+    pub(crate) fn register_preload_headers(&self, catalog: &Catalog, map: &str,
         persistent_heap: bool) -> Result<usize> {
         let context = crate::edge_animation::CreationContext::Level;
-        let bootstrap = catalog.animation_preload_bootstrap.get_or_init(|| {
+        let bootstrap = catalog.preload_bootstrap.get_or_init(|| {
             let mut count = 0;
             for section in 0..2 {
                 count += self.register_declaration_headers(catalog, section, &[0; 24], context, false)?;
@@ -355,7 +355,7 @@ impl LevelList {
             crate::assets::inventory_item::configuration::promote_bootstrap(catalog)?;
             Ok(count)
         }).as_ref().map_err(Clone::clone)?;
-        let mut previous = catalog.animation_preload_map.lock()
+        let mut previous = catalog.preload_map.lock()
             .map_err(|_| "animation preload map owner is poisoned")?;
         // 049f30 records exact map-name equality; 04a6c0 additionally checks
         // com_usePersistentHeap. 062bd0 then gives its inverse to 0410f0,

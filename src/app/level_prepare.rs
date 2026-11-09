@@ -83,7 +83,7 @@ pub(super) fn prepare_level(
     crate::loading::begin_level(list.clone(), catalog.as_ref().unwrap());
     let persistent_heap = crate::platform::console::shared().read().cvars
         .int("com_usePersistentHeap").ok_or("com_usePersistentHeap is not registered")? != 0;
-    list.register_animation_headers(catalog.as_ref().unwrap(), map, persistent_heap)
+    list.register_preload_headers(catalog.as_ref().unwrap(), map, persistent_heap)
         .map_err(std::io::Error::other)?;
     let mut physics_texts = crate::assets::declaration_texts::PhysicsSeed::new(
         catalog.as_ref().unwrap(), language,

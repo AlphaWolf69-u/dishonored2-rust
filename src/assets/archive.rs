@@ -102,8 +102,8 @@ pub struct Catalog {
     containers: containers::Containers,
     /// 068c30/0658b0 primary header order, distinct from data archive slots.
     header_order: std::sync::OnceLock<std::result::Result<Box<[u8]>, String>>,
-    pub(crate) animation_preload_bootstrap: std::sync::OnceLock<std::result::Result<usize, String>>,
-    pub(crate) animation_preload_map: std::sync::Mutex<Option<Box<str>>>,
+    pub(crate) preload_bootstrap: std::sync::OnceLock<std::result::Result<usize, String>>,
+    pub(crate) preload_map: std::sync::Mutex<Option<Box<str>>>,
 }
 
 impl Drop for Catalog {
@@ -330,8 +330,8 @@ impl Catalog {
             animset_declarations: Default::default(),
             md6_declarations: Default::default(),
             md6_loading: Default::default(),
-            animation_preload_bootstrap: Default::default(),
-            animation_preload_map: Default::default(),
+            preload_bootstrap: Default::default(),
+            preload_map: Default::default(),
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             pickable_sources: Default::default(),
