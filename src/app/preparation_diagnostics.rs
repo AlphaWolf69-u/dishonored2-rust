@@ -79,7 +79,8 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 let interactions = prepared.get_resource::<super::interactions::Interactions>()
                     .ok_or("prepared interactions are absent")?;
                 let scene = prepared.get_resource::<super::SceneData>().ok_or("prepared scene is absent")?;
-                super::usable_animation::observe_resources(&catalog, interactions, &scene.placed_models);
+                let root_count = scene.expanded_placement_roots.unwrap_or(scene.placed_models.len());
+                super::usable_animation::observe_resources(&catalog, interactions, &scene.placed_models[..root_count]);
             }
             // This is the same body/setup acquisition used by setup::prepare.
             // Rendering arms, GPU uploads and frame updates are not exercised.
