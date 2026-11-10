@@ -13,7 +13,6 @@ use super::{
     mpsc, render_state, surface_gpu, texture,
 };
 use bevy::prelude::*;
-use std::borrow::Cow;
 
 pub(super) fn inspect_retired_slot_demand(queue: &SceneRenderQueue) -> (usize, usize, usize) {
     let paths = &queue.diffuse_image_paths;
@@ -1178,32 +1177,27 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     let total_levels = inline.mip_count + selected_separate
         .map_or(0, |selected| u32::from(highest_separate.unwrap() - selected) + 1);
     let mut packed_payload = Vec::new();
-    let mut emit = |mip_level: u32, width: u32, height: u32, payload: Cow<'_, [u8]>| {
-        if packed {
-            if packed_payload.capacity() == 0 {
-                let bytes = (0..total_levels).map(|level|
-                    format.mip_bytes((width >> level).max(1), (height >> level).max(1))).sum();
-                packed_payload.reserve_exact(bytes);
-            }
-            packed_payload.extend_from_slice(&payload);
-        } else {
-            uploads.push(CompressedMipUpload {mip_level, width, height, payload: MipPayload::Owned(payload.into_owned())});
-        }
+    let chain_capacity = |width: u32, height: u32| {
+        (0..total_levels).map(|level|
+            format.mip_bytes((width >> level).max(1), (height >> level).max(1))).sum()
     };
     if let Some(selected) = selected_separate {
         let last = highest_separate.ok_or("selected image mip has no lower levels")?;
         for mip in selected..=last {
             let path = format!("{stem}_mip{mip}");
-            let bytes;
-            let (mip_width, mip_height, payload) = if packed {
-                bytes = catalog.read(&path).map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("missing authored lower mip {path}"))?;
-                let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
-                (compressed.width, compressed.height, Cow::Borrowed(compressed.payload))
+            let (mip_width, mip_height) = if packed {
+                texture::append_separate_mip(catalog, &path, u32::from(mip), format, &mut packed_payload, chain_capacity)?
+                    .ok_or_else(|| format!("missing authored lower mip {path}"))?
             } else {
                 let compressed = texture::read_separate_mip(catalog, &path, u32::from(mip), format)?
                     .ok_or_else(|| format!("missing authored lower mip {path}"))?;
-                (compressed.width, compressed.height, Cow::Owned(compressed.payload))
+                uploads.push(CompressedMipUpload {
+                    mip_level: mip_count,
+                    width: compressed.width,
+                    height: compressed.height,
+                    payload: MipPayload::Owned(compressed.payload),
+                });
+                (compressed.width, compressed.height)
             };
             if let Some((width, height)) = previous {
                 if mip_width != (width / 2).max(1)
@@ -1214,7 +1208,6 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             }
             top.get_or_insert((mip_width, mip_height));
             previous = Some((mip_width, mip_height));
-            emit(mip_count, mip_width, mip_height, payload);
             mip_count += 1;
         }
     }
@@ -1224,10 +1217,23 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         }
     }
     top.get_or_insert((inline.width, inline.height));
-    for (index, mip) in inline_mips.iter().flatten().enumerate() {
-        emit(mip_count + index as u32, mip.width, mip.height, Cow::Borrowed(mip.payload));
+    if packed {
+        if packed_payload.is_empty() {
+            packed_payload.reserve_exact(chain_capacity(inline.width, inline.height));
+        }
+        for mip in inline_mips.iter().flatten() {
+            packed_payload.extend_from_slice(mip.payload);
+        }
+    } else {
+        for (index, mip) in inline_mips.iter().flatten().enumerate() {
+            uploads.push(CompressedMipUpload {
+                mip_level: mip_count + index as u32,
+                width: mip.width,
+                height: mip.height,
+                payload: MipPayload::Owned(mip.payload.to_vec()),
+            });
+        }
     }
-    drop(emit);
     mip_count += inline.mip_count;
     if report_staging && !packed {
         let inline_bytes = inline_mips.iter().flatten().map(|mip| mip.payload.len()).sum::<usize>();

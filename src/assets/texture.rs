@@ -321,6 +321,21 @@ pub fn read_separate_mip(
     level: u32,
     format: ImageFormat,
 ) -> Result<Option<OwnedCompressedMip>, String> {
+    let mut payload = Vec::new();
+    Ok(append_separate_mip(catalog, path, level, format, &mut payload, |_, _| 0)?
+        .map(|(width, height)| OwnedCompressedMip { width, height, payload }))
+}
+
+/// Append to the final upload chain so initial views need no temporary
+/// whole-member allocation either. A failed archive read leaves it intact.
+pub(crate) fn append_separate_mip(
+    catalog: &super::archive::Catalog,
+    path: &str,
+    level: u32,
+    format: ImageFormat,
+    payload: &mut Vec<u8>,
+    chain_capacity: impl FnOnce(u32, u32) -> usize,
+) -> Result<Option<(u32, u32)>, String> {
     static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     let (buffered, trace) = *MODE.get_or_init(|| (
         std::env::var_os("DH2_DEBUG_BUFFER_SEPARATE_MIPS").is_some_and(|value| value == "1"),
@@ -328,28 +343,35 @@ pub fn read_separate_mip(
     ));
     let streamed = !buffered && !catalog.has_overlays();
     let start = trace.then(crate::loading::thread_cycles).flatten();
+    let offset = payload.len();
+    let reserve = |output: &mut Vec<u8>, width, height, bytes| {
+        let needed = if offset == 0 { chain_capacity(width, height).max(bytes) } else { bytes };
+        output.try_reserve_exact(needed).map_err(|error| error.to_string())
+    };
     let result = if streamed {
         catalog.with_stream(path, |input, size| {
             let mut words = [0; 20];
             input.read_exact(&mut words).map_err(|error| error.to_string())?;
             let header = BimageMipHeader::parse(&words, size)?;
             header.validate_format(level, format)?;
-            let mut payload = Vec::new();
-            payload.try_reserve_exact(header.payload_size).map_err(|error| error.to_string())?;
-            payload.resize(header.payload_size, 0);
-            input.read_exact(&mut payload).map_err(|error| error.to_string())?;
-            Ok(OwnedCompressedMip { width: header.width, height: header.height, payload })
-        })?
+            reserve(payload, header.width, header.height, header.payload_size)?;
+            payload.resize(offset + header.payload_size, 0);
+            input.read_exact(&mut payload[offset..]).map_err(|error| error.to_string())?;
+            Ok((header.width, header.height))
+        })
     } else {
         let Some(bytes) = catalog.read(path).map_err(|error| error.to_string())? else { return Ok(None) };
         let mip = compressed_mip(&bytes, level, format)?;
-        Some(OwnedCompressedMip { width: mip.width, height: mip.height, payload: mip.payload.to_vec() })
+        reserve(payload, mip.width, mip.height, mip.payload.len())?;
+        payload.extend_from_slice(mip.payload);
+        Ok(Some((mip.width, mip.height)))
     };
-    if let (Some(start), Some(mip)) = (start, &result) {
+    if result.is_err() { payload.truncate(offset); }
+    if let (Some(start), Ok(Some(_))) = (start, &result) {
         let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
-        eprintln!("MEMORY separate mip acquisition: path={path} streamed={streamed} member_bytes={} cycles={cycles}", mip.payload.len() + 20);
+        eprintln!("MEMORY separate mip acquisition: path={path} streamed={streamed} member_bytes={} cycles={cycles}", payload.len() - offset + 20);
     }
-    Ok(result)
+    result
 }
 
 #[test]
