@@ -6823,6 +6823,49 @@ the control destroyed its six independent identities. No preparation
 error was reported. This measures metadata acquisition and ownership.
 Evidence: DH2-fx-level-lifetime/artifacts/physics-material-constants-20261111-comparison.json.
 
+
+### Component class metadata session ownership
+
+Prediction before implementation. The installed class registration and
+hierarchy initialization (1401990d0 / 140199530 / 1401995f0) and generated
+factory registration (140946640) provide shared initialized metadata.
+The host PhysicsScene currently rereads the executable, scans constructors
+and reconstructs the same immutable ComponentTypes on every map.
+Keep the prepared class/factory/dependency metadata in its Catalog and
+let each PhysicsScene lease it. Mutable pools, entities, declarations,
+world storage and capacity settings remain constructed for each map.
+On EotW / Dust / EotW, expect three metadata acquisitions to perform one
+41,134,632-byte read/scan and two reuse hits. No executable buffer is
+retained. Reuse the existing setup-local name map so this change adds no
+per-frame name lookup. Verify the complete named class/type ranges,
+factory descriptors, dependency inputs and installed map outputs.
+The final Catalog and scene lease release must destroy the metadata.
+
+The first metadata comparison exposed allocation-dependent numeric IDs
+in one of the three independently rebuilt registries. 1990d0 sorts
+registered names by their NameId addresses, and the host allocator can
+place a later name block at a different address. Source inspection
+confirmed that component admission and dependency expansion use each
+registry's own class ranges. The comparison now records the raw
+numeric ranges separately and checks the complete named acceptance
+matrix, source metadata, factory/definition tables and resolved ranks.
+No class registration or runtime range algorithm was changed.
+
+Installed component metadata acceptance at f2620b67. The same dev
+executable completed EotW / Dust / EotW with three independent metadata
+owners and one Catalog owner. All 1,904 named classes, their complete
+acceptance relations and source fields, all 350 factory/type/definition
+descriptors and initialization ranks matched. This repeat also matched
+raw numeric ID ranges. All 645 selected preparation records matched.
+Metadata source reads fell from three (123,403,896 bytes) to one
+(41,134,632 bytes), and affected acquisition recorded 970,111,240
+versus 323,649,025 aggregate thread cycles. Three control owners and
+the one shared owner all reached final destruction. This verifies
+metadata construction and map preparation, with gameplay timings
+outside the observation.
+Evidence: DH2-collision-staging/artifacts/component-metadata-relations-20261111-comparison.json.
+
+
 ### Typed physics material resource ownership
 
 Prediction before implementation. Registration 141352520 and material

@@ -92,6 +92,7 @@ pub struct Catalog {
     pub(crate) skeleton_resources: std::sync::OnceLock<std::sync::Arc<crate::assets::edge_skeleton::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    pub(crate) component_types: std::sync::Mutex<Option<std::sync::Arc<crate::gameplay::component_state::types::ComponentTypes>>>,
     pub(crate) material_constants: std::sync::Mutex<Option<std::sync::Arc<crate::assets::physics_material::MaterialConstants>>>,
     pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::PhysicsMaterial>>>,
     pub(crate) physics_system_resources: std::sync::OnceLock<crate::assets::physworld::physics_system::Resources>,
@@ -497,6 +498,7 @@ impl Catalog {
             skeleton_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
+            component_types: Default::default(),
             material_constants: Default::default(),
             physics_material_resources: Default::default(),
             physics_system_resources: Default::default(),
