@@ -1139,9 +1139,6 @@ pub(super) fn prepare(
                 if !repeated { initialize_mesh(&mut mesh); }
                 meshes.add(mesh)
             };
-            if repeated {
-                initialize_mesh(meshes.get_mut(&mesh).expect("prepared static mesh"));
-            }
             let (mesh, transform) = if world_baked {
                 baked_shear_instances += 1;
                 (
@@ -1176,6 +1173,9 @@ pub(super) fn prepare(
                     instance,
                 )
             };
+            if repeated {
+                initialize_mesh(meshes.get_mut(&mesh).expect("prepared static mesh"));
+            }
             vegetation_meshes.prepare(
                 resolver.needs_vegetation_channels(&mat.handle),
                 &mesh,
