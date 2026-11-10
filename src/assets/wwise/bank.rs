@@ -78,8 +78,8 @@ pub(super) fn play_settings(bytes: &[u8]) -> io::Result<PlaySettings> {
     let mut delay = ActionDelay { frames: (property(0xe).unwrap_or(0) as i32).wrapping_mul(48), modifiers: [0; 2] };
     let probability = property(0x10).map(f32::from_bits);
     let count = usize::from(reader.u8()?);
-    let ids = reader.take(count)?.to_vec();
-    for id in ids {
+    let ids = reader.take(count)?;
+    for &id in ids {
         let values = [reader.u32()? as i32, reader.u32()? as i32];
         match id {
             0xf => transition.modifiers = values,
@@ -125,8 +125,8 @@ pub(super) fn state_action(bytes: &[u8]) -> io::Result<StateAction> {
     let mut delay = ActionDelay { frames: properties.iter().find(|(id, _)| *id == 0xe)
         .map_or(0, |(_, value)| (*value as i32).wrapping_mul(48)), modifiers: [0; 2] };
     let count = reader.u8()? as usize;
-    let ids = reader.take(count)?.to_vec();
-    for id in ids {
+    let ids = reader.take(count)?;
+    for &id in ids {
         let values = [reader.u32()? as i32, reader.u32()? as i32];
         if id == 0xe { delay.modifiers = values.map(|value| value.wrapping_mul(48)); }
     }
@@ -192,9 +192,9 @@ pub(super) fn stop_action(bytes: &[u8]) -> io::Result<StopAction> {
     let mut delay = ActionDelay { frames: properties.iter().find(|(id, _)| *id == 0xe)
         .map_or(0, |(_, value)| (*value as i32).wrapping_mul(48)), modifiers: [0; 2] };
     let count = reader.u8()? as usize;
-    let ids = reader.take(count)?.to_vec();
+    let ids = reader.take(count)?;
     let mut modifiers = [0; 2];
-    for id in ids {
+    for &id in ids {
         let values = [reader.u32()? as i32, reader.u32()? as i32];
         if id == 0xf { modifiers = values; }
         if id == 0xe { delay.modifiers = values.map(|value| value.wrapping_mul(48)); }
@@ -529,8 +529,8 @@ impl<'a> Reader<'a> {
 
     fn properties(&mut self) -> io::Result<Vec<(u8, u32)>> {
         let count = self.u8()? as usize;
-        let ids = self.take(count)?.to_vec();
-        ids.into_iter().map(|id| Ok((id, self.u32()?))).collect()
+        let ids = self.take(count)?;
+        ids.iter().map(|&id| Ok((id, self.u32()?))).collect()
     }
 
     fn states(&mut self) -> io::Result<()> {
@@ -553,8 +553,8 @@ impl<'a> Reader<'a> {
         self.u8()?; // Priority flags.
         node.values = self.properties()?;
         let count = self.u8()? as usize;
-        let ids = self.take(count)?.to_vec();
-        for property in ids {
+        let ids = self.take(count)?;
+        for &property in ids {
             let (min, max) = (self.f32()?, self.f32()?);
             // AkPropValue also carries integer properties such as Loop.
             // Validate as floats only for the floating gain/pitch properties.
