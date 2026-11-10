@@ -452,8 +452,51 @@ impl ProbeLightingSet {
         }
     }
 
-    /// Repack the native typed SRVs into one read-only WGSL word buffer.
-    /// The layout changes; the indices and 24/16/4-byte native records do not.
+    /// Repack the installed typed SRVs into one read-only WGSL word buffer.
+    /// The layout changes; the indices and 24/16/4-byte records do not.
+    fn vertex_shader_layout(&self) -> ([u32; 10], usize) {
+        let refs = &self.vertex_references;
+        let instances = refs.instance_offsets.len();
+        let indices = refs.tetrahedron_indices.len();
+        let tetrahedra = self.spatial.tetrahedra.len();
+        let vertices = self.spatial.vertices.len();
+        let probes = self.probes.len();
+        let instance_start = 10;
+        let index_start = instance_start + instances;
+        let tetrahedron_start = index_start + indices;
+        let vertex_start = tetrahedron_start + tetrahedra * 6;
+        let reflection_start = vertex_start + vertices * 4;
+        let word_count = reflection_start + probes * 2;
+        let header = [
+            instance_start, index_start, tetrahedron_start, vertex_start,
+            instances, indices, tetrahedra, vertices, reflection_start, probes,
+        ].map(|word| u32::try_from(word).expect("PNW GPU word count"));
+        (header, word_count)
+    }
+
+    fn write_vertex_shader_words(&self, header: &[u32; 10], mut append: impl FnMut(&[u32])) {
+        let refs = &self.vertex_references;
+        append(header);
+        append(&refs.instance_offsets);
+        append(&refs.tetrahedron_indices);
+        for tetra in &self.spatial.tetrahedra {
+            append(&tetra.vertex_indices);
+            append(&[
+                u32::from(tetra.probe_indices[0]) | u32::from(tetra.probe_indices[1]) << 16,
+                u32::from(tetra.probe_indices[2]) | u32::from(tetra.probe_indices[3]) << 16,
+            ]);
+        }
+        for vertex in &self.spatial.vertices {
+            append(&vertex.position.map(f32::to_bits));
+            append(&[u32::from_le_bytes(vertex.probe_weights)]);
+        }
+        for probe in &self.probes {
+            let (index, luminance) = self.reflection_info(probe);
+            append(&[index, luminance.to_bits()]);
+        }
+    }
+
+    /// Diagnostic control for the host's former word staging and serialization.
     pub fn vertex_shader_words(&self) -> Vec<u32> {
         let refs = &self.vertex_references;
         let mut words = vec![0u32; 10];
@@ -500,6 +543,25 @@ impl ProbeLightingSet {
             words.extend(record);
         }
         words
+    }
+
+    pub fn vertex_shader_bytes(&self) -> Vec<u8> {
+        let (header, word_count) = self.vertex_shader_layout();
+        let mut data = Vec::with_capacity(word_count * size_of::<u32>());
+        self.write_vertex_shader_words(&header, |words| {
+            #[cfg(target_endian = "little")]
+            {
+                // SAFETY: u32 has no padding and this immutable byte view spans
+                // only initialized values, whose memory order matches WGSL.
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size_of_val(words))
+                };
+                data.extend_from_slice(bytes);
+            }
+            #[cfg(target_endian = "big")]
+            data.extend(words.iter().flat_map(|word| word.to_le_bytes()));
+        });
+        data
     }
 
     /// Use the game shader's tetrahedron and per-vertex packed-probe-weight
