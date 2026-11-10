@@ -213,8 +213,8 @@ impl ResidentImages {
         }
     }
 
-    /// 1402f5530 replaces the resource's current view. Existing named wrappers
-    /// keep their old snapshot (1402df8c0); only subsequent acquisitions change.
+    /// 1402f5530 replaces the resource's current view. A live named wrapper
+    /// keeps its snapshot until its last reference releases (1402df8c0).
     /// Called at commits, never for unchanged images in the streaming hot loop.
     pub(super) fn publish_view(&self, path: &str, handle: &Handle<Image>,
         level: DiffuseMipLevel, mip_count: u32) {
@@ -320,6 +320,8 @@ impl UiImages {
                 generations.retain(|(id, generation)| generation.strong_count() != 0 || images.contains(*id));
             }
         }
+        // 14101d290 reuses the live named wrapper across Iggy contexts.
+        // Only its first acquisition calls 1402df8c0 for a view snapshot.
         if !editable {
             if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) { return Ok(binding); }
         }

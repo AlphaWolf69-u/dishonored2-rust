@@ -2115,9 +2115,17 @@ The host image owner will reuse an already acquired scene-base view only when
 its initial complete-chain view selects the scene loader's requested source mip.
 Already replaced/trimmed views are not treated as complete base chains. This
 preserves the scene minimum/residency policy rather than pinning full chains.
-Later UI acquisitions use the committed scene/common view; existing wrappers
-retain their previous view. Registered current views change only on successful
-streaming commits, including inactive common-image reductions.
+The first live named wrapper uses the committed scene/common view.
+`14101d290` first searches the global Iggy wrapper table by name and adds the
+new context reference through `14100d6f0`. It calls the texture resolver only
+when no wrapper is live. `1402df8c0` likewise acquires the SRV on its first
+reference and reuses the saved handle for further references. A streamed
+replacement leaves that named snapshot available to all holders of its live
+wrapper. After the last wrapper reference releases, the next wrapper uses
+the current committed view. The host's weak named-binding lookup represents
+this sharing without extending the wrapper lifetime. Registered current
+views change only on successful streaming commits, including inactive
+common-image reductions. This scope is established by executable code.
 
 Prediction: each eligible base slot removes exactly one independent payload
 preparation and upload, equal to that registered view's payload bytes. Mip and
