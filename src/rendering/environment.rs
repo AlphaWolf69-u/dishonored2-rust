@@ -133,7 +133,7 @@ pub fn load_area_environments(
     document: &entities::Document,
     catalog: &archive::Catalog,
 ) -> Result<Vec<AreaEnvironment>, String> {
-    load_area_environments_with_sources(document, catalog, &mut Default::default())
+    load_area_environments_with_sources(document, catalog, &mut crate::physworld::source::ShapeSources::uncached(catalog))
 }
 
 pub(crate) fn load_area_environments_with_sources(

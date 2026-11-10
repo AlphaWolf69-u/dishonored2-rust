@@ -20,7 +20,7 @@ impl Drop for ShapeHistoryLease {
         SHAPE_SCOPES.release(self.0, || {
             let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
             let start = trace.then(crate::loading::thread_cycles).flatten();
-            let (entries, bytes, slots, _) = crate::loading::retain_catalog_kind(self.0, "physhape", |_| false);
+            let (entries, bytes, slots) = crate::loading::forget_catalog_kind(self.0, "physhape").unwrap_or_default();
             if trace {
                 let cycles = start.zip(crate::loading::thread_cycles())
                     .map_or(0, |(start, end)| end.saturating_sub(start));
@@ -83,6 +83,15 @@ impl ShapeSources {
     pub(crate) fn new(catalog: &Catalog) -> Self {
         let enabled = !catalog.has_overlays()
             && std::env::var("DH2_DEBUG_SEPARATE_TRIGGER_SOURCES").as_deref() != Ok("1");
+        Self::with_sharing(catalog, enabled)
+    }
+
+    /// A standalone consumer still owns its catalog's history during acquisition.
+    pub(crate) fn uncached(catalog: &Catalog) -> Self {
+        Self::with_sharing(catalog, false)
+    }
+
+    fn with_sharing(catalog: &Catalog, enabled: bool) -> Self {
         let trace = std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1");
         Self {
             history: ShapeHistoryLease::acquire(catalog.identity()), enabled, accepting: enabled, trace,

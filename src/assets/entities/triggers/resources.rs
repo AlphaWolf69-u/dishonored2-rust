@@ -160,7 +160,7 @@ impl TriggerAssets {
     /// Reads installed files without flattening compound instances, transforms,
     /// shape tags or tree order into movement triangles or volume planes.
     pub fn load(document: &Document, map: &str, catalog: &Catalog) -> Result<Self, String> {
-        Self::load_with_sources(document, map, catalog, &mut Default::default())
+        Self::load_with_sources(document, map, catalog, &mut physworld::source::ShapeSources::uncached(catalog))
     }
 
     pub(crate) fn load_with_sources(document: &Document, map: &str, catalog: &Catalog,

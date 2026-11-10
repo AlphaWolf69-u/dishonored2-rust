@@ -189,7 +189,7 @@ pub fn trigger_wind_sources(
     catalog: &crate::archive::Catalog,
     document: &crate::entities::Document,
 ) -> Result<Vec<TriggerWindSource>, String> {
-    trigger_wind_sources_with_sources(catalog, document, &mut Default::default())
+    trigger_wind_sources_with_sources(catalog, document, &mut crate::physworld::source::ShapeSources::uncached(catalog))
 }
 
 pub(crate) fn trigger_wind_sources_with_sources(
