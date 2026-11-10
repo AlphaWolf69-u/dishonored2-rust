@@ -30,13 +30,13 @@ pub(super) fn edit(mesh: &mut SpawnMesh, fields: &Fields) -> Result<(), String> 
             }
             "m_worldspace" => mesh.worldspace = boolean(value)?,
             "m_rotationOrder" => {
-                mesh.rotation_order = match atom(value)? {
-                    "idAngles::XYZ" => 0,
-                    "idAngles::YZX" => 1,
-                    "idAngles::ZXY" => 2,
-                    "idAngles::XZY" => 3,
-                    "idAngles::YXZ" => 4,
-                    "idAngles::ZYX" => 5,
+                mesh.rotation_order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
                     mode => return Err(format!("unknown particle mesh rotation order {mode}")),
                 }
             }
@@ -71,13 +71,13 @@ pub(super) fn velocity_edit(
             "m_scale" => particles::vector_parameter(&mut mesh.scale, scope(value)?)?,
             "m_rotation" => particles::vector_parameter(&mut mesh.rotation, scope(value)?)?,
             "m_rotationOrder" => {
-                mesh.rotation_order = match atom(value)? {
-                    "idAngles::XYZ" => 0,
-                    "idAngles::YZX" => 1,
-                    "idAngles::ZXY" => 2,
-                    "idAngles::XZY" => 3,
-                    "idAngles::YXZ" => 4,
-                    "idAngles::ZYX" => 5,
+                mesh.rotation_order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
                     mode => return Err(format!("unknown particle velocity rotation order {mode}")),
                 }
             }
