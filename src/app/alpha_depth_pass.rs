@@ -21,10 +21,12 @@ fn extract(
     materials: Extract<Res<AlphaDepthMaterials>>,
     mut candidates: Local<(usize, usize, Vec<usize>)>,
 ) {
-    sources.0.clear();
     let Some(scene) = scene.as_ref() else {
+        if sources.0.capacity() != 0 { sources.0 = Default::default(); }
+        if candidates.2.capacity() != 0 { *candidates = Default::default(); }
         return;
     };
+    sources.0.clear();
     if scene.is_added() { *candidates = Default::default(); }
     // An instance's material never changes; instances are only appended and
     // the material table (blended materials only) is replaced whole. Index the
