@@ -22,6 +22,10 @@ fn placed_vertex(placement: &entities::PlacedModel, local: [f32; 3]) -> [f32; 3]
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--particle-model-streams") {
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        return dishonored2_rust::assets::particle_model::observe_streams(&base).map_err(Into::into);
+    }
     if std::env::args().nth(1).as_deref() == Some("--catalog-stream") {
         return inspect_catalog_stream();
     }

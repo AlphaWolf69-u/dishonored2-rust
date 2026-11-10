@@ -7046,6 +7046,44 @@ field names the immediately preceding build, not that earlier saved log.
 No tests, visible launches, gameplay appearance or frame-time claims.
 
 
+Particle model stream prediction (2026-11-11). Original140232220 opens
+PMODEL, validates its two magic words, reads the count and fills the final
+32-byte vertex records directly from the stream. The host currently holds
+a full decoded archive member beside the typed vertex array. The independent
+installed index census found473 models/19,889,068 source bytes, eight at
+least256KiB and a maximum969,740 bytes. Apply the existing large-model
+stream policy to PMODEL: retain small/editable buffered acquisition and
+use the Catalog's bounded reader plus an8KiB stack block for larger immutable
+members. Preserve every float bit, all20 attribute bytes, vertex order and
+opaque-tail length. Cancellation continues through the same Catalog reader;
+identity/reuse and GPU owners do not change. Expect one fewer full-member
+heap buffer per qualifying cold read, with no larger retained representation
+or per-frame work. Compare original packed vertex bytes for all473 members
+and affected read/parse cost for both modes in an optimized build before
+acceptance. No total RSS or gameplay frame-time gain is predicted.
+
+
+Particle model streaming acceptance at e74780d9. The optimized model-audit
+build compared all473 installed models/621,356 vertices with their original
+packed vertex bytes. Buffered parsing, forced stream parsing and the actual
+production selector match every float bit, all20 attribute bytes, vertex
+order, count and opaque-tail length. Eight members qualify for streaming.
+Alternating256 affected read/parse samples per mode recorded211,777us buffered
+versus184,308us streamed (about13% lower), with the same reader pool and
+warm installed files. The largest removed full-member heap buffer is969,740
+bytes; the stream decoder uses an8,192-byte stack block beside the unchanged
+final vertex array and existing archive buffering. This is a scoped acquisition
+result, not a whole-map loading, RSS, walking CPU or FPS claim.
+
+The coherent dev integration build completed buffered and streamed actual
+EotW/Dust/EotW preparation/publication with exit0. Prepared media, stream
+records, encoded residency, all scene preparation records and selected fades
+matched exactly. Resource identity, cancellation, map/session ownership and
+GPU paths are unchanged. No tests or visible launches were used. Evidence:
+DH2-fx-level-lifetime/artifacts/particle-model-streams-20261111-comparison.json
+and DH2/artifacts/particle-model-buffer-census-20261111.json.
+
+
 Allocation provenance review (2026-11-11). The completed tagged shutdown
 observation retained256 bytes under sound graph after actual audio tables
 retired. Source review of the diagnostic allocator found record_big captures
