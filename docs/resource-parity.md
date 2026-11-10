@@ -3028,6 +3028,24 @@ were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
 Live gameplay demand and cancellation were outside this windowless
 observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
 
+Worker initial-chain acquisition prediction. When an explicit initial mip
+selects separate files, the worker reads each full member and copies its
+payload even though the upload can own the buffer returned by
+`read_separate_mip`. Use the same direct reader already measured for finer
+upgrades (14030e840 and 14030f030) and transfer its payload unchanged to the
+initial chain. Keep the existing resident-image packing path and dimension
+checks. Expect one fewer overlapping whole-member allocation for each
+selected separate worker mip, with unchanged upload bytes and suffix order.
+
+Installed acceptance (`1f85fde2`). The same game-feature executable read 30
+installed mixed chains in each mode. All 35 separate-member reads selected the
+same members, totaling 13,042,364 decoded member bytes. The upload payload CRCs,
+formats, dimensions, and mip selection matched. Both runs published all 30
+images through the render mailbox and retired all observed image and archive
+backing leases. This verifies acquisition and upload ownership. Live demand and
+release CPU timing were outside the observation. Evidence:
+`DH2-interactions/artifacts/initial-separate-worker-mips-20261110-comparison.json`.
+
 ### Fog curve resource ownership
 
 The original `1402edb60` constructs a temporary curve-image builder on the
