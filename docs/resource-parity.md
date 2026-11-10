@@ -349,7 +349,7 @@ trailing `*` covers a family of kinds.
 | `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
-| `fade` | `assets::fx::fade`, `app::loading_fade` | host: select the initial or later authored declaration at `1408aac09` / `1408aac1f`, acquire only that curve for the direct-map load, sample with `140166f60` / `140166e40` / `140167170`, and retire it at fade completion. Priority/listener/script arbitration remains outside the direct-map loader. The selected-source change still requires installed load verification |
+| `fade` | `assets::fx::fade`, `app::loading_fade` | host: select the initial or later authored declaration at `1408aac09` / `1408aac1f`, acquire only that curve for the direct-map load, sample with `140166f60` / `140166e40` / `140167170`, and retire it at fade completion. Priority/listener/script arbitration remains outside the direct-map loader. Catalog-scoped immutable fade identities now own selected header registration, bootstrap promotion, cached failures and conditional map/persistent purge; loading controllers lease curves while keeping independent clocks. Installed owner-scope acceptance is pending |
 | `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the decoded traversal/object tables intentionally retain flat runtime query data. Historical source a34a947 measured the associated query package at 826 -> 682 CPU ms/s and 3.05 -> 2.30 ms median query span; this is a host performance representation, not abandoned parse staging. The source blob and typed query data share map ownership and release together |
 | `Font` | `assets::iggy::font`, `flash::text`, `flash::glyph_cache` | host: metadata reads do not decode glyphs; live movie consumers share metrics, kerning and lazy outlines over retained Iggy source bytes through a weak provider index (original14102bd60/14102ba20). Source/provider/movie ownership has no strong cycle. Existing R8 glyph pages, dirty updates, installed atlas caps and inactive GPU eviction remain unchanged. Working-main same-binary production acquisition created35->7 providers, peak record bytes400964->200634, and released every created identity in both modes. This validates provider lifetime/reuse, not CPU speed or total IGGY parity |
 | `footStepPhysMat` | none | none: no owner yet |
@@ -6980,3 +6980,19 @@ global installation/map state. This is source-context correctness, with no
 CPU-speed, gameplay playback or GPU upload claim. No tests or visible game
 launches were used. Evidence:
 DH2-fx-level-lifetime/artifacts/audio-acquisition-context-v3-20261111-comparison.json.
+
+
+Fade resource lifetime prediction (2026-11-11). Original declaration
+registration 141351cd0 uses the shared registry 1400607f0; fade is in the
+36-kind conditional heap-1 table at 142280ee0. The host loading controller
+currently reads/parses its selected declaration directly and drops its curve
+when complete, leaving the catalog read credit without a resource owner.
+Route that same typed parser through the existing scoped Registry. Register
+selected lazy headers, promote bootstrap identities, retain immutable failures,
+bypass sharing for editable sources, and retire map/persistent read credits
+only after the last curve lease. Keep each loading controller's duration and
+elapsed time independent. Expect identical selected curve samples and no frame
+lookup/locking; repeated requests within a live scope should parse once.
+Header/shared payload retention can increase between fades, so this is a
+lifecycle/reuse correction, not a predicted RAM or frame-time reduction.
+Observe every installed fade and the actual bootstrap/map/final lease boundaries.
