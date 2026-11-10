@@ -5598,3 +5598,11 @@ boundary (1408a4830). Measure the cancellation span separately from ordinary
 load costs.
 
 The clean game-feature compilation at db1cb92a covers the new checks. Live shutdown latency and cancellation at the individual checkpoints remain unobserved.
+
+Autonomous motion event ownership. The host now borrows the selected event
+node, its parameters and its ports from the loaded graph while mutating
+only the playback, motor and variable owners. This removes one temporary
+definition copy per dispatched event. The original keyframe action
+140533460 reads its authored declaration identity and stores a separate
+playback handle at +0x30. The existing node lookup order and dispatch rules
+are preserved. The installed motion-output comparison is pending.
