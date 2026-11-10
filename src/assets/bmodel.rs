@@ -44,15 +44,19 @@ impl std::ops::Deref for ModelSource {
     }
 }
 
+/// Load one model without extending its lifetime past the caller's lease.
+pub(crate) fn load(catalog: &super::archive::Catalog, path: &str) -> Result<Option<Model>, String> {
+    catalog.read(path).map_err(|error| error.to_string())?
+        .map(|bytes| parse(&bytes).map_err(|error| format!("{path}: {error}")))
+        .transpose()
+}
+
 pub(crate) fn acquire(
     catalog: &super::archive::Catalog,
     path: &str,
     common: Option<&CommonModels>,
 ) -> Result<Option<ModelSource>, String> {
-    let read = || -> Result<Option<Model>, String> {
-        catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| parse(&bytes)).transpose()
-    };
+    let read = || load(catalog, path);
     let Some(common) = common.filter(|owner| owner.paths.contains(path)) else {
         return Ok(read()?.map(ModelSource::Level));
     };

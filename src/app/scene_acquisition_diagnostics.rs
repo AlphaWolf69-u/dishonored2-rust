@@ -11,21 +11,22 @@ pub fn inspect_scene_preparation(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    inspect_scene_resources(base, levels, Mode::Prepare)
+    inspect_scene_resources(base, levels, Mode::Prepare, false)
 }
 
 pub fn inspect_scene_publication(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    inspect_scene_resources(base, levels, Mode::Publish)
+    inspect_scene_resources(base, levels, Mode::Publish, false)
 }
 
 pub fn inspect_scene_gpu_resources(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    inspect_scene_resources(base, levels, Mode::Upload)
+    let reuse_host = levels.first().is_some_and(|arg| arg == "--reuse-host");
+    inspect_scene_resources(base, &levels[usize::from(reuse_host)..], Mode::Upload, reuse_host)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -164,10 +165,57 @@ fn resource_snapshot(world: &World, step: usize, phase: &str) {
     super::resource_diagnostics::allocator_snapshot(world.resource::<RenderDevice>(), phase, step);
 }
 
+fn scene_host(first_host: bool) -> App {
+    let mut app = App::new();
+    let mut plugins = DefaultPlugins
+            .set(bevy::window::WindowPlugin {
+                primary_window: None,
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                ..default()
+            })
+            .set(bevy::render::RenderPlugin {
+                render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
+                    bevy::render::settings::WgpuSettings {
+                        backends: cfg!(target_os = "windows")
+                            .then_some(bevy::render::settings::Backends::DX12),
+                        features: bevy::render::settings::WgpuSettings::default().features
+                            | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
+                            | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
+                            | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D,
+                        ..default()
+                    },
+                )),
+                ..default()
+            })
+            .disable::<bevy::audio::AudioPlugin>()
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>();
+    // Log/tracing subscribers are process-wide; later independent hosts
+    // reuse the first host's subscriber rather than registering it again.
+    if !first_host { plugins = plugins.disable::<bevy::log::LogPlugin>(); }
+    app.add_plugins(plugins);
+    app.add_plugins(MaterialPlugin::<ProbeMaterial>::default())
+        .add_plugins(MaterialPlugin::<DecalMaterial>::default())
+        .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin)
+        .init_resource::<super::texture_streaming::SharedImages>()
+        .init_resource::<super::resident_images::ResidentImages>();
+    super::scene_preparation::SceneGpuInputs::install(&mut app);
+    super::audio::initialize_resources(&mut app);
+    app.finish();
+    app.cleanup();
+    let resident = app
+        .world()
+        .resource::<super::resident_images::ResidentImages>()
+        .clone();
+    app.insert_resource(super::resident_images::UiImages::new(resident));
+    app
+}
+
 fn inspect_scene_resources(
     base: &std::path::Path,
     levels: &[String],
     mode: Mode,
+    reuse_host: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if levels.is_empty() {
         return Err("inspect-scene-preparation requires level names".into());
@@ -175,58 +223,16 @@ fn inspect_scene_resources(
     let catalog = archive::Catalog::shared(base)?;
     let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
+    let mut host = None;
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
         if let Some(map) = level.entities.strip_suffix(".entities") {
             crate::gameplay::map_info::set_current_map(&format!("{map}.map"));
         }
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=begin");
-        // A fresh host per sample avoids claiming reuse of unpublished assets.
-        // The real worker prepares its normal asset batches; dropping the
-        // unpublished result observes completed-but-unpublished acquisition
-        // retirement; it does not simulate mid-read cancellation or game frames.
-        let mut app = App::new();
-        let mut plugins = DefaultPlugins
-                .set(bevy::window::WindowPlugin {
-                    primary_window: None,
-                    exit_condition: bevy::window::ExitCondition::DontExit,
-                    ..default()
-                })
-                .set(bevy::render::RenderPlugin {
-                    render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
-                        bevy::render::settings::WgpuSettings {
-                            backends: cfg!(target_os = "windows")
-                                .then_some(bevy::render::settings::Backends::DX12),
-                            features: bevy::render::settings::WgpuSettings::default().features
-                                | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
-                                | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
-                                | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D,
-                            ..default()
-                        },
-                    )),
-                    ..default()
-                })
-                .disable::<bevy::audio::AudioPlugin>()
-                .disable::<bevy::winit::WinitPlugin>()
-                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>();
-        // Log/tracing subscribers are process-wide; later independent hosts
-        // reuse the first host's subscriber rather than registering it again.
-        if step != 0 { plugins = plugins.disable::<bevy::log::LogPlugin>(); }
-        app.add_plugins(plugins);
-        app.add_plugins(MaterialPlugin::<ProbeMaterial>::default())
-            .add_plugins(MaterialPlugin::<DecalMaterial>::default())
-            .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin)
-            .init_resource::<super::texture_streaming::SharedImages>()
-            .init_resource::<super::resident_images::ResidentImages>();
-        super::scene_preparation::SceneGpuInputs::install(&mut app);
-        super::audio::initialize_resources(&mut app);
-        app.finish();
-        app.cleanup();
-        let resident = app
-            .world()
-            .resource::<super::resident_images::ResidentImages>()
-            .clone();
-        app.insert_resource(super::resident_images::UiImages::new(resident));
+        // Fresh hosts isolate each sample by default. Reuse mode carries the
+        // asset storage and render device across actual map retirement.
+        let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
         if mode == Mode::Upload {
             let inputs = gpu_inputs(app.world());
             upload_assets(&mut app, &inputs)?;
@@ -295,15 +301,20 @@ fn inspect_scene_resources(
         } else {
             drop(prepared);
         }
-        drop(app);
-        for (tag, bytes) in crate::platform::allocation_tags::report() {
-            eprintln!(
-                "RESOURCE_SCENE_HEAP step={step} phase=host-released tag={tag:?} bytes={bytes}"
-            );
+        if reuse_host {
+            host = Some(app);
+        } else {
+            drop(app);
+            for (tag, bytes) in crate::platform::allocation_tags::report() {
+                eprintln!(
+                    "RESOURCE_SCENE_HEAP step={step} phase=host-released tag={tag:?} bytes={bytes}"
+                );
+            }
         }
         catalog.release_level_resources();
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
+    drop(host);
     drop(session);
     drop(catalog);
     drop(catalog_session);
