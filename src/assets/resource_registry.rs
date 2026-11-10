@@ -30,6 +30,13 @@ impl<T: ?Sized, E> Default for Registry<T, E> {
 }
 impl<T: ?Sized, E: Clone> Registry<T, E> {
     pub(crate) fn len(&self) -> usize { self.entries.len() }
+    #[cfg(feature = "game")]
+    pub(crate) fn registered_paths(&self) -> Vec<&str> {
+        let mut paths = self.entries.keys().map(String::as_str).collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths
+    }
+
     pub(crate) fn owns_read_history(&self, path: &str) -> bool {
         self.entries.get(path).is_some_and(|entry|
             entry.current.as_ref().is_some_and(|value| value.strong_count() != 0) || entry.failure.is_some())
