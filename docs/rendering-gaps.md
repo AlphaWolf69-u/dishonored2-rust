@@ -155,3 +155,30 @@ budget r_prt_particletrailrenderer_budget; pose 140211a90; spawn
 14020a720 (idTriangleDrawVerts<ushort>); surface record 140210e30 from
 1401fbad0. The particle renderprog draws them through its
 non-`$useDirectInstancing` branch (vertex texcoord4, color, texcoord5).
+
+Trail record (0x168): +4 trail life (m_trailLife sample), +8 seed, +0xc
+initial location (raw m_spawn.m_initialLocation value), +0x18 colour (baseColor x
+initialColor, alpha x initialAlpha), +0x28 width, +0x2c flip bits
+(14020dd00), +0x30 pose interpolator (1401d9xxx, same as EmitterPose),
++0xa0 time of last point, +0xa4 emitting, +0xa8/+0xac interpolation
+distance and its square (FLT_MAX when <= 0), +0xb0 point times,
++0xc8 point positions, +0x108 per-point base velocity (m_initialVelocity),
++0x118 per-point accumulated velocity, +0x128 per-point orientation
+(only with m_isVectorOriented), +0x138 trail time, +0x13c cycle fraction,
++0x140 flipbook frame, +0x144 seed, +0x148 length, +0x14c segment count,
++0x150..+0x164 bounds.
+Per substep (14020cfc0): flipbook advance (14020eb00), drop points older
+than trail life keeping one (14020d7c0, only with more than 3 points and
+once the oldest exceeds 1.2x life? DAT_141ac8fd8), trail-life motion sample
+(14020ba40), per-point motion (14020c620: segment-life velocity over life,
+accelerations, gravity), new point when emitting (140209de0: needs
+m_minimalEmitterMove since the last pose and m_minimalParticleDistance from
+the last point; subdivides by m_interpolationDistance along the pose
+interpolator), length and bounds by Catmull-Rom over 2n-3 samples
+(14020dff0), segment count (14020d6f0: length x segments + 0.5, at least
+1, capped by maxSegments when length scaled).
+Strip (14020a720): segment count + 1 vertex pairs from max(time - life,
+first point time) to the newest point; colour/alpha/width from trail-life
+curves at the normalized age; centre and side from 140210240/1402100f0 and
+14020f940/14020f710; vertices written by 140212f90 (40 bytes each),
+strips joined by duplicated vertices; bounds grow by the widest width.
