@@ -6583,3 +6583,14 @@ source bytes, skin fields, render meshes and actor behavior. The
 normal model reader and physics owners retain their existing payload.
 Compare capacities and the affected acquisition spans using installed
 usable models and a full-data reference in the same build.
+
+Installed usable skin source acceptance at a9fd5eeb. Edge of the
+World, Dust District, Edge of the World matched all 140 skin source
+acquisitions, 63 unique models, compiled member fingerprints and
+prepared instances. The full decode allocated 1,352,190 bytes for
+UV0 and indices, matching four bytes per 119,931 vertices and two
+bytes per 436,233 indices. The skin-only decode allocated zero bytes
+for those arrays. The scoped read/decode counters were 57.11 and
+57.72 million dev thread cycles respectively. This is an allocation
+result with no measured speedup or gameplay frame-time claim.
+Evidence: DH2-fx-level-lifetime/artifacts/usable-skin-source-20261111-comparison.json.
