@@ -2954,6 +2954,19 @@ ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
 
+Streaming priority ownership prediction: original 14030cdb0 derives the
+priority class from the current image record's path. The host cache currently
+rebuilds classifications only when the slot array changes length. Reusing a
+retired FX slot can keep its previous path class and therefore change the new
+image's request and reduction order. Classify each path on admission and keep
+its class beside the projected demand in the existing record's alignment
+padding. Inactive shared images retain that class with the mip state. This
+removes the separate two-byte-per-slot cache, its full
+path rescan on append, and the second classification on shared-image capture.
+Existing slots should keep the same priority keys. Reused slots should get
+the same key as a fresh slot for the same path and demand, apart from the
+existing slot-index tie break. No per-frame path processing is added.
+
 
 ### Fog curve resource ownership
 

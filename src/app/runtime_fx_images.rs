@@ -95,7 +95,11 @@ pub(super) fn synchronize(
                 index
             };
             let priority = source.sampling_priority.load(Ordering::Relaxed);
-            queue.diffuse_image_demands[index].raise_priority(priority);
+            if existing.is_some() {
+                queue.diffuse_image_demands[index].raise_priority(priority);
+            } else {
+                queue.diffuse_image_demands[index] = super::texture_streaming::image_demand(&path, priority.max(1));
+            }
             queue.diffuse_mip_states[index].sampling_priority = priority;
             state.slots.insert(path, Slot { index, image: Arc::downgrade(source), owned: existing.is_none(), registered: false, added_consumer: false, wanted: true, lease: None });
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {

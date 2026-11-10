@@ -48,6 +48,11 @@ pub(super) struct DiffuseMipState {
     pub(super) path_priority: u16,
 }
 
+pub(super) fn image_demand(path: &str, sampling_priority: u8) -> texture::ProjectedAreaDemand {
+    texture::ProjectedAreaDemand::with_priority(sampling_priority)
+        .with_path_priority(residency::path_priority(path))
+}
+
 /// Explicit init/common image references survive world destruction. Capture
 /// the current streamed identity at a map boundary, never a second base copy.
 /// No registry lookup or lock is added to ordinary gameplay streaming.
@@ -134,7 +139,7 @@ impl SharedImages {
             state.pending = None;
             state.pending_reduction = false;
             state.reserved_bytes = 0;
-            state.path_priority = residency::path_priority(path);
+            state.path_priority = queue.diffuse_image_demands[slot].path_priority();
             state.idle_frames = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
             self.resident
                 .insert(path.clone(), (queue.preferred_mip, handle.clone(), state));

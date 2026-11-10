@@ -69,7 +69,6 @@ fn reduction_target(resident: DiffuseMipLevel, minimum: DiffuseMipLevel,
 /// sort only potentially eligible requests, reusing both scratch vectors.
 #[derive(Default)]
 pub(super) struct Pressure {
-    path_priority: Vec<u16>,
     keys: Vec<u64>,
     prepared_frame: u64,
     pub reductions: u64,
@@ -98,15 +97,12 @@ fn area_key(area: f32, mode: u16, age: u32, priority: u16, slot: usize) -> u64 {
 
 impl Pressure {
     fn prepare(&mut self, queue: &SceneRenderQueue) {
-        if self.prepared_frame == queue.texture_stream_frame && self.path_priority.len() == queue.diffuse_image_paths.len() { return; }
+        if self.prepared_frame == queue.texture_stream_frame && self.keys.len() == queue.diffuse_image_demands.len() { return; }
         self.prepared_frame = queue.texture_stream_frame;
-        if self.path_priority.len() != queue.diffuse_image_paths.len() {
-            self.path_priority = queue.diffuse_image_paths.iter().map(|p| path_priority(p)).collect();
-            self.keys.resize(self.path_priority.len(), 0);
-        }
+        self.keys.resize(queue.diffuse_image_demands.len(), 0);
         for (slot, demand) in queue.diffuse_image_demands.iter().enumerate() {
             let age = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
-            self.keys[slot] = area_key(demand.area(), demand.metadata(), age, self.path_priority[slot], slot);
+            self.keys[slot] = area_key(demand.area(), demand.metadata(), age, demand.path_priority(), slot);
         }
     }
 
