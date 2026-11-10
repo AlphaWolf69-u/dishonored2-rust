@@ -243,7 +243,7 @@ impl CameraGpu {
     }
 }
 pub(super) fn register(app: &mut App) {
-    app.init_resource::<FxSimulation>().init_resource::<FxPublication>();
+    app.init_resource::<FxPublication>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<FxPublication>::default());
     app.init_resource::<super::particle_pass::ParticleMaterialSampler>();
     app.init_resource::<super::particle_images::SceneParticleImages>()
@@ -715,14 +715,14 @@ pub(crate) fn simulate_effects(
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
     particle_view: Res<super::particle_systems::ParticleQueryFrame>,
     fog_frame: Res<FogSceneFrame>,
-    mut simulation: ResMut<FxSimulation>,
+    simulation: Option<ResMut<FxSimulation>>,
     mut published: ResMut<FxPublication>,
     mut last_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
     mut decal_error: Local<Option<String>>,
 ) {
-    let (Some(water), Some(sources)) = (water.0.as_ref(), sources.0.as_ref()) else {
+    let (Some(water), Some(sources), Some(mut simulation)) = (water.0.as_ref(), sources.0.as_ref(), simulation) else {
         // A missing view withdraws the draw data. LevelLifetime owns the
         // simulation and retires it after the outgoing GPU publication.
         published.0 = None;

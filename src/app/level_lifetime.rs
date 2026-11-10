@@ -100,6 +100,7 @@ impl LevelLifetime {
         // published() recorded the startup resources.
         world.remove_resource::<super::ParallelShadowOwner>();
         world.remove_resource::<super::local_shadow_updates::LocalShadowOwner>();
+        world.remove_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
         if let (Some(images), Some(shared)) = (
@@ -182,7 +183,6 @@ fn reset_scene_publications(world: &mut World) {
         backend::particle_pass::ParticleMaterialSampler,
         backend::particle_images::SceneParticleImages,
         backend::particle_systems::ParticleQueryFrame,
-        backend::camera_scene::FxSimulation,
         backend::camera_scene::FxPublication,
         backend::physics_queries::PhysicsQueryFrame,
         backend::shadow_pass::ShadowSceneFrame,
