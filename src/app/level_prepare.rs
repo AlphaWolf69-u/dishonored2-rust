@@ -9,6 +9,7 @@ use super::{
     shader_cache, shadow_target_dimensions, tome, transformed, view_to_game,
 };
 use bevy::prelude::*;
+use std::sync::Arc;
 
 /// Hold shape acquisition history until the published world retires.
 #[derive(Resource)]
@@ -40,6 +41,30 @@ impl SkeletalHistoryScope {
 #[derive(Resource)]
 pub(super) struct PreparedPhysicsTexts(pub(crate) crate::assets::declaration_texts::PhysicsSeed);
 
+/// The archived companions belong to this map, even when preparation fails.
+#[derive(Resource)]
+pub(super) struct LevelSourceReads {
+    catalog: Arc<archive::Catalog>,
+    level: crate::assets::level::LevelResources,
+}
+
+impl Drop for LevelSourceReads {
+    fn drop(&mut self) {
+        let level = &self.level;
+        let mut retired = 0;
+        for path in [level.world.as_str(), level.entities.as_str(), level.tome.as_str()]
+            .into_iter().chain(level.physics.as_deref()).chain(level.probe_network.as_deref())
+        {
+            if let Some(kind) = self.catalog.kind(path) {
+                retired += usize::from(crate::loading::forget(self.catalog.identity(), kind, path).is_some());
+            }
+        }
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("LEVEL_SOURCE_HISTORY world={} retired={retired}", level.world);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CancellationPoint {
     General,
@@ -69,6 +94,8 @@ pub(super) fn prepare_level(
     check_cancelled()?;
     let profile = env::var("DH2_PERF_PROFILE").as_deref() == Ok("1");
     let startup = Instant::now();
+    let level_reads = LevelSourceReads { catalog: catalog.clone(), level };
+    let level = &level_reads.level;
     let path = PathBuf::from(&level.world);
     let game_base = Some(base);
     let catalog = Some(catalog);
@@ -1104,5 +1131,6 @@ pub(super) fn prepare_level(
     app.insert_resource(ViewSettings(view_settings));
     app.insert_resource(StreamingDiagnostics::new(&path));
     drop(entity_document);
+    app.insert_resource(level_reads);
     Ok(app)
 }
