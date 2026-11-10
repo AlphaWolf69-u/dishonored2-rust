@@ -1,5 +1,7 @@
 //! Persistent colour-cube history from 326af0, independent of fog shadows.
 use bevy::{
+    asset::RenderAssetUsages,
+    image::Image,
     math::Vec4,
     render::{
         render_resource::*,
@@ -20,6 +22,18 @@ pub fn identity_pixels() -> Vec<u8> {
             })
         })
         .collect()
+}
+
+pub(crate) fn identity_image() -> Image {
+    let mut image = Image::new(
+        Extent3d { width: 32, height: 32, depth_or_array_layers: 32 },
+        TextureDimension::D3,
+        identity_pixels(),
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.label = Some("default colour grading image");
+    image
 }
 
 pub struct CubeOverrides<'a> {

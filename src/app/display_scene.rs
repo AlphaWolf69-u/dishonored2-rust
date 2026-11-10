@@ -91,12 +91,14 @@ impl DisplayScene {
             &default_reader.image_source("env/tonemapping/colorcube")?,
             images,
             &mut resident,
+            registry,
         )?;
         let world_cube = load_cube(
             catalog,
             &reader.image_source("env/tonemapping/colorcube")?,
             images,
             &mut resident,
+            registry,
         )?;
         // The parameters an environment sets, and its colour cube.
         let mut prepare = |parameters: &EnvironmentRenderParameters| -> Result<AreaInputs, String> {
@@ -116,6 +118,7 @@ impl DisplayScene {
                     &read.image_source("env/tonemapping/colorcube")?,
                     images,
                     &mut resident,
+                    registry,
                 )?)
             } else {
                 None
@@ -266,6 +269,7 @@ fn load_cube(
     name: &str,
     images: &mut dyn AssetWrite<Image>,
     resident: &mut HashMap<String, Handle<Image>>,
+    registry: &super::resident_images::ResidentImages,
 ) -> Result<Handle<Image>, String> {
     let key = if name.eq_ignore_ascii_case("_defaultColorCube") {
         "_defaultColorCube".into()
@@ -276,11 +280,16 @@ fn load_cube(
     if let Some(image) = resident.get(&key) {
         return Ok(image.clone());
     }
-    let (pixels, format) = if key == "_defaultColorCube" {
-        (
-            crate::rendering::bevy_backend::colour_cube::identity_pixels(),
-            TextureFormat::Rgba8Unorm,
-        )
+    let handle = if key == "_defaultColorCube" {
+        let shared = registry.default_colour_cube();
+        let reused = shared.is_some();
+        let handle = shared.unwrap_or_else(|| {
+            images.add(crate::rendering::bevy_backend::colour_cube::identity_image())
+        });
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+            eprintln!("DISPLAY_DEFAULT_COLOUR_CUBE shared={reused} handle={:?}", handle.id());
+        }
+        handle
     } else {
         let bytes = catalog
             .read(&key)
@@ -303,19 +312,14 @@ fn load_cube(
             crate::texture::ImageFormat::Rgba8Srgb => TextureFormat::Rgba8UnormSrgb,
             other => return Err(format!("unsupported colour-cube format {other:?}: {key}")),
         };
-        (volume.payload, format)
+        images.add(Image::new(
+            Extent3d { width: 32, height: 32, depth_or_array_layers: 32 },
+            TextureDimension::D3,
+            volume.payload,
+            format,
+            RenderAssetUsages::RENDER_WORLD,
+        ))
     };
-    let handle = images.add(Image::new(
-        Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 32,
-        },
-        TextureDimension::D3,
-        pixels,
-        format,
-        RenderAssetUsages::RENDER_WORLD,
-    ));
     resident.insert(key, handle.clone());
     Ok(handle)
 }
