@@ -274,7 +274,7 @@ impl WorldFxSources {
         if let Ok(effect) = std::env::var("DH2_DEBUG_PLAY_FX") {
             names.push(effect);
         }
-        result.load_named_into(names, catalog, library, resources);
+        result.load_named_into(names, catalog, library, resources, || false);
         result
     }
 
@@ -287,8 +287,22 @@ impl WorldFxSources {
         resources: &mut super::definition::ParticleResources,
     ) -> Self {
         let mut result = Self::default();
-        result.load_named_into(names, catalog, library, resources);
+        result.load_named_into(names, catalog, library, resources, || false);
         result
+    }
+
+    pub(crate) fn load_named_cancellable(
+        names: Vec<String>,
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Self, String> {
+        let mut result = Self::default();
+        if !result.load_named_into(names, catalog, library, resources, cancelled) {
+            return Err("effect acquisition cancelled".into());
+        }
+        Ok(result)
     }
 
     fn load_named_into(
@@ -297,7 +311,8 @@ impl WorldFxSources {
         catalog: &Catalog,
         library: &mut ProgramLibrary,
         resources: &mut super::definition::ParticleResources,
-    ) {
+        cancelled: impl Fn() -> bool,
+    ) -> bool {
         let result = self;
         let trace = std::env::var_os("DH2_TRACE_WORLD_FX").is_some();
         let mut sound_events = HashMap::new();
@@ -306,6 +321,7 @@ impl WorldFxSources {
         // reference order after the declarations that name them.
         let mut next = 0;
         while next < names.len() {
+            if cancelled() { return false; }
             let name = names[next].clone();
             let name = &name;
             next += 1;
@@ -318,6 +334,7 @@ impl WorldFxSources {
                 let mut groups = Vec::new();
                 let group_fields = descriptor_fields(scope(&fields, "m_groups").unwrap_or(&[]))?;
                 for fields in &group_fields {
+                    if cancelled() { return Err("effect acquisition cancelled".into()); }
                     let asset = crate::assets::fx::effect_group(fields)?;
                     if !asset.enabled {
                         continue;
@@ -404,6 +421,7 @@ impl WorldFxSources {
                 Ok(Arc::new(WorldEffectDefinition { groups }))
             };
             let loaded = load().map_err(|error| format!("{name}: {error}"));
+            if cancelled() { return false; }
             if trace {
                 match &loaded {
                     Ok(definition) => eprintln!("World FX definition acquired: {name} groups={}", definition.groups.len()),
@@ -413,5 +431,6 @@ impl WorldFxSources {
             result.effects.insert(name.clone(), loaded);
             names.extend(children);
         }
+        !cancelled()
     }
 }
