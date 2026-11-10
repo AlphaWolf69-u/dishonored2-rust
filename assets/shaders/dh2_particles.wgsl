@@ -6,6 +6,7 @@ override particle_water_alpha_mask_spec:u32=0u;
 override particle_water_mesh:u32=0u;
 override particle_masking:u32=0u;
 override particle_liquid:u32=0u;
+override particle_dissolve:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -72,6 +73,8 @@ struct ParticleMaterialParameters {
     translucency_ramp:array<vec4<f32>,3>,
     liquid:array<vec4<f32>,3>,
     liquid_options:vec4<u32>,
+    dissolve:vec4<f32>,
+    dissolve_options:vec4<u32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -237,6 +240,71 @@ fn particle_fresnel_opacity(input:ParticleFragment,coordinates:vec4<f32>,normal:
     }
     return 1.0;
 }
+// particles::Distortion before it adds the texture coordinates: the
+// UV offset in XY and the distortion mask in Z.
+fn particle_distortion(coordinates:vec4<f32>)->vec3<f32> {
+    let material=particle_material;
+    var distorted=vec3(0.0);
+    if material.distort_options.x!=0u {
+        var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
+        distorted.z=one.x;
+        if material.distort_options.z!=0u {one.y=one.x;}
+        distorted=vec3(one*material.layers[0].strength.xy,distorted.z);
+        if material.distort_options.y!=0u {
+            var two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(coordinates,material.layers[1])).xy;
+            let mask=two.x;
+            if material.distort_options.w!=0u {two.y=two.x;}
+            if material.colour_options.x!=0u {
+                distorted=vec3(distorted.xy*two*material.layers[1].strength.xy,distorted.z*mask);
+            } else {distorted+=vec3(two*material.layers[1].strength.xy,mask);}
+        }
+    }
+    return distorted;
+}
+// particle/dissolve fragment (unlit: no installed dissolve material is lit).
+// The lookup_fire ramp uses the lookup binding slot.
+fn particle_dissolve_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
+    let material=particle_material;
+    let coordinates=input.texture_coordinates;
+    // use_mesh meshes have no vertex colour.
+    let legacy=select(input.colour,vec4(1.0),material.dissolve_options.y!=0u);
+    let offset=particle_distortion(coordinates).xy;
+    let uv=coordinates.xy+offset*max(0.0,1.0-legacy.w)*material.dissolve.x;
+    var opacity:f32;
+    if material.dissolve_options.x!=0u {
+        opacity=textureSample(particle_opacity,particle_bilinear,uv).x;
+    } else {
+        opacity=textureSample(particle_opacity,linear_clamp,uv).x;
+    }
+    let ramp=clamp(opacity+legacy.w-1.0,0.0,1.0);
+    var colour=textureSample(particle_lookup,particle_trilinear,vec2(ramp,0.5)).rgb;
+    var alpha=smoothstep(material.dissolve.y,material.dissolve.z,ramp);
+    // AdjustColor(legacy_color.xxxx): RGB and alpha scale by the vertex red.
+    colour*=legacy.x*material.colour_adjust.rgb*material.colour_adjust.a;
+    alpha*=legacy.x;
+    let distance=1.0/input.position.w;
+    alpha*=particle_soft_contact(input,distance);
+    if material.fade_options.y!=0u {
+        alpha*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
+    }
+    let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u);
+    let normal=face*normalize(input.world_normal);
+    alpha*=particle_fresnel_opacity(input,coordinates,normal,face*normalize(input.world_tangent),
+        face*normalize(input.world_bitangent),normal);
+    alpha*=material.dissolve.w;
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    if particle_masking!=0u {
+        if alpha<max(material.alpha_test,0.0001) {discard;}
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    // Dissolve applies the vertex fog fully, without the
+    // particleFogScatterPower blend of add_default.
+    let rgb=material_fog_composite(colour*exposure*particle_view.exposure_extent.x,input.fog);
+    return ParticleColour(vec4(rgb,alpha),colour);
+}
 // particles::SoftContact (fx/opt/use_softcontact 1 linear, 2 cubic,
 // 3 spherical) against the scene depth.
 fn particle_soft_contact(input:ParticleFragment,distance:f32)->f32 {
@@ -319,6 +387,7 @@ fn particle_liquid_colour(input:ParticleFragment)->ParticleColour {
 }
 fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     if particle_liquid!=0u {return particle_liquid_colour(input);}
+    if particle_dissolve!=0u {return particle_dissolve_colour(input,front_face);}
     let material=particle_material;
     let coordinates=input.texture_coordinates;
     let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u &&
@@ -346,21 +415,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         let alpha=textureSample(particle_opacity,particle_trilinear,opacity_uv).x*legacy.a;
         colour=vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,alpha);
     } else {
-    var distorted=vec3(0.0);
-    if material.distort_options.x!=0u {
-        var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(coordinates,material.layers[0])).xy;
-        distorted.z=one.x;
-        if material.distort_options.z!=0u {one.y=one.x;}
-        distorted=vec3(one*material.layers[0].strength.xy,distorted.z);
-        if material.distort_options.y!=0u {
-            var two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(coordinates,material.layers[1])).xy;
-            let mask=two.x;
-            if material.distort_options.w!=0u {two.y=two.x;}
-            if material.colour_options.x!=0u {
-                distorted=vec3(distorted.xy*two*material.layers[1].strength.xy,distorted.z*mask);
-            } else {distorted+=vec3(two*material.layers[1].strength.xy,mask);}
-        }
-    }
+    var distorted=particle_distortion(coordinates);
     distorted=vec3(distorted.xy+coordinates.xy,clamp(distorted.z,0.0,1.0));
     if material.surface_options.x!=0u {
         let tile=material.macro_fresnel.y;
