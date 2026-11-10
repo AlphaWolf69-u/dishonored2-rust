@@ -81,13 +81,23 @@ impl<T: ?Sized, E: Clone> Registry<T, E> {
 
     pub(crate) fn acquire(&mut self, path: &str, inherited_marker: u8,
         load: impl FnOnce(u8) -> Result<Arc<T>, E>) -> Result<Arc<T>, E> {
+        self.acquire_when(path, inherited_marker, load, || true)
+    }
+
+    /// A worker withdrawal is not a failed installed resource. Keep its
+    /// registered header but publish neither its value nor its error.
+    pub(crate) fn acquire_when(&mut self, path: &str, inherited_marker: u8,
+        load: impl FnOnce(u8) -> Result<Arc<T>, E>, publish: impl FnOnce() -> bool,
+    ) -> Result<Arc<T>, E> {
         let entry = self.admit(path, inherited_marker);
         if let Some(error) = &entry.failure { return Err(error.clone()); }
         if let Some(value) = entry.current.as_ref().and_then(Weak::upgrade) {
             entry.resident = Some(value.clone());
             return Ok(value);
         }
-        match load(if entry.bootstrap_phase { 2 } else { entry.marker }) {
+        let loaded = load(if entry.bootstrap_phase { 2 } else { entry.marker });
+        if !publish() { return loaded; }
+        match loaded {
             Ok(value) => {
                 entry.current = Some(Arc::downgrade(&value));
                 entry.resident = Some(value.clone());

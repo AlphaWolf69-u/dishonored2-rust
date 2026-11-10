@@ -15,6 +15,11 @@ use std::{
     sync::{Arc, Weak},
 };
 
+fn check_active(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+    if cancelled.is_some_and(|stop| stop()) { return Err("particle acquisition cancelled".into()); }
+    Ok(())
+}
+
 /// Level-scoped fast lookup table, shared by player and world effects.
 /// Catalog resource identities own declaration and PMODEL residency. The
 /// original declarations/resources are immutable; only emitters own simulation
@@ -97,16 +102,18 @@ impl ParticleResources {
     pub fn debug_set_sharing(&mut self, shared: bool) {
         self.shared = shared;
     }
-    fn model(&mut self, catalog: &Catalog, resource: &str, marker: u8) -> Result<(), String> {
+    fn model(&mut self, catalog: &Catalog, resource: &str, marker: u8, cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+        check_active(cancelled)?;
         if self.models.contains_key(resource) { return Ok(()); }
-        let model = crate::assets::fx::particle_resources::model(catalog, resource, marker, self.shared, || {
+        let model = crate::assets::fx::particle_resources::model(catalog, resource, marker, self.shared, cancelled, || {
             self.model_reads += 1;
-            let bytes = catalog.read(resource).map_err(|error| format!("{resource}: {error}"))?
+            let bytes = catalog.read_cancellable(resource, cancelled).map_err(|error| format!("{resource}: {error}"))?
                 .ok_or_else(|| format!("missing particle model {resource}"))?;
             crate::assets::particle_model::parse(&bytes)
                 .map(Arc::new)
                 .map_err(|error| format!("{resource}: {error}"))
         })?;
+        check_active(cancelled)?;
         self.models.insert(resource.to_owned(), model);
         Ok(())
     }
@@ -114,7 +121,9 @@ impl ParticleResources {
         &mut self,
         catalog: &Catalog,
         path: &str,
+        cancelled: Option<&dyn Fn() -> bool>,
     ) -> Result<Arc<particle_declaration::ParticleDeclaration>, String> {
+        check_active(cancelled)?;
         self.declaration_requests += 1;
         let key = path.replace('\\', "/").to_ascii_lowercase();
         if self.shared {
@@ -122,23 +131,25 @@ impl ParticleResources {
                 return loaded.clone();
             }
         }
-        let loaded = crate::assets::fx::particle_resources::declaration(catalog, path, self.shared, |marker| {
+        let loaded = crate::assets::fx::particle_resources::declaration(catalog, path, self.shared, cancelled, |marker| {
             self.declaration_reads += 1;
             let _tag = crate::platform::allocation_tags::tag("particle definitions");
             // Preserve archive IO failures distinctly from absent declarations.
             let mut read_error = None;
-            let mut read = |path: &str| match catalog.read(path) {
+            let mut read = |path: &str| match catalog.read_cancellable(path, cancelled) {
                 Ok(bytes) => bytes,
                 Err(error) => { read_error = Some(format!("{path}: {error}")); None }
             };
             let fields = read_edit(&mut read, "particledt", path);
             if let Some(error) = read_error { return Err(error); }
             let fields = fields?;
+            check_active(cancelled)?;
             let mut declaration = particle_declaration::declaration(&fields)
                 .map_err(|error| format!("{path}: {error}"))?;
             // Emission meshes are dedicated PMODEL archive resources,
             // independent of the ordinary rendered-prop mesh loader.
             for stage in &mut declaration.stages {
+                check_active(cancelled)?;
                 for field in stage
                     .spawn_fields
                     .iter_mut()
@@ -146,6 +157,7 @@ impl ParticleResources {
                     .chain(&mut stage.acceleration_fields)
                 {
                     for texture in &mut field.textures {
+                        check_active(cancelled)?;
                         let Some(source) = &texture.source else {
                             continue;
                         };
@@ -153,13 +165,14 @@ impl ParticleResources {
                             .image_resource(source)
                             .ok_or_else(|| format!("missing field image alias {source}"))?;
                         if !self.field_images.contains_key(resource) {
-                            let pixels = crate::assets::fx::particle_resources::field(catalog, resource, self.shared, || {
+                            let pixels = crate::assets::fx::particle_resources::field(catalog, resource, self.shared, cancelled, || {
                                 self.field_image_reads += 1;
-                                let bytes = catalog.read(resource).map_err(|error| format!("{resource}: {error}"))?
+                                let bytes = catalog.read_cancellable(resource, cancelled).map_err(|error| format!("{resource}: {error}"))?
                                     .ok_or_else(|| format!("missing field image {resource}"))?;
                                 Ok(Arc::new(crate::assets::fx::particle_field::FieldPixels::read(&bytes)
                                     .map_err(|error| format!("{resource}: {error}"))?))
                             })?;
+                            check_active(cancelled)?;
                             self.field_images.insert(resource.to_owned(), pixels);
                         }
                         texture.pixels = Some(self.field_images[resource].clone());
@@ -171,22 +184,53 @@ impl ParticleResources {
                 ] {
                     let Some(source) = source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
-                    self.model(catalog, &resource, marker)?;
+                    self.model(catalog, &resource, marker, cancelled)?;
                     *model = Some(self.models[&resource].clone());
                 }
                 for mesh in &mut stage.meshes {
                     let Some(source) = &mesh.source else { continue };
                     let resource = crate::assets::particle_model::resource_path(source)?;
-                    self.model(catalog, &resource, marker)?;
+                    self.model(catalog, &resource, marker, cancelled)?;
                     mesh.model = Some(self.models[&resource].clone());
                 }
             }
 
             Ok(Arc::new(declaration))
         });
+        check_active(cancelled)?;
         self.declarations.insert(key, loaded.clone());
         loaded
     }
+}
+
+/// Exercise the real declaration owner with a stop after an installed member
+/// was read, then reacquire in the same catalog and worker cache.
+#[cfg(feature = "game")]
+pub(crate) fn observe_cancelled_declaration(base: &std::path::Path, name: &str)
+    -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = Catalog::open(base)?;
+    let path = format!("generated/decls/particledt/{name}.decl");
+    if catalog.kind(&path) != Some("particledt") || catalog.has_overlay_file(&path) {
+        return Err("expected an installed particle declaration".into());
+    }
+    let cancelled = || crate::loading::catalog_read_recorded(catalog.identity(), "particledt", &path);
+    let mut resources = ParticleResources::default();
+    let stopped = resources.declaration(&catalog, name, Some(&cancelled))
+        .is_err_and(|error| error.contains("acquisition cancelled"));
+    let reached_source = cancelled();
+    let unpublished = resources.declarations.is_empty();
+    let reads_before_retry = resources.declaration_reads;
+    let first = resources.declaration(&catalog, name, None)?;
+    let read_again = resources.declaration_reads == reads_before_retry + 1;
+    let second = resources.declaration(&catalog, name, None)?;
+    let reused = Arc::ptr_eq(&first, &second);
+    let stages = first.stages.len();
+    let observed = Arc::downgrade(&first);
+    drop((first, second, resources));
+    catalog.release_level_resources();
+    let retired = observed.upgrade().is_none() && !cancelled();
+    eprintln!("PARTICLE_CANCELLED_DECLARATION name={name} stages={stages} stopped={stopped} reached_source={reached_source} unpublished={unpublished} read_again={read_again} reused={reused} retired={retired}");
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -209,6 +253,14 @@ impl ParticleDefinition {
         library: &mut ProgramLibrary,
         resources: &mut ParticleResources,
     ) -> Result<Self, String> {
+        Self::load_cancellable(fields, catalog, library, resources, None)
+    }
+
+    pub(super) fn load_cancellable(
+        fields: &[(String, Value)], catalog: &Catalog, library: &mut ProgramLibrary,
+        resources: &mut ParticleResources, cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, String> {
+        check_active(cancelled)?;
         let owner = particle_system::particle_system(fields)?;
         let parameter_block = owner.parameter_block.as_deref().map(|name| {
             resources.parameter_blocks
@@ -229,7 +281,7 @@ impl ParticleDefinition {
             .iter()
             .map(|path| {
                 path.as_deref()
-                    .map(|path| resources.declaration(catalog, path))
+                    .map(|path| resources.declaration(catalog, path, cancelled))
                     .transpose()
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -238,6 +290,7 @@ impl ParticleDefinition {
         for declaration in declarations.iter().flatten() {
             for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
                 for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
+                    check_active(cancelled)?;
                     if let Some(name) = &mesh.material {
                         let key = name.replace('\\', "/").to_ascii_lowercase();
                         if *resources
@@ -264,6 +317,7 @@ impl ParticleDefinition {
                             .map(|mesh| &mesh.material),
                     );
                 for material in names {
+                    check_active(cancelled)?;
                     let Some(name) = material else {
                         continue;
                     };
@@ -286,6 +340,7 @@ impl ParticleDefinition {
                 }
             }
         }
+        check_active(cancelled)?;
         Ok(Self {
             owner: Arc::new(owner),
             parameter_block,

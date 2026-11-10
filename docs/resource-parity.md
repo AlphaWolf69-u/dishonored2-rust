@@ -6567,3 +6567,19 @@ LOD0-selection spans measured 6,306,227 versus 234,979 thread cycles
 in the dev observation. This covers archive selection and prepared
 geometry. It does not measure walking or animation playback. Evidence:
 DH2-fx-level-lifetime/artifacts/usable-rig-mesh-source-20261110-comparison.json.
+
+### Runtime particle acquisition cancellation
+
+Prediction before implementation. Original 1400607f0/14005feb0 resolve
+the declaration and model records, 140232220 reads PMODEL, and
+140060180 releases the registered scope. The host can stop a runtime
+FX job between effects and groups, but its current group still admits
+all particle dependencies after the last requester leaves. Propagate the
+existing stop signal through the declaration, field and PMODEL readers
+and check it between material acquisitions. A stopped load must not
+publish its partial value or memoize its error as an immutable resource
+failure. Completed dependencies retain their normal registry scope.
+Expect a later request in the same catalog and worker cache to recover
+the same asset, with the same ordinary load output. Observe cancellation
+after reading an installed declaration, successful same-owner retry, and
+normal FX publication and retirement. This is host worker cancellation.
