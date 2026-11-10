@@ -278,6 +278,8 @@ impl WorldShadowMeshSources {
         let trace_uv = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
         let mut uv_pairs = 0;
         let mut uv_mismatches = 0;
+        let mut position_count = 0;
+        let mut position_mismatches = 0;
         for (object_id, object) in world.objects.iter().enumerate() {
             let source = &world.meshes[object.mesh_index];
             let key = (object.mesh_index, object.flipped);
@@ -292,6 +294,16 @@ impl WorldShadowMeshSources {
                     object.flipped,
                 );
                 if trace_uv {
+                    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                        forward.attribute(Mesh::ATTRIBUTE_POSITION)
+                    {
+                        position_count += positions.len();
+                        position_mismatches += source.positions().len().abs_diff(positions.len())
+                            + source.positions().iter().zip(positions).filter(|(source, actual)| {
+                                let [x, y, z] = source.map(f32::to_bits);
+                                actual.map(f32::to_bits) != [x, z, y ^ (1 << 31)]
+                            }).count();
+                    }
                     if let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
                         forward.attribute(PACKED_UV_0)
                     {
@@ -331,6 +343,9 @@ impl WorldShadowMeshSources {
             });
         }
         if trace_uv {
+            eprintln!(
+                "MEMORY BWM packed position preparation: vertices={position_count} mismatches={position_mismatches}"
+            );
             let staged_pairs: usize = world.meshes.iter().map(|mesh| mesh.uvs().len()).sum();
             eprintln!(
                 "MEMORY BWM packed UV preparation: pairs={uv_pairs} mismatches={uv_mismatches} staged_pairs={staged_pairs}"
