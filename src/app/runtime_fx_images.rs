@@ -10,6 +10,7 @@ struct Slot {
     registered: bool,
     added_consumer: bool,
     wanted: bool,
+    discard_read: bool,
     lease: Option<Arc<super::resident_images::ResidentImage>>,
 }
 
@@ -21,6 +22,8 @@ pub(super) struct RuntimeFxImages {
     seen_world_revision: Option<u64>,
     world_entries: std::collections::HashSet<String>,
     pub(super) requested: Vec<usize>,
+    /// Owned slots whose read completed after their last FX consumer retired.
+    pub(super) discard_reads: Vec<usize>,
     pub(super) failure: Option<(u64, String)>,
 }
 
@@ -48,16 +51,33 @@ pub(super) fn synchronize(
 ) {
     let (Some(owner), Some(mut world), Some(mut state), Some(mut queue), Some(mut worker), Some(mut consumers)) =
         (owner, world, state, queue, worker, consumers) else { return };
+    state.discard_reads.clear();
     if state.failure.as_ref().is_some_and(|(generation, _)| *generation != world.generation) {
         state.failure = None;
     }
     if owner.ready.is_empty() && world.images.is_empty() && world.extra_images.is_empty() && state.slots.is_empty() && state.world_entries.is_empty() {
         world.images_ready = world.image_revision;
-        if state.seen_revision != Some(owner.revision) || state.seen_world_revision != Some(world.image_revision) { state.seen_revision = Some(owner.revision); }
+        state.seen_revision = Some(owner.revision);
+        state.seen_world_revision = Some(world.image_revision);
         if !state.requested.is_empty() { state.requested.clear(); }
         return;
     }
-    if state.seen_revision != Some(owner.revision) || state.seen_world_revision != Some(world.image_revision) {
+    let world_changed = state.seen_world_revision != Some(world.image_revision);
+    if world_changed {
+        // Surviving surfaces include effect tails. Retire only the bindings
+        // whose final surface lease is gone, even if a replacement is pending.
+        state.world_entries.retain(|name| {
+            if world.images.contains_key(name) {
+                return true;
+            }
+            Arc::make_mut(&mut consumers.world_materials).remove(name);
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE world_image_binding_retire={name}");
+            }
+            false
+        });
+    }
+    if state.seen_revision != Some(owner.revision) || world_changed {
         for slot in state.slots.values_mut() { slot.wanted = false; }
         for source in owner.ready.values().flat_map(|sources| sources.particle_materials())
             .flat_map(|material| material.images.values())
@@ -74,7 +94,7 @@ pub(super) fn synchronize(
                 continue;
             }
             if let Some((index, _)) = consumers.slots.iter().find(|(_, image)| image.path == path) {
-                state.slots.insert(path, Slot { index: *index, image: Arc::downgrade(source), owned: false, registered: true, added_consumer: false, wanted: true, lease: None });
+                state.slots.insert(path, Slot { index: *index, image: Arc::downgrade(source), owned: false, registered: true, added_consumer: false, wanted: true, discard_read: false, lease: None });
                 continue;
             }
             let existing = queue.diffuse_image_paths.iter().position(|name| name == path.as_ref());
@@ -101,7 +121,7 @@ pub(super) fn synchronize(
                 queue.diffuse_image_demands[index] = super::texture_streaming::image_demand(&path, priority.max(1));
             }
             queue.diffuse_mip_states[index].sampling_priority = priority;
-            state.slots.insert(path, Slot { index, image: Arc::downgrade(source), owned: existing.is_none(), registered: false, added_consumer: false, wanted: true, lease: None });
+            state.slots.insert(path, Slot { index, image: Arc::downgrade(source), owned: existing.is_none(), registered: false, added_consumer: false, wanted: true, discard_read: false, lease: None });
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_request={} slot={index} reused_scene={}", source.path, existing.is_some());
             }
@@ -113,7 +133,8 @@ pub(super) fn synchronize(
     let mut remove = Vec::new();
     let mut failed = None;
     let state = &mut *state;
-    let (slots, requested) = (&mut state.slots, &mut state.requested);
+    let (slots, requested, discard_reads) =
+        (&mut state.slots, &mut state.requested, &mut state.discard_reads);
     for (path, slot) in slots {
         if !slot.wanted && !slot.added_consumer && !slot.owned {
             remove.push(path.clone());
@@ -123,12 +144,25 @@ pub(super) fn synchronize(
         // One registered scene consumer is our lease; all other strong
         // references belong to active definitions, instances or GPU material.
         if strong <= usize::from(slot.added_consumer) {
-            if !worker.inflight.get(slot.index).copied().unwrap_or(false)
-                && queue.diffuse_image_pending[slot.index].is_none() {
+            if slot.owned && !slot.wanted && worker.inflight[slot.index] {
+                if slot.discard_read || !worker.cancel_queued(slot.index) {
+                    // The old slot stays reserved until the submitted read
+                    // acknowledges it. Avoid locking its queue again.
+                    slot.discard_read = true;
+                    discard_reads.push(slot.index);
+                } else {
+                    queue.diffuse_mip_states[slot.index].reserved_bytes = 0;
+                    if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                        eprintln!("FX_LIFECYCLE scene_image_read_cancelled slot={}", slot.index);
+                    }
+                }
+            }
+            if !worker.inflight[slot.index] && queue.diffuse_image_pending[slot.index].is_none() {
                 remove.push(path.clone());
             }
             continue;
         }
+        slot.discard_read = false;
         if slot.wanted { requested.push(slot.index); }
         if slot.wanted && queue.diffuse_image_handles[slot.index].is_none() {
             if let Some(error) = worker.initial_failures.get(&slot.index) {
@@ -166,12 +200,6 @@ pub(super) fn synchronize(
     // already part of the level; dynamic entries own only their own keys.
     if world.images_ready != world.image_revision && world.images.values().flatten().map(|(_, image)| image)
         .chain(world.extra_images.iter()).all(|image| !image.scene_owned || consumers.handles.contains_key(&image.path)) {
-        let obsolete: Vec<_> = state.world_entries.iter()
-            .filter(|name| !world.images.contains_key(*name)).cloned().collect();
-        for name in obsolete {
-            Arc::make_mut(&mut consumers.world_materials).remove(&name);
-            state.world_entries.remove(&name);
-        }
         for (name, images) in &world.images {
             if state.world_entries.contains(name) || !consumers.world_materials.contains_key(name) {
                 let binding: Vec<_> = images.iter().map(|(_, image)| image.clone()).collect();

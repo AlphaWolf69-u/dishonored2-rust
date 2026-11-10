@@ -736,6 +736,18 @@ impl TextureReadWorker {
         }
     }
 
+    /// Remove an unpublished read without reusing its index if the reader
+    /// already took it. The caller still owns the slot in that case.
+    pub(super) fn cancel_queued(&mut self, slot: usize) -> bool {
+        let mut queue = self.requests.queue.lock().unwrap();
+        let Some(index) = queue.pending.iter().position(|request| request.0 == slot) else {
+            return false;
+        };
+        drop(queue.pending.remove(index));
+        self.inflight[slot] = false;
+        self.inflight_count -= 1;
+        true
+    }
 }
 
 impl TextureReadRequests {
@@ -1614,6 +1626,27 @@ pub(super) fn stream_visible_textures(
                 collect_completions, completion_batches, completion_items, completion_temp_bytes);
         }
     }
+    let abandoned_reads = runtime_fx_images.as_deref().filter(|owner| !owner.discard_reads.is_empty());
+    if let Some(owner) = abandoned_reads {
+        let (ready, inflight, inflight_count) =
+            (&mut worker.ready, &mut worker.inflight, &mut worker.inflight_count);
+        ready.retain(|(slot, target, _)| {
+            if !owner.discard_reads.contains(slot) {
+                return true;
+            }
+            inflight[*slot] = false;
+            *inflight_count -= 1;
+            queue.diffuse_mip_states[*slot].reserved_bytes = 0;
+            // A new consumer can revive this slot before PostUpdate retires it.
+            if matches!(target, TextureReadTarget::Initial(_)) {
+                queue.diffuse_image_attempted[*slot] = false;
+            }
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE scene_image_read_discarded slot={slot}");
+            }
+            false
+        });
+    }
     let mut budget = texture::MipUploadBudget::new(settings.upload_kb);
     while budget.allows_next_upload() {
         let Some((slot, target, result)) = worker.ready.pop_front() else {
@@ -1815,6 +1848,9 @@ pub(super) fn stream_visible_textures(
     if *timing && frame % 600 == 0 {
         eprintln!("MEMORY texture request scratch: frames={frame} allocate_each_frame={allocate_each_frame} flag_growth_frames={flag_growth_frames} order_growth_frames={order_growth_frames} flags_capacity={} order_capacity={}",
             requested.capacity(), request_order.capacity());
+    }
+    if let Some(owner) = abandoned_reads {
+        request_order.retain(|slot| !owner.discard_reads.contains(slot));
     }
     let request_count = request_order.len();
     for &slot in request_order.iter() {
