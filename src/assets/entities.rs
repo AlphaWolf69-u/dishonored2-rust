@@ -1013,7 +1013,7 @@ where
 pub fn load_world_environment(
     catalog: &crate::archive::Catalog,
     resource: &str,
-) -> std::io::Result<Option<(EnvironmentLighting, EnvironmentRenderParameters, f32)>> {
+) -> Result<Option<(EnvironmentLighting, EnvironmentRenderParameters, f32)>, Box<dyn std::error::Error>> {
     let mut current = resource.to_owned();
     let mut layers = Vec::new();
     let mut lighting = Vec::new();
