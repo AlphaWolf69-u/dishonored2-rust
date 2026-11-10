@@ -6206,3 +6206,25 @@ of the World and Dust District. Expect at most one primary sample vector
 live in this part of setup, identical query geometry bits and lighting
 uploads, and lower scoped CPU cost from removing the per-cell linear scan.
 The standalone complete PRB/PNW readers still expose their full records.
+
+Integrated ownership acceptance (`116a0d59`). Windowless Edge of the World,
+Dust District and Edge of the World each transferred the final manifest
+lease from one owner to zero while retaining the coverage report. Their
+map-only descriptor capacities were 4,562,689, 4,508,068 and 4,562,689 bytes.
+An installed FX publication supplied seven committed scene image views to
+the idle particle cache. It retained zero after withdrawal and had no
+strong owner of the old handle table. The actual FX release also removed
+all seven GPU image assets and returned their slots. No active particle
+draw was observed. The decal replacement repeated the ten-proxy release
+result. Both FX preparations had zero existing material values in their
+worker snapshots, so they exercise batch handoff but do not quantify the
+snapshot fix for a cache hit.
+
+Two paired optimized acquisitions matched full probe cell geometry CRCs
+`714c76bc` / `d39ec98e`, vertex upload CRCs `bbc9941d` / `4fa1e3b9`, and
+instance records `089f05a5` / `d496779e`. The primary sample vectors held
+20,348,928 / 17,356,800 bytes at the old loop exit and zero after the
+change. Mean affected CPU cycles fell from 511.1M to 454.6M and 484.9M
+to 448.6M respectively. No frame timing was measured. All seven scoped
+observations exited successfully without reported graphics validation errors.
+Evidence: `DH2-collision-staging/artifacts/resource-ownership-integration-20261110-comparison.json`.
