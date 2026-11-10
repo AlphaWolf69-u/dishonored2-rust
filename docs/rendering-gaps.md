@@ -23,7 +23,9 @@ declaration. Particle programs connected: `particle/add_default`,
 All 8,909 installed FX declarations loaded through `WorldFxSources`
 (local census `examples/fx_failure_census.rs`; `examples/` is not tracked): effects=8909 failed_effects=10 particles=2171 failed_particles=1233.
 Each particle declaration fails at its first unsupported field, so counts
-below a top reason can hide further gaps.
+below a top reason can hide further gaps. Since this table: flipbook and
+radial-ramp opacity, bare rotation orders and clipping planes are
+connected; 1,114 particle declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -94,15 +96,3 @@ would draw through its material's passes. No installed content does this:
 all 8,909 installed FX declarations (and every level's world FX) contain 0
 sprites with world materials; the 56 world-material particle surfaces are all
 meshes, which `particle_meshes` already draws.
-
-## Particle clipping planes (`m_planes`, 73 declarations)
-
-`arkDeclParticleSystem::clipping_t::m_planes` is an
-`idList<clipping_t::plane_t, TAG_PARTICLE>` at clipping +0x30, emptied by the
-clipping constructor 1401c3f80. `plane_t` (0x14 bytes, reflection 141558910):
-`m_normal` idVec3 +0, `m_distance` float +0xC, `m_worldspace` bool +0x10.
-Installed items often set only `m_distance` (water leaks, fountains), so the
-element's default normal decides the plane. Unknown: that default, and where
-the simulator or renderer reads the list (the rewrite carries one clip plane
-per instance: the ocean/rendering plane). Next step: find the reads of
-clipping +0x30 in the stage simulator and the plane_t default constructor.

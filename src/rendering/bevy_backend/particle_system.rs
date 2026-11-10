@@ -298,10 +298,10 @@ impl ParticleSystem {
                     clip_plane: self
                         .clipping
                         .as_ref()
-                        .map_or(bevy::prelude::Vec4::W, |planes| {
-                            bevy::prelude::Vec4::from_array(planes.rendering)
-                        }),
-                    clip_fade_distance: self.clipping.as_ref().map_or(0., |p| p.fade_distance),
+                        .and_then(|planes| planes.rendering)
+                        .map_or(bevy::prelude::Vec4::W, bevy::prelude::Vec4::from_array),
+                    clip_fade_distance: self.clipping.as_ref().filter(|p| p.rendering.is_some())
+                        .map_or(0., |p| p.fade_distance),
                     fog,
                 });
             }
@@ -333,8 +333,8 @@ impl ParticleSystem {
                     material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
                     transparency,state,stencil_reference,grid_level:0,
                     mesh:Some((source.clone(),model.clone())),instances,
-                    clip_plane:self.clipping.as_ref().map_or(bevy::prelude::Vec4::W,|planes|bevy::prelude::Vec4::from_array(planes.rendering)),
-                    clip_fade_distance:self.clipping.as_ref().map_or(0.,|planes|planes.fade_distance),fog,
+                    clip_plane:self.clipping.as_ref().and_then(|planes|planes.rendering).map_or(bevy::prelude::Vec4::W,bevy::prelude::Vec4::from_array),
+                    clip_fade_distance:self.clipping.as_ref().filter(|planes|planes.rendering.is_some()).map_or(0.,|planes|planes.fade_distance),fog,
                 });
             }
         }
@@ -610,9 +610,7 @@ impl ParticleSystem {
             self.simulated_frame = Some(frame);
             return Ok(());
         };
-        self.clipping = surface.and_then(|surface| {
-            ParticleClipPlanes::new(&first.declaration.clipping, publication.pose, surface)
-        });
+        self.clipping = ParticleClipPlanes::new(&first.declaration.clipping, publication.pose, surface);
         for stage_slot in 0..self.stages.len() {
             let stage = &mut self.stages[stage_slot];
             let definition = &stage.declaration.stages[stage.index];
@@ -642,16 +640,16 @@ impl ParticleSystem {
                     bound
                 }
             });
-            let plane = self
+            let planes = self
                 .clipping
                 .as_ref()
-                .map(|p| if worldspace { p.world } else { p.local });
+                .map_or(&[][..], |p| if worldspace { &p.world[..] } else { &p.local[..] });
             stage.advance_frame_with_sources(
                 delta,
                 &StageFrame {
                     pose: publication.pose,
                     bounds,
-                    planes: plane.as_slice(),
+                    planes,
                     source_velocity,
                     rate: publication.rate,
                     lod: self.detail_level,

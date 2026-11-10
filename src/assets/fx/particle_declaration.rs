@@ -61,6 +61,23 @@ impl ParticleVisibility {
     }
 }
 
+/// arkDeclParticleSystem::clipping_t::plane_t (0x14 bytes, reflection
+/// 141558910): m_normal +0, m_distance +0xC, m_worldspace +0x10. Installed
+/// declarations write only non-default fields: items set `z = -1` or zero z
+/// beside another axis, and m_worldspace only as false, so the default is
+/// normal (0, 0, 1), distance 0, world space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClippingPlane {
+    pub normal: [f32; 3],
+    pub distance: f32,
+    pub worldspace: bool,
+}
+impl Default for ClippingPlane {
+    fn default() -> Self {
+        Self { normal: [0., 0., 1.], distance: 0., worldspace: true }
+    }
+}
+
 pub struct ParticleClipping {
     /// Authored order is [maximum, minimum], unlike simulation contains().
     pub bounding_box: [[f32; 3]; 2],
@@ -71,6 +88,8 @@ pub struct ParticleClipping {
     pub ocean_plane_offset: f32,
     pub rendering_offset: f32,
     pub rendering_fade_distance: f32,
+    /// clipping +0x30, emptied by 1401c3f80.
+    pub planes: Vec<ClippingPlane>,
 }
 impl Default for ParticleClipping {
     /// 1c3f80 supplies the +/-1e30 clipping box, not +/-FLT_MAX.
@@ -87,6 +106,7 @@ impl Default for ParticleClipping {
             ocean_plane_offset: 0.,
             rendering_offset: 0.,
             rendering_fade_distance: 0.,
+            planes: Vec::new(),
         }
     }
 }
@@ -113,6 +133,34 @@ impl ParticleClipping {
                 "m_oceanPlaneOffset" => self.ocean_plane_offset = number(value)?,
                 "m_renderingOffset" => self.rendering_offset = number(value)?,
                 "m_renderingFadeDistance" => self.rendering_fade_distance = number(value)?,
+                "m_planes" => {
+                    for (name, value) in scope(value)? {
+                        if name == "num" {
+                            let count = atom(value)?
+                                .parse::<usize>()
+                                .map_err(|e| format!("particle clipping plane count: {e}"))?;
+                            self.planes.resize_with(count, ClippingPlane::default);
+                            continue;
+                        }
+                        let index = name
+                            .strip_prefix("item[")
+                            .and_then(|v| v.strip_suffix(']'))
+                            .ok_or_else(|| format!("unknown particle clipping plane array field {name}"))?
+                            .parse::<usize>()
+                            .map_err(|e| format!("particle clipping plane index: {e}"))?;
+                        let plane = self.planes.get_mut(index).ok_or_else(|| {
+                            format!("particle clipping plane {index} exceeds declared count")
+                        })?;
+                        for (name, value) in scope(value)? {
+                            match name.as_str() {
+                                "m_normal" => particles::vector(&mut plane.normal, scope(value)?)?,
+                                "m_distance" => plane.distance = number(value)?,
+                                "m_worldspace" => plane.worldspace = boolean(value)?,
+                                _ => return Err(format!("unknown particle clipping plane field {name}")),
+                            }
+                        }
+                    }
+                }
                 _ => return Err(format!("unresolved particle clipping field {name}")),
             }
         }
