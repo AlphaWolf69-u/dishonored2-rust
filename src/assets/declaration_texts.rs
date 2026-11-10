@@ -420,6 +420,8 @@ pub(crate) fn acquire(
 pub(crate) fn observe_catalog_scopes(base: &std::path::Path, map: &str) -> Result<(), String> {
     let a = Catalog::open(base).map_err(|error| error.to_string())?;
     let b = Catalog::open(base).map_err(|error| error.to_string())?;
+    let level = crate::assets::level::LevelResources::resolve(&a, map).map_err(|error| error.to_string())?;
+    let map = level.entities.trim_start_matches("maps/").trim_end_matches(".entities");
     let language = crate::assets::lang::read_text_language(base)?;
     let load = |catalog: &Catalog| acquire(base, catalog, map, language, PhysicsSeed::new(catalog, language));
     let first = load(&a)?;

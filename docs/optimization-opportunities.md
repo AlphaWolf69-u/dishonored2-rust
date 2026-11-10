@@ -1578,6 +1578,8 @@ session allocation between levels; measure its owned capacities and the changed
 acquisition function in a same-executable comparison. No frame-time or RSS
 saving is predicted, and no tests or visual inspection are needed.
 
+Camera material history still rebuilds a temporary name set at level retirement. The 63 prepared variants each generate a path string even though the session table is immutable. Reuse exact packed Catalog path identities or another borrowed representation if it removes these allocations without a larger resident cache or extra lookups for every material. This affects only the retire span, with no frame-time prediction. Keep the existing path set until a measured replacement preserves all 63 credits.
+
 ### Declaration-history membership lookup: prediction before implementation
 
 The first complete scope scan retired 536 map names / 55,498 String-capacity

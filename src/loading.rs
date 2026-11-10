@@ -359,30 +359,6 @@ pub(crate) fn forget_catalog_kind(catalog: u64, kind: &str) -> Option<(usize, us
     })
 }
 
-/// Family owners aggregate all live resource identities. Keep each catalog's
-/// independent history and adjust only the active level's acquisition count.
-pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (usize, usize, usize, usize) {
-    with(|s| {
-        let mut removed = 0;
-        let mut bytes = 0;
-        let mut slots_before = 0;
-        let mut slots_after = 0;
-        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
-            let Some(paths) = history.loaded.get_mut(kind) else { continue };
-            slots_before += paths.capacity();
-            paths.retain(|path| {
-                if keep(path) { return true; }
-                removed += 1;
-                bytes += path.len();
-                false
-            });
-            slots_after += paths.capacity();
-        }
-        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
-        (removed, bytes, slots_before, slots_after)
-    })
-}
-
 /// Several loaders may lease one family in the same catalog. Serialize
 /// retirement with admission so a new lease never observes a stale purge.
 pub(crate) struct CatalogHistoryScopes(Mutex<Option<HashMap<u64, usize>>>);
