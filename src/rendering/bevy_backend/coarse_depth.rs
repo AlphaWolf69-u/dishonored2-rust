@@ -761,18 +761,36 @@ impl CoarseDepthGpu {
 /// by the camera. No gameplay camera is created and no view is drawn.
 pub(crate) fn observe_view_retirement(world: &mut World) -> Result<(), String> {
     use super::alpha_depth_scene::AlphaGpu;
-    use bevy::render::render_resource::{CommandEncoderDescriptor, PollType};
     let device = world.resource::<RenderDevice>().clone();
     let queue = world.resource::<RenderQueue>().clone();
     let pipelines = <crate::tiled_lighting_gpu::TlfPipelines as bevy::prelude::FromWorld>::from_world(world);
-    let report = |phase| {
-        if let Some(allocations) = device.wgpu_device().generate_allocator_report() {
-            eprintln!("CAMERA_DEPTH_ALLOCATIONS phase={phase} live_bytes={} reserved_bytes={}",
-                allocations.total_allocated_bytes, allocations.total_reserved_bytes);
-        }
-    };
     world.init_resource::<AlphaGpu>();
     world.init_resource::<CoarseDepthGpu>();
+    for sample in 0..2 {
+        observe_view_retirement_sample(world, &device, &queue, &pipelines, sample)?;
+    }
+    Ok(())
+}
+
+fn observe_view_retirement_sample(
+    world: &mut World,
+    device: &RenderDevice,
+    queue: &RenderQueue,
+    pipelines: &crate::tiled_lighting_gpu::TlfPipelines,
+    sample: usize,
+) -> Result<(), String> {
+    use super::alpha_depth_scene::AlphaGpu;
+    use bevy::render::render_resource::{CommandEncoderDescriptor, PollType};
+    let report = |phase| {
+        if let Some(allocations) = device.wgpu_device().generate_allocator_report() {
+            eprintln!("CAMERA_DEPTH_ALLOCATIONS phase={phase} sample={sample} live_bytes={} reserved_bytes={}",
+                allocations.total_allocated_bytes, allocations.total_reserved_bytes);
+            for allocation in allocations.allocations {
+                eprintln!("CAMERA_DEPTH_ALLOCATION phase={phase} sample={sample} label={:?} bytes={}",
+                    allocation.name, allocation.size);
+            }
+        }
+    };
     report("before");
     let extent = bevy::math::UVec2::new(1920, 1080);
     let source = device.create_texture(&TextureDescriptor {
@@ -785,11 +803,11 @@ pub(crate) fn observe_view_retirement(world: &mut World) -> Result<(), String> {
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
-    world.resource_mut::<AlphaGpu>().ensure_opacity(&device, extent);
+    world.resource_mut::<AlphaGpu>().ensure_opacity(device, extent);
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
     let readback = {
         let mut gpu = world.resource_mut::<CoarseDepthGpu>();
-        gpu.ensure(Entity::PLACEHOLDER, source.id(), &source, &device, &pipelines)?;
+        gpu.ensure(Entity::PLACEHOLDER, source.id(), &source, device, pipelines)?;
         let CoarseDepthGpu { output, readback, .. } = &mut *gpu;
         let readback = readback.as_mut().ok_or("coarse-depth observation has no staging")?;
         readback.record_copy(&mut encoder, &output.as_ref().ok_or("missing coarse output")?.texture, false)?;
@@ -806,7 +824,11 @@ pub(crate) fn observe_view_retirement(world: &mut World) -> Result<(), String> {
     device.poll(PollType::Wait { submission_index: Some(submitted), timeout: None })
         .map_err(|error| error.to_string())?;
     report("released");
-    eprintln!("CAMERA_DEPTH_OBSERVATION mapping_on_release={mapping} callback_leases={}", readback.strong_count());
+    let settled = queue.submit([]);
+    device.poll(PollType::Wait { submission_index: Some(settled), timeout: None })
+        .map_err(|error| error.to_string())?;
+    report("settled");
+    eprintln!("CAMERA_DEPTH_OBSERVATION sample={sample} mapping_on_release={mapping} callback_leases={}", readback.strong_count());
     Ok(())
 }
 
