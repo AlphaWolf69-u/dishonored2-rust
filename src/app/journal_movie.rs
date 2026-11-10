@@ -337,7 +337,7 @@ impl Movie {
         player
             .call_root_method("_C_Show", &[(-1i32).into(), first.into(), second.into()])
             .map_err(|e| player.describe(&e))?;
-        let image_map = super::pause_menu::library_images(&catalog, &player, &resources)?;
+        let image_map = super::pause_menu::library_images(&catalog, &player, &resources, crate::flash::bitmap_resources::PackLifetime::Session)?;
         let residency =
             super::pause_menu::MovieResidency::new("journal", &catalog, &resources, &image_map);
         let images = Arc::new(image_map);

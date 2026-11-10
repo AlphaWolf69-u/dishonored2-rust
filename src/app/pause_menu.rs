@@ -5,7 +5,7 @@
 //! interpreter nests AS3 calls on the native stack); the main thread sends it
 //! input and frame ticks and receives draw lists.
 use crate::assets::{archive::Catalog, installation, lang};
-use crate::flash::{bitmap_resources::{self, MovieBitmaps}, render, Player};
+use crate::flash::{bitmap_resources::{self, MovieBitmaps, PackLifetime}, render, Player};
 use crate::gameplay::game_clock_runtime::GamePaused;
 use crate::gameplay::pause_state::{self, Character, Movie, Request};
 use crate::platform::bindings::{self, Keyboard};
@@ -64,9 +64,8 @@ enum Command {
     Wheel(i32),
     /// The frame's time step, and when the frame sent it.
     Tick(f64, std::time::Instant),
-    /// OnExit: unload the player. Resume schedules the next Prepare;
-    /// teardown ends both the current player and any pending handoff.
-    Close { reprepare: bool },
+    /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
+    Close,
     Loading { screen: (i32, i32), map: String, frames: Sender<Result<super::loading_movie::Frame, String>> },
     LoadingTick { dt: f64, progress: f64, ready: bool },
     EndLoading,
@@ -132,12 +131,32 @@ fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
     Ok(c)
 }
 
-pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<MovieBitmaps, String> {
+pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)],
+    lifetime: PackLifetime) -> Result<MovieBitmaps, String> {
+    use bitmap_resources::PackRequest;
     let mut out = MovieBitmaps::default();
+    let mut cold = Vec::new();
     for (index, path) in resources {
         let file = player.state.borrow().file(*index);
-        out.insert_pack(*index, bitmap_resources::acquire(catalog, path, &file)?);
+        match bitmap_resources::request(catalog, path, &file, lifetime)? {
+            PackRequest::Ready(pack) => out.insert_pack(*index, pack),
+            PackRequest::Cold(work) => cold.push((*index, work)),
+        }
     }
+    if cold.len() > 1 && std::env::var_os("DH2_DEBUG_SERIAL_UI_PACKS").is_none_or(|v| v != "1") {
+        if let Some(pool) = bevy::tasks::IoTaskPool::try_get().filter(|pool| pool.thread_num() > 1) {
+            // Do not run unrelated streaming tasks on the latency-sensitive
+            // movie thread while waiting for these specific pack reads.
+            let packs = pool.scope_with_executor(false, None, |scope| {
+                for (index, work) in cold {
+                    scope.spawn(async move { (index, work.acquire(catalog)) });
+                }
+            });
+            for (index, pack) in packs { out.insert_pack(index, pack?); }
+            return Ok(out);
+        }
+    }
+    for (index, work) in cold { out.insert_pack(index, work.acquire(catalog)?); }
     Ok(out)
 }
 
@@ -225,7 +244,7 @@ impl Loaded {
         let mut images = self.pause_images.clone();
         if let Some((g, resources)) = self.pause.boxes.global_with_resources() {
             let catalog = installed_catalog()?;
-            images.append_layer(library_images(&catalog, g, resources)?, render::LAYER_LIBRARY_OFFSET);
+            images.append_layer(library_images(&catalog, g, resources, PackLifetime::Session)?, render::LAYER_LIBRARY_OFFSET);
         }
         self.images = Arc::new(images);
         Ok(())
@@ -370,7 +389,7 @@ impl PauseMenu {
         self.hud_elapsed = 0.0;
         self.hud_phase = 0.0;
         self.hud_force = true;
-        let _ = self.commands.send(Command::Close { reprepare: false });
+        let _ = self.commands.send(Command::Close);
         let _ = self.commands.send(Command::EndLoading);
         self.open = false;
         self.ready = false;
@@ -422,7 +441,7 @@ fn prepare(screen: (i32, i32)) -> Result<Prepared, String> {
     let movie = pause_state::movie(debug_character());
     let (mut player, resources) = Player::load_installed(&catalog, language, movie)?;
     pause_state::file_ready(&mut player, screen)?;
-    let images = library_images(&catalog, &player, &resources)?;
+    let images = library_images(&catalog, &player, &resources, PackLifetime::Session)?;
     let options = pause_state::read_options(&catalog)?;
     // The chapter header's map lookup, cached per map.
     crate::gameplay::map_info::current_loading_info(&catalog);
@@ -525,7 +544,7 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
             }
             Command::Cursor { .. } if matches!(out.last(), Some(Command::Cursor { .. })) => *out.last_mut().unwrap() = command,
             // A reload or unload ends the batch's earlier frames.
-            Command::Open { .. } | Command::Close { .. } => {
+            Command::Open { .. } | Command::Close => {
                 tick = None;
                 out.push(command);
             }
@@ -550,7 +569,6 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut unhandled = Vec::new();
     let mut timing = debug_timing::Timing::default();
     let mut prepared: Option<Prepared> = None;
-    let mut next_pause_bitmaps = None;
     // The last frame sent; it is sent again while nothing changed the movie
     // (no tick, input, notification or request), and keeps its uploaded vertices.
     let mut last_frame: Option<FlashFrame> = None;
@@ -628,7 +646,6 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         Err(e) => warn!("Pause movie: {e}"),
                     }
                 }
-                drop(next_pause_bitmaps.take());
                 crate::loading::complete(PAUSE_GATE);
             }
             Command::Open { screen } => {
@@ -640,14 +657,9 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         let _ = outbox.send(Event::Failed(e));
                     }
                 }
-                drop(next_pause_bitmaps.take());
             }
-            Command::Close { reprepare } => {
-                // Release VM and frame state now. The pending prewarm may
-                // acquire the same packs without going back to the archive.
-                next_pause_bitmaps = loaded.take()
-                    .filter(|_| reprepare)
-                    .map(|movie| movie.pause_images);
+            Command::Close => {
+                loaded = None;
                 // 1410298b0 closes the movie and its draw ownership. Only an
                 // actually submitted frame may outlive it, not this reuse slot.
                 last_frame = None;
@@ -1210,7 +1222,7 @@ pub fn update_pause_menu(
             Event::Resume => {
                 menu.modal.end_pause(&mut journal_data);
                 // `FUN_14078ca40` pops the state; OnExit unloads the movie.
-                let _ = menu.commands.send(Command::Close { reprepare: true });
+                let _ = menu.commands.send(Command::Close);
                 menu.open = false;
                 menu.hud_force = true;
             }

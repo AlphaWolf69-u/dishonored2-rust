@@ -205,7 +205,7 @@ impl HudMovie {
         let settings_generation = crate::platform::console::shared().generation();
         // The first gauge values come from the live player/component owner.
         // The movie retains its authored initial state until that data exists.
-        let image_map = super::pause_menu::library_images(catalog, &player, &resources)?;
+        let image_map = super::pause_menu::library_images(catalog, &player, &resources, crate::flash::bitmap_resources::PackLifetime::Session)?;
         let residency =
             super::pause_menu::MovieResidency::new("hud", catalog, &resources, &image_map);
         let images = Arc::new(image_map);

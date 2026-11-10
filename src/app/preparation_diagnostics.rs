@@ -193,15 +193,19 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
 pub fn inspect_ui_bitmap_ownership(base: &Path, movies: &[String])
     -> Result<(), Box<dyn std::error::Error>>
 {
-    use crate::flash::{bitmap_resources::MovieBitmaps, Player};
+    use crate::flash::{bitmap_resources::{MovieBitmaps, PackLifetime}, Player};
+    let loading_first = movies.first().is_some_and(|arg| arg == "--loading-first");
+    let movies = &movies[usize::from(loading_first)..];
     if movies.is_empty() { return Err("provide at least one installed Iggy movie path".into()); }
+    let mut task_host = bevy::prelude::App::new();
+    task_host.add_plugins(bevy::app::TaskPoolPlugin::default());
     let catalog = crate::assets::archive::Catalog::shared(base)?;
     let language = crate::assets::lang::read_text_language(base)?;
-    let acquire = |movie: &str, phase: &str| -> Result<Arc<MovieBitmaps>, String> {
+    let acquire = |movie: &str, phase: &str, lifetime| -> Result<Arc<MovieBitmaps>, String> {
         let (player, resources) = Player::load_installed(&catalog, language, movie)?;
         let started = std::time::Instant::now();
         let cycles = crate::loading::thread_cycles();
-        let images = super::pause_menu::library_images(&catalog, &player, &resources)?;
+        let images = super::pause_menu::library_images(&catalog, &player, &resources, lifetime)?;
         let elapsed = started.elapsed();
         let cycles = cycles.zip(crate::loading::thread_cycles())
             .map_or(0, |(start, end)| end.saturating_sub(start));
@@ -224,29 +228,51 @@ pub fn inspect_ui_bitmap_ownership(base: &Path, movies: &[String])
         Ok(Arc::new(images))
     };
     let mut active = Vec::new();
-    for movie in movies { active.push(acquire(movie, "opened")?); }
+    for (index, movie) in movies.iter().enumerate() {
+        let lifetime = if loading_first && index == 0 { PackLifetime::Movie } else { PackLifetime::Session };
+        active.push(acquire(movie, "opened", lifetime)?);
+    }
+    if loading_first && active.len() > 1 {
+        let loading_ids: std::collections::HashSet<_> = active[0].values().map(Arc::as_ptr).collect();
+        let reused = active[1].values().filter(|image| loading_ids.contains(&Arc::as_ptr(image))).count();
+        println!("UI_BITMAP_OWNERSHIP loading_transfer_images={reused}");
+    }
+    let movie = movies.last().unwrap();
+    let lifetime = if loading_first && active.len() == 1 { PackLifetime::Movie } else { PackLifetime::Session };
+    let mut overlapping = acquire(movie, "overlapping", lifetime)?;
+    let previous = active.last().unwrap();
+    let reused = overlapping.iter().filter(|(id, image)| {
+        previous.get(*id).is_some_and(|other| Arc::ptr_eq(image, other))
+    }).count();
+    println!("UI_BITMAP_OWNERSHIP overlapping_reuses={reused} overlapping_images={}", overlapping.len());
+    if active.len() > 1 {
+        drop(overlapping);
+        drop(active.pop());
+        overlapping = acquire(movie, "reopened-with-earlier-maps", lifetime)?;
+        active.push(overlapping.clone());
+    }
     let mut observed = std::collections::HashMap::new();
     for images in &active {
         for image in images.values() {
             observed.entry(Arc::as_ptr(image)).or_insert_with(|| Arc::downgrade(image));
         }
     }
-    let movie = movies.last().unwrap();
-    let overlapping = acquire(movie, "overlapping")?;
-    let previous = active.last().unwrap();
-    let reused = overlapping.iter().filter(|(id, image)| {
-        previous.get(*id).is_some_and(|other| Arc::ptr_eq(image, other))
-    }).count();
-    println!("UI_BITMAP_OWNERSHIP overlapping_reuses={reused} overlapping_images={}", overlapping.len());
-    drop(active);
     let report = |phase| {
         let bytes: usize = observed.values().filter_map(std::sync::Weak::upgrade)
             .map(|image| image.bytes.len()).sum();
         println!("UI_BITMAP_OWNERSHIP phase={phase} retained_payload_bytes={bytes}");
     };
+    if loading_first && active.len() > 1 {
+        drop(active.remove(0));
+        report("loading-map-released");
+    }
+    drop(active);
     report("final-map-held");
     drop(overlapping);
     report("all-maps-released");
-    drop(acquire(movie, "reopened")?);
+    drop(acquire(movie, "reopened", lifetime)?);
+    if loading_first && movies.len() > 1 {
+        drop(acquire(&movies[0], "loading-reopened", PackLifetime::Movie)?);
+    }
     Ok(())
 }

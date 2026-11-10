@@ -120,6 +120,7 @@ impl Movie {
         configure.map_err(|e| player.describe(&e))?;
         let images = Arc::new(super::pause_menu::library_images(
             &catalog, &player, &resources,
+            crate::flash::bitmap_resources::PackLifetime::Movie,
         )?);
         let mut cache = render::Cache::default();
         let stage = player.state.borrow().stage_size;
