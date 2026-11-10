@@ -342,19 +342,26 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         decals.sources = sources;
         decals.leases = leases;
     };
-    let epoch = |app: &mut App| -> Result<(), Box<dyn std::error::Error>> {
-        let world = app.world_mut();
+    let update_images = |world: &mut World| -> Result<(), Box<dyn std::error::Error>> {
         world.run_system_once(super::texture_streaming::stream_visible_textures)
             .map_err(|error| format!("FX texture worker: {error:?}"))?;
         world.run_system_once(runtime_fx_images::synchronize)
             .map_err(|error| format!("FX image bindings: {error:?}"))?;
+        Ok(())
+    };
+    let epoch = |app: &mut App| -> Result<(), Box<dyn std::error::Error>> {
+        let world = app.world_mut();
+        update_images(world)?;
         runtime_materials::coordinate(world);
         world.run_system_once(super::projected_decals::publish_runtime)
             .map_err(|error| format!("FX decal proxies: {error:?}"))?;
         render_epoch(app)
     };
     if let Ok(path) = std::env::var("DH2_DEBUG_RUNTIME_FX_ALIAS_IMAGE") {
-        observe_runtime_fx_image_aliases(app, catalog, &path, &epoch)?;
+        observe_runtime_fx_image_aliases(app, catalog, &path, &|app| {
+            update_images(app.world_mut())?;
+            render_epoch(app)
+        })?;
     }
     let leases = Arc::new(vec![Arc::downgrade(&sources)]);
     let generation = if std::env::var_os("DH2_DEBUG_MATERIAL_SUPERSESSION").is_some_and(|value| value == "1") {
