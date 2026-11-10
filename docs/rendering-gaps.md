@@ -384,3 +384,46 @@ rather than aimed at 1401fa780's default origin. The packet's target
 point list (+0x70), which 1401ce790 turns into control-point anchors and
 per-frame deltas, is likewise unpublished. No installed beam position has
 a spawn mesh; one would be refused.
+
+## Particle ribbons (`m_ribbons`), next
+
+38 declarations' first failure. arkRibbonDesc (0x13b0 bytes, declaration
+list +0x5f8, system list +0x39c; enable check 1402042b0, constructor
+1402042c0, frame update 1402007b0 between the trails and the end of the
+system frame). Reflection: m_enabled +0, m_enableWind +1,
+m_enableVelocityInheritance +2, m_worldspace +3, m_main +8 (m_name),
+m_timings +0x10 (timings_t: m_cycles +0, m_warmup +4, m_delay +0xc,
+m_duration +0x14, m_rate +0x20, m_life +0xe8), m_spawn +0x100 (spawner_t:
+m_initialLocation +0, m_initialVelocity +0x118, m_spawnMesh +0x230,
+m_velocityMesh +0x580, m_velocitySprayCone +0x7b8), m_velocityOverLife
++0x980, m_accelerationOverLife +0xa90 (acceleration_t: m_value +0,
+m_worldspace +0x110, m_gravity +0x118), m_linearAccelerationOverLife
++0xc70, m_material +0xd38, m_flipBook +0xd40, m_mapping +0xe20,
+m_baseColor +0xe2c, m_cycleLifeCurves +0xe40 and m_segmentLifeCurves
++0x10e0 (life_t: m_color +0, m_alpha +0x110, m_width +0x1d8),
+m_section +0x1380 (m_startFromOrigin, m_minimumParticleLife +4,
+m_maximumParticleLife +8), m_tesselation +0x138c (segments, length
+scaled, max segments), m_noise +0x1398 (perlin_t {mode PERCENT/LENGTH,
+octaves, persistence, frequency}, frequency +0x10, scale +0x14).
+
+Runtime: one ribbon per emitter. Points of 0x34 bytes (+0x10 list):
+position +0, age +0xc, base velocity +0x10, accumulated velocity +0x1c,
+velocity +0x28. Constructor: two system seeds (+0x20, +0x24), flips and
+initial flipbook frame from the system seed, 1/cycle duration (+0x64),
+the point capacity 140203ae0, step limit min(1/60, 1/(0.001 x max rate x
+2)) (+0x60), vertex budget 2 x maxSegments + 2. Frame (1402007b0): delay
+1402063f0, clock-only 140208910, wind 1402089e0, inheritance 140208970,
+then the usual 1/60 s / 4 % / cycle-end slices: points 1402086f0 (age by
+1/cycle duration, flipbook 1401f7230, 140208270 per point, then points
+past their life dropped from the front) and emission 140207d20 (rate as
+1401d9180, spawn 140207f70: append or reuse the last point, spawn
+position/velocity 140204080 from spawner_t, moved to world for world
+ribbons, inherited velocity 1401db630, then one 140208270 step). Point
+step 140208270: linear acceleration along the velocity, acceleration
+(rotated unless world) with gravity x -9.8 on z, velocity over life times
+the base velocity, wind over life, position += velocity x delta. Strip
+140207230: 140204df0 builds the point curve, section clamps to
+[m_minimumParticleLife, m_maximumParticleLife], segments 140206ed0,
+140204950, build 140206420 (strip mapping 140208ef0, 1401d1390/1401d1c30
+interpolation, 1401d5ce0, noise 14010e2e0, as beams). Decompiled dump:
+scratch `ribbon_a.c` (regenerate from chunk_000090.c).
