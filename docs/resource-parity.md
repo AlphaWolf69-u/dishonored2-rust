@@ -6684,3 +6684,19 @@ before purge, and the three-map CPU acquisition fingerprints matched
 the compact usable-skin build. The forced read interruptions and the
 normal worker retirement gate are separate observations.
 Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
+
+### Raw declaration buffer handoff
+
+Prediction before implementation. The installed resource identity and
+release boundaries are 1400607f0 and 140060180. Four host readers still
+copy a valid UTF-8 archive buffer into a String before its only parser
+uses it. Move the existing allocation into the string for placed light,
+area environment, pause environment and fallback MD6 declarations.
+Preserve the current byte-for-byte lossy UTF-8 semantics, including
+invalid bytes, and keep the lexer-normalized readers on their existing
+route. The prior Edge of the World and Dust District light comparison
+read 56,215 and 67,341 bytes per load. Expect those source bytes to
+require no second copy when valid, with no read-count or runtime
+ownership change. Compare actual buffer adoption and installed outputs
+in the same build. This is a host acquisition change, without a
+steady-state memory or frame-time prediction.
