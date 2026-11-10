@@ -5,6 +5,7 @@
 //! Basis arguments are the stage owner's row-major 3x3 (stage +0x1c).
 mod strip;
 pub use strip::{TrailTransform, TrailVertex};
+pub(crate) use strip::{centre_and_tangent, half, unorm, vertex_pair, StripFrame, StripMapping};
 
 use super::pose::EmitterPose;
 use crate::{
@@ -55,11 +56,11 @@ pub struct TrailRecord {
     pub(crate) bounds: [[f32; 3]; 2],
 }
 
-const EMPTY_BOUNDS: [[f32; 3]; 2] = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
+pub(crate) const EMPTY_BOUNDS: [[f32; 3]; 2] = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
 
 /// The row-major basis product used by 14020d300, 140209070 and 14020ba40:
 /// x' = y*m3 + x*m0 + z*m6, y' = x*m1 + y*m4 + z*m7, z' = x*m2 + y*m5 + z*m8.
-fn rotate(v: [f32; 3], m: &[[f32; 3]; 3]) -> [f32; 3] {
+pub(crate) fn rotate(v: [f32; 3], m: &[[f32; 3]; 3]) -> [f32; 3] {
     [
         add(add(multiply(v[1], m[1][0]), multiply(v[0], m[0][0])), multiply(v[2], m[2][0])),
         add(add(multiply(v[0], m[0][1]), multiply(v[1], m[1][1])), multiply(v[2], m[2][1])),
@@ -151,8 +152,11 @@ impl TrailBudget {
         } else {
             tessellation.segments as i32
         };
-        let vertices = (per + 2).wrapping_mul(capacity as i32).wrapping_mul(2).wrapping_sub(2) as u32;
-        vertices.min(16384)
+        Self::vertices(per, capacity).min(16384)
+    }
+    /// 1402134d0: (segments + 2) x 2 x capacity - 2 vertices.
+    pub fn vertices(per: i32, capacity: usize) -> u32 {
+        (per + 2).wrapping_mul(capacity as i32).wrapping_mul(2).wrapping_sub(2) as u32
     }
     pub fn new(segments: impl Iterator<Item = i32>, limit: u32) -> Self {
         let (mut total, mut count) = (0u32, 0u32);
@@ -544,18 +548,26 @@ impl TrailRecord {
 
     /// 14020dff0's inline centre-line sample at `time`.
     fn centre(&self, time: f32) -> [f32; 3] {
-        let n = self.times.len();
-        if n == 1 || time <= self.times[0] {
-            return self.positions[0];
+        curve_centre(&self.times, &self.positions, time)
+    }
+}
+
+/// The inline centre-line sample of 14020dff0 and 1401d6f70: the end points
+/// outside the key range, otherwise Catmull-Rom over the interval's four
+/// control points.
+pub(crate) fn curve_centre(times: &[f32], positions: &[[f32; 3]], time: f32) -> [f32; 3] {
+        let n = times.len();
+        if n == 1 || time <= times[0] {
+            return positions[0];
         }
-        if self.times[n - 1] <= time {
-            return self.positions[n - 1];
+        if times[n - 1] <= time {
+            return positions[n - 1];
         }
         let mut index = 0;
-        while index + 1 < n && !(time <= self.times[index + 1]) {
+        while index + 1 < n && !(time <= times[index + 1]) {
             index += 1;
         }
-        let [start, end] = crate::gameplay::effects::curve::curve_key_times(&self.times, index as i32);
+        let [start, end] = crate::gameplay::effects::curve::curve_key_times(times, index as i32);
         let mut t = subtract(time, start);
         if f32::from_bits(0x3400_0000) < subtract(end, start) {
             t = divide(t, subtract(end, start));
@@ -566,9 +578,8 @@ impl TrailRecord {
         let w1 = add(multiply(multiply(subtract(multiply(t, 3.), 5.), t), half), 1.);
         let w2 = multiply(add(multiply(subtract(4., multiply(t, 3.)), t), 1.), half);
         let i = index as i64;
-        let [p0, p1, p2, p3] = [i - 1, i, i + 1, i + 2].map(|k| control_point(&self.positions, k));
+        let [p0, p1, p2, p3] = [i - 1, i, i + 1, i + 2].map(|k| control_point(positions, k));
         std::array::from_fn(|c| {
             add(add(add(multiply(p1[c], w1), multiply(p0[c], w0)), multiply(p2[c], w2)), multiply(p3[c], w3))
         })
-    }
 }

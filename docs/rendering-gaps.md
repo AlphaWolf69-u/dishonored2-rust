@@ -26,7 +26,8 @@ Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
 radial-ramp opacity, bare rotation orders, clipping planes, stage
 sorting, stage-to-stage spawning, attractors, stage trails and
-declaration trails are connected; 954 particle declarations still fail.
+declaration trails and beams are connected; 884 particle declarations
+still fail (15 at beams whose end uses the FX target parameters, below).
 
 | Count | First failure |
 |---|---|
@@ -231,7 +232,7 @@ shared record functions are the template twins of the stage-trail ones
 the arkTrailDesc offsets (spawn_t +0x3a8, etc.), which must be mapped per
 call before reusing the stage-trail port.
 
-## Particle beams (`m_beams`), next
+## Particle beams (`m_beams`), connected
 
 219 beams in 126 installed declarations (99 first failures). arkBeamDesc
 (reflection): m_name +0, m_enabled +8, m_enableWind +9,
@@ -364,6 +365,22 @@ FLT_MIN))) x d2 from the first point and finally to the last point,
 growing the bounds with each sample. Segment count 1401d52d0: below 1e-4
 both length and segments are zeroed; length scaled: max(1, floor(length x
 segments + 0.5)) capped by maxSegments; otherwise floor(segments + 0.5).
-All beam pieces are now mapped; next is the runtime port, checking the
-scalar samples whose arguments the decompile dropped (1401d21b0 radius,
-radial and inherited velocity) against the disassembly.
+Runtime: `gameplay::particles::beam` (records) and `beam_system`
+(emitters), created before the declaration trails and simulated between
+the stages and the trails, as 140201760 and the system frame order do;
+strips share the trail vertex format, mapping and vertex pairs. The
+1401d21b0 samples whose arguments the decompile dropped use the cycle
+fraction and the emitter cycle seed (disassembly); its period draw is
+140001050(min, max, f) = (1 - f) min + max f. The noise permutation window
+is owned by the catalog (`Catalog::beam_noise`), loaded on the first
+definition with a noisy beam and held by those definitions' systems.
+`examples/beam_smoke.rs` drives all 86 loadable installed beams for three
+seconds without failures or non-finite vertices. Not verified on screen.
+
+Remaining: the FX target parameters (system +0x1d10) come from the FX
+owner's packet (140227b90); no rewrite producer publishes one, so the 39
+beams whose end uses them (15 declarations' first failure) are refused
+rather than aimed at 1401fa780's default origin. The packet's target
+point list (+0x70), which 1401ce790 turns into control-point anchors and
+per-frame deltas, is likewise unpublished. No installed beam position has
+a spawn mesh; one would be refused.

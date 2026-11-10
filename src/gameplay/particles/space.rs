@@ -26,6 +26,12 @@ impl ParticleSpace {
         }
     }
 
+    /// A pair whose local basis was replaced after 208bf0 (1401ceeb0's
+    /// target pair for local beams).
+    pub fn from_bases(world_to_stage: [[f32; 3]; 3], local_to_stage: [[f32; 3]; 3]) -> Self {
+        Self { world_to_stage, local_to_stage }
+    }
+
     /// 208b50 returns the selected basis without transforming an input vector.
     pub fn basis(&self, worldspace: bool) -> [[f32; 3]; 3] {
         if worldspace {

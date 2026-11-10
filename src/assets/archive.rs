@@ -86,6 +86,9 @@ pub struct Catalog {
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
     pub(crate) common_models: std::sync::OnceLock<std::result::Result<crate::assets::bmodel::CommonModels, String>>,
+    /// The beam noise permutation window, read from the executable once per
+    /// session on the first beam definition with noise.
+    pub(crate) beam_noise: std::sync::OnceLock<std::result::Result<std::sync::Arc<crate::gameplay::particles::beam_noise::SimplexTable>, String>>,
     pub(crate) difficulty_definitions: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Definition>>>,
     pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
     pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
@@ -411,6 +414,7 @@ impl Catalog {
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
             common_models: Default::default(),
+            beam_noise: Default::default(),
             difficulty_definitions: Default::default(),
             difficulty_presets: Default::default(),
             sound_rtpcs: Default::default(),

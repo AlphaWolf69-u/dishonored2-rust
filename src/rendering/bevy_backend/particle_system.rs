@@ -56,6 +56,11 @@ pub(crate) struct ParticleSystem {
     pub trail_bounds: Option<[[f32; 3]; 2]>,
     /// System +0x39a: (declaration trail index, arkTrail).
     pub trails: Vec<(usize, crate::gameplay::particles::trail_system::DeclarationTrail)>,
+    /// System +0x398: (declaration beam index, arkBeam).
+    pub beams: Vec<(usize, crate::gameplay::particles::beam_system::BeamEmitter)>,
+    /// System +0x1d10 (1401fa780's defaults until an FX owner publishes).
+    pub beam_target: crate::gameplay::particles::beam::BeamTarget,
+    beam_noise: Option<Arc<crate::gameplay::particles::beam_noise::SimplexTable>>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
     /// World-program mesh materials, drawn as material surfaces (1401fbad0).
     pub world_mesh_materials: Arc<std::collections::HashSet<String>>,
@@ -410,6 +415,46 @@ impl ParticleSystem {
                 });
             }
         }
+        // 1401d8d50: each beam emitter draws its live beams as one strip.
+        for (index, beam) in &self.beams {
+            let asset = &declaration.beams[*index];
+            let Some(name) = asset.material.as_ref() else { continue };
+            let material = self.materials.get(name).ok_or_else(|| format!("particle beam material absent: {name}"))?;
+            let mut strip = Vec::new();
+            let bounds = beam.build(asset, context.camera.position, publication.colour, publication.pose,
+                self.beam_noise.as_deref(), &mut strip)?;
+            crate::rendering::particles::bounds::include(&mut trail_bounds, bounds);
+            if strip.is_empty() {
+                continue;
+            }
+            let mut transparency = context.transparency.get(material.state)?;
+            if material.distortion { transparency.mode = 0; }
+            let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
+                material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+            output.push(super::particle_pass::ParticleDraw {
+                masking_factor: self.masking_factor,
+                material: material.clone(),
+                lighting: if material.lighting.is_some() { lighting } else { None },
+                transparency,
+                state,
+                stencil_reference,
+                grid_level: 0,
+                mesh: None,
+                instances: vec![crate::rendering::particles::ParticleInstance {
+                    position: [0.; 3],
+                    axes: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                    parameters: crate::rendering::particles::PackedParticleParameters {
+                        colour: u32::MAX, flipbook_seed_uv: 0, size: 0,
+                    },
+                }],
+                strip,
+                clip_plane: self.clipping.as_ref().and_then(|planes| planes.rendering)
+                    .map_or(bevy::prelude::Vec4::W, bevy::prelude::Vec4::from_array),
+                clip_fade_distance: self.clipping.as_ref().filter(|planes| planes.rendering.is_some())
+                    .map_or(0., |planes| planes.fade_distance),
+                fog,
+            });
+        }
         // 140212410: each declaration trail draws its live records.
         for (index, trail) in &self.trails {
             let asset = &declaration.trails[*index];
@@ -482,7 +527,7 @@ impl ParticleSystem {
         let texture_images = texture_materials.iter().flat_map(|material| material.images.values())
             .filter(|image| image.scene_owned && seen.insert(image.path.clone()))
             .cloned().collect();
-        let (effect, (stages, trails, system_seed)) = ParticleEffect::new(
+        let (effect, (stages, beams, trails, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
             seed,
@@ -510,6 +555,15 @@ impl ParticleSystem {
                         stage.parent = names.iter().position(|name| name == wanted);
                     }
                 }
+                // 140201760 then creates an arkBeam for each enabled beam
+                // with a material (1401d0ff0), before the trails.
+                let mut beams = Vec::new();
+                for (index, beam) in declaration.beams.iter().enumerate() {
+                    if beam.enabled && beam.material.is_some() {
+                        beams.push((index, crate::gameplay::particles::beam_system::BeamEmitter::new(
+                            beam, &mut system_seed, ReferenceFrame::default())?));
+                    }
+                }
                 // 140201760 then creates an arkTrail for each enabled
                 // declaration trail with a material (1402107a0).
                 let mut trails = Vec::new();
@@ -519,7 +573,7 @@ impl ParticleSystem {
                             trail, &mut system_seed, ReferenceFrame::default())?));
                     }
                 }
-                Ok((stages, trails, system_seed))
+                Ok((stages, beams, trails, system_seed))
             },
         )?;
         Ok(Self {
@@ -531,6 +585,9 @@ impl ParticleSystem {
             declaration: declaration.clone(),
             stages,
             trails,
+            beams,
+            beam_target: Default::default(),
+            beam_noise: definition.beam_noise.clone(),
             trail_bounds: None,
             materials: definition.materials.clone(),
             world_mesh_materials: Arc::new(definition.world_mesh_materials.clone()),
@@ -568,6 +625,10 @@ impl ParticleSystem {
             // 1402122f0 / 140212720
             trail.live_count() == 0
                 && !emitting(trail.can_emit(&self.declaration.trails[*index]))
+        }) && self.beams.iter().all(|(index, beam)| {
+            // 1401d9070 / 1401d8c60
+            beam.live_count() == 0
+                && !emitting(beam.can_emit(&self.declaration.beams[*index]))
         })
     }
 
@@ -819,9 +880,21 @@ impl ParticleSystem {
             }
             self.stages[stage_slot].events.pending = deliveries;
         }
+        let declaration = self.declaration.clone();
+        // 1401fde70 for each beam, before the trails. Its first frame
+        // (+0x1c9c bit 4) adds the beam's warmup from the system seed.
+        for (index, beam) in &mut self.beams {
+            let asset = &declaration.beams[*index];
+            let delta = if self.first_simulation {
+                crate::gameplay::particles::emitter::warmup_delta(delta, asset.timings.warmup, &mut self.system_seed)
+            } else {
+                delta
+            };
+            beam.advance(asset, &declaration, delta, publication.pose, &self.beam_target, self.wind,
+                self.source_motion.as_ref(), publication.rate, true)?;
+        }
         // 140200bf0 for each declaration trail. Its first frame (+0x1c9c
         // bit 4) draws one system seed and starts the pose at the system.
-        let declaration = self.declaration.clone();
         for (index, trail) in &mut self.trails {
             if self.first_simulation {
                 crate::random::lcg_step(&mut self.system_seed);

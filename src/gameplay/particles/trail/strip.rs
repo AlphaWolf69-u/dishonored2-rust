@@ -56,7 +56,7 @@ fn snorm(value: f32) -> u32 {
 }
 
 /// 140164340.
-fn unorm(colour: [f32; 4]) -> u32 {
+pub(crate) fn unorm(colour: [f32; 4]) -> u32 {
     let byte = |v: f32| (multiply(v, 255.) as i32).clamp(0, 255) as u32;
     byte(colour[0]) | byte(colour[1]) << 8 | byte(colour[2]) << 16 | byte(colour[3]) << 24
 }
@@ -172,12 +172,12 @@ fn vector_range(parameter: &VectorParameter, seed: &mut u32) -> [f32; 3] {
 
 /// 140208ef0/140208eb0: [u0, v0, u1, v1, tangent basis x4, u step, v step]
 /// plus the TEXCOORD4.zw halves written at mapping +0x28.
-struct StripMapping {
+pub(crate) struct StripMapping {
     m: [f32; 10],
-    extra: [u16; 2],
+    pub(crate) extra: [u16; 2],
 }
 impl StripMapping {
-    fn new(mapping: &crate::assets::fx::particle_trail::StripMapping, length: f32, segments: f32, flips: [bool; 2]) -> Self {
+    pub(crate) fn new(mapping: &crate::assets::fx::particle_trail::StripMapping, length: f32, segments: f32, flips: [bool; 2]) -> Self {
         let negative = |v: f32| f32::from_bits(v.to_bits() ^ 0x8000_0000);
         let mut scale = mapping.scale;
         if mapping.by_length {
@@ -223,7 +223,7 @@ impl StripMapping {
         }
         Self { m, extra: [0; 2] }
     }
-    fn advance(&mut self) {
+    pub(crate) fn advance(&mut self) {
         let m = &mut self.m;
         m[0] = add(m[0], m[8]);
         m[1] = add(m[9], m[1]);
@@ -234,10 +234,10 @@ impl StripMapping {
 
 /// 14020f940: centre, unit tangent, side and normal, and |tangent . view|
 /// for 14020f6f0's edge-on fade.
-struct StripFrame {
-    centre: [f32; 3],
+pub(crate) struct StripFrame {
+    pub(crate) centre: [f32; 3],
     tangent: [f32; 3],
-    side: [f32; 3],
+    pub(crate) side: [f32; 3],
     normal: [f32; 3],
     facing: f32,
 }
@@ -291,6 +291,30 @@ impl StripFrame {
         ];
         Self { centre, tangent, side: o, normal: n, facing }
     }
+    /// 1401d4580: the beam frame. The side is the tangent crossed with the
+    /// unnormalized view vector, the normal side x tangent renormalized;
+    /// beams have no edge-on fade.
+    pub(crate) fn beam(centre: [f32; 3], tangent: [f32; 3], eye: [f32; 3]) -> Self {
+        let inverse = |s: f32| divide(1., s.max(f32::MIN_POSITIVE).sqrt());
+        let s = add(add(multiply(tangent[0], tangent[0]), multiply(tangent[1], tangent[1])), multiply(tangent[2], tangent[2]));
+        let t = tangent.map(|c| multiply(c, inverse(s)));
+        let v: [f32; 3] = std::array::from_fn(|i| subtract(eye[i], centre[i]));
+        let side = [
+            subtract(multiply(t[2], v[1]), multiply(t[1], v[2])),
+            subtract(multiply(t[0], v[2]), multiply(t[2], v[0])),
+            subtract(multiply(t[1], v[0]), multiply(t[0], v[1])),
+        ];
+        let s = add(add(multiply(side[1], side[1]), multiply(side[0], side[0])), multiply(side[2], side[2]));
+        let side = side.map(|c| multiply(c, inverse(s)));
+        let normal = [
+            subtract(multiply(side[2], t[1]), multiply(side[1], t[2])),
+            subtract(multiply(side[0], t[2]), multiply(side[2], t[0])),
+            subtract(multiply(side[1], t[0]), multiply(side[0], t[1])),
+        ];
+        let s = add(add(multiply(normal[1], normal[1]), multiply(normal[0], normal[0])), multiply(normal[2], normal[2]));
+        let normal = normal.map(|c| multiply(c, inverse(s)));
+        Self { centre, tangent: t, side, normal, facing: 0. }
+    }
     fn fade(&self) -> f32 {
         let f = multiply(subtract(1., self.facing), 20.);
         if f <= 1. { f } else { 1. }
@@ -298,7 +322,7 @@ impl StripFrame {
 }
 
 /// 140212f90: (centre - width x side, centre + width x side).
-fn vertex_pair(mapping: &StripMapping, f: &StripFrame, width: f32, colour: u32) -> [TrailVertex; 2] {
+pub(crate) fn vertex_pair(mapping: &StripMapping, f: &StripFrame, width: f32, colour: u32) -> [TrailVertex; 2] {
     let m = &mapping.m;
     let normal = snorm(f.normal[0]) | snorm(f.normal[1]) << 8 | snorm(f.normal[2]) << 16;
     let tx = add(add(multiply(m[5], f.side[0]), multiply(m[4], f.tangent[0])), multiply(m[6], f.normal[0]));
@@ -460,7 +484,14 @@ impl TrailRecord {
 
     /// 140210240 -> 14020fb80 (centre) and 1401d1500 (tangent).
     fn centre_and_tangent(&self, time: f32, index: i64) -> ([f32; 3], [f32; 3]) {
-        let [start, end] = curve_key_times(&self.times, index as i32);
+        centre_and_tangent(&self.times, &self.positions, time, index)
+    }
+}
+
+/// 140210240's centre and 1401d1500's tangent over a point curve, shared by
+/// trail and beam strips (1401d32e0 computes the same centre inline).
+pub(crate) fn centre_and_tangent(times: &[f32], positions: &[[f32; 3]], time: f32, index: i64) -> ([f32; 3], [f32; 3]) {
+        let [start, end] = curve_key_times(times, index as i32);
         let interval = subtract(end, start);
         let mut t = subtract(time, start);
         if f32::from_bits(0x3400_0000) < interval {
@@ -471,7 +502,7 @@ impl TrailRecord {
         let w2 = multiply(add(multiply(subtract(4., multiply(t, 3.)), t), 1.), h);
         let w1 = add(multiply(multiply(subtract(multiply(t, 3.), 5.), t), h), 1.);
         let w3 = multiply(multiply(subtract(t, 1.), t), h);
-        let p = [index - 1, index, index + 1, index + 2].map(|k| control_point(&self.positions, k));
+        let p = [index - 1, index, index + 1, index + 2].map(|k| control_point(positions, k));
         let centre = std::array::from_fn(|c| {
             add(add(add(multiply(p[1][c], w1), multiply(p[0][c], w0)), multiply(p[2][c], w2)), multiply(p[3][c], w3))
         });
@@ -484,5 +515,4 @@ impl TrailRecord {
             multiply(add(add(add(multiply(p[3][c], d3), multiply(p[2][c], d2)), multiply(p[1][c], d1)), multiply(p[0][c], d0)), scale)
         });
         (centre, tangent)
-    }
 }

@@ -214,6 +214,8 @@ pub struct ParticleDefinition {
     /// Materials drawn as trail strips, whose strip pipelines are prepared
     /// with the level's particle materials.
     pub strip_materials: HashSet<String>,
+    /// The catalog's beam noise table, held while a beam with noise exists.
+    pub beam_noise: Option<Arc<crate::gameplay::particles::beam_noise::SimplexTable>>,
 }
 impl ParticleDefinition {
     pub fn load(
@@ -324,18 +326,49 @@ impl ParticleDefinition {
             }
         }
         // 140201760 creates an arkBeam for each enabled beam with a material
-        // (1401d0ff0); beams are not simulated yet.
-        if declarations.iter().flatten().any(|declaration| {
-            declaration.beams.iter().any(|beam| beam.enabled && beam.material.is_some())
-        }) {
-            return Err("particle beams are not simulated yet".into());
+        // (1401d0ff0); its material loads like the rest.
+        let beams: Vec<&crate::assets::fx::particle_beam::ParticleBeamAsset> = declarations.iter().flatten()
+            .flat_map(|declaration| declaration.beams.iter())
+            .filter(|beam| beam.enabled && beam.material.is_some())
+            .collect();
+        for beam in &beams {
+            // The FX owner's target packet (140227b90) has no rewrite
+            // producer; the default target would aim these at the origin.
+            if beam.end.use_target_parameters {
+                return Err("particle beam target parameters have no producer yet".into());
+            }
+            // No installed beam position names a spawn mesh (1401d0d60).
+            if beam.start.spawn_mesh.source.is_some() || beam.end.spawn_mesh.source.is_some() {
+                return Err("particle beam spawn meshes are not loaded".into());
+            }
+            let name = beam.material.as_ref().unwrap();
+            let key = name.replace('\\', "/").to_ascii_lowercase();
+            let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+            let material = if let Some(material) = cached {
+                material
+            } else {
+                resources.material_reads += 1;
+                let material = Arc::new(ParticleMaterial::load_shared(
+                    catalog, library, name, &mut resources.images,
+                ).map_err(|error| format!("material {name}: {error}"))?);
+                resources.materials.insert(key, Arc::downgrade(&material));
+                material
+            };
+            materials.insert(name.clone(), material);
         }
+        let beam_noise = beams.iter().any(|beam| f32::from_bits(0x3400_0000) < beam.noise.scale).then(|| {
+            catalog.beam_noise.get_or_init(|| {
+                crate::gameplay::particles::beam_noise::SimplexTable::load(catalog.base()).map(Arc::new)
+            }).clone()
+        }).transpose()?;
+        let beam_materials: Vec<String> = beams.iter().filter_map(|beam| beam.material.clone()).collect();
         let strip_materials = declarations.iter().flatten()
             .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
             .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
             .filter_map(|trail| trail.material.clone())
             .chain(declarations.iter().flatten().flat_map(|declaration| declaration.trails.iter())
                 .filter(|trail| trail.enabled).filter_map(|trail| trail.trail.material.clone()))
+            .chain(beam_materials)
             .collect();
         Ok(Self {
             strip_materials,
@@ -344,6 +377,7 @@ impl ParticleDefinition {
             declarations,
             materials,
             world_mesh_materials,
+            beam_noise,
         })
     }
 }
