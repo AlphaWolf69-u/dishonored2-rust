@@ -771,7 +771,7 @@ fn parse_stream(
             lod,
         });
     }
-    // FUN_140296240 reads this BWM v21 section into the world's +0x390
+    // FUN_1402974c0 reads this BWM v21 section into the world's +0x390
     // array: 24 bytes of bounds, a 32-bit Umbra ID, and a 16-bit field.
     let visibility_count = usize_at(bytes, at)?;
     at += 4;
@@ -806,7 +806,7 @@ fn parse_stream(
         });
     }
     at += records.len();
-    // FUN_140296240 then reads four auxiliary lists, variable-length group
+    // FUN_1402974c0 then reads four auxiliary lists, variable-length group
     // records, Tome-indexed instance lists at world +0x408, and a separate
     // world-record list at +0x418.
     let aux_counts = (0..4)

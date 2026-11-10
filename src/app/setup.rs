@@ -271,21 +271,46 @@ pub(super) fn prepare(
     if records.is_empty() {
         records.push([Vec4::ZERO; 9]);
     }
-    // The per-vertex references only build this GPU buffer; nothing reads
-    // them on the CPU afterwards, so they are released once it is built.
-    let words = scene
-        .environment_probes
-        .as_mut()
-        .map(|set| {
+    // The CPU references build only this GPU buffer. Write the host WGSL
+    // layout straight into its upload backing, then retire setup-only arrays.
+    let trace_probe = env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+    let copy_probe = env::var_os("DH2_DEBUG_COPY_VERTEX_PROBE_BUFFER").is_some_and(|v| v == "1");
+    let started = trace_probe.then(crate::loading::thread_cycles).flatten();
+    let mut word_capacity_bytes = 0;
+    let mut vertex_probe_buffer = if let Some(set) = scene.environment_probes.as_mut() {
+        let buffer = if copy_probe {
             let words = set.vertex_shader_words();
-            if let Some(set) = std::sync::Arc::get_mut(set) {
-                set.vertex_references.instance_offsets = Vec::new();
-                set.vertex_references.tetrahedron_indices = Vec::new();
+            word_capacity_bytes = words.capacity() * size_of::<u32>();
+            ShaderBuffer::from(words)
+        } else {
+            ShaderBuffer {
+                data: Some(set.vertex_shader_bytes()),
+                ..default()
             }
-            words
-        })
-        .unwrap_or_else(|| vec![0u32; 8]);
-    let bytes = words.len() as u64 * 4;
+        };
+        if let Some(set) = std::sync::Arc::get_mut(set) {
+            set.vertex_references.instance_offsets = Vec::new();
+            set.vertex_references.tetrahedron_indices = Vec::new();
+        }
+        buffer
+    } else {
+        ShaderBuffer {
+            data: Some(vec![0; 8 * size_of::<u32>()]),
+            ..default()
+        }
+    };
+    let data = vertex_probe_buffer.data.as_ref().expect("prepared PNW GPU buffer");
+    let bytes = data.len() as u64;
+    if trace_probe {
+        let cycles = started.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        let mut crc = flate2::Crc::new();
+        crc.update(data);
+        eprintln!(
+            "MEMORY vertex probe buffer: copy={copy_probe} bytes={bytes} capacity={} word_capacity_bytes={word_capacity_bytes} cycles={cycles} signature={:08x}",
+            data.capacity(), crc.sum(),
+        );
+    }
     let limits = render_device.limits();
     assert!(
         bytes <= u64::from(limits.max_storage_buffer_binding_size)
@@ -299,7 +324,6 @@ pub(super) fn prepare(
         records.len(),
         limits.max_storage_buffer_binding_size
     );
-    let mut vertex_probe_buffer = ShaderBuffer::from(words);
     vertex_probe_buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
     let vertex_probe_buffer = probe_sh_buffers.add(vertex_probe_buffer);
     // Only the handle is consumed before the completed probe data is uploaded.
