@@ -6017,6 +6017,28 @@ after warmup. This observes ownership and queue retirement, without measuring
 active rendering cost. Evidence:
 `DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
 
+Placed static model staging prediction. The BML1 loader retires its input at
+14026a5a0 and releases dispensable triangle arrays through 140278df0. The host
+needs decoded level triangles while resolving placements in authored order.
+The last placement that uses each source is known before setup. Record it in
+the same source table and drop level triangles after that placement, leaving
+session sources with the catalog. The archived Edge of the World load kept
+30,145,962 bytes of combined static and skeletal geometry until the end of
+setup. Expect lower peak live static geometry within this scope, one source
+acquisition per path, identical mesh bytes and placement order, and no change
+to gameplay CPU. Compare the placement loop including the new table pass.
+
+Placed static model staging acceptance (`c285c906`). Two optimized
+retain/early-release pairs matched all prepared vertex and index bytes
+and their ordered mesh references. Each map decoded the same source count
+and byte total. Peak static CPU staging fell from 20,588,490 to 4,298,220
+bytes in Edge of the World and from 20,741,684 to 6,323,080 in Dust
+District. Both released paths had zero static staging left at loop exit.
+The affected placement span averaged 3.292B cycles with retention and
+3.286B with early release across both maps. Individual Dust runs varied
+in both directions. No frame timing was measured. Evidence:
+`DH2-collision-staging/artifacts/static-model-last-use-20261110-comparison.json`.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
