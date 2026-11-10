@@ -1648,8 +1648,14 @@ FX slot can outlive its old image as an empty reusable index. `r_addAllMips`
 previously admitted those empty indices and could queue a read that completed
 after another image reused the same index. Skip unassigned slots when building
 the request order. Expect zero reads for retired slots and unchanged ordering
-for live images, including in all-mips mode. This case still needs a live
-request-and-reuse observation.
+for live images, including in all-mips mode. The installed DX12 observer
+(`5ac96a60`) published and released two Tower FX image slots and seven
+Edge of the World slots. The production all-mips ordering returned 1,974
+and 4,143 registered requests respectively and zero retired slots. All
+observed FX assets released while their level stayed alive. This exercises
+request ordering on real retired slots. A subsequent slot reassignment,
+live rendering, and map-generation overlap were outside this observation.
+Evidence: `DH2-fx-level-lifetime/artifacts/runtime-fx-retired-slots-20261110-comparison.json`.
 
 A later seven-snapshot EotW quality route (`6b15daea`) observed four real
 parallel/local target replacements at settings generations 3, 4, 6, and 7.
