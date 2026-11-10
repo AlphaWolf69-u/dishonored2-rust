@@ -402,6 +402,7 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- World and player FX ownership (`1408a4830`, `140199df0`, `140821350`, `14021f820`). The map owns simulation state and its particle pools. The player-water/view update supplies frame inputs and does not own those pools. End player particle chains at map teardown before the world manager clears its chains. Prediction: no pool recreation on first camera publication or a temporary missing frame, one fewer initialization of both 1,024-slot pools per normal map entry, and no live player particle slots at the world shutdown boundary. Missing view inputs still withdraw the draw publication. This concerns host ownership and level acquisition, with no lower frame-time claim. Live camera-gap and active player-particle teardown observations remain pending.
 - Sound source release: `141122400` releases an old bank-backed source before
   assigning new media; `1410f1910` reuses the registered Sound object. The host
   now prunes unused Vorbis header/codebook cache entries after map voices and

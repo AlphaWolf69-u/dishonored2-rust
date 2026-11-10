@@ -40,12 +40,12 @@ impl LevelLifetime {
     }
 
     pub fn clear(&mut self, world: &mut World) -> Result<(), String> {
-        // bevy_backend: retire the currently hosted FX chains while their
+        // bevy_backend: retire player and world FX chains while their
         // support owners are still present. The caller has acknowledged the
         // outgoing render publication. This does not replace the GameLocal
         // component/entity/graph shutdown phases still being integrated.
         if let Some(mut effects) = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() {
-            effects.shutdown_world_effects()?;
+            effects.shutdown()?;
         }
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
