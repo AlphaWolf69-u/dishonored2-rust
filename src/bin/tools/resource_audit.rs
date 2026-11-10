@@ -71,8 +71,7 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             let unshared = args.get(1).is_some_and(|value| value == "unshared");
             env::set_var("DH2_DEBUG_UNSHARED_WORLD_QUERIES", if unshared { "1" } else { "0" });
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
-            let bytes = catalog.read(path)?.ok_or("WORLD resource absent")?;
-            let world = dishonored2_rust::world_mesh::parse(&bytes)?;
+            let world = dishonored2_rust::world_mesh::load(&catalog, path, || false)?;
             let before = dishonored2_rust::platform::allocation_tags::report().into_iter()
                 .find(|(name, _)| *name == "WORLD spatial queries").map_or(0, |(_, bytes)| bytes);
             let mut owners = Vec::new();
