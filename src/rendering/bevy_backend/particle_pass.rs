@@ -599,6 +599,10 @@ pub struct ParticlePass {
     bilinear: Sampler,
     _unused_volume: Texture,
     unused_volume_view: TextureView,
+    /// 2D stand-in for texture slots a material's program never samples
+    /// (a flipbook material has no opacity image).
+    _unused_image: Texture,
+    unused_image_view: TextureView,
     _unused_shadow: Texture,
     unused_shadow_view: TextureView,
     comparison: Sampler,
@@ -851,6 +855,22 @@ impl ParticlePass {
             &[0; 4],
         );
         let unused_volume_view = unused_volume.create_view(&default());
+        let unused_image = device.create_texture_with_data(
+            queue,
+            &TextureDescriptor {
+                label: Some("unused particle image binding"),
+                size: Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            TextureDataOrder::MipMajor,
+            &[0; 4],
+        );
+        let unused_image_view = unused_image.create_view(&default());
         // Dormant fixed-layout binding for unlit scenes with no probe network.
         let unused_cube = device.create_texture_with_data(
             queue,
@@ -915,6 +935,8 @@ impl ParticlePass {
             bilinear: sampler(AddressMode::Repeat, MipmapFilterMode::Nearest),
             _unused_volume: unused_volume,
             unused_volume_view,
+            _unused_image: unused_image,
+            unused_image_view,
             _unused_shadow: unused_shadow,
             unused_shadow_view,
             comparison: super::shadow_pipeline::shadow_comparison_sampler(device),
@@ -969,9 +991,9 @@ impl ParticlePass {
             )?;
             views.insert(name.as_str(), view);
         }
-        let opacity = views
-            .get("fx/opacity")
-            .ok_or("particle opacity image absent")?;
+        // The material omits fx/opacity only when its program never samples
+        // it (flipbook volume or radial ramp).
+        let opacity = views.get("fx/opacity").unwrap_or(&self.unused_image_view);
         let volume_view = if let Some(volume) = &source.volume {
             let view = images.acquire(
                 device,

@@ -110,7 +110,7 @@ impl ParticleImages {
             };
             Arc::new(ParticleImage::scene(path.clone(), info))
         } else {
-            let image = crate::material::load_2d_image(catalog, source)?;
+            let image = crate::material::load_2d_image(catalog, source).map_err(|error| format!("{source}: {error}"))?;
             Arc::new(ParticleImage::new(path.clone(), image.info, 1, image.payload, self.retain_payload))
         };
         self.reads += 1;

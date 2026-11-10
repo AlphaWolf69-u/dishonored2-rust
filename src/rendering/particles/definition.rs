@@ -288,7 +288,7 @@ impl ParticleDefinition {
                         resources.material_reads += 1;
                         let material = Arc::new(ParticleMaterial::load_shared(
                             catalog, library, name, &mut resources.images,
-                        )?);
+                        ).map_err(|error| format!("material {name}: {error}"))?);
                         resources.materials.insert(key, Arc::downgrade(&material));
                         material
                     };

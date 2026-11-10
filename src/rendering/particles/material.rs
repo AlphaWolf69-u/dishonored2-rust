@@ -350,6 +350,14 @@ impl ParticleMaterial {
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let mut images = BTreeMap::new();
+        // fx/opacity is not sampled when a flipbook volume replaces it
+        // (add_default's TextureColor, the water and dist_blur flipbook
+        // branches) or when add_default/dist_blur build opacity with
+        // RadialRamp; installed materials of both kinds point fx/opacity
+        // at a flipbook volume, which is not a 2D image.
+        let flipbook_volume = !scrolling_water && !liquid && !dissolve && !add_liquid && options["fx/opt/use_flipbook"] != 0;
+        let radial_opacity = !scrolling_water && !liquid && !dissolve && !add_liquid && !water
+            && options["fx/opt/radial_ramp"] != 0;
         for (image, option) in [
             ("fx/opacity", None),
             ("fx/disto1", Some("fx/opt/uv_disto1")),
@@ -364,6 +372,9 @@ impl ParticleMaterial {
             ),
             ("particleFresnelLUT", Some("fx/opt/fresnel/uselut")),
         ] {
+            if (flipbook_volume || radial_opacity) && image == "fx/opacity" {
+                continue;
+            }
             let water_required = scrolling_water && matches!(image, "fx/disto1" | "fx/disto2" | "fx/diffuse");
             // particle/liquid samples only opacity, lookup and diffuse here,
             // whatever add_default's options say.
@@ -401,7 +412,7 @@ impl ParticleMaterial {
             let source = scopes.image_source(image)?;
             images.insert(
                 image.to_ascii_lowercase(),
-                image_resources.image(catalog, &source)?,
+                image_resources.image(catalog, &source).map_err(|error| format!("{image} {error}"))?,
             );
         }
         if dissolve {
