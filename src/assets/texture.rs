@@ -591,14 +591,19 @@ pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, St
 /// 1402e9ff0 hands each record to 1402f5500; no intermediate packed copy is needed.
 pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, CompressedMip<'a>))
     -> Result<BimageInfo, String> {
-    let info = BimageInfo::parse(bytes)?;
+    let mut info = BimageInfo::parse(bytes)?;
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
         return Err("invalid BIM dimensions/mip count".into());
     }
+    // Block-compressed records store each level padded to whole blocks
+    // (installed 256x2 lookups carry 256x4 BC payloads), and D3D requires
+    // the top level of a BC texture in whole blocks: the texture takes the
+    // padded size.
+    let block = info.format.block_width();
     let mut at = 62usize;
     for level in 0..info.mip_count {
-        let width = (info.width >> level).max(1);
-        let height = (info.height >> level).max(1);
+        let width = (info.width >> level).max(1).div_ceil(block) * block;
+        let height = (info.height >> level).max(1).div_ceil(block) * block;
         let header = bytes
             .get(at..at + 20)
             .ok_or("truncated inline mip header")?;
@@ -611,6 +616,9 @@ pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, Compres
         let mip = compressed_mip(record, level, info.format)?;
         if (mip.width, mip.height) != (width, height) {
             return Err("inline mip dimensions disagree with BIM header".into());
+        }
+        if level == 0 {
+            (info.width, info.height) = (width, height);
         }
         visit(level, mip);
         at = end;
