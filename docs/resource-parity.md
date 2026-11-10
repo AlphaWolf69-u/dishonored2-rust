@@ -2977,6 +2977,14 @@ streamer, with no new allocations on ordinary gameplay frames. This is a host
 ownership change at the map retirement boundary (1408a4830), separate from
 the earlier mailbox-scratch measurements.
 
+The game-feature check on db1cb92a compiled the exact texture sources now
+integrated. LevelLifetime removes the texture worker with the outgoing map,
+which owns its request state and cached instance slots. Projected demand
+carries the original name-based priority initialized for each newly admitted
+identity, including reused FX slots. Existing priority-key construction is
+unchanged. Live slot reuse, affected CPU cost and mip publication still need
+runtime observations. Evidence: DH2-scene-shutdown/artifacts/resource-shutdown-batch-20261110-check-provenance.json.
+
 
 ### Fog curve resource ownership
 
