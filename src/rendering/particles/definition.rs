@@ -211,6 +211,9 @@ pub struct ParticleDefinition {
     /// every renderer an ordinary model surface (material = desc+0x278), so
     /// these draw through the world material's own passes, not the FX pass.
     pub world_mesh_materials: HashSet<String>,
+    /// Materials drawn as trail strips, whose strip pipelines are prepared
+    /// with the level's particle materials.
+    pub strip_materials: HashSet<String>,
 }
 impl ParticleDefinition {
     pub fn load(
@@ -304,15 +307,22 @@ impl ParticleDefinition {
             }
         }
         // 1efcc0 creates a trail renderer for each enabled trail with a
-        // material (1401fada0). Their strips are not drawn yet.
+        // material (1401fada0). The vector-oriented frame (1402100f0,
+        // 14020f710) is not ported yet.
         if declarations.iter().flatten().any(|declaration| {
             declaration.stages.iter().filter(|stage| stage.enabled).any(|stage| {
-                stage.trails.iter().any(|trail| trail.enabled && trail.material.is_some())
+                stage.trails.iter().any(|trail| trail.enabled && trail.material.is_some() && trail.vector_oriented)
             })
         }) {
-            return Err("particle trail strips are not drawn yet".into());
+            return Err("vector-oriented particle trails are not built yet".into());
         }
+        let strip_materials = declarations.iter().flatten()
+            .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
+            .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
+            .filter_map(|trail| trail.material.clone())
+            .collect();
         Ok(Self {
+            strip_materials,
             owner: Arc::new(owner),
             parameter_block,
             declarations,

@@ -25,8 +25,8 @@ All 8,909 installed FX declarations loaded through `WorldFxSources`
 Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
 radial-ramp opacity, bare rotation orders, clipping planes, stage
-sorting, stage-to-stage spawning and attractors are connected; 1,054
-particle declarations still fail.
+sorting, stage-to-stage spawning, attractors and stage trails are
+connected; 997 particle declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -124,12 +124,18 @@ radius and strength), and the integration loop adds 1cda40's pull scaled by
 m_strengthOverLife to the particle's accumulated velocity before each
 substep. Installed data: 197 attractors in 111 particle declarations.
 
-## Particle trails (`m_trails`), in progress
+## Particle trails (`m_trails`): stage trails connected
 
 Stage trails (arkParticleTrailDesc, 0x15b0 bytes, list at stage +0x1938;
 183 in 134 installed declarations) and declaration trails (arkTrailDesc,
-list at system +0x39a; 60 in 42 declarations). Both still rejected by the
-reader until simulation, strip building and drawing all exist.
+list at system +0x39a; 60 in 42 declarations). Stage trails are simulated
+(gameplay::particles::trail), built into strips each frame within the
+renderer budget and drawn through `particle_strip_vertex`; examples/
+trail_smoke.rs drives all 68 loadable installed stage trails for 120 frames
+without errors. Not yet seen on screen. Remaining: vector-oriented trails
+(1402100f0/14020f710/1402104b0, 7 declarations), declaration-level trails
+(arkTrailDesc, 37 declarations), and TEXCOORD5 (left unwritten by the
+original, zero here).
 
 Descriptor (reflection, defaults 1401facf0): m_name +0, m_enabled +8 (1),
 m_worldspace +9 (1), m_trailLife +0x10 (0.5), m_material +0xd8 (required:

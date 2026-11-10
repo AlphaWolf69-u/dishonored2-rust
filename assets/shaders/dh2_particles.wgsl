@@ -172,6 +172,16 @@ struct ParticleFragment {
         output.world_tangent=normalize(basis*grid.tangent.xyz);
         world_bitangent=normalize(basis*grid.bitangent.xyz);
     }
+    let bitangent_sign=select(1.0,grid.tangent.w,instance.clip_fade.y!=0.0);
+    return particle_vertex_finish(output,position,clip,world_bitangent,bitangent_sign,instance);
+}
+
+// The vertex tail shared by the instanced sprite path and the
+// non-instanced strip path (vertex format 4): lighting, fog, clip plane
+// and transparency inputs.
+fn particle_vertex_finish(input:ParticleFragment,position:vec3<f32>,clip:vec4<f32>,
+    world_bitangent:vec3<f32>,bitangent_sign:f32,instance:ParticleInstance)->ParticleFragment {
+    var output=input;
     if particle_lighting_mode==1u {
         let root=particle_root_lighting[instance.parameters.w];
         var sh:array<vec3<f32>,9>;
@@ -194,7 +204,6 @@ struct ParticleFragment {
     }
     // Pixel-context reconstructs B using the authored tangent sign. Particle
     // render roots have modelMtxInverted=+1, even for mirrored instance axes.
-    let bitangent_sign=select(1.0,grid.tangent.w,instance.clip_fade.y!=0.0);
     output.world_bitangent=cross(output.world_normal,output.world_tangent)*bitangent_sign;
     if particle_lighting_mode>=2u {
         let root=particle_root_lighting[instance.parameters.w];
@@ -217,6 +226,42 @@ struct ParticleFragment {
     output.transparency_mode=transparency.mode.x;
     output.lighting_record=instance.parameters.w;
     return output;
+}
+
+// Non-instanced particle geometry (the renderprog's !$useDirectInstancing
+// branch, vertex format 4): texcoords and colour pass straight through from
+// VERTEX_TEXCOORD4 and VERTEX_COLOR, the particle centre and radius come
+// from VERTEX_TEXCOORD5, and the surface is already in world space. The
+// instance record carries only the draw's clip, fade and record index.
+struct ParticleStripVertex {
+    @builtin(instance_index) instance_index:u32,
+    @location(0) position:vec3<f32>,
+    @location(1) texcoord:vec4<f32>,
+    @location(2) normal:vec4<f32>,
+    @location(3) tangent:vec4<f32>,
+    @location(4) colour:vec4<f32>,
+    @location(5) centre:vec4<f32>,
+}
+@vertex fn particle_strip_vertex(input:ParticleStripVertex)->ParticleFragment {
+    let instance=particle_instances[input.instance_index];
+    let position=input.position;
+    let clip=particle_view.clip_from_game_world*vec4(position,1.0);
+    var output:ParticleFragment;
+    output.position=clip;
+    output.texture_coordinates=input.texcoord;
+    if particle_distortion_mode!=0u || particle_add_liquid!=0u {
+        let f=particle_material.distortion_fog;
+        output.texture_coordinates.w=clamp(exp2(-clamp(clip.w-f.x,0.0,f.y)*f.z),0.0,1.0);
+    }
+    output.colour=input.colour;
+    output.world_position=position;
+    output.particle_center=input.centre.xyz;
+    output.world_normal=normalize(input.normal.xyz);
+    output.world_tangent=normalize(input.tangent.xyz);
+    let world_bitangent=normalize(cross(output.world_normal,output.world_tangent)*input.tangent.w);
+    var finished=particle_vertex_finish(output,position,clip,world_bitangent,input.tangent.w,instance);
+    finished.fade_radius.y=input.centre.w;
+    return finished;
 }
 fn particle_pan(coordinates:vec4<f32>,layer:ParticleTextureLayer)->vec2<f32> {
     let time=coordinates.w*layer.rotation_seed.y+particle_view.camera_time.w;

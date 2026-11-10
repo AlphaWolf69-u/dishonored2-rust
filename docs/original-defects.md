@@ -70,3 +70,10 @@ would change, so it can be made opt-in without guessing.
   `m_positionOverCycle` (+0x118) as expected.
 - Rewrite: `AttractorState::prepare` in `src/gameplay/particles/attractor.rs`
   keeps the double `m_velocity` sample.
+
+### Trail segment motion reads the trail-life gravity
+- `FUN_14020c620` samples `m_trailLifeCurves.m_acceleration.m_gravity`
+  (+0xac8) at the segment's age; `m_segmentLifeCurves`' gravity (+0x1120,
+  default 1 from 14020ee80) is never read (confirmed in the disassembly).
+- Rewrite: `TrailRecord::move_point` in `src/gameplay/particles/trail.rs`
+  keeps it.

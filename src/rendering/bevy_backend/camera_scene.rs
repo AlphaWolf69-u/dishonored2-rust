@@ -513,7 +513,8 @@ fn render_particles(
                 let bounded = !particles.prepared && lighting_scene.upload_budget.max_bytes.is_some()
                     && !bevy::render::render_asset::unbounded_loading_acquisition();
                 let (created, complete) = particles.pass.prepare_materials_bounded(
-                    particle_images, &device, &queue, materials, &console.cvars, sampler, bounded.then_some(1))?;
+                    particle_images, &device, &queue, materials, &lighting_scene.world_sources.0.strip_materials(),
+                    &console.cvars, sampler, bounded.then_some(1))?;
                 if !complete {
                     return Err("particle materials are preparing".into());
                 }
@@ -540,7 +541,7 @@ fn render_particles(
                 let console = crate::platform::console::shared().read();
                 let started = super::world_effects::trace_lifecycle().then(std::time::Instant::now);
                 match particles.pass.prepare_materials_bounded(particle_images, &device, &queue,
-                    prewarm.sources.particle_materials(), &console.cvars, sampler, Some(1)) {
+                    prewarm.sources.particle_materials(), &prewarm.sources.strip_materials(), &console.cvars, sampler, Some(1)) {
                     Ok((created, complete)) => {
                         if let Some(started) = started {
                             eprintln!("FX_LIFECYCLE gpu_prepare generation={} created={created} complete={complete} cpu_ms={:.3}",

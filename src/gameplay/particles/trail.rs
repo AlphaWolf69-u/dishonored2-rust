@@ -46,7 +46,7 @@ pub struct TrailRecord {
     pub(crate) frame: f32,
     point_seed: u32,
     pub(crate) length: f32,
-    pub(crate) segments: i32,
+    pub segments: i32,
     pub(crate) bounds: [[f32; 3]; 2],
 }
 
@@ -102,6 +102,73 @@ pub(crate) fn control_point(points: &[[f32; 3]], k: i64) -> [f32; 3] {
         std::array::from_fn(|i| add(a[i], multiply(subtract(a[i], b[i]), steps)))
     } else {
         points[k as usize]
+    }
+}
+
+/// 140211a90's owner matrix: rows (basis column, position component).
+pub fn owner_transform(owner: crate::gameplay::reference_frame::ReferenceFrame) -> TrailTransform {
+    let (b, p) = (owner.basis, owner.position);
+    std::array::from_fn(|r| [b[0][r], b[1][r], b[2][r], p[r]])
+}
+
+/// 1402117d0/140211bc0 move a local stage's particle into world space for
+/// a world-space trail: the position by the owner matrix and the basis by
+/// 140211630.
+pub fn to_world(m: &TrailTransform, position: [f32; 3], basis: [[f32; 3]; 3]) -> ([f32; 3], [[f32; 3]; 3]) {
+    let (x, y, z) = (position[0], position[1], position[2]);
+    let position = std::array::from_fn(|r| {
+        add(add(add(multiply(m[r][3], 1.), multiply(m[r][1], y)), multiply(m[r][2], z)), multiply(m[r][0], x))
+    });
+    let basis = basis.map(|row| {
+        [
+            add(add(multiply(m[0][1], row[1]), multiply(m[0][0], row[0])), multiply(m[0][2], row[2])),
+            add(add(multiply(m[1][1], row[1]), multiply(m[1][0], row[0])), multiply(m[1][2], row[2])),
+            add(add(multiply(m[2][0], row[0]), multiply(m[2][1], row[1])), multiply(m[2][2], row[2])),
+        ]
+    });
+    (position, basis)
+}
+
+/// 1402134xx's vertex budget for one trail renderer: each live trail
+/// with n segments needs 2n + 2 vertices, plus two per join. When the
+/// total exceeds the renderer's budget, every trail's segment count is
+/// scaled by the remaining fraction.
+pub struct TrailBudget {
+    factor: f32,
+}
+impl TrailBudget {
+    /// 1402107b0: min(1402134d0(capacity, 1401f9300(tessellation)),
+    /// r_prt_particletrailrenderer_budget x 16384); the cvar defaults to 1.
+    pub fn limit(trail: &ParticleTrailAsset, capacity: usize) -> u32 {
+        let tessellation = &trail.tessellation;
+        let per = if tessellation.length_scaled {
+            tessellation.maximum_segments
+        } else {
+            tessellation.segments as i32
+        };
+        let vertices = (per + 2).wrapping_mul(capacity as i32).wrapping_mul(2).wrapping_sub(2) as u32;
+        vertices.min(16384)
+    }
+    pub fn new(segments: impl Iterator<Item = i32>, limit: u32) -> Self {
+        let (mut total, mut count) = (0u32, 0u32);
+        for n in segments.filter(|&n| n != 0) {
+            total = total.wrapping_add((n as u32).wrapping_mul(2).wrapping_add(2));
+            count += 1;
+        }
+        let base = if count != 0 { count * 2 - 2 } else { 0 };
+        let factor = if limit < base.wrapping_add(total) {
+            divide(limit.wrapping_sub(base) as f32, total as f32)
+        } else {
+            1.
+        };
+        Self { factor }
+    }
+    /// 1402134a0.
+    pub fn segments(&self, segments: i32) -> u32 {
+        if segments == 0 {
+            return 0;
+        }
+        ((multiply((segments + 1) as f32, self.factor) as i32) - 1).max(0) as u32
     }
 }
 

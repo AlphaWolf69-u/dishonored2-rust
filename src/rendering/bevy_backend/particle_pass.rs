@@ -337,6 +337,9 @@ pub struct ParticleDraw {
     pub grid_level: u32,
     pub mesh: Option<(String, Arc<crate::assets::particle_model::ParticleModel>)>,
     pub instances: Vec<ParticleInstance>,
+    /// Non-instanced particle geometry (vertex format 4, a triangle strip),
+    /// drawn with one instance record for the draw's clip/fade/record data.
+    pub strip: Vec<crate::gameplay::particles::trail::TrailVertex>,
     pub clip_plane: Vec4,
     pub clip_fade_distance: f32,
     pub fog: FogObjectParameters,
@@ -416,7 +419,7 @@ pub(super) struct ParticlePrograms {
     lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
-    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, bool, i32, u8, bool), RenderPipeline>,
+    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, bool, i32, u8, bool, bool), RenderPipeline>,
 }
 impl ParticlePrograms {
     fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
@@ -608,7 +611,8 @@ pub struct ParticlePass {
     comparison: Sampler,
     _unused_cube: Texture,
     unused_cube_view: TextureView,
-    materials: HashMap<(String, crate::render_state::RenderState, bool), MaterialGpu>,
+    /// Keyed by material, state, masking and strip geometry.
+    materials: HashMap<(String, crate::render_state::RenderState, bool, bool), MaterialGpu>,
     // Host: pipeline specialization is independent of image/material binding
     // residency (1402c9f00/1402ca440 keep prepared shader programs separately).
     pipeline_requests: usize,
@@ -621,6 +625,12 @@ pub struct ParticlePass {
     colour_format: TextureFormat,
     depth_format: TextureFormat,
     instance_bytes: Vec<u8>,
+    /// bevy_backend: the frame's strip vertices in one buffer, created at
+    /// the first strip draw, grown to the next power of two and released
+    /// with the pass. The original appends to its per-renderer dynamic
+    /// idTriangles (1402107b0) within the frame's vertex budget.
+    strip_vertices: Option<Buffer>,
+    strip_bytes: Vec<u8>,
 }
 fn buffer_entry(binding: u32, uniform: bool) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
@@ -953,6 +963,8 @@ impl ParticlePass {
             colour_format,
             depth_format,
             instance_bytes: Vec::with_capacity(max_instances * 96),
+            strip_vertices: None,
+            strip_bytes: Vec::new(),
         })
     }
 
@@ -1229,6 +1241,7 @@ impl ParticlePass {
         accumulation: bool,
         anisotropic_sampler: &Sampler,
         masking: bool,
+        strip: bool,
     ) -> Result<MaterialGpu, String> {
         if masking && (!source.masking_uses_main || source.distortion) {
             return Err(format!("particle masking program requires separate preparation: {}", source.name));
@@ -1242,7 +1255,7 @@ impl ParticlePass {
             u8::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
                 | (u8::from(source.option("fx/opt/use_mesh")? != 0) << 1)
         } else { 0 };
-        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3) | (u8::from(source.water) << 4), masking);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3) | (u8::from(source.water) << 4), masking, strip);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
@@ -1288,14 +1301,28 @@ impl ParticlePass {
                 ("particle_water_alpha_mask_spec", f64::from(u32::from(water_options & 1 != 0))),
                 ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0))),
                 ("particle_masking", f64::from(u32::from(masking)))];
+            // Vertex format 4 (1402d0dc0 list +0x178).
+            let strip_attributes = [
+                VertexAttribute { format: VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                VertexAttribute { format: VertexFormat::Float16x4, offset: 0xc, shader_location: 1 },
+                VertexAttribute { format: VertexFormat::Snorm8x4, offset: 0x14, shader_location: 2 },
+                VertexAttribute { format: VertexFormat::Snorm8x4, offset: 0x18, shader_location: 3 },
+                VertexAttribute { format: VertexFormat::Unorm8x4, offset: 0x1c, shader_location: 4 },
+                VertexAttribute { format: VertexFormat::Float16x4, offset: 0x20, shader_location: 5 },
+            ];
+            let strip_layout = [RawVertexBufferLayout {
+                array_stride: 40,
+                step_mode: VertexStepMode::Vertex,
+                attributes: &strip_attributes,
+            }];
             let pipeline = device.create_render_pipeline(&RawRenderPipelineDescriptor {
-                label: Some("particle sprite colour"),
+                label: Some(if strip { "particle strip colour" } else { "particle sprite colour" }),
                 layout: Some(&self.programs.pipeline_layout),
                 vertex: RawVertexState {
                     module: &self.programs.shader,
-                    entry_point: Some("particle_vertex"),
+                    entry_point: Some(if strip { "particle_strip_vertex" } else { "particle_vertex" }),
                     compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
-                    buffers: &[],
+                    buffers: if strip { &strip_layout } else { &[] },
                 },
                 fragment: Some(RawFragmentState {
                     module: &self.programs.shader,
@@ -1309,7 +1336,11 @@ impl ParticlePass {
                     compilation_options: PipelineCompilationOptions { constants: &constants, ..default() },
                     targets: &targets,
                 }),
+                // bevy_backend: the original draws trail strips through the
+                // shared index buffer 1402d1ae0(registry, 2); a triangle
+                // strip gives the same triangles without the index buffer.
                 primitive: PrimitiveState {
+                    topology: if strip { PrimitiveTopology::TriangleStrip } else { PrimitiveTopology::TriangleList },
                     front_face,
                     cull_mode,
                     ..default()
@@ -1352,7 +1383,7 @@ impl ParticlePass {
         cvars: &crate::platform::cvars::CVars,
         surface_sampler: &Sampler,
     ) -> Result<usize, String> {
-        self.prepare_materials_bounded(images, device, queue, materials, cvars, surface_sampler, None)
+        self.prepare_materials_bounded(images, device, queue, materials, &Default::default(), cvars, surface_sampler, None)
             .map(|(created, _)| created)
     }
 
@@ -1366,6 +1397,7 @@ impl ParticlePass {
         device: &RenderDevice,
         queue: &RenderQueue,
         materials: impl Iterator<Item = &'a Arc<ParticleMaterial>>,
+        strips: &std::collections::HashSet<String>,
         cvars: &crate::platform::cvars::CVars,
         surface_sampler: &Sampler,
         max_created: Option<usize>,
@@ -1379,14 +1411,16 @@ impl ParticlePass {
         for material in materials {
             let mut transparency = transparencies.get(material.state)?;
             if material.distortion { transparency.mode = 0; }
-            for water in [false, true] {
+            // Trail materials also get their strip pipelines before play.
+            let strip_variants: &[bool] = if strips.contains(&material.name) { &[false, true] } else { &[false] };
+            for (water, &strip) in [false, true].into_iter().flat_map(|water| strip_variants.iter().map(move |strip| (water, strip))) {
                 let (state, _) = crate::render_state::alpha_surface_draw_state(material.state, transparency.mode != 0, water);
-                let key = (material.name.clone(), state, false);
+                let key = (material.name.clone(), state, false, strip);
                 if self.materials.contains_key(&key) { continue; }
                 if max_created.is_some_and(|limit| created >= limit) {
                     return Ok((created, false));
                 }
-                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler, false)?;
+                let gpu = self.material(images, device, queue, material.clone(), state, transparency.mode != 0, surface_sampler, false, strip)?;
                 self.materials.insert(key, gpu);
                 created += 1;
             }
@@ -1412,10 +1446,10 @@ impl ParticlePass {
         let mut created = 0;
         for source in materials {
             let state = crate::render_state::masking_surface_draw_state(source.state);
-            let key = (source.name.clone(), state, true);
+            let key = (source.name.clone(), state, true, false);
             if self.materials.contains_key(&key) { continue; }
             if max_created.is_some_and(|limit| created >= limit) { return Ok((created, false)); }
-            let material = self.material(images, device, queue, source.clone(), state, false, surface_sampler, true)?;
+            let material = self.material(images, device, queue, source.clone(), state, false, surface_sampler, true, false)?;
             self.materials.insert(key, material);
             created += 1;
         }
@@ -1518,7 +1552,7 @@ impl ParticlePass {
         for draw in draws {
             if masking && !(draw.masking_factor > 0.0) { continue; }
             let state = draw_state(draw);
-            let key = (draw.material.name.clone(), state, masking);
+            let key = (draw.material.name.clone(), state, masking, !draw.strip.is_empty());
             if !self.materials.contains_key(&key) {
                 let surface_sampler = input.surface_sampler.unwrap_or(&self.wrap).clone();
                 let material = self.material(
@@ -1530,6 +1564,7 @@ impl ParticlePass {
                         accumulation,
                         &surface_sampler,
                         masking,
+                        !draw.strip.is_empty(),
                     )?;
                 self.materials.insert(key, material);
             }
@@ -1612,6 +1647,29 @@ impl ParticlePass {
             return Ok(());
         }
         queue.write_buffer(&self.instances, 0, &self.instance_bytes);
+        self.strip_bytes.clear();
+        for draw in draws {
+            for vertex in &draw.strip {
+                self.strip_bytes.extend(vertex.position.iter().flat_map(|v| v.to_le_bytes()));
+                self.strip_bytes.extend(vertex.texcoord.iter().flat_map(|v| v.to_le_bytes()));
+                self.strip_bytes.extend(vertex.normal.to_le_bytes());
+                self.strip_bytes.extend(vertex.tangent.to_le_bytes());
+                self.strip_bytes.extend(vertex.colour.to_le_bytes());
+                self.strip_bytes.extend(vertex.texcoord5.iter().flat_map(|v| v.to_le_bytes()));
+            }
+        }
+        if !self.strip_bytes.is_empty() {
+            let needed = self.strip_bytes.len() as u64;
+            if self.strip_vertices.as_ref().is_none_or(|buffer| buffer.size() < needed) {
+                self.strip_vertices = Some(device.create_buffer(&BufferDescriptor {
+                    label: Some("particle strip vertices"),
+                    size: needed.next_power_of_two(),
+                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            queue.write_buffer(self.strip_vertices.as_ref().unwrap(), 0, &self.strip_bytes);
+        }
         let transparency = ShaderBuffer::from(
             draws
                 .iter()
@@ -1911,14 +1969,25 @@ impl ParticlePass {
         pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
         pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
         let mut first = 0u32;
+        let mut strip_first = 0u32;
         for draw in draws {
+            let strip = draw.strip.len() as u32;
             if draw.material.distortion || (masking && !(draw.masking_factor > 0.0)) {
-                first += draw.instances.len() as u32; continue;
+                first += draw.instances.len() as u32; strip_first += strip; continue;
             }
             let level = draw.grid_level.min(5) as usize;
-            let material = &self.materials[&(draw.material.name.clone(), draw_state(draw), masking)];
+            let material = &self.materials[&(draw.material.name.clone(), draw_state(draw), masking, strip != 0)];
             pass.set_pipeline(&material.pipeline);
             pass.set_stencil_reference(if masking { 0 } else { draw.stencil_reference });
+            if strip != 0 {
+                pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[0], &[]);
+                pass.set_bind_group(1, &material.binding, &[]);
+                pass.set_vertex_buffer(0, *self.strip_vertices.as_ref().unwrap().slice(u64::from(strip_first) * 40..));
+                pass.draw(0..strip, first..first + 1);
+                first += draw.instances.len() as u32;
+                strip_first += strip;
+                continue;
+            }
             let (geometry,binding)=if let Some((source,_))=&draw.mesh {
                 let cached=&self.meshes[source]; (&cached.0,&cached.1.as_ref().unwrap().1)
             } else {(&self.grids[level],&self.view_bindings.as_ref().unwrap().1[level])};
@@ -1969,11 +2038,21 @@ impl ParticlePass {
             pass.set_bind_group(2, &self.fog_binding.as_ref().unwrap().1, &[]);
             pass.set_bind_group(3, &self.lighting_binding.as_ref().unwrap().1, &[]);
             let mut first = 0;
+            let mut strip_first = 0u32;
             for draw in draws {
                 let count = draw.instances.len() as u32;
-                if draw.material.distortion {
+                let strip = draw.strip.len() as u32;
+                if draw.material.distortion && strip != 0 {
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state, false, true)];
+                    pass.set_pipeline(&material.pipeline);
+                    pass.set_stencil_reference(draw.stencil_reference);
+                    pass.set_bind_group(0, &self.view_bindings.as_ref().unwrap().1[0], &[]);
+                    pass.set_bind_group(1, &material.binding, &[]);
+                    pass.set_vertex_buffer(0, *self.strip_vertices.as_ref().unwrap().slice(u64::from(strip_first) * 40..));
+                    pass.draw(0..strip, first..first + 1);
+                } else if draw.material.distortion {
                     let level = draw.grid_level.min(5) as usize;
-                    let material = &self.materials[&(draw.material.name.clone(), draw.state, false)];
+                    let material = &self.materials[&(draw.material.name.clone(), draw.state, false, false)];
                     pass.set_pipeline(&material.pipeline);
                     pass.set_stencil_reference(draw.stencil_reference);
                     let (geometry,binding)=if let Some((source,_))=&draw.mesh {
@@ -1985,6 +2064,7 @@ impl ParticlePass {
                     pass.draw_indexed(0..geometry.count, 0, first..first+count);
                 }
                 first += count;
+                strip_first += strip;
             }
             drop(pass);
             let prepared = hdr.prepare(device, queue, encoder, input.colour, input.extent,

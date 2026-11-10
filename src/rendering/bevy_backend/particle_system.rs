@@ -293,6 +293,7 @@ impl ParticleSystem {
                     state,
                     stencil_reference,
                     mesh: None,
+                    strip: Vec::new(),
                     grid_level:
                         crate::rendering::particles::geometry::SpriteGrid::level_for_distance(
                             sprite.tessellation_distance,
@@ -336,9 +337,67 @@ impl ParticleSystem {
                     masking_factor:self.masking_factor,
                     material:material.clone(),lighting:if material.lighting.is_some(){lighting}else{None},
                     transparency,state,stencil_reference,grid_level:0,
-                    mesh:Some((source.clone(),model.clone())),instances,
+                    mesh:Some((source.clone(),model.clone())),instances,strip:Vec::new(),
                     clip_plane:self.clipping.as_ref().and_then(|planes|planes.rendering).map_or(bevy::prelude::Vec4::W,bevy::prelude::Vec4::from_array),
                     clip_fade_distance:self.clipping.as_ref().filter(|planes|planes.rendering.is_some()).map_or(0.,|planes|planes.fade_distance),fog,
+                });
+            }
+            // 1401f3060: each trail renderer builds its live particles'
+            // strips, in slot order, within its vertex budget.
+            for (trail_index, trail) in definition.trails.iter().enumerate() {
+                let records = &stage.trails[trail_index];
+                if records.is_empty() {
+                    continue;
+                }
+                let Some(name) = trail.material.as_ref() else { continue };
+                let material = self.materials.get(name).ok_or_else(|| format!("particle trail material absent: {name}"))?;
+                let live: Vec<&crate::gameplay::particles::trail::TrailRecord> = stage.particles.iter()
+                    .filter_map(|(slot, _)| records.get(slot).and_then(Option::as_ref))
+                    .collect();
+                let budget = crate::gameplay::particles::trail::TrailBudget::new(
+                    live.iter().map(|record| record.segments),
+                    crate::gameplay::particles::trail::TrailBudget::limit(trail, stage.particles.capacity()),
+                );
+                // 140211a90: a local stage's local trail is built in stage
+                // space and moved by the owner matrix (140210350).
+                let owner = (!definition.worldspace && !trail.worldspace)
+                    .then(|| crate::gameplay::particles::trail::owner_transform(publication.pose));
+                let mut strip = Vec::new();
+                for record in &live {
+                    let segments = budget.segments(record.segments);
+                    if segments != 0 {
+                        record.build(trail, segments, context.camera.position, publication.colour, owner.as_ref(), &mut strip)?;
+                    }
+                }
+                if strip.is_empty() {
+                    continue;
+                }
+                let mut transparency = context.transparency.get(material.state)?;
+                if material.distortion { transparency.mode = 0; }
+                let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
+                    material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+                output.push(super::particle_pass::ParticleDraw {
+                    masking_factor: self.masking_factor,
+                    material: material.clone(),
+                    lighting: if material.lighting.is_some() { lighting } else { None },
+                    transparency,
+                    state,
+                    stencil_reference,
+                    grid_level: 0,
+                    mesh: None,
+                    instances: vec![crate::rendering::particles::ParticleInstance {
+                        position: [0.; 3],
+                        axes: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                        parameters: crate::rendering::particles::PackedParticleParameters {
+                            colour: u32::MAX, flipbook_seed_uv: 0, size: 0,
+                        },
+                    }],
+                    strip,
+                    clip_plane: self.clipping.as_ref().and_then(|planes| planes.rendering)
+                        .map_or(bevy::prelude::Vec4::W, bevy::prelude::Vec4::from_array),
+                    clip_fade_distance: self.clipping.as_ref().filter(|planes| planes.rendering.is_some())
+                        .map_or(0., |planes| planes.fade_distance),
+                    fog,
                 });
             }
         }

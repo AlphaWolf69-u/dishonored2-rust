@@ -36,6 +36,10 @@ pub struct StageSimulation {
     /// stable when particles die or the free list reuses a previous slot.
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
     pub meshes: Vec<Vec<Option<MeshInitialState>>>,
+    /// One arkParticleTrailRenderer per descriptor trail (stage +0xd0),
+    /// with a record per particle slot. A dead particle's record stays so
+    /// its slot's next start keeps the stale age (see TrailRecord::start).
+    pub trails: Vec<Vec<Option<super::trail::TrailRecord>>>,
     mesh_cursor: usize,
     periodic_orientation: super::periodic::PeriodicOrientationState,
     inherited_velocity: super::spawn::SpawnVelocity,
@@ -70,6 +74,7 @@ struct Bindings<'a> {
     particles: &'a mut ParticleStage,
     sprites: &'a mut [Vec<Option<SpriteInitialState>>],
     meshes: &'a mut [Vec<Option<MeshInitialState>>],
+    trails: &'a mut [Vec<Option<super::trail::TrailRecord>>],
     owner_basis: [[f32; 3]; 3],
     lod: usize,
     mesh_cursor: &'a mut usize,
@@ -305,6 +310,29 @@ impl EmitterBindings for Bindings<'_> {
             state.advance(&descriptor.appearance,&descriptor.flipbook,age,context.remaining_delta,&mut update_seed)?;
             slots[slot]=Some(state);
         }
+        // 1f4e00: each trail renderer starts its record on the same seed
+        // chain (1402117d0) and advances it by the remaining delta
+        // (140211bc0), which draws nothing from the particle seed.
+        let owner = ReferenceFrame { position: self.owner_position, basis: self.owner_basis };
+        for (descriptor, slots) in definition.trails.iter().zip(self.trails.iter_mut()) {
+            if slots.is_empty() {
+                continue;
+            }
+            if self.definition.constant_seed {
+                sprite_seed = particle_seed;
+            }
+            let (position, basis) = if !definition.worldspace && descriptor.worldspace {
+                super::trail::to_world(&super::trail::owner_transform(owner), birth_state.position, owner.basis)
+            } else {
+                (birth_state.position, owner.basis)
+            };
+            let previous_age = slots[slot].as_ref().map_or(0., |record| record.age);
+            let mut record = super::trail::TrailRecord::start(
+                previous_age, descriptor, context.cycle_fraction, position, basis, &mut sprite_seed,
+            )?;
+            record.advance(descriptor, age, context.cycle_fraction, context.remaining_delta, position, basis)?;
+            slots[slot] = Some(record);
+        }
         self.events.birth(
             &birth_state,
             seed,
@@ -323,6 +351,7 @@ impl StageSimulation {
         self.particles.flush();
         self.events.pending.clear();
         for meshes in &mut self.meshes { for mesh in meshes { *mesh=None; } }
+        for trails in &mut self.trails { for trail in trails { *trail = None; } }
         for sprites in &mut self.sprites {
             for sprite in sprites {
                 *sprite = None;
@@ -346,6 +375,7 @@ impl StageSimulation {
             particles: &mut self.particles,
             sprites: &mut self.sprites,
             meshes: &mut self.meshes,
+            trails: &mut self.trails,
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut self.mesh_cursor,
@@ -378,6 +408,14 @@ impl StageSimulation {
             .collect::<Vec<Vec<Option<SpriteInitialState>>>>();
         let mut meshes = definition.meshes.iter()
             .map(|_| (0..capacity).map(|_| None).collect()).collect::<Vec<Vec<Option<MeshInitialState>>>>();
+        // 1efcc0 creates a renderer for each enabled trail with a material.
+        let mut trails = definition.trails.iter()
+            .map(|trail| if trail.enabled && trail.material.is_some() {
+                (0..capacity).map(|_| None).collect()
+            } else {
+                Vec::new()
+            })
+            .collect::<Vec<Vec<Option<super::trail::TrailRecord>>>>();
         // 1efcc0 retains the first draw as its cycle seed and the second as
         // its mutable spawn seed. Periodic orientation precedes field setup.
         let cycle_seed = crate::random::lcg_step(system_seed);
@@ -416,6 +454,7 @@ impl StageSimulation {
             particles: &mut particles,
             sprites: &mut sprites,
             meshes: &mut meshes,
+            trails: &mut trails,
             owner_basis: pose.basis,
             lod: 0,
             mesh_cursor: &mut mesh_cursor,
@@ -439,6 +478,7 @@ impl StageSimulation {
             particles,
             sprites,
             meshes,
+            trails,
             mesh_cursor,
             periodic_orientation,
             inherited_velocity,
@@ -670,6 +710,8 @@ impl StageSimulation {
         let fields = &self.fields;
         let sprites = &mut self.sprites;
         let meshes = &mut self.meshes;
+        let trails = &mut self.trails;
+        let fraction = self.emitter.cycle.fraction;
         let events = &mut self.events;
         let event_seed = &mut self.emitter.seed;
         self.particles.advance_with_events(
@@ -735,6 +777,17 @@ impl StageSimulation {
                         state.advance(&mesh.appearance,&mesh.flipbook,particle.age,delta,seed)?;
                     }
                 }
+                // 1f5620 -> 140211bc0 after the sprite and mesh updates.
+                for (trail, slots) in definition.trails.iter().zip(trails.iter_mut()) {
+                    if let Some(record) = slots.get_mut(index).and_then(Option::as_mut) {
+                        let (position, basis) = if !definition.worldspace && trail.worldspace {
+                            super::trail::to_world(&super::trail::owner_transform(frame.pose), particle.position, frame.pose.basis)
+                        } else {
+                            (particle.position, frame.pose.basis)
+                        };
+                        record.advance(trail, particle.age, fraction, delta, position, basis)?;
+                    }
+                }
                 Ok(())
             },
             |particle, previous_age, alive| {
@@ -770,6 +823,7 @@ impl StageSimulation {
             particles: &mut self.particles,
             sprites: &mut self.sprites,
             meshes: &mut self.meshes,
+            trails: &mut self.trails,
             owner_basis: frame.pose.basis,
             lod: frame.lod,
             mesh_cursor: &mut self.mesh_cursor,

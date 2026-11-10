@@ -147,6 +147,14 @@ impl WorldFxSources {
     }
 
     /// Every particle material of the level's world FX.
+    /// Names of the materials the level's FX draw as trail strips.
+    pub fn strip_materials(&self) -> std::collections::HashSet<String> {
+        self.effects.values().filter_map(|e| e.as_ref().ok())
+            .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+            .flat_map(|p| p.strip_materials.iter().cloned())
+            .collect()
+    }
+
     pub fn particle_materials(&self) -> impl Iterator<Item = &Arc<super::material::ParticleMaterial>> {
         self.effects.values().filter_map(|e| e.as_ref().ok())
             .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())

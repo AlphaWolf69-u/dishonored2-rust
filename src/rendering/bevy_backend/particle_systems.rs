@@ -143,8 +143,10 @@ impl ParticleSystems {
                 let meshes=stage.declaration.stages[stage.index].meshes.iter()
                     .filter(|mesh|mesh.enabled&&mesh.model.is_some()
                         &&mesh.material.as_ref().is_some_and(|name|!system.world_mesh_materials.contains(name))).count();
-                instances += stage.particles.capacity() * (sprites+meshes);
-                draws += sprites+meshes;
+                // A trail renderer is one draw with one instance record.
+                let trails = stage.trails.iter().filter(|records| !records.is_empty()).count();
+                instances += stage.particles.capacity() * (sprites+meshes) + trails;
+                draws += sprites+meshes+trails;
             }
         }
         (instances, draws)

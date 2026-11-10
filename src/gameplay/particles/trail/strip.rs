@@ -296,19 +296,20 @@ fn vertex_pair(mapping: &StripMapping, f: &StripFrame, width: f32, colour: u32) 
 
 impl TrailRecord {
     /// 14020a720: append `segments + 1` vertex pairs, joined to an earlier
-    /// strip by two degenerate vertices.
+    /// strip by two degenerate vertices, and return the strip bounds (the
+    /// record bounds grown by the widest width). The original grows the
+    /// record's own bounds in place; they are rebuilt by every advance.
     pub fn build(
-        &mut self,
+        &self,
         trail: &ParticleTrailAsset,
         segments: u32,
         eye: [f32; 3],
         tint: [f32; 4],
         transform: Option<&TrailTransform>,
         vertices: &mut Vec<TrailVertex>,
-    ) -> Result<(), String> {
+    ) -> Result<[[f32; 3]; 2], String> {
         if segments == 0 {
-            self.bounds = EMPTY_BOUNDS;
-            return Ok(());
+            return Ok(EMPTY_BOUNDS);
         }
         if trail.vector_oriented {
             return Err("vector-oriented particle trails are not built yet".into());
@@ -347,9 +348,10 @@ impl TrailRecord {
             }
         }
         let widest = multiply(widest, width);
+        let mut bounds = self.bounds;
         for i in 0..3 {
-            self.bounds[0][i] = subtract(self.bounds[0][i], widest);
-            self.bounds[1][i] = add(widest, self.bounds[1][i]);
+            bounds[0][i] = subtract(bounds[0][i], widest);
+            bounds[1][i] = add(widest, bounds[1][i]);
         }
         let mut mapping = StripMapping::new(&trail.mapping, self.length, segments as f32, self.flips);
         mapping.extra = [half(self.frame), half(unit(&mut seed))];
@@ -399,7 +401,7 @@ impl TrailRecord {
         if let Some(joint) = joint {
             vertices[joint] = vertices[joint + 1];
         }
-        Ok(())
+        Ok(bounds)
     }
 
     /// 140210240 -> 14020fb80 (centre) and 1401d1500 (tangent).
