@@ -815,15 +815,14 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     }
     if let TextureReadTarget::Exact(mip, format) = target {
         let path = format!("{stem}_mip{mip}");
-        let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? else {
+        let Some(compressed) = texture::read_separate_mip(catalog, &path, u32::from(mip), format)? else {
             return Ok(None);
         };
-        let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
         let uploads = vec![CompressedMipUpload {
             mip_level: 0,
             width: compressed.width,
             height: compressed.height,
-            payload: compressed.payload.to_vec(),
+            payload: compressed.payload,
         }];
         return Ok(Some(StreamedDiffuse {
             image: empty_streamed_image(

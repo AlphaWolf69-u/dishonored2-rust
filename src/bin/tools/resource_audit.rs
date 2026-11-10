@@ -33,6 +33,23 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             #[cfg(not(feature = "game"))]
             return Err("inspect-cpu-preparation requires the game feature".into());
         }
+        "inspect-separate-mips" => {
+            use dishonored2_rust::{archive::Catalog, texture};
+            if args.is_empty() { return Err("inspect-separate-mips requires installed mip paths".into()); }
+            let catalog = Catalog::open(base)?;
+            for path in args {
+                let (stem, suffix) = path.rsplit_once("_mip").ok_or("expected a separate mip path")?;
+                let level = suffix.parse::<u32>()?;
+                let base = catalog.read_prefix(stem, 62)?.ok_or("missing base image")?;
+                let format = texture::BimageInfo::parse(&base)?.format;
+                let mip = texture::read_separate_mip(&catalog, path, level, format)?
+                    .ok_or("missing separate mip")?;
+                let mut crc = flate2::Crc::new();
+                crc.update(&mip.payload);
+                println!("BIMAGE_MIP path={path} size={}x{} format={format:?} payload_bytes={} crc={:08x}",
+                    mip.width, mip.height, mip.payload.len(), crc.sum());
+            }
+        }
         "inspect-world-geometry" => {
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
             let worlds = if args.is_empty() {

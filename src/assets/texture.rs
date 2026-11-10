@@ -298,22 +298,58 @@ pub fn compressed_mip(
     level: u32,
     format: ImageFormat,
 ) -> Result<CompressedMip<'_>, String> {
-    let mip = BimageMipResource::parse(bytes)?;
-    if mip.mip_level != level {
-        return Err("bimage mip level differs from request".into());
-    }
-    let expected = format.mip_bytes(mip.width, mip.height);
-    if mip.payload.len() != expected {
-        return Err(format!(
-            "invalid {format:?} mip payload: expected {expected}, got {}",
-            mip.payload.len()
-        ));
-    }
+    let header = BimageMipHeader::parse(bytes, bytes.len())?;
+    header.validate_format(level, format)?;
     Ok(CompressedMip {
-        width: mip.width,
-        height: mip.height,
-        payload: mip.payload,
+        width: header.width,
+        height: header.height,
+        payload: &bytes[20..],
     })
+}
+
+pub struct OwnedCompressedMip {
+    pub width: u32,
+    pub height: u32,
+    pub payload: Vec<u8>,
+}
+
+/// Acquire the payload owned by one separate mip upload. Original 14030e840
+/// reads the five header words before handing the stream to 14030f030.
+pub fn read_separate_mip(
+    catalog: &super::archive::Catalog,
+    path: &str,
+    level: u32,
+    format: ImageFormat,
+) -> Result<Option<OwnedCompressedMip>, String> {
+    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    let (buffered, trace) = *MODE.get_or_init(|| (
+        std::env::var_os("DH2_DEBUG_BUFFER_SEPARATE_MIPS").is_some_and(|value| value == "1"),
+        std::env::var_os("DH2_DEBUG_SEPARATE_MIP_ACQUISITION").is_some_and(|value| value == "1"),
+    ));
+    let streamed = !buffered && !catalog.has_overlays();
+    let start = trace.then(crate::loading::thread_cycles).flatten();
+    let result = if streamed {
+        catalog.with_stream(path, |input, size| {
+            let mut words = [0; 20];
+            input.read_exact(&mut words).map_err(|error| error.to_string())?;
+            let header = BimageMipHeader::parse(&words, size)?;
+            header.validate_format(level, format)?;
+            let mut payload = Vec::new();
+            payload.try_reserve_exact(header.payload_size).map_err(|error| error.to_string())?;
+            payload.resize(header.payload_size, 0);
+            input.read_exact(&mut payload).map_err(|error| error.to_string())?;
+            Ok(OwnedCompressedMip { width: header.width, height: header.height, payload })
+        })?
+    } else {
+        let Some(bytes) = catalog.read(path).map_err(|error| error.to_string())? else { return Ok(None) };
+        let mip = compressed_mip(&bytes, level, format)?;
+        Some(OwnedCompressedMip { width: mip.width, height: mip.height, payload: mip.payload.to_vec() })
+    };
+    if let (Some(start), Some(mip)) = (start, &result) {
+        let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+        eprintln!("MEMORY separate mip acquisition: path={path} streamed={streamed} member_bytes={} cycles={cycles}", mip.payload.len() + 20);
+    }
+    Ok(result)
 }
 
 #[test]
@@ -688,8 +724,16 @@ pub fn compressed_bc7_mip(
     })
 }
 
-impl<'a> BimageMipResource<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, String> {
+struct BimageMipHeader {
+    mip_level: u32,
+    header_flags: u32,
+    width: u32,
+    height: u32,
+    payload_size: usize,
+}
+
+impl BimageMipHeader {
+    fn parse(bytes: &[u8], resource_size: usize) -> Result<Self, String> {
         let mip_level = word(bytes, 0)?;
         let header_flags = word(bytes, 4)?;
         let width = word(bytes, 8)?;
@@ -701,16 +745,40 @@ impl<'a> BimageMipResource<'a> {
         let end = 20usize
             .checked_add(payload_size)
             .ok_or("bimage mip payload size overflow")?;
-        let payload = bytes.get(20..end).ok_or("truncated bimage mip payload")?;
-        if end != bytes.len() {
+        if end > resource_size {
+            return Err("truncated bimage mip payload".into());
+        }
+        if end != resource_size {
             return Err("bimage mip payload size mismatch".into());
         }
+        Ok(Self { mip_level, header_flags, width, height, payload_size })
+    }
+
+    fn validate_format(&self, level: u32, format: ImageFormat) -> Result<(), String> {
+        if self.mip_level != level {
+            return Err("bimage mip level differs from request".into());
+        }
+        let blocks_wide = self.width.div_ceil(format.block_width()) as usize;
+        let blocks_high = self.height.div_ceil(format.block_width()) as usize;
+        let expected = blocks_wide.checked_mul(blocks_high)
+            .and_then(|blocks| blocks.checked_mul(format.block_bytes()))
+            .ok_or("bimage mip payload size overflow")?;
+        if self.payload_size != expected {
+            return Err(format!("invalid {format:?} mip payload: expected {expected}, got {}", self.payload_size));
+        }
+        Ok(())
+    }
+}
+
+impl<'a> BimageMipResource<'a> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, String> {
+        let header = BimageMipHeader::parse(bytes, bytes.len())?;
         Ok(Self {
-            mip_level,
-            header_flags,
-            width,
-            height,
-            payload,
+            mip_level: header.mip_level,
+            header_flags: header.header_flags,
+            width: header.width,
+            height: header.height,
+            payload: &bytes[20..],
         })
     }
 }
