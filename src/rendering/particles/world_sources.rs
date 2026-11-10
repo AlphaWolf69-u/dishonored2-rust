@@ -274,7 +274,7 @@ impl WorldFxSources {
         if let Ok(effect) = std::env::var("DH2_DEBUG_PLAY_FX") {
             names.push(effect);
         }
-        result.load_named_into(names, catalog, library, resources, || false);
+        result.load_named_into(names, catalog, library, resources, None);
         result
     }
 
@@ -287,7 +287,7 @@ impl WorldFxSources {
         resources: &mut super::definition::ParticleResources,
     ) -> Self {
         let mut result = Self::default();
-        result.load_named_into(names, catalog, library, resources, || false);
+        result.load_named_into(names, catalog, library, resources, None);
         result
     }
 
@@ -299,7 +299,7 @@ impl WorldFxSources {
         cancelled: impl Fn() -> bool,
     ) -> Result<Self, String> {
         let mut result = Self::default();
-        if !result.load_named_into(names, catalog, library, resources, cancelled) {
+        if !result.load_named_into(names, catalog, library, resources, Some(&cancelled)) {
             return Err("effect acquisition cancelled".into());
         }
         Ok(result)
@@ -311,8 +311,9 @@ impl WorldFxSources {
         catalog: &Catalog,
         library: &mut ProgramLibrary,
         resources: &mut super::definition::ParticleResources,
-        cancelled: impl Fn() -> bool,
+        cancellation: Option<&dyn Fn() -> bool>,
     ) -> bool {
+        let cancelled = || cancellation.is_some_and(|stop| stop());
         let result = self;
         let trace = std::env::var_os("DH2_TRACE_WORLD_FX").is_some();
         let mut sound_events = HashMap::new();
@@ -365,18 +366,21 @@ impl WorldFxSources {
                         .collect::<Result<Vec<_>, String>>()?;
                     let particle_fields =
                         descriptor_fields(scope(fields, "m_particleSystems").unwrap_or(&[]))?;
-                    let particles = particle_fields
-                        .iter()
-                        .filter(|fields| atom(fields, "m_enabled") != Some("false"))
-                        .map(|fields| {
-                            ParticleDefinition::load(fields, catalog, library, resources)
-                        })
-                        .collect();
+                    let mut particles = Vec::new();
+                    for fields in particle_fields.iter().filter(|fields| atom(fields, "m_enabled") != Some("false")) {
+                        if cancelled() { return Err("effect acquisition cancelled".into()); }
+                        particles.push(ParticleDefinition::load_cancellable(fields, catalog, library, resources, cancellation));
+                    }
+                    if cancelled() { return Err("effect acquisition cancelled".into()); }
                     let decals = match descriptor_fields(scope(fields, "m_decals").unwrap_or(&[])) {
-                        Ok(descriptors) => descriptors.iter()
-                            .filter(|fields| atom(fields, "m_enabled") != Some("false"))
-                            .map(|fields| crate::assets::fx::decal::DecalDefinition::load(fields, catalog, &mut resources.decal_resources).map(Arc::new))
-                            .collect(),
+                        Ok(descriptors) => {
+                            let mut decals = Vec::new();
+                            for fields in descriptors.iter().filter(|fields| atom(fields, "m_enabled") != Some("false")) {
+                                if cancelled() { return Err("effect acquisition cancelled".into()); }
+                                decals.push(crate::assets::fx::decal::DecalDefinition::load(fields, catalog, &mut resources.decal_resources).map(Arc::new));
+                            }
+                            decals
+                        }
                         Err(error) => vec![Err(error)],
                     };
                     let other_families = fields
