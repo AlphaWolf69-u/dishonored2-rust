@@ -402,6 +402,9 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Wwise stream location ownership (`1400bc8f0`, `1410bf740`, `1410f1910` / `141122400`). The event resolver already looks up a Sound's package using its owning bank and language. Retain that bank identity in the streamed reference until graph decoding and keep the locator table local to that acquisition. Expect zero level-retained lookup entries, no cross-event lock or overwrite during parallel preload, and unchanged media extents for unambiguous IDs. Only the graph's actual stream sources retain their locators. The existing resident package-entry reader can also fill fallback resident media directly, avoiding one temporary buffer and payload copy per full package read. Header-only and prefetched stream acquisition retain their current reads. The lifetime prediction concerns acquisition and its scratch storage, with no steady-state voice cost or lower frame-time prediction. Installed publication and scoped timing observations remain pending.
+
+  Installed publication (`ff26580f`) matched the previously accepted EotW / Dust / EotW run across 27,177 prepared-media records and 5,837 stream-format records. Encoded residency and stream acquisition counts and read byte totals matched at all three map checkpoints. An independent installed package comparison found 76 cross-package IDs in the EotW selection and 81 in Dust, with byte-identical duplicates in both. The observer used actual installed source acquisition and publication. Voice playback, the full-media fallback and scoped performance were outside that observation. Evidence: `DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-comparison.json` and `wwise-stream-bank-identities-20261110.json`.
 - Sound source release: `141122400` releases an old bank-backed source before
   assigning new media; `1410f1910` reuses the registered Sound object. The host
   now prunes unused Vorbis header/codebook cache entries after map voices and
@@ -3026,6 +3029,24 @@ during acquisition, not steady-state memory saved. Scoped reader cycles
 were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
 Live gameplay demand and cancellation were outside this windowless
 observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
+
+Worker initial-chain acquisition prediction. When an explicit initial mip
+selects separate files, the worker reads each full member and copies its
+payload even though the upload can own the buffer returned by
+`read_separate_mip`. Use the same direct reader already measured for finer
+upgrades (14030e840 and 14030f030) and transfer its payload unchanged to the
+initial chain. Keep the existing resident-image packing path and dimension
+checks. Expect one fewer overlapping whole-member allocation for each
+selected separate worker mip, with unchanged upload bytes and suffix order.
+
+Installed acceptance (`1f85fde2`). The same game-feature executable read 30
+installed mixed chains in each mode. All 35 separate-member reads selected the
+same members, totaling 13,042,364 decoded member bytes. The upload payload CRCs,
+formats, dimensions, and mip selection matched. Both runs published all 30
+images through the render mailbox and retired all observed image and archive
+backing leases. This verifies acquisition and upload ownership. Live demand and
+release CPU timing were outside the observation. Evidence:
+`DH2-interactions/artifacts/initial-separate-worker-mips-20261110-comparison.json`.
 
 ### Fog curve resource ownership
 
