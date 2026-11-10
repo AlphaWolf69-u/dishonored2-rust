@@ -398,6 +398,7 @@ pub(crate) fn release_marker(catalog: &Catalog, marker: PurgeMarker) {
     let _loading = catalog.md6_loading.lock().unwrap_or_else(|error| error.into_inner());
     let mut registry = catalog.md6_declarations.lock().unwrap_or_else(|error| error.into_inner());
     let before = registry.records.len();
+    let purge_level = matches!(marker, PurgeMarker::Level);
     // Release matching payloads together: a child declaration can retain an
     // ancestor's metadata/record. Checking parents before dropping children
     // would preserve dead headers merely because of hash iteration order.
@@ -410,10 +411,23 @@ pub(crate) fn release_marker(catalog: &Catalog, marker: PurgeMarker) {
         snapshot.previous.retain(|generation| generation.strong_count() != 0);
         let keep = Arc::strong_count(record) > 1 || snapshot.value.strong_count() != 0 || !snapshot.previous.is_empty();
         if !keep {
-            if let Some(kind) = catalog.kind(path) { crate::loading::forget(catalog.identity(), kind, path); }
+            if let Some(kind) = catalog.kind(path).filter(|kind| !purge_level || *kind != "md6Def") {
+                crate::loading::forget(catalog.identity(), kind, path);
+            }
         }
         keep
     });
+    if purge_level {
+        // Compatibility mesh resolution may have read the declaration
+        // without loading its registered metadata. Keep credit only for
+        // generations the declaration owner still retains.
+        crate::loading::retain_catalog_kind(catalog.identity(), "md6Def", |path| {
+            registry.records.get(path).is_some_and(|record| {
+                let value = record.value.lock().unwrap_or_else(|error| error.into_inner());
+                value.attempted && !value.absent
+            })
+        });
+    }
     let Registry { records, order } = &mut *registry;
     order.retain(|path| records.contains_key(path));
     if tracing() {

@@ -7,27 +7,26 @@ use std::{borrow::Cow, collections::HashMap, sync::{Arc, OnceLock}};
 // 140060180 retires map resource identities separately from the request
 // list. The rewrite has no session-owned physhape cache: preparation and the
 // published level hold the scope until no owner can reuse its identities.
-static SHAPE_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
-pub(crate) struct ShapeHistoryLease;
+static SHAPE_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
+pub(crate) struct ShapeHistoryLease(u64);
 impl ShapeHistoryLease {
-    fn acquire() -> Arc<Self> {
-        *SHAPE_SCOPES.lock().unwrap_or_else(|error| error.into_inner()) += 1;
-        Arc::new(Self)
+    fn acquire(catalog: u64) -> Arc<Self> {
+        SHAPE_SCOPES.acquire(catalog);
+        Arc::new(Self(catalog))
     }
 }
 impl Drop for ShapeHistoryLease {
     fn drop(&mut self) {
-        let mut scopes = SHAPE_SCOPES.lock().unwrap_or_else(|error| error.into_inner());
-        *scopes -= 1;
-        if *scopes != 0 { return; }
-        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
-        let start = trace.then(crate::loading::thread_cycles).flatten();
-        let (entries, bytes, slots, _) = crate::loading::retain_kind("physhape", |_| false);
-        if trace {
-            let cycles = start.zip(crate::loading::thread_cycles())
-                .map_or(0, |(start, end)| end.saturating_sub(start));
-            eprintln!("MEMORY shape history release: entries={entries} path_capacity_bytes={bytes} slots={slots} cycles={cycles}");
-        }
+        SHAPE_SCOPES.release(self.0, || {
+            let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+            let start = trace.then(crate::loading::thread_cycles).flatten();
+            let (entries, bytes, slots) = crate::loading::forget_catalog_kind(self.0, "physhape").unwrap_or_default();
+            if trace {
+                let cycles = start.zip(crate::loading::thread_cycles())
+                    .map_or(0, |(start, end)| end.saturating_sub(start));
+                eprintln!("MEMORY shape history release: entries={entries} path_capacity_bytes={bytes} slots={slots} cycles={cycles} catalog={}", self.0);
+            }
+        });
     }
 }
 
@@ -68,7 +67,6 @@ fn read_source(catalog: &Catalog, path: &str, counts: &mut Counts)
 /// Cache only early area inputs; physics-only and late wind shapes do not grow
 /// this map. It is dropped after all level preparation consumers have run.
 pub(crate) struct ShapeSources {
-    history: Arc<ShapeHistoryLease>,
     enabled: bool,
     accepting: bool,
     trace: bool,
@@ -77,25 +75,28 @@ pub(crate) struct ShapeSources {
     source_capacity: usize,
     schema_capacity: usize,
     key_capacity: usize,
-}
-
-impl Default for ShapeSources {
-    fn default() -> Self {
-        Self { history: ShapeHistoryLease::acquire(), enabled: false, accepting: false, trace: false, sources: HashMap::new(), counts: Default::default(),
-            source_capacity: 0, schema_capacity: 0, key_capacity: 0 }
-    }
+    // Retire history after the acquired source data drops.
+    history: Arc<ShapeHistoryLease>,
 }
 
 impl ShapeSources {
     pub(crate) fn new(catalog: &Catalog) -> Self {
         let enabled = !catalog.has_overlays()
             && std::env::var("DH2_DEBUG_SEPARATE_TRIGGER_SOURCES").as_deref() != Ok("1");
+        Self::with_sharing(catalog, enabled)
+    }
+
+    /// A standalone consumer still owns its catalog's history during acquisition.
+    pub(crate) fn uncached(catalog: &Catalog) -> Self {
+        Self::with_sharing(catalog, false)
+    }
+
+    fn with_sharing(catalog: &Catalog, enabled: bool) -> Self {
         let trace = std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1");
-        let mut sources = Self::default();
-        sources.enabled = enabled;
-        sources.accepting = enabled;
-        sources.trace = trace;
-        sources
+        Self {
+            history: ShapeHistoryLease::acquire(catalog.identity()), enabled, accepting: enabled, trace,
+            sources: HashMap::new(), counts: Default::default(), source_capacity: 0, schema_capacity: 0, key_capacity: 0,
+        }
     }
 
     pub(crate) fn history_lease(&self) -> Arc<ShapeHistoryLease> { self.history.clone() }

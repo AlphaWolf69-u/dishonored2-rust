@@ -692,27 +692,26 @@ pub fn constant_color_pixels(color: [f32; 4]) -> Option<[u8; 64]> {
 
 // Host scope for the 140060180 material purge. Session material metadata is
 // retained by its own owner and reported separately at level release.
-static MATERIAL_HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
-pub(crate) struct MaterialHistoryLease(());
+static MATERIAL_HISTORY_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
+pub(crate) struct MaterialHistoryLease(u64);
 impl MaterialHistoryLease {
-    pub(crate) fn acquire() -> std::sync::Arc<Self> {
-        *MATERIAL_HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        std::sync::Arc::new(Self(()))
+    pub(crate) fn acquire(catalog: u64) -> std::sync::Arc<Self> {
+        MATERIAL_HISTORY_SCOPES.acquire(catalog);
+        std::sync::Arc::new(Self(catalog))
     }
 }
 impl Drop for MaterialHistoryLease {
     fn drop(&mut self) {
-        let mut scopes = MATERIAL_HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
-        *scopes -= 1;
-        if *scopes != 0 { return; }
-        let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
-        let start = trace.then(crate::loading::thread_cycles).flatten();
-        let retained = crate::assets::camera_blur::retained_material_paths();
-        let (count, bytes, slots, _) = crate::loading::retain_kind("material", |path| retained.contains(path));
-        if trace {
-            let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
-            eprintln!("MEMORY material history release: entries={count} path_capacity_bytes={bytes} slots={slots} retained={} cycles={cycles}", retained.len());
-        }
+        MATERIAL_HISTORY_SCOPES.release(self.0, || {
+            let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+            let start = trace.then(crate::loading::thread_cycles).flatten();
+            let retained = crate::assets::camera_blur::retained_material_paths(self.0);
+            let (count, bytes, slots, _) = crate::loading::retain_catalog_kind(self.0, "material", |path| retained.contains(path));
+            if trace {
+                let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
+                eprintln!("MEMORY material history release: entries={count} path_capacity_bytes={bytes} slots={slots} retained={} cycles={cycles} catalog={}", retained.len(), self.0);
+            }
+        });
     }
 }
 
