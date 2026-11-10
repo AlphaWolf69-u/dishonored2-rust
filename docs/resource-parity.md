@@ -5994,6 +5994,15 @@ UTF-8 validates. Malformed quoted bytes keep the existing replacement
 behavior. Expect one fewer whole-text allocation for valid owned reads
 and matching parsed definitions, with no new retained source owner.
 
+Installed decoder comparison (`a7043617`). The previous decoder and both
+new entry points produced identical text for 1,593 installed declarations
+sampled across 511 index kind names. The sample includes 24 non-ASCII
+members and three whose decoded bytes changed from the source. Owned
+decoding kept the input allocation for 1,590 members covering 7,056,074
+cumulative source bytes. This isolates the decoder and does not measure
+full loading time or retained process memory. Evidence:
+`DH2-fx-resources/artifacts/owned-declaration-layout-20261110.json`.
+
 Screen-shadow binding replacement prediction. The original visibility and
 bilateral tasks bind the active view resources and reuse compiled programs
 (`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
