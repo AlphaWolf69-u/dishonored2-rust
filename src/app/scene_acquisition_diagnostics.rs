@@ -371,6 +371,10 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         }
     }
     eprintln!("RESOURCE_RUNTIME_FX_RELEASE images=0 meshes=0 decal_materials=0");
+    let (free, requests, requested_free) = super::texture_streaming::inspect_retired_slot_demand(
+        app.world().resource::<SceneRenderQueue>(),
+    );
+    eprintln!("RESOURCE_RUNTIME_FX_RETIRED_SLOTS free={free} requests={requests} requested_free={requested_free}");
     Ok(())
 }
 
