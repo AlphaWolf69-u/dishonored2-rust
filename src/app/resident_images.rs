@@ -319,14 +319,38 @@ impl ResidentImages {
 /// chain. No gameplay view, GPU upload or movie is required for this lookup.
 pub(super) fn inspect_view_replacement(catalog: &archive::Catalog, path: &str) -> Result<(), String> {
     let registry = ResidentImages::default();
+    let mut ui = UiImages::new(registry.clone());
     let mut images = Assets::<Image>::default();
     let full = registry.acquire(catalog, path, &mut images)?;
+    let mut scene = SceneRenderQueue {
+        diffuse_image_paths: vec![path.to_owned()],
+        diffuse_image_handles: vec![Some(full.handle.clone())],
+        diffuse_mip_states: vec![super::texture_streaming::DiffuseMipState {
+            resident: Some(full.level), ..Default::default()
+        }],
+        ..Default::default()
+    };
+    fn image_id(binding: &crate::flash::iggy_functions::TextureBinding) -> Option<AssetId<Image>> {
+        binding.owner::<Arc<ResidentImage>>().map(|image| image.handle.id())
+    }
+    let first = ui.acquire(catalog, path, &mut images, Some(&scene), None)?;
+    let first_view = image_id(&first) == Some(full.handle.id());
     let mut coarse = read_resident_diffuse_image(catalog, path, None)?.ok_or("missing inline view")?;
     coarse.pack_uploads();
     let coarse_mips = coarse.image.texture_descriptor.mip_level_count;
     let coarse_level = coarse.level;
     let coarse_handle = images.add(coarse.image);
     registry.publish_view(path, Some(full.handle.id()), &coarse_handle, coarse_level, coarse_mips);
+    scene.diffuse_image_handles[0] = Some(coarse_handle.clone());
+    scene.diffuse_mip_states[0].resident = Some(coarse_level);
+    let existing = ui.acquire(catalog, path, &mut images, Some(&scene), None)?;
+    let shared_wrapper = Arc::ptr_eq(&first, &existing);
+    let old_lease = Arc::downgrade(&first);
+    drop(first);
+    drop(existing);
+    let reopened = ui.acquire(catalog, path, &mut images, Some(&scene), None)?;
+    let current_view = image_id(&reopened) == Some(coarse_handle.id());
+    eprintln!("UI_NAMED_VIEW path={path} initial_committed={first_view} reused_wrapper={shared_wrapper} old_wrapper_released={} reopened_committed={current_view}", old_lease.strong_count() == 0);
     let streamed = registry.lease_scene_view(path, &coarse_handle, coarse_level, coarse_mips);
     let restored = registry.acquire(catalog, path, &mut images)?;
     let shared = Arc::ptr_eq(&full, &restored);

@@ -97,11 +97,7 @@ impl UiTextures {
     }
     pub fn insert(&mut self, key: TextureKey, image: Image) {
         if self.trace && matches!(key, TextureKey::Bitmap(_)) { self.bitmap_uploads += 1; }
-        let bytes = if matches!(key, TextureKey::Game(_)) {
-            0
-        } else {
-            payload_bytes(&image.0)
-        };
+        let bytes = payload_bytes(&image.0);
         self.bytes += bytes;
         let ordinal = self.next_ordinal;
         self.next_ordinal = self.next_ordinal.wrapping_add(1);
@@ -180,18 +176,6 @@ impl UiTextures {
         let entry = self.entries.remove(key)?;
         self.bytes -= entry.bytes;
         Some(entry.image)
-    }
-    pub fn retain(&mut self, mut keep: impl FnMut(&TextureKey, &Image) -> bool) {
-        let mut removed = 0;
-        self.entries.retain(|key, entry| {
-            if keep(key, &entry.image) {
-                true
-            } else {
-                removed += entry.bytes;
-                false
-            }
-        });
-        self.bytes -= removed;
     }
     fn over_budget(&self) -> bool {
         self.entries.len() > MAX_ENTRIES || self.bytes > MAX_PAYLOAD_BYTES

@@ -6065,3 +6065,13 @@ the separate mutable tails remain on the model lighting owner. Both maps
 returned to zero GPU buffers after release. Active motion and arm patches
 were traced in source and were outside the windowless observations.
 Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.
+
+Named UI image release prediction. The installed named wrapper keeps its
+SRV through 1402df8c0 and binds it through 1410150f0. In the host, the
+extracted frame already holds that snapshot's scene asset handle. Flash
+also cloned the GPU texture and view into its bitmap cache, where a frame
+with no draw batches or no camera could leave a retired named view pinned.
+Bind named images from the existing GPU asset, so only the wrapper, frame
+and submitted GPU work own that snapshot. Keep the bitmap, glyph and ramp
+cache for textures Flash creates. Expect unchanged view/sampler selection,
+no extra upload and no named-view cache entry or per-batch name allocation.
