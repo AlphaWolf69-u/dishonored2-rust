@@ -15,6 +15,24 @@ pub mod camera_view;
 #[cfg(feature = "game")]
 pub mod camera_scene;
 
+/// Mirror absence as well as changes for map-owned render publications.
+#[cfg(feature = "game")]
+pub(crate) fn extract_level_resource<R>(
+    mut commands: bevy::prelude::Commands,
+    source: bevy::render::Extract<Option<bevy::prelude::Res<R::Source>>>,
+    target: Option<bevy::prelude::ResMut<R>>,
+) where
+    R: bevy::render::extract_resource::ExtractResource<Mutability = bevy::ecs::component::Mutable>,
+{
+    use bevy::prelude::DetectChanges;
+    match (source.as_ref(), target) {
+        (Some(source), Some(mut target)) if source.is_changed() => *target = R::extract_resource(source),
+        (Some(source), None) => commands.insert_resource(R::extract_resource(source)),
+        (None, Some(_)) => commands.remove_resource::<R>(),
+        _ => {}
+    }
+}
+
 /// Host world/view references release before destination resources are
 /// acquired. Global programs and viewport-only reusable storage remain.
 #[cfg(feature = "game")]

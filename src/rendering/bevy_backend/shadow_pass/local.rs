@@ -134,14 +134,13 @@ pub(super) fn install(app: &mut App) {
         .init_resource::<ShadowCaptureReadiness>()
         .add_plugins(ExtractResourcePlugin::<ShadowCaptureReadiness>::default())
         .add_plugins(ExtractResourcePlugin::<LocalShadowSceneFrame>::default())
-        .add_plugins(ExtractResourcePlugin::<LocalShadowCompletion>::default())
-        .add_plugins(ExtractResourcePlugin::<
-            crate::shadow_sampling::LocalSamplingBuffer,
-        >::default());
+        .add_plugins(ExtractResourcePlugin::<LocalShadowCompletion>::default());
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
             .init_resource::<LocalGpu>()
             .init_resource::<HdrTrace>()
+            .add_systems(bevy::render::ExtractSchedule,
+                crate::rendering::bevy_backend::extract_level_resource::<crate::shadow_sampling::LocalSamplingBuffer>)
             .add_systems(Render, prepare.in_set(RenderSystems::PrepareResources))
             .add_systems(
                 Core3d,

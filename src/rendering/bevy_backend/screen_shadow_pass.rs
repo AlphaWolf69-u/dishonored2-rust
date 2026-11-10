@@ -14,11 +14,11 @@ use bevy::{
         storage::GpuShaderBuffer,
         texture::GpuImage,
         view::{ExtractedView, ViewDepthTexture},
-        Extract, ExtractSchedule, RenderApp,
+        ExtractSchedule, RenderApp,
     },
 };
 
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource)]
 pub struct ScreenShadowFrame {
     pub output: Handle<Image>,
     pub cloud: Handle<Image>,
@@ -71,7 +71,7 @@ impl Plugin for ScreenShadowScenePlugin {
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
-        render.add_systems(ExtractSchedule, extract_screen_shadow_frame)
+        render.add_systems(ExtractSchedule, super::extract_level_resource::<ScreenShadowFrame>)
             .init_resource::<ScreenGpu>().add_systems(
             Core3d,
             (
@@ -82,21 +82,6 @@ impl Plugin for ScreenShadowScenePlugin {
                     .before(main_opaque_pass_3d),
             ),
         );
-    }
-}
-
-pub(crate) fn extract_screen_shadow_frame(
-    mut commands: Commands,
-    source: Extract<Option<Res<ScreenShadowFrame>>>,
-    target: Option<ResMut<ScreenShadowFrame>>,
-) {
-    // The optional frame owns image handles. Mirror absence as well as
-    // changes so its assets can retire during the same level handoff.
-    match (source.as_ref(), target) {
-        (Some(source), Some(mut target)) if source.is_changed() => *target = (**source).clone(),
-        (Some(source), None) => commands.insert_resource((**source).clone()),
-        (None, Some(_)) => commands.remove_resource::<ScreenShadowFrame>(),
-        _ => {}
     }
 }
 

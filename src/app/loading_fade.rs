@@ -14,15 +14,13 @@ struct Definition {
 }
 #[derive(Resource, Default)]
 pub(super) struct LoadingFade {
-    initial: Option<Definition>,
-    later: Option<Definition>,
-    active: Option<bool>,
-    elapsed: f32,
+    definition: Option<Definition>,
+    elapsed: Option<f32>,
 }
 #[derive(Component)]
 pub(super) struct FadeLayer;
 impl LoadingFade {
-    pub fn load(catalog: &Catalog, document: Option<&Document>) -> Result<Self, String> {
+    pub fn load(catalog: &Catalog, document: Option<&Document>, initial: bool) -> Result<Self, String> {
         fn find(fields: &[(String, Value)]) -> Option<&Vec<(String, Value)>> {
             for (name, value) in fields {
                 if let Value::Scope(fields) = value {
@@ -41,44 +39,27 @@ impl LoadingFade {
         else {
             return Ok(Self::default());
         };
-        let read = |name| -> Result<Option<Definition>, String> {
-            let Some(fields) = scope(fields, name) else {
-                return Ok(None);
-            };
-            let Some(path) =
-                atom(fields, "m_decl").filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("NULL"))
-            else {
-                return Ok(None);
-            };
-            let duration = atom(fields, "m_duration")
-                .ok_or_else(|| format!("fade {path} has no resolved duration"))?
-                .parse::<f32>()
-                .map_err(|e| e.to_string())?;
-            let source = catalog
-                .read(&format!("generated/decls/fade/{path}.decl"))
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("missing fade {path}"))?;
-            let fade = crate::assets::fx::fade::Fade::parse(&crate::entities::declaration_text(
-                    &source,
-                ))?;
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                eprintln!("LOAD fade definition: {path} duration={duration} opacity_keys={} opacity_values={}",
-                    fade.opacity.times.len(), fade.opacity.values.len());
-            }
-            Ok(Some(Definition {
-                fade,
-                duration,
-            }))
+        let field = if initial { "m_fadeIn" } else { "m_fadeIn_NotInitialLoad" };
+        let Some(fields) = scope(fields, field) else { return Ok(Self::default()) };
+        let Some(path) = atom(fields, "m_decl").filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("NULL")) else {
+            return Ok(Self::default());
         };
-        Ok(Self {
-            initial: read("m_fadeIn")?,
-            later: read("m_fadeIn_NotInitialLoad")?,
-            ..Default::default()
-        })
+        let duration = atom(fields, "m_duration")
+            .ok_or_else(|| format!("fade {path} has no resolved duration"))?
+            .parse::<f32>()
+            .map_err(|error| error.to_string())?;
+        let source = catalog.read(&format!("generated/decls/fade/{path}.decl"))
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing fade {path}"))?;
+        let fade = crate::assets::fx::fade::Fade::parse(&crate::entities::owned_declaration_text(source))?;
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("LOAD fade definition: {path} duration={duration} opacity_keys={} opacity_values={} initial={initial}",
+                fade.opacity.times.len(), fade.opacity.values.len());
+        }
+        Ok(Self { definition: Some(Definition { fade, duration }), elapsed: None })
     }
-    pub fn start(&mut self, initial: bool) {
-        self.active = Some(initial);
-        self.elapsed = 0.;
+    pub fn start(&mut self) {
+        self.elapsed = Some(0.);
     }
 }
 pub(super) fn advance_fade(
@@ -90,18 +71,13 @@ pub(super) fn advance_fade(
     let Some(fade) = fade.as_deref_mut() else {
         return;
     };
-    let Some(initial) = fade.active else { return };
+    let Some(elapsed) = fade.elapsed else { return };
     if paused.0 {
         return;
     }
-    fade.elapsed += time.delta_secs();
-    let definition = if initial {
-        fade.initial.as_ref()
-    } else {
-        fade.later.as_ref()
-    };
-    let (rgba, done) = if let Some(definition) = definition {
-        let normalized = fade.elapsed / definition.duration.max(0.001);
+    let elapsed = elapsed + time.delta_secs();
+    let (rgba, done) = if let Some(definition) = fade.definition.as_ref() {
+        let normalized = elapsed / definition.duration.max(0.001);
         (
             definition
                 .fade
@@ -115,8 +91,9 @@ pub(super) fn advance_fade(
     for mut colour in &mut layer {
         colour.0 = Color::srgba(rgba[0], rgba[1], rgba[2], rgba[3]);
     }
+    fade.elapsed = (!done).then_some(elapsed);
     if done {
-        fade.active = None;
+        fade.definition = None;
         super::load_timing::mark("loading fade complete");
     }
 }
