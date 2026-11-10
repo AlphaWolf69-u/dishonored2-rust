@@ -167,6 +167,8 @@ pub struct ParticleStageAsset {
     pub acceleration_fields: Vec<super::particle_field::ParticleField>,
     /// Stage +0x1628.
     pub attractors: Vec<super::particle_attractor::ParticleAttractor>,
+    /// Stage +0x1938.
+    pub trails: Vec<super::particle_trail::ParticleTrailAsset>,
 }
 impl Default for ParticleStageAsset {
     fn default() -> Self {
@@ -219,6 +221,7 @@ impl Default for ParticleStageAsset {
             vector_fields: Vec::new(),
             acceleration_fields: Vec::new(),
             attractors: Vec::new(),
+            trails: Vec::new(),
         }
     }
 }
@@ -415,6 +418,7 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
                 super::particle_field::field,
             )?,
             "m_meshes" => descriptor_list(&mut result.meshes, scope(value)?, super::particle_mesh::mesh)?,
+            "m_trails" => descriptor_list(&mut result.trails, scope(value)?, super::particle_trail::trail)?,
             "m_attractors" => descriptor_list(
                 &mut result.attractors,
                 scope(value)?,

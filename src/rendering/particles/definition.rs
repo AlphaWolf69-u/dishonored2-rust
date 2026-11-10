@@ -272,6 +272,13 @@ impl ParticleDefinition {
                             .iter()
                             .filter(|mesh| mesh.enabled)
                             .map(|mesh| &mesh.material),
+                    )
+                    .chain(
+                        stage
+                            .trails
+                            .iter()
+                            .filter(|trail| trail.enabled)
+                            .map(|trail| &trail.material),
                     );
                 for material in names {
                     let Some(name) = material else {
@@ -295,6 +302,15 @@ impl ParticleDefinition {
                     materials.insert(name.clone(), material);
                 }
             }
+        }
+        // 1efcc0 creates a trail renderer for each enabled trail with a
+        // material (1401fada0). Their strips are not drawn yet.
+        if declarations.iter().flatten().any(|declaration| {
+            declaration.stages.iter().filter(|stage| stage.enabled).any(|stage| {
+                stage.trails.iter().any(|trail| trail.enabled && trail.material.is_some())
+            })
+        }) {
+            return Err("particle trail strips are not drawn yet".into());
         }
         Ok(Self {
             owner: Arc::new(owner),

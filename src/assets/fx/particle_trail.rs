@@ -1,0 +1,268 @@
+//! arkParticleTrailDesc (0x15b0 bytes): constructor 1401fab30, defaults
+//! 1401facf0, spawn_t defaults 14020ed10, life_t defaults 14020f0f0 (trail)
+//! and 14020ee80 (segment). Offsets are the reflection's.
+use super::particle_stage::SpawnVector;
+use super::*;
+use crate::gameplay::particles::{
+    parameters::{ScalarParameter, VectorParameter},
+    sprite::SpriteFlipbook,
+};
+
+/// arkStripMapping (+0x1c0): m_mode +0 (PERCENT 0, LENGHT 1), m_scale +4,
+/// m_axis +8 (U 0, V 1). 1401f9000: PERCENT, 1, U.
+#[derive(Clone, Copy)]
+pub struct StripMapping {
+    pub by_length: bool,
+    pub scale: f32,
+    pub along_v: bool,
+}
+impl Default for StripMapping {
+    fn default() -> Self {
+        Self { by_length: false, scale: 1., along_v: false }
+    }
+}
+
+/// arkStripTessellation (+0x1488), 1401f9010: 10 segments per unit length,
+/// length scaled, at most 256 segments.
+#[derive(Clone, Copy)]
+pub struct StripTessellation {
+    pub segments: f32,
+    pub length_scaled: bool,
+    pub maximum_segments: i32,
+}
+
+/// arkTrailCommonDesc::acceleration_t.
+pub struct TrailAcceleration {
+    pub value: VectorParameter,
+    pub worldspace: bool,
+    pub linear: ScalarParameter,
+    pub gravity: ScalarParameter,
+}
+
+/// arkTrailCommonDesc::life_t (0x658 bytes).
+pub struct TrailLifeCurves {
+    pub velocity_over_life: VectorParameter,
+    pub acceleration: TrailAcceleration,
+    pub colour: VectorParameter,
+    pub alpha: ScalarParameter,
+    pub width: ScalarParameter,
+}
+impl TrailLifeCurves {
+    /// 14020f0f0/14020ee80 share everything but the alpha fade keys
+    /// (1401d1110) and the gravity scale.
+    fn new(fade: [f32; 2], gravity: f32) -> Self {
+        let mut alpha = ScalarParameter::constant(1.);
+        alpha.curve.maximum = crate::gameplay::effects::curve::EffectFloatCurve {
+            times: vec![0., fade[0], fade[1], 1.],
+            values: vec![0., 0., 0., 0., 1., 0., 0., 1., 0., 0., 0., 0.],
+        };
+        Self {
+            velocity_over_life: VectorParameter::constant([1.; 3]),
+            acceleration: TrailAcceleration {
+                value: VectorParameter::constant([0.; 3]),
+                worldspace: false,
+                linear: ScalarParameter::constant(0.),
+                gravity: ScalarParameter::constant(gravity),
+            },
+            colour: VectorParameter::constant([1.; 3]),
+            alpha,
+            width: ScalarParameter::constant(1.),
+        }
+    }
+}
+
+/// arkTrailCommonDesc::spawn_t (+0x1d0, 0x4f0 bytes).
+pub struct TrailSpawn {
+    pub location: SpawnVector,
+    pub velocity: SpawnVector,
+    pub base_colour: [f32; 4],
+    pub colour: VectorParameter,
+    pub alpha: ScalarParameter,
+    pub width: ScalarParameter,
+    pub minimal_emitter_move: f32,
+    pub minimal_particle_distance: f32,
+    pub interpolation_distance: f32,
+}
+
+pub struct ParticleTrailAsset {
+    pub name: String,
+    pub enabled: bool,
+    pub worldspace: bool,
+    pub life: ScalarParameter,
+    pub material: Option<String>,
+    pub flipbook: SpriteFlipbook,
+    pub mapping: StripMapping,
+    pub spawn: TrailSpawn,
+    pub offset_over_life: SpawnVector,
+    pub trail_life: TrailLifeCurves,
+    pub segment_life: TrailLifeCurves,
+    pub tessellation: StripTessellation,
+    /// orientation_t (+0x1498): m_isVectorOriented, m_orientationVector.
+    pub vector_oriented: bool,
+    pub orientation_vector: VectorParameter,
+}
+
+impl Default for ParticleTrailAsset {
+    fn default() -> Self {
+        let mut orientation_vector = VectorParameter::constant([0., 0., 1.]);
+        orientation_vector.uniform = false;
+        Self {
+            name: String::new(),
+            enabled: true,
+            worldspace: true,
+            life: ScalarParameter::constant(0.5),
+            material: None,
+            flipbook: SpriteFlipbook::default(),
+            mapping: StripMapping::default(),
+            spawn: TrailSpawn {
+                location: SpawnVector::new([0.; 3]),
+                velocity: SpawnVector::new([0.; 3]),
+                base_colour: [1.; 4],
+                colour: VectorParameter::constant([1.; 3]),
+                alpha: ScalarParameter::constant(1.),
+                width: ScalarParameter::constant(1.),
+                minimal_emitter_move: 0.,
+                minimal_particle_distance: f32::from_bits(0x3b03_126f),
+                interpolation_distance: 0.,
+            },
+            offset_over_life: SpawnVector::new([0.; 3]),
+            trail_life: TrailLifeCurves::new([f32::from_bits(0x3e4c_cccd), f32::from_bits(0x3f4c_cccd)], 0.),
+            segment_life: TrailLifeCurves::new([f32::from_bits(0x3dcc_cccd), 0.5], 1.),
+            tessellation: StripTessellation { segments: 10., length_scaled: true, maximum_segments: 256 },
+            vector_oriented: false,
+            orientation_vector,
+        }
+    }
+}
+
+fn life_curves(result: &mut TrailLifeCurves, fields: &Fields) -> Result<(), String> {
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_velocityOverLife" => particles::vector_parameter(&mut result.velocity_over_life, scope(value)?)?,
+            "m_acceleration" => {
+                for (name, value) in scope(value)? {
+                    let acceleration = &mut result.acceleration;
+                    match name.as_str() {
+                        "m_value" => particles::vector_parameter(&mut acceleration.value, scope(value)?)?,
+                        "m_worldspace" => acceleration.worldspace = boolean(value)?,
+                        "m_linearAcceleration" => {
+                            particles::scalar_parameter(&mut acceleration.linear, scope(value)?)?
+                        }
+                        "m_gravity" => particles::scalar_parameter(&mut acceleration.gravity, scope(value)?)?,
+                        _ => return Err(format!("unknown trail acceleration field {name}")),
+                    }
+                }
+            }
+            "m_color" => particles::vector_parameter(&mut result.colour, scope(value)?)?,
+            "m_alpha" => particles::scalar_parameter(&mut result.alpha, scope(value)?)?,
+            "m_width" => particles::scalar_parameter(&mut result.width, scope(value)?)?,
+            _ => return Err(format!("unknown trail life-curve field {name}")),
+        }
+    }
+    Ok(())
+}
+
+fn colour(target: &mut [f32; 4], fields: &Fields) -> Result<(), String> {
+    for (name, value) in fields {
+        let index = match name.as_str() {
+            "r" => 0,
+            "g" => 1,
+            "b" => 2,
+            "a" => 3,
+            _ => return Err(format!("unknown trail colour component {name}")),
+        };
+        target[index] = number(value)?;
+    }
+    Ok(())
+}
+
+fn enumeration<'a>(value: &'a Value) -> Result<&'a str, String> {
+    Ok(atom(value)?.rsplit("::").next().unwrap_or(""))
+}
+
+pub fn trail(fields: &Fields) -> Result<ParticleTrailAsset, String> {
+    let mut result = ParticleTrailAsset::default();
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_name" => result.name = atom(value)?.to_owned(),
+            "m_enabled" => result.enabled = boolean(value)?,
+            "m_worldspace" => result.worldspace = boolean(value)?,
+            "m_trailLife" => particles::scalar_parameter(&mut result.life, scope(value)?)?,
+            "m_material" => {
+                let name = atom(value)?;
+                result.material = (!name.is_empty() && !name.eq_ignore_ascii_case("NULL")).then(|| name.to_owned());
+            }
+            "m_flipBook" => super::particle_sprite::flipbook(&mut result.flipbook, scope(value)?)?,
+            "m_mapping" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_mode" => {
+                            result.mapping.by_length = match enumeration(value)? {
+                                "PERCENT" => false,
+                                "LENGHT" => true,
+                                mode => return Err(format!("unknown strip mapping mode {mode}")),
+                            }
+                        }
+                        "m_scale" => result.mapping.scale = number(value)?,
+                        "m_axis" => {
+                            result.mapping.along_v = match enumeration(value)? {
+                                "U" => false,
+                                "V" => true,
+                                axis => return Err(format!("unknown strip mapping axis {axis}")),
+                            }
+                        }
+                        _ => return Err(format!("unknown strip mapping field {name}")),
+                    }
+                }
+            }
+            "m_spawn" => {
+                let spawn = &mut result.spawn;
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_initialLocation" => spawn.location.edit(scope(value)?)?,
+                        "m_initialVelocity" => spawn.velocity.edit(scope(value)?)?,
+                        "m_baseColor" => colour(&mut spawn.base_colour, scope(value)?)?,
+                        "m_initialColor" => particles::vector_parameter(&mut spawn.colour, scope(value)?)?,
+                        "m_initialAlpha" => particles::scalar_parameter(&mut spawn.alpha, scope(value)?)?,
+                        "m_initialWidth" => particles::scalar_parameter(&mut spawn.width, scope(value)?)?,
+                        "m_minimalEmitterMove" => spawn.minimal_emitter_move = number(value)?,
+                        "m_minimalParticleDistance" => spawn.minimal_particle_distance = number(value)?,
+                        "m_interpolationDistance" => spawn.interpolation_distance = number(value)?,
+                        _ => return Err(format!("unknown trail spawn field {name}")),
+                    }
+                }
+            }
+            "m_offsetOverLife" => result.offset_over_life.edit(scope(value)?)?,
+            "m_trailLifeCurves" => life_curves(&mut result.trail_life, scope(value)?)?,
+            "m_segmentLifeCurves" => life_curves(&mut result.segment_life, scope(value)?)?,
+            "m_tesselation" => {
+                for (name, value) in scope(value)? {
+                    let tessellation = &mut result.tessellation;
+                    match name.as_str() {
+                        "m_segments" => tessellation.segments = number(value)?,
+                        "m_isLengthScaled" => tessellation.length_scaled = boolean(value)?,
+                        "m_maxSegments" => {
+                            tessellation.maximum_segments = atom(value)?
+                                .parse()
+                                .map_err(|e| format!("invalid trail segment limit: {e}"))?
+                        }
+                        _ => return Err(format!("unknown trail tessellation field {name}")),
+                    }
+                }
+            }
+            "m_orientation" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_isVectorOriented" => result.vector_oriented = boolean(value)?,
+                        "m_orientationVector" => {
+                            particles::vector_parameter(&mut result.orientation_vector, scope(value)?)?
+                        }
+                        _ => return Err(format!("unknown trail orientation field {name}")),
+                    }
+                }
+            }
+            _ => return Err(format!("unknown particle trail field {name}")),
+        }
+    }
+    Ok(result)
+}
