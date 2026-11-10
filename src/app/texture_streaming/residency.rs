@@ -180,7 +180,7 @@ impl SharedImages {
         state.pending_reduction = false;
         if success {
             if let Some(registry) = registry {
-                registry.publish_view(&replacement.path, &replacement.handle, replacement.level, replacement.mip_count);
+                registry.publish_view(&replacement.path, Some(handle.id()), &replacement.handle, replacement.level, replacement.mip_count);
             }
             *handle = replacement.handle;
             state.resident = Some(replacement.level);
