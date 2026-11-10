@@ -33,10 +33,10 @@ struct Names {
 }
 
 impl Names {
-    fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+    fn new<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Self {
         let mut packed = Self::default();
         for name in names {
-            packed.text.push_str(name);
+            packed.text.push_str(name.as_ref());
             packed.ends.push(packed.text.len() as u32);
         }
         packed.text.shrink_to_fit();
@@ -341,37 +341,39 @@ impl Catalog {
     }
 
     pub fn open(base: &Path) -> Result<Self> {
+        let retain_name_buffers = !std::env::var_os("DH2_DEBUG_SEPARATE_INDEX_NAMES").is_some_and(|v| v == "1");
+        let trace = std::env::var_os("DH2_DEBUG_CATALOG_INDEX_NAMES").is_some_and(|v| v == "1");
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let mut growths = [0usize; 3];
+        let mut rows = 0;
         let mut entries = Vec::new();
         let mut kinds: Vec<String> = Vec::new();
         let mut image_sources = Vec::new();
         for group in 1..=4 {
-            index::visit_group(base, group, |record| {
-                let index::IndexEntry {
-                    kind,
-                    mut source,
-                    mut path,
-                    offset,
-                    size,
-                    stored_size,
-                    archive_slot,
-                    flags,
-                    ..
-                } = record;
+            let mut capacities = [0; 3];
+            index::visit_group_records(base, group, |record| {
+                if trace {
+                    rows += 1;
+                    let read = [record.kind.capacity(), record.source.capacity(), record.path.capacity()];
+                    for index in 0..3 { growths[index] += usize::from(read[index] > capacities[index]); }
+                }
+                let mut path = std::mem::take(&mut record.path);
                 path.make_ascii_lowercase();
                 if path.contains('\\') {
                     path = path.replace('\\', "/");
                 }
-                if kind.eq_ignore_ascii_case("image") && path.ends_with(".bimage7") {
+                if record.kind.eq_ignore_ascii_case("image") && path.ends_with(".bimage7") {
+                    let mut source = std::mem::take(&mut record.source);
                     source.make_ascii_lowercase();
                     if source.contains('\\') {
                         source = source.replace('\\', "/");
                     }
                     image_sources.push((source, path.clone()));
                 }
-                let kind = match kinds.iter().position(|k| *k == kind) {
+                let kind = match kinds.iter().position(|kind| *kind == record.kind) {
                     Some(i) => i as u16,
                     None => {
-                        kinds.push(kind);
+                        kinds.push(std::mem::take(&mut record.kind));
                         (kinds.len() - 1) as u16
                     }
                 };
@@ -380,14 +382,16 @@ impl Catalog {
                     Entry {
                         group,
                         header_groups: 1 << (group - 1),
-                        offset,
-                        size,
-                        stored_size,
-                        slot: archive_slot,
+                        offset: record.offset,
+                        size: record.size,
+                        stored_size: record.stored_size,
+                        slot: record.archive_slot,
                         kind,
-                        flags,
+                        flags: record.flags,
                     },
                 ));
+                if !retain_name_buffers { *record = index::IndexEntry::default(); }
+                if trace { capacities = [record.kind.capacity(), record.source.capacity(), record.path.capacity()]; }
             })?;
         }
         // The original map overwrote duplicate paths as later index groups
@@ -428,9 +432,20 @@ impl Catalog {
         image_programs.sort();
         image_programs.dedup();
         let packed = |pairs: Vec<(String, usize)>| {
-            (Names::new(pairs.iter().map(|(name, _)| name.as_str())), pairs.iter().map(|&(_, i)| i as u32).collect())
+            let indices = pairs.iter().map(|&(_, i)| i as u32).collect();
+            let names = if retain_name_buffers {
+                Names::new(pairs.into_iter().map(|(name, _)| name))
+            } else {
+                Names::new(pairs.iter().map(|(name, _)| name.as_str()))
+            };
+            (names, indices)
         };
-        Ok(Self {
+        let paths = if retain_name_buffers {
+            Names::new(entries.iter_mut().map(|(path, _)| std::mem::take(path)))
+        } else {
+            Names::new(entries.iter().map(|(path, _)| path.as_str()))
+        };
+        let catalog = Self {
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             animset_declarations: Default::default(),
             md6_declarations: Default::default(),
@@ -456,12 +471,46 @@ impl Catalog {
             header_order: Default::default(),
             kinds,
             base: base.to_path_buf(),
-            paths: Names::new(entries.iter().map(|(path, _)| path.as_str())),
+            paths,
             entries: entries.into_iter().map(|(_, entry)| entry).collect(),
             image_sources: packed(image_sources),
             image_programs: packed(image_programs),
             overlay: crate::platform::home::layers().files,
-        })
+        };
+        if trace {
+            let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("CATALOG_INDEX_NAMES retained_scratch={retain_name_buffers} rows={rows} kind_growths={} source_growths={} path_growths={} selected={} name_bytes={} cycles={cycles}",
+                growths[0], growths[1], growths[2], catalog.paths.len(), catalog.paths.text.len());
+            catalog.report_index_identity();
+        }
+        Ok(catalog)
+    }
+
+    fn report_index_identity(&self) {
+        let mut hash = blake3::Hasher::new();
+        let name = |hash: &mut blake3::Hasher, value: &str| {
+            hash.update(&(value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        };
+        for (path, entry) in self.paths.iter().zip(&self.entries) {
+            name(&mut hash, path);
+            name(&mut hash, &self.kinds[usize::from(entry.kind)]);
+            hash.update(&[entry.group, entry.header_groups]);
+            hash.update(&entry.offset.to_le_bytes());
+            hash.update(&entry.size.to_le_bytes());
+            hash.update(&entry.stored_size.to_le_bytes());
+            hash.update(&entry.slot.to_le_bytes());
+            hash.update(&entry.flags.to_le_bytes());
+        }
+        for (names, indices) in [&self.image_sources, &self.image_programs] {
+            hash.update(&(names.len() as u64).to_le_bytes());
+            for (source, &index) in names.iter().zip(indices) {
+                name(&mut hash, source);
+                hash.update(&index.to_le_bytes());
+            }
+        }
+        eprintln!("CATALOG_INDEX_IDENTITY digest={} image_aliases={} program_aliases={}",
+            hash.finalize(), self.image_sources.0.len(), self.image_programs.0.len());
     }
 
     /// The overlay file replacing `path`, if any.
