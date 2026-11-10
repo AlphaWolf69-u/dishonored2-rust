@@ -358,10 +358,16 @@ impl Reader<'_> {
 }
 
 pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
-    inspect_model::<true>(bytes)
+    inspect_model::<true>(bytes, None)
 }
 
-fn inspect_model<const RENDER_DATA: bool>(bytes: &[u8]) -> Result<ModelInfo, String> {
+fn check_model_acquisition(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+    if cancelled.is_some_and(|stop| stop()) { return Err("compiled model acquisition cancelled".into()); }
+    Ok(())
+}
+
+fn inspect_model<const RENDER_DATA: bool>(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Result<ModelInfo, String> {
+    check_model_acquisition(cancelled)?;
     let mut input = Reader { bytes, at: 0 };
     if input.take(4)? != b"MM6B" {
         return Err("not an MM6B model".into());
@@ -389,6 +395,7 @@ fn inspect_model<const RENDER_DATA: bool>(bytes: &[u8]) -> Result<ModelInfo, Str
     }
     let mut surfaces = Vec::with_capacity(surface_count);
     for number in 0..surface_count {
+        check_model_acquisition(cancelled)?;
         let name = input.string()?;
         let material_path = input.string()?;
         input.take(4)?; // per-surface field at +0x30
@@ -556,6 +563,7 @@ fn inspect_model<const RENDER_DATA: bool>(bytes: &[u8]) -> Result<ModelInfo, Str
             indices,
         });
     }
+    check_model_acquisition(cancelled)?;
     let bytes_after_surfaces = bytes.len() - input.at;
     let tail = if bytes_after_surfaces == 0 { None } else { Some(input.model_tail()?) };
     let margin = (0..3)
@@ -602,12 +610,13 @@ mod acquisition {
         *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_MODEL_ACQUISITION").is_some_and(|v| v == "1"))
     }
 
-    pub(super) fn decoded<const RENDER_DATA: bool>(catalog: &crate::archive::Catalog, path: &str) -> Result<ModelInfo, String> {
+    pub(super) fn decoded<const RENDER_DATA: bool>(catalog: &crate::archive::Catalog, path: &str, cancelled: Option<&dyn Fn() -> bool>)
+        -> Result<ModelInfo, String> {
         let tracing = tracing();
         let cycles = tracing.then(crate::loading::thread_cycles).flatten();
-        let bytes = catalog.read(path).map_err(|error| error.to_string())?
+        let bytes = catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{path} is absent"))?;
-        let mut model = super::inspect_model::<RENDER_DATA>(&bytes)?;
+        let mut model = super::inspect_model::<RENDER_DATA>(&bytes, cancelled)?;
         if model.tail.is_none() { return Err(format!("{path}: installed MD6 resource has no closing tail")); }
         let decode_cycles = cycles.zip(if tracing { crate::loading::thread_cycles() } else { None })
             .map(|(start, end)| end.saturating_sub(start));
@@ -711,11 +720,11 @@ impl ModelSources {
     pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, resource: &str)
         -> Result<std::sync::Arc<ModelInfo>, String>
     {
-        self.acquire_resolved::<true>(catalog, resource, || None)
+        self.acquire_resolved::<true>(catalog, resource, None, || None)
     }
 
     pub(crate) fn acquire_skin_for_rig(catalog: &crate::archive::Catalog, resource: &str,
-        rig: &crate::assets::animation_rig::Rig,
+        rig: &crate::assets::animation_rig::Rig, cancelled: Option<&dyn Fn() -> bool>,
     ) -> Result<SkinModel, String> {
         static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
         let (full, separate) = *MODE.get_or_init(|| (
@@ -726,16 +735,17 @@ impl ModelSources {
         // This short scope cannot mix skin-only entries with render consumers.
         let mut sources = Self::new(catalog);
         let model = if full {
-            sources.acquire_resolved::<true>(catalog, resource, admitted)
+            sources.acquire_resolved::<true>(catalog, resource, cancelled, admitted)
         } else {
-            sources.acquire_resolved::<false>(catalog, resource, admitted)
+            sources.acquire_resolved::<false>(catalog, resource, cancelled, admitted)
         }?;
         Ok(SkinModel(model))
     }
 
     fn acquire_resolved<const RENDER_DATA: bool>(&mut self, catalog: &crate::archive::Catalog, resource: &str,
-        admitted_mesh: impl FnOnce() -> Option<String>,
+        cancelled: Option<&dyn Fn() -> bool>, admitted_mesh: impl FnOnce() -> Option<String>,
     ) -> Result<std::sync::Arc<ModelInfo>, String> {
+        check_model_acquisition(cancelled)?;
         let started = acquisition::tracing().then(std::time::Instant::now);
         let cycles = acquisition::tracing().then(crate::loading::thread_cycles).flatten();
         if self.catalog != catalog.identity() {
@@ -758,7 +768,7 @@ impl ModelSources {
         let path = match admitted {
             Some(path) => path,
             None => resolve_compiled_mesh(resource, |decl| {
-                catalog.read(decl).ok().flatten().map(|bytes| {
+                catalog.read_cancellable(decl, cancelled).ok().flatten().map(|bytes| {
                     if started.is_some() {
                         declaration_reads += 1;
                         declaration_bytes += bytes.len();
@@ -789,7 +799,9 @@ impl ModelSources {
                 return Ok(model);
             }
         }
-        let model = acquisition::wrap(acquisition::decoded::<RENDER_DATA>(catalog, &path)?);
+        let decoded = acquisition::decoded::<RENDER_DATA>(catalog, &path, cancelled)?;
+        check_model_acquisition(cancelled)?;
+        let model = acquisition::wrap(decoded);
         if self.share {
             let key = key.into_owned();
             self.models.insert(key.clone(), model.clone());

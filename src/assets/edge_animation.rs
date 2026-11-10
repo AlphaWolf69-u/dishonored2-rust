@@ -11,6 +11,7 @@
 use crate::edge_skeleton::JointRestPose;
 pub(crate) mod residency;
 pub use residency::acquire;
+pub(crate) use residency::acquire_cancellable;
 pub(crate) use residency::{find_existing, force_load, ResourceScope};
 pub(crate) use residency::{acquire_record, acquire_record_in_context, find_record, register_lazy_in_context, register_lazy_preload,
     force_load_in_context, mark_preload_persistent, promote_bootstrap, promote_existing_bootstrap,

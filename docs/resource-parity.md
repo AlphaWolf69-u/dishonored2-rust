@@ -6660,6 +6660,32 @@ forced declaration withdrawal and the normal worker gate separately.
 Evidence: DH2-collision-staging/artifacts/particle-acquisition-cancellation-20261111-comparison.json.
 
 
+### Usable animation read withdrawal
+
+Prediction before implementation. Original 1407e5190 resolves AnimBasic
+items, 140257330 acquires animation records, and 14025aa00 consumes
+the compiled model. The rewrite's background usable task only checks
+close before and after building a full rig and its clips, then reads the
+model without another checkpoint. Carry the existing level signal to
+the clip reader and compiled mesh read, checking between AnimBasic
+items and MD6 surfaces. A stopped clip must leave its resource header
+retryable, preserving any earlier decoded generation. The load gate
+still waits for worker retirement before map purge. Ordinary callers
+keep their existing loaders, data and ownership. Observe an installed
+clip interrupted before decode and retried in the same catalog, plus
+the actual usable worker retirement path and unchanged prepared data.
+
+Installed usable-read cancellation acceptance at 54dc48d9. The
+fountain handle Edge clip and compiled fountain mesh each stopped
+after the archive read and subsequently acquired in the same catalog.
+The retry matched clip metadata and the full CPU skin inputs. The
+normal Edge of the World worker withdrawal drained the rig request
+before purge, and the three-map CPU acquisition fingerprints matched
+the compact usable-skin build. The forced read interruptions and the
+normal worker retirement gate are separate observations.
+Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
+
+
 ### Wwise Vorbis setup packet acquisition
 
 Prediction before implementation. Original 1411614e0 takes installed

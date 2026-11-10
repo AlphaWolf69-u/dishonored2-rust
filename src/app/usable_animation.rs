@@ -16,9 +16,9 @@ impl Asset {
         let rig_name = declaration.strip_prefix("generated/decls/md6def/")
             .and_then(|name| name.strip_suffix(".decl"))
             .ok_or("usable MD6 declaration path is invalid")?;
-        let rig = BasicRig::load(catalog, rig_name)?;
+        let rig = BasicRig::load_cancellable(catalog, rig_name, Some(&cancelled))?;
         if cancelled() { return Err("usable animation acquisition cancelled".into()); }
-        let model = crate::bmd6::ModelSources::acquire_skin_for_rig(catalog, path, &rig)?;
+        let model = crate::bmd6::ModelSources::acquire_skin_for_rig(catalog, path, &rig, Some(&cancelled))?;
         Ok(Arc::new(Self { rig, model }))
     }
     fn instantiate(&self) -> AnimBasicNode { self.rig.template.clone() }
@@ -265,6 +265,46 @@ pub(super) fn advance(
             slot.initialized = false;
         }
     }
+}
+
+/// Stop the actual clip and usable-mesh owners just after their archive
+/// read, then acquire the same authored resources from those catalogs.
+pub(super) fn observe_read_cancellation(base: &std::path::Path, model: &str)
+    -> Result<(), Box<dyn std::error::Error>> {
+    use crate::archive::Catalog;
+    let control = Catalog::open(base)?;
+    let expected = Asset::load(&control, model, || false)?;
+    let item = expected.rig.template.items.first().ok_or("usable model has no AnimBasic clips")?;
+    let source = expected.rig.alias(&item.alias).ok_or("usable clip alias is absent")?;
+    let clip = crate::edge_animation::resource_path(source).ok_or("usable clip path is invalid")?
+        .replace('\\', "/").to_ascii_lowercase();
+    let mesh = expected.rig.model_reference().compiled_mesh().ok_or("usable mesh path is absent")?
+        .replace('\\', "/").to_ascii_lowercase();
+
+    let clip_catalog = Catalog::open(base)?;
+    let clip_read = || crate::loading::catalog_read_recorded(clip_catalog.identity(), "anim", &clip);
+    let clip_stopped = crate::edge_animation::acquire_cancellable(&clip_catalog, &clip, Some(&clip_read))
+        .is_err_and(|error| error.contains("acquisition cancelled")) && clip_read();
+    let decoded = crate::edge_animation::acquire(&clip_catalog, &clip)?;
+    let reference = &expected.rig.animations[item.clip];
+    let clip_retried = decoded.frame_count == reference.frame_count
+        && decoded.frame_rate.to_bits() == reference.frame_rate.to_bits();
+
+    let mesh_catalog = Catalog::open(base)?;
+    let kind = mesh_catalog.kind(&mesh).ok_or("installed compiled mesh absent")?;
+    let mesh_read = || crate::loading::catalog_read_recorded(mesh_catalog.identity(), kind, &mesh);
+    let mesh_stopped = Asset::load(&mesh_catalog, model, &mesh_read)
+        .is_err_and(|error| error.contains("acquisition cancelled")) && mesh_read();
+    let restored = Asset::load(&mesh_catalog, model, || false)?;
+    let original = expected.model.surfaces();
+    let actual = restored.model.surfaces();
+    let mesh_retried = original.len() == actual.len() && original.iter().zip(actual).all(|(a, b)| {
+        a.positions == b.positions && a.packed_channels == b.packed_channels
+            && a.skin_indices == b.skin_indices && a.skin_weights == b.skin_weights
+            && a.matrix_offset == b.matrix_offset && a.skin_influences == b.skin_influences
+    });
+    eprintln!("USABLE_READ_CANCELLATION model={model} clip={clip} mesh={mesh} clip_stopped={clip_stopped} clip_retried={clip_retried} mesh_stopped={mesh_stopped} mesh_retried={mesh_retried}");
+    Ok(())
 }
 
 /// Submit a real installed usable model without advancing any actor.

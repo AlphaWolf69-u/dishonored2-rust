@@ -146,7 +146,7 @@ impl std::fmt::Debug for ResourceLease {
 }
 
 fn lease(catalog: &Catalog, path: &str, record: Arc<Record>, duplicate: bool) -> Result<ResourceLease, String> {
-    let value = match load(catalog, path, &record, duplicate, false) {
+    let value = match load(catalog, path, &record, duplicate, false, None) {
         Ok(animation) => Ok(animation),
         Err(LoadFailure::Record(error)) => Err(error),
         Err(LoadFailure::Owner(error)) => return Err(error),
@@ -285,18 +285,28 @@ pub(crate) fn find_existing(catalog: &Catalog, name: &str) -> Result<Option<Edge
         if tracing() { eprintln!("MEMORY animation record lookup: path={path} registered=false"); }
         return Ok(None);
     };
-    load(catalog, &path, &record, false, false).map(Some).map_err(LoadFailure::into_string)
+    load(catalog, &path, &record, false, false, None).map(Some).map_err(LoadFailure::into_string)
 }
 
 /// 0607f0's creating acquisition. Validation against a rig remains caller-owned;
 /// clock/pose state never enters a resource record.
 pub fn acquire(catalog: &Catalog, name: &str) -> Result<EdgeAnimation, String> {
-    acquire_scoped(catalog, name, None)
+    acquire_cancellable(catalog, name, None)
 }
-fn acquire_scoped(catalog: &Catalog, name: &str, scope: Option<ResourceScope>) -> Result<EdgeAnimation, String> {
+
+pub(crate) fn acquire_cancellable(catalog: &Catalog, name: &str, cancelled: Option<&dyn Fn() -> bool>)
+    -> Result<EdgeAnimation, String> {
+    acquire_scoped(catalog, name, None, cancelled)
+}
+
+fn acquire_scoped(catalog: &Catalog, name: &str, scope: Option<ResourceScope>,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<EdgeAnimation, String> {
+    check_active(cancelled).map_err(LoadFailure::into_string)?;
     let path = normalize(name);
     let record = create(catalog, &path, scope, None)?;
-    load(catalog, &path, &record, separate() && scope.is_none(), scope.is_some()).map_err(LoadFailure::into_string)
+    load(catalog, &path, &record, separate() && scope.is_none(), scope.is_some(), cancelled)
+        .map_err(LoadFailure::into_string)
 }
 
 enum LoadFailure {
@@ -309,11 +319,21 @@ impl LoadFailure {
     }
 }
 
-fn load(catalog: &Catalog, path: &str, record: &Arc<Record>, duplicate: bool, retain: bool) -> Result<EdgeAnimation, LoadFailure> {
+fn check_active(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), LoadFailure> {
+    if cancelled.is_some_and(|stop| stop()) {
+        return Err(LoadFailure::Owner("animation acquisition cancelled".into()));
+    }
+    Ok(())
+}
+
+fn load(catalog: &Catalog, path: &str, record: &Arc<Record>, duplicate: bool, retain: bool,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<EdgeAnimation, LoadFailure> {
     // Edge decoding has no foreign-resource callbacks. A per-record lock
     // coalesces its IO/parse without holding the whole class registry during IO;
     // playback still holds only its immutable AnimationData Arc.
     let mut snapshot = record.snapshot.lock().map_err(|_| LoadFailure::Owner("animation record is poisoned".into()))?;
+    check_active(cancelled)?;
     snapshot.retain_until_purge |= retain;
     let mutable = catalog.has_overlay_file(path);
     if !mutable && !duplicate {
@@ -325,21 +345,25 @@ fn load(catalog: &Catalog, path: &str, record: &Arc<Record>, duplicate: bool, re
         }
         if let Some(error) = &snapshot.failure { return Err(LoadFailure::Record(error.clone())); }
     }
-    if mutable || duplicate {
-        let old = std::mem::take(&mut snapshot.weak);
-        snapshot.pinned = None;
-        if old.strong_count() != 0 { snapshot.previous.push(old); }
-    }
-    snapshot.previous.retain(|generation| generation.strong_count() != 0);
     let decoded = (|| {
-        let bytes = catalog.read(path).map_err(|error| error.to_string())?
+        let bytes = catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{path} is absent"))?;
+        if cancelled.is_some_and(|stop| stop()) { return Err("animation acquisition cancelled".into()); }
         let source_bytes = bytes.len();
         let signature = if tracing() { let mut crc = flate2::Crc::new(); crc.update(&bytes); crc.sum() } else { 0 };
         let animation = if duplicate { EdgeAnimation::parse(&bytes) } else { EdgeAnimation::parse_owned(bytes) }
             .map_err(|error| format!("{path}: {error}"))?;
         Ok::<_, String>((animation, signature, source_bytes))
     })();
+    // Check before replacing an editable snapshot or storing a failure.
+    // Cancellation is a caller withdrawal, so the record can retry.
+    check_active(cancelled)?;
+    if mutable || duplicate {
+        let old = std::mem::take(&mut snapshot.weak);
+        snapshot.pinned = None;
+        if old.strong_count() != 0 { snapshot.previous.push(old); }
+    }
+    snapshot.previous.retain(|generation| generation.strong_count() != 0);
     let (animation, signature, source_bytes) = match decoded {
         Ok(decoded) => decoded,
         Err(error) => {
@@ -375,13 +399,13 @@ pub(crate) enum PurgeMarker { Level = 0, PersistentHeap = 1, Permanent = 2 }
 /// 257390: the resource owner, not an alias value, retains a forced clip.
 /// A hash lookup replaces the former linear scan of two strong-lease vectors.
 pub(crate) fn force_load(catalog: &Catalog, name: &str, scope: ResourceScope) -> Result<(), String> {
-    acquire_scoped(catalog, name, Some(scope)).map(drop)
+    acquire_scoped(catalog, name, Some(scope), None).map(drop)
 }
 
 pub(crate) fn force_load_in_context(catalog: &Catalog, name: &str, context: CreationContext) -> Result<(), String> {
     let path = normalize(name);
     let record = create(catalog, &path, Some(ResourceScope::Level), Some(context))?;
-    load(catalog, &path, &record, false, true).map(drop).map_err(LoadFailure::into_string)
+    load(catalog, &path, &record, false, true, None).map(drop).map_err(LoadFailure::into_string)
 }
 
 /// 060180 removes only the requested native marker. Live Rust leases keep

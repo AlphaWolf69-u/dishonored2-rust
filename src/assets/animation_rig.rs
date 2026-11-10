@@ -400,12 +400,18 @@ pub struct Clips<'a> {
 
 impl Clips<'_> {
     pub fn clip(&mut self, alias: &str) -> Result<usize, String> {
+        self.clip_cancellable(alias, None)
+    }
+
+    fn clip_cancellable(&mut self, alias: &str, cancelled: Option<&dyn Fn() -> bool>) -> Result<usize, String> {
+        check_active(cancelled)?;
         if let Some(&index) = self.loaded.get(alias) {
             return Ok(index);
         }
         let anim = self.rig.alias(alias).ok_or_else(|| format!("no animset alias {alias}"))?;
         let resource = crate::edge_animation::resource_path(anim).ok_or_else(|| format!("{anim} is not an md6anim"))?;
-        let animation = crate::edge_animation::acquire(self.catalog, &resource)?;
+        let animation = crate::edge_animation::acquire_cancellable(self.catalog, &resource, cancelled)?;
+        check_active(cancelled)?;
         animation.sample(self.rest, 0.0).map_err(|e| format!("{resource}: {e}"))?;
         self.animations.push(animation);
         self.loaded.insert(alias.to_owned(), self.animations.len() - 1);
@@ -415,12 +421,23 @@ impl Clips<'_> {
 
 /// An md6's animBasic list as an AnimBasicNode.
 pub fn anim_basic(clips: &mut Clips, fields: &[(String, crate::entities::Value)]) -> Result<crate::gameplay::player::animation::AnimBasicNode, String> {
+    anim_basic_cancellable(clips, fields, None)
+}
+
+fn check_active(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+    if cancelled.is_some_and(|stop| stop()) { return Err("usable animation acquisition cancelled".into()); }
+    Ok(())
+}
+
+fn anim_basic_cancellable(clips: &mut Clips, fields: &[(String, crate::entities::Value)],
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<crate::gameplay::player::animation::AnimBasicNode, String> {
     use crate::gameplay::player::animation::{AnimBasicItem, AnimBasicNode};
     let _tag = crate::platform::allocation_tags::tag("AnimBasic item definitions");
     let (list, stop_blend_out) = decls::anim_basic_list(fields)?;
     let mut items = Vec::with_capacity(list.len());
     for (alias, blend_in, blend_out) in list {
-        items.push(AnimBasicItem { clip: clips.clip(&alias)?, alias, blend_in, blend_out });
+        items.push(AnimBasicItem { clip: clips.clip_cancellable(&alias, cancelled)?, alias, blend_in, blend_out });
     }
     Ok(AnimBasicNode::from_items(items, stop_blend_out))
 }
@@ -441,15 +458,27 @@ impl std::ops::Deref for BasicRig {
 
 impl BasicRig {
     pub fn load(catalog: &Catalog, model: &str) -> Result<Self, String> {
+        Self::load_cancellable(catalog, model, None)
+    }
+
+    pub(crate) fn load_cancellable(catalog: &Catalog, model: &str, cancelled: Option<&dyn Fn() -> bool>)
+        -> Result<Self, String> {
+        check_active(cancelled)?;
         let rig = Rig::acquire(catalog, model)?;
+        check_active(cancelled)?;
         let declaration = rig.decl("animBasicDecl").ok_or_else(|| format!("{model} has no animBasicDecl"))?;
-        let fields = crate::entities::player::resolved_decl("animbasic", &declaration, |path| text_of(catalog, path))?;
+        let fields = crate::entities::player::resolved_decl("animbasic", &declaration, |path| {
+            Ok(catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())?
+                .map(crate::entities::owned_declaration_text))
+        })?;
+        check_active(cancelled)?;
         let (template, animations) = {
             let mut clips = Clips { catalog, rig: &rig, rest: &rig.skeleton.rest,
                 animations: Vec::new(), loaded: HashMap::new() };
-            let template = anim_basic(&mut clips, &fields)?;
+            let template = anim_basic_cancellable(&mut clips, &fields, cancelled)?;
             (template, clips.animations)
         };
+        check_active(cancelled)?;
         Ok(Self { rig, animations, template })
     }
 }
