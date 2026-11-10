@@ -5899,6 +5899,18 @@ on the buffered route and keep packed channels, geometry, bounds, bindings
 and reuse policy unchanged. Compare decoded fields and acquisition costs on
 installed models before integrating the change.
 
+Installed static model comparison (`fb704c39`). The independent index and
+layout census found 102 qualifying BML1 members, all compressed, with 258
+surfaces and 1,315,706 vertices. The optimized tool compared buffered and
+streamed decoding twice and matched all model fields in all 102 resources,
+with no unsupported members. The largest decoded member was 2,226,130
+bytes. It no longer overlaps the typed mesh arrays as a whole-file buffer.
+Scoped elapsed read/parse totals were 138.686–142.428 ms buffered and
+129.899–131.034 ms streamed. Both routes use the same model parser. The
+comparison does not measure peak process memory, whole-map load time or
+rendered output. Evidence: `DH2/artifacts/static-model-stream-index-20261110.json`
+and `DH2-fx-level-lifetime/artifacts/static-model-stream-20261110-comparison.json`.
+
 Shared point-query owner acceptance (91584611). A windowless production
 scene observation prepared Edge of the World, Dust District and Edge of the
 World again. Gameplay and the particle query publication acquired the same
