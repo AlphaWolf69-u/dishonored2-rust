@@ -5587,6 +5587,19 @@ windowless acquisition measurements, without gameplay CPU or peak RAM
 claims. Evidence: DH2-collision-staging/artifacts/collision-lifetime-extremes-20261110-comparison.json
 and DH2-collision-staging/artifacts/convex-horizon-20261110-comparison.json.
 
+Placed model mesh preparation prediction. The host shares a nondeforming
+BMD6 mesh by model, surface, mirrored winding and skin influence count.
+Its rest palette is shared by model, and `apply_rest_pose` uses no placement
+transform for model-local meshes. The current setup still builds the four
+skin input arrays and applies the same rest pose again for each handle reuse.
+Move those writes to creation of the mesh. Baked and deforming meshes keep
+per-placement preparation, and vegetation still admits its channels by the
+actual material. Static BML1 shadow positions likewise attach at mesh creation.
+Expect one fewer initialization per shared handle hit, with identical final
+vertex and index bytes. This is a host consequence of preparing the shared
+geometry from the BMD6 source (14025aa00); it does not move runtime skinning
+or change GPU residency. Measure the affected setup work before integration.
+
 ### Direct acquisition of whole inline image payloads
 
 Prediction before change. In the recorded Edge of the World / Dust District / Edge of the World acquisition, 11,838 whole-image reads used only indexed inline records; 7,421 of those members exceeded the archive stream's 65,536-byte buffer. The largest indexed member was 16,777,298 bytes. The current 2D resident path reads each complete member and copies its records into a second Bevy Image allocation. Original 1402e9ff0 sends authored mip records to 1402f5500. For large inline-only resident images, validate the same headers and read the authored bytes into their final upload allocation. Expect no full decoded member allocation on that route, lower or unchanged affected CPU cycles, and matching upload CRCs, descriptors and GPU retirement. The stream scratch bounds temporary member staging; the required Image allocation remains. Compare scoped acquisition cycles and output in the same executable before integrating. No gameplay or process peak claim is predicted.

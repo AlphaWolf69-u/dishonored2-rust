@@ -823,12 +823,30 @@ pub(super) fn prepare(
                     };
                     let bounds = render_bounds(&points);
                     let instance = placed_transform(placement);
-                    let world_baked = !deformed.contains(&number)
+                    let deforms = deformed.contains(&number);
+                    let world_baked = !deforms
                         && needs_exact_world_mesh(&instance, &surface.positions, &points);
                     let skin_influences = resolver.shadow_materials.skin_influences(&mat.handle);
+                    let flipped = instance.to_matrix().determinant() < 0.0;
+                    let mut prepare_mesh = |mut mesh: Mesh| {
+                        retain_model_shadow_position(&mut mesh, &surface.positions);
+                        // Physics-system skinning re-poses these every frame.
+                        if deforms {
+                            mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
+                        }
+                        retain_skin_inputs(&mut mesh, surface);
+                        if skin_influences != 0 {
+                            if let Err(error) = skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
+                                apply_rest_pose(&mut mesh, surface, &skin.matrices, skin_influences, placement, world_baked)
+                            }) {
+                                eprintln!("Model rest pose pending {}: {error}", placement.resource_path);
+                            }
+                        }
+                        meshes.add(mesh)
+                    };
                     let (mesh, transform) = if world_baked {
                         (
-                            meshes.add(authored_mesh(
+                            prepare_mesh(authored_mesh(
                                 &points,
                                 &surface.uvs,
                                 &surface.indices,
@@ -837,14 +855,14 @@ pub(super) fn prepare(
                             )),
                             Transform::IDENTITY,
                         )
-                    } else if deformed.contains(&number) {
+                    } else if deforms {
                         (
-                            meshes.add(source_mesh(
+                            prepare_mesh(source_mesh(
                                 &surface.positions,
                                 &surface.uvs,
                                 &surface.indices,
                                 &surface.packed_channels,
-                                instance.to_matrix().determinant() < 0.0,
+                                flipped,
                             )),
                             instance,
                         )
@@ -854,48 +872,22 @@ pub(super) fn prepare(
                                 .entry((
                                     placement.resource_path.clone(),
                                     surface_number,
-                                    instance.to_matrix().determinant() < 0.0,
+                                    flipped,
                                     skin_influences,
                                 ))
                                 .or_insert_with(|| {
-                                    meshes.add(source_mesh(
+                                    prepare_mesh(source_mesh(
                                         &surface.positions,
                                         &surface.uvs,
                                         &surface.indices,
                                         &surface.packed_channels,
-                                        instance.to_matrix().determinant() < 0.0,
+                                        flipped,
                                     ))
                                 })
                                 .clone(),
                             instance,
                         )
                     };
-                    retain_model_shadow_position(meshes, &mesh, &surface.positions);
-                    if let Some(mut mesh) = meshes.get_mut(&mesh) {
-                        // Physics-system skinning re-poses these every frame.
-                        if deformed.contains(&number) {
-                            mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
-                        }
-                        retain_skin_inputs(&mut mesh, surface);
-                        if skin_influences != 0 {
-                            match skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
-                                apply_rest_pose(
-                                    &mut mesh,
-                                    surface,
-                                    &skin.matrices,
-                                    skin_influences,
-                                    placement,
-                                    world_baked,
-                                )
-                            }) {
-                                Ok(()) => {}
-                                Err(error) => eprintln!(
-                                    "Model rest pose pending {}: {error}",
-                                    placement.resource_path
-                                ),
-                            }
-                        }
-                    }
                     vegetation_meshes.prepare(
                         resolver.needs_vegetation_channels(&mat.handle),
                         &mesh,
@@ -1061,10 +1053,14 @@ pub(super) fn prepare(
             let bounds = render_bounds(&points);
             let instance = placed_transform(placement);
             let world_baked = needs_exact_world_mesh(&instance, &surface.positions, &points);
+            let mut prepare_mesh = |mut mesh: Mesh| {
+                retain_model_shadow_position(&mut mesh, &surface.positions);
+                meshes.add(mesh)
+            };
             let (mesh, transform) = if world_baked {
                 baked_shear_instances += 1;
                 (
-                    meshes.add(super::view_geometry::authored_mesh_from_uvs(
+                    prepare_mesh(super::view_geometry::authored_mesh_from_uvs(
                         &points,
                         super::view_geometry::MeshUvs::Packed(&surface.uvs),
                         &surface.indices,
@@ -1083,7 +1079,7 @@ pub(super) fn prepare(
                             0,
                         ))
                         .or_insert_with(|| {
-                            meshes.add(super::view_geometry::source_mesh_from_uvs(
+                            prepare_mesh(super::view_geometry::source_mesh_from_uvs(
                                 &surface.positions,
                                 super::view_geometry::MeshUvs::Packed(&surface.uvs),
                                 &surface.indices,
@@ -1095,7 +1091,6 @@ pub(super) fn prepare(
                     instance,
                 )
             };
-            retain_model_shadow_position(meshes, &mesh, &surface.positions);
             vegetation_meshes.prepare(
                 resolver.needs_vegetation_channels(&mat.handle),
                 &mesh,
