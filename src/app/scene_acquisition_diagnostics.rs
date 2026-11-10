@@ -572,6 +572,10 @@ fn inspect_scene_resources(
                 acquire_water_images(app.world(), step)?;
                 upload_assets(&mut app, &inputs)?;
                 gpu_snapshot(&app, step, "uploaded");
+                if std::env::var_os("DH2_DEBUG_SCREEN_SHADOW_PROGRAMS").is_some_and(|value| value == "1") {
+                    let state = app.world().resource::<super::shadow_updates::ScreenShadowSource>().producer_state()?;
+                    crate::screen_shadow_pass::observe_program_reuse(app.sub_app_mut(RenderApp).world_mut(), state)?;
+                }
             }
             if let Mode::RuntimeFx(effects) = mode {
                 inspect_runtime_fx(&mut app, &catalog, effects)?;

@@ -291,6 +291,11 @@ struct ParallelReceiverCompile {
 
 #[derive(Resource)]
 pub(super) struct ScreenShadowSource(Result<ScreenShadowParameters, String>);
+impl ScreenShadowSource {
+    pub(super) fn producer_state(&self) -> Result<[u32; 9], &str> {
+        self.0.as_ref().map(|source| source.producer).map_err(String::as_str)
+    }
+}
 struct ScreenShadowParameters {
     ambient_occlusion: crate::platform::game_settings::AmbientOcclusion,
     producer: [u32; 9],

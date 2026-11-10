@@ -203,6 +203,23 @@ impl ScreenPrograms {
     }
 }
 
+/// Observe compiled program identity across the actual screen owner release.
+pub(crate) fn observe_program_reuse(world: &mut World, state: [u32; 9]) -> Result<(), String> {
+    let device = world.resource::<RenderDevice>().clone();
+    world.init_resource::<ScreenGpu>();
+    let acquire = |world: &mut World| {
+        let mut gpu = world.resource_mut::<ScreenGpu>();
+        ScreenPrograms::acquire(&mut gpu.programs, &device,
+            bevy::core_pipeline::core_3d::CORE_3D_DEPTH_FORMAT, state)
+            .map(|pair| pair.each_ref().map(|program| program.visibility.id()))
+    };
+    let first = acquire(world)?;
+    ScreenGpu::release_level(world);
+    let next = acquire(world)?;
+    eprintln!("SCREEN_SHADOW_PROGRAMS retained={} variants={}", first == next, next.len());
+    Ok(())
+}
+
 fn clear_view_stencil(
     frame: Option<Res<ScreenShadowFrame>>,
     views: Query<&ViewDepthTexture, With<ExtractedView>>,
