@@ -329,17 +329,24 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         render_epoch(app)
     };
     let leases = Arc::new(vec![Arc::downgrade(&sources)]);
-    request(world, 1, sources, leases);
+    let generation = if std::env::var_os("DH2_DEBUG_MATERIAL_SUPERSESSION").is_some_and(|value| value == "1") {
+        // Submit the real installed material batch, then replace its revision
+        // before any worker output can enter the image or render owners.
+        request(world, 1, sources.clone(), leases.clone());
+        runtime_materials::coordinate(world);
+        2
+    } else { 1 };
+    request(world, generation, sources, leases);
     let started = std::time::Instant::now();
     loop {
         epoch(app)?;
         let world = app.world();
         let materials = world.resource::<DynamicWorldMaterials>();
         let prepared = world.resource::<DynamicDecalMaterials>();
-        if materials.failed.load(Ordering::Acquire) == 1 || prepared.failed.load(Ordering::Acquire) == 1 {
+        if materials.failed.load(Ordering::Acquire) == generation || prepared.failed.load(Ordering::Acquire) == generation {
             return Err("runtime FX publication failed; see material and texture diagnostics".into());
         }
-        if prepared.prepared_generation == 1 && materials.images_ready == materials.image_revision {
+        if prepared.prepared_generation == generation && materials.images_ready == materials.image_revision {
             break;
         }
         if started.elapsed() > std::time::Duration::from_secs(120) {
@@ -365,7 +372,7 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         return Err("runtime FX reused startup assets; select a level without those resources".into());
     }
 
-    request(app.world_mut(), 2, Arc::default(), Arc::default());
+    request(app.world_mut(), generation + 1, Arc::default(), Arc::default());
     let started = std::time::Instant::now();
     loop {
         epoch(app)?;
