@@ -23,6 +23,12 @@ struct Entry {
     flags: u16,
 }
 
+impl Entry {
+    fn is_streamed(&self) -> bool {
+        self.flags & 0x20 != 0
+    }
+}
+
 /// Sorted strings packed into one buffer. The installed index lists about a
 /// million resource paths; as separate `String`s their headers and
 /// allocations cost more than their text.
@@ -254,7 +260,7 @@ impl Catalog {
     /// 140066ac0..140066b8c classifies these as streamed rather than map
     /// preload requests. The load-list reader already normalizes this path.
     pub(crate) fn preloads(&self, path: &str) -> bool {
-        let streamed = self.paths.search(path).ok().is_some_and(|index| self.entries[index].flags & 0x20 != 0);
+        let streamed = self.paths.search(path).ok().is_some_and(|index| self.entries[index].is_streamed());
         !streamed && ![".sbcm", ".tbcm", ".bwm"].iter().any(|suffix| path.contains(suffix))
     }
 
@@ -660,11 +666,25 @@ impl Catalog {
         // A failed acquisition cannot advance loading progress. Record only
         // actual payloads after archive/overlay IO and decompression succeed.
         if matches!(&result, Ok(Some(_))) {
-            if let Some(entry) = entry {
-                crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
-            }
+            self.record_payload_read(entry, path);
         }
         result
+    }
+
+    fn record_payload_read(&self, entry: Option<&Entry>, path: &str) {
+        let Some(entry) = entry else { return };
+        let kind = &self.kinds[entry.kind as usize];
+        // The map preloader (140066ac0) excludes these mips. Their texture
+        // owner accounts for publication and eviction independently.
+        if entry.is_streamed() && kind == "image" && path.contains(".bimage7_mip") {
+            static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if !*RETAIN.get_or_init(|| {
+                std::env::var_os("DH2_DEBUG_RETAIN_STREAMED_MIP_HISTORY").is_some_and(|value| value == "1")
+            }) {
+                return;
+            }
+        }
+        crate::loading::read_catalog(self.identity, kind, path);
     }
 
     /// Borrow a bounded, buffered stream over an installed member. The
@@ -698,10 +718,7 @@ impl Catalog {
                 value
             }
         };
-        // Match read(): successful streaming acquisitions count toward loading.
-        if let Some(entry) = entry {
-            crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
-        }
+        self.record_payload_read(entry, path);
         Ok(Some(value))
     }
 
