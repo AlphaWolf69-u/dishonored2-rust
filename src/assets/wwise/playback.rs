@@ -1,6 +1,6 @@
 //! Loaded actor, action and event registries (1410d64e0 / 1410f5a80).
 //! References are global; media keeps the bank that owns its source object.
-use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
+use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned, BankMediaIndex,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
     PlaybackContainer, PlaybackNode, PlaybackSwitch, MediaBytes};
 use std::{borrow::Cow, collections::{HashMap, HashSet}, io, ops::Range,
@@ -12,6 +12,7 @@ struct LoadedBank<'a> {
     feedback: bool,
     media_index: Option<Range<usize>>,
     media_data: Option<Range<usize>>,
+    media_index_ordered: bool,
 }
 
 static MEDIA_SECTION_MODE: OnceLock<(bool, bool)> = OnceLock::new();
@@ -167,7 +168,8 @@ impl<'a> PlaybackBanks<'a> {
         });
         let media_index = range(b"DIDX");
         let media_data = range(b"DATA");
-        self.banks.push(LoadedBank { bytes, feedback, media_index, media_data });
+        let media_index_ordered = media_index.as_ref().is_some_and(|range| BankMediaIndex::ordered(&bytes[range.clone()]));
+        self.banks.push(LoadedBank { bytes, feedback, media_index, media_data, media_index_ordered });
         for (id, object) in records {
             match object.kind {
                 // 141150a90 loads music kinds 10..13 into the same actor
@@ -464,6 +466,7 @@ impl<'a> PlaybackBanks<'a> {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let bank = &self.banks[object.bank];
                     let (index, data) = bank.media_sections()?;
+                    let index = index.map(|bytes| BankMediaIndex { bytes, ordered: bank.media_index_ordered });
                     let source = media_from_sound(bytes, index, data,
                         &mut |id, stream| media(object.bank, id, stream), |bytes| bank.bytes.media(bytes))?;
                     entry.insert(source).clone()

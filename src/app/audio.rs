@@ -722,6 +722,7 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
         graph::capture_media_signatures();
         registry.library.report_media_sections();
         crate::assets::wwise::Package::report_media_lookup();
+        crate::assets::wwise::report_bank_index_lookup();
         crate::assets::wwise::capture_property_chains();
         for (representation, (n, installed, views)) in graph::resident_media_stats() {
             eprintln!("LOAD sound media representation {representation}: {n} current sources, {} MB installed, {} MB logical views", installed >> 20, views >> 20);
