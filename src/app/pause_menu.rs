@@ -165,7 +165,7 @@ pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(u
 pub(super) fn state_movie(catalog: &Catalog, kind: &str, state: &str) -> Result<String, String> {
     let edit = crate::assets::entities::player::resolved_decl(kind, state, |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
+            .map(crate::assets::entities::owned_declaration_text))
     })?;
     let reference = crate::gameplay::options::decl::atom(&edit, "m_iggyInfo")
         .ok_or_else(|| format!("{state} has no m_iggyInfo"))?;

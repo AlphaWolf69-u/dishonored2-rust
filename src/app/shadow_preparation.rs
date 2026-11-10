@@ -474,7 +474,7 @@ pub(super) fn rest_skinning(
             .read(path)
             .ok()
             .flatten()
-            .map(|bytes| entities::declaration_text(&bytes).into_owned())
+            .map(entities::owned_declaration_text)
     })?;
     let name = binding
         .as_ref()

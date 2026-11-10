@@ -64,7 +64,7 @@ impl DeclarationSource {
             let mut value = player_declarations_with_listener(character, Self::can_share(catalog) && !baseline, |path| {
                 if trace && player_listener_trace_path(path) { eprintln!("PLAYER_DECL_READ owner=bundle character={character} path={path}"); }
                 Ok(catalog.read(path).map_err(|error| error.to_string())?
-                    .map(|bytes| super::declaration_text(&bytes).into_owned()))
+                    .map(super::owned_declaration_text))
             })?;
             // Keep the public parser complete, and only compact this private
             // setup copy after every authored declaration has been resolved.

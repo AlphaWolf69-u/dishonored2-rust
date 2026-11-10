@@ -212,7 +212,7 @@ pub(super) fn load_player_arms(
         Ok(catalog
             .read(path)
             .map_err(|e| e.to_string())?
-            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+            .map(entities::owned_declaration_text))
     };
     let character = character_name(super::pause_menu::debug_character());
     let declarations = declarations_source.full(catalog, character)?;

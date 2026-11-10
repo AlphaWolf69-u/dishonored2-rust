@@ -588,7 +588,7 @@ fn swimming_clip_aliases(
     let name = rig.decl("locomotionDecl").ok_or("body has no locomotion declaration")?;
     let fields = crate::entities::player::resolved_decl("playerlocomotion", &name, |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+            .map(crate::entities::owned_declaration_text))
     })?;
     let decls = crate::gameplay::player::decls::loco_stances(&fields, ["Empty"; 2])?;
     let entries = decls.iter().find(|(name, _)| name == "Swimming").map(|(_, entries)| entries);

@@ -5987,6 +5987,24 @@ the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
 
+Owned declaration text extension. The 140135f70 lexer treats signed bytes
+as unquoted whitespace and preserves quoted/commented bytes. The measured
+contact-only handoff already avoids copying ASCII source. Extend ownership
+transfer to installed declaration consumers that already own their archive
+read. Normalize in that allocation and transfer it into the String when
+UTF-8 validates. Malformed quoted bytes keep the existing replacement
+behavior. Expect one fewer whole-text allocation for valid owned reads
+and matching parsed definitions, with no new retained source owner.
+
+Installed decoder comparison (`a7043617`). The previous decoder and both
+new entry points produced identical text for 1,593 installed declarations
+sampled across 511 index kind names. The sample includes 24 non-ASCII
+members and three whose decoded bytes changed from the source. Owned
+decoding kept the input allocation for 1,590 members covering 7,056,074
+cumulative source bytes. This isolates the decoder and does not measure
+full loading time or retained process memory. Evidence:
+`DH2-fx-resources/artifacts/owned-declaration-layout-20261110.json`.
+
 Camera depth owner acceptance (`e40c02cf`). Two windowless DX12 observations
 released the 1920×1080 opacity image, reduction pyramid, coarse output,
 constants and four staging slots with a readback map outstanding. The callback
