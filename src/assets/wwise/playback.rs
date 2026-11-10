@@ -110,6 +110,14 @@ impl<'a> PlaybackBanks<'a> {
             Cow::Borrowed(bytes) => BankBytes::Borrowed(bytes),
             Cow::Owned(bytes) => BankBytes::Shared(bytes.into()),
         };
+        self.insert_bank(bytes)
+    }
+
+    pub(crate) fn insert_resident(&mut self, bytes: MediaBytes) -> io::Result<usize> {
+        self.insert_bank(BankBytes::Shared(bytes))
+    }
+
+    fn insert_bank(&mut self, bytes: BankBytes<'a>) -> io::Result<usize> {
         let chunks = bank_chunks(&bytes)?;
         let feedback = bank_feedback(&chunks)?;
         let mut objects = chunks.get(b"HIRC").map(|hierarchy| bank_objects(hierarchy))

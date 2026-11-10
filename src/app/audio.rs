@@ -513,6 +513,8 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
 
         let mut output_mix = None;
         let before = registry.banks.len();
+        let trace_backing = std::env::var_os("DH2_DEBUG_WWISE_BANK_BACKING").is_some_and(|v| v == "1");
+        let copy_backing = std::env::var_os("DH2_DEBUG_COPY_WWISE_BANK_BACKING").is_some_and(|v| v == "1");
         for shared in [true, false] {
         for path in &paths {
             let package = if let Some(package) = registry.packages.get(path) {
@@ -538,14 +540,30 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
                     && bank.entry.id == entry.id && bank.entry.language_id == entry.language_id) { continue; }
                 let indexed = (|| -> Result<_, Box<dyn std::error::Error>> {
                     let mut file = std::fs::File::open(&path)?;
-                    let bytes = package.read_entry(&mut file, entry)?;
+                    let start = trace_backing.then(crate::loading::thread_cycles).flatten();
+                    let bytes: crate::assets::wwise::MediaBytes = if copy_backing {
+                        package.read_entry(&mut file, entry)?.into()
+                    } else {
+                        package.read_resident_entry(&mut file, entry)?
+                    };
+                    if trace_backing {
+                        let cycles = start.zip(crate::loading::thread_cycles())
+                            .map_or(0, |(start, end)| end.saturating_sub(start));
+                        let mut crc = flate2::Crc::new();
+                        crc.update(&bytes);
+                        let copied_bytes = if copy_backing { bytes.len() } else { 0 };
+                        eprintln!(
+                            "WWISE_BANK_BACKING package={} id={} language={} bytes={} copied_bytes={copied_bytes} cycles={cycles} crc={:08x}",
+                            path.display(), entry.id, entry.language_id, bytes.len(), crc.sum(),
+                        );
+                    }
                     Ok((crate::assets::wwise::bank_mix(&bytes)?, crate::assets::wwise::bank_attenuations(&bytes)?, bytes))
                 })();
                 match indexed {
                     Ok((bank_mix, bank_attenuations, bytes)) => {
                         for attenuation in bank_attenuations { Arc::make_mut(&mut registry.attenuations).entry(attenuation.id).or_insert_with(|| Arc::new(attenuation)); }
                         if bank_mix.is_some() { output_mix = bank_mix; }
-                        Arc::make_mut(&mut registry.library).insert(bytes.into())?;
+                        Arc::make_mut(&mut registry.library).insert_resident(bytes)?;
                         Arc::make_mut(&mut registry.banks).push(Bank { path: path.clone(), package: package.clone(), entry });
                     }
                     Err(error) => debug!("Skipping Wwise bank in {}: {error}", path.display()),
