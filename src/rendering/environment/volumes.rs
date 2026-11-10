@@ -45,7 +45,7 @@ fn resolve_with_cache(
                 .read(&format!("generated/decls/env/{parent}.decl"))
                 .map_err(|e| e.to_string())?;
             if trace { reads += 1; decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
-            Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+            Ok(bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "area-env")))
         }, cache,
     )?;
     // 342ce0's default argument is false in 88d060. Use the same parameter

@@ -41,6 +41,32 @@ pub(crate) fn report_text_handoff(phase: &str) {
     eprintln!("DECLARATION_TEXT_HANDOFF phase={phase} calls={calls} source_bytes={bytes} direct={direct} same_buffer={same_buffer} retained_capacity={retained_capacity} cycles={cycles}");
 }
 
+/// Preserve the text-only readers' UTF-8 behavior without running the
+/// signed-byte declaration lexer normalization on their archive buffers.
+pub(crate) fn adopt_utf8(bytes: Vec<u8>, owner: &str) -> String {
+    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    let (copy, trace) = *MODE.get_or_init(|| (
+        std::env::var_os("DH2_DEBUG_COPY_RAW_DECLARATION_TEXT").is_some_and(|value| value == "1"),
+        std::env::var_os("DH2_DEBUG_RAW_DECLARATION_TEXT").is_some_and(|value| value == "1"),
+    ));
+    let start = trace.then(crate::loading::thread_cycles).flatten();
+    let length = bytes.len();
+    let original = bytes.as_ptr();
+    let text = if copy {
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        crate::entities::decode_utf8_lossy(bytes)
+    };
+    if trace {
+        let cycles = start.zip(crate::loading::thread_cycles())
+            .map_or(0, |(a, b)| b.saturating_sub(a));
+        let adopted = length != 0 && text.as_ptr() == original;
+        eprintln!("RAW_DECLARATION_TEXT owner={owner} bytes={length} adopted={adopted} cycles={cycles} signature={}",
+            blake3::hash(text.as_bytes()));
+    }
+    text
+}
+
 pub(crate) type TextMap = HashMap<String, String>;
 #[derive(Default)]
 pub(crate) struct DeclarationTexts {

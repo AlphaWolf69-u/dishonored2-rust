@@ -150,6 +150,7 @@ pub fn inspect_scene_publication(
             "--texture-read-cancellation" => return archive::observe_member_cancellation(base, name),
             "--particle-read-cancellation" => return crate::rendering::particles::definition::observe_cancelled_declaration(base, name),
             "--usable-read-cancellation" => return super::usable_animation::observe_read_cancellation(base, name),
+            "--vorbis-header-samples" => return crate::assets::wwise::observe_header_samples(&base.join("pck").join(name)).map_err(Into::into),
             "--manifest-catalog-scopes" => {
                 return crate::assets::map_resources::observe_catalog_manifests(base, name).map_err(Into::into);
             }

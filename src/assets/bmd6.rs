@@ -773,7 +773,7 @@ impl ModelSources {
                         declaration_reads += 1;
                         declaration_bytes += bytes.len();
                     }
-                    String::from_utf8_lossy(&bytes).into_owned()
+                    crate::assets::declaration_texts::adopt_utf8(bytes, "md6")
                 })
             })?,
         };

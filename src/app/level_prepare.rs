@@ -379,7 +379,7 @@ pub(super) fn prepare_level(
                 let bytes = catalog.read(resource).map_err(|error| error.to_string())?;
                 light_source_reads += 1;
                 light_source_bytes += bytes.as_ref().map_or(0, Vec::len);
-                Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+                Ok(bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "light")))
             }, reuse_light_sources)
         })
         .transpose()?

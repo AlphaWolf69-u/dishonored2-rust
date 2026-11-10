@@ -6685,6 +6685,64 @@ the compact usable-skin build. The forced read interruptions and the
 normal worker retirement gate are separate observations.
 Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
 
+
+### Wwise Vorbis setup packet acquisition
+
+Prediction before implementation. Original 1411614e0 takes installed
+Vorbis metadata and 141161240 feeds installed packets. The host already
+decodes those packets in place. On a header miss it still copies the
+RIFF prefix, emits three synthetic Ogg header pages and parses their
+page table just to supply lewton the identification and setup packets.
+Give the pinned, BSD-licensed ww2ogg setup writer a raw-packet output
+and feed it the borrowed installed setup record. Construct the 30-byte
+identification packet from the same RIFF fields on the stack. Keep the
+existing setup reconstruction, shared setup/cache retirement and legacy
+full-file reader for layouts outside the installed packet path. Expect
+zero RIFF copies and zero Ogg pages for that path, with identical header
+packets and decoded samples. Compare raw packets to the converter's
+reference and record scoped cold acquisition work before integrating.
+The decoder bridge is host integration, not an original codec port.
+
+Installed Vorbis setup acceptance at c9e2429c. All 34 compared
+identification and setup packet pairs matched the converter, and all
+32 decoded PCM sample fingerprints matched. The conversion control
+recorded 13,755 bytes copied into RIFF staging and 107,432 bytes
+generated as Ogg pages. The direct path recorded zero bytes for both.
+Edge of the World, Dust District, and the return to Edge of the World
+matched media, streams, residency and retirement. The observer's cache
+miss counts differed, so its acquisition cycle totals do not establish
+a speedup.
+Evidence: DH2-fx-level-lifetime/artifacts/vorbis-packet-setup-20261111-comparison.json.
+
+
+### Raw declaration buffer handoff
+
+Prediction before implementation. The installed resource identity and
+release boundaries are 1400607f0 and 140060180. Four host readers still
+copy a valid UTF-8 archive buffer into a String before its only parser
+uses it. Move the existing allocation into the string for placed light,
+area environment, pause environment and fallback MD6 declarations.
+Preserve the current byte-for-byte lossy UTF-8 semantics, including
+invalid bytes, and keep the lexer-normalized readers on their existing
+route. The prior Edge of the World and Dust District light comparison
+read 56,215 and 67,341 bytes per load. Expect those source bytes to
+require no second copy when valid, with no read-count or runtime
+ownership change. Compare actual buffer adoption and installed outputs
+in the same build. This is a host acquisition change, without a
+steady-state memory or frame-time prediction.
+
+Installed declaration handoff acceptance at 71a4c2c5. In the same
+development executable, 304 acquisitions across light, area-environment,
+MD6 and pause-environment readers adopted 284,590 bytes of existing
+archive buffers in Edge of the World and Dust District. The control
+copied the same bytes. The scoped handoff recorded 958,615 versus
+384,580 aggregate thread cycles. Exact text fingerprints, scene and
+GPU preparation signatures, and initial texture and material handoff
+outputs matched. This measures the declaration handoff, not a frame
+timing or peak-memory result.
+Evidence: DH2-collision-staging/artifacts/raw-declaration-buffer-handoff-20261111-comparison.json.
+
+
 ### Iggy string buffer ownership
 
 Prediction before implementation. Iggy 141093380 loads serialized
