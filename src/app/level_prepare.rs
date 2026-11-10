@@ -26,14 +26,14 @@ pub(super) struct MaterialHistoryScope(#[allow(dead_code)] std::sync::Arc<crate:
 /// Keep skeletal acquisitions through preparation and render-world retirement.
 #[derive(Resource)]
 pub(super) struct SkeletalHistoryScope {
-    _models: std::sync::Arc<crate::bmd6::HistoryLease>,
-    _skeletons: std::sync::Arc<crate::edge_skeleton::HistoryLease>,
+    _models: crate::bmd6::HistoryLease,
+    _skeletons: crate::edge_skeleton::HistoryLease,
 }
 impl SkeletalHistoryScope {
-    fn new() -> Self {
+    pub(super) fn new(catalog: &archive::Catalog) -> Self {
         Self {
-            _models: crate::bmd6::HistoryLease::acquire(),
-            _skeletons: crate::edge_skeleton::HistoryLease::acquire(),
+            _models: crate::bmd6::HistoryLease::acquire(catalog.identity()),
+            _skeletons: crate::edge_skeleton::HistoryLease::acquire(catalog.identity()),
         }
     }
 }
@@ -102,7 +102,7 @@ pub(super) fn prepare_level(
     let mut app = super::loading_screen::PreparedLevel::default();
     app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
     app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(catalog.identity())));
-    app.insert_resource(SkeletalHistoryScope::new());
+    app.insert_resource(SkeletalHistoryScope::new(&catalog));
     let catalog = Some(catalog);
     let map = level
         .entities

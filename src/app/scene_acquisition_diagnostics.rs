@@ -44,6 +44,7 @@ fn inspect_catalog_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn 
         crate::bmodel::ModelHistoryLease::acquire(catalog),
         crate::material::MaterialHistoryLease::acquire(catalog.identity()),
         crate::physworld::source::ShapeSources::new(catalog),
+        super::level_prepare::SkeletalHistoryScope::new(catalog),
     );
     let first = leases(&a);
     let second = leases(&b);
@@ -52,7 +53,10 @@ fn inspect_catalog_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn 
     let model = crate::bmodel::acquire(&a, COMMON_MODEL, Some(common))?.ok_or("installed common model absent")?;
     drop(model);
     let mut paths = Vec::new();
-    for (kind, suffix) in [("model", ".bmodel"), ("material", ".decl"), ("physhape", ".hkx")] {
+    for (kind, suffix) in [
+        ("model", ".bmodel"), ("material", ".decl"), ("physhape", ".hkx"),
+        ("baseModel", ".bmd6model"), ("skeleton", ".edgeskl"),
+    ] {
         let path = a.paths_with_suffix(suffix).into_iter()
             .find(|path| path != COMMON_MODEL && a.kind(path) == Some(kind))
             .ok_or_else(|| format!("installed resource kind {kind} absent"))?;
@@ -77,7 +81,28 @@ fn inspect_catalog_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn 
             return Err(format!("{kind} history outlived its final scope").into());
         }
     }
-    eprintln!("CATALOG_LEVEL_SCOPES retired={} independent=true common_model=true", paths.len());
+    use crate::assets::animation_rig::declaration::{LoadContext, resolve_model};
+    const LIVE_MD6: &str = "models/characters/animals/bloodfly/bloodfly.md6";
+    const RAW_MD6: &str = "generated/decls/md6def/models/characters/animals/rat/rat.md6.decl";
+    let live = resolve_model(&a, LIVE_MD6, true, LoadContext::Level)?.ok_or("installed MD6 declaration absent")?;
+    let live_path = &live.declaration().path;
+    a.read(RAW_MD6)?.ok_or("installed compatibility MD6 source absent")?;
+    b.read(RAW_MD6)?.ok_or("second compatibility MD6 source absent")?;
+    a.release_md6_level();
+    if !crate::loading::catalog_read_recorded(a.identity(), "md6Def", live_path)
+        || crate::loading::catalog_read_recorded(a.identity(), "md6Def", RAW_MD6)
+        || !crate::loading::catalog_read_recorded(b.identity(), "md6Def", RAW_MD6) {
+        return Err("MD6 history lost its registered owner or retired outside its catalog".into());
+    }
+    let live_path = live_path.clone();
+    drop(live);
+    a.release_md6_level();
+    b.release_md6_level();
+    if crate::loading::catalog_read_recorded(a.identity(), "md6Def", &live_path)
+        || crate::loading::catalog_read_recorded(b.identity(), "md6Def", RAW_MD6) {
+        return Err("MD6 history outlived its final owner".into());
+    }
+    eprintln!("CATALOG_LEVEL_SCOPES retired={} independent=true common_model=true md6=true", paths.len());
     Ok(())
 }
 
