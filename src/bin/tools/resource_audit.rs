@@ -7,6 +7,56 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+fn observe_decal_leases(
+    catalog: &dishonored2_rust::archive::Catalog,
+    programs: &mut dishonored2_rust::shader_cache::ProgramLibrary,
+    effects: &[String],
+) -> Result<()> {
+    use dishonored2_rust::{assets::decal::DecalMaterials, rendering::particles::{
+        definition::ParticleResources, world_sources::WorldFxSources,
+    }};
+    use std::{collections::{BTreeMap, HashSet}, sync::{Arc, Weak}};
+
+    if effects.len() < 2 { return Err(invalid("decal lease observation requires two installed effects").into()); }
+    for share in [false, true] {
+        let mut level = ParticleResources::default();
+        let mut batches = Vec::new();
+        let mut declarations: BTreeMap<String, Vec<Weak<DecalMaterials<String>>>> = BTreeMap::new();
+        let mut signature = blake3::Hasher::new();
+        for name in effects {
+            let mut separate = ParticleResources::default();
+            let resources = if share { &mut level } else { &mut separate };
+            let batch = WorldFxSources::load_named_shared(vec![name.clone()], catalog, programs, resources);
+            let effect = batch.effects.get(name).ok_or("installed effect was not acquired")?
+                .as_ref().map_err(Clone::clone)?;
+            for decal in effect.groups.iter().flat_map(|group| &group.decals) {
+                let decal = decal.as_ref().map_err(Clone::clone)?;
+                for (path, declaration) in decal.asset.declarations.iter().zip(&decal.declarations) {
+                    let (Some(path), Some(declaration)) = (path, declaration) else { continue; };
+                    declarations.entry(path.clone()).or_default().push(Arc::downgrade(declaration));
+                    for text in [Some(name), Some(path), declaration.opaque.as_ref(),
+                        declaration.opaque_instanced.as_ref(), declaration.alpha.as_ref(), declaration.alpha_instanced.as_ref()] {
+                        let text = text.map_or(&[][..], |value| value.as_bytes());
+                        signature.update(&(text.len() as u64).to_le_bytes());
+                        signature.update(text);
+                    }
+                }
+            }
+            batches.push(batch);
+        }
+        if declarations.is_empty() { return Err(invalid("no installed decal declarations were admitted").into()); }
+        let distinct: usize = declarations.values().map(|references| {
+            references.iter().map(Weak::as_ptr).collect::<HashSet<_>>().len()
+        }).sum();
+        drop(batches);
+        level.retire_unused();
+        let retained = declarations.values().flatten().filter(|reference| reference.strong_count() != 0).count();
+        eprintln!("DECAL_LEASES shared={share} names={} references={} live_identities={distinct} retained_references={retained} signature={}",
+            declarations.len(), declarations.values().map(Vec::len).sum::<usize>(), signature.finalize());
+    }
+    Ok(())
+}
+
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
         "inspect-scene-gpu-resources" => {
@@ -349,6 +399,12 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             };
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
             let named = command == "inspect-fx-definitions";
+            if named && args.first().is_some_and(|argument| argument == "--decal-leases") {
+                let mut programs = dishonored2_rust::shader_cache::ProgramLibrary::open(
+                    base, dishonored2_rust::shader_cache::ShaderCacheBackend::Pc, &catalog,
+                )?;
+                return observe_decal_leases(&catalog, &mut programs, &args[1..]);
+            }
             let (graphs, actors) = if named {
                 if args.is_empty() { return Err("inspect-fx-definitions requires installed FX names".into()); }
                 (Vec::new(), Vec::new())
