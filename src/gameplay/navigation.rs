@@ -279,6 +279,23 @@ impl CollisionWorld {
         self.triangles.len()
     }
 
+    #[cfg(feature = "game")]
+    pub(crate) fn preparation_signature(&self) -> u32 {
+        let mut crc = flate2::Crc::new();
+        for triangle in &self.triangles {
+            let mut bytes = [0; 72];
+            let words = [triangle.a, triangle.b, triangle.c, triangle.min, triangle.max]
+                .into_iter()
+                .flat_map(|point| point.to_array().map(f32::to_bits))
+                .chain([triangle.owner, triangle.material, triangle.filter]);
+            for (target, word) in bytes.chunks_exact_mut(4).zip(words) {
+                target.copy_from_slice(&word.to_le_bytes());
+            }
+            crc.update(&bytes);
+        }
+        crc.sum()
+    }
+
     pub fn large_triangle_count(&self) -> usize {
         match &self.index {
             TriangleIndex::Packed { large, .. } => large.len(),
