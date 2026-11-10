@@ -157,7 +157,9 @@ impl Drop for Catalog {
         self.kiscule_resources.take();
         self.particle_resources.take();
         crate::assets::render_parameter::report(self, "catalog-retiring");
-        self.render_parameters.take();
+        let parameters = usize::from(self.render_parameters.take().is_some_and(|mut owner| {
+            owner.shader_metadata.get_mut().unwrap_or_else(|error| error.into_inner()).take().is_some()
+        }));
         self.shader_indices.take();
         // Host read accounting belongs to this immutable archive namespace;
         // releasing it must not leave credits for a later Catalog identity.
@@ -169,7 +171,7 @@ impl Drop for Catalog {
             .unwrap_or_else(|error| error.into_inner()).take().is_some());
         let contacts = usize::from(self.contact_database.get_mut()
             .unwrap_or_else(|error| error.into_inner()).take().is_some());
-        crate::loading::retire_catalog(self.identity, animations, declarations, blur, contacts);
+        crate::loading::retire_catalog(self.identity, animations, declarations, blur, contacts, parameters);
     }
 }
 
