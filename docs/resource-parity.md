@@ -5885,3 +5885,14 @@ matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
 547,680–555,905 with borrowed nodes. This measures those startup dispatches,
 without a gameplay frame-time claim. The source was c40dcdbe and the same
 comparison artifact records both batches.
+
+Static model acquisition prediction. The original BML1 loader 14026a5a0
+feeds the model stream to 140259d50 and closes it after constructing the
+surfaces. The host currently inflates the entire member while also building
+the typed position, packed attribute and index arrays. Use the Catalog
+stream for installed members of at least 256 KiB, with 64 KiB of archive
+buffering and an 8 KiB stack block. Expect to remove one member-sized heap
+allocation per qualifying cold acquisition. Keep small and editable sources
+on the buffered route and keep packed channels, geometry, bounds, bindings
+and reuse policy unchanged. Compare decoded fields and acquisition costs on
+installed models before integrating the change.

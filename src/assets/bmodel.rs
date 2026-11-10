@@ -1,6 +1,9 @@
 //! Read-only decoder for static BML1/BTRI model geometry.
 
-use std::{collections::{HashMap, HashSet}, mem::size_of, sync::{Arc, Mutex}};
+use std::{collections::{HashMap, HashSet}, io::{self, Read}, mem::size_of, sync::{Arc, Mutex}};
+
+const STREAM_THRESHOLD: usize = 256 * 1024;
+const READ_BLOCK_SIZE: usize = 8 * 1024;
 
 /// Host preparation payload for common model identities. Native lookup
 /// 1400607f0 and bootstrap promotion 140060b60 retain the common resource.
@@ -45,7 +48,28 @@ impl std::ops::Deref for ModelSource {
 }
 
 /// Load one model without extending its lifetime past the caller's lease.
-pub(crate) fn load(catalog: &super::archive::Catalog, path: &str) -> Result<Option<Model>, String> {
+pub fn load(catalog: &super::archive::Catalog, path: &str) -> Result<Option<Model>, String> {
+    if !catalog.has_overlays()
+        && catalog.resource_size(path).is_some_and(|size| size >= STREAM_THRESHOLD)
+    {
+        return catalog.with_stream(path, |reader, size| {
+            let mut scratch = [0; READ_BLOCK_SIZE];
+            let mut input = ModelInput {
+                source: ModelSourceBytes::Stream(reader, &mut scratch),
+                length: size,
+                at: 0,
+            };
+            let model = read_model(&mut input).map_err(|error| format!("{path}: {error}"))?;
+            // Consume the opaque tail so the archive reader can validate the member.
+            let expected = model.bytes_after_bindings as u64;
+            let read = io::copy(&mut reader.take(expected), &mut io::sink())
+                .map_err(|error| format!("{path}: {error}"))?;
+            if read != expected {
+                return Err(format!("{path}: truncated model tail"));
+            }
+            Ok(model)
+        });
+    }
     catalog.read(path).map_err(|error| error.to_string())?
         .map(|bytes| parse(&bytes).map_err(|error| format!("{path}: {error}")))
         .transpose()
@@ -136,7 +160,7 @@ impl Drop for ModelHistoryLease {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Model {
     pub surfaces: Vec<Surface>,
     /// FUN_140269ff0 unions the authored BTRI surface bounds.
@@ -146,7 +170,7 @@ pub struct Model {
     pub bytes_after_bindings: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Surface {
     pub material_path: String,
     /// BML1 surface separator/marker preserved from the source record.
@@ -166,18 +190,57 @@ fn region(bytes: &[u8], at: usize, size: usize) -> Result<&[u8], String> {
         .ok_or_else(|| format!("model section at {at} exceeds {} bytes", bytes.len()))
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> Result<u32, String> {
-    Ok(u32::from_le_bytes(
-        region(bytes, at, 4)?.try_into().unwrap(),
-    ))
-}
-
 fn float_at(bytes: &[u8], at: usize) -> Result<f32, String> {
     let value = f32::from_le_bytes(region(bytes, at, 4)?.try_into().unwrap());
     if value.is_finite() {
         Ok(value)
     } else {
         Err(format!("non-finite model coordinate at {at}"))
+    }
+}
+
+enum ModelSourceBytes<'a> {
+    Slice(&'a [u8]),
+    Stream(&'a mut dyn Read, &'a mut [u8; READ_BLOCK_SIZE]),
+}
+
+struct ModelInput<'a> {
+    source: ModelSourceBytes<'a>,
+    length: usize,
+    at: usize,
+}
+
+impl ModelInput<'_> {
+    fn section_end(&self, size: usize) -> Result<usize, String> {
+        let end = self.at.checked_add(size).ok_or("offset overflow")?;
+        if end > self.length {
+            return Err(format!("model section at {} exceeds {} bytes", self.at, self.length));
+        }
+        Ok(end)
+    }
+
+    fn read(&mut self, size: usize) -> Result<&[u8], String> {
+        let end = self.section_end(size)?;
+        let bytes = match &mut self.source {
+            ModelSourceBytes::Slice(bytes) => &bytes[self.at..end],
+            ModelSourceBytes::Stream(reader, scratch) => {
+                let bytes = &mut scratch[..size];
+                reader.read_exact(bytes).map_err(|error| error.to_string())?;
+                bytes
+            }
+        };
+        self.at = end;
+        Ok(bytes)
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        Ok(u32::from_le_bytes(self.read(4)?.try_into().unwrap()))
+    }
+
+    fn string(&mut self, length: usize) -> Result<String, String> {
+        std::str::from_utf8(self.read(length)?)
+            .map(str::to_owned)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -211,122 +274,114 @@ pub fn accumulate_resource_bounds(
 }
 
 pub fn parse(bytes: &[u8]) -> Result<Model, String> {
-    if region(bytes, 0, 4)? != b"1LMB" {
+    read_model(&mut ModelInput {
+        source: ModelSourceBytes::Slice(bytes),
+        length: bytes.len(),
+        at: 0,
+    })
+}
+
+fn read_model(input: &mut ModelInput<'_>) -> Result<Model, String> {
+    if input.read(4)? != b"1LMB" {
         return Err("not a BML1 model".into());
     }
-    let source_length = u32_at(bytes, 8)? as usize;
+    input.read(4)?;
+    let source_length = input.u32()? as usize;
     if source_length > 4096 {
         return Err("unreasonable BML1 source path length".into());
     }
-    region(bytes, 12, source_length)?;
-    let surface_count = u32_at(bytes, 12 + source_length)? as usize;
+    input.read(source_length)?;
+    let surface_count = input.u32()? as usize;
     if surface_count == 0 || surface_count > 128 {
         return Err("unreasonable BML1 surface count".into());
     }
-    let mut at = 16 + source_length;
     let mut surfaces = Vec::with_capacity(surface_count);
     for surface_number in 0..surface_count {
-        let length = u32_at(bytes, at)? as usize;
-        at += 4;
+        let length = input.u32()? as usize;
         if length == 0 || length > 4096 {
             return Err(format!("surface {surface_number} material length invalid"));
         }
-        let material_path = std::str::from_utf8(region(bytes, at, length)?)
-            .map_err(|error| error.to_string())?
-            .to_string();
-        at += length;
-        let surface_marker = u32_at(bytes, at)?;
-        // Ordinary BML1 surfaces use 0xffffffff. The installed area-volume
-        // proxy meshes use zero at the same position and still contain valid
-        // BTRI geometry immediately afterward.
+        let material_path = input.string(length)?;
+        let surface_marker = input.u32()?;
+        // Ordinary surfaces use 0xffffffff. Area volume proxies use zero.
         if surface_marker != u32::MAX && surface_marker != 0 {
             return Err(format!(
                 "surface {surface_number} has unsupported marker {surface_marker:#x}"
             ));
         }
-        at += 4;
-        if region(bytes, at, 4)? != b"BTRI" {
+        if input.read(4)? != b"BTRI" {
             return Err(format!("surface {surface_number} missing BTRI"));
         }
-        let btri = at;
-        if u32_at(bytes, btri + 4)? != 0x0001_0002 {
+        if input.u32()? != 0x0001_0002 {
             return Err(format!(
                 "surface {surface_number} has unsupported BTRI version"
             ));
         }
-        let cpu_declaration = u32_at(bytes, btri + 8)?;
-        let gpu_declaration = u32_at(bytes, btri + 12)?;
-        if cpu_declaration != 1 || gpu_declaration != 1 || region(bytes, btri + 0x3c, 8)? != [0; 8]
-        {
+        let cpu_declaration = input.u32()?;
+        let gpu_declaration = input.u32()?;
+        input.read(0x28)?;
+        let vertex_count = input.u32()? as usize;
+        if cpu_declaration != 1 || gpu_declaration != 1 || input.read(8)? != [0; 8] {
             return Err(format!("surface {surface_number} unsupported vertex declarations {cpu_declaration}/{gpu_declaration} or GPU stream"));
         }
-        let vertex_count = u32_at(bytes, btri + 0x38)? as usize;
         if vertex_count == 0 || vertex_count > u16::MAX as usize {
             return Err(format!("surface {surface_number} vertex count invalid"));
         }
-        let vertex_start = btri + 0x44;
-        let vertex_bytes = region(
-            bytes,
-            vertex_start,
-            vertex_count
-                .checked_mul(32)
-                .ok_or("vertex count overflow")?,
-        )?;
+        input.section_end(vertex_count * 32)?;
         let mut positions = Vec::with_capacity(vertex_count);
         let mut uvs = Vec::with_capacity(vertex_count);
         let mut packed_channels = Vec::with_capacity(vertex_count);
-        for vertex in vertex_bytes.chunks_exact(32) {
-            let position = [
-                float_at(vertex, 0)?,
-                float_at(vertex, 4)?,
-                float_at(vertex, 8)?,
-            ];
-            let u = half::f16::from_le_bytes(vertex[12..14].try_into().unwrap());
-            let v = half::f16::from_le_bytes(vertex[14..16].try_into().unwrap());
-            if !u.is_finite() || !v.is_finite() {
-                return Err(format!("surface {surface_number} has invalid UVs"));
+        for first in (0..vertex_count).step_by(READ_BLOCK_SIZE / 32) {
+            let count = (vertex_count - first).min(READ_BLOCK_SIZE / 32);
+            for vertex in input.read(count * 32)?.chunks_exact(32) {
+                let position = [
+                    float_at(vertex, 0)?,
+                    float_at(vertex, 4)?,
+                    float_at(vertex, 8)?,
+                ];
+                let u = half::f16::from_le_bytes(vertex[12..14].try_into().unwrap());
+                let v = half::f16::from_le_bytes(vertex[14..16].try_into().unwrap());
+                if !u.is_finite() || !v.is_finite() {
+                    return Err(format!("surface {surface_number} has invalid UVs"));
+                }
+                positions.push(position);
+                uvs.push([u, v]);
+                packed_channels.push(vertex[16..32].try_into().unwrap());
             }
-            positions.push(position);
-            uvs.push([u, v]);
-            packed_channels.push(vertex[16..32].try_into().unwrap());
         }
-        at = vertex_start + vertex_bytes.len();
-        let index_count = u32_at(bytes, at)? as usize;
-        at += 4;
+        let index_count = input.u32()? as usize;
         if index_count == 0 || index_count % 3 != 0 || index_count > 3_000_000 {
             return Err(format!("surface {surface_number} index count invalid"));
         }
-        let index_bytes = region(
-            bytes,
-            at,
-            index_count.checked_mul(2).ok_or("index count overflow")?,
-        )?;
+        input.section_end(index_count * 2)?;
         let mut indices = Vec::with_capacity(index_count);
-        for pair in index_bytes.chunks_exact(2) {
-            let index = u16::from_le_bytes(pair.try_into().unwrap());
-            if index as usize >= vertex_count {
-                return Err(format!(
-                    "surface {surface_number} index {index} exceeds {vertex_count} vertices"
-                ));
+        for first in (0..index_count).step_by(READ_BLOCK_SIZE / 2) {
+            let count = (index_count - first).min(READ_BLOCK_SIZE / 2);
+            for pair in input.read(count * 2)?.chunks_exact(2) {
+                let index = u16::from_le_bytes(pair.try_into().unwrap());
+                if index as usize >= vertex_count {
+                    return Err(format!(
+                        "surface {surface_number} index {index} exceeds {vertex_count} vertices"
+                    ));
+                }
+                indices.push(index);
             }
-            indices.push(index);
         }
-        at += index_bytes.len();
         // FUN_14025a040: authored minimum/maximum then the seventh field.
+        let bounds = input.read(28)?;
         let authored_bounds = [
             [
-                float_at(bytes, at)?,
-                float_at(bytes, at + 4)?,
-                float_at(bytes, at + 8)?,
+                float_at(bounds, 0)?,
+                float_at(bounds, 4)?,
+                float_at(bounds, 8)?,
             ],
             [
-                float_at(bytes, at + 12)?,
-                float_at(bytes, at + 16)?,
-                float_at(bytes, at + 20)?,
+                float_at(bounds, 12)?,
+                float_at(bounds, 16)?,
+                float_at(bounds, 20)?,
             ],
         ];
-        float_at(bytes, at + 24)?;
-        at += 28;
+        float_at(bounds, 24)?;
         surfaces.push(Surface {
             material_path,
             surface_marker,
@@ -336,32 +391,24 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
             packed_channels,
             indices,
         });
-        if region(bytes, at, 4)? != b"BML1" {
+        if input.read(4)? != b"BML1" {
             return Err(format!(
                 "surface {surface_number} BML1 section boundary missing"
             ));
         }
-        at += 4;
     }
-    let binding_count = u32_at(bytes, at)? as usize;
-    at += 4;
+    let binding_count = input.u32()? as usize;
     if binding_count > 128 {
         return Err("unreasonable BML1 material-binding count".into());
     }
     let mut material_bindings = Vec::with_capacity(binding_count);
     for _ in 0..binding_count {
-        let length = u32_at(bytes, at)? as usize;
-        at += 4;
+        let length = input.u32()? as usize;
         if length > 4096 {
             return Err("unreasonable BML1 material-binding path length".into());
         }
-        let path = std::str::from_utf8(region(bytes, at, length)?)
-            .map_err(|error| error.to_string())?
-            .to_string();
-        at += length;
-        region(bytes, at, 12)?;
-        at += 12;
-        material_bindings.push(path);
+        material_bindings.push(input.string(length)?);
+        input.read(12)?;
     }
     let surface_bounds: Vec<_> = surfaces
         .iter()
@@ -372,7 +419,7 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
         surfaces,
         authored_bounds,
         material_bindings,
-        bytes_after_bindings: bytes.len() - at,
+        bytes_after_bindings: input.length - input.at,
     })
 }
 
