@@ -13,6 +13,7 @@ use super::{
     mpsc, render_state, surface_gpu, texture,
 };
 use bevy::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn inspect_retired_slot_demand(queue: &SceneRenderQueue) -> (usize, usize, usize) {
     let paths = &queue.diffuse_image_paths;
@@ -334,8 +335,9 @@ impl BaseImageReader {
                 while bytes < self.budget {
                     if cancelled() { return; }
                     let Some(request) = requests.next() else { break; };
-                    let result = read_resident_diffuse_image(&self.catalog, &request.path, request.preferred)
-                        .and_then(|image| image.ok_or_else(|| format!("resident image is absent: {}", request.path)));
+                    let result = read_resident_image(&self.catalog, &request.path, request.preferred, Some(&cancelled));
+                    if cancelled() { return; }
+                    let result = result.and_then(|image| image.ok_or_else(|| format!("resident image is absent: {}", request.path)));
                     let mut image = match result {
                         Ok(image) => image,
                         Err(error) => { let _ = self.outgoing.send(Err(error)); return; }
@@ -432,8 +434,9 @@ pub(super) fn prepare_base_images(catalog: &Arc<archive::Catalog>, queue: &Scene
             requests.push(BaseImageRequest { slot, path: path.clone(), preferred });
             continue;
         }
-        let mut streamed = read_resident_diffuse_image(catalog, path, preferred)?
-            .ok_or_else(|| format!("resident image is absent: {path}"))?;
+        let acquired = read_resident_image(catalog, path, preferred, Some(&|| check_cancelled().is_err()));
+        check_cancelled()?;
+        let mut streamed = acquired?.ok_or_else(|| format!("resident image is absent: {path}"))?;
         streamed.pack_uploads();
         result.payloads.insert(slot, streamed);
     }
@@ -823,7 +826,12 @@ type TextureReadRequest = (usize, String, TextureReadTarget);
 struct TextureReadQueue {
     pending: VecDeque<TextureReadRequest>,
     reading: bool,
-    cancelled: bool,
+}
+
+#[derive(Default)]
+struct TextureReadJobs {
+    queue: Mutex<TextureReadQueue>,
+    cancelled: AtomicBool,
 }
 
 struct ActiveTextureRead<'a> {
@@ -855,7 +863,7 @@ pub(super) struct TextureReadWorker {
 
 struct TextureReadRequests {
     catalog: Arc<archive::Catalog>,
-    queue: Arc<Mutex<TextureReadQueue>>,
+    jobs: Arc<TextureReadJobs>,
     completed_tx: mpsc::Sender<TextureReadResult>,
 }
 
@@ -874,7 +882,7 @@ impl TextureReadWorker {
     pub(super) fn new(catalog: Arc<archive::Catalog>, image_count: usize) -> Self {
         let (completed_tx, completed) = mpsc::channel();
         Self {
-            requests: TextureReadRequests { catalog, queue: Arc::default(), completed_tx },
+            requests: TextureReadRequests { catalog, jobs: Arc::default(), completed_tx },
             frame: FrameRequests::default(),
             closing: false,
             completed: Mutex::new(completed),
@@ -888,15 +896,15 @@ impl TextureReadWorker {
     pub(super) fn close_acquisitions(&mut self) {
         if self.closing { return; }
         self.closing = true;
-        let mut queue = self.requests.queue.lock().unwrap();
-        queue.cancelled = true;
+        let mut queue = self.requests.jobs.queue.lock().unwrap();
+        self.requests.jobs.cancelled.store(true, Ordering::Relaxed);
         queue.pending.clear();
         drop(queue);
         self.ready.clear();
     }
 
     pub(super) fn retire_acquisitions(&mut self) -> bool {
-        let reading = self.requests.queue.lock().unwrap().reading;
+        let reading = self.requests.jobs.queue.lock().unwrap().reading;
         self.completed.get_mut().unwrap_or_else(|error| error.into_inner()).try_iter().for_each(drop);
         !reading
     }
@@ -904,7 +912,7 @@ impl TextureReadWorker {
     /// Remove an unpublished read without reusing its index if the reader
     /// already took it. The caller still owns the slot in that case.
     pub(super) fn cancel_queued(&mut self, slot: usize) -> bool {
-        let mut queue = self.requests.queue.lock().unwrap();
+        let mut queue = self.requests.jobs.queue.lock().unwrap();
         let Some(index) = queue.pending.iter().position(|request| request.0 == slot) else {
             return false;
         };
@@ -918,8 +926,8 @@ impl TextureReadWorker {
 impl TextureReadRequests {
     /// Queues a read; `Err` returns the request when the queue is full.
     fn request(&self, request: TextureReadRequest) -> Result<(), TextureReadRequest> {
-        let mut queue = self.queue.lock().unwrap();
-        if queue.cancelled || queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
+        let mut queue = self.jobs.queue.lock().unwrap();
+        if self.jobs.cancelled.load(Ordering::Relaxed) || queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
             return Err(request);
         }
         queue.pending.push_back(request);
@@ -927,19 +935,20 @@ impl TextureReadRequests {
             return Ok(());
         }
         drop(queue);
-        let (catalog, queue, completed_tx) = (
+        let (catalog, jobs, completed_tx) = (
             self.catalog.clone(),
-            self.queue.clone(),
+            self.jobs.clone(),
             self.completed_tx.clone(),
         );
         bevy::tasks::IoTaskPool::get()
             .spawn(async move {
                 let _tag = crate::platform::allocation_tags::tag("texture worker");
-                let mut lease = ActiveTextureRead { queue: &queue, released: false };
+                let cancelled = || jobs.cancelled.load(Ordering::Relaxed);
+                let mut lease = ActiveTextureRead { queue: &jobs.queue, released: false };
                 loop {
                     let Some((slot, stem, target)) = ({
-                        let mut queue = queue.lock().unwrap();
-                        if queue.cancelled { return; }
+                        let mut queue = jobs.queue.lock().unwrap();
+                        if cancelled() { return; }
                         let next = queue.pending.pop_front();
                         if next.is_none() {
                             queue.reading = false;
@@ -950,8 +959,8 @@ impl TextureReadRequests {
                     }) else {
                         return;
                     };
-                    let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
-                    if queue.lock().unwrap().cancelled { return; }
+                    let result = read_diffuse_image(&catalog, &stem, target, false, Some(&cancelled));
+                    if cancelled() { return; }
                     if completed_tx.send((slot, target, result)).is_err() {
                         return;
                     }
@@ -988,19 +997,25 @@ pub(super) fn read_streamed_diffuse_at_target(
     stem: &str,
     target: TextureReadTarget,
 ) -> Result<Option<StreamedDiffuse>, String> {
-    read_diffuse_image(catalog, stem, target, false)
+    read_diffuse_image(catalog, stem, target, false, None)
 }
 
 /// Whole-image consumers own one final packed payload; streamed jobs above
 /// retain independent mip buffers for their cross-thread queue uploads.
 pub(super) fn read_resident_diffuse_image(catalog: &archive::Catalog, stem: &str,
     preferred: Option<u8>) -> Result<Option<StreamedDiffuse>, String> {
+    read_resident_image(catalog, stem, preferred, None)
+}
+
+fn read_resident_image(catalog: &archive::Catalog, stem: &str, preferred: Option<u8>,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<StreamedDiffuse>, String> {
     static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     let (split, trace) = *MODE.get_or_init(|| (
         std::env::var("DH2_DEBUG_SPLIT_RESIDENT_MIPS").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_IMAGE_PACKING").as_deref() == Ok("1"),
     ));
-    let result = read_diffuse_image(catalog, stem, TextureReadTarget::Initial(preferred), !split)?;
+    let result = read_diffuse_image(catalog, stem, TextureReadTarget::Initial(preferred), !split, cancelled)?;
     if trace {
         if let Some(image) = &result {
             let mut crc = flate2::Crc::new();
@@ -1026,7 +1041,8 @@ pub(super) fn initial_separate_mip(catalog: &archive::Catalog, stem: &str, prefe
 }
 
 fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureReadTarget,
-    packed: bool) -> Result<Option<StreamedDiffuse>, String> {
+    packed: bool, cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<StreamedDiffuse>, String> {
     if let Some(payload) = material::intrinsic_image_pixels(stem) {
         if matches!(target, TextureReadTarget::Exact(..)) {
             return Err("intrinsic image has no streamed finer mip".into());
@@ -1049,7 +1065,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     }
     if let TextureReadTarget::Exact(mip, format) = target {
         let path = format!("{stem}_mip{mip}");
-        let Some(compressed) = texture::read_separate_mip(catalog, &path, u32::from(mip), format)? else {
+        let Some(compressed) = texture::read_separate_mip_cancellable(catalog, &path, u32::from(mip), format, cancelled)? else {
             return Ok(None);
         };
         let uploads = vec![CompressedMipUpload {
@@ -1095,7 +1111,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     } else {
         None
     };
-    let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
+    let Some(bytes) = catalog.read_cancellable(stem, cancelled).map_err(|error| error.to_string())? else {
         return Err(format!("missing base BIM format descriptor {stem}"));
     };
     // Match the large-image acquisition scope of the buffered comparison.
@@ -1186,10 +1202,10 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         for mip in selected..=last {
             let path = format!("{stem}_mip{mip}");
             let (mip_width, mip_height) = if packed {
-                texture::append_separate_mip(catalog, &path, u32::from(mip), format, &mut packed_payload, chain_capacity)?
+                texture::append_separate_mip(catalog, &path, u32::from(mip), format, &mut packed_payload, chain_capacity, cancelled)?
                     .ok_or_else(|| format!("missing authored lower mip {path}"))?
             } else {
-                let compressed = texture::read_separate_mip(catalog, &path, u32::from(mip), format)?
+                let compressed = texture::read_separate_mip_cancellable(catalog, &path, u32::from(mip), format, cancelled)?
                     .ok_or_else(|| format!("missing authored lower mip {path}"))?;
                 uploads.push(CompressedMipUpload {
                     mip_level: mip_count,

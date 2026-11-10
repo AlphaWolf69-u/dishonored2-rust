@@ -321,8 +321,15 @@ pub fn read_separate_mip(
     level: u32,
     format: ImageFormat,
 ) -> Result<Option<OwnedCompressedMip>, String> {
+    read_separate_mip_cancellable(catalog, path, level, format, None)
+}
+
+pub(crate) fn read_separate_mip_cancellable(
+    catalog: &super::archive::Catalog, path: &str, level: u32, format: ImageFormat,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<OwnedCompressedMip>, String> {
     let mut payload = Vec::new();
-    Ok(append_separate_mip(catalog, path, level, format, &mut payload, |_, _| 0)?
+    Ok(append_separate_mip(catalog, path, level, format, &mut payload, |_, _| 0, cancelled)?
         .map(|(width, height)| OwnedCompressedMip { width, height, payload }))
 }
 
@@ -335,6 +342,7 @@ pub(crate) fn append_separate_mip(
     format: ImageFormat,
     payload: &mut Vec<u8>,
     chain_capacity: impl FnOnce(u32, u32) -> usize,
+    cancelled: Option<&dyn Fn() -> bool>,
 ) -> Result<Option<(u32, u32)>, String> {
     static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     let (buffered, trace) = *MODE.get_or_init(|| (
@@ -349,7 +357,7 @@ pub(crate) fn append_separate_mip(
         output.try_reserve_exact(needed).map_err(|error| error.to_string())
     };
     let result = if streamed {
-        catalog.with_stream(path, |input, size| {
+        catalog.with_stream_cancellable(path, cancelled, |input, size| {
             let mut words = [0; 20];
             input.read_exact(&mut words).map_err(|error| error.to_string())?;
             let header = BimageMipHeader::parse(&words, size)?;
@@ -360,7 +368,7 @@ pub(crate) fn append_separate_mip(
             Ok((header.width, header.height))
         })
     } else {
-        let Some(bytes) = catalog.read(path).map_err(|error| error.to_string())? else { return Ok(None) };
+        let Some(bytes) = catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())? else { return Ok(None) };
         let mip = compressed_mip(&bytes, level, format)?;
         reserve(payload, mip.width, mip.height, mip.payload.len())?;
         payload.extend_from_slice(mip.payload);

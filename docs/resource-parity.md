@@ -6507,6 +6507,41 @@ Loading and pause bitmap payloads matched the preceding Iggy build.
 This covers installed immutable dictionaries and the source lifetime.
 Evidence: DH2-collision-staging/artifacts/catalog-language-dictionary-20261110-comparison.json.
 
+
+### Cancelled texture acquisition
+
+Prediction before implementation. The installed image loader 1402ea140
+and streamed-mip reader 14030e840/14030f030 feed the image owner, and
+140060180 releases the outgoing map registry. The rewrite closes the
+texture request queue and waits for its reader to acknowledge withdrawal.
+A worker that already started an archive member currently decodes it in
+full, even though the outgoing scene will discard the result. Let the
+existing scene cancellation reach the bounded member reader, including
+separate mip payloads. Keep current member validation and archive read
+credit for successful reads. A cancelled read must drop partial output
+and release its archive lease without publishing or crediting a partial
+resource. The worker still acknowledges retirement before map purge.
+Ordinary camera changes and FX-only slot revivals retain their current
+behavior. Predict no decoded output past the next bounded read after
+whole-scene cancellation, the same payloads for completed reads, and
+unchanged ownership and GPU submissions. Compare installed interrupted
+member reads and retry signatures, then observe normal scene publication
+and retirement. This is host cancellation, not an original decoder port.
+
+Installed cancellation acceptance at 822faa90. Both archive read routes
+stopped after a partial read of the compressed 16,777,298-byte Edge of
+the World sky member and a stored and compressed 16,777,236-byte
+separate mip. Cancelled members had no read credit or retained payload.
+Both successful retry paths matched the full reference bytes. The normal
+Edge of the World and Dust District windowless publication matched the
+image payload, material handoff and GPU ownership records. Dunwall Tower
+admitted an actual texture request and settled the outgoing worker before
+purge. The forced partial-read route and the normal worker gate are
+separate observations. No interruption of a blocking operating-system
+read or gameplay frame-time gain is claimed. Evidence:
+DH2-scene-shutdown/artifacts/texture-read-cancellation-retry-20261110-comparison.json.
+
+
 ### Usable rig and LOD0 acquisition
 
 Prediction before implementation. Installed 1401c9630 admits the MD6
