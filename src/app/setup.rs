@@ -568,9 +568,9 @@ pub(super) fn prepare(
             let render_instance = if needs_exact_world_mesh(&instance, &source.positions, &points) {
                 // Bevy's Transform cannot express shear. Preserve the exact
                 // authored affine transform in this instance's vertex data.
-                let baked = meshes.add(authored_mesh(
+                let baked = meshes.add(super::view_geometry::authored_mesh_from_uvs(
                     &points,
-                    &source.uvs,
+                    super::view_geometry::MeshUvs::Packed(&source.uvs),
                     &source.indices,
                     &source.packed_channels,
                     |v| transformed_direction(matrix, v),

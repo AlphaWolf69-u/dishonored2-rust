@@ -23,7 +23,7 @@ const BWM_ELEMENTS: [[u8; 8]; 6] = [
 #[derive(Debug)]
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
-    pub uvs: Vec<[f32; 2]>,
+    pub uvs: Vec<[half::f16; 2]>,
     /// Declaration 8 stream 1: UV1 half2, normal/tangent SNORM8x4, color UNORM8x4.
     pub packed_channels: Vec<[u8; 16]>,
     pub indices: Vec<u16>,
@@ -600,10 +600,8 @@ pub fn parse(bytes: &[u8]) -> Result<WorldMesh, String> {
             BWM_ELEMENTS[find_vertex_element(&BWM_ELEMENTS, semantic, index) as usize][6] as usize
         });
         for vertex in vertex_attributes.chunks_exact(20) {
-            let u =
-                half::f16::from_bits(u16::from_le_bytes(vertex[0..2].try_into().unwrap())).to_f32();
-            let v =
-                half::f16::from_bits(u16::from_le_bytes(vertex[2..4].try_into().unwrap())).to_f32();
+            let u = half::f16::from_le_bytes(vertex[0..2].try_into().unwrap());
+            let v = half::f16::from_le_bytes(vertex[2..4].try_into().unwrap());
             if !u.is_finite() || !v.is_finite() {
                 return Err(format!("mesh {mesh_number} has non-finite UVs"));
             }

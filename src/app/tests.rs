@@ -338,7 +338,11 @@ fn world_shadow_test_world() -> world_mesh::WorldMesh {
         spatial_query_cache: Default::default(),
         meshes: vec![world_mesh::Mesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            uvs: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            uvs: vec![
+                [half::f16::ZERO, half::f16::ZERO],
+                [half::f16::ONE, half::f16::ZERO],
+                [half::f16::ZERO, half::f16::ONE],
+            ],
             packed_channels: vec![[0; 16]; 3],
             indices: vec![0, 1, 2],
         }],
@@ -5905,9 +5909,9 @@ fn shadow_sources_resolve_actual_world_materials() {
         }
         let source = &world.meshes[object.mesh_index];
         let handle = handles.entry(object.mesh_index).or_insert_with(|| {
-            geometry.add(source_mesh(
+            geometry.add(view_geometry::source_mesh_from_uvs(
                 &source.positions,
-                &source.uvs,
+                view_geometry::MeshUvs::Packed(&source.uvs),
                 &source.indices,
                 &source.packed_channels,
                 false,
