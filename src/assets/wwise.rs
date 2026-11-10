@@ -593,17 +593,37 @@ impl Package {
             .find(|entry| entry.id == id && entry.language_id == language_id)
     }
 
-    /// Read one indexed bank or media item from the package.
-    pub fn read_entry<R: Read + Seek>(&self, reader: &mut R, entry: Entry) -> io::Result<Vec<u8>> {
+    fn seek_entry<R: Seek>(&self, reader: &mut R, entry: Entry) -> io::Result<usize> {
         let end = entry.offset.checked_add(entry.size).ok_or_else(|| invalid("Wwise entry range overflow"))?;
         if entry.offset < self.data_offset || end > self.file_size {
             return Err(invalid("Wwise entry outside package data"));
         }
         let size = usize::try_from(entry.size).map_err(|_| invalid("Wwise entry too large for host"))?;
         reader.seek(SeekFrom::Start(entry.offset))?;
+        Ok(size)
+    }
+
+    /// Read one indexed bank or media item from the package.
+    pub fn read_entry<R: Read + Seek>(&self, reader: &mut R, entry: Entry) -> io::Result<Vec<u8>> {
+        let size = self.seek_entry(reader, entry)?;
         let mut bytes = vec![0; size];
         reader.read_exact(&mut bytes)?;
         Ok(bytes)
+    }
+
+    /// The resident bank and its embedded media share this allocation.
+    pub(crate) fn read_resident_entry<R: Read + Seek>(
+        &self, reader: &mut R, entry: Entry,
+    ) -> io::Result<MediaBytes> {
+        use std::sync::Arc;
+
+        let size = self.seek_entry(reader, entry)?;
+        let bytes = Arc::<[u8]>::new_zeroed_slice(size);
+        // SAFETY: new_zeroed_slice initializes every byte, and zero is valid for u8.
+        let mut bytes = unsafe { bytes.assume_init() };
+        let buffer = Arc::get_mut(&mut bytes).expect("new package allocation is exclusive");
+        reader.read_exact(buffer)?;
+        Ok(bytes.into())
     }
 }
 
