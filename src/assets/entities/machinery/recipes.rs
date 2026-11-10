@@ -1,5 +1,5 @@
 //! Archive-backed physical recipes for constrained ambient assemblies.
-use super::{constraints, material_density, ConstraintSettings};
+use super::{constraints, ConstraintSettings};
 use crate::{
     archive::Catalog,
     entities::{self, Document, PlacedModel},
@@ -364,9 +364,10 @@ pub(crate) fn load_with_sources(
                             let name = body.material.as_deref().ok_or_else(|| {
                                 format!("{id}: unresolved model physics material")
                             })?;
-                            mass.volume * material_density(name, |path| texts.read(
-                                catalog, path, crate::assets::declaration_texts::PhysicsUse::Machinery,
-                            ))?
+                            mass.volume * entities::physics_material::resources::acquire_with(
+                                catalog, name, |path| texts.read(catalog, path,
+                                    crate::assets::declaration_texts::PhysicsUse::Machinery),
+                            )?.positive_density()?
                         };
                         mass.set_mass(target);
                         // 140808ea0: a locked axis (decl +0xc4 bits 3..5)

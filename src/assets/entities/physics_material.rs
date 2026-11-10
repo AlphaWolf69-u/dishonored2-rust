@@ -1,6 +1,7 @@
 //! arkPhysicsMaterial declarations (`generated/decls/physicsmaterial/*.decl`).
 //! Defaults come from the constructor FUN_14008b640; a declaration starts
 //! from its `inherit` parent's resolved values and applies its `edit` block.
+pub(crate) mod resources;
 use super::components::atom;
 use super::{field, scope};
 
@@ -50,6 +51,11 @@ pub struct PhysicsMaterial {
 }
 
 impl PhysicsMaterial {
+    pub(crate) fn positive_density(&self) -> Result<f32, String> {
+        if self.density > 0. { Ok(self.density) }
+        else { Err(format!("invalid density in physics material {}", self.name)) }
+    }
+
     /// FUN_14008b640 constructor values: density 1000, both frictions 0.5,
     /// restitution 0, flag byte 3 (mantle and vault allowed).
     pub fn constructor_default(name: &str) -> Self {

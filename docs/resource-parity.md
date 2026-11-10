@@ -387,7 +387,7 @@ trailing `*` covers a family of kinds.
 | `pauseMenuSectionOptions` | `gameplay::options`, `gameplay::pause_state` | host: requested options declarations initialize owned typed sections/state; root syntax retires after initialization, subclass syntax after its last constructor reader, and the actual pause/preparation owner releases typed state. No movie or GPU resources are owned by this CPU declaration layer. Native14137dcc0/140516d70/140516e40; four-load source-retirement and typed-state comparison passed; see scope below |
 | `pblock` | `assets::parm_block`, `rendering::render_program`, `rendering::particles::definition` | partial: the installed registry has 96 declarations; typed acquisition and weak declaration/history ownership are connected to particle definitions and retained through runtime tails, and compile in the integrated game build. Metadata is acquired lazily through the shared program library; mutable overlays bypass sharing. FX descriptors preserve `m_parmBlock` but the world FX owner still rejects those systems because per-instance binding and actual masking-pass activation remain unconnected. Original registration is `141351ed0`, value deserialization `14098cdd0`, and particle application `140227cd0` / `140228110` / `1403421e0`. The masking executor is `1403222f0`, registered by `14034fe00`: it binds maskBuffer with scene depth, selects slots 15/16, and preserves material state except depth writes; `render_state::masking_surface_draw_state`, `material_lists::model_masking_admitted`, and `render_model::update_particle_parameters` port the traced rules but await renderer integration. EotW / Dust / Dust return / EotW measured coverage remains 0/33, 0/37, 0/31, 0/33 listed declarations. Complete per-instance binding, target execution and color-grading consumer before lifting rejection. |
 | `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Model collision and machinery requests now route through the physics source owner. The candidate cache of alias targets was removed after the Dust return comparison showed extra temporary storage and slower acquisition with no saved reads. Full resource registry lifetime remains partial. Original 14006a910 pushes the map heap for named maps; physhape is absent from 1400661e0's conditional persistent-type promotion table at 142280ee0. Init/common inherit their caller's scope |
-| `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
+| `physicsMaterial` | `assets::entities::physics_material::resources`, `assets::declaration_texts` | host: Catalog-owned selected headers, lazy shared complete typed values and immutable failures, bootstrap promotion, conditional persistent-map markers and scoped purge. Collision, machinery and world material libraries acquire through that owner. Collision queries retain their existing contiguous value snapshot, while material libraries lease immutable definitions and keep mutable numeric records separately. Editable overlays bypass sharing. Original registration 141352520, construction 14008b640 and common registry rules apply. Source implementation awaits installed acquisition, scope and output comparison below |
 | `physSystem` | `assets::physworld::physics_system` | host: Catalog-owned selected headers, lazy shared decoded systems and immutable failures, bootstrap promotion, explicit map markers and scoped purge. Recipes retain generation leases and instantiate independent mutable bodies and constraints. Original lookup and instance boundaries `1401c9630` / `1400607f0` / `14076abc0` / `14008d7b0`. Installed four-map acquisition matches all twelve admitted recipe/mapping inputs. Bootstrap reuse, live-map purge protection, exact read-history release and final consumer release were observed at b7bacad0. Unsupported character-system parser inputs remain explicitly rejected. See physics-system registry acceptance below |
 | `physworld` | `assets::level`, `assets::physworld`, `gameplay::navigation`, `app::level_lifetime` | host: the selected map companion is acquired once by level preparation; source bytes and Havok schema/decoded construction tables retire at the end of the physics phase. Only owned full-precision collision triangles, packed cell indices, material/filter and owner state survive in NavigationWorld; it releases with the outgoing level. Failed/cancelled preparation drops the same owned values. Native registration141388640 and compressed-mesh tree141262020; no per-query source decoding, GPU upload or session pin. This covers the supported static-query representation, not a port of the whole Havok world runtime or generic native resource registry |
 | `playerLocomotion` | `assets::entities::player::DeclarationSource`, `app::player`, `gameplay::player::animation` | host: inherited declaration syntax is acquired during player setup and shared with arm/body consumers through the temporary setup owner. Runtime body/bob/arm LocoData owns model-specific clip indices, speed sets and transitions; mutable playback remains per node. Generic syntax is dropped after setup consumers, with no frame-time archive reads or permanent source cache. Original registration14138cdb0, common identity1400607f0 and animation update1406f4c70; selected native registry header/purge phases remain a host deviation, not ported |
@@ -6822,3 +6822,35 @@ path used one identity and destroyed it after final ownership ended;
 the control destroyed its six independent identities. No preparation
 error was reported. This measures metadata acquisition and ownership.
 Evidence: DH2-fx-level-lifetime/artifacts/physics-material-constants-20261111-comparison.json.
+
+### Typed physics material resource ownership
+
+Prediction before implementation. Registration 141352520 and material
+construction 14008b640 join the shared resource registry 1400607f0.
+The conditional heap-1 table at 142280ee0 includes physicsMaterial.
+Current world collision, placed-model collision, constrained machinery
+and trigger/water material-library startup reuse source text but resolve
+the same complete material independently. Introduce one typed Catalog
+registry and lease its immutable values from those consumers. Register
+selected headers lazily, promote bootstrap records, preserve explicit
+map/persistent markers and immutable failures, bypass sharing for editable
+overlays, and release identities at the existing marker/session boundaries.
+Keep each world's mutable numeric material library and stable local slots.
+
+Expect unchanged material values, collision filters, navigation signatures,
+body mass and constraint inputs. Typed decode count should fall to requested
+distinct immutable names per owning scope. The registry adds header and
+failure metadata, so measure storage and source/parse counts instead of
+assuming a total memory saving. Existing inherited-field parsing still
+flattens transient source syntax into the complete typed value. It does
+not retain a second generic tree or parent payload beside every child.
+Archive history sweeping must preserve live typed resource records.
+Compare normal and forced separate acquisition through installed map
+preparation and independently observe bootstrap/map/final release.
+
+The collision query owner keeps its existing contiguous runtime material
+snapshot. Its query indexing therefore has the same layout and expressions.
+The shared definition supplies the snapshot during preparation, while
+world material libraries retain the actual Arc generation. This intentional
+host projection preserves the existing query representation and does not
+add resource lookup or reference counting to walking queries.

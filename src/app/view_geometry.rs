@@ -574,12 +574,12 @@ fn collision_material_slot(
     texts: &mut crate::assets::declaration_texts::PhysicsSeed,
 ) -> Option<u32> {
     *slots.entry(name.to_owned()).or_insert_with(|| {
-        match entities::physics_material::physics_material(name, |path| {
+        match entities::physics_material::resources::acquire_with(catalog, name, |path| {
             texts.read(catalog, path, crate::assets::declaration_texts::PhysicsUse::Model)
         }) {
             Ok(material) => {
                 let slot = materials.len() as u32;
-                materials.push(material);
+                materials.push((*material).clone());
                 Some(slot)
             }
             Err(error) => {

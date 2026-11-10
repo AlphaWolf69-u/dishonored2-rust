@@ -263,9 +263,12 @@ impl DeclarationTexts {
             // a read. Hold it in that same order through this history sweep.
             let events = (kind == "soundevent").then(|| catalog.sound_events.get()).flatten()
                 .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
+            let materials = (kind == "physicsMaterial").then(|| catalog.physics_material_resources.get()).flatten()
+                .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
             let (count, capacity, _, _) = crate::loading::retain_catalog_kind(catalog.identity(), kind, |path| {
                 self.common.as_deref().is_some_and(|values| values.contains_key(path))
                     || events.as_ref().is_some_and(|registry| registry.owns_read_history(path))
+                    || materials.as_ref().is_some_and(|registry| registry.owns_read_history(path))
             });
             removed += count;
             bytes += capacity;

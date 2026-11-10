@@ -93,6 +93,7 @@ pub struct Catalog {
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) material_constants: std::sync::Mutex<Option<std::sync::Arc<crate::assets::physics_material::MaterialConstants>>>,
+    pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::PhysicsMaterial>>>,
     pub(crate) physics_system_resources: std::sync::OnceLock<crate::assets::physworld::physics_system::Resources>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
     pub(crate) common_models: std::sync::OnceLock<std::result::Result<crate::assets::bmodel::CommonModels, String>>,
@@ -148,6 +149,8 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        crate::assets::entities::physics_material::resources::report_retirement(self);
+        self.physics_material_resources.take();
         crate::assets::physworld::physics_system::report_retirement(self);
         self.physics_system_resources.take();
         crate::assets::physworld::mass::resources::report_retirement(self);
@@ -240,6 +243,7 @@ impl Catalog {
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::difficulty::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
+        crate::assets::entities::physics_material::resources::release_marker(self, 0);
         crate::assets::physworld::physics_system::release_marker(self, 0);
         self.release_pickable_level();
     }
@@ -251,6 +255,7 @@ impl Catalog {
         crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
         crate::assets::wwise::rtpc_resources::release_marker(self, 1);
         crate::assets::physworld::mass::resources::release_marker(self, 1);
+        crate::assets::entities::physics_material::resources::release_marker(self, 1);
         crate::assets::physworld::physics_system::release_marker(self, 1);
         crate::assets::entities::effects::declarations::release_marker(self, 1);
         crate::assets::inventory_item::configuration::release_persistent(self);
@@ -493,6 +498,7 @@ impl Catalog {
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
             material_constants: Default::default(),
+            physics_material_resources: Default::default(),
             physics_system_resources: Default::default(),
             common_models: Default::default(),
             difficulty_definitions: Default::default(),

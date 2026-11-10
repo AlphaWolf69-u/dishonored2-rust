@@ -672,7 +672,7 @@ pub(super) fn prepare_level(
                     catalog.as_ref().unwrap(), path,
                     crate::assets::declaration_texts::PhysicsUse::World,
                 );
-                entities::physics_material::physics_material(name, read).map_err(|error| {
+                entities::physics_material::resources::acquire_with(catalog.as_ref().unwrap(), name, read).map_err(|error| {
                     missing_materials.push(error);
                 })
             })
@@ -689,7 +689,7 @@ pub(super) fn prepare_level(
         if !missing_materials.is_empty() {
             println!("Physics materials unresolved: {missing_materials:?}");
         }
-        let mut resolved: Vec<_> = materials.iter().flatten().cloned().collect();
+        let mut resolved: Vec<_> = materials.iter().flatten().map(|material| (**material).clone()).collect();
         let slot: Vec<u32> = materials
             .iter()
             .scan(0u32, |next, material| {
