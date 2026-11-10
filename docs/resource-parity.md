@@ -6522,3 +6522,13 @@ resolver. The model payload, cache scope, rig, playback, GPU inputs
 and runtime release remain unchanged. Compare the actual installed
 usable owners with and without the declaration handoff and count the
 avoided reads and bytes separately from the model decode.
+
+Installed usable-mesh acceptance at de4eda22. The Edge of the World,
+Dust District, Edge of the World route matched all 840 prepared
+instances, 63 model paths, model payload fingerprints and existing
+failures. Each of 140 LOD0 requests reused its admitted declaration,
+eliminating 140 reads and 101,781 decoded source bytes. The same-build
+LOD0-selection spans measured 6,306,227 versus 234,979 thread cycles
+in the dev observation. This covers archive selection and prepared
+geometry. It does not measure walking or animation playback. Evidence:
+DH2-fx-level-lifetime/artifacts/usable-rig-mesh-source-20261110-comparison.json.
