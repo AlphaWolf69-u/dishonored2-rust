@@ -14,6 +14,41 @@ pub(super) struct SceneGpuInputs {
     pub buffers: Arc<Vec<AssetId<ShaderBuffer>>>,
 }
 
+impl SceneGpuInputs {
+    pub(super) fn install(app: &mut App) {
+        use bevy::{
+            ecs::schedule::common_conditions::run_once,
+            render::{
+                extract_resource::ExtractResourcePlugin,
+                mesh::allocator::{allocate_and_free_meshes, MeshAllocator},
+                Render, RenderApp, RenderSystems,
+            },
+        };
+        app.init_resource::<Self>()
+            .add_plugins(ExtractResourcePlugin::<Self>::default());
+        if std::env::var_os("DH2_DEBUG_MIX_BOOTSTRAP_MESH_SLABS").is_some_and(|v| v == "1") {
+            return;
+        }
+        if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            fn scene_has_meshes(inputs: Res<SceneGpuInputs>) -> bool {
+                !inputs.meshes.is_empty()
+            }
+            fn seal_bootstrap_slabs(mut allocator: ResMut<MeshAllocator>) {
+                allocator.seal_existing_slabs();
+            }
+            // World purge can free its buffers even while the bootstrap
+            // meshes live. No buffer or existing allocation is moved here.
+            render.add_systems(
+                Render,
+                seal_bootstrap_slabs
+                    .in_set(RenderSystems::PrepareAssets)
+                    .before(allocate_and_free_meshes)
+                    .run_if(scene_has_meshes.and(run_once)),
+            );
+        }
+    }
+}
+
 pub(super) struct ScenePreparation {
     meshes: AssetBatch<Mesh>,
     images: AssetBatch<Image>,

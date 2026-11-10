@@ -218,6 +218,7 @@ fn inspect_scene_resources(
             .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin)
             .init_resource::<super::texture_streaming::SharedImages>()
             .init_resource::<super::resident_images::ResidentImages>();
+        super::scene_preparation::SceneGpuInputs::install(&mut app);
         super::audio::initialize_resources(&mut app);
         app.finish();
         app.cleanup();

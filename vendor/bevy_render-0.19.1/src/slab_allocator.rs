@@ -959,6 +959,12 @@ where
         }
     }
 
+    /// Keep all existing allocations valid, but pack future general allocations
+    /// into separate slabs. Empty sealed slabs are reclaimed by normal removal.
+    pub fn seal_existing_slabs(&mut self) {
+        self.slab_layouts.clear();
+    }
+
     /// Get the number of allocated slabs
     pub fn slab_count(&self) -> usize {
         self.slabs.len()

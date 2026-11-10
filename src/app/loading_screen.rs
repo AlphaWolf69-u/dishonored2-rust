@@ -237,9 +237,7 @@ pub(super) fn install(
     app.init_resource::<ScenePublished>().add_plugins(
         bevy::render::extract_resource::ExtractResourcePlugin::<ScenePublished>::default(),
     );
-    app.init_resource::<super::scene_preparation::SceneGpuInputs>().add_plugins(
-        bevy::render::extract_resource::ExtractResourcePlugin::<super::scene_preparation::SceneGpuInputs>::default(),
-    );
+    super::scene_preparation::SceneGpuInputs::install(app);
     app.init_resource::<SceneImageRequests>().add_plugins(
         bevy::render::extract_resource::ExtractResourcePlugin::<SceneImageRequests>::default(),
     );
