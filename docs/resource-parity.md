@@ -402,6 +402,8 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Camera depth owner retirement (`14036d0c0`, `1402fbe40`, `1402fc6a0`, `140351780`). The coarse reduction retains a binding to the outgoing camera depth along with its pyramid and staging ring, and alpha depth keeps an opacity image even without an active view. Release those view allocations at the existing render acknowledgement, while keeping device shader pipeline caches. Cancel outstanding readback mappings by retiring their generations before dropping the staging buffers. Predict zero outgoing pyramid, opacity, and ring identities at the map boundary. At 1920×1080 their own logical texture and readback payloads exceed 13 MB before allocator padding and the old bound depth texture. Allocation starts again at the next valid view; ordinary in-map rendering and resize policy stay the same.
+
 - Packed acoustic route lookup (`1400b7790`, `1400b7ce0`). The original resolves a zone pair to an offset and traverses the installed packed records in place. Both host audio admission and detailed path scoring currently allocate an owned route list and a portal vector for each record before applying distance and direction. Borrow validated portal words from the existing map-owned table. Predict zero route and portal allocations per gameplay lookup, with matching traversal order, cost and malformed-list rejection. Measure only lookup and traversal over actual installed zone pairs, including the added bounds-validation pass. The graph's retained table size and audio playback state stay the same.
 
   Installed lookup comparison `2e7959e1` matched the ordered routes and portal signatures for Edge of the World, Dust District and the Clockwork Mansion boat. Each of the two owned passes built 104,832 / 239,319 / 1,681,717 nonempty route-list and portal buffers. Each borrowed pass built zero. On the boat, lookup plus traversal used 338.8–345.8 million thread cycles with owned lists and 59.3–60.1 million with borrowed lists. This measures the changed traversal over installed pairs. Full mixer timing, in-game listening and malformed archive inputs were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/packed-acoustic-route-20261110-comparison.json`.
@@ -6003,6 +6005,42 @@ cumulative source bytes. This isolates the decoder and does not measure
 full loading time or retained process memory. Evidence:
 `DH2-fx-resources/artifacts/owned-declaration-layout-20261110.json`.
 
+Camera depth owner acceptance (`e40c02cf`). Two windowless DX12 observations
+released the 1920×1080 opacity image, reduction pyramid, coarse output,
+constants and four staging slots with a readback map outstanding. The callback
+had zero leases after cancellation. The fence left one 65,536-byte coarse
+output and one 65,536-byte staging allocation in submitted device work.
+The next empty submission and drain retired both. Live allocations then
+returned to the same 655,360 bytes of labeled wgpu device resources on both
+samples, with no validation errors. The allocator reserved 268,435,456 bytes
+after warmup. This observes ownership and queue retirement, without measuring
+active rendering cost. Evidence:
+`DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
+
+Probe index upload backing prediction. The installed PNW loader 1402b15e0
+passes packed shader reference words to the GPU buffer constructor. The
+host now streams the archive, but it still builds a typed index array and
+copies it into a separate WGSL byte buffer. Installed acquisition reports
+54,300,976 index words in Edge of the World and 73,538,998 in Dust District.
+Read their little-endian bytes into the eventual upload allocation. Reserve
+the prefix from the already loaded world instance count and the suffix
+from the PNW tables. Use the actual parsed offset count for the header and
+relocate in place if it differs. Expect removal of 217,203,904 and
+294,155,992 overlapping index bytes, with matching full upload CRCs and
+unchanged runtime query data. Compare the affected read/pack cost and
+asset removal. This changes host staging, not the WGSL layout.
+
+Probe index upload backing acceptance (`eb285fd3`). Two windowless DX12
+copy/direct pairs matched PNW fingerprints and full upload CRCs `bbc9941d`
+and `4fa1e3b9`. Direct transfer reused the full backing on both maps, avoiding
+217,203,904 B of overlapping index storage in Edge of the World and
+294,155,992 B in Dust District. The measured upload packing step fell from
+142.5–152.7M to 6.6–7.1M cycles and from 182.4–187.8M to 6.1–6.4M cycles,
+respectively. PNW input CPU samples overlapped or differed by one scheduler
+tick. Both maps returned to 15 GPU images, four meshes and zero buffers after
+retirement. No frame timings were measured. Evidence:
+`DH2-scene-shutdown/artifacts/probe-index-upload-backing-20261110-comparison.json`.
+
 Screen-shadow binding replacement prediction. The original visibility and
 bilateral tasks bind the active view resources and reuse compiled programs
 (`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
@@ -6024,3 +6062,24 @@ across the owner release call. All three scenes completed ordinary FX
 shutdown and released the extracted screen-shadow image again. Active
 particle shutdown errors, live resize and replacement binding draws were
 outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
+
+Instance probe record residency prediction. The original indirect-lighting
+owner retires buffer backing in 14035bca0. The host currently preserves
+the complete serialized probe buffer for byte comparisons on moving
+models and arms. Those writers use only records appended after static
+world geometry. Keep that contiguous writable tail with exact initial
+values and let extraction take the complete upload allocation. Keep the
+same asset ID, GPU bytes and patch order. Expect to release the static
+prefix after upload, with the same per-record compare and writes as the
+previous path. The existing EotW and Dust full CPU copies are 14,902,560
+and 21,835,296 bytes. Measure the actual retained tail and output CRC.
+
+Instance probe record residency acceptance (`acca51c7`). Installed Edge of
+the World and Dust District produced the same full upload CRCs `089f05a5`
+and `d496779e`, with unchanged GPU buffer lengths. CPU backing went from
+14,902,560 to 902,592 bytes and from 21,835,296 to 766,368 bytes. The
+main-world asset retained no serialized upload payload after extraction;
+the separate mutable tails remain on the model lighting owner. Both maps
+returned to zero GPU buffers after release. Active motion and arm patches
+were traced in source and were outside the windowless observations.
+Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.

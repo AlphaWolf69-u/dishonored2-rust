@@ -38,6 +38,27 @@ pub(super) struct AlphaGpu {
     completed: Mutex<Option<(Entity, u32, bool)>>,
 }
 impl AlphaGpu {
+    pub(super) fn ensure_opacity(&mut self, device: &RenderDevice, extent: UVec2) {
+        if self.opacity.as_ref().is_none_or(|image| {
+            image.texture.width() != extent.x || image.texture.height() != extent.y
+        }) {
+            self.opacity = Some(FogAttachment::with_usage(
+                device, "opacity buffer", extent, TextureFormat::Rg16Float, TextureUsages::COPY_SRC,
+            ));
+        }
+    }
+
+    pub(super) fn release_level(world: &mut World) {
+        let Some(mut gpu) = world.get_resource_mut::<Self>() else { return };
+        if let Some(opacity) = gpu.opacity.take() {
+            if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+                eprintln!("CAMERA_DEPTH_RELEASE owner=opacity extent={:?}", opacity.texture.size());
+            }
+        }
+        gpu.phases.clear();
+        *gpu.completed.get_mut().unwrap_or_else(|error| error.into_inner()) = None;
+    }
+
     pub(super) fn opacity_texture(&self, camera: Entity, frame: u32) -> Option<&Texture> {
         self.opacity(camera, frame)?;
         Some(&self.opacity.as_ref()?.texture)
@@ -216,19 +237,7 @@ fn prepare(
                     target.main_texture().width(),
                     target.main_texture().height(),
                 );
-                if gpu
-                    .opacity
-                    .as_ref()
-                    .is_none_or(|a| a.texture.width() != extent.x || a.texture.height() != extent.y)
-                {
-                    gpu.opacity = Some(FogAttachment::with_usage(
-                        &device,
-                        "opacity buffer",
-                        extent,
-                        TextureFormat::Rg16Float,
-                        TextureUsages::COPY_SRC,
-                    ));
-                }
+                gpu.ensure_opacity(&device, extent);
                 gpu.phases.insert(view.retained_view_entity, selected);
             }
         }

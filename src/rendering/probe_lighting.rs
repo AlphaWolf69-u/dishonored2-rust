@@ -288,6 +288,20 @@ pub fn load_for_world(
     catalog: &archive::Catalog,
     world: &str,
 ) -> Result<Option<ProbeLightingSet>, String> {
+    load_world_probes(catalog, world, None)
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn load_for_rendered_world(
+    catalog: &archive::Catalog, world: &str, instances: usize,
+) -> Result<Option<ProbeLightingSet>, String> {
+    let copy = std::env::var_os("DH2_DEBUG_COPY_PROBE_INDICES").is_some_and(|v| v == "1");
+    load_world_probes(catalog, world, (!copy).then_some(instances))
+}
+
+fn load_world_probes(
+    catalog: &archive::Catalog, world: &str, instances: Option<usize>,
+) -> Result<Option<ProbeLightingSet>, String> {
     let level = crate::assets::level::LevelResources::resolve(catalog, world)
         .map_err(|error| error.to_string())?;
     let Some(network_resource) = level.probe_network else {
@@ -303,7 +317,7 @@ pub fn load_for_world(
     let (names, secondary_resources, spatial, vertex_references) = catalog
         .with_stream(&network_resource, |source, size| {
             if size != expected_size { return Err(format!("probe network size changed: {size} vs {expected_size}")); }
-            pnetwork::read_stream(source, size)
+            pnetwork::read_stream(source, size, instances)
         })?
         .ok_or_else(|| format!("missing probe network {network_resource}"))?;
     if let Some(start) = probe_cpu_start {
@@ -397,6 +411,19 @@ pub fn load_for_world(
     }))
 }
 
+fn shader_word_bytes(words: &[u32]) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: u32 has no padding and the immutable byte view spans only
+        // initialized values whose memory order matches WGSL.
+        std::borrow::Cow::Borrowed(unsafe {
+            std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size_of_val(words))
+        })
+    }
+    #[cfg(target_endian = "big")]
+    std::borrow::Cow::Owned(words.iter().flat_map(|word| word.to_le_bytes()).collect())
+}
+
 impl ProbeLightingSet {
     /// Host queries use the prepared quads, in place of reading PRB samples
     /// through 382d90/383d80 at runtime. Retire superseded preparation backing;
@@ -474,11 +501,7 @@ impl ProbeLightingSet {
         (header, word_count)
     }
 
-    fn write_vertex_shader_words(&self, header: &[u32; 10], mut append: impl FnMut(&[u32])) {
-        let refs = &self.vertex_references;
-        append(header);
-        append(&refs.instance_offsets);
-        append(&refs.tetrahedron_indices);
+    fn write_vertex_shader_tail(&self, mut append: impl FnMut(&[u32])) {
         for tetra in &self.spatial.tetrahedra {
             append(&tetra.vertex_indices);
             append(&[
@@ -503,7 +526,8 @@ impl ProbeLightingSet {
         words[0] = words.len().try_into().expect("PNW GPU word count");
         words.extend_from_slice(&refs.instance_offsets);
         words[1] = words.len().try_into().expect("PNW GPU word count");
-        words.extend_from_slice(&refs.tetrahedron_indices);
+        words.extend(refs.tetrahedron_indices.bytes().chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())));
         words[2] = words.len().try_into().expect("PNW GPU word count");
         for tetra in &self.spatial.tetrahedra {
             words.extend_from_slice(&tetra.vertex_indices);
@@ -548,20 +572,25 @@ impl ProbeLightingSet {
     pub fn vertex_shader_bytes(&self) -> Vec<u8> {
         let (header, word_count) = self.vertex_shader_layout();
         let mut data = Vec::with_capacity(word_count * size_of::<u32>());
-        self.write_vertex_shader_words(&header, |words| {
-            #[cfg(target_endian = "little")]
-            {
-                // SAFETY: u32 has no padding and this immutable byte view spans
-                // only initialized values, whose memory order matches WGSL.
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size_of_val(words))
-                };
-                data.extend_from_slice(bytes);
-            }
-            #[cfg(target_endian = "big")]
-            data.extend(words.iter().flat_map(|word| word.to_le_bytes()));
-        });
+        data.extend_from_slice(shader_word_bytes(&header).as_ref());
+        data.extend_from_slice(shader_word_bytes(&self.vertex_references.instance_offsets).as_ref());
+        data.extend_from_slice(self.vertex_references.tetrahedron_indices.bytes());
+        self.write_vertex_shader_tail(|words| data.extend_from_slice(shader_word_bytes(words).as_ref()));
         data
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn take_vertex_shader_bytes(&mut self) -> (Vec<u8>, bool) {
+        let (header, word_count) = self.vertex_shader_layout();
+        let refs = &mut self.vertex_references;
+        let index_start = header[1] as usize * size_of::<u32>();
+        let (mut data, direct) = std::mem::take(&mut refs.tetrahedron_indices)
+            .into_upload(index_start, word_count * size_of::<u32>());
+        let header_end = size_of_val(&header);
+        data[..header_end].copy_from_slice(shader_word_bytes(&header).as_ref());
+        data[header_end..index_start].copy_from_slice(shader_word_bytes(&refs.instance_offsets).as_ref());
+        self.write_vertex_shader_tail(|words| data.extend_from_slice(shader_word_bytes(words).as_ref()));
+        (data, direct)
     }
 
     /// Use the game shader's tetrahedron and per-vertex packed-probe-weight
@@ -883,15 +912,17 @@ mod tests {
                 let references = set
                     .vertex_references
                     .tetrahedron_indices
-                    .get(offset..end)
+                    .bytes()
+                    .get(offset * 4..end * 4)
                     .unwrap_or_else(|| panic!("instance{instance} reference range{offset}..{end}"));
-                for &tetrahedron in references {
+                for record in references.chunks_exact(4) {
+                    let tetrahedron = u32::from_le_bytes(record.try_into().unwrap());
                     assert!(
                         (tetrahedron as usize) < set.spatial.tetrahedra.len(),
                         "instance{instance} invalid tetrahedron{tetrahedron}"
                     );
                 }
-                vertices += references.len();
+                vertices += references.len() / 4;
             }
         }
         eprintln!("Validated {vertices} BWM instance-vertex references against PNW tetrahedra");

@@ -455,7 +455,7 @@ pub(super) fn prepare_level(
     let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str()))
     {
         (Some(catalog), Some(_)) => {
-            probe_lighting::load_for_world(catalog, &path.to_string_lossy())
+            probe_lighting::load_for_rendered_world(catalog, &path.to_string_lossy(), world.matrices.len())
                 .map_err(std::io::Error::other)?
         }
         _ => None,
