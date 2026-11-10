@@ -5881,3 +5881,16 @@ matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
 547,680–555,905 with borrowed nodes. This measures those startup dispatches,
 without a gameplay frame-time claim. The source was c40dcdbe and the same
 comparison artifact records both batches.
+
+Shared point-query owner acceptance (91584611). A windowless production
+scene observation prepared Edge of the World, Dust District and Edge of the
+World again. Gameplay and the particle query publication acquired the same
+level owner in all three preparations. The geometry held 332/259/332 bodies,
+256 tree nodes and 640 leaf blocks per map, with 332/259/332 shape records.
+Frame publication now passes a lease instead of copying these inputs. Body
+centre wind/water/ray queries produced identical signatures on both visits
+to Edge of the World. All three scenes retired through the trigger and
+acoustic shape teardown paths. This observes the shared path and repeat
+acquisition. A direct comparison with the removed snapshot, active observer
+detach, frame timing and rendered particle output were outside the observation.
+Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
