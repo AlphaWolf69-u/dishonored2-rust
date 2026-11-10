@@ -193,3 +193,14 @@ normalized (eye - centre), side = normalize(forward x view), normal =
 side x forward; +0x30 |forward.view| feeds 14020f6f0's fade
 min((1 - dot) x 20, 1) on width. Renderer sets vertex format 4 (+0x148)
 with index size 2 (+0x14c).
+Vertex format 4 (registry 0x1432d55a0, element list +0x178, built by
+1402d0dc0; 8-byte records: format bits, semantic, index, offset, slot; D3D
+layout by 1402aba10): POSITION0 f32x3 @0, TEXCOORD0/1 @0xc, TEXCOORD4
+f16x4 @0xc, NORMAL snorm8x4 @0x14, TANGENT snorm8x4 @0x18, COLOR unorm8x4
+@0x1c, TEXCOORD5 f16x4 @0x20 (trails leave it unwritten). The particle
+renderprog's non-instanced vertex shaders read VERTEX_POSITION, COLOR,
+TEXCOORD4 and, by permutation, NORMAL, TANGENT, TEXCOORD5 (installed
+shader-cache census, examples/vertex_input_census.rs). Strips are drawn
+from the shared index buffer 1402d1ae0(registry, 2).
+Segment motion (14020c620) samples the trail-life gravity (+0xac8) at the
+segment age; the segment-life gravity (+0x1120, default 1) is never read.
