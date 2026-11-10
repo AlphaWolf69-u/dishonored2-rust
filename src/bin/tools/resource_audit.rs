@@ -103,11 +103,17 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
         "inspect-acoustics" => {
             use dishonored2_rust::assets::{archive::Catalog, sound_propagation::Propagation};
             let catalog = Catalog::open(base)?;
-            for path in catalog.paths_with_suffix(".soundpropa") {
+            let (measure_routes, paths) = match args.split_first() {
+                Some((flag, paths)) if flag == "--routes" => (true, paths.to_vec()),
+                _ => (false, catalog.paths_with_suffix(".soundpropa")),
+            };
+            if paths.is_empty() { return Err(invalid("no acoustic resource paths selected").into()); }
+            for path in paths {
                 let graph = Propagation::load(&catalog, &path)?
                     .ok_or_else(|| invalid(format!("indexed acoustic resource is absent: {path}")))?;
                 println!("ACOUSTIC_RESOURCE path={path} zones={} portals={} route_dimension={}",
                     graph.zones.len(), graph.portals.len(), graph.routes.zone_count);
+                if measure_routes { graph.observe_route_lookups(&path)?; }
             }
         }
         "inspect-inline-volumes" => {
