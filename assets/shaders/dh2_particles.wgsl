@@ -8,6 +8,7 @@ override particle_masking:u32=0u;
 override particle_liquid:u32=0u;
 override particle_dissolve:u32=0u;
 override particle_add_liquid:u32=0u;
+override particle_water:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -78,6 +79,9 @@ struct ParticleMaterialParameters {
     dissolve_options:vec4<u32>,
     add_liquid:vec4<f32>,
     add_liquid_options:vec4<u32>,
+    water:vec4<f32>,
+    water_thresholds:vec4<f32>,
+    water_options:vec4<u32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -452,6 +456,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     let bitangent=face*normalize(input.world_bitangent);
     var colour=vec4(1.0);
     var scrolling_normal=vec3(0.0,0.0,1.0);
+    var water_normal=vec3(0.0,0.0,1.0);
     if particle_scrolling_water!=0u {
         // particle/scrolling_water samples both distortion layers regardless
         // of add_default's UV-distortion options.
@@ -469,6 +474,36 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
         let legacy=select(input.colour,vec4(1.0),particle_water_mesh!=0u);
         let alpha=textureSample(particle_opacity,particle_trilinear,opacity_uv).x*legacy.a;
         colour=vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,alpha);
+    } else if particle_water!=0u {
+        // particle/water and particle/blood: thresholded opacity, a
+        // three-band normal trick and diffuse distorted by the normal.
+        let water=material.water;
+        let legacy=select(input.colour,vec4(1.0),material.water_options.y!=0u);
+        let pan=material.layers[2].tiling_pan.zw*particle_view.camera_time.w;
+        var alpha:f32;
+        var normal_xy:vec2<f32>;
+        if material.animation_options.x!=0u {
+            alpha=textureSample(particle_animation,linear_clamp,coordinates.xyz).x;
+            normal_xy=textureSample(particle_distortion_animation,linear_clamp,coordinates.xyz).xy;
+            if material.water_options.x!=0u {alpha=clamp(alpha-1.0+legacy.w,0.0,1.0);}
+        } else {
+            alpha=clamp(textureSample(particle_opacity,particle_trilinear,coordinates.xy+pan).x-1.0+legacy.w,0.0,1.0);
+            normal_xy=textureSample(particle_bump,particle_trilinear,coordinates.xy+pan).xy;
+        }
+        let threshold=clamp(alpha,0.0,1.0);
+        alpha=smoothstep(0.0,water.x,alpha);
+        // UnpackBC5NormalMap, then the authored band scaling of XY.
+        water_normal=normalize(vec3(normal_xy,1.001-clamp(dot(normal_xy,normal_xy),0.0,1.0)));
+        let bands=material.water_thresholds;
+        let first=smoothstep(bands.x,bands.y,threshold);
+        let trick=vec2(1.0-first,first*(1.0-smoothstep(bands.y,bands.z,threshold)));
+        water_normal=vec3(water_normal.xy*(trick.x-trick.y),water_normal.z);
+        let inner=water.y*legacy.w;
+        alpha*=(trick.x+trick.y)*inner+(1.0-inner);
+        let diffuse=textureSample(particle_diffuse,particle_trilinear,
+            coordinates.xy*material.layers[2].tiling_pan.xy+water_normal.xy*water.z+pan);
+        colour=vec4(diffuse.rgb*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a,
+            clamp(alpha,0.0,1.0)*water.w);
     } else {
     var distorted=particle_distortion(coordinates);
     distorted=vec3(distorted.xy+coordinates.xy,clamp(distorted.z,0.0,1.0));
@@ -525,6 +560,8 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     var lighting_normal=normal;
     if particle_scrolling_water!=0u && particle_lighting_mode!=0u {
         lighting_normal=normalize(scrolling_normal.x*tangent+scrolling_normal.y*bitangent+scrolling_normal.z*normal);
+    } else if particle_water!=0u && particle_lighting_mode!=0u {
+        lighting_normal=normalize(water_normal.x*tangent+water_normal.y*bitangent+water_normal.z*normal);
     } else if material.normal_options.x!=0u {
         let uv=coordinates.xy*material.lighting_uv.xy+material.lighting_uv.zw;
         var xy=textureSample(particle_bump,particle_surface_anisotropic,uv).xy;
@@ -541,7 +578,8 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     colour.a*=particle_fresnel_opacity(input,coordinates,lighting_normal,tangent,bitangent,normal);
     let plane_dot=dot(input.clip_plane,vec4(input.world_position,1.0));
     if plane_dot<0.0 {discard;}
-    if particle_scrolling_water==0u && input.fade_radius.x>0.0 {
+    // The water programs clip without the ClipPlaneFadeDistance fade.
+    if particle_scrolling_water==0u && particle_water==0u && input.fade_radius.x>0.0 {
         colour.a*=smoothstep(0.0,input.fade_radius.x,plane_dot);
     }
     if particle_masking!=0u {
@@ -639,7 +677,9 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     }
     var rgb=lit_colour*particle_view.exposure_extent.x;
     let fogged=material_fog_composite(rgb,input.fog);
-    rgb=mix(rgb,fogged,material.radial_exposure_fog.z);
+    // The water programs apply the vertex fog fully, without the
+    // particleFogScatterPower blend of add_default.
+    rgb=mix(rgb,fogged,select(material.radial_exposure_fog.z,1.0,particle_water!=0u));
     return ParticleColour(vec4(rgb,colour.a),albedo);
 }
 @fragment fn particle_fragment(input:ParticleFragment,@builtin(front_facing) front_face:bool)->@location(0) vec4<f32> {

@@ -126,6 +126,9 @@ pub struct ParticleMaterial {
     /// `particle/add_liquid`: thresholded sum of two panned distortion
     /// layers, fog-seeded panning and per-pixel fog.
     pub add_liquid: bool,
+    /// `particle/water` and `particle/blood` (the same fragment): opacity
+    /// thresholds, a banded normal and normal-distorted diffuse.
+    pub water: bool,
     /// 1402d5210 derives the mask variant from MAIN only when no distinct
     /// authored masking program is present. Such programs need their own owner.
     pub masking_uses_main: bool,
@@ -181,9 +184,10 @@ impl ParticleMaterial {
         let liquid = program.eq_ignore_ascii_case("particle/liquid");
         let dissolve = program.eq_ignore_ascii_case("particle/dissolve");
         let add_liquid = program.eq_ignore_ascii_case("particle/add_liquid");
+        let water = program.eq_ignore_ascii_case("particle/water") || program.eq_ignore_ascii_case("particle/blood");
         let masking_uses_main = crate::material::authored_program_override(&bytes, "maskingProgram")
             .is_none_or(|masking| masking.eq_ignore_ascii_case(&program));
-        if !distortion && !scrolling_water && !liquid && !dissolve && !add_liquid && !program.eq_ignore_ascii_case("particle/add_default") {
+        if !distortion && !scrolling_water && !liquid && !dissolve && !add_liquid && !water && !program.eq_ignore_ascii_case("particle/add_default") {
             return Err(format!("particle program {program} is not connected"));
         }
         let definition = library
@@ -267,6 +271,11 @@ impl ParticleMaterial {
             // program; 14 installed liquid materials still author it.
             options.insert("fx/opt/use_lighting".into(), 0);
         }
+        if water {
+            for name in ["fx/opt/liquid_alpha_fb_animated", "fx/opt/use_mesh"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+        }
         if add_liquid {
             for name in ["fx/opt/fade_threshold", "fx/opt/no_opacity_map"] {
                 options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
@@ -308,6 +317,10 @@ impl ParticleMaterial {
         if distortion { extra_uniforms.extend(["fogStart", "fogEnd", "fogScale"]); }
         if scrolling_water { extra_uniforms.push("liquid_Disto_amount"); }
         if dissolve { extra_uniforms.extend(["distoStrength", "alpha_Adjust"]); }
+        if water {
+            extra_uniforms.extend(["liquid_Threshold", "liquid_nm_thresholds", "liquid_inner_alpha",
+                "liquid_Disto_amount", "liquid_default_alpha"]);
+        }
         if add_liquid {
             extra_uniforms.extend(["distoStrength", "liquid_Threshold", "fogStart", "fogEnd", "fogScale"]);
         }
@@ -357,6 +370,14 @@ impl ParticleMaterial {
             if liquid && !matches!(image, "fx/opacity" | "fx/lookup" | "fx/diffuse") {
                 continue;
             }
+            // The water programs sample opacity (or the flipbook) and diffuse.
+            if water && !matches!(image, "fx/opacity" | "fx/diffuse") {
+                continue;
+            }
+            if water && image == "fx/diffuse" {
+                images.insert(image.into(), image_resources.image(catalog, &scopes.image_source(image)?)?);
+                continue;
+            }
             // particle/dissolve samples opacity and the distortion layers.
             if dissolve && !matches!(image, "fx/opacity" | "fx/disto1" | "fx/disto2") {
                 continue;
@@ -385,6 +406,9 @@ impl ParticleMaterial {
         }
         if dissolve {
             images.insert("fx/lookup_fire".into(), image_resources.image(catalog, &scopes.image_source("fx/lookup_fire")?)?);
+        }
+        if water && options["fx/opt/use_flipbook"] == 0 {
+            images.insert("fx/normals".into(), image_resources.image(catalog, &scopes.image_source("fx/normals")?)?);
         }
         if scrolling_water || liquid {
             images.insert("fx/normals".into(), image_resources.image(catalog, &scopes.image_source("fx/normals")?)?);
@@ -522,7 +546,8 @@ impl ParticleMaterial {
             let gloss_in_alpha = read_option("glossInDiffuseAlpha")? != 0;
             // Scrolling water derives its normal from fx/normals; its source
             // does not execute the ordinary material bump-map fetch.
-            let bump = !scrolling_water && read_option("hasBumpMap")? != 0;
+            // The water programs build their own normal from fx/normals.
+            let bump = !scrolling_water && !water && read_option("hasBumpMap")? != 0;
             let detail_bump = if bump && read_option("hasDetailBumpMap")? != 0 {
                 Some([
                     scopes.vector("detailBumpmapTiling")?[0],
@@ -585,7 +610,7 @@ impl ParticleMaterial {
         } else {
             None
         };
-        let distortion_volume = if distortion && options["fx/opt/use_flipbook"] != 0 {
+        let distortion_volume = if (distortion || water) && options["fx/opt/use_flipbook"] != 0 {
             Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbooknormals")?)?)
         } else { None };
         // 1402d4e20 / 1402eab10: all material consumers raise one image's
@@ -602,6 +627,7 @@ impl ParticleMaterial {
             liquid,
             dissolve,
             add_liquid,
+            water,
             masking_uses_main,
             state,
             darkvision_layer,

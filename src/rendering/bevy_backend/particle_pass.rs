@@ -95,6 +95,13 @@ struct MaterialParameters {
     add_liquid: Vec4,
     /// particle/add_liquid fade_threshold, no_opacity_map.
     add_liquid_options: UVec4,
+    /// particle/water and blood (liquid_Threshold, liquid_inner_alpha,
+    /// liquid_Disto_amount, liquid_default_alpha).
+    water: Vec4,
+    /// liquid_nm_thresholds.
+    water_thresholds: Vec4,
+    /// liquid_alpha_fb_animated, use_mesh.
+    water_options: UVec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -177,7 +184,18 @@ impl MaterialParameters {
         } else {
             (Vec4::ZERO, UVec4::ZERO)
         };
+        let (water, water_thresholds, water_options) = if source.water {
+            (Vec4::new(scalar("liquid_Threshold")?, scalar("liquid_inner_alpha")?,
+                scalar("liquid_Disto_amount")?, scalar("liquid_default_alpha")?),
+                Vec4::from_array(source.uniform("liquid_nm_thresholds")?),
+                UVec4::new(option("fx/opt/liquid_alpha_fb_animated")?, option("fx/opt/use_mesh")?, 0, 0))
+        } else {
+            (Vec4::ZERO, Vec4::ZERO, UVec4::ZERO)
+        };
         Ok(Self {
+            water,
+            water_thresholds,
+            water_options,
             liquid,
             liquid_options,
             dissolve,
@@ -1086,7 +1104,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 19,
                     resource: BindingResource::TextureView(
-                        views.get(if source.scrolling_water || source.liquid { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
+                        views.get(if source.scrolling_water || source.liquid || source.water { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
                 },
                 BindGroupEntry {
                     binding: 20,
@@ -1202,7 +1220,7 @@ impl ParticlePass {
             u8::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
                 | (u8::from(source.option("fx/opt/use_mesh")? != 0) << 1)
         } else { 0 };
-        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3), masking);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3) | (u8::from(source.water) << 4), masking);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
@@ -1244,6 +1262,7 @@ impl ParticlePass {
                 ("particle_liquid", f64::from(u32::from(source.liquid))),
                 ("particle_dissolve", f64::from(u32::from(source.dissolve))),
                 ("particle_add_liquid", f64::from(u32::from(source.add_liquid))),
+                ("particle_water", f64::from(u32::from(source.water))),
                 ("particle_water_alpha_mask_spec", f64::from(u32::from(water_options & 1 != 0))),
                 ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0))),
                 ("particle_masking", f64::from(u32::from(masking)))];
