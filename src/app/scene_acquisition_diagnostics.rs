@@ -25,6 +25,9 @@ pub fn inspect_scene_publication(
             for path in paths { super::resident_images::inspect_view_replacement(&catalog, path)?; }
             return Ok(());
         }
+        if flag == "--catalog-history-scopes" {
+            return inspect_catalog_history_scopes(base);
+        }
     }
     if let [flag, level, effect] = levels {
         if flag == "--fx-requests" {
@@ -32,6 +35,50 @@ pub fn inspect_scene_publication(
         }
     }
     inspect_scene_resources(base, levels, Mode::Publish, false)
+}
+
+fn inspect_catalog_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let a = Arc::new(archive::Catalog::open(base)?);
+    let b = Arc::new(archive::Catalog::open(base)?);
+    let leases = |catalog: &Arc<archive::Catalog>| (
+        crate::bmodel::ModelHistoryLease::acquire(catalog),
+        crate::material::MaterialHistoryLease::acquire(catalog.identity()),
+        crate::physworld::source::ShapeSources::new(catalog),
+    );
+    let first = leases(&a);
+    let second = leases(&b);
+    const COMMON_MODEL: &str = "generated/model/models/environment/props/generic/bottle_set_01/bottle_04.bmodel";
+    let common = crate::bmodel::CommonModels::shared(&a).ok_or("installed common model owner unavailable")?;
+    let model = crate::bmodel::acquire(&a, COMMON_MODEL, Some(common))?.ok_or("installed common model absent")?;
+    drop(model);
+    let mut paths = Vec::new();
+    for (kind, suffix) in [("model", ".bmodel"), ("material", ".decl"), ("physhape", ".hkx")] {
+        let path = a.paths_with_suffix(suffix).into_iter()
+            .find(|path| path != COMMON_MODEL && a.kind(path) == Some(kind))
+            .ok_or_else(|| format!("installed resource kind {kind} absent"))?;
+        let before = a.read(&path)?.ok_or("first installed resource missing")?;
+        let other = b.read(&path)?.ok_or("second installed resource missing")?;
+        if before != other { return Err(format!("installed resource changed between catalogs: {path}").into()); }
+        paths.push((kind, path));
+    }
+    drop(first);
+    for (kind, path) in &paths {
+        if crate::loading::catalog_read_recorded(a.identity(), kind, path)
+            || !crate::loading::catalog_read_recorded(b.identity(), kind, path) {
+            return Err(format!("{kind} history retired outside its catalog scope").into());
+        }
+    }
+    if !crate::loading::catalog_read_recorded(a.identity(), "model", COMMON_MODEL) {
+        return Err("live common model lost its loading credit".into());
+    }
+    drop(second);
+    for (kind, path) in &paths {
+        if crate::loading::catalog_read_recorded(b.identity(), kind, path) {
+            return Err(format!("{kind} history outlived its final scope").into());
+        }
+    }
+    eprintln!("CATALOG_LEVEL_SCOPES retired={} independent=true common_model=true", paths.len());
+    Ok(())
 }
 
 pub fn inspect_scene_gpu_resources(

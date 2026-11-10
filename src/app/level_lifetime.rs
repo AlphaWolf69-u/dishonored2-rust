@@ -51,6 +51,7 @@ impl LevelLifetime {
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
         let material_history = world.remove_resource::<super::level_prepare::MaterialHistoryScope>();
         let skeletal_history = world.remove_resource::<super::level_prepare::SkeletalHistoryScope>();
+        let shape_history = world.remove_resource::<super::level_prepare::ShapeHistoryScope>();
         let level_reads = world.remove_resource::<super::level_prepare::LevelSourceReads>();
         if let Some(mut patches) = world.get_resource_mut::<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>() {
             patches.release_level();
@@ -113,6 +114,7 @@ impl LevelLifetime {
         drop(model_history);
         drop(material_history);
         drop(skeletal_history);
+        drop(shape_history);
         drop(level_reads);
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();

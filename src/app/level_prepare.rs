@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 /// Hold shape acquisition history until the published world retires.
 #[derive(Resource)]
-struct ShapeHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::physworld::source::ShapeHistoryLease>);
+pub(super) struct ShapeHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::physworld::source::ShapeHistoryLease>);
 
 /// Keep static model history until preparation and renderer ownership stop.
 #[derive(Resource)]
@@ -99,11 +99,11 @@ pub(super) fn prepare_level(
     let level = &level_reads.level;
     let path = PathBuf::from(&level.world);
     let game_base = Some(base);
-    let catalog = Some(catalog);
     let mut app = super::loading_screen::PreparedLevel::default();
-    app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire()));
-    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire()));
+    app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
+    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(catalog.identity())));
     app.insert_resource(SkeletalHistoryScope::new());
+    let catalog = Some(catalog);
     let map = level
         .entities
         .trim_start_matches("maps/")

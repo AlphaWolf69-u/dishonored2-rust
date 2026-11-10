@@ -391,7 +391,30 @@ pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (us
     })
 }
 
-#[cfg(feature = "game")]
+/// Several loaders may lease one family in the same catalog. Serialize
+/// retirement with admission so a new lease never observes a stale purge.
+pub(crate) struct CatalogHistoryScopes(Mutex<Option<HashMap<u64, usize>>>);
+
+impl CatalogHistoryScopes {
+    pub(crate) const fn new() -> Self { Self(Mutex::new(None)) }
+
+    pub(crate) fn acquire(&self, catalog: u64) {
+        let mut scopes = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        *scopes.get_or_insert_with(HashMap::new).entry(catalog).or_default() += 1;
+    }
+
+    pub(crate) fn release(&self, catalog: u64, retire: impl FnOnce()) {
+        let mut scopes = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let owners = scopes.as_mut().expect("history scopes missing");
+        let count = owners.get_mut(&catalog).expect("history lease catalog missing");
+        *count -= 1;
+        if *count != 0 { return; }
+        owners.remove(&catalog);
+        if owners.is_empty() { *scopes = None; }
+        retire();
+    }
+}
+
 pub(crate) fn retain_catalog_kind(catalog: u64, kind: &str, mut keep: impl FnMut(&str) -> bool)
     -> (usize, usize, usize, usize) {
     with(|state| {

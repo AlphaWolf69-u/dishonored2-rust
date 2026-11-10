@@ -18,9 +18,10 @@ pub(crate) fn retire_catalog(catalog: u64) -> usize {
     usize::from(retired.is_some())
 }
 /// Names whose parsed material metadata is still owned by the session cache.
-pub(crate) fn retained_material_paths() -> std::collections::HashSet<String> {
+pub(crate) fn retained_material_paths(catalog: u64) -> std::collections::HashSet<String> {
     let resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());
-    resident.as_ref().into_iter().flat_map(|(_, resources)| resources.materials.materials.keys())
+    resident.as_ref().filter(|(identity, _)| *identity == catalog)
+        .into_iter().flat_map(|(_, resources)| resources.materials.materials.keys())
         .map(|variant| format!("generated/decls/material/{}.decl", variant.material_name().to_ascii_lowercase()))
         .collect()
 }
