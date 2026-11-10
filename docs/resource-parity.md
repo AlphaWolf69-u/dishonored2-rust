@@ -6257,3 +6257,5 @@ at the existing release boundary with a disabled grid. At 1920×1080 and
 Expect their allocations to retire after submitted GPU work drains. The
 shared texture array and device pipelines remain with their own owners.
 No additional upload, draw work or per-frame reference clone is expected.
+
+Tiled-light retirement observation (964f7f2a). Windowless DX12 created the production 1920x1080 tiled-light pass, published the buffers through the forward publisher, and dropped the pass. Its forward bindings alone kept the light-node pool (4,653,056 allocated bytes), lighting records (65,536) and per-type list heads (131,072) live. The normal area-light level release restored the exact empty binding identities and removed all three allocator entries after queue drain. Their logical buffer size was 4,788,736 bytes and their reported allocations totaled 4,849,664 bytes. The observer exited zero with no validation errors. It did not submit gameplay draws or measure frame time. Evidence: DH2-fx-level-lifetime/artifacts/area-light-tile-retirement-20261110-comparison.json.
