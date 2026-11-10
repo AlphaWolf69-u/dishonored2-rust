@@ -472,5 +472,15 @@ with parameters `OcclusionQuery/Transform1` (radius, radius x aspect) and
 `OcclusionQuery/Transform2` (projected centre). Installed:
 generated/decls/material/occlusionquery_{0,1}.material.decl,
 renderparm/occlusionquery/transform{1,2}.decl and renderprog/occlusionquery.
-The rewrite has no GPU occlusion query path yet; it needs a wgpu
-QuerySet with resolve and delayed readback owned by the render backend.
+The query geometry is the shared unit quad (corners at +-1): 1402926d0's
+normalization is the quad's pixel area (r^2 x width^2) x 0.97 x the
+resolution scales, no pi. Program `renderprog/occlusionquery`: position
+= x * Transform1.xy + y * Transform1.zw + Transform2.xy, z = Transform2.z;
+blend ONE ZERO, no depth write, depth test GEQUAL (reversed Z), no cull,
+colour only with DebugDraw (r_showOcclusionQuery). 1401ffbc0 also scales
+the system's distance size (+0x1de0) and distance alpha (+0x1de4) by the
+declaration's size/alpha curves at the result, before 1401ff460 culls.
+The vendored DX12 backend now creates counting occlusion queries (wgpu-hal
+PATCHES.md). Remaining: the declaration reader, the per-system query
+state, the query manager and a depth-tested query pass with resolve and
+delayed readback.

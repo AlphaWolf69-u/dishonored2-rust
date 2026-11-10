@@ -68,3 +68,11 @@ The fog TLF GPU test copies texture data at offset 256, forcing this DX12 path.
 It repeats complete view construction, three-frame submission and teardown,
 checks numeric output and stable persistent buffer identities, then verifies
 that settled allocator usage does not exceed the pre-view baseline.
+
+## Counting occlusion queries
+
+`src/dx12/device.rs` creates occlusion query sets with
+`D3D12_QUERY_TYPE_OCCLUSION` instead of `D3D12_QUERY_TYPE_BINARY_OCCLUSION`,
+so resolved values are passed-sample counts. The original renderer's
+occlusion query pass (1402926d0) turns the count into a visible fraction of
+the query quad's area; a binary result cannot express that.
