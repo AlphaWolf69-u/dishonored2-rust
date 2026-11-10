@@ -17,8 +17,8 @@ does not regress. Backend differences must remain labelled and measured.
 | Vertex probes | The two-map comparison matched the full GPU buffer CRCs. Shader-only position and lookup storage releases after packing while the CPU query data remains live. | This is load and ownership evidence. Walking-frame timings were outside the observation. |
 | Inline and separate texture mips | Inline compaction matched 8,129 prepared images and GPU retirement counts. Separate acquisition matched 70 archive samples across all five formats and four suffixes. The gameplay worker uses the measured acquisition owner. | Separate-mip demand, queued completion, and publication timing still need live evidence. |
 | Replaced texture views | Compilation and Bevy's asset-event path confirm that the CPU descriptor follows the existing final-handle lifetime of the GPU image. | A live named UI binding during scene texture replacement has yet to be observed. |
+| Collision geometry | Four installed maps matched collision geometry and materials after removing tuple staging and audit-only shape details. High-chaos Palace avoids a 190 MB tuple buffer. Its indexed convex hull search matched the previous triangle order and reduced same-build shape extraction cycles from 1,346 billion to 6.8 billion. | Runtime queries use the existing decoded index. Live close during collision preparation remains unobserved. |
 
-The combined collision acquisition change remains on its verification branch.
 Dynamic FX image cancellation and early session close still require evidence
 from the corresponding live paths. The earlier all-level CPU run and the
 windowless GPU observations cover the stages listed in the parity ledger.

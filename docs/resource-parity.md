@@ -2954,6 +2954,7 @@ ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
 
+
 Streaming priority ownership prediction: original 14030cdb0 derives the
 priority class from the current image record's path. The host cache currently
 rebuilds classifications only when the slot array changes length. Reusing a
@@ -2977,6 +2978,7 @@ streamer, with no new allocations on ordinary gameplay frames. This is a host
 ownership change at the map retirement boundary (1408a4830), separate from
 the earlier mailbox-scratch measurements.
 
+The clean game-feature compilation at db1cb92a covers both changes. Source review shows the per-map worker owns the outgoing scratch and that the priority classifier now runs at slot admission. The check does not observe live FX slot reuse, mip publication, or affected streaming CPU costs.
 
 ### Fog curve resource ownership
 
@@ -5555,6 +5557,30 @@ the authored primitive. Hull triangulation here supplies the host query
 representation. Compare same-build extraction cycles and exact collision
 signatures before integration.
 
+Installed collision acceptance. The menu and high-chaos Palace comparison
+(`d69007b6`) matched all geometry signatures, material tables and navigation
+counts. The Palace path no longer constructs the 190,361,808-byte tuple
+vector or retains the 23,525,626-byte decoded member at index construction.
+It also omits 13,547,616 bytes of audit detail capacity. The old linear hull
+search dominated Palace in both ownership modes. In the unchanged optimized
+executable `c9ada5e4`, the indexed and linear searches produced the same
+triangle signatures as the preceding builds, with matching authored counts,
+placed collision, materials and navigation counts. Palace extraction cycles
+fell from 1,345.58 billion to 6.82 billion (about 197 times lower). Edge of
+the World measured 1.28 billion to 0.98 billion, with one run per setting.
+Palace index construction stayed at 1.55–1.56 billion cycles. These are
+windowless acquisition measurements, without gameplay CPU or peak RAM
+claims. Evidence: DH2-collision-staging/artifacts/collision-lifetime-extremes-20261110-comparison.json
+and DH2-collision-staging/artifacts/convex-horizon-20261110-comparison.json.
+
+### Direct acquisition of whole inline image payloads
+
+Prediction before change. In the recorded Edge of the World / Dust District / Edge of the World acquisition, 11,838 whole-image reads used only indexed inline records; 7,421 of those members exceeded the archive stream's 65,536-byte buffer. The largest indexed member was 16,777,298 bytes. The current 2D resident path reads each complete member and copies its records into a second Bevy Image allocation. Original 1402e9ff0 sends authored mip records to 1402f5500. For large inline-only resident images, validate the same headers and read the authored bytes into their final upload allocation. Expect no full decoded member allocation on that route, lower or unchanged affected CPU cycles, and matching upload CRCs, descriptors and GPU retirement. The stream scratch bounds temporary member staging; the required Image allocation remains. Compare scoped acquisition cycles and output in the same executable before integrating. No gameplay or process peak claim is predicted.
+
+Optimized acceptance rejected the read-direct variant (0ae65b15). Four same-executable observations matched 8,129 whole-image acquisitions and all mip descriptors, payload CRCs, material handoffs and GPU asset counts. The streamed reader avoided full-member temporaries but consumed 2,482–2,764 million versus 2,000–2,057 million affected cycles in Edge of the World, and 2,099–2,137 million versus 1,804–1,824 million in Dust District. Retain the faster archive acquisition call. Prediction for the replacement: validate the same indexed mip payload ranges, then compact the owned member in place using the same range compaction as layered images. This removes a second full-sized allocation, preserves one payload move, and avoids the per-image buffered decoder and output initialization of the rejected variant. Header slack is bounded by 62 + 20 times the mip count (plus archive read capacity). Keep the same large inline-only scope and baseline for a matched repeat. Evidence: DH2-fx-resources/artifacts/resident-inline-image-streaming-20261110-comparison.json.
+
+Installed compaction acceptance (99ea2165). Four same-executable optimized acquisitions matched all 8,129 prepared image payloads, format/extent/mip selection and CRC, material handoffs, and GPU upload/retirement counts. The 5,039 eligible inline reads per two-map route reuse the decoded member allocation as the upload allocation, removing a second overlapping buffer. The largest eligible member was 16,777,298 bytes; the old separate payload was 16,777,216 bytes. Affected Edge of the World cycles were 1,894–1,899 million buffered and 1,818–1,839 million compacted. Dust District measured 1,707–1,720 million buffered and 1,670–1,739 million compacted. The two-map acquisition total fell 1.7% and 2.5% in the two paired observations. Individual Dust samples vary around parity. These are scoped acquisition cycles and temporary allocation capacities, with no frame-time or peak RAM claim. Evidence: DH2-fx-resources/artifacts/resident-inline-image-compaction-20261110-comparison.json.
+
 Collision cancellation prediction. The closing audio session waits for the
 map worker's lease, and the former checks bracket the whole collision phase.
 An interrupted map should stop visiting authored shapes and placed bodies,
@@ -5565,14 +5591,4 @@ progress can finish. This bounds host worker retirement at the map lifetime
 boundary (1408a4830). Measure the cancellation span separately from ordinary
 load costs.
 
-### Direct acquisition of whole inline image payloads
-
-Prediction before change. In the recorded Edge of the World / Dust District / Edge of the World acquisition, 11,838 whole-image reads used only indexed inline records; 7,421 of those members exceeded the archive stream's 65,536-byte buffer. The largest indexed member was 16,777,298 bytes. The current 2D resident path reads each complete member and copies its records into a second Bevy Image allocation. Original 1402e9ff0 sends authored mip records to 1402f5500. For large inline-only resident images, validate the same headers and read the authored bytes into their final upload allocation. Expect no full decoded member allocation on that route, lower or unchanged affected CPU cycles, and matching upload CRCs, descriptors and GPU retirement. The stream scratch bounds temporary member staging; the required Image allocation remains. Compare scoped acquisition cycles and output in the same executable before integrating. No gameplay or process peak claim is predicted.
-
-Optimized acceptance rejected the read-direct variant (0ae65b15). Four same-executable observations matched 8,129 whole-image acquisitions and all mip descriptors, payload CRCs, material handoffs and GPU asset counts. The streamed reader avoided full-member temporaries but consumed 2,482–2,764 million versus 2,000–2,057 million affected cycles in Edge of the World, and 2,099–2,137 million versus 1,804–1,824 million in Dust District. Retain the faster archive acquisition call. Prediction for the replacement: validate the same indexed mip payload ranges, then compact the owned member in place using the same range compaction as layered images. This removes a second full-sized allocation, preserves one payload move, and avoids the per-image buffered decoder and output initialization of the rejected variant. Header slack is bounded by 62 + 20 times the mip count (plus archive read capacity). Keep the same large inline-only scope and baseline for a matched repeat. Evidence: DH2-fx-resources/artifacts/resident-inline-image-streaming-20261110-comparison.json.
-
-Installed compaction acceptance (99ea2165). Four same-executable optimized acquisitions matched all 8,129 prepared image payloads, format/extent/mip selection and CRC, material handoffs, and GPU upload/retirement counts. The 5,039 eligible inline reads per two-map route reuse the decoded member allocation as the upload allocation, removing a second overlapping buffer. The largest eligible member was 16,777,298 bytes; the old separate payload was 16,777,216 bytes. Affected Edge of the World cycles were 1,894–1,899 million buffered and 1,818–1,839 million compacted. Dust District measured 1,707–1,720 million buffered and 1,670–1,739 million compacted. The two-map acquisition total fell 1.7% and 2.5% in the two paired observations. Individual Dust samples vary around parity. These are scoped acquisition cycles and temporary allocation capacities, with no frame-time or peak RAM claim. Evidence: DH2-fx-resources/artifacts/resident-inline-image-compaction-20261110-comparison.json.
-
-### Keep collision decoder detail on its audit callers
-
-Prediction before change. Original compiled physics registration is 141388640, with shape-key and material lookup at 1400922d0 and 140853b80. The host retains the current decoded runtime triangle index for query cost. During level preparation the existing decoder also saves every convex vertex vector, transformed compressed-shape bounds and reverse shape-to-body list, although the client only uses triangles and summary counts. The existing installed loads generate 82,846 and 107,123 convex records and 1,132 and 1,457 compressed records in Edge of the World and Dust District. The convex records alone occupy at least 2,651,072 and 3,427,936 bytes of 32-byte record storage, excluding vertices and reserve capacity. Count successful shapes in the navigation acquisition and release per-shape scratch after triangulation. Keep full audit output for explicit shape inspection. Decode, failure rollback, triangle order, authored filter/material assignment and runtime queries must match. Compare the same installed levels with and without the detail tables, measure capacities and decode-thread cycles, and compare all final triangle data. No frame-time or process-peak claim is predicted.
+The clean game-feature compilation at db1cb92a covers the new checks. Live shutdown latency and cancellation at the individual checkpoints remain unobserved.
