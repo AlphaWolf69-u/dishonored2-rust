@@ -143,6 +143,12 @@ pub fn inspect_scene_publication(
         if flag == "--fade-resource-scopes" {
             return crate::assets::fx::fade::observe_resources(base).map_err(Into::into);
         }
+        if flag == "--decal-preload-inventory" {
+            return inspect_decal_preload_inventory(base);
+        }
+        if flag == "--decal-resource-scopes" {
+            return crate::assets::decal::observe_resources(base).map_err(Into::into);
+        }
         if flag == "--audio-bank-inventory" {
             return super::audio::observe_bank_inventory(base).map_err(Into::into);
         }
@@ -1154,4 +1160,31 @@ fn report_sampling_assets(app: &App, step: usize, phase: &str, images: &[AssetId
     let gpu_images = images.iter().filter(|id| render.resource::<RenderAssets<GpuImage>>().get(**id).is_some()).count();
     let gpu_buffers = buffers.iter().filter(|id| render.resource::<RenderAssets<GpuShaderBuffer>>().get(**id).is_some()).count();
     eprintln!("SAMPLING_ASSET_LIFETIME step={step} phase={phase} fog={fog} parallel={parallel} local={local} cpu_images={cpu_images} cpu_buffers={cpu_buffers} gpu_images={gpu_images} gpu_buffers={gpu_buffers}");
+}
+
+
+fn inspect_decal_preload_inventory(base: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = archive::Catalog::open(base)?;
+    let language = crate::assets::lang::read_text_language(base)?;
+    let mut maps = 0;
+    for path in catalog.paths_with_suffix(".mapresources") {
+        let Some(map) = path.strip_prefix("generated/buildgame/")
+            .and_then(|path| path.strip_suffix(".mapresources")) else { continue };
+        if matches!(map, "init" | "common") { continue; }
+        let list = crate::assets::map_resources::acquire_level_list(base, &catalog, map, language)?;
+        list.register_preload_headers(&catalog, map, false)?;
+        let owner = catalog.decal_resources.get().ok_or("decal headers were not registered")?
+            .lock().map_err(|_| "decal registry is poisoned")?;
+        eprintln!(r#"DECAL_PRELOAD_CONTEXT {{"map":{map:?},"paths":{:?}}}"#, owner.registered_paths());
+        drop(owner);
+        let owner = catalog.fade_resources.get().ok_or("fade headers were not registered")?
+            .lock().map_err(|_| "fade registry is poisoned")?;
+        eprintln!(r#"FADE_PRELOAD_CONTEXT {{"map":{map:?},"paths":{:?}}}"#, owner.registered_paths());
+        drop(owner);
+        catalog.release_level_resources();
+        catalog.release_persistent_level_resources();
+        maps += 1;
+    }
+    eprintln!("DECAL_PRELOAD_COMPLETE maps={maps}");
+    Ok(())
 }
