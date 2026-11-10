@@ -1015,6 +1015,25 @@ fn inspect_scene_resources(
                     crate::screen_shadow_pass::observe_program_reuse(app.sub_app_mut(RenderApp).world_mut(), state)?;
                 }
             }
+            let observed_poses = if std::env::var_os("DH2_DEBUG_SKIN_PUBLICATION").is_some_and(|value| value == "1") {
+                let poses = |world: &World| -> Vec<_> {
+                    world.resource::<super::shadow_updates::ModelShadowSources>().0.iter()
+                        .filter_map(|source| source.skinning.as_ref()?.as_ref().ok().map(Arc::downgrade))
+                        .collect()
+                };
+                let publish = |app: &mut App| {
+                    app.world_mut().run_system_once(super::machinery::pose_physics_systems)
+                        .map_err(|error| std::io::Error::other(format!("skin publication: {error}")))
+                };
+                publish(&mut app)?;
+                let first = poses(app.world());
+                publish(&mut app)?;
+                let repeated = poses(app.world());
+                let reused = first.len() == repeated.len()
+                    && first.iter().zip(&repeated).all(|(a, b)| std::sync::Weak::ptr_eq(a, b));
+                eprintln!("SKIN_PUBLICATION_SCOPE step={step} poses={} unchanged_reused={reused}", first.len());
+                first
+            } else { Vec::new() };
             if let Mode::RuntimeFx(effects) = mode {
                 inspect_runtime_fx(&mut app, &catalog, effects)?;
             }
@@ -1047,6 +1066,10 @@ fn inspect_scene_resources(
             // asset queue work above; view-pass owners were not installed.
             // Use the actual main-world teardown and asset-removal owners.
             lifetime.clear(app.world_mut())?;
+            if !observed_poses.is_empty() {
+                let retained = observed_poses.iter().filter(|pose| pose.strong_count() != 0).count();
+                eprintln!("SKIN_PUBLICATION_SCOPE step={step} retained={retained}");
+            }
             resource_snapshot(app.world(), step, "level-cleared");
             // These are the registered asset owner's real handle-drop
             // consumers, in dependency order; no application schedule runs.
