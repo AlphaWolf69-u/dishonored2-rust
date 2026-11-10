@@ -343,6 +343,76 @@ pub(super) struct VisibilityUpdateScratch {
     query_visible: Vec<bool>,
 }
 
+/// Run the installed map's visibility query without rendering a camera.
+pub(super) fn observe_query_scratch(world: &mut World) -> Result<(), String> {
+    use bevy::camera::RenderTargetInfo;
+    use crate::rendering::bevy_backend::fog::FogCamera;
+
+    let camera = world.query_filtered::<Entity, (With<Camera3d>, With<FogCamera>)>()
+        .single(world).map_err(|error| error.to_string())?;
+    let other_cameras: Vec<_> = world.query_filtered::<Entity, (With<Camera3d>, Without<FogCamera>)>()
+        .iter(world).collect();
+    let other_cameras: Vec<_> = other_cameras.into_iter().filter_map(|entity| {
+        world.entity_mut(entity).take::<Camera3d>().map(|component| (entity, component))
+    }).collect();
+    let initial_pose = *world.get::<Transform>(camera).ok_or("visibility camera has no pose")?;
+    let target = RenderTargetInfo { physical_size: UVec2::new(1366, 768), ..Default::default() };
+    let previous_target = world.get_mut::<Camera>(camera).ok_or("visibility camera is absent")?
+        .computed.target_info.replace(target);
+    let mut schedule = Schedule::default();
+    schedule.add_systems(stream_visible_models);
+    let mut reference = Vec::new();
+    let mut allocation = None;
+    let mut count = 0;
+    let mut visible_total = 0;
+    for reuse in [false, true] {
+        for (step, heading) in [-0.8f32, -0.4, 0.0, 0.4, 0.8].into_iter().enumerate() {
+            if !reuse {
+                world.resource_mut::<SceneRenderQueue>().tome_render_instances.updates.query_visible = Vec::new();
+            }
+            let mut pose = world.get_mut::<Transform>(camera).ok_or("visibility camera lost its pose")?;
+            *pose = initial_pose;
+            pose.rotation = Quat::from_rotation_y(heading) * pose.rotation;
+            schedule.run(world);
+            let scene = world.resource::<SceneRenderQueue>();
+            let scratch = &scene.tome_render_instances.updates.query_visible;
+            if scratch.len() != scene.instances.len() || scratch.is_empty() {
+                return Err("visibility sweep did not map the installed scene".into());
+            }
+            let selected: Vec<_> = scene.instances.iter().enumerate()
+                .filter_map(|(index, instance)| instance.visible.then_some(index)).collect();
+            if reuse {
+                if selected != reference[step] {
+                    return Err(format!("visibility changed at sweep step {step}"));
+                }
+                let current = (scratch.as_ptr(), scratch.capacity());
+                if *allocation.get_or_insert(current) != current {
+                    return Err("visibility scratch moved within one scene".into());
+                }
+                visible_total += selected.len();
+                count += 1;
+            } else {
+                reference.push(selected);
+            }
+        }
+    }
+    world.get_mut::<Camera>(camera).unwrap().computed.target_info = None;
+    schedule.run(world);
+    let scene = world.resource::<SceneRenderQueue>();
+    let scratch = &scene.tome_render_instances.updates.query_visible;
+    if allocation != Some((scratch.as_ptr(), scratch.capacity())) || scene.active != 0 || visible_total == 0 {
+        return Err("visibility withdrawal changed scratch ownership or left visible instances".into());
+    }
+    eprintln!("VISIBILITY_SCRATCH frames={count} capacity={} selected_total={visible_total} withdrawn={}",
+        scratch.capacity(), scene.active);
+    world.get_mut::<Camera>(camera).unwrap().computed.target_info = previous_target;
+    *world.get_mut::<Transform>(camera).unwrap() = initial_pose;
+    for (entity, component) in other_cameras {
+        world.entity_mut(entity).insert(component);
+    }
+    Ok(())
+}
+
 // The ordinary direct-Tome query selects mapped static BWM instances and
 // forwards their projected image demand. The installed worker clears only
 // its own output on error, then returns; merge the successful siblings, log
