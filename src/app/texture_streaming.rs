@@ -783,9 +783,10 @@ pub(super) fn read_resident_diffuse_image(catalog: &archive::Catalog, stem: &str
                 image.uploads.iter().map(|mip|mip.payload.len()).sum()
             };
             let descriptor = &image.image.texture_descriptor;
-            eprintln!("MEMORY image packing: path={stem} preferred={preferred:?} mip_buffers={} mip_buffer_bytes={} final_bytes={bytes} extent={}x{} mips={} format={:?} checksum={:08x}",
+            eprintln!("MEMORY image packing: path={stem} preferred={preferred:?} mip_buffers={} mip_buffer_bytes={} final_bytes={bytes} extent={}x{} mips={} format={:?} checksum={:08x} resource_mip={:?} next_separate_suffix={:?}",
                 image.uploads.len(), image.uploads.iter().map(|mip|mip.payload.len()).sum::<usize>(),
-                descriptor.size.width, descriptor.size.height, descriptor.mip_level_count, descriptor.format, crc.sum());
+                descriptor.size.width, descriptor.size.height, descriptor.mip_level_count, descriptor.format, crc.sum(),
+                image.level.resource_mip, image.level.next_separate_suffix);
         }
     }
     Ok(result)
@@ -842,16 +843,61 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             },
         }));
     }
+    static STAGING: std::sync::OnceLock<(bool, bool, bool)> = std::sync::OnceLock::new();
+    let (copy_inline, report_staging, buffer_resident) = *STAGING.get_or_init(|| (
+        std::env::var("DH2_DEBUG_COPY_INLINE_MIPS").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_IMAGE_STAGING").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_BUFFER_RESIDENT_IMAGES").as_deref() == Ok("1"),
+    ));
+    let highest_separate = (0..=15)
+        .rev()
+        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
+    let selected_separate = match target {
+        TextureReadTarget::Initial(None) => None,
+        TextureReadTarget::Initial(Some(preferred)) => (0..=preferred)
+            .rev()
+            .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
+        TextureReadTarget::Exact(_, _) => unreachable!(),
+    };
+    let stream_size = if packed && !copy_inline && selected_separate.is_none() && !catalog.has_overlays() {
+        catalog.resource_size(stem).filter(|&size| size > archive::STREAM_BUFFER_BYTES)
+    } else {
+        None
+    };
+    let acquisition_start = if report_staging && stream_size.is_some() {
+        crate::loading::thread_cycles()
+    } else {
+        None
+    };
+    let report_acquisition = |streamed: bool| {
+        if let (Some(bytes), Some(start)) = (stream_size, acquisition_start) {
+            let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            eprintln!("MEMORY resident image acquisition: path={stem} streamed={streamed} member_bytes={bytes} cycles={cycles}");
+        }
+    };
+    if stream_size.is_some() && !buffer_resident {
+        let chain = catalog.with_stream(stem, texture::read_inline_chain)?
+            .ok_or_else(|| format!("missing base BIM format descriptor {stem}"))?;
+        let info = chain.info;
+        let mut image = empty_streamed_image(info.width, info.height, info.mip_count, gpu_image_format(info.format));
+        image.data = Some(chain.payload);
+        report_acquisition(true);
+        return Ok(Some(StreamedDiffuse {
+            image,
+            uploads: Vec::new(),
+            level: DiffuseMipLevel {
+                resource_mip: None,
+                next_separate_suffix: highest_separate,
+                width: info.width,
+                height: info.height,
+                format: info.format,
+            },
+        }));
+    }
     let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
         return Err(format!("missing base BIM format descriptor {stem}"));
     };
-    // Host cross-thread buffers still own their bytes. Borrow validated source
-    // records instead of first building and then splitting a packed payload.
-    static STAGING: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
-    let (copy_inline, report_staging) = *STAGING.get_or_init(|| (
-        std::env::var("DH2_DEBUG_COPY_INLINE_MIPS").as_deref() == Ok("1"),
-        std::env::var("DH2_DEBUG_IMAGE_STAGING").as_deref() == Ok("1"),
-    ));
+    // The worker and separate-mip consumers still need individual authored records.
     let copied = if copy_inline { Some(texture::compressed_inline_chain(&bytes)?) } else { None };
     let mut inline_mips = [None; 16];
     let inline = if let Some(chain) = &copied {
@@ -870,16 +916,6 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         texture::visit_inline_mips(&bytes, |index, mip| inline_mips[index as usize] = Some(mip))?
     };
     let format = inline.format;
-    let highest_separate = (0..=15)
-        .rev()
-        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
-    let selected_separate = match target {
-        TextureReadTarget::Initial(None) => None,
-        TextureReadTarget::Initial(Some(preferred)) => (0..=preferred)
-            .rev()
-            .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
-        TextureReadTarget::Exact(_, _) => unreachable!(),
-    };
     let mut uploads = Vec::new();
     let mut top = None;
     let mut previous: Option<(u32, u32)> = None;
@@ -947,6 +983,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     let (width, height) = top.ok_or("authored image has no mip payload")?;
     let mut image = empty_streamed_image(width, height, mip_count, gpu_image_format(format));
     if packed { image.data = Some(packed_payload); }
+    report_acquisition(false);
     Ok(Some(StreamedDiffuse {
         image,
         uploads,
