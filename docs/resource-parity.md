@@ -2994,6 +2994,31 @@ unchanged. Live slot reuse, affected CPU cost and mip publication still need
 runtime observations. Evidence: DH2-scene-shutdown/artifacts/resource-shutdown-batch-20261110-check-provenance.json.
 
 
+Initial texture worker prediction. Original 1402e9ff0 hands validated
+authored inline records to 1402f5500. The host worker currently allocates one
+new byte buffer per inline mip even when the upload already owns the decoded
+archive member. For initial inline-only worker jobs, keep that member once
+and hand checked mip ranges to the upload queue. Expect no second payload
+allocation or copy, with only record headers and the archive capacity slack
+retained until upload. Keep separately streamed mip jobs on their existing
+direct acquisition path. Compare matching mip order, dimensions, payload
+signatures and GPU publication before claiming a gameplay memory or CPU gain.
+
+Installed worker upload acceptance (0b3f82fa). Four same-executable
+observations loaded 32 archived images across five formats and one to seven
+inline levels. All inputs matched the previously observed installed CRC,
+dimensions, format, mip count and next finer suffix. The real GPU upload
+mailbox accepted every job. After upload all decoded archive owners were
+released, and after the diagnostic released its image handles all 32 GPU
+identities retired. Per run the old path copied 25,838,832 payload bytes
+into new mip buffers. The new path reused one decoded member per image
+(25,843,168 bytes of total member capacity, including 4,336 bytes of
+headers and slack). These figures describe overlapping copies avoided
+during acquisition, not steady-state memory saved. Scoped reader cycles
+were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
+Live gameplay demand and cancellation were outside this windowless
+observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
+
 ### Fog curve resource ownership
 
 The original `1402edb60` constructs a temporary curve-image builder on the

@@ -25,8 +25,86 @@ pub fn inspect_scene_gpu_resources(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some((flag, paths)) = levels.split_first() {
+        if flag == "--worker-images" {
+            return inspect_worker_images(base, paths);
+        }
+    }
     let reuse_host = levels.first().is_some_and(|arg| arg == "--reuse-host");
     inspect_scene_resources(base, &levels[usize::from(reuse_host)..], Mode::Upload, reuse_host)
+}
+
+/// Run the worker's installed-image reader and the renderer's normal upload
+/// mailbox without a gameplay frame or visibility producer.
+fn inspect_worker_images(
+    base: &std::path::Path,
+    paths: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::texture_streaming::{GpuMipCopy, MipPayload, PendingGpuImageUpload, TextureReadTarget};
+    if paths.is_empty() { return Err("--worker-images requires installed image paths".into()); }
+    let catalog = archive::Catalog::open(base)?;
+    let mut app = scene_host(true);
+    let mailbox = PreparedImageMailbox::default();
+    app.sub_app_mut(RenderApp)
+        .insert_resource(mailbox.clone())
+        .add_systems(Render, report_prepared_diffuse_images.after(RenderSystems::PrepareAssets));
+    let mut handles = Vec::with_capacity(paths.len());
+    let mut archive_members = Vec::new();
+    for path in paths {
+        let start = crate::loading::thread_cycles();
+        let streamed = super::texture_streaming::read_streamed_diffuse_at_target(
+            &catalog, path, TextureReadTarget::Initial(None),
+        )?.ok_or_else(|| format!("missing worker image {path}"))?;
+        let cycles = start.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        let mut crc = flate2::Crc::new();
+        let mut bytes = 0;
+        let mut owned_capacity = 0;
+        for mip in &streamed.uploads {
+            crc.update(&mip.payload);
+            bytes += mip.payload.len();
+            if let MipPayload::Owned(payload) = &mip.payload { owned_capacity += payload.capacity(); }
+        }
+        let member_capacity = match streamed.uploads.first().map(|mip| &mip.payload) {
+            Some(MipPayload::Member(member, _)) => {
+                archive_members.push(Arc::downgrade(member));
+                member.capacity()
+            }
+            _ => 0,
+        };
+        eprintln!("RESOURCE_WORKER_IMAGE path={path} bytes={bytes} extent={}x{} mips={} format={:?} next={:?} crc32={:08x} cycles={cycles} owned_capacity={owned_capacity} member_capacity={member_capacity}",
+            streamed.level.width, streamed.level.height, streamed.uploads.len(), streamed.image.texture_descriptor.format,
+            streamed.level.next_separate_suffix, crc.sum());
+        let handle = app.world_mut().resource_mut::<Assets<Image>>().add(streamed.image);
+        mailbox.0.lock().unwrap().pending.push(PendingGpuImageUpload {
+            id: handle.id(), previous: None, copy: GpuMipCopy::None, uploads: streamed.uploads,
+        });
+        handles.push(handle);
+    }
+    let started = std::time::Instant::now();
+    let mut completed = std::collections::HashSet::new();
+    while completed.len() < handles.len() {
+        render_epoch(&mut app)?;
+        let mut state = mailbox.0.lock().unwrap();
+        if let Some((id, error)) = state.failed.first() {
+            return Err(format!("worker upload {id:?} failed: {error}").into());
+        }
+        completed.extend(state.completed.drain(..));
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            return Err(format!("{} worker uploads remain pending", handles.len() - completed.len()).into());
+        }
+    }
+    let ids: Vec<_> = handles.iter().map(Handle::id).collect();
+    drop(handles);
+    track_assets::<Image>(app.world_mut())?;
+    for _ in 0..3 { render_epoch(&mut app)?; }
+    let gpu = app.sub_app(RenderApp).world().resource::<RenderAssets<GpuImage>>();
+    let remaining = ids.iter().filter(|id| gpu.get(**id).is_some()).count();
+    let retained_members = archive_members.iter().filter(|member| member.strong_count() != 0).count();
+    eprintln!("RESOURCE_WORKER_IMAGE_LIFETIME uploaded={} retained={remaining} retained_members={retained_members}", completed.len());
+    if remaining != 0 { return Err(format!("{remaining} worker images remain resident").into()); }
+    if retained_members != 0 { return Err(format!("{retained_members} worker members remain owned after upload").into()); }
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq)]

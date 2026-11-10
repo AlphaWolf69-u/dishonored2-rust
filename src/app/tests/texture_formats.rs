@@ -70,7 +70,9 @@ fn scalar_16_texture_upload_and_sampling(
         mip_level,
         width,
         height: 1,
-        payload: values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        payload: super::super::texture_streaming::MipPayload::Owned(
+            values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        ),
     });
     upload_compressed_mips(device, queue, image, None, GpuMipCopy::None, &uploads).unwrap();
     let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {

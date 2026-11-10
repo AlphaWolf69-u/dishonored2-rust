@@ -146,9 +146,7 @@ impl ResidentImages {
         // can prepare two chains, but only one becomes an asset/GPU identity.
         let mut loaded = read_resident_diffuse_image(catalog, &path, preferred)?
             .ok_or_else(|| format!("missing resident image {path}"))?;
-        if !loaded.uploads.is_empty() {
-            loaded.image.data = Some(loaded.uploads.into_iter().flat_map(|mip| mip.payload).collect());
-        }
+        loaded.pack_uploads();
         let level = loaded.level;
         let mip_count = loaded.image.texture_descriptor.mip_level_count;
         let extent = [loaded.image.width() as f64, loaded.image.height() as f64];
