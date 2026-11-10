@@ -5978,3 +5978,13 @@ format. A resize, level change or input swap with identical formats and
 state should recreate only the dependent bindings. The AO and depth-unhack
 owners also compile when replaced. Their independent reuse needs separate
 format and program ownership evidence.
+
+Renderer owner acceptance (`b1309447`). The windowless DX12 readback used
+the gameplay staging owner. Five selected-slot results matched the direct
+map result, the four staging buffers totalled 65,536 bytes, and the queued
+callback held no lease after cancellation. Installed Edge of the World,
+Dust District and Edge of the World retained both visibility pipeline IDs
+across the owner release call. All three scenes completed ordinary FX
+shutdown and released the extracted screen-shadow image again. Active
+particle shutdown errors, live resize and replacement binding draws were
+outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
