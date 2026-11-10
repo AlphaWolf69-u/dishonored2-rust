@@ -5947,6 +5947,24 @@ the outgoing owners. Expect the same order and no additional work on a
 successful transition. This covers fallible teardown, without trying to
 restore gameplay after a corrupted chain.
 
+Packed skeletal UV prediction. The installed BMD6 loader 14025aa00 calls
+140259960 for the authored vertex streams. Declarations 9 and 10 use two
+half-float UV sets. Host decode kept UV1 packed but widened UV0, which the
+normal mesh builder immediately packed again. Keep UV0 packed in ModelInfo
+and pass it through the existing packed mesh builder for placed and arm
+models. Predict four fewer bytes per decoded vertex and no UV0 widen/pack
+round trip for ordinary meshes. The sheared and diagnostic float layouts
+still widen at their consumers. Preserve the established decoded signatures
+and compare the installed GPU attribute bits and acquisition costs.
+
+Packed skeletal UV acceptance (`97dc2212`). Windowless scene preparation
+matched the previous complete vertex/index fingerprints for 908 placed
+meshes in Edge of the World and 961 in Dust District, including their packed
+UV bytes. The parser now retains four fewer bytes per decoded vertex.
+Normal arm preparation calls the same packed mesh builder. Arm draw output,
+scoped UV decode timing and peak RAM were outside this observation.
+Evidence: `DH2-collision-staging/artifacts/view-and-model-resources-20261110-model-comparison.json`.
+
 Screen-shadow publication prediction. The host level teardown corresponds
 to 1408a4830 and the 1400410f0 resource purge. The standard Bevy extractor
 copies the optional ScreenShadowFrame when present but leaves the render

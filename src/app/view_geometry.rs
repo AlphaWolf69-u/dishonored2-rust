@@ -840,6 +840,7 @@ impl MeshUvs<'_> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn authored_mesh<const N: usize>(
     points: &[Vec3],
     uvs: &[[f32; 2]],
@@ -932,7 +933,7 @@ fn packed_view_direction(x: u8, y: u8, z: u8, w: u8) -> [i8; 4] {
 /// The installed vertex in view axes: float positions, half-float UVs,
 /// SNORM8x4 normal/tangent and UNORM8x4 colour. The bitangent is
 /// derived in the vertex shader (DH2_DERIVED_BITANGENT) from the same values
-/// `authored_mesh` takes it from, cross(N, T) * sign.
+/// the float mesh builder uses, cross(N, T) * sign.
 fn packed_authored_mesh<const N: usize>(
     positions: Vec<[f32; 3]>,
     uvs: MeshUvs<'_>,

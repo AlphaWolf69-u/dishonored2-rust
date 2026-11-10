@@ -19,9 +19,10 @@
 //! with the palette joint × inverse bind from `Player::arms()`, published
 //! each frame as the model's joint transforms.
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
+use super::view_geometry::{source_mesh_from_uvs, MeshUvs};
 use super::{
     archive, bmd6, edge_skeleton, entities, material, model_motion,
-    player::PlayerState, render_model, shadow_preparation, source_mesh, view_to_game, MaterialHandle,
+    player::PlayerState, render_model, shadow_preparation, view_to_game, MaterialHandle,
     MaterialResolver, MeshTag, SceneData, ShaderBuffer,
 };
 use crate::gameplay::player::ArmRender;
@@ -286,7 +287,7 @@ pub(super) fn load_player_arms(
             // (decl 9: four, else eight), the stream the skinning reads.
             let influences = surface.skin_influences;
             let mut mesh =
-                source_mesh(&surface.positions, &surface.uvs, &surface.indices, &surface.packed_channels, false);
+                source_mesh_from_uvs(&surface.positions, MeshUvs::Packed(&surface.uvs), &surface.indices, &surface.packed_channels, false);
             bind_pose_skin(&mut mesh, surface, influences, palette.len())
                 .map_err(|error| format!("{model} surface {index}: {error}"))?;
             if model_depth_hack > 0.0 {

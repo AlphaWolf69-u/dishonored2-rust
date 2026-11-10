@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if surface.uvs.iter().flatten().any(|v| !v.is_finite()) {
                         uv_nonfinite += 1;
                     }
-                    if surface.uvs.iter().flatten().any(|v| v.abs() > 1_000.0) {
+                    if surface.uvs.iter().flatten().any(|v| v.to_f32().abs() > 1_000.0) {
                         uv_extreme += 1;
                     }
                 }
@@ -141,8 +141,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut uv_high = [f32::NEG_INFINITY; 2];
                         for uv in &surface.uvs {
                             for axis in 0..2 {
-                                uv_low[axis] = uv_low[axis].min(uv[axis]);
-                                uv_high[axis] = uv_high[axis].max(uv[axis]);
+                                let value = uv[axis].to_f32();
+                                uv_low[axis] = uv_low[axis].min(value);
+                                uv_high[axis] = uv_high[axis].max(value);
                             }
                         }
                         println!(
