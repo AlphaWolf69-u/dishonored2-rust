@@ -6010,6 +6010,17 @@ setup. Expect lower peak live static geometry within this scope, one source
 acquisition per path, identical mesh bytes and placement order, and no change
 to gameplay CPU. Compare the placement loop including the new table pass.
 
+Placed static model staging acceptance (`c285c906`). Two optimized
+retain/early-release pairs matched all prepared vertex and index bytes
+and their ordered mesh references. Each map decoded the same source count
+and byte total. Peak static CPU staging fell from 20,588,490 to 4,298,220
+bytes in Edge of the World and from 20,741,684 to 6,323,080 in Dust
+District. Both released paths had zero static staging left at loop exit.
+The affected placement span averaged 3.292B cycles with retention and
+3.286B with early release across both maps. Individual Dust runs varied
+in both directions. No frame timing was measured. Evidence:
+`DH2-collision-staging/artifacts/static-model-last-use-20261110-comparison.json`.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
