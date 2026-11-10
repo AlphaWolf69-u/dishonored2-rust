@@ -6399,3 +6399,12 @@ Unpublished 2D image rollback acceptance (7f877958). The installed-image observa
 Unpublished map rollback acceptance (b0582a32). Windowless Edge of the World preparation cancelled during collision index construction after registering the persistent map. The batch discarded 46,546 acquisition descriptors and the marker-1 registry sweep removed 2,318 observed headers across particle, audio, mass and FX graph classes while leaving bootstrap records available. Two subsequent preparations completed in the same catalog, and the normal Edge of the World and Dust District scene publication and release route completed without an unpublished rollback. Both commands exited zero. The observed boundary is CPU preparation cancellation and successful scene publication, with actual window close and GPU display outside the route. Evidence: DH2-fx-resources/artifacts/unpublished-level-rollback-20261110-comparison.json.
 
 Cancelled image acquisition history acceptance (62d5caa4). The installed stink-bug diffuse image was credited when staged, then lost its credit and unpublished UI binding when the scene image batch dropped. An independently loaded normal map and the same diffuse path in a separate catalog retained their credit. Retry restored credit with a fresh handle and the same BLAKE3 payload. The windowless DX12 Edge of the World, Dust District, Edge of the World route also published and released all three scenes. The installed ocean cube and caustics upload sizes and CRCs matched the layered rollback observation. Both commands exited zero with no graphics validation errors. Gameplay rendering and frame time were outside this observation. Evidence: DH2-fx-resources/artifacts/abandoned-image-read-history-20261110-comparison.json.
+
+Installed map-info acceptance at 8d6b3196. All 36 installed world labels
+and full selected declarations matched the reference scan. The indexed
+route read 60 members and 185,956 decoded bytes, compared with 573 members
+and 2,186,370 decoded bytes in the reference route. The interleaved
+catalog observation matched declaration bytes, shared the low/high alias,
+reused the first catalog's entry on return and retired each catalog
+independently. Evidence:
+DH2-scene-shutdown/artifacts/map-info-catalog-cache-20261110-comparison.json.
