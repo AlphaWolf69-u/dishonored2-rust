@@ -482,7 +482,7 @@ pub(super) fn prepare(
         world_shadow_mesh_sources.objects[object_number].gather_flags48 = Some(admission);
         let first_material = if let Some(matrix) = scene.world.matrices.get(object.matrix_start) {
             let points: Vec<Vec3> = source
-                .positions
+                .positions()
                 .iter()
                 .map(|&position| transformed(matrix, position))
                 .collect();
@@ -528,7 +528,7 @@ pub(super) fn prepare(
             let matrix = &scene.world.matrices[matrix_index];
             let visibility_record = &scene.world.visibility[matrix_index];
             let points: Vec<Vec3> = source
-                .positions
+                .positions()
                 .iter()
                 .map(|&position| transformed(matrix, position))
                 .collect();
@@ -571,14 +571,14 @@ pub(super) fn prepare(
             }
             let instance = game_affine_to_view(matrix);
             let bounds = authored_world_bounds(visibility_record);
-            let render_instance = if needs_exact_world_mesh(&instance, &source.positions, &points) {
+            let render_instance = if needs_exact_world_mesh(&instance, source.positions(), &points) {
                 // Bevy's Transform cannot express shear. Preserve the exact
                 // authored affine transform in this instance's vertex data.
                 let baked = meshes.add(super::view_geometry::authored_mesh_from_uvs(
                     &points,
-                    super::view_geometry::MeshUvs::Packed(&source.uvs),
-                    &source.indices,
-                    &source.packed_channels,
+                    super::view_geometry::MeshUvs::Packed(source.uvs()),
+                    source.indices(),
+                    source.packed_channels(),
                     |v| transformed_direction(matrix, v),
                 ));
                 let render_instance = RenderInstance {
@@ -633,8 +633,8 @@ pub(super) fn prepare(
                 resolver.needs_vegetation_channels(&render_instance.material),
                 &render_instance.mesh,
                 meshes,
-                &source.positions,
-                &source.packed_channels,
+                source.positions(),
+                source.packed_channels(),
             );
             let render_index = render_instances.len();
             bwm_visibility_render_instances[matrix_index].push(render_index);
@@ -1991,12 +1991,7 @@ pub(super) fn prepare(
     });
     // Every world mesh is uploaded and its shadow/water/probe inputs are
     // built; the original keeps no CPU copy of uploaded world geometry.
-    for mesh in &mut scene.world.meshes {
-        mesh.positions = Vec::new();
-        mesh.uvs = Vec::new();
-        mesh.packed_channels = Vec::new();
-        mesh.indices = Vec::new();
-    }
+    scene.world.meshes = Vec::new();
     super::load_timing::mark("setup: end");
     Ok(())
 }

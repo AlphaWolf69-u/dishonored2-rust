@@ -285,10 +285,10 @@ impl WorldShadowMeshSources {
                 (mesh.clone(), count.clone())
             } else {
                 let mut forward = source_mesh_from_uvs(
-                    &source.positions,
-                    MeshUvs::Packed(&source.uvs),
-                    &source.indices,
-                    &source.packed_channels,
+                    source.positions(),
+                    MeshUvs::Packed(source.uvs()),
+                    source.indices(),
+                    source.packed_channels(),
                     object.flipped,
                 );
                 if trace_uv {
@@ -296,8 +296,8 @@ impl WorldShadowMeshSources {
                         forward.attribute(PACKED_UV_0)
                     {
                         uv_pairs += uvs.len();
-                        uv_mismatches += source.uvs.len().abs_diff(uvs.len())
-                            + source.uvs.iter().zip(uvs)
+                        uv_mismatches += source.uvs().len().abs_diff(uvs.len())
+                            + source.uvs().iter().zip(uvs)
                                 .filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits))
                                 .count();
                     }
@@ -305,8 +305,8 @@ impl WorldShadowMeshSources {
                 // World shadow programs read the forward mesh's own position,
                 // NORMAL and COLOR; only vegetation and water meshes add
                 // game-space copies (retain_vegetation_channels, water_objects).
-                let raw_vertex_count = (forward.count_vertices() == source.positions.len())
-                    .then_some(source.positions.len())
+                let raw_vertex_count = (forward.count_vertices() == source.positions().len())
+                    .then_some(source.positions().len())
                     .ok_or_else(|| "world source/forward vertex counts disagree".to_string());
                 // Per-frame native program admission validates the original
                 // vertex ABI after render extraction as well as at startup.
@@ -331,7 +331,7 @@ impl WorldShadowMeshSources {
             });
         }
         if trace_uv {
-            let staged_pairs: usize = world.meshes.iter().map(|mesh| mesh.uvs.capacity()).sum();
+            let staged_pairs: usize = world.meshes.iter().map(|mesh| mesh.uvs().len()).sum();
             eprintln!(
                 "MEMORY BWM packed UV preparation: pairs={uv_pairs} mismatches={uv_mismatches} staged_pairs={staged_pairs}"
             );

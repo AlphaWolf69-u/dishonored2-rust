@@ -100,7 +100,7 @@ fn run() -> Result<()> {
     // These owners open the canonical packed Catalog themselves. Do not keep
     // a second, fully expanded table of every index record beside them.
     match args[1].as_str() {
-        "inspect-ui-bitmap-ownership" | "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" | "inspect-fx-definitions" | "inspect-material-program" | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation" | "inspect-scene-preparation" | "inspect-scene-publication" | "inspect-scene-gpu-resources" => {
+        "inspect-world-geometry" | "inspect-ui-bitmap-ownership" | "inspect-ui-fonts" | "inspect-fonts" | "inspect-fx-resources" | "inspect-fx-definitions" | "inspect-material-program" | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation" | "inspect-scene-preparation" | "inspect-scene-publication" | "inspect-scene-gpu-resources" => {
             return resource_audit::run(&args[1], base, &args[3..]);
         }
         _ => {}
@@ -249,9 +249,9 @@ fn run() -> Result<()> {
             }
             let bytes = read_entry(base, matching[0])?;
             let world = world_mesh::parse(&bytes).map_err(invalid)?;
-            let vertex_count: usize = world.meshes.iter().map(|mesh| mesh.positions.len()).sum();
+            let vertex_count: usize = world.meshes.iter().map(|mesh| mesh.positions().len()).sum();
             let triangle_count: usize =
-                world.meshes.iter().map(|mesh| mesh.indices.len() / 3).sum();
+                world.meshes.iter().map(|mesh| mesh.indices().len() / 3).sum();
             println!(
                 "{} meshes, {} objects, {vertex_count} vertices, {triangle_count} triangles",
                 world.meshes.len(),
@@ -291,10 +291,10 @@ fn run() -> Result<()> {
                 let mut base_index = 1usize;
                 for (number, mesh) in world.meshes.iter().enumerate() {
                     writeln!(file, "g world_mesh_{number}")?;
-                    for [x, y, z] in &mesh.positions {
+                    for [x, y, z] in mesh.positions() {
                         writeln!(file, "v {x} {y} {z}")?;
                     }
-                    for face in mesh.indices.chunks_exact(3) {
+                    for face in mesh.indices().chunks_exact(3) {
                         writeln!(
                             file,
                             "f {} {} {}",
@@ -303,7 +303,7 @@ fn run() -> Result<()> {
                             base_index + face[2] as usize
                         )?;
                     }
-                    base_index += mesh.positions.len();
+                    base_index += mesh.positions().len();
                 }
                 file.flush()?;
                 println!("Wrote geometry to {}", destination.display());

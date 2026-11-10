@@ -352,9 +352,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mesh = &world.meshes[object.mesh_index];
             for matrix_index in object.matrix_start..object.matrix_end {
                 let matrix = &world.matrices[matrix_index];
-                for face in mesh.indices.chunks_exact(3) {
+                for face in mesh.indices().chunks_exact(3) {
                     let triangle: [[f32; 3]; 3] = [face[0], face[1], face[2]].map(|index| {
-                        let point = mesh.positions[index as usize];
+                        let point = mesh.positions()[index as usize];
                         std::array::from_fn(|row| {
                             matrix[row * 4] * point[0]
                                 + matrix[row * 4 + 1] * point[1]
@@ -424,10 +424,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         {
             let mesh = &world.meshes[object.mesh_index];
             for matrix in &world.matrices[object.matrix_start..object.matrix_end] {
-                for face in mesh.indices.chunks_exact(3) {
+                for face in mesh.indices().chunks_exact(3) {
                     let triangle: [[f32; 3]; 3] = std::array::from_fn(|corner| {
                         let index = face[corner];
-                        let p = mesh.positions[index as usize];
+                        let p = mesh.positions()[index as usize];
                         std::array::from_fn(|row| {
                             matrix[row * 4] * p[0]
                                 + matrix[row * 4 + 1] * p[1]
@@ -461,7 +461,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for matrix in &world.matrices[object.matrix_start..object.matrix_end] {
                 let mut lo = [f32::INFINITY; 3];
                 let mut hi = [f32::NEG_INFINITY; 3];
-                for position in &mesh.positions {
+                for position in mesh.positions() {
                     let point: [f32; 3] = std::array::from_fn(|row| {
                         matrix[row * 4] * position[0]
                             + matrix[row * 4 + 1] * position[1]
@@ -476,7 +476,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "mesh={} tris={} bounds={lo:?}..{hi:?} {}",
                     object.mesh_index,
-                    mesh.indices.len() / 3,
+                    mesh.indices().len() / 3,
                     object.material_path
                 );
             }
@@ -493,7 +493,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for matrix in &world.matrices[object.matrix_start..object.matrix_end] {
                 let mut lo = [f32::INFINITY; 3];
                 let mut hi = [f32::NEG_INFINITY; 3];
-                for position in &mesh.positions {
+                for position in mesh.positions() {
                     let point: [f32; 3] = std::array::from_fn(|row| {
                         matrix[row * 4] * position[0]
                             + matrix[row * 4 + 1] * position[1]
@@ -534,7 +534,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mesh = &world.meshes[object.mesh_index];
             let mut lo = [f32::INFINITY; 3];
             let mut hi = [f32::NEG_INFINITY; 3];
-            for vertex in &mesh.positions {
+            for vertex in mesh.positions() {
                 for axis in 0..3 {
                     lo[axis] = lo[axis].min(vertex[axis]);
                     hi[axis] = hi[axis].max(vertex[axis]);
@@ -580,7 +580,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mesh = &world.meshes[object.mesh_index];
             let mut lo = [f32::INFINITY; 3];
             let mut hi = [f32::NEG_INFINITY; 3];
-            for vertex in &mesh.positions {
+            for vertex in mesh.positions() {
                 for axis in 0..3 {
                     lo[axis] = lo[axis].min(vertex[axis]);
                     hi[axis] = hi[axis].max(vertex[axis]);
@@ -686,7 +686,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!(
                 "PACKED_CHANNELS mesh={} vertices={} {:?}",
                 object.mesh_index,
-                mesh.positions.len(),
+                mesh.positions().len(),
                 channels
             );
         }

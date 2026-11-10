@@ -104,6 +104,13 @@ impl LevelResources {
         })
     }
 
+    pub(crate) fn load_world(
+        &self, catalog: &Catalog, cancelled: impl Fn() -> bool,
+    ) -> Result<super::world_mesh::WorldMesh> {
+        super::world_mesh::load(catalog, &self.world, cancelled)
+            .map_err(|error| invalid(error).into())
+    }
+
     pub fn read_world(&self, catalog: &Catalog) -> Result<Vec<u8>> {
         catalog
             .read(&self.world)?

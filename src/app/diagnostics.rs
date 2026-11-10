@@ -80,9 +80,9 @@ pub(super) fn sightline_world_surface(
         let mesh = &world.meshes[object.mesh_index];
         for matrix_index in object.matrix_start..object.matrix_end {
             let matrix = &world.matrices[matrix_index];
-            for face in mesh.indices.chunks_exact(3) {
+            for face in mesh.indices().chunks_exact(3) {
                 let triangle = [face[0], face[1], face[2]]
-                    .map(|index| transformed(matrix, mesh.positions[index as usize]));
+                    .map(|index| transformed(matrix, mesh.positions()[index as usize]));
                 let Some(distance) = ray_triangle(origin, direction, triangle) else {
                     continue;
                 };

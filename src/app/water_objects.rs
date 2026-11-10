@@ -33,7 +33,7 @@ pub(super) fn prepare_world_geometry(
                     water_world_colour::retain_normal_w(&mut mesh, channels)?;
                 }
                 // The water passes read raw game-space positions.
-                let positions = &world.meshes[source.mesh_index].positions;
+                let positions = world.meshes[source.mesh_index].positions();
                 if !mesh.contains_attribute(crate::rendering::bevy_backend::shadow_pass::VEGETATION_POSITION) {
                     mesh.insert_attribute(crate::rendering::bevy_backend::shadow_pass::VEGETATION_POSITION, positions.clone());
                 }

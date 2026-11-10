@@ -85,7 +85,7 @@ fn verify_world_bounds(world: &world_mesh::WorldMesh) -> (usize, usize, f32) {
     let mut escaped = 0;
     let mut largest_escape = 0.0f32;
     for object in &world.objects {
-        let vertices = &world.meshes[object.mesh_index].positions;
+        let vertices = world.meshes[object.mesh_index].positions();
         for index in object.matrix_start..object.matrix_end {
             checked += 1;
             let matrix = &world.matrices[index];
