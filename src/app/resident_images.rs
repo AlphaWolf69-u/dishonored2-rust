@@ -23,29 +23,40 @@ pub(super) struct PreparedImages {
     registry: ResidentImages,
 }
 impl PreparedImages {
-    pub(super) fn new(assets: &Assets<Image>, registry: ResidentImages) -> Self {
+    pub(super) fn new(assets: &Assets<Image>, mut registry: ResidentImages) -> Self {
+        registry.layered_batch = Some(Arc::new(()));
         Self { batch: Some(AssetBatch::new(assets)), registry }
     }
+    pub(super) fn registry(&self) -> &ResidentImages { &self.registry }
     pub(super) fn assets(&mut self) -> &mut AssetBatch<Image> {
         self.batch.as_mut().expect("scene images already published")
     }
     pub(super) fn publish(mut self, assets: &mut Assets<Image>) {
         self.batch.take().expect("scene images already published").publish(assets);
+        self.registry.finish_layered_batch(true);
     }
 }
 impl Drop for PreparedImages {
     fn drop(&mut self) {
         if let Some(batch) = &self.batch {
             self.registry.discard_batch(batch);
+            self.registry.finish_layered_batch(false);
         }
     }
+}
+
+type LayeredImageSource = crate::rendering::bevy_backend::layered_images::LayeredImageSource;
+
+struct LayeredRegistration {
+    source: Arc<LayeredImageSource>,
+    batch: Option<Weak<()>>,
 }
 
 #[derive(Default)]
 struct Registry {
     resident: HashMap<String, Arc<ResidentImage>>,
     inline: HashMap<String, Arc<ResidentImage>>,
-    layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
+    layered: HashMap<String, LayeredRegistration>,
     default_colour_cube: Option<Handle<Image>>,
     noise: Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource>,
     leases: HashMap<String, Weak<ResidentImage>>,
@@ -85,11 +96,12 @@ impl Registry {
 pub(super) struct ResidentImages {
     registry: Arc<Mutex<Registry>>,
     separate: bool,
+    layered_batch: Option<Arc<()>>,
 }
 impl Default for ResidentImages {
     fn default() -> Self {
         Self { registry: Arc::default(), separate:
-            std::env::var("DH2_DEBUG_SEPARATE_RESIDENT_IMAGES").as_deref() == Ok("1") }
+            std::env::var("DH2_DEBUG_SEPARATE_RESIDENT_IMAGES").as_deref() == Ok("1"), layered_batch: None }
     }
 }
 impl ResidentImages {
@@ -149,7 +161,7 @@ impl ResidentImages {
     }
     /// Diagnostic restores the former per-consumer identity boundary.
     pub(super) fn consumer(&self) -> Self {
-        if self.separate { Self { registry: Arc::default(), separate: true } }
+        if self.separate { Self { registry: Arc::default(), separate: true, layered_batch: None } }
         else { self.clone() }
     }
     fn acquire(&self, catalog: &archive::Catalog, name: &str,
@@ -289,9 +301,8 @@ impl ResidentImages {
     /// The same registry boundary also owns cube/array identities. Their
     /// backend source retires upload staging and leases one immutable GPU image.
     pub(super) fn layered(&self, catalog: &archive::Catalog, path: &str, cube: bool,
-        load: impl FnOnce() -> Result<crate::rendering::bevy_backend::layered_images::LayeredImageSource, String>,
-    ) -> Result<Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>, String> {
-        use crate::rendering::bevy_backend::layered_images::LayeredImageSource;
+        load: impl FnOnce() -> Result<LayeredImageSource, String>,
+    ) -> Result<Arc<LayeredImageSource>, String> {
         if LayeredImageSource::separate() { return load().map(Arc::new); }
         if catalog.image_has_overlay(path) {
             let source = Arc::new(load()?);
@@ -302,15 +313,29 @@ impl ResidentImages {
             generations.push(Arc::downgrade(&source));
             return Ok(source);
         }
-        if let Some(source) = self.registry.lock().unwrap().layered.get(path).cloned() {
+        if let Some(source) = self.registry.lock().unwrap().layered.get(path).map(|entry| entry.source.clone()) {
             if source.is_cube() != cube { return Err(format!("image {path} acquired with an incompatible cube/array type")); }
             return Ok(source);
         }
         let prepared = Arc::new(load()?);
         let mut registry = self.registry.lock().unwrap();
-        let source = registry.layered.entry(path.to_owned()).or_insert(prepared).clone();
+        let source = registry.layered.entry(path.to_owned()).or_insert_with(|| LayeredRegistration {
+            source: prepared, batch: self.layered_batch.as_ref().map(Arc::downgrade),
+        }).source.clone();
         if source.is_cube() != cube { return Err(format!("image {path} acquired with an incompatible cube/array type")); }
         Ok(source)
+    }
+
+    fn finish_layered_batch(&self, publish: bool) {
+        let Some(batch) = &self.layered_batch else { return; };
+        let mut registry = self.registry.lock().unwrap_or_else(|error| error.into_inner());
+        registry.layered.retain(|_, entry| {
+            if !entry.batch.as_ref().is_some_and(|owner| owner.as_ptr() == Arc::as_ptr(batch)) {
+                return true;
+            }
+            if publish { entry.batch = None; }
+            publish
+        });
     }
 
     fn release_level(&self, shared: &super::texture_streaming::SharedImages) {
@@ -440,6 +465,48 @@ fn observe_discarded_batch(catalog: &archive::Catalog, path: &str) -> Result<(),
     eprintln!("DISCARDED_IMAGE_BATCH invalidated={invalidated} retried={retried} matched={matched} preserved={preserved} payload={expected}");
     if !(invalidated && retried && matched && preserved) {
         return Err("discarded image batch left a stale registration or changed published bytes".into());
+    }
+    observe_discarded_layered_batch(catalog, &registry, &mut assets)
+}
+
+fn observe_discarded_layered_batch(catalog: &archive::Catalog, registry: &ResidentImages,
+    assets: &mut Assets<Image>) -> Result<(), String> {
+    const DUST_CUBE: &str = "generated/image/models/campaign/dust/dust_oceancube.bimage7";
+    const EOTW_CUBE: &str = "generated/image/models/campaign/eotw/eotw_oceancube.bimage7";
+    const CAUSTICS: &str = "generated/image/rendering/water/caustics3.bimage7";
+    let cube = |registry: &ResidentImages, path: &str| {
+        registry.layered(catalog, path, true, || {
+            let source = crate::material::load_cube_image(catalog, path)?;
+            Ok(LayeredImageSource::cube(path.to_owned(), source.image))
+        })
+    };
+    let array = |registry: &ResidentImages| {
+        registry.layered(catalog, CAUSTICS, false, || {
+            let bytes = catalog.read(CAUSTICS).map_err(|error| error.to_string())?
+                .ok_or("missing installed caustics array")?;
+            let chain = crate::texture::compressed_inline_array_owned(bytes)?;
+            Ok(LayeredImageSource::array(CAUSTICS.to_owned(), chain))
+        })
+    };
+    let abandoned = PreparedImages::new(assets, registry.clone());
+    let abandoned_cube = Arc::downgrade(&cube(abandoned.registry(), DUST_CUBE)?);
+    let abandoned_array = Arc::downgrade(&array(abandoned.registry())?);
+    let committed = PreparedImages::new(assets, registry.clone());
+    let committed_cube = cube(committed.registry(), EOTW_CUBE)?;
+    committed.publish(assets);
+    let staged = abandoned_cube.strong_count() == 1 && abandoned_array.strong_count() == 1;
+    drop(abandoned);
+    let retired = abandoned_cube.strong_count() == 0 && abandoned_array.strong_count() == 0;
+    let preserved = Arc::ptr_eq(&committed_cube, &cube(registry, EOTW_CUBE)?);
+    let next = PreparedImages::new(assets, registry.clone());
+    let next_cube = cube(next.registry(), DUST_CUBE)?;
+    let next_array = array(next.registry())?;
+    next.publish(assets);
+    let retried = Arc::ptr_eq(&next_cube, &cube(registry, DUST_CUBE)?)
+        && Arc::ptr_eq(&next_array, &array(registry)?);
+    eprintln!("DISCARDED_LAYERED_BATCH staged={staged} retired={retired} preserved={preserved} retried={retried}");
+    if !(staged && retired && preserved && retried) {
+        return Err("layered image registration did not follow scene publication".into());
     }
     Ok(())
 }

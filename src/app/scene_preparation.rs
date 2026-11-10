@@ -60,14 +60,13 @@ pub(super) struct ScenePreparation {
     device: RenderDevice,
     shared_images: super::texture_streaming::SharedImages,
     audio: super::audio::AudioPreparation,
-    resident_images: super::resident_images::ResidentImages,
 }
 impl ScenePreparation {
     pub fn new(world: &mut World) -> Self {
         let resident_images = world.resource::<super::resident_images::ResidentImages>().clone();
         Self {
             meshes: AssetBatch::new(world.resource::<Assets<Mesh>>()),
-            images: super::resident_images::PreparedImages::new(world.resource::<Assets<Image>>(), resident_images.clone()),
+            images: super::resident_images::PreparedImages::new(world.resource::<Assets<Image>>(), resident_images),
             probes: AssetBatch::new(world.resource::<Assets<ProbeMaterial>>()),
             decals: AssetBatch::new(world.resource::<Assets<DecalMaterial>>()),
             skies: AssetBatch::new(world.resource::<Assets<SkyMaterial>>()),
@@ -78,7 +77,6 @@ impl ScenePreparation {
                 .resource::<super::texture_streaming::SharedImages>()
                 .clone(),
             audio: super::audio::AudioPreparation::take(world),
-            resident_images,
         }
     }
     pub fn prepare(
@@ -94,6 +92,7 @@ impl ScenePreparation {
             }
         };
         check_cancelled()?;
+        let resident_images = self.images.registry().clone();
         let mut scene = prepared
             .take_resource::<SceneData>()
             .expect("prepared scene");
@@ -123,12 +122,12 @@ impl ScenePreparation {
                 &scene,
                 programs,
                 self.images.assets(),
-                &self.resident_images,
+                &resident_images,
             )?;
             commands.insert_resource(frame);
             commands.insert_resource(source);
         }
-        commands.insert_resource(super::area_lights::prepare(&scene, self.images.assets(), &self.resident_images));
+        commands.insert_resource(super::area_lights::prepare(&scene, self.images.assets(), &resident_images));
         super::setup::prepare(
             &mut commands,
             &mut scene,
@@ -148,7 +147,7 @@ impl ScenePreparation {
             volumes.as_ref(),
             effects.as_ref(),
             Some(&self.shared_images),
-            &self.resident_images,
+            &resident_images,
             &check_cancelled,
         )?;
         check_cancelled()?;
@@ -173,7 +172,7 @@ impl ScenePreparation {
             .ids(|image| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
         // The session LUT was reserved outside this batch, but it still
         // participates in the existing display readiness gate.
-        if let Some(cube) = self.resident_images.default_colour_cube() {
+        if let Some(cube) = resident_images.default_colour_cube() {
             image_ids.push(cube.id());
         }
         prepared.insert_resource(SceneGpuInputs {
