@@ -6456,3 +6456,13 @@ text, fallbacks and Iggy imports, and release of inactive dictionaries
 after the last movie closes. Compare both lookup forms and installed
 content before claiming parity. The host wrapper costs one Arc per
 dictionary and preserves the existing thread-local player API.
+
+Installed localization acceptance at b6e68a2b. The two catalog scopes read
+one and two installed members. Both lookup forms matched for all 6,226
+Russian entries. The first catalog reused its Russian table after the
+second loaded one, and switching the first to English left its old
+dictionary usable only while its existing consumer held it. The current
+dictionary likewise released after catalog and consumer retirement.
+Loading and pause bitmap payloads matched the preceding Iggy build.
+This covers installed immutable dictionaries and the source lifetime.
+Evidence: DH2-collision-staging/artifacts/catalog-language-dictionary-20261110-comparison.json.
