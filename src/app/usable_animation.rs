@@ -1,7 +1,7 @@
 //! Per-instance AnimBasic playback for authored usable components.
 //! Rig/mesh acquisition runs on the IO worker; immutable assets are shared
 //! only while placements actually retain them.
-use std::{collections::HashMap, sync::{Arc, Weak}};
+use std::{collections::HashMap, sync::{Arc, Weak, atomic::Ordering}};
 use bevy::{prelude::*, tasks::{IoTaskPool, Task, block_on, futures_lite::future::poll_once}};
 use crate::{assets::animation_rig::BasicRig, gameplay::player::animation::{AnimBasicCommand, AnimBasicNode}};
 
@@ -10,12 +10,14 @@ struct Asset {
     model: Arc<crate::bmd6::ModelInfo>,
 }
 impl Asset {
-    fn load(catalog: &crate::archive::Catalog, path: &str) -> Result<Arc<Self>, String> {
+    fn load(catalog: &crate::archive::Catalog, path: &str, cancelled: impl Fn() -> bool) -> Result<Arc<Self>, String> {
+        if cancelled() { return Err("usable animation acquisition cancelled".into()); }
         let declaration = crate::bmd6::declaration_path(path).ok_or("usable model is not a compiled MD6")?;
         let rig_name = declaration.strip_prefix("generated/decls/md6def/")
             .and_then(|name| name.strip_suffix(".decl"))
             .ok_or("usable MD6 declaration path is invalid")?;
         let rig = BasicRig::load(catalog, rig_name)?;
+        if cancelled() { return Err("usable animation acquisition cancelled".into()); }
         let model = crate::bmd6::ModelSources::new(catalog).acquire(catalog, path)?;
         Ok(Arc::new(Self { rig, model }))
     }
@@ -57,6 +59,24 @@ pub(super) struct UsableAnimations {
 }
 
 impl UsableAnimations {
+    fn request_asset(&mut self, key: String, path: String, interactions: &super::interactions::Interactions) {
+        self.loading.entry(key).or_insert_with(|| {
+            let catalog = interactions.catalog.clone();
+            let closed = interactions.acquisitions_closed.clone();
+            std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
+                Asset::load(&catalog, &path, || closed.load(Ordering::Acquire))
+            }))
+        });
+    }
+
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        self.loading.retain(|_, task| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            block_on(poll_once(task)).is_none()
+        });
+        self.loading.is_empty()
+    }
+
     /// Physics publishes until an overlap has an actual animation pose; then
     /// this owner publishes their combined pose exactly once per frame.
     pub(super) fn combines_physics(&self, placement: usize) -> bool {
@@ -113,12 +133,8 @@ pub(super) fn advance(
             let slot = owner.placements.get_mut(&index).unwrap();
             slot.node = Some(asset.instantiate());
             slot.asset = Some(asset);
-        } else if !owner.loading.contains_key(&key) {
-            let catalog = interactions.catalog.clone();
-            let path = model.clone();
-            owner.loading.insert(key, std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
-                Asset::load(&catalog, &path)
-            })));
+        } else {
+            owner.request_asset(key, model, &interactions);
         }
     }
     let owner = &mut *owner;
@@ -251,6 +267,19 @@ pub(super) fn advance(
     }
 }
 
+/// Submit a real installed usable model without advancing any actor.
+pub(super) fn observe_level_acquisition(world: &mut World) -> bool {
+    if !world.contains_resource::<UsableAnimations>() { return false; }
+    world.resource_scope(|world, mut owner: Mut<UsableAnimations>| {
+        let (Some(interactions), Some(placements)) = (world.get_resource::<super::interactions::Interactions>(),
+            world.get_resource::<super::RenderSourcePlacements>()) else { return false };
+        let Some(placement) = placements.0.iter().find(|placement| animated_actor(interactions, placement).is_some())
+            else { return false };
+        owner.request_asset(placement.resource_path.clone(), placement.resource_path.clone(), interactions);
+        true
+    })
+}
+
 
 /// Observe the same acquisition/instance constructors for authored animated
 /// root placements. No frames, commands, visibility or gameplay are simulated.
@@ -264,7 +293,7 @@ pub(super) fn observe_resources(catalog: &crate::archive::Catalog,
         if animated_actor(interactions, placement).is_none() { continue; }
         let path = &placement.resource_path;
         let key = if catalog.has_overlays() { format!("{path}#{index}") } else { path.clone() };
-        let asset = assets.entry(key).or_insert_with(|| Asset::load(catalog, path));
+        let asset = assets.entry(key).or_insert_with(|| Asset::load(catalog, path, || false));
         match asset {
             Ok(asset) => {
                 let node = asset.instantiate();
