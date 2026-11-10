@@ -6,7 +6,13 @@
 use lewton::{audio::{get_decoded_sample_count, read_audio_packet_generic, read_wwise_audio_packet_generic,
     wwise_decoded_sample_count, wwise_packet_mode, PreviousWindowRight},
     header::{read_header_ident, read_header_setup, IdentHeader, SetupHeader}, samples::InterleavedSamples};
-use std::{io, sync::Arc};
+use hashbrown::{Equivalent, HashMap};
+use std::{
+    collections::hash_map::RandomState,
+    hash::Hash,
+    io,
+    sync::{Arc, LazyLock, Mutex, OnceLock},
+};
 
 pub struct PacketIndex {
     ident: Arc<IdentHeader>,
@@ -89,20 +95,69 @@ pub(super) fn wwise_layout_sized(bytes: &[u8], source_size: usize) -> Option<Wwi
     })
 }
 
-/// Decoder headers by Wwise setup packet: rebuilt once from the codebook
-/// library by converting only the media's header (no audio packets).
-type HeaderKey = (SetupKey, u32);
-static WWISE_HEADERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<HeaderKey, (Arc<IdentHeader>, Arc<SetupHeader>)>>> =
-    std::sync::LazyLock::new(Default::default);
+#[derive(Eq, Hash, PartialEq)]
+struct PacketKey<F> {
+    bytes: Box<[u8]>,
+    format: F,
+}
 
-pub(super) fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(Arc<IdentHeader>, Arc<SetupHeader>)> {
+/// Same hash as PacketKey, borrowing the source bytes until insertion.
+#[derive(Hash)]
+struct PacketLookup<'a, F> {
+    bytes: &'a [u8],
+    format: F,
+}
+
+impl<F: Eq> Equivalent<PacketKey<F>> for PacketLookup<'_, F> {
+    fn equivalent(&self, key: &PacketKey<F>) -> bool {
+        self.format == key.format && self.bytes == key.bytes.as_ref()
+    }
+}
+
+impl<F: Copy> PacketLookup<'_, F> {
+    fn owned(&self) -> PacketKey<F> {
+        PacketKey { bytes: self.bytes.into(), format: self.format }
+    }
+}
+
+type PacketCache<F, T> = LazyLock<Mutex<HashMap<PacketKey<F>, T, RandomState>>>;
+
+fn cached_packet<F: Copy + Eq + Hash, T: Clone>(
+    cache: &PacketCache<F, T>, lookup: &PacketLookup<'_, F>, kind: &str,
+) -> Option<T> {
+    static OBSERVE: OnceLock<bool> = OnceLock::new();
+    static COPY_KEYS: OnceLock<bool> = OnceLock::new();
+    let observe = *OBSERVE.get_or_init(|| std::env::var_os("DH2_DEBUG_VORBIS_KEYS").is_some_and(|value| value == "1"));
+    let copy_keys = observe && *COPY_KEYS.get_or_init(|| std::env::var_os("DH2_DEBUG_COPY_VORBIS_KEYS").is_some_and(|value| value == "1"));
+    let started = if observe { crate::loading::thread_cycles() } else { None };
+    let found = if copy_keys {
+        let key = lookup.owned();
+        cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+    } else {
+        cache.lock().unwrap_or_else(|e| e.into_inner()).get(lookup).cloned()
+    };
+    if observe {
+        let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(a, b)| b.saturating_sub(a));
+        let copied_bytes = if copy_keys { lookup.bytes.len() } else { 0 };
+        eprintln!("VORBIS_KEY kind={kind} hit={} copied_bytes={copied_bytes} cycles={cycles}", found.is_some());
+    }
+    found
+}
+
+type SetupFormat = (u8, (u8, u8));
+type DecoderHeaders = (Arc<IdentHeader>, Arc<SetupHeader>);
+
+/// Decoder headers rebuilt once per Wwise setup packet and source format.
+static WWISE_HEADERS: PacketCache<(SetupFormat, u32), DecoderHeaders> = LazyLock::new(Default::default);
+
+pub(super) fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<DecoderHeaders> {
     let data = bytes.get(layout.data.start..).ok_or_else(|| invalid("Wwise data header outside prefix"))?;
     let setup = data.get(layout.setup..layout.first_audio).ok_or_else(|| invalid("Wwise setup outside data"))?;
     // Codebooks can share across sample rates; the identification header
     // cannot. 1411606d0 reads each source's fmt sample rate independently.
-    let key = ((setup.to_vec(), layout.channels, layout.blocksizes), layout.sample_rate);
-    if let Some(headers) = WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Ok(headers.clone());
+    let lookup = PacketLookup { bytes: setup, format: ((layout.channels, layout.blocksizes), layout.sample_rate) };
+    if let Some(headers) = cached_packet(&WWISE_HEADERS, &lookup, "wwise") {
+        return Ok(headers);
     }
     let mut header = bytes[..layout.data.start + layout.first_audio].to_vec();
     header[layout.data.start - 4..layout.data.start].copy_from_slice(&(layout.first_audio as u32).to_le_bytes());
@@ -110,7 +165,7 @@ pub(super) fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(A
     header[4..8].copy_from_slice(&riff.to_le_bytes());
     let index = PacketIndex::new(&super::decode_wem(&header)?)?;
     let headers = (index.ident, index.setup);
-    Ok(WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(headers).clone())
+    Ok(WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).entry(lookup.owned()).or_insert(headers).clone())
 }
 
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message.to_owned()) }
@@ -118,9 +173,7 @@ fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidDa
 /// Decoded setups by (setup packet, channels, block sizes). Wwise encodes
 /// from a shared codebook library, so many streams carry the same setup;
 /// its decoded codebooks are large and identical, so each is kept once.
-type SetupKey = (Vec<u8>, u8, (u8, u8));
-static SETUPS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<SetupKey, Arc<SetupHeader>>>> =
-    std::sync::LazyLock::new(Default::default);
+static SETUPS: PacketCache<SetupFormat, Arc<SetupHeader>> = LazyLock::new(Default::default);
 
 /// Final session retirement drops cache ownership even when a decoder still
 /// holds a header. Those decoder Arcs remain valid until their own retirement.
@@ -154,13 +207,13 @@ pub(crate) fn release_unused_headers() {
 }
 
 fn shared_setup(packet: &[u8], channels: u8, blocksizes: (u8, u8)) -> io::Result<Arc<SetupHeader>> {
-    let key = (packet.to_vec(), channels, blocksizes);
-    if let Some(setup) = SETUPS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Ok(setup.clone());
+    let lookup = PacketLookup { bytes: packet, format: (channels, blocksizes) };
+    if let Some(setup) = cached_packet(&SETUPS, &lookup, "decoder") {
+        return Ok(setup);
     }
     let setup = Arc::new(read_header_setup(packet, channels, blocksizes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))?);
-    Ok(SETUPS.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert(setup).clone())
+    Ok(SETUPS.lock().unwrap_or_else(|e| e.into_inner()).entry(lookup.owned()).or_insert(setup).clone())
 }
 
 impl PacketIndex {
