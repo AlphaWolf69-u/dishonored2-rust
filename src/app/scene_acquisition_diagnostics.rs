@@ -141,6 +141,9 @@ pub fn inspect_scene_publication(
     if let [flag, name] = levels {
         match flag.as_str() {
             "--editable-sound-event" => return inspect_editable_sound_event(base, name),
+            "--physics-system-scopes" => {
+                return crate::assets::physworld::physics_system::observe_resource_scopes(base, name).map_err(Into::into);
+            }
             "--contact-catalog-scopes" => {
                 return crate::assets::declaration_texts::observe_catalog_scopes(base, name).map_err(Into::into);
             }
