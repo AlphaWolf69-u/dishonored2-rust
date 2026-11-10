@@ -14,7 +14,6 @@ declaration. Particle programs connected: `particle/add_default`,
 | `particle/blood` | 19 materials (combat blood, camera blood, eotw fish blood) | blocked: see below |
 | `arkeyeball` | 23 materials | none: character eye program |
 | Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
-| World-material sprite renderers | Dust District leaves (`arkVegetation` sprites) | none: `ParticleMaterial` refuses non-particle programs, failing the whole FX; meshes with world materials already draw through `particle_meshes` |
 | World FX target/tag pose producer | eotw world FX | none: `world_particle_state` refuses targeted FX |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
 | `particle/fire`, `particle/filing_container` | 2 and 8 materials | none |
@@ -48,3 +47,12 @@ near that view. Next step: an original capture with a stink bug (eotw) in a
 shadow-casting light, then the census of shadow-pass draws using
 `ro_directinstancebuffer`; if present, add the proxy surfaces to the
 rewrite's dynamic caster list with their instance records.
+
+## Not gaps
+
+World-material sprite renderers: the original publishes sprite and mesh
+renderers as the same surface record, so a sprite with a world MAIN program
+would draw through its material's passes. No installed content does this:
+all 8,909 installed FX declarations (and every level's world FX) contain 0
+sprites with world materials; the 56 world-material particle surfaces are all
+meshes, which `particle_meshes` already draws.
