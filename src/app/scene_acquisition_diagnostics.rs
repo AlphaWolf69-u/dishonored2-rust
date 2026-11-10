@@ -353,6 +353,9 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
             .map_err(|error| format!("FX decal proxies: {error:?}"))?;
         render_epoch(app)
     };
+    if let Ok(path) = std::env::var("DH2_DEBUG_RUNTIME_FX_ALIAS_IMAGE") {
+        observe_runtime_fx_image_aliases(app, catalog, &path, &epoch)?;
+    }
     let leases = Arc::new(vec![Arc::downgrade(&sources)]);
     let generation = if std::env::var_os("DH2_DEBUG_MATERIAL_SUPERSESSION").is_some_and(|value| value == "1") {
         // Submit the real installed material batch, then replace its revision
@@ -441,6 +444,64 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         app.world().resource::<SceneRenderQueue>(),
     );
     eprintln!("RESOURCE_RUNTIME_FX_RETIRED_SLOTS free={free} requests={requests} requested_free={requested_free}");
+    Ok(())
+}
+
+fn observe_runtime_fx_image_aliases(
+    app: &mut App,
+    catalog: &archive::Catalog,
+    path: &str,
+    epoch: &impl Fn(&mut App) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::{runtime_fx_images::RuntimeFxImages, usable_effects::DynamicWorldMaterials};
+    use crate::rendering::particles::{definition::ParticleResources, image_resources::ParticleImage};
+    use std::sync::Arc;
+
+    if app.world().resource::<SceneRenderQueue>().diffuse_image_paths.iter().any(|existing| existing == path) {
+        return Err("FX alias observation needs an image absent from the prepared map".into());
+    }
+    let acquire = || -> Result<Arc<ParticleImage>, String> {
+        let mut resources = ParticleResources::default();
+        resources.use_scene_images();
+        resources.scene_image(catalog, path)?.ok_or_else(|| format!("missing scene image {path}"))
+    };
+    let first = acquire()?;
+    let second = acquire()?;
+    if Arc::ptr_eq(&first, &second) || first.path != second.path {
+        return Err("FX alias observation did not acquire distinct descriptors of one path".into());
+    }
+    let publish = |app: &mut App, images: Vec<Arc<ParticleImage>>| {
+        let mut world = app.world_mut().resource_mut::<DynamicWorldMaterials>();
+        world.extra_images = images;
+        world.image_revision = world.image_revision.wrapping_add(1);
+    };
+    let binding = |app: &App| {
+        let world = app.world();
+        let slot = world.resource::<RuntimeFxImages>().slot(path)?;
+        world.resource::<SceneRenderQueue>().diffuse_image_handles[slot].as_ref().map(|image| (slot, image.id()))
+    };
+    publish(app, vec![first, second.clone()]);
+    let start = std::time::Instant::now();
+    let initial = loop {
+        epoch(app)?;
+        if let Some(binding) = binding(app) { break binding; }
+        if start.elapsed() > std::time::Duration::from_secs(60) {
+            return Err("FX alias image did not reach the streaming registry".into());
+        }
+    };
+    publish(app, vec![second.clone()]);
+    epoch(app)?;
+    let replacement = binding(app) == Some(initial);
+    publish(app, Vec::new());
+    epoch(app)?;
+    let tail = binding(app) == Some(initial);
+    drop(second);
+    epoch(app)?;
+    let released = binding(app).is_none();
+    eprintln!("RESOURCE_RUNTIME_FX_IMAGE_ALIAS slot={} replacement={replacement} tail={tail} released={released}", initial.0);
+    if !(replacement && tail && released) {
+        return Err("FX image slot ownership did not follow both source identities".into());
+    }
     Ok(())
 }
 

@@ -6,12 +6,47 @@ use crate::rendering::{bevy_backend::particle_images::SceneParticleImages, parti
 struct Slot {
     index: usize,
     image: Weak<ParticleImage>,
+    alternate_images: Vec<Weak<ParticleImage>>,
     owned: bool,
     registered: bool,
     added_consumer: bool,
     wanted: bool,
     discard_read: bool,
     lease: Option<Arc<super::resident_images::ResidentImage>>,
+}
+
+impl Slot {
+    fn note_image(&mut self, image: &Arc<ParticleImage>) {
+        let identity = Arc::as_ptr(image);
+        if self.image.as_ptr() == identity {
+            return;
+        }
+        self.alternate_images.retain(|other| other.strong_count() != 0);
+        if self.image.strong_count() == 0 {
+            self.alternate_images.retain(|other| other.as_ptr() != identity);
+            self.image = Arc::downgrade(image);
+        } else if !self.alternate_images.iter().any(|other| other.as_ptr() == identity) {
+            // Editable acquisitions can have separate descriptors for the
+            // same path. The scene lease still belongs to the first identity.
+            self.alternate_images.push(Arc::downgrade(image));
+        }
+    }
+
+    fn has_external_owner(&self) -> bool {
+        self.image.strong_count() > usize::from(self.added_consumer)
+            || self.alternate_images.iter().any(|image| image.strong_count() != 0)
+    }
+
+    fn registration_image(&mut self) -> Option<Arc<ParticleImage>> {
+        if let Some(image) = self.image.upgrade() {
+            return Some(image);
+        }
+        let index = self.alternate_images.iter().position(|image| image.strong_count() != 0)?;
+        let source = self.alternate_images.swap_remove(index);
+        let image = source.upgrade()?;
+        self.image = source;
+        Some(image)
+    }
 }
 
 #[derive(Resource, Default)]
@@ -88,13 +123,11 @@ pub(super) fn synchronize(
             let path = source.path.clone();
             if let Some(slot) = state.slots.get_mut(&path) {
                 slot.wanted = true;
-                // An immutable registry normally reuses the same identity; a
-                // fresh acquisition after retirement must not retain a dead weak pointer.
-                if slot.image.strong_count() == 0 { slot.image = Arc::downgrade(source); }
+                slot.note_image(source);
                 continue;
             }
             if let Some((index, _)) = consumers.slots.iter().find(|(_, image)| image.path == path) {
-                state.slots.insert(path, Slot { index: *index, image: Arc::downgrade(source), owned: false, registered: true, added_consumer: false, wanted: true, discard_read: false, lease: None });
+                state.slots.insert(path, Slot { index: *index, image: Arc::downgrade(source), alternate_images: Vec::new(), owned: false, registered: true, added_consumer: false, wanted: true, discard_read: false, lease: None });
                 continue;
             }
             let existing = queue.diffuse_image_paths.iter().position(|name| name == path.as_ref());
@@ -121,7 +154,7 @@ pub(super) fn synchronize(
                 queue.diffuse_image_demands[index] = super::texture_streaming::image_demand(&path, priority.max(1));
             }
             queue.diffuse_mip_states[index].sampling_priority = priority;
-            state.slots.insert(path, Slot { index, image: Arc::downgrade(source), owned: existing.is_none(), registered: false, added_consumer: false, wanted: true, discard_read: false, lease: None });
+            state.slots.insert(path, Slot { index, image: Arc::downgrade(source), alternate_images: Vec::new(), owned: existing.is_none(), registered: false, added_consumer: false, wanted: true, discard_read: false, lease: None });
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_request={} slot={index} reused_scene={}", source.path, existing.is_some());
             }
@@ -140,10 +173,9 @@ pub(super) fn synchronize(
             remove.push(path.clone());
             continue;
         }
-        let strong = slot.image.strong_count();
         // One registered scene consumer is our lease; all other strong
         // references belong to active definitions, instances or GPU material.
-        if strong <= usize::from(slot.added_consumer) {
+        if !slot.has_external_owner() {
             if slot.owned && !slot.wanted && worker.inflight[slot.index] {
                 if slot.discard_read || !worker.cancel_queued(slot.index) {
                     // The old slot stays reserved until the submitted read
@@ -179,7 +211,7 @@ pub(super) fn synchronize(
             }
         }
         if slot.registered { continue; }
-        let Some(image) = slot.image.upgrade() else { continue };
+        let Some(image) = slot.registration_image() else { continue };
         Arc::make_mut(&mut consumers.slots).push((slot.index, image));
         Arc::make_mut(&mut consumers.handles).insert(path.clone(), handle);
         slot.registered = true;
