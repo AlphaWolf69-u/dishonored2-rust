@@ -755,6 +755,14 @@ fn inspect_scene_resources(
                     camera.is_active = false;
                 }
                 if observe_initial_images {
+                    let ready_common = |world: &World| {
+                        let scene = world.resource::<SceneRenderQueue>();
+                        let shared = world.resource::<super::texture_streaming::SharedImages>();
+                        scene.diffuse_image_paths.iter().enumerate()
+                            .filter(|(slot, path)| shared.contains(path) && scene.diffuse_mip_states[*slot].resident.is_some())
+                            .count()
+                    };
+                    let ready_before = ready_common(app.world());
                     std::thread::scope(|scope| {
                         if let Some(reader) = base_reader { scope.spawn(move || reader.read(|| false)); }
                         let result = super::loading_screen::observe_initial_image_phases(&mut app, &catalog, render_epoch);
@@ -763,12 +771,8 @@ fn inspect_scene_resources(
                         app.world_mut().remove_resource::<super::texture_streaming::PreparedBaseImages>();
                         result
                     })?;
-                    let scene = app.world().resource::<SceneRenderQueue>();
-                    let shared = app.world().resource::<super::texture_streaming::SharedImages>();
-                    let common = scene.diffuse_image_paths.iter().enumerate()
-                        .filter(|(slot, path)| shared.contains(path) && scene.diffuse_mip_states[*slot].resident.is_some())
-                        .count();
-                    eprintln!("INITIAL_TEXTURE_COMMON step={step} resident={common}");
+                    let resident = ready_common(app.world());
+                    eprintln!("INITIAL_TEXTURE_COMMON step={step} before={ready_before} resident={resident}");
                 }
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;
