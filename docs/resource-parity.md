@@ -5450,7 +5450,7 @@ Installed acquisition acceptance (c98c8ec6). Four clean same-build windowless Eo
 
 ### Compiled world UV staging
 
-The BWM v21 reader (140296240) consumes a 20-byte vertex attribute stream with an authored half2 UV0. The forward mesh already uses half2. Keeping the source representation in staging removes the widen/narrow pair and four CPU bytes per staged vertex, while the baked shear and diagnostic float output still widen when required.
+The original dispatcher 140295fa0 routes the installed BWM version word 0x00010015 to 1402974c0. Its earlier-version path is 140296240. The v21 reader uploads the section buffers through 1402d3550/1402d3aa0 using a stream view or reusable TAG_TEMP scratch, and uses vertex declaration 8 for the mesh descriptors. The installed 20-byte vertex attribute stream contains authored half2 UV0. The forward mesh already uses half2. Keeping the source representation in staging removes the widen/narrow pair and four CPU bytes per staged vertex, while the baked shear and diagnostic float output still widen when required.
 
 Installed acceptance (380bade5). EotW/Dust/EotW prepared and uploaded 18,848,218 world mesh UV pairs that match their installed half bits, with no mismatch. EotW UV0 staging uses 20,585,928 instead of 41,171,856 bytes; Dust uses 20,869,224 instead of 41,738,448. Uploaded and retired GPU asset counts, static-model UV observations and material fingerprints match the previous installed route. Both routes return to 11,075,584 live device bytes and 201,326,592 reserved bytes on every unload. These are CPU staging capacities, with no permanent world-geometry CPU copy or gameplay timing claim. Evidence: DH2-fx-resources/artifacts/packed-world-uvs-20261110-comparison.json. No game window or test suite ran.
 
