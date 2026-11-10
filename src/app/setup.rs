@@ -291,6 +291,16 @@ pub(super) fn prepare(
         if let Some(set) = std::sync::Arc::get_mut(set) {
             set.vertex_references.instance_offsets = Vec::new();
             set.vertex_references.tetrahedron_indices = Vec::new();
+            let retain_source = env::var_os("DH2_DEBUG_RETAIN_VERTEX_PROBE_SOURCES").is_some_and(|v| v == "1");
+            if trace_probe {
+                let position_bytes = set.spatial.vertex_positions.capacity() * size_of::<[f32; 3]>();
+                let table_bytes = set.vertex_references.cell_probe_indices.capacity() * size_of::<[u32; 4]>();
+                eprintln!("MEMORY vertex probe source retirement: retain={retain_source} position_bytes={position_bytes} table_bytes={table_bytes}");
+            }
+            if !retain_source {
+                set.spatial.vertex_positions = Vec::new();
+                set.vertex_references.cell_probe_indices = Vec::new();
+            }
         }
         buffer
     } else {

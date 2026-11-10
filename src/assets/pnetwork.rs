@@ -65,12 +65,6 @@ pub struct Tetrahedron {
     pub probe_indices: [u16; 4],
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct TetrahedronVertex {
-    pub position: [f32; 3],
-    pub probe_weights: [u8; 4],
-}
-
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub probe_name: String,
@@ -96,7 +90,8 @@ pub struct SpatialData {
     pub voronoi_version: u32,
     pub cell_count: usize,
     pub tetrahedra: Vec<Tetrahedron>,
-    pub vertices: Vec<TetrahedronVertex>,
+    pub vertex_positions: Vec<[f32; 3]>,
+    pub vertex_probe_weights: Vec<[u8; 4]>,
     pub bytes_consumed: usize,
 }
 
@@ -186,20 +181,20 @@ fn read_spatial<R: Read>(input: &mut Input<R>) -> Result<SpatialData, String> {
     let vertex_bytes = input.u32()? as usize;
     if vertex_bytes % 16 != 0 { return Err(format!("tetrahedron-vertex buffer has invalid byte size {vertex_bytes}")); }
     if vertex_bytes > input.limit.saturating_sub(input.position) { return Err("truncated tetrahedron-vertex shader buffer".into()); }
-    let mut vertices = Vec::with_capacity(vertex_bytes / 16);
+    let mut vertex_positions = Vec::with_capacity(vertex_bytes / 16);
+    let mut vertex_probe_weights = Vec::with_capacity(vertex_bytes / 16);
     read_records::<_, 16>(input, vertex_bytes / 16, |raw| {
-        let packed = word(raw, 12);
-        vertices.push(TetrahedronVertex { position: [f32::from_bits(word(raw, 0)), f32::from_bits(word(raw, 4)), f32::from_bits(word(raw, 8))],
-            probe_weights: [packed as u8, (packed >> 8) as u8, (packed >> 16) as u8, (packed >> 24) as u8] });
+        vertex_positions.push([0, 4, 8].map(|offset| f32::from_bits(word(raw, offset))));
+        vertex_probe_weights.push(raw[12..16].try_into().unwrap());
     })?;
-    if tetrahedra.iter().any(|t| t.vertex_indices.iter().any(|&i| i as usize >= vertices.len())) {
+    if tetrahedra.iter().any(|t| t.vertex_indices.iter().any(|&i| i as usize >= vertex_positions.len())) {
         return Err("tetrahedron references a vertex outside its shader buffer".into());
     }
     if cells.iter().any(|c| c.first_tetrahedron.checked_add(c.tetrahedron_count).is_none_or(|end| end > runtime_tetrahedra.len()))
         || runtime_tetrahedra.iter().any(|t| t.shader_index >= tetrahedra.len()) {
         return Err("Voronoi CPU query references an invalid tetrahedron".into());
     }
-    Ok(SpatialData { voronoi_version, cell_count, cells, runtime_tetrahedra, tetrahedra, vertices, bytes_consumed: input.position })
+    Ok(SpatialData { voronoi_version, cell_count, cells, runtime_tetrahedra, tetrahedra, vertex_positions, vertex_probe_weights, bytes_consumed: input.position })
 }
 
 pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> {
@@ -282,8 +277,11 @@ pub(crate) fn fingerprint(names: &[String], secondary: &[String], data: &Spatial
     for t in &data.runtime_tetrahedra { u64v(&mut c,t.shader_index as u64); u32v(&mut c,t.cell_index); for p in &t.positions { for v in p { u32v(&mut c,v.to_bits()); } } }
     u64v(&mut c,data.tetrahedra.len() as u64);
     for t in &data.tetrahedra { for v in t.vertex_indices { u32v(&mut c,v); } for v in t.probe_indices { c.update(&v.to_le_bytes()); } }
-    u64v(&mut c,data.vertices.len() as u64);
-    for v in &data.vertices { for x in v.position { u32v(&mut c,x.to_bits()); } c.update(&v.probe_weights); }
+    u64v(&mut c,data.vertex_positions.len() as u64);
+    for (position, weights) in data.vertex_positions.iter().zip(&data.vertex_probe_weights) {
+        for x in position { u32v(&mut c,x.to_bits()); }
+        c.update(weights);
+    }
     u64v(&mut c,refs.cell_probe_indices.len() as u64); for row in &refs.cell_probe_indices { for &v in row { u32v(&mut c,v); } }
     let mut bytes = [0u8; 65536];
     for values in [&refs.tetrahedron_indices, &refs.instance_offsets] {
