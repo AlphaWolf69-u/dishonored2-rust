@@ -20,7 +20,7 @@ pub(super) struct SkinPublication {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn publish_skin(
     placement_index: usize,
-    model: &crate::bmd6::ModelInfo,
+    model: &crate::bmd6::SkinModel,
     palette: Vec<Affine>,
     publication: &mut SkinPublication,
     meshes: &mut Assets<Mesh>,
@@ -31,7 +31,7 @@ pub(super) fn publish_skin(
 ) {
     let Some(placement) = placements.0.get(placement_index) else { return; };
     let Some(source) = sources.0.iter_mut().find(|s| s.placement == placement_index) else { return; };
-    publish_target(placement, source, model, palette, publication, meshes, buffers, queue);
+    publish_target(placement, source, model.surfaces(), palette, publication, meshes, buffers, queue);
 }
 
 /// Existing physics callers already have these references before evaluating a
@@ -40,7 +40,7 @@ pub(super) fn publish_skin(
 pub(super) fn publish_target(
     placement: &crate::entities::PlacedModel,
     source: &mut ModelShadowSource,
-    model: &crate::bmd6::ModelInfo,
+    surfaces: &[crate::bmd6::SurfaceInfo],
     palette: Vec<Affine>,
     publication: &mut SkinPublication,
     meshes: &mut Assets<Mesh>,
@@ -59,7 +59,7 @@ pub(super) fn publish_target(
         let instance = &mut queue.instances[index];
         let handle = instance.mesh.clone();
         let Some(RenderModelSurface::Bmd6 { surface, .. }) = instance.source.map(|s| s.surface) else { continue; };
-        let Some(info) = model.surfaces.get(surface) else { continue; };
+        let Some(info) = surfaces.get(surface) else { continue; };
         if info.skin_influences == 0 { continue; }
         let baked = instance.source.is_some_and(|s| s.world_baked);
         if let Some(mut mesh) = meshes.get_mut(&handle) {

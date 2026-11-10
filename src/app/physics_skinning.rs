@@ -187,7 +187,7 @@ pub(super) fn pose_physics_systems(
             continue;
         };
         super::skin_publication::publish_target(
-            placement, source, &skin.model, palette, &mut skin.publication, meshes, buffers, queue,
+            placement, source, &skin.model.surfaces, palette, &mut skin.publication, meshes, buffers, queue,
         );
     }
 }

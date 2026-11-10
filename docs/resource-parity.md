@@ -6567,3 +6567,19 @@ LOD0-selection spans measured 6,306,227 versus 234,979 thread cycles
 in the dev observation. This covers archive selection and prepared
 geometry. It does not measure walking or animation playback. Evidence:
 DH2-fx-level-lifetime/artifacts/usable-rig-mesh-source-20261110-comparison.json.
+
+### Usable animation skin-source storage
+
+Prediction before implementation. Original 14025aa00 consumes the
+compiled MD6 model and 14025e4d0 selects the streams and offset for a
+skin surface. The usable worker has already-published render meshes.
+Its CPU pose only needs bind positions, packed normal/tangent
+channels, joint indices/weights and the matrix offset. The worker
+currently assembles and retains a second UV0 and triangle-index copy.
+Decode through the same member and structural checks, keeping only
+the needed arrays for this owner. Expect four bytes per vertex and
+two bytes per index of unused allocation removed, with unchanged
+source bytes, skin fields, render meshes and actor behavior. The
+normal model reader and physics owners retain their existing payload.
+Compare capacities and the affected acquisition spans using installed
+usable models and a full-data reference in the same build.

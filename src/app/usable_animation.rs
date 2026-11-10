@@ -7,7 +7,7 @@ use crate::{assets::animation_rig::BasicRig, gameplay::player::animation::{AnimB
 
 struct Asset {
     rig: BasicRig,
-    model: Arc<crate::bmd6::ModelInfo>,
+    model: crate::bmd6::SkinModel,
 }
 impl Asset {
     fn load(catalog: &crate::archive::Catalog, path: &str, cancelled: impl Fn() -> bool) -> Result<Arc<Self>, String> {
@@ -18,7 +18,7 @@ impl Asset {
             .ok_or("usable MD6 declaration path is invalid")?;
         let rig = BasicRig::load(catalog, rig_name)?;
         if cancelled() { return Err("usable animation acquisition cancelled".into()); }
-        let model = crate::bmd6::ModelSources::new(catalog).acquire_for_rig(catalog, path, &rig)?;
+        let model = crate::bmd6::ModelSources::acquire_skin_for_rig(catalog, path, &rig)?;
         Ok(Arc::new(Self { rig, model }))
     }
     fn instantiate(&self) -> AnimBasicNode { self.rig.template.clone() }
@@ -303,6 +303,30 @@ pub(super) fn observe_resources(catalog: &crate::archive::Catalog,
             }
             Err(error) => { failures += 1; eprintln!("ANIMBASIC_INSTANCE_FAILURE path={path} error={error}"); }
         }
+    }
+    for (path, asset) in &assets {
+        let Ok(asset) = asset else { continue; };
+        let mut signature = blake3::Hasher::new();
+        let mut vertices = 0;
+        let mut indices = 0;
+        let mut render_bytes = 0;
+        for surface in asset.model.surfaces() {
+            signature.update(&surface.vertex_count.to_le_bytes());
+            signature.update(&surface.index_count.to_le_bytes());
+            signature.update(&surface.matrix_offset.to_le_bytes());
+            signature.update(&[surface.skin_influences]);
+            for value in surface.positions.iter().flatten() {
+                signature.update(&value.to_le_bytes());
+            }
+            for stream in &surface.packed_channels { signature.update(stream); }
+            for stream in &surface.skin_indices { signature.update(stream); }
+            for stream in &surface.skin_weights { signature.update(stream); }
+            vertices += surface.positions.len();
+            indices += surface.index_count as usize;
+            render_bytes += surface.uvs.capacity() * std::mem::size_of::<[half::f16; 2]>()
+                + surface.indices.capacity() * std::mem::size_of::<u16>();
+        }
+        eprintln!("ANIMBASIC_SKIN_SOURCE path={path} vertices={vertices} indices={indices} render_bytes={render_bytes} signature={}", signature.finalize());
     }
     let mut unique = std::collections::HashSet::new();
     let mut aliases = 0;
