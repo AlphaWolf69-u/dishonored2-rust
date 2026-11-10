@@ -24,8 +24,8 @@ All 8,909 installed FX declarations loaded through `WorldFxSources`
 (local census `examples/fx_failure_census.rs`; `examples/` is not tracked): effects=8909 failed_effects=10 particles=2171 failed_particles=1233.
 Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
-radial-ramp opacity, bare rotation orders and clipping planes are
-connected; 1,114 particle declarations still fail.
+radial-ramp opacity, bare rotation orders, clipping planes and stage
+sorting are connected; 1,097 particle declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -96,3 +96,12 @@ would draw through its material's passes. No installed content does this:
 all 8,909 installed FX declarations (and every level's world FX) contain 0
 sprites with world materials; the 56 world-material particle surfaces are all
 meshes, which `particle_meshes` already draws.
+
+## Stage-to-stage spawning (`m_spawnStage`, 55 first failures)
+
+`m_spawnStage { m_stageName, m_lifeRestriction, m_velocityRedirectionAngle,
+m_initialVelocity, m_spawnOnlyFromStage }` makes a stage emit from another
+stage's live particles (e.g. pipes_steam_02's "steam_body_+X"). The rewrite
+parses only m_spawnOnlyFromStage and has no stage-to-stage emission. Next
+step: trace the spawn path in 1f4e00 for the parent-stage source and port it
+with the remaining fields.
