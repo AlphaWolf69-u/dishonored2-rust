@@ -102,6 +102,13 @@ meshes, which `particle_meshes` already draws.
 `m_spawnStage { m_stageName, m_lifeRestriction, m_velocityRedirectionAngle,
 m_initialVelocity, m_spawnOnlyFromStage }` makes a stage emit from another
 stage's live particles (e.g. pipes_steam_02's "steam_body_+X"). The rewrite
-parses only m_spawnOnlyFromStage and has no stage-to-stage emission. Next
-step: trace the spawn path in 1f4e00 for the parent-stage source and port it
-with the remaining fields.
+parses only m_spawnOnlyFromStage and has no stage-to-stage emission. Found
+(2026-11-10): `arkParentSpawnStage` is inline at stage descriptor +0
+(m_stageName idAtomicString +0, m_spawnOnlyFromStage +8, curves
+m_lifeRestriction +0x10, m_initialVelocity +0xD8, m_velocityRedirectionAngle
++0x1A0). System setup 140201760 resolves the parent stage by descriptor and
+stores it at stage +0x110; the stage step 1f4e00 calls 1401f3f10 (2,578
+bytes), which returns at once without a parent and otherwise evaluates the
+spawn curves (keys +0x218, values +0x230 relative to the descriptor) to emit
+from the parent's particles. Next step: port 1401f3f10 whole and feed the
+parent stage's live particles into the child's emission.
