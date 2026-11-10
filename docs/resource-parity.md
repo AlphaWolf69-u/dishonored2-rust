@@ -6246,3 +6246,14 @@ The 36 ordered probe acquisition records match the earlier full route,
 including primary, secondary and rejected counts. Geometry and GPU upload
 byte parity remain measured on Edge of the World and Dust District.
 Evidence: `DH2-collision-staging/artifacts/integrated-all-level-acquisition-20261110.json`.
+
+Tiled-light publication prediction. Original `140371750` owns the
+1,152,000 four-byte light-node links and the lighting records. The host
+releases its view-scoped TLF pass at the render handoff, but the forward
+area-light publisher still holds the outgoing records, list heads and node
+pool. Save the forward renderer's initial empty bindings and restore them
+at the existing release boundary with a disabled grid. At 1920×1080 and
+16-pixel tiles the three outgoing buffers total 4,788,736 logical bytes.
+Expect their allocations to retire after submitted GPU work drains. The
+shared texture array and device pipelines remain with their own owners.
+No additional upload, draw work or per-frame reference clone is expected.
