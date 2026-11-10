@@ -3,6 +3,9 @@
 //! 14020dea0 -> 14020cfc0. The trail follows its particle: only live
 //! particles' trails are built (1401f3060) and a respawn restarts the record.
 //! Basis arguments are the stage owner's row-major 3x3 (stage +0x1c).
+mod strip;
+pub use strip::{TrailTransform, TrailVertex};
+
 use super::pose::EmitterPose;
 use crate::{
     assets::fx::particle_trail::ParticleTrailAsset,
