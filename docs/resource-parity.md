@@ -6104,3 +6104,15 @@ the separate mutable tails remain on the model lighting owner. Both maps
 returned to zero GPU buffers after release. Active motion and arm patches
 were traced in source and were outside the windowless observations.
 Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.
+
+Particle scene-image retirement prediction. Original image publication
+1402f5530 and residency 14030f3d0 own the active texture independently of
+particle bindings. The host GPU particle cache retained a strong reference
+to the previous map of scene image handles and its view objects. The final
+effect can end with no draws, bypassing image synchronization until a later
+effect starts. Track publication identity weakly and remove absent views
+when the particle pass is idle or preparing a changed publication. Active
+materials and submitted work keep their own leases. Retained path view
+changes still use the existing GPU-ready synchronization. Expect no uploads
+or view rebuilds for unchanged publications and no retired handles pinned
+by an idle particle pass.

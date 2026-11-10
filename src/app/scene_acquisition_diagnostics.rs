@@ -382,6 +382,11 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         .map(|decal| decal.handle.id()).filter(|id| !baseline_decals.contains(id)).collect();
     eprintln!("RESOURCE_RUNTIME_FX_PUBLISH proxies={} images={} meshes={} decal_materials={}",
         proxies.len(), images.len(), meshes.len(), decal_materials.len());
+    if std::env::var_os("DH2_DEBUG_PARTICLE_SCENE_RETIREMENT").is_some_and(|value| value == "1") {
+        crate::rendering::bevy_backend::particle_images::observe_scene_retirement(
+            world.resource(), app.sub_app(RenderApp).world().resource(), &images,
+        )?;
+    }
     if images.is_empty() && meshes.is_empty() && decal_materials.is_empty() {
         return Err("runtime FX reused startup assets; select a level without those resources".into());
     }

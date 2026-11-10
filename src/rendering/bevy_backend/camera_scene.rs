@@ -408,6 +408,7 @@ fn render_particles(
             crate::loading::complete(PARTICLE_GATE);
             let prewarm = &lighting_scene.prewarm;
             let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            particle_images.retire_scene_views(&lighting_scene.scene_images);
             if let Some(particles) = particles.as_mut() {
                 if particles.retirement != prewarm.retirement {
                     particles.pass.retire_unused_materials();
