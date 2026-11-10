@@ -689,7 +689,7 @@ pub(super) fn prepare_level(
         if !missing_materials.is_empty() {
             println!("Physics materials unresolved: {missing_materials:?}");
         }
-        let mut resolved: Vec<_> = materials.iter().flatten().map(|material| (**material).clone()).collect();
+        let mut resolved: Vec<_> = materials.iter().flatten().map(|material| material.material().clone()).collect();
         let slot: Vec<u32> = materials
             .iter()
             .scan(0u32, |next, material| {

@@ -6897,3 +6897,15 @@ The shared definition supplies the snapshot during preparation, while
 world material libraries retain the actual Arc generation. This intentional
 host projection preserves the existing query representation and does not
 add resource lookup or reference counting to walking queries.
+
+Physics material contact-consumer sweep. ContactSounds::Definitions still
+rebuilds a separate material_chain from source text on first contact. The
+original 140002c60 traverses the same material ancestry used by physical
+declaration identities. Extend the shared typed definition with the compact
+ordered names visited by its existing inherited-field reader. Contact FX
+then leases that definition and supplies its stored chain directly to the
+unchanged database lookup. Keep common source text available for inherited
+decoding of new map declarations. Expect zero separate contact-chain parses
+for already decoded materials, identical ancestry for every installed
+material, and identical physical values. Measure the extra retained names
+rather than treating the compact chain as free storage.

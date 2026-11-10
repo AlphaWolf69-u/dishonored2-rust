@@ -579,7 +579,7 @@ fn collision_material_slot(
         }) {
             Ok(material) => {
                 let slot = materials.len() as u32;
-                materials.push((*material).clone());
+                materials.push(material.material().clone());
                 Some(slot)
             }
             Err(error) => {

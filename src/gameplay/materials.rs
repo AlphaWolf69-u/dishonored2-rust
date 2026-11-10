@@ -6,6 +6,7 @@ use crate::assets::{
     entities::physics_material::PhysicsMaterial, physics_material::MaterialConstants,
 };
 use std::sync::Arc;
+use crate::assets::entities::physics_material::resources::Definition;
 #[cfg(test)]
 mod tests;
 
@@ -14,7 +15,7 @@ mod tests;
 /// same library, including materials applied later by water startup.
 pub(crate) struct MaterialOwner<S, C> {
     pub library: MaterialLibrary<S, C>,
-    declarations: Vec<Arc<PhysicsMaterial>>,
+    declarations: Vec<Arc<Definition>>,
     names: std::collections::HashMap<String, usize>,
 }
 impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
@@ -47,7 +48,7 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
     fn declaration_using(
         &mut self,
         name: &str,
-        acquire: impl FnOnce() -> Result<Arc<PhysicsMaterial>, String>,
+        acquire: impl FnOnce() -> Result<Arc<Definition>, String>,
     ) -> Result<usize, String> {
         if let Some(&handle) = self.names.get(name) {
             return Ok(handle);
@@ -59,7 +60,7 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
         Ok(handle)
     }
     pub fn get(&self, handle: usize) -> Option<&PhysicsMaterial> {
-        self.declarations.get(handle).map(Arc::as_ref)
+        self.declarations.get(handle).map(|definition| definition.material())
     }
     pub fn resolve(
         &mut self,

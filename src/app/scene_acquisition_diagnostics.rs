@@ -140,6 +140,9 @@ pub fn inspect_scene_publication(
         if flag == "--shader-session-scopes" {
             return crate::assets::shader_cache::observe_session_scopes(base).map_err(Into::into);
         }
+        if flag == "--physics-material-inventory" {
+            return crate::assets::entities::physics_material::resources::observe_inventory(base).map_err(Into::into);
+        }
         if flag == "--map-info-inventory" {
             return crate::gameplay::map_info::observe_inventory(base).map_err(Into::into);
         }

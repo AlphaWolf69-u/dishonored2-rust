@@ -1,7 +1,7 @@
 //! Host scheduling for the sound portion of material-contact FX. Definitions,
 //! ancestry and event IDs are read from the installation and cached by name.
 use super::{AudioTarget, SoundEvent};
-use crate::{archive::Catalog, assets::{entities::{contacts::{material_chain, ContactDatabase}, Value}, fx},
+use crate::{archive::Catalog, assets::{entities::{contacts::ContactDatabase, Value}, fx},
     gameplay::{effects::{groups::sample_offsets, sound::{sample_position, SoundEffect, SoundEvent as TimedEvent}, timing::EffectTimingRanges},
         game_clock_runtime::{ClockRuntime, GamePaused}, sound::{Contact, Emitter, Request}}};
 use bevy::prelude::*;
@@ -24,7 +24,7 @@ struct Definitions {
     catalog: std::sync::Arc<Catalog>,
     texts: declaration_texts::DeclarationTexts,
     database: Arc<ContactDatabase>,
-    chains: HashMap<String, Vec<String>>,
+    chains: HashMap<String, Arc<crate::assets::entities::physics_material::resources::Definition>>,
     effects: HashMap<String, Arc<Vec<Group>>>,
 }
 
@@ -53,10 +53,14 @@ impl Definitions {
         use crate::{entities::scene_motion::child, gameplay::options::decl::list_items};
         for name in [&contact.source, &contact.target] {
             if !self.chains.contains_key(name) {
-                self.chains.insert(name.clone(), material_chain(name, |path| declaration_texts::read(&self.catalog, &self.texts, path))?);
+                let material = crate::assets::entities::physics_material::resources::acquire_with(
+                    &self.catalog, name, |path| declaration_texts::read(&self.catalog, &self.texts, path),
+                )?;
+                self.chains.insert(name.clone(), material);
             }
         }
-        let Some(effect) = self.database.effect(&self.chains[&contact.source], &self.chains[&contact.target]) else {
+        let Some(effect) = self.database.effect(self.chains[&contact.source].contact_chain(),
+            self.chains[&contact.target].contact_chain()) else {
             return Ok(Arc::new(Vec::new()));
         };
         if let Some(groups) = self.effects.get(effect) { return Ok(groups.clone()); }
