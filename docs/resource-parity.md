@@ -2954,7 +2954,6 @@ ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
 
-
 Streaming priority ownership prediction: original 14030cdb0 derives the
 priority class from the current image record's path. The host cache currently
 rebuilds classifications only when the slot array changes length. Reusing a
@@ -2978,7 +2977,14 @@ streamer, with no new allocations on ordinary gameplay frames. This is a host
 ownership change at the map retirement boundary (1408a4830), separate from
 the earlier mailbox-scratch measurements.
 
-The clean game-feature compilation at db1cb92a covers both changes. Source review shows the per-map worker owns the outgoing scratch and that the priority classifier now runs at slot admission. The check does not observe live FX slot reuse, mip publication, or affected streaming CPU costs.
+The game-feature check on db1cb92a compiled the exact texture sources now
+integrated. LevelLifetime removes the texture worker with the outgoing map,
+which owns its request state and cached instance slots. Projected demand
+carries the original name-based priority initialized for each newly admitted
+identity, including reused FX slots. Existing priority-key construction is
+unchanged. Live slot reuse, affected CPU cost and mip publication still need
+runtime observations. Evidence: DH2-scene-shutdown/artifacts/resource-shutdown-batch-20261110-check-provenance.json.
+
 
 ### Fog curve resource ownership
 
