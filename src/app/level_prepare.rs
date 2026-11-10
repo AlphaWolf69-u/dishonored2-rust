@@ -604,7 +604,19 @@ pub(super) fn prepare_level(
     if let Some(physics_bytes) = level.read_physics(catalog.as_ref().unwrap())? {
         let physics_start = std::time::Instant::now();
         let physics = physworld::parse(&physics_bytes)?;
-        let geometry = physics.collision_shapes(&physics_bytes)?;
+        let keep_details = env::var_os("DH2_DEBUG_KEEP_COLLISION_DETAILS").is_some_and(|value| value == "1");
+        let shape_cycles = env::var_os("DH2_DEBUG_PHYSICS_SIGNATURES").is_some_and(|value| value == "1")
+            .then(crate::loading::thread_cycles).flatten();
+        let geometry = if keep_details {
+            physics.collision_shapes(&physics_bytes)?
+        } else {
+            physics.collision_triangles(&physics_bytes)?
+        };
+        if let Some(start) = shape_cycles {
+            let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            eprintln!("MEMORY collision extraction: details={keep_details} detail_capacity_bytes={} cycles={cycles}",
+                geometry.detail_capacity_bytes());
+        }
         if profile {
             println!(
                 "PERF authored physics parse and decode: {:.3}s",
@@ -613,8 +625,8 @@ pub(super) fn prepare_level(
         }
         println!(
             "Authored collision: {} convex shapes, {} compressed meshes, {} triangles; {} compressed meshes remain undecoded",
-            geometry.convex.len(),
-            geometry.compressed.len(),
+            geometry.convex_count(),
+            geometry.compressed_count(),
             geometry.triangles.len(),
             geometry.compressed_decode_failures.len()
         );
