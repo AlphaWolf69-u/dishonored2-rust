@@ -30,6 +30,22 @@ enum SceneSkeletalModel {
     Shared(Arc<bmd6::ModelInfo>),
 }
 
+struct StaticModelSlot {
+    last_placement: usize,
+    source: Option<Option<bmodel::ModelSource>>,
+    level_bytes: usize,
+}
+
+fn uses_static_model(path: &str) -> bool {
+    !path.ends_with(".blueprint.decl") && !path.ends_with(".bmd6model")
+        && !path.contains("/collisions/") && !path.contains("/templates/occlusion/")
+        && !path.contains("/skiff_01_noswim")
+}
+
+fn capacity_bytes<T>(values: &Vec<T>) -> usize {
+    values.capacity() * std::mem::size_of::<T>()
+}
+
 struct TransformScratch {
     points: Vec<Vec3>,
     separate: bool,
@@ -824,7 +840,23 @@ pub(super) fn prepare(
     if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
         report_placement_storage(&scene.placed_models, &expanded_placements);
     }
-    let mut model_cache = HashMap::<String, Option<bmodel::ModelSource>>::new();
+    let trace_model_staging = env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1");
+    let retain_static_sources = env::var_os("DH2_DEBUG_RETAIN_STATIC_MODEL_STAGING").is_some_and(|value| value == "1");
+    let placement_start = trace_model_staging.then(crate::loading::thread_cycles).flatten();
+    let mut model_cache = HashMap::new();
+    if !retain_static_sources {
+        for (number, placement) in expanded_placements.iter().enumerate() {
+            let path = placement.resource_path.as_str();
+            if uses_static_model(path) {
+                model_cache.insert(path, StaticModelSlot { last_placement: number, source: None, level_bytes: 0 });
+            }
+        }
+    }
+    let mut static_live_bytes = 0;
+    let mut static_peak_bytes = 0;
+    let mut static_decoded_bytes = 0;
+    let mut packed_uv_pairs = 0;
+    let mut packed_uv_mismatches = 0;
     let common_models = catalog.and_then(bmodel::CommonModels::shared);
     let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
     let mut model_sources = catalog.map(bmd6::ModelSources::new);
@@ -1118,29 +1150,41 @@ pub(super) fn prepare(
             }
             continue;
         }
-        // Authoring helpers carry debug colours but are not visible objects.
-        if placement.resource_path.contains("/collisions/")
-            || placement.resource_path.contains("/templates/occlusion/")
-            || placement.resource_path.contains("/skiff_01_noswim")
-        {
-            continue;
-        }
-        let model = model_cache
-            .entry(placement.resource_path.clone())
-            .or_insert_with(|| {
-                let catalog = catalog.as_ref()?;
-                match bmodel::acquire(catalog, &placement.resource_path, common_models) {
-                    Ok(Some(model)) => Some(model),
-                    Ok(None) => {
-                        eprintln!("Model not indexed: {}", placement.resource_path);
-                        None
+        // Authoring helpers have no slot because they are not visible objects.
+        let path = placement.resource_path.as_str();
+        let slot = if retain_static_sources && uses_static_model(path) {
+            model_cache.entry(path).or_insert(StaticModelSlot {
+                last_placement: number, source: None, level_bytes: 0,
+            })
+        } else {
+            let Some(slot) = model_cache.get_mut(path) else { continue; };
+            slot
+        };
+        let StaticModelSlot { last_placement, source, level_bytes } = slot;
+        let model = source.get_or_insert_with(|| {
+            let catalog = catalog.as_ref()?;
+            match bmodel::acquire(catalog, path, common_models) {
+                Ok(Some(model)) => {
+                    if trace_model_staging && matches!(&model, bmodel::ModelSource::Level(_)) {
+                        *level_bytes = model.surfaces.iter().map(|s| capacity_bytes(&s.positions)
+                            + capacity_bytes(&s.uvs) + capacity_bytes(&s.packed_channels)
+                            + capacity_bytes(&s.indices)).sum();
+                        static_live_bytes += *level_bytes;
+                        static_decoded_bytes += *level_bytes;
+                        static_peak_bytes = static_peak_bytes.max(static_live_bytes);
                     }
-                    Err(error) => {
-                        eprintln!("Model acquisition failed {}: {error}", placement.resource_path);
-                        None
-                    }
+                    Some(model)
                 }
-            });
+                Ok(None) => {
+                    eprintln!("Model not indexed: {path}");
+                    None
+                }
+                Err(error) => {
+                    eprintln!("Model acquisition failed {path}: {error}");
+                    None
+                }
+            }
+        });
         let Some(model) = model else {
             continue;
         };
@@ -1223,13 +1267,23 @@ pub(super) fn prepare(
                             0,
                         ))
                         .or_insert_with(|| {
-                            prepare_mesh(super::view_geometry::source_mesh_from_uvs(
+                            let mesh = super::view_geometry::source_mesh_from_uvs(
                                 &surface.positions,
                                 super::view_geometry::MeshUvs::Packed(&surface.uvs),
                                 &surface.indices,
                                 &surface.packed_channels,
                                 instance.to_matrix().determinant() < 0.0,
-                            ))
+                            );
+                            if trace_model_staging {
+                                if let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
+                                    mesh.attribute(super::view_geometry::PACKED_UV_0)
+                                {
+                                    packed_uv_pairs += uvs.len();
+                                    packed_uv_mismatches += surface.uvs.len().abs_diff(uvs.len())
+                                        + surface.uvs.iter().zip(uvs).filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits)).count();
+                                }
+                            }
+                            prepare_mesh(mesh)
                         })
                         .clone(),
                     instance,
@@ -1309,6 +1363,17 @@ pub(super) fn prepare(
                 });
             }
         }
+        if !retain_static_sources && *last_placement == number {
+            *source = None;
+            static_live_bytes -= *level_bytes;
+        }
+    }
+    let static_resource_count = model_cache.len();
+    drop(model_cache);
+    if trace_model_staging {
+        let cycles = placement_start.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        eprintln!("STATIC_MODEL_STAGING retained={retain_static_sources} sources={static_resource_count} decoded_bytes={static_decoded_bytes} peak_bytes={static_peak_bytes} live_bytes={static_live_bytes} cycles={cycles}");
     }
     placed_points.report("placed-models");
     println!(
@@ -1350,7 +1415,7 @@ pub(super) fn prepare(
     println!(
         "Placed models: {model_instances}/{} instances, {} unique resources, {model_surfaces} surfaces",
         root_placement_count,
-        model_cache.len()
+        static_resource_count
     );
     println!(
         "MD6 skeletal instances shown in compiled rest pose: {md6_rest_pose_instances}; joint animation is not implemented"
@@ -1359,28 +1424,8 @@ pub(super) fn prepare(
     // Runtime meshes/query/skinning owners already hold their required data;
     // as with input retirement at 14025aa00's exit, staging is not residency.
     mesh_observation.report("MODEL_MESH_PREPARATION", meshes, &render_instances[placed_mesh_start..]);
-    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-        let mut packed_uv_pairs = 0;
-        let mut packed_uv_mismatches = 0;
-        for ((path, surface, _, _), handle) in &model_mesh_handles {
-            let Some(model) = model_cache.get(path).and_then(Option::as_ref) else { continue; };
-            let Some(source) = model.surfaces.get(*surface) else { continue; };
-            let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
-                meshes.get(handle).and_then(|mesh| mesh.attribute(super::view_geometry::PACKED_UV_0))
-                else { continue; };
-            packed_uv_pairs += uvs.len();
-            packed_uv_mismatches += source.uvs.len().abs_diff(uvs.len())
-                + source.uvs.iter().zip(uvs).filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits)).count();
-        }
+    if trace_model_staging {
         eprintln!("MEMORY BML1 packed UV preparation: pairs={packed_uv_pairs} mismatches={packed_uv_mismatches}");
-        fn capacity_bytes<T>(values: &Vec<T>) -> usize {
-            values.capacity() * std::mem::size_of::<T>()
-        }
-        let static_bytes: usize = model_cache.values().flatten()
-            .filter(|model| matches!(model, bmodel::ModelSource::Level(_)))
-            .flat_map(|model| &model.surfaces)
-            .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
-                + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)).sum();
         let skeletal_bytes: usize = md6_cache.values().flatten()
             .filter(|model| matches!(model, SceneSkeletalModel::Prepared(_)))
             .flat_map(|model| &model.surfaces)
@@ -1388,9 +1433,8 @@ pub(super) fn prepare(
                 + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)
                 + capacity_bytes(&s.skin_weights) + capacity_bytes(&s.skin_indices)).sum();
         eprintln!("MEMORY model staging retirement: static_resources={} skeletal_resources={} vertex_index_capacity_bytes={}",
-            model_cache.len(), md6_cache.len(), static_bytes + skeletal_bytes);
+            static_resource_count, md6_cache.len(), skeletal_bytes);
     }
-    drop(model_cache);
     drop(md6_cache);
     drop(model_sources);
     drop(physics_models);
