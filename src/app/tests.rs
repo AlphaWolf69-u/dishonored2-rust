@@ -9415,9 +9415,9 @@ fn installed_dust_cable_md6_placements_pose_and_query() {
         let mut low = [f32::MAX; 3];
         let mut high = [f32::MIN; 3];
         for surface in &model.surfaces {
-            let mut mesh = source_mesh(
+            let mut mesh = view_geometry::source_mesh_from_uvs(
                 &surface.positions,
-                &surface.uvs,
+                view_geometry::MeshUvs::Packed(&surface.uvs),
                 &surface.indices,
                 &surface.packed_channels,
                 false,
