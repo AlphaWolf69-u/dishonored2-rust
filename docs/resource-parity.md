@@ -404,6 +404,16 @@ trailing `*` covers a family of kinds.
 
 - Camera depth owner retirement (`14036d0c0`, `1402fbe40`, `1402fc6a0`, `140351780`). The coarse reduction retains a binding to the outgoing camera depth along with its pyramid and staging ring, and alpha depth keeps an opacity image even without an active view. Release those view allocations at the existing render acknowledgement, while keeping device shader pipeline caches. Cancel outstanding readback mappings by retiring their generations before dropping the staging buffers. Predict zero outgoing pyramid, opacity, and ring identities at the map boundary. At 1920×1080 their own logical texture and readback payloads exceed 13 MB before allocator padding and the old bound depth texture. Allocation starts again at the next valid view; ordinary in-map rendering and resize policy stay the same.
 
+- Packed acoustic route lookup (`1400b7790`, `1400b7ce0`). The original resolves a zone pair to an offset and traverses the installed packed records in place. Both host audio admission and detailed path scoring currently allocate an owned route list and a portal vector for each record before applying distance and direction. Borrow validated portal words from the existing map-owned table. Predict zero route and portal allocations per gameplay lookup, with matching traversal order, cost and malformed-list rejection. Measure only lookup and traversal over actual installed zone pairs, including the added bounds-validation pass. The graph's retained table size and audio playback state stay the same.
+
+  Installed lookup comparison `2e7959e1` matched the ordered routes and portal signatures for Edge of the World, Dust District and the Clockwork Mansion boat. Each of the two owned passes built 104,832 / 239,319 / 1,681,717 nonempty route-list and portal buffers. Each borrowed pass built zero. On the boat, lookup plus traversal used 338.8–345.8 million thread cycles with owned lists and 59.3–60.1 million with borrowed lists. This measures the changed traversal over installed pairs. Full mixer timing, in-game listening and malformed archive inputs were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/packed-acoustic-route-20261110-comparison.json`.
+
+- Shared particle physics queries (`140677ec0`, `140678070`, `1401fc710`, `140c85490`). The original queries the published physics world. The host cloned every reachable trigger body, broadphase tree and water height for every published camera frame, even after particle simulation moved to the main world. Keep one map-owned collision geometry owner, resolve wind identities after component startup, and let the frame stamp lease the same geometry. Current trigger and water bodies are published only during startup; moving machinery and player physics use separate owners. Predict one validation pass per map, zero per-frame copies or allocations for publishing query inputs, and the same tree order, filters, positions and water heights. The final lease detaches shape observers before freeing geometry.
+
+- Physics shape-observer teardown (`140cdfcb0`, `140ce03d0`, `1408a4830`). Trigger and acoustic worlds own Havok shape-observer registrations. Their Rust drop paths currently free both objects without running the existing detach routine. Drain active and pooled registrations in the original order while each shape's signals are still owned, including failed preparation and the final acoustic-world lease. Expect zero remaining subscriptions after a successful drain, with no gameplay work or change to published shapes and queries. Detached records are retired once even when a caller explicitly releases its world before Rust drop.
+
+  Windowless Edge of the World, Dust District and Clockwork Mansion boat publication and clear (`8ad64e43`) reached both teardown hooks in all three maps with no errors. All six registries had zero mutable observers. This verifies the owner ordering for those installed maps. A nonempty observer drain was outside the observation. Evidence: `DH2-fx-level-lifetime/artifacts/shape-observer-retirement-20261110-comparison.json`.
+
 - Default colour grading image (`1402f5cc0`, `1402ecb20`, `1402f5420`). Renderer bootstrap registers the 32³ identity LUT once. The display owner currently recreates it in every map. Use the existing session intrinsic image owner and pass the same immutable handle to display preparation. Keep the separate mutable colour-history images (`14036d0c0`, `140326af0`) under the view owner. Expect one 131,072-byte source upload per session and zero duplicate source uploads across maps. The default handle remains resident between maps, while the authored world and override cubes retain their current map ownership. Pixel encoding, sampling and blending stay the same.
 
   Windowless D3D12 comparison `baf3183e` reused one 32³ RGBA8 texture across Edge of the World, Dust District and a return to Edge of the World. The map-local path created three image identities, and the shared path used the same GPU identity before preparation and after teardown at every step. Two 131,072-byte source uploads were avoided. Active image, mesh, buffer and sky material counts matched at each load. This comparison covers asset upload and residency, with view draws outside its scope. Evidence: `DH2-collision-staging/artifacts/default-colour-cube-20261110-comparison.json`.
@@ -5883,3 +5893,39 @@ matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
 547,680–555,905 with borrowed nodes. This measures those startup dispatches,
 without a gameplay frame-time claim. The source was c40dcdbe and the same
 comparison artifact records both batches.
+
+Static model acquisition prediction. The original BML1 loader 14026a5a0
+feeds the model stream to 140259d50 and closes it after constructing the
+surfaces. The host currently inflates the entire member while also building
+the typed position, packed attribute and index arrays. Use the Catalog
+stream for installed members of at least 256 KiB, with 64 KiB of archive
+buffering and an 8 KiB stack block. Expect to remove one member-sized heap
+allocation per qualifying cold acquisition. Keep small and editable sources
+on the buffered route and keep packed channels, geometry, bounds, bindings
+and reuse policy unchanged. Compare decoded fields and acquisition costs on
+installed models before integrating the change.
+
+Installed static model comparison (`fb704c39`). The independent index and
+layout census found 102 qualifying BML1 members, all compressed, with 258
+surfaces and 1,315,706 vertices. The optimized tool compared buffered and
+streamed decoding twice and matched all model fields in all 102 resources,
+with no unsupported members. The largest decoded member was 2,226,130
+bytes. It no longer overlaps the typed mesh arrays as a whole-file buffer.
+Scoped elapsed read/parse totals were 138.686–142.428 ms buffered and
+129.899–131.034 ms streamed. Both routes use the same model parser. The
+comparison does not measure peak process memory, whole-map load time or
+rendered output. Evidence: `DH2/artifacts/static-model-stream-index-20261110.json`
+and `DH2-fx-level-lifetime/artifacts/static-model-stream-20261110-comparison.json`.
+
+Shared point-query owner acceptance (91584611). A windowless production
+scene observation prepared Edge of the World, Dust District and Edge of the
+World again. Gameplay and the particle query publication acquired the same
+level owner in all three preparations. The geometry held 332/259/332 bodies,
+256 tree nodes and 640 leaf blocks per map, with 332/259/332 shape records.
+Frame publication now passes a lease instead of copying these inputs. Body
+centre wind/water/ray queries produced identical signatures on both visits
+to Edge of the World. All three scenes retired through the trigger and
+acoustic shape teardown paths. This observes the shared path and repeat
+acquisition. A direct comparison with the removed snapshot, active observer
+detach, frame timing and rendered particle output were outside the observation.
+Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.

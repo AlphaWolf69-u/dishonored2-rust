@@ -15,10 +15,10 @@ use super::{
     shape_transform::ScaledShapeTransform,
 };
 use crate::assets::physworld::query_geometry::QueryShapes;
-pub mod snapshot;
+pub(crate) mod level;
 
 /// Read-only body projection shared by the live physics owner and its
-/// immutable, frame-stamped query publication. Both use the same traversal.
+/// query consumers. All use the same traversal.
 pub trait PointQueryBodies {
     fn body(&self, index: u32) -> Option<&super::collision_body::CollisionBody>;
 }

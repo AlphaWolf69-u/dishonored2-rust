@@ -309,15 +309,24 @@ that representation. The later shared property-chain implementation and its
 measured results are recorded in the sound actor property chains row above.
 
 
-UI bitmap backing review: `flash::bitmap_resources::load` reads the separate
-`.raw.iggytex` member, copies just the selected compiled image ranges and then
-drops the source member. Those bitmap blocks are not embedded duplicates in
-`IggyFile`'s retained `.iggy` bytes. The session library cache prevents repeated
-bitmap reads/decode; it is intentional, not a second resident raw-file copy.
-Aligned BC7 data remains compressed; the documented nonaligned backend fallback
-still needs cropped RGBA output. The generic entity document likewise drops at
-the end of `app::level_prepare`; runtime scene ownership holds typed records,
-not the whole parser tree.
+UI bitmap backing review: the loading, HUD, Journal, notes, pause and
+global-dialog movies acquired 25 nonempty bitmap packs from installed
+archives. Each pack shared its decoded `.raw.iggytex` archive member across
+images. All bitmap bytes came from that allocation without an RGBA expansion
+or per-image payload copy. The `.iggy` source carries the texture records and
+does not duplicate their bitmap payload. The index stores those members in
+40,645,081 compressed bytes for 94,059,288 decoded bytes, so direct file
+mapping cannot replace decompression.
+
+The default policy released the 3,242,736-byte loading-only pack and kept
+90,816,552 bytes after the observed movie maps closed. Forcing movie-scoped
+ownership dropped retained payload to zero and preserved the Journal image
+signature. Its final bitmap reacquisition increased from 0.125 to 39.204 ms
+in the paired release observation. Keep the session policy while it protects
+reopening latency. These are bitmap acquisition and owner capacities,
+separate from total process memory and on-screen menu readiness. Evidence:
+`artifacts/ui-supported-bitmap-census-20261110` and
+`artifacts/ui-journal-pack-reuse-20261110`.
 
 
 2026-11-04 viewport acceptance (14909a0): both same-binary Dust retain/retire

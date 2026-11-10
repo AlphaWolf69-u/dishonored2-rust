@@ -250,6 +250,10 @@ impl WorldStorage {
     pub fn release(self, geometry: &mut impl BodyCreationGeometry) -> Result<(), String> {
         self.registry.release(geometry)
     }
+
+    pub fn detach_shape_observers(&mut self, geometry: &mut impl BodyCreationGeometry) -> Result<usize, String> {
+        self.registry.detach_all(geometry)
+    }
 }
 
 #[cfg(test)]

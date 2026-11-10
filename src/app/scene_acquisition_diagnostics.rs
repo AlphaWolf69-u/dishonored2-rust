@@ -548,6 +548,14 @@ fn inspect_scene_resources(
             prepared.publish(app.world_mut());
             lifetime.published(app.world(), &before);
             resource_snapshot(app.world(), step, "published");
+            if std::env::var_os("DH2_DEBUG_LEVEL_POINT_QUERIES").is_some_and(|value| value == "1") {
+                let physics = app.world().get_resource::<super::physics_scene::PhysicsScene>()
+                    .ok_or("published physics query owner is absent")?;
+                let first = physics.point_queries()?;
+                let second = physics.point_queries()?;
+                eprintln!("LEVEL_POINT_QUERY_LEASE shared={}", std::sync::Arc::ptr_eq(&first, &second));
+                first.observe_queries()?;
+            }
             if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
                 // Only asset upload/removal is observed. No camera produces a
                 // view, and no gameplay or audio systems were registered.
