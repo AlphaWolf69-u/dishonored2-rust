@@ -19,9 +19,14 @@ impl<T> Entry<T> {
             retired: false, current: Weak::new(), resident: None, failure: None }
     }
 }
-pub(crate) struct Registry<T> { entries: HashMap<String, Entry<T>> }
+type SeparateGenerations<T> = HashMap<String, Vec<Weak<T>>>;
+
+pub(crate) struct Registry<T> {
+    entries: HashMap<String, Entry<T>>,
+    separate: Option<Box<SeparateGenerations<T>>>,
+}
 impl<T> Default for Registry<T> {
-    fn default() -> Self { Self { entries: HashMap::new() } }
+    fn default() -> Self { Self { entries: HashMap::new(), separate: None } }
 }
 impl<T> Registry<T> {
     pub(crate) fn len(&self) -> usize { self.entries.len() }
@@ -48,8 +53,7 @@ impl<T> Registry<T> {
             if entry.resident.is_none() { entry.resident = entry.current.upgrade(); }
         }
     }
-    pub(crate) fn acquire(&mut self, path: &str, inherited_marker: u8,
-        load: impl FnOnce(u8) -> Result<Arc<T>, String>) -> Result<Arc<T>, String> {
+    fn admit(&mut self, path: &str, inherited_marker: u8) -> &mut Entry<T> {
         let entry = self.entries.entry(path.to_owned()).or_insert_with(|| Entry::new(inherited_marker));
         // A request after purge rejoins a still-live generation in the new
         // caller's scope; a previous map's marker must not be resurrected.
@@ -66,6 +70,12 @@ impl<T> Registry<T> {
             entry.bootstrap_phase = true;
             if !entry.map_preload_override { entry.marker = 2; }
         }
+        entry
+    }
+
+    pub(crate) fn acquire(&mut self, path: &str, inherited_marker: u8,
+        load: impl FnOnce(u8) -> Result<Arc<T>, String>) -> Result<Arc<T>, String> {
+        let entry = self.admit(path, inherited_marker);
         if let Some(error) = &entry.failure { return Err(error.clone()); }
         if let Some(value) = entry.current.upgrade() {
             entry.resident = Some(value.clone());
@@ -80,6 +90,18 @@ impl<T> Registry<T> {
             Err(error) => { entry.failure = Some(error.clone()); Err(error) }
         }
     }
+    /// Editable particle generations share the path's marker and read credit.
+    /// They are always reparsed and only their actual consumers retain them.
+    pub(crate) fn acquire_separate(&mut self, path: &str, inherited_marker: u8,
+        load: impl FnOnce(u8) -> Result<Arc<T>, String>) -> Result<Arc<T>, String> {
+        let entry = self.admit(path, inherited_marker);
+        let value = load(if entry.bootstrap_phase { 2 } else { entry.marker })?;
+        let generations = self.separate.get_or_insert_with(Default::default).entry(path.to_owned()).or_default();
+        generations.retain(|generation| generation.strong_count() != 0);
+        generations.push(Arc::downgrade(&value));
+        Ok(value)
+    }
+
     /// Requested storage only: hash control bytes and allocator rounding are
     /// intentionally excluded. Weak identities do not keep decoded payloads.
     pub(crate) fn report(&self, catalog: u64, kind: &str, phase: &str,
@@ -112,9 +134,20 @@ impl<T> Registry<T> {
                 entry.retired = true;
             }
         }
+        if let Some(generations) = &mut self.separate {
+            generations.retain(|_, values| {
+                values.retain(|value| value.strong_count() != 0);
+                !values.is_empty()
+            });
+            if generations.is_empty() { self.separate = None; }
+        }
         let before = self.entries.len();
+        let separate = self.separate.as_deref();
         self.entries.retain(|path, entry| {
-            if !entry.retired || entry.current.strong_count() != 0 { return true; }
+            if !entry.retired || entry.current.strong_count() != 0
+                || separate.is_some_and(|generations| generations.contains_key(path)) {
+                return true;
+            }
             crate::loading::forget(catalog, kind, path);
             false
         });

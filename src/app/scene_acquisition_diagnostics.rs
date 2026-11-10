@@ -14,6 +14,69 @@ pub fn inspect_scene_preparation(
     inspect_scene_resources(base, levels, Mode::Prepare, false)
 }
 
+fn inspect_fx_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::assets::{
+        fx::{particle_declaration, particle_resources},
+        parm_block::ParmBlockSources,
+        particle_model,
+    };
+    use std::sync::Arc;
+
+    const DECLARATION_NAME: &str = "models/effects/empty.particledt";
+    const DECLARATION: &str = "generated/decls/particledt/models/effects/empty.particledt.decl";
+    const MODEL: &str = "generated/staticparticlemodel/models/effects/meshes/cylinder_no_cap_1m.pmodel";
+    const BLOCK: &str = "generated/decls/pblock/default.pblock.decl";
+    let a = archive::Catalog::open(base)?;
+    let b = archive::Catalog::open(base)?;
+    let acquire_particles = |catalog: &archive::Catalog, shared| {
+        let declaration = particle_resources::declaration(catalog, DECLARATION_NAME, shared, |_| {
+            let fields = crate::gameplay::options::decl::read_edit(
+                &mut |path| catalog.read(path).ok().flatten(), "particledt", DECLARATION_NAME,
+            )?;
+            particle_declaration::declaration(&fields).map(Arc::new)
+        })?;
+        let model = particle_resources::model(catalog, MODEL, 0, shared, || {
+            let bytes = catalog.read(MODEL).map_err(|error| error.to_string())?
+                .ok_or("installed particle model absent")?;
+            particle_model::parse(&bytes).map(Arc::new)
+        })?;
+        Ok::<_, String>((declaration, model))
+    };
+    let first = acquire_particles(&a, false)?;
+    let replacement = acquire_particles(&a, false)?;
+    let other = acquire_particles(&b, true)?;
+    if Arc::ptr_eq(&first.0, &replacement.0) || Arc::ptr_eq(&first.1, &replacement.1) {
+        return Err("uncached particle generations share a decoded payload".into());
+    }
+    let mut programs_a = shader_cache::ProgramLibrary::open(base, shader_cache::ShaderCacheBackend::Pc, &a)?;
+    let mut programs_b = shader_cache::ProgramLibrary::open(base, shader_cache::ShaderCacheBackend::Pc, &b)?;
+    let mut blocks_a = ParmBlockSources::new(&a);
+    let mut blocks_b = ParmBlockSources::new(&b);
+    let first_block = blocks_a.acquire(&a, BLOCK, |name| programs_a.parameter_value_metadata(&a, name))?;
+    let other_block = blocks_b.acquire(&b, BLOCK, |name| programs_b.parameter_value_metadata(&b, name))?;
+    let paths = [("particledt", DECLARATION), ("staticParticleModel", MODEL), ("pblock", BLOCK)];
+    let records = |catalog: &archive::Catalog| paths.map(|(kind, path)|
+        crate::loading::catalog_read_recorded(catalog.identity(), kind, path));
+    a.release_level_resources();
+    drop(first);
+    a.release_level_resources();
+    if records(&a) != [true; 3] || records(&b) != [true; 3] {
+        return Err("an active FX generation lost its catalog read history".into());
+    }
+    drop(replacement);
+    drop(first_block);
+    a.release_level_resources();
+    if records(&a) != [false; 3] || records(&b) != [true; 3] {
+        return Err("FX history retirement crossed its catalog boundary".into());
+    }
+    drop(other);
+    drop(other_block);
+    b.release_level_resources();
+    if records(&b) != [false; 3] { return Err("FX history survived its final marker".into()); }
+    eprintln!("FX_HISTORY_SCOPES kinds=3 independent=true separate_generations=true retired=true");
+    Ok(())
+}
+
 pub fn inspect_scene_publication(
     base: &std::path::Path,
     levels: &[String],
@@ -39,6 +102,9 @@ pub fn inspect_scene_gpu_resources(
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some((flag, paths)) = levels.split_first() {
+        if flag == "--fx-history-scopes" {
+            return inspect_fx_history_scopes(base);
+        }
         if flag == "--ocean-readback" {
             let app = scene_host(true);
             let world = app.sub_app(RenderApp).world();
