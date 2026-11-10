@@ -5900,3 +5900,14 @@ acoustic shape teardown paths. This observes the shared path and repeat
 acquisition. A direct comparison with the removed snapshot, active observer
 detach, frame timing and rendered particle output were outside the observation.
 Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
+
+Screen-shadow publication prediction. The host level teardown corresponds
+to 1408a4830 and the 1400410f0 resource purge. The standard Bevy extractor
+copies the optional ScreenShadowFrame when present but leaves the render
+copy in place when the main-world source disappears. That copy holds the
+outgoing visibility output, cloud and optional AO depth image handles even
+after ScreenGpu releases its cached bindings. Withdraw the main publication
+when its camera stops and remove the extracted frame when its source is
+absent. Expect one fewer outgoing frame lease and retirement of its private
+output before the next map's acquisition. Shared resident images remain
+with their own owners. The ordinary changed-frame extraction stays the same.

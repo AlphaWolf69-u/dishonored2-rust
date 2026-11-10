@@ -414,6 +414,7 @@ fn acquire(world: &mut World) {
                     for mut camera in world.query_filtered::<&mut Camera, (With<Camera3d>, Without<LoadingCamera>)>().iter_mut(world) {
                         camera.is_active = false;
                     }
+                    world.remove_resource::<crate::screen_shadow_pass::ScreenShadowFrame>();
                     world.spawn((
                         Camera3d::default(),
                         bevy::core_pipeline::tonemapping::Tonemapping::None,
