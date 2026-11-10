@@ -6632,6 +6632,34 @@ result with no measured speedup or gameplay frame-time claim.
 Evidence: DH2-fx-level-lifetime/artifacts/usable-skin-source-20261111-comparison.json.
 
 
+### Runtime particle acquisition cancellation
+
+Prediction before implementation. Original 1400607f0/14005feb0 resolve
+the declaration and model records, 140232220 reads PMODEL, and
+140060180 releases the registered scope. The host can stop a runtime
+FX job between effects and groups, but its current group still admits
+all particle dependencies after the last requester leaves. Propagate the
+existing stop signal through the declaration, field and PMODEL readers
+and check it between material acquisitions. A stopped load must not
+publish its partial value or memoize its error as an immutable resource
+failure. Completed dependencies retain their normal registry scope.
+Expect a later request in the same catalog and worker cache to recover
+the same asset, with the same ordinary load output. Observe cancellation
+after reading an installed declaration, successful same-owner retry, and
+normal FX publication and retirement. This is host worker cancellation.
+
+Installed particle cancellation acceptance at 72b08270. The installed
+empty particle declaration reached its archive read, stopped without
+publishing a cached value or failure, and decoded on the next request
+from the same owner. The subsequent lookup reused that generation and
+map withdrawal released it. Ordinary Edge of the World and Dust
+District preparation matched their declaration/model/field counts and
+effect event fingerprints. The real Dunwall Tower FX request drained
+at level withdrawal along with its other workers. This verifies a
+forced declaration withdrawal and the normal worker gate separately.
+Evidence: DH2-collision-staging/artifacts/particle-acquisition-cancellation-20261111-comparison.json.
+
+
 ### Usable animation read withdrawal
 
 Prediction before implementation. Original 1407e5190 resolves AnimBasic
