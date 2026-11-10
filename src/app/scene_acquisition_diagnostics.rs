@@ -675,6 +675,8 @@ fn inspect_scene_resources(
     let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
     let observe_initial_images = std::env::var_os("DH2_DEBUG_OBSERVE_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1");
+    let stop_initial_images = observe_initial_images
+        && std::env::var_os("DH2_DEBUG_STOP_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1");
     if observe_initial_images && mode != Mode::Upload {
         return Err("initial texture phase observation requires GPU asset epochs".into());
     }
@@ -752,14 +754,24 @@ fn inspect_scene_resources(
                     camera.is_active = false;
                 }
                 if observe_initial_images {
+                    if stop_initial_images && base_reader.is_none() {
+                        return Err("initial texture close observation requires bounded reads".into());
+                    }
+                    let closed = std::sync::atomic::AtomicBool::new(false);
                     std::thread::scope(|scope| {
-                        if let Some(reader) = base_reader { scope.spawn(move || reader.read(|| false)); }
-                        let result = super::loading_screen::observe_initial_image_phases(&mut app, &catalog, render_epoch);
+                        if let Some(reader) = base_reader {
+                            let closed = &closed;
+                            scope.spawn(move || reader.read(|| closed.load(std::sync::atomic::Ordering::Acquire)));
+                        }
+                        let result = super::loading_screen::observe_initial_image_phases(
+                            &mut app, &catalog, stop_initial_images, render_epoch);
+                        closed.store(true, std::sync::atomic::Ordering::Release);
                         // A failed render epoch must wake a waiting sender
                         // before the scope joins the installed reader.
                         app.world_mut().remove_resource::<super::texture_streaming::PreparedBaseImages>();
                         result
                     })?;
+                    if stop_initial_images { eprintln!("INITIAL_TEXTURE_READER_DRAINED step={step}"); }
                 }
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;

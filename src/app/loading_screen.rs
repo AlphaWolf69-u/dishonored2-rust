@@ -369,8 +369,11 @@ fn show_bootstrap(
 }
 
 fn close_session_acquisitions(world: &mut World) {
-    super::level_lifetime::close_level_acquisitions(world);
     super::audio::close_session_admission();
+    super::level_lifetime::close_level_acquisitions(world);
+    if let Some(mut state) = world.get_resource_mut::<Acquisition>() {
+        state.result = None;
+    }
 }
 
 fn acquire(world: &mut World) {
@@ -931,6 +934,7 @@ fn acknowledge_initial_image_batch(
 pub(super) fn observe_initial_image_phases(
     app: &mut App,
     catalog: &Catalog,
+    stop_after_first_upload: bool,
     mut render_epoch: impl FnMut(&mut App) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use bevy::render::RenderApp;
@@ -944,8 +948,17 @@ pub(super) fn observe_initial_image_phases(
         }
         render_epoch(app)?;
         let render = app.sub_app(RenderApp).world();
-        acknowledge_initial_image_batch(&gpu, render.resource(), render.resource(),
+        let requested = render.resource::<SceneImageRequests>();
+        acknowledge_initial_image_batch(&gpu, requested, render.resource(),
             (render.resource(), render.resource(), render.resource()));
+        if stop_after_first_upload && !requested.images.is_empty()
+            && matches!(gpu.0.load(std::sync::atomic::Ordering::Acquire), GPU_COMMON_IMAGES_READY | GPU_MAP_IMAGES_READY)
+        {
+            eprintln!("INITIAL_TEXTURE_STOP phase={} generation={} uploaded_ids={}",
+                requested.phase, requested.generation, requested.images.len());
+            super::level_lifetime::close_level_acquisitions(app.world_mut());
+            return Ok(());
+        }
         if started.elapsed() > std::time::Duration::from_secs(120) {
             return Err("initial texture phase observation timed out".into());
         }
