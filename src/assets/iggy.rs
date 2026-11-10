@@ -572,7 +572,7 @@ impl FileScope {
     {
         debug_assert_eq!(self.catalog, catalog.identity());
         let key = (!catalog.has_overlay_file(resource))
-            .then(|| resource.replace('\', "/").to_ascii_lowercase());
+            .then(|| resource.replace('\\', "/").to_ascii_lowercase());
         if let Some(file) = key.as_ref().and_then(|key| self.files.borrow().get(key).cloned()) {
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 eprintln!("LOAD Iggy reuse: {resource} identity={:p}", Rc::as_ptr(&file));
