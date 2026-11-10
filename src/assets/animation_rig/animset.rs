@@ -263,7 +263,7 @@ fn acquire_inner(catalog: &Catalog, path: &str, context: Option<crate::edge_anim
     }
     let read_start = tracing().then(crate::loading::thread_cycles).flatten();
     let bytes = catalog.read(&path).map_err(|error| error.to_string())?.ok_or_else(|| format!("{path} is absent"))?;
-    let source = crate::entities::declaration_text(&bytes).into_owned();
+    let source = crate::entities::owned_declaration_text(bytes);
     let read_end = read_start.and_then(|_| crate::loading::thread_cycles());
     let parse_start = tracing().then(crate::loading::thread_cycles).flatten();
     let mut aliases = HashMap::new();

@@ -38,7 +38,7 @@ impl<I> EnvironmentProfiles<I> {
         let read = |name: &str| -> Result<Option<String>, String> {
             catalog
                 .read(&format!("generated/decls/env/{name}.decl"))
-                .map(|v| v.map(|bytes| entities::declaration_text(&bytes).into_owned()))
+                .map(|v| v.map(entities::owned_declaration_text))
                 .map_err(|e| e.to_string())
         };
         let source = read(&key)?.ok_or_else(|| format!("environment profile not found: {name}"))?;

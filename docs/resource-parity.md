@@ -5985,6 +5985,15 @@ the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
 
+Owned declaration text extension. The 140135f70 lexer treats signed bytes
+as unquoted whitespace and preserves quoted/commented bytes. The measured
+contact-only handoff already avoids copying ASCII source. Extend ownership
+transfer to installed declaration consumers that already own their archive
+read. Normalize in that allocation and transfer it into the String when
+UTF-8 validates. Malformed quoted bytes keep the existing replacement
+behavior. Expect one fewer whole-text allocation for valid owned reads
+and matching parsed definitions, with no new retained source owner.
+
 Screen-shadow binding replacement prediction. The original visibility and
 bilateral tasks bind the active view resources and reuse compiled programs
 (`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).

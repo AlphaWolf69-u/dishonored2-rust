@@ -313,7 +313,7 @@ impl WorldWind {
                         .read(name)
                         .map(|bytes| {
                             bytes
-                                .map(|bytes| crate::entities::declaration_text(&bytes).into_owned())
+                                .map(crate::entities::owned_declaration_text)
                         })
                         .map_err(|error| error.to_string())
                 })

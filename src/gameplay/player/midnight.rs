@@ -65,7 +65,7 @@ pub(crate) fn prepare_sounds_owned(
     if std::env::var("DH2_DEBUG_SEPARATE_MIDNIGHT_SOUND_EVENTS").as_deref() == Ok("1") {
         return prepare_sounds(decl, casting, |path| {
             Ok(catalog.read(path).map_err(|error| error.to_string())?
-                .map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                .map(crate::entities::owned_declaration_text))
         });
     }
     prepare_sounds_using(decl, casting, |name| {

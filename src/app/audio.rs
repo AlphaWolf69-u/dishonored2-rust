@@ -651,7 +651,7 @@ fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<
                 if trace { reads += 1; }
                 let bytes = catalog.read(path).map_err(|error| format!("{path}: {error}"))?;
                 if trace { decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
-                Ok(bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                Ok(bytes.map(crate::entities::owned_declaration_text))
             }) {
                 Ok(Some(declaration)) => events.push(declaration.id),
                 Ok(None) => {}

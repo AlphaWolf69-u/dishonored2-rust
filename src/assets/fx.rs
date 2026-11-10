@@ -134,7 +134,7 @@ impl SoundEventAsset {
     pub fn resolve(&self, catalog: &crate::archive::Catalog) -> Result<Option<std::sync::Arc<crate::assets::wwise::SoundEventDeclaration>>, String> {
         self.resolve_with(catalog, |path| {
             catalog.read(path)
-                .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                .map(|bytes| bytes.map(crate::entities::owned_declaration_text))
                 .map_err(|error| format!("{path}: {error}"))
         })
     }
