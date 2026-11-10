@@ -30,10 +30,29 @@ impl Default for PreparationQueue {
 
 /// Dropping the task cancels queued work or releases a running job's result.
 /// Bank/source snapshots retain only a Weak back-link to PreparationQueue.
-pub(super) struct Job<T: Send + 'static>(Task<T>);
+pub(super) struct Job<T: Send + 'static>(Task<Prepared<T>>);
+
+struct Prepared<T> {
+    generation: u64,
+    result: Option<T>,
+}
+
+impl<T> Drop for Prepared<T> {
+    fn drop(&mut self) {
+        let Some(result) = self.result.take() else { return };
+        // An abandoned task can finish rebuilding decoder headers after the
+        // map's usual sweep. Release its decoder leases before sweeping again.
+        drop(result);
+        if self.generation != super::graph::media_generation() {
+            crate::assets::wwise::release_unused_headers();
+        }
+    }
+}
+
 impl<T: Send + 'static> Job<T> {
     pub(super) fn take(&mut self) -> Option<T> {
-        bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(&mut self.0))
+        let mut prepared = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(&mut self.0))?;
+        prepared.result.take()
     }
 }
 impl PreparationQueue {
@@ -46,6 +65,7 @@ impl PreparationQueue {
         let trace = self.trace;
         let queued = trace.then(Instant::now);
         let debug_shared = self.worker.is_none();
+        let generation = super::graph::media_generation();
         let execute = async move {
             let started = trace.then(Instant::now);
             let cycles = if trace {
@@ -64,7 +84,7 @@ impl PreparationQueue {
                     started.elapsed().as_micros()
                 );
             }
-            result
+            Prepared { generation, result: Some(result) }
         };
         let task = if let Some(worker) = &self.worker {
             worker.spawn(execute)

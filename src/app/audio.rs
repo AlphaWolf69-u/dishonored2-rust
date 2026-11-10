@@ -375,6 +375,8 @@ pub(super) fn begin_level(world: &mut World) {
     registry.level_prepared = false;
     drop(registry);
     world.resource::<bevy_backend::Engine>().retain_nodes(&actors);
+    world.insert_resource(SoundDecodeQueue::default());
+    world.insert_resource(PendingSounds::default());
     world.resource_mut::<WwiseRegistry>().media_generation = graph::retain_media(&sound_ids);
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         let waiting = std::mem::take(&mut completions.waiting);
@@ -385,8 +387,6 @@ pub(super) fn begin_level(world: &mut World) {
         completions.dynamic_sources.clear();
         completions.retired_sources.clear();
     }
-    world.insert_resource(SoundDecodeQueue::default());
-    world.insert_resource(PendingSounds::default());
     world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
     if let Some(contacts) = world.get_resource::<contacts::ContactSounds>() {
