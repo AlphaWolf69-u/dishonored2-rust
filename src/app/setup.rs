@@ -660,7 +660,8 @@ pub(super) fn prepare(
         .as_ref()
         .map(|catalog| expanded_model_placements(&scene.placed_models, catalog))
         .unwrap_or_else(|| scene.placed_models.clone());
-    let mut model_cache = HashMap::<String, Option<bmodel::Model>>::new();
+    let mut model_cache = HashMap::<String, Option<bmodel::ModelSource>>::new();
+    let common_models = catalog.and_then(bmodel::CommonModels::shared);
     let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
     let mut model_sources = catalog.map(bmd6::ModelSources::new);
     let mut md6_rest_pose_instances = 0usize;
@@ -952,21 +953,14 @@ pub(super) fn prepare(
             .entry(placement.resource_path.clone())
             .or_insert_with(|| {
                 let catalog = catalog.as_ref()?;
-                let bytes = match catalog.read(&placement.resource_path) {
-                    Ok(Some(bytes)) => bytes,
+                match bmodel::acquire(catalog, &placement.resource_path, common_models) {
+                    Ok(Some(model)) => Some(model),
                     Ok(None) => {
                         eprintln!("Model not indexed: {}", placement.resource_path);
-                        return None;
+                        None
                     }
                     Err(error) => {
-                        eprintln!("Model read failed {}: {error}", placement.resource_path);
-                        return None;
-                    }
-                };
-                match bmodel::parse(&bytes) {
-                    Ok(model) => Some(model),
-                    Err(error) => {
-                        eprintln!("Model parse failed {}: {error}", placement.resource_path);
+                        eprintln!("Model acquisition failed {}: {error}", placement.resource_path);
                         None
                     }
                 }
@@ -1184,7 +1178,9 @@ pub(super) fn prepare(
         fn capacity_bytes<T>(values: &Vec<T>) -> usize {
             values.capacity() * std::mem::size_of::<T>()
         }
-        let static_bytes: usize = model_cache.values().flatten().flat_map(|model| &model.surfaces)
+        let static_bytes: usize = model_cache.values().flatten()
+            .filter(|model| matches!(model, bmodel::ModelSource::Level(_)))
+            .flat_map(|model| &model.surfaces)
             .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
                 + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)).sum();
         let skeletal_bytes: usize = md6_cache.values().flatten()

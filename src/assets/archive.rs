@@ -85,6 +85,7 @@ pub struct Catalog {
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
+    pub(crate) common_models: std::sync::OnceLock<Result<crate::assets::bmodel::CommonModels, String>>,
     pub(crate) difficulty_definitions: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Definition>>>,
     pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
     pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
@@ -409,6 +410,7 @@ impl Catalog {
             animation_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
+            common_models: Default::default(),
             difficulty_definitions: Default::default(),
             difficulty_presets: Default::default(),
             sound_rtpcs: Default::default(),

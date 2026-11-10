@@ -1,5 +1,104 @@
 //! Read-only decoder for static BML1/BTRI model geometry.
 
+use std::{collections::{HashMap, HashSet}, mem::size_of, sync::{Arc, Mutex}};
+
+/// Host preparation payload for common model identities. Native lookup
+/// 1400607f0 and bootstrap promotion 140060b60 retain the common resource.
+/// Keep only requested decoded models and leave GPU meshes to their owner.
+pub(crate) struct CommonModels {
+    paths: HashSet<String>,
+    models: Mutex<HashMap<String, Arc<Model>>>,
+    reuse: bool,
+}
+
+impl CommonModels {
+    pub(crate) fn shared(catalog: &super::archive::Catalog) -> Option<&Self> {
+        if catalog.has_overlays() {
+            return None;
+        }
+        catalog.common_models.get_or_init(|| {
+            let language = super::lang::read_text_language(catalog.base()).map_err(|error| error.to_string())?;
+            let mut paths = HashSet::new();
+            for name in ["init", "common"] {
+                let list = super::map_resources::acquire_list(catalog.base(), catalog, name, language)
+                    .map_err(|error| error.to_string())?;
+                paths.extend(list.iter().filter(|resource| resource.kind.eq_ignore_ascii_case("model"))
+                    .map(|resource| resource.path.clone()));
+            }
+            let reuse = std::env::var("DH2_DEBUG_SEPARATE_COMMON_MODELS").as_deref() != Ok("1");
+            Ok(Self { paths, models: Mutex::default(), reuse })
+        }).as_ref().ok()
+    }
+}
+
+pub(crate) enum ModelSource {
+    Level(Model),
+    Common(Arc<Model>),
+}
+
+impl std::ops::Deref for ModelSource {
+    type Target = Model;
+
+    fn deref(&self) -> &Model {
+        match self { Self::Level(model) => model, Self::Common(model) => model }
+    }
+}
+
+pub(crate) fn acquire(
+    catalog: &super::archive::Catalog,
+    path: &str,
+    common: Option<&CommonModels>,
+) -> Result<Option<ModelSource>, String> {
+    let read = || -> Result<Option<Model>, String> {
+        catalog.read(path).map_err(|error| error.to_string())?
+            .map(|bytes| parse(&bytes)).transpose()
+    };
+    let Some(common) = common.filter(|owner| owner.paths.contains(path)) else {
+        return Ok(read()?.map(ModelSource::Level));
+    };
+    let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
+    if !common.reuse {
+        let model = read()?;
+        if trace {
+            if let Some(model) = &model { report_model(path, model, "acquired"); }
+        }
+        return Ok(model.map(ModelSource::Level));
+    }
+    let mut models = common.models.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(model) = models.get(path) {
+        crate::loading::read_catalog(catalog.identity(), "model", path);
+        if trace { report_model(path, model, "reused"); }
+        return Ok(Some(ModelSource::Common(model.clone())));
+    }
+    let _tag = crate::platform::allocation_tags::tag("common static model sources");
+    let Some(model) = read()? else { return Ok(None); };
+    let model = Arc::new(model);
+    if trace { report_model(path, &model, "acquired"); }
+    models.insert(path.to_owned(), model.clone());
+    Ok(Some(ModelSource::Common(model)))
+}
+
+fn report_model(path: &str, model: &Model, action: &str) {
+    let mut crc = flate2::Crc::new();
+    let mut geometry_bytes = 0;
+    for surface in &model.surfaces {
+        crc.update(surface.material_path.as_bytes());
+        for value in surface.authored_bounds.iter().flatten()
+            .chain(surface.positions.iter().flatten())
+            .chain(surface.uvs.iter().flatten())
+        {
+            crc.update(&value.to_le_bytes());
+        }
+        for channels in &surface.packed_channels { crc.update(channels); }
+        for index in &surface.indices { crc.update(&index.to_le_bytes()); }
+        geometry_bytes += surface.positions.capacity() * size_of::<[f32; 3]>()
+            + surface.uvs.capacity() * size_of::<[f32; 2]>()
+            + surface.packed_channels.capacity() * size_of::<[u8; 16]>()
+            + surface.indices.capacity() * size_of::<u16>();
+    }
+    eprintln!("MEMORY common model {action}: path={path} geometry_bytes={geometry_bytes} signature={:08x}", crc.sum());
+}
+
 // Host equivalent of 140060180: retain model read identities for the level
 // that owns the prepared meshes, including pending preparation.
 static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
