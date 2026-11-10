@@ -4,7 +4,7 @@
 use crate::assets::{archive::Catalog, level::LevelResources};
 use bevy::{
     ecs::{
-        schedule::{ConditionWithAccess, ScheduleLabel, Schedules as BevySchedules, SystemKey},
+        schedule::{ConditionWithAccess, ScheduleLabel, Schedules as BevySchedules, SystemKey, common_conditions::on_message},
         system::IntoSystem,
     },
     prelude::*,
@@ -307,6 +307,13 @@ pub(super) fn install(
         super::resident_images::publish_ui_images.before(bevy::asset::AssetEventSystems),
     )
     .add_systems(Last, (initial_render_ready, finish_loading).chain())
+    .add_systems(
+        Last,
+        super::audio::close_session_admission
+            .after(finish_loading)
+            .after(bevy::window::ExitSystems)
+            .run_if(on_message::<AppExit>),
+    )
     .add_systems(PostUpdate, (super::texture_streaming::particle_images::publish,
         super::texture_streaming::environment_images::publish_ocean)
         .before(bevy::asset::AssetEventSystems))
