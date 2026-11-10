@@ -226,6 +226,45 @@ impl Default for ParticleStageAsset {
     }
 }
 
+/// 1f82c0's allocation estimate for an arkStandardCycles block (stages and
+/// declaration trails).
+pub fn standard_cycles_capacity(
+    emitter: &EmitterDefinition,
+    life: &ScalarParameter,
+    infinite_life: bool,
+    burst: bool,
+    burst_event: &str,
+    maximum_burst_events: u32,
+) -> Result<u64, String> {
+    use crate::float::{add, divide, multiply, truncate_i64};
+    let ceil = |value: f32| truncate_i64(value.ceil()) as u64;
+    if !infinite_life {
+        let life = multiply(life.curve.maximum_key_value(0.)?, life.range[0].max(life.range[1]));
+        if !burst {
+            let count = multiply(emitter.rate.maximum_rate()?, life).ceil();
+            return Ok(ceil(multiply(add(count, 1.), f32::from_bits(0x3f86_6666))));
+        }
+        let duration = emitter.duration[0].min(emitter.duration[1]);
+        let mut cycles = divide(life, duration).ceil();
+        if emitter.cycles != 0 && emitter.cycles as f32 <= cycles {
+            cycles = emitter.cycles as f32;
+        }
+        let count = truncate_i64(multiply(emitter.rate.maximum_burst(), cycles)) as u64;
+        return Ok(if burst_event.is_empty() {
+            count
+        } else {
+            (count as u32).wrapping_mul(maximum_burst_events) as u64
+        });
+    }
+    let per_cycle = if burst {
+        ceil(emitter.rate.maximum_burst())
+    } else {
+        ceil(multiply(emitter.duration[0].max(emitter.duration[1]), emitter.rate.maximum_rate()?))
+    };
+    let count = (per_cycle as u32).wrapping_mul(emitter.cycles);
+    Ok(if burst_event.is_empty() { count } else { count.wrapping_mul(maximum_burst_events) } as u64)
+}
+
 fn unsigned(value: &Value) -> Result<u32, String> {
     atom(value)?
         .parse()
@@ -236,43 +275,8 @@ impl ParticleStageAsset {
     /// 1f82c0's allocation estimate. The ordinary stage owner (1efcc0) caps
     /// it at 8192 slots, shared by sprite and mesh renderers.
     pub fn estimated_capacity(&self) -> Result<u64, String> {
-        use crate::float::{add, divide, multiply, truncate_i64};
-        let ceil = |value: f32| truncate_i64(value.ceil()) as u64;
-        if !self.infinite_life {
-            let life = multiply(
-                self.life.curve.maximum_key_value(0.)?,
-                self.life.range[0].max(self.life.range[1]),
-            );
-            if !self.burst {
-                let count = multiply(self.emitter.rate.maximum_rate()?, life).ceil();
-                return Ok(ceil(multiply(add(count, 1.), f32::from_bits(0x3f86_6666))));
-            }
-            let duration = self.emitter.duration[0].min(self.emitter.duration[1]);
-            let mut cycles = divide(life, duration).ceil();
-            if self.emitter.cycles != 0 && self.emitter.cycles as f32 <= cycles {
-                cycles = self.emitter.cycles as f32;
-            }
-            let count = truncate_i64(multiply(self.emitter.rate.maximum_burst(), cycles)) as u64;
-            return Ok(if self.burst_event.is_empty() {
-                count
-            } else {
-                (count as u32).wrapping_mul(self.maximum_burst_events) as u64
-            });
-        }
-        let per_cycle = if self.burst {
-            ceil(self.emitter.rate.maximum_burst())
-        } else {
-            ceil(multiply(
-                self.emitter.duration[0].max(self.emitter.duration[1]),
-                self.emitter.rate.maximum_rate()?,
-            ))
-        };
-        let count = (per_cycle as u32).wrapping_mul(self.emitter.cycles);
-        Ok(if self.burst_event.is_empty() {
-            count
-        } else {
-            count.wrapping_mul(self.maximum_burst_events)
-        } as u64)
+        standard_cycles_capacity(&self.emitter, &self.life, self.infinite_life, self.burst,
+            &self.burst_event, self.maximum_burst_events)
     }
 
     fn spawn(&mut self, fields: &Fields) -> Result<(), String> {

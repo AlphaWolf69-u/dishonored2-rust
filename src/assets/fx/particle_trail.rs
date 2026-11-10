@@ -266,3 +266,97 @@ pub fn trail(fields: &Fields) -> Result<ParticleTrailAsset, String> {
     }
     Ok(result)
 }
+
+/// arkTrailDesc (declaration m_trails): m_timings (+0x10, arkStandardCycles
+/// with warmup +0x1d0, delay +0x1d8 and duration +0x1e0), then the stage
+/// trail body shifted by 0x1d8. Defaults 140210690: rate 1, life 0.5,
+/// duration 1, at most one burst event. These trails have no m_worldspace.
+pub struct DeclarationTrailAsset {
+    pub enabled: bool,
+    pub enable_wind: bool,
+    pub enable_velocity_inheritance: bool,
+    pub emitter: crate::gameplay::particles::emitter::EmitterDefinition,
+    pub burst: bool,
+    pub burst_event: String,
+    pub maximum_burst_events: u32,
+    pub life: ScalarParameter,
+    pub infinite_life: bool,
+    pub warmup: [f32; 2],
+    pub trail: ParticleTrailAsset,
+}
+
+impl DeclarationTrailAsset {
+    /// 1f82c0's estimate, capped at 64 records by 140211de0.
+    pub fn capacity(&self) -> Result<usize, String> {
+        let count = super::particle_stage::standard_cycles_capacity(
+            &self.emitter, &self.life, self.infinite_life, self.burst, &self.burst_event, self.maximum_burst_events,
+        )?;
+        Ok(count.min(64) as usize)
+    }
+}
+
+pub fn declaration_trail(fields: &Fields) -> Result<DeclarationTrailAsset, String> {
+    use crate::gameplay::particles::{emitter::EmitterDefinition, parameters::{EmissionRate, RateParameter}};
+    let unsigned = |value: &Value| atom(value)?.parse::<u32>().map_err(|e| format!("invalid trail integer: {e}"));
+    let mut result = DeclarationTrailAsset {
+        enabled: true,
+        enable_wind: false,
+        enable_velocity_inheritance: false,
+        emitter: EmitterDefinition {
+            cycles: 0,
+            duration: [1.; 2],
+            delay: [0.; 2],
+            simulation_precision: 1.,
+            rate: EmissionRate {
+                range: RateParameter { range: [1.; 2], lods: Vec::new() },
+                curve: EffectFloatCurvePair::constant(1.),
+            },
+        },
+        burst: false,
+        burst_event: String::new(),
+        maximum_burst_events: 1,
+        life: ScalarParameter::constant(0.5),
+        infinite_life: false,
+        warmup: [0.; 2],
+        trail: ParticleTrailAsset::default(),
+    };
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_enabled" => result.enabled = boolean(value)?,
+            "m_enableWind" => result.enable_wind = boolean(value)?,
+            "m_enableVelocityInheritance" => result.enable_velocity_inheritance = boolean(value)?,
+            "m_timings" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_cycles" => result.emitter.cycles = unsigned(value)?,
+                        "m_burst" => result.burst = boolean(value)?,
+                        "m_burstEvent" => result.burst_event = atom(value)?.to_owned(),
+                        "m_maximumBurstEvents" => result.maximum_burst_events = unsigned(value)?,
+                        "m_rate" => {
+                            let mut rate = ScalarParameter {
+                                range: result.emitter.rate.range.range,
+                                curve: std::mem::take(&mut result.emitter.rate.curve),
+                            };
+                            particles::scalar_parameter(&mut rate, scope(value)?)?;
+                            result.emitter.rate.range.range = rate.range;
+                            result.emitter.rate.curve = rate.curve;
+                        }
+                        "m_rate_lod" => edit_list(&mut result.emitter.rate.range.lods, scope(value)?, [20.; 2],
+                            |slot, value| bounds(slot, scope(value)?))?,
+                        "m_life" => particles::scalar_parameter(&mut result.life, scope(value)?)?,
+                        "m_infiniteLife" => result.infinite_life = boolean(value)?,
+                        "m_warmup" => bounds(&mut result.warmup, scope(value)?)?,
+                        "m_delay" => bounds(&mut result.emitter.delay, scope(value)?)?,
+                        "m_duration" => bounds(&mut result.emitter.duration, scope(value)?)?,
+                        _ => return Err(format!("unknown trail timing field {name}")),
+                    }
+                }
+            }
+            "m_worldspace" => return Err("declaration trails have no m_worldspace".into()),
+            _ => body.push((name.clone(), value.clone())),
+        }
+    }
+    result.trail = trail(&body)?;
+    Ok(result)
+}
