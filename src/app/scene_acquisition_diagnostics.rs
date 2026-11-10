@@ -500,9 +500,15 @@ fn scene_host(first_host: bool) -> App {
         .init_resource::<super::texture_streaming::SharedImages>()
         .init_resource::<super::resident_images::ResidentImages>();
     super::scene_preparation::SceneGpuInputs::install(&mut app);
-    app.sub_app_mut(RenderApp).add_systems(
-        bevy::render::ExtractSchedule, crate::screen_shadow_pass::extract_screen_shadow_frame,
-    );
+    {
+        use crate::rendering::bevy_backend::{extract_level_resource, fog_material::FogMaterialResources};
+        app.sub_app_mut(RenderApp).add_systems(bevy::render::ExtractSchedule, (
+            extract_level_resource::<crate::screen_shadow_pass::ScreenShadowFrame>,
+            extract_level_resource::<FogMaterialResources>,
+            extract_level_resource::<crate::shadow_sampling::ParallelSamplingBuffer>,
+            extract_level_resource::<crate::shadow_sampling::LocalSamplingBuffer>,
+        ));
+    }
     super::audio::initialize_resources(&mut app);
     app.finish();
     app.cleanup();
@@ -566,6 +572,7 @@ fn inspect_scene_resources(
             catalog.clone(),
             level,
             true,
+            step == 0,
             |_| false,
         )?;
         super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
@@ -634,6 +641,20 @@ fn inspect_scene_resources(
                 eprintln!("SCREEN_SHADOW_OWNER step={step} phase=extracted gpu_image={uploaded}");
                 Some(output)
             }).flatten();
+            let sampling_assets = if matches!(mode, Mode::Upload)
+                && std::env::var_os("DH2_DEBUG_SAMPLING_RETIREMENT").is_some_and(|value| value == "1") {
+                let render = app.sub_app(RenderApp).world();
+                let fog = render.get_resource::<crate::rendering::bevy_backend::fog_material::FogMaterialResources>()
+                    .ok_or("fog material resources were not extracted")?;
+                let parallel = render.get_resource::<crate::shadow_sampling::ParallelSamplingBuffer>()
+                    .ok_or("parallel sampling buffer was not extracted")?;
+                let local = render.get_resource::<crate::shadow_sampling::LocalSamplingBuffer>()
+                    .ok_or("local sampling buffer was not extracted")?;
+                let images = [fog.world.id(), fog.canvas.id(), fog.opaque_depth.id(), fog.curve.id(), parallel.unavailable_depth.id()];
+                let buffers = [fog.parameters.id(), fog.objects.id(), parallel.buffer.id(), local.buffer.id()];
+                report_sampling_assets(&app, step, "published", &images, &buffers);
+                Some((images, buffers))
+            } else { None };
             // No camera/view frame was produced. Upload mode completed its
             // asset queue work above; view-pass owners were not installed.
             // Use the actual main-world teardown and asset-removal owners.
@@ -654,6 +675,9 @@ fn inspect_scene_resources(
                 // events. Record actual final ownership rather than asserting
                 // that every remaining asset is a map leak.
                 for _ in 0..3 { render_epoch(&mut app)?; }
+                if let Some((images, buffers)) = sampling_assets {
+                    report_sampling_assets(&app, step, "released", &images, &buffers);
+                }
                 if let Some(output) = screen_output {
                     let render = app.sub_app(RenderApp).world();
                     let frame = render.contains_resource::<crate::screen_shadow_pass::ScreenShadowFrame>();
@@ -688,4 +712,16 @@ fn inspect_scene_resources(
         eprintln!("RESOURCE_SCENE_HEAP phase=session-released tag={tag:?} bytes={bytes}");
     }
     Ok(())
+}
+
+fn report_sampling_assets(app: &App, step: usize, phase: &str, images: &[AssetId<Image>], buffers: &[AssetId<ShaderBuffer>]) {
+    let render = app.sub_app(RenderApp).world();
+    let fog = render.contains_resource::<crate::rendering::bevy_backend::fog_material::FogMaterialResources>();
+    let parallel = render.contains_resource::<crate::shadow_sampling::ParallelSamplingBuffer>();
+    let local = render.contains_resource::<crate::shadow_sampling::LocalSamplingBuffer>();
+    let cpu_images = images.iter().filter(|id| app.world().resource::<Assets<Image>>().contains(**id)).count();
+    let cpu_buffers = buffers.iter().filter(|id| app.world().resource::<Assets<ShaderBuffer>>().contains(**id)).count();
+    let gpu_images = images.iter().filter(|id| render.resource::<RenderAssets<GpuImage>>().get(**id).is_some()).count();
+    let gpu_buffers = buffers.iter().filter(|id| render.resource::<RenderAssets<GpuShaderBuffer>>().get(**id).is_some()).count();
+    eprintln!("SAMPLING_ASSET_LIFETIME step={step} phase={phase} fog={fog} parallel={parallel} local={local} cpu_images={cpu_images} cpu_buffers={cpu_buffers} gpu_images={gpu_images} gpu_buffers={gpu_buffers}");
 }

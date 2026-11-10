@@ -358,7 +358,7 @@ fn render_particles(
     water: Res<WaterSceneFrame>,
     fog_frame: Res<FogSceneFrame>,
     fog: Res<FogGpu>,
-    shared: Res<super::fog_material::FogMaterialResources>,
+    shared: Option<Res<super::fog_material::FogMaterialResources>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
@@ -561,6 +561,7 @@ fn render_particles(
         if draws.is_empty() {
             return Ok(());
         }
+        let shared = shared.as_deref().ok_or("particle fog resource owner unavailable")?;
         let adaptation = buffers
             .get(&exposure.0)
             .ok_or("particle adaptation awaits preparation")?;

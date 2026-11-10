@@ -142,9 +142,10 @@ impl Plugin for FogPlugin {
         app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
             FogSceneFrame,
         >::default());
-        app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<
-            super::fog_material::FogMaterialResources,
-        >::default());
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.add_systems(bevy::render::ExtractSchedule,
+                super::extract_level_resource::<super::fog_material::FogMaterialResources>);
+        }
         app.add_plugins(bevy::render::extract_component::ExtractComponentPlugin::<
             InteriorVolume,
         >::default());

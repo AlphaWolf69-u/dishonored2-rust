@@ -37,7 +37,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             let checkpoints = Cell::new(0u32);
             let requested = Cell::new(None);
             let prepared = super::level_prepare::prepare_level(
-                base.to_owned(), catalog.clone(), level, true, |point| {
+                base.to_owned(), catalog.clone(), level, true, step == 0, |point| {
                     if requested.get().is_some() { return true; }
                     if cancellation != Some(point) { return false; }
                     checkpoints.set(checkpoints.get() + 1);

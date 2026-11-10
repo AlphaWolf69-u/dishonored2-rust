@@ -603,6 +603,7 @@ fn acquire(world: &mut World) {
             };
             let preparation = super::scene_preparation::ScenePreparation::new(world);
             let needs_initial_inventory = !world.resource::<super::interaction_focus::DiscoveredDocuments>().is_initialized();
+            let initial_load = state.initial_load;
             let (send, receive) = mpsc::channel();
             state.result = Some(Mutex::new(receive));
             std::thread::Builder::new()
@@ -611,7 +612,7 @@ fn acquire(world: &mut World) {
                 .spawn(move || {
                     let _audio_work = audio_work;
                     if _audio_work.is_closing() { return; }
-                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory, |_| _audio_work.is_closing())
+                    let result = super::level_prepare::prepare_level(base, catalog, level, needs_initial_inventory, initial_load, |_| _audio_work.is_closing())
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
                             if _audio_work.is_closing() { return Err("audio session is closing".into()); }
@@ -753,7 +754,7 @@ fn finish_loading(
     mut uploads: ResMut<bevy::render::render_asset::RenderAssetBytesPerFrame>,
 ) {
     if state.published && state.movie.is_some() && state.continued && crate::loading::ready() {
-        if let Some(fade) = fade.as_deref_mut() { fade.start(state.initial_load); }
+        if let Some(fade) = fade.as_deref_mut() { fade.start(); }
         uploads.max_bytes = state.upload_budget;
         state.initial_load = false;
         state.finished = true;
