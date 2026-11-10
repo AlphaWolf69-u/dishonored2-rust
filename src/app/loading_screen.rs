@@ -255,6 +255,7 @@ pub(super) fn install(
     app.insert_resource(crate::gameplay::game_clock_runtime::GamePaused(true));
     app.init_resource::<super::resident_images::ResidentImages>();
     let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
+    resident.prepare_intrinsics(&catalog, &mut *app.world_mut().resource_mut::<Assets<Image>>())?;
     app.insert_resource(super::resident_images::UiImages::new(resident));
     app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
     let upload_budget = app.world().resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes;

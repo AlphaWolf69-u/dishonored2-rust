@@ -84,11 +84,8 @@ pub(super) fn load(catalog: &Catalog, document: &Document) -> Result<Vec<AreaFog
                 volume.id
             ));
         };
-        let bytes = catalog
-            .read(&resource)
-            .map_err(|e| e.to_string())?
+        let model = crate::bmodel::load(catalog, &resource)?
             .ok_or_else(|| format!("{}: missing fog render model {resource}", volume.id))?;
-        let model = crate::bmodel::parse(&bytes).map_err(|e| format!("{resource}: {e}"))?;
         result.push(AreaFogSource {
             target: volume
                 .scattering_source

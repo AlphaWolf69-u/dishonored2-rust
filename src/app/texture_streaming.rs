@@ -793,6 +793,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             return Err("intrinsic image has no streamed finer mip".into());
         }
         let mut image = empty_streamed_image(16, 16, 1, TextureFormat::Rgba8Unorm);
+        image.texture_descriptor.label = Some("intrinsic image");
         let uploads = if packed { image.data = Some(payload); Vec::new() }
             else {vec![CompressedMipUpload {mip_level: 0, width: 16, height: 16, payload}]};
         return Ok(Some(StreamedDiffuse {
