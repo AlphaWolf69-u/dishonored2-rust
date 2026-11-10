@@ -5960,3 +5960,14 @@ relocate in place if it differs. Expect removal of 217,203,904 and
 294,155,992 overlapping index bytes, with matching full upload CRCs and
 unchanged runtime query data. Compare the affected read/pack cost and
 asset removal. This changes host staging, not the WGSL layout.
+
+Probe index upload backing acceptance (`eb285fd3`). Two windowless DX12
+copy/direct pairs matched PNW fingerprints and full upload CRCs `bbc9941d`
+and `4fa1e3b9`. Direct transfer reused the full backing on both maps, avoiding
+217,203,904 B of overlapping index storage in Edge of the World and
+294,155,992 B in Dust District. The measured upload packing step fell from
+142.5–152.7M to 6.6–7.1M cycles and from 182.4–187.8M to 6.1–6.4M cycles,
+respectively. PNW input CPU samples overlapped or differed by one scheduler
+tick. Both maps returned to 15 GPU images, four meshes and zero buffers after
+retirement. No frame timings were measured. Evidence:
+`DH2-scene-shutdown/artifacts/probe-index-upload-backing-20261110-comparison.json`.
