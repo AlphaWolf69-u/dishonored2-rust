@@ -16,6 +16,7 @@ pub mod spawn;
 pub mod sprite;
 pub mod stage;
 pub mod timing;
+pub mod trail;
 
 use crate::float::{add, divide, multiply, subtract};
 
