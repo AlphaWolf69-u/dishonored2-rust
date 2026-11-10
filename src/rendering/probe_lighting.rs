@@ -188,23 +188,28 @@ pub struct ProbeLighting {
 // Only probe sets own gameplay EnvProbe identities. Keep their shared read
 // history while any set or in-flight load is alive, and retire it when the
 // final owner releases its data (140060180's map resource boundary).
-static PROBE_OWNERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static PROBE_OWNERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, usize>>> =
+    std::sync::LazyLock::new(Default::default);
 #[derive(Debug)]
-struct ProbeLease;
+struct ProbeLease(u64);
 impl ProbeLease {
-    fn acquire() -> std::sync::Arc<Self> {
-        *PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        std::sync::Arc::new(Self)
+    fn acquire(catalog: u64) -> std::sync::Arc<Self> {
+        let mut owners = PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        *owners.entry(catalog).or_default() += 1;
+        std::sync::Arc::new(Self(catalog))
     }
 }
 impl Drop for ProbeLease {
     fn drop(&mut self) {
         let mut owners = PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        *owners -= 1;
-        if *owners == 0 {
-            if let Some((entries, string_bytes, slots)) = crate::loading::forget_kind("EnvProbe") {
-                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                    eprintln!("MEMORY probe history release: entries={entries} path_capacity_bytes={string_bytes} table_capacity={slots}");
+        let count = owners.get_mut(&self.0).expect("probe lease has no catalog scope");
+        *count -= 1;
+        if *count == 0 {
+            owners.remove(&self.0);
+            if owners.is_empty() { *owners = Default::default(); }
+            if let Some((entries, string_bytes, slots)) = crate::loading::forget_catalog_kind(self.0, "EnvProbe") {
+                if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+                    eprintln!("MEMORY probe history release: catalog={} entries={entries} path_capacity_bytes={string_bytes} table_capacity={slots}", self.0);
                 }
             }
         }
@@ -308,7 +313,7 @@ fn load_world_probes(
     let Some(network_resource) = level.probe_network else {
         return Ok(None);
     };
-    let lease = ProbeLease::acquire();
+    let lease = ProbeLease::acquire(catalog.identity());
     // 1402b15e0 consumes the network from its input stream. Parse in the
     // same order from the archive decoder, keeping only the required tables.
     let probe_cpu_start = (std::env::var("DH2_DEBUG_PNW_CPU").as_deref() == Ok("1"))
@@ -337,6 +342,33 @@ fn load_world_probes(
     }
     let mut probes = Vec::with_capacity(names.len());
     let mut reflection_probes = Vec::with_capacity(secondary_resources.len());
+    let separate = std::env::var_os("DH2_DEBUG_SEPARATE_PROBE_RECORDS").is_some_and(|v| v == "1");
+    let trace_records = std::env::var_os("DH2_DEBUG_PROBE_RECORD_ACQUISITION").is_some_and(|v| v == "1");
+    let mut scratch = Vec::new();
+    let mut acquisitions = 0;
+    let mut growths = 0;
+    let mut peak = 0;
+    let mut read_cycles = 0u64;
+    let mut source_crc = flate2::Crc::new();
+    let mut read_probe = |path: &str, keep_samples| {
+        if separate { scratch = Vec::new(); }
+        let before = scratch.capacity();
+        let started = trace_records.then(crate::loading::thread_cycles).flatten();
+        if !catalog.read_into(path, &mut scratch).map_err(|error| error.to_string())? {
+            return Err(format!("missing probe resource {path}"));
+        }
+        if trace_records {
+            acquisitions += 1;
+            growths += usize::from(scratch.capacity() > before);
+            peak = peak.max(scratch.capacity());
+            if let Some((start, end)) = started.zip(crate::loading::thread_cycles()) {
+                read_cycles = read_cycles.saturating_add(end.saturating_sub(start));
+            }
+            source_crc.update(path.as_bytes());
+            source_crc.update(&scratch);
+        }
+        if retain_samples { bprobe::parse(&scratch) } else { bprobe::parse_for_lighting(&scratch, keep_samples) }
+    };
     let sample_start = trace_staging.then(crate::loading::thread_cycles).flatten();
     let mut cells_by_probe = std::collections::HashMap::new();
     let mut next_cell = Vec::new();
@@ -354,24 +386,13 @@ fn load_world_probes(
     }
     for name in &secondary_resources {
         let path = format!("{name}.bprobe");
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("missing reflection probe {path}"))?;
-        let probe = if retain_samples { bprobe::parse(&bytes) }
-            else { bprobe::parse_for_lighting(&bytes, false) };
-        reflection_probes.push(probe.map_err(|error| format!("reflection probe {path}: {error}"))?);
+        reflection_probes.push(read_probe(&path, false).map_err(|error| format!("reflection probe {path}: {error}"))?);
     }
     let rejected_resources = Vec::new();
     for name in names {
         let resource = format!("{name}.bprobe");
         let first_cell = cells_by_probe.remove(name.as_str());
-        let parsed = catalog
-            .read(&resource)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("PNW references missing probe resource {resource}"))
-            .and_then(|bytes| if retain_samples { bprobe::parse(&bytes) }
-                else { bprobe::parse_for_lighting(&bytes, first_cell.is_some()) });
+        let parsed = read_probe(&resource, first_cell.is_some());
         match parsed {
             Ok(probe) => {
                 let mut index = first_cell.unwrap_or(usize::MAX);
@@ -405,6 +426,10 @@ fn load_world_probes(
             // fabricated black probe or a misindexed, partially loaded array.
             Err(error) => return Err(format!("required primary probe {resource}: {error}; native ordered probe IDs cannot be compacted")),
         }
+    }
+    drop(scratch);
+    if trace_records {
+        eprintln!("PROBE_RECORD_ACQUISITION separate={separate} reads={acquisitions} growths={growths} peak_scratch_bytes={peak} read_cycles={read_cycles} source_crc={:08x}", source_crc.sum());
     }
     let cell_geometry = if retain_samples {
         spatial.cells.iter().map(|cell| {
