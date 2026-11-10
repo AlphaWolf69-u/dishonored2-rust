@@ -6041,3 +6041,13 @@ readables still use the selected collection declaration, and discovered
 journal items retain their own identities. Expect one loading owner before
 play, zero surviving request-table owners after the gate, and release of
 the map-only descriptor section. Init/common still have their own owners.
+
+Windowless publication exposed an additional observer lease. The timing
+coverage reporter had stored a separate map-list reference for its PostUpdate
+report, while this acquisition observation calls the play gate directly. All
+three publications dropped from two owners to one. Route the same coverage
+calculation through the request list retired at play start and remove the
+independent timing acquisition. Expect one to zero owners with timing enabled
+and the same report content for the reads recorded before handoff. The isolated
+map sections measured 4,562,689 bytes in Edge of the World and 4,508,068 in
+Dust District. This counts descriptor ownership, rather than process memory.

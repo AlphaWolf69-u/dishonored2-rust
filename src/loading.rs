@@ -393,7 +393,7 @@ pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (us
 
 /// The level is shown: later first reads are late loads.
 pub fn play_started() {
-    with(|s| {
+    let coverage = with(|s| {
         s.playing = true;
         let (separate, trace) = history_modes();
         if trace {
@@ -403,17 +403,32 @@ pub fn play_started() {
         }
         // 1400661e0 frees the temporary acquisition table after loading.
         // Progress is now 1; late-load reporting only needs the read registry.
+        let timing = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1");
+        let report_coverage = timing && !s.required.is_empty();
         if std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() != Ok("1") {
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            if timing {
                 eprintln!("MEMORY loading descriptor release: entries={} logical_section_bytes={} owners={} index_capacity={}",
                     s.required.len(), s.required.logical_descriptor_bytes(),
                     std::sync::Arc::strong_count(&s.required), s.required_heads.capacity() + s.required_next.capacity());
             }
-            s.required = Default::default();
+            let list = std::mem::take(&mut s.required);
             s.required_heads = Default::default();
             s.required_next = Default::default();
+            report_coverage.then_some(list)
+        } else {
+            report_coverage.then(|| s.required.clone())
         }
     });
+    // Report from the retired acquisition list while it is still in scope.
+    // A diagnostic has no independent map-list owner during loading or play.
+    if let Some(list) = coverage {
+        let report = report_iter(list.iter());
+        let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
+        eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");
+        for c in report.iter().filter(|c| c.listed > 0 || c.unlisted > 0) {
+            eprintln!("LOAD coverage {}: {} of {} listed, {} unlisted", c.kind, c.loaded, c.listed, c.unlisted);
+        }
+    }
 }
 
 #[cfg(feature = "game")]

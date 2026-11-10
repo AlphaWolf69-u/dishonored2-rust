@@ -71,24 +71,7 @@ pub(super) fn track_streaming(scene: bevy::prelude::Res<super::SceneRenderQueue>
     }
 }
 
-static LIST: Mutex<Option<std::sync::Arc<crate::assets::map_resources::LevelList>>> = Mutex::new(None);
-
-/// Keep the current map's load lists for the coverage report.
-pub(super) fn keep_load_list(catalog: &crate::assets::archive::Catalog) {
-    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_none_or(|v| v != "1") {
-        return;
-    }
-    let Some(map) = crate::gameplay::map_info::current_map() else { return };
-    let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
-    let language = crate::assets::lang::read_text_language(catalog.base()).unwrap_or("english");
-    match crate::assets::map_resources::acquire_level_list(catalog.base(), catalog, &map, language) {
-        Ok(list) => *LIST.lock().unwrap() = Some(list),
-        Err(e) => eprintln!("LOAD list {map}: {e}"),
-    }
-}
-
-/// When every loading gate is complete: play starts, and the coverage of
-/// the original's load lists is reported.
+/// Report asset residency once every loading gate is complete.
 pub(super) fn level_ready(
     mut done: bevy::prelude::Local<bool>,
     scene: bevy::prelude::Res<super::SceneData>,
@@ -130,16 +113,6 @@ pub(super) fn level_ready(
     if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
         for (frames, bytes, blocks) in crate::platform::allocation_tags::big_blocks().into_iter().take(30) {
             eprintln!("LOAD big {} MB in {blocks}: {frames}", bytes >> 20);
-        }
-    }
-    // Coverage is emitted once. A diagnostic must not retain the map's
-    // acquisition descriptors throughout gameplay or into the next load.
-    if let Some(list) = LIST.lock().unwrap().take() {
-        let report = crate::loading::report_iter(list.iter());
-        let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
-        eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");
-        for c in report.iter().filter(|c| c.listed > 0 || c.unlisted > 0) {
-            eprintln!("LOAD coverage {}: {} of {} listed, {} unlisted", c.kind, c.loaded, c.listed, c.unlisted);
         }
     }
 }
