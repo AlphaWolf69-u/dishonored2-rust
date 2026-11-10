@@ -8,6 +8,7 @@ use std::{borrow::Cow, collections::HashMap, sync::{Arc, Mutex, OnceLock}};
 
 #[derive(Default)]
 pub(crate) struct Owner {
+    pub(crate) shader_metadata: Mutex<Option<crate::assets::shader_cache::ParameterTables>>,
     entries: Mutex<HashMap<Arc<str>, Result<Arc<Parameter>, String>>>,
 }
 pub(crate) struct Parameter {

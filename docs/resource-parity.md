@@ -899,6 +899,10 @@ independent timing samples or a whole-frame FPS improvement.
 
 ### Session shader metadata reuse
 
+Shader metadata catalog acceptance (2cf152fb). On A/B/A, both parameter and index acquisitions recorded cold/cold/reused. Returning to A avoided a 733,409-byte index read and reused all 1,688 parameter kinds and 239 option defaults. The independent installed libraries matched 270 program entries, 14,711 stage entries, and the 4,281-byte DOF program read. Dropping one catalog kept its live libraries valid, then released their last leases independently. Edge of the World and Dust District matched the earlier windowless DX12 image, GPU, common-texture and material records. Evidence: DH2-screen-shadow-retirement/artifacts/shader-session-metadata-20261110-comparison.json.
+
+Shader metadata catalog ownership prediction (2026-11-10). Original 1402d8820 initializes render-parameter declarations, 1400607f0/14005feb0 reuse them, and 1402ca9c0 acquires the installed shader index with session lifetime. The rewrite's parameter snapshot is a single global replacement slot even though every input comes from its Catalog. The shader-index weak table also deletes other base-path identities whenever one base opens. Move the parameter snapshot to the source Catalog and prune only expired weak index identities. An interleaved A/B/A acquisition should parse two metadata snapshots and two previously distinct index keys instead of three, keeping identical metadata and per-library cursors. Editable renderparm sources must still decode independently. Expect no new program parsing, GPU operations or per-frame work. Compare the actual program library identities, authored metadata and final consumer release.
+
 UI named-image binding correction: `1410150f0` binds the image resource,
 whose current GPU view can change independently of a movie's draw list. The
 host compositor cached that view by name forever. Expected correction is zero
