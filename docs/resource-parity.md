@@ -402,6 +402,10 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Packed acoustic route lookup (`1400b7790`, `1400b7ce0`). The original resolves a zone pair to an offset and traverses the installed packed records in place. Both host audio admission and detailed path scoring currently allocate an owned route list and a portal vector for each record before applying distance and direction. Borrow validated portal words from the existing map-owned table. Predict zero route and portal allocations per gameplay lookup, with matching traversal order, cost and malformed-list rejection. Measure only lookup and traversal over actual installed zone pairs, including the added bounds-validation pass. The graph's retained table size and audio playback state stay the same.
+
+  Installed lookup comparison `2e7959e1` matched the ordered routes and portal signatures for Edge of the World, Dust District and the Clockwork Mansion boat. Each of the two owned passes built 104,832 / 239,319 / 1,681,717 nonempty route-list and portal buffers. Each borrowed pass built zero. On the boat, lookup plus traversal used 338.8–345.8 million thread cycles with owned lists and 59.3–60.1 million with borrowed lists. This measures the changed traversal over installed pairs. Full mixer timing, in-game listening and malformed archive inputs were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/packed-acoustic-route-20261110-comparison.json`.
+
 - Shared particle physics queries (`140677ec0`, `140678070`, `1401fc710`, `140c85490`). The original queries the published physics world. The host cloned every reachable trigger body, broadphase tree and water height for every published camera frame, even after particle simulation moved to the main world. Keep one map-owned collision geometry owner, resolve wind identities after component startup, and let the frame stamp lease the same geometry. Current trigger and water bodies are published only during startup; moving machinery and player physics use separate owners. Predict one validation pass per map, zero per-frame copies or allocations for publishing query inputs, and the same tree order, filters, positions and water heights. The final lease detaches shape observers before freeing geometry.
 
 - Physics shape-observer teardown (`140cdfcb0`, `140ce03d0`, `1408a4830`). Trigger and acoustic worlds own Havok shape-observer registrations. Their Rust drop paths currently free both objects without running the existing detach routine. Drain active and pooled registrations in the original order while each shape's signals are still owned, including failed preparation and the final acoustic-world lease. Expect zero remaining subscriptions after a successful drain, with no gameplay work or change to published shapes and queries. Detached records are retired once even when a caller explicitly releases its world before Rust drop.
@@ -5887,6 +5891,29 @@ matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
 547,680–555,905 with borrowed nodes. This measures those startup dispatches,
 without a gameplay frame-time claim. The source was c40dcdbe and the same
 comparison artifact records both batches.
+
+Static model acquisition prediction. The original BML1 loader 14026a5a0
+feeds the model stream to 140259d50 and closes it after constructing the
+surfaces. The host currently inflates the entire member while also building
+the typed position, packed attribute and index arrays. Use the Catalog
+stream for installed members of at least 256 KiB, with 64 KiB of archive
+buffering and an 8 KiB stack block. Expect to remove one member-sized heap
+allocation per qualifying cold acquisition. Keep small and editable sources
+on the buffered route and keep packed channels, geometry, bounds, bindings
+and reuse policy unchanged. Compare decoded fields and acquisition costs on
+installed models before integrating the change.
+
+Installed static model comparison (`fb704c39`). The independent index and
+layout census found 102 qualifying BML1 members, all compressed, with 258
+surfaces and 1,315,706 vertices. The optimized tool compared buffered and
+streamed decoding twice and matched all model fields in all 102 resources,
+with no unsupported members. The largest decoded member was 2,226,130
+bytes. It no longer overlaps the typed mesh arrays as a whole-file buffer.
+Scoped elapsed read/parse totals were 138.686–142.428 ms buffered and
+129.899–131.034 ms streamed. Both routes use the same model parser. The
+comparison does not measure peak process memory, whole-map load time or
+rendered output. Evidence: `DH2/artifacts/static-model-stream-index-20261110.json`
+and `DH2-fx-level-lifetime/artifacts/static-model-stream-20261110-comparison.json`.
 
 Shared point-query owner acceptance (91584611). A windowless production
 scene observation prepared Edge of the World, Dust District and Edge of the

@@ -1,6 +1,6 @@
 //! Portal path admission (1400b63b0/1400b5f70).
 use super::admission::{self, Admission, Query};
-use crate::assets::sound_propagation::{Portal, Propagation, Route};
+use crate::assets::sound_propagation::{Portal, Propagation, RouteView};
 use bevy_math::Vec3;
 
 fn dot(a: Vec3, b: Vec3) -> f32 {
@@ -55,7 +55,7 @@ impl Portal {
 fn path_admitted(
     graph: &Propagation,
     query: &Query,
-    route: &Route,
+    route: &RouteView<'_>,
     reduction_scale: f32,
 ) -> Result<bool, String> {
     let mut zone = query.source_zone.ok_or("portal path has no source zone")?;
@@ -75,16 +75,11 @@ fn path_admitted(
     let mut length = 0.0;
     let mut from = query.source;
     let mut reduction = f32::from_bits(source.properties[2]) * reduction_scale;
-    for step in 0..route.portals.len() {
+    for portal in route.portals(reverse) {
         remaining -= reduction * remaining;
-        let index = if reverse {
-            route.portals.len() - 1 - step
-        } else {
-            step
-        };
         let portal = graph
             .portals
-            .get(usize::from(route.portals[index]))
+            .get(usize::from(portal))
             .ok_or("missing acoustic path portal")?;
         let point = portal.path_point(from, query.listener);
         length += distance(from, point, query.vertical_scale);
@@ -130,7 +125,7 @@ pub fn admission(
         let cost_limit = crate::float::truncate_i64(query.range * 1000.0) as u32;
         for route in graph
             .routes
-            .between(source.id, listener.id)
+            .views(source.id, listener.id)
             .map_err(|error| error.to_string())?
         {
             if route.cost_millimetres < cost_limit
