@@ -12,6 +12,7 @@ pub mod particle_sprite;
 pub mod particle_stage;
 pub mod particle_attractor;
 pub mod particle_trail;
+pub mod particle_beam;
 pub mod particle_field;
 pub mod particles;
 pub mod screen_quad;

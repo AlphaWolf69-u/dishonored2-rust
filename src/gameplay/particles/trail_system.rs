@@ -46,8 +46,8 @@ impl DeclarationTrail {
         lcg_step(system_seed);
         let mut cycle_seed = lcg_step(system_seed);
         let capacity = asset.capacity()?;
-        let delay = sample_range(asset.emitter.delay, &mut cycle_seed);
-        let clock = CycleClock::new(asset.emitter.duration, &mut cycle_seed);
+        let delay = sample_range(asset.timings.emitter.delay, &mut cycle_seed);
+        let clock = CycleClock::new(asset.timings.emitter.duration, &mut cycle_seed);
         let cycle_seed = lcg_step(&mut cycle_seed);
         Ok(Self {
             seed: cycle_seed,
@@ -73,7 +73,7 @@ impl DeclarationTrail {
 
     /// 140212de0: advance the clock only, reseeding at a cycle restart.
     fn advance_clock(&mut self, asset: &DeclarationTrailAsset, delta: f32) -> Result<(), String> {
-        self.clock.advance(delta, asset.emitter.cycles, asset.emitter.duration, &mut self.cycle_seed)?;
+        self.clock.advance(delta, asset.timings.emitter.cycles, asset.timings.emitter.duration, &mut self.cycle_seed)?;
         if self.clock.restarted {
             self.cycle_seed = lcg_step(&mut self.cycle_seed);
             self.seed = self.cycle_seed;
@@ -93,10 +93,10 @@ impl DeclarationTrail {
     fn spawn(&mut self, asset: &DeclarationTrailAsset, wind: &ParticleWind, position: [f32; 3], basis: [[f32; 3]; 3], delta: f32) -> Result<(), String> {
         let Some(&slot) = self.free.last() else { return Ok(()) };
         let previous_age = self.records[slot].as_ref().map_or(0., |record| record.age);
-        let mut record = TrailRecord::start(previous_age, &asset.trail, Some(&asset.life), self.emitting,
+        let mut record = TrailRecord::start(previous_age, &asset.trail, Some(&asset.timings.life), self.emitting,
             self.clock.fraction, position, basis, &mut self.cycle_seed)?;
         let force = self.record_wind(wind, &record)?;
-        let alive = record.advance_declaration(&asset.trail, asset.infinite_life, self.clock.fraction, delta, position, basis, force)?;
+        let alive = record.advance_declaration(&asset.trail, asset.timings.infinite_life, self.clock.fraction, delta, position, basis, force)?;
         self.records[slot] = Some(record);
         if alive {
             self.free.pop();
@@ -114,7 +114,7 @@ impl DeclarationTrail {
             let mut record = self.records[slot].take().ok_or("live trail record is absent")?;
             record.set_emitting(self.emitting);
             let force = self.record_wind(wind, &record)?;
-            let alive = record.advance_declaration(&asset.trail, asset.infinite_life, self.clock.fraction, delta, position, basis, force)?;
+            let alive = record.advance_declaration(&asset.trail, asset.timings.infinite_life, self.clock.fraction, delta, position, basis, force)?;
             self.records[slot] = Some(record);
             if !alive {
                 self.free.push(slot);
@@ -128,10 +128,10 @@ impl DeclarationTrail {
     fn emit(&mut self, asset: &DeclarationTrailAsset, wind: &ParticleWind, position: [f32; 3], basis: [[f32; 3]; 3], mut delta: f32, scale: f32) -> Result<(), String> {
         let step_limit = f32::from_bits(0x3c88_8889);
         while 0. < delta {
-            if self.free.is_empty() || !self.clock.can_emit(asset.emitter.cycles) {
+            if self.free.is_empty() || !self.clock.can_emit(asset.timings.emitter.cycles) {
                 break;
             }
-            let rate = &asset.emitter.rate;
+            let rate = &asset.timings.emitter.rate;
             let range_mix = crate::random::lcg_unit(&mut self.seed);
             let curve_mix = crate::random::lcg_unit(&mut self.seed);
             let [max, min] = rate.range.range;
@@ -156,12 +156,12 @@ impl DeclarationTrail {
 
     /// 1402120f0: a cycle restart spawns round(rate x scale) records.
     fn burst(&mut self, asset: &DeclarationTrailAsset, wind: &ParticleWind, position: [f32; 3], basis: [[f32; 3]; 3], delta: f32, scale: f32) -> Result<(), String> {
-        if !self.clock.can_emit(asset.emitter.cycles) {
+        if !self.clock.can_emit(asset.timings.emitter.cycles) {
             return Ok(());
         }
         if self.clock.restarted {
             let mix = crate::random::lcg_unit(&mut self.cycle_seed);
-            let [max, min] = asset.emitter.rate.range.range;
+            let [max, min] = asset.timings.emitter.rate.range.range;
             let mut count = add(multiply(add(multiply(mix, subtract(max, min)), min), scale), 0.5).floor() as i32;
             while 0 < count && !self.free.is_empty() {
                 self.spawn(asset, wind, position, basis, delta)?;
@@ -219,7 +219,7 @@ impl DeclarationTrail {
                     self.pose.advance(step);
                     let sampled = self.pose.sample();
                     self.update_records(asset, wind, sampled.position, sampled.basis, step)?;
-                    if asset.burst {
+                    if asset.timings.burst {
                         self.burst(asset, wind, sampled.position, sampled.basis, step, rate)?;
                     } else {
                         self.emit(asset, wind, sampled.position, sampled.basis, step, rate)?;
@@ -271,6 +271,6 @@ impl DeclarationTrail {
 
     /// 1402122f0.
     pub fn can_emit(&self, asset: &DeclarationTrailAsset) -> bool {
-        self.clock.can_emit(asset.emitter.cycles)
+        self.clock.can_emit(asset.timings.emitter.cycles)
     }
 }

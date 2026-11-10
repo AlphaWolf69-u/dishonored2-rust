@@ -304,6 +304,8 @@ pub struct ParticleDeclaration {
     pub stages: Vec<ParticleStageAsset>,
     /// System +0x39a's arkTrail producers.
     pub trails: Vec<super::particle_trail::DeclarationTrailAsset>,
+    /// System +0x398's arkBeam producers.
+    pub beams: Vec<super::particle_beam::ParticleBeamAsset>,
 }
 
 impl ParticleDeclaration {
@@ -369,6 +371,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
                     }
                 }
             }
+            "m_beams" => descriptor_list(&mut result.beams, scope(value)?, super::particle_beam::beam)?,
             "m_trails" => descriptor_list(&mut result.trails, scope(value)?, super::particle_trail::declaration_trail)?,
             _ => return Err(format!("unresolved particle declaration producer {name}")),
         }

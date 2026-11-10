@@ -323,6 +323,13 @@ impl ParticleDefinition {
                 materials.insert(name.clone(), material);
             }
         }
+        // 140201760 creates an arkBeam for each enabled beam with a material
+        // (1401d0ff0); beams are not simulated yet.
+        if declarations.iter().flatten().any(|declaration| {
+            declaration.beams.iter().any(|beam| beam.enabled && beam.material.is_some())
+        }) {
+            return Err("particle beams are not simulated yet".into());
+        }
         let strip_materials = declarations.iter().flatten()
             .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
             .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
