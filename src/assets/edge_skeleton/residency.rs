@@ -12,6 +12,15 @@ static SEPARATE: OnceLock<bool> = OnceLock::new();
 fn tracing() -> bool { *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_SKELETON_ACQUISITION").is_some_and(|v| v == "1") || std::env::var_os("DH2_DEBUG_RIG_ACQUISITION").is_some_and(|v| v == "1") || std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1")) }
 fn separate() -> bool { *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_SKELETON_RESOURCES").is_some_and(|v| v == "1")) }
 
+impl Drop for Registry {
+    fn drop(&mut self) {
+        if tracing() {
+            let entries = self.0.get_mut().unwrap_or_else(|error| error.into_inner());
+            eprintln!("SKELETON_REGISTRY_RETIRED entries={} slots={}", entries.len(), entries.capacity());
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct Audit { pub source_crc: u32, pub source_bytes: usize, identity: usize, logical_bytes: usize }
 impl Drop for Audit {
