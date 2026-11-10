@@ -268,7 +268,8 @@ pub(crate) fn observe_readback(device: &RenderDevice, queue: &RenderQueue) -> Re
         mapped_at_creation: false,
     });
     let samples: [[f32; 4]; 5] = std::array::from_fn(|i| [i as f32, -0.25, 0.5, 1.0]);
-    queue.write_buffer(&source, 0, bytemuck::cast_slice(&samples));
+    let bytes: Vec<_> = samples.iter().flatten().flat_map(|value| value.to_le_bytes()).collect();
+    queue.write_buffer(&source, 0, &bytes);
     let mut readbacks = OceanQueryReadbacks::new(device);
     let mut requests = OceanQueryQueue::new();
     let count = samples.len() as u32;
