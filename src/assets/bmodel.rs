@@ -89,14 +89,15 @@ fn report_model(path: &str, model: &Model, action: &str) {
         crc.update(surface.material_path.as_bytes());
         for value in surface.authored_bounds.iter().flatten()
             .chain(surface.positions.iter().flatten())
-            .chain(surface.uvs.iter().flatten())
         {
             crc.update(&value.to_le_bytes());
         }
+        // Keep diagnostic signatures comparable with the earlier float staging.
+        for value in surface.uvs.iter().flatten() { crc.update(&value.to_f32().to_le_bytes()); }
         for channels in &surface.packed_channels { crc.update(channels); }
         for index in &surface.indices { crc.update(&index.to_le_bytes()); }
         geometry_bytes += surface.positions.capacity() * size_of::<[f32; 3]>()
-            + surface.uvs.capacity() * size_of::<[f32; 2]>()
+            + surface.uvs.capacity() * size_of::<[half::f16; 2]>()
             + surface.packed_channels.capacity() * size_of::<[u8; 16]>()
             + surface.indices.capacity() * size_of::<u16>();
     }
@@ -153,7 +154,7 @@ pub struct Surface {
     /// FUN_14025a040 reads six finite floats after the index stream.
     pub authored_bounds: [[f32; 3]; 2],
     pub positions: Vec<[f32; 3]>,
-    pub uvs: Vec<[f32; 2]>,
+    pub uvs: Vec<[half::f16; 2]>,
     /// Declaration 1: UV1 half2, normal/tangent SNORM8x4, color UNORM8x4.
     pub packed_channels: Vec<[u8; 16]>,
     pub indices: Vec<u16>,
@@ -280,10 +281,8 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
                 float_at(vertex, 4)?,
                 float_at(vertex, 8)?,
             ];
-            let u = half::f16::from_bits(u16::from_le_bytes(vertex[12..14].try_into().unwrap()))
-                .to_f32();
-            let v = half::f16::from_bits(u16::from_le_bytes(vertex[14..16].try_into().unwrap()))
-                .to_f32();
+            let u = half::f16::from_le_bytes(vertex[12..14].try_into().unwrap());
+            let v = half::f16::from_le_bytes(vertex[14..16].try_into().unwrap());
             if !u.is_finite() || !v.is_finite() {
                 return Err(format!("surface {surface_number} has invalid UVs"));
             }

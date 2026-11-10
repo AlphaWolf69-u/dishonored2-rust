@@ -1053,9 +1053,9 @@ pub(super) fn prepare(
             let (mesh, transform) = if world_baked {
                 baked_shear_instances += 1;
                 (
-                    meshes.add(authored_mesh(
+                    meshes.add(super::view_geometry::authored_mesh_from_uvs(
                         &points,
-                        &surface.uvs,
+                        super::view_geometry::MeshUvs::Packed(&surface.uvs),
                         &surface.indices,
                         &surface.packed_channels,
                         |v| placed_direction(placement, v),
@@ -1072,9 +1072,9 @@ pub(super) fn prepare(
                             0,
                         ))
                         .or_insert_with(|| {
-                            meshes.add(source_mesh(
+                            meshes.add(super::view_geometry::source_mesh_from_uvs(
                                 &surface.positions,
-                                &surface.uvs,
+                                super::view_geometry::MeshUvs::Packed(&surface.uvs),
                                 &surface.indices,
                                 &surface.packed_channels,
                                 instance.to_matrix().determinant() < 0.0,
@@ -1205,6 +1205,19 @@ pub(super) fn prepare(
     // Runtime meshes/query/skinning owners already hold their required data;
     // as with input retirement at 14025aa00's exit, staging is not residency.
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        let mut packed_uv_pairs = 0;
+        let mut packed_uv_mismatches = 0;
+        for ((path, surface, _, _), handle) in &model_mesh_handles {
+            let Some(model) = model_cache.get(path).and_then(Option::as_ref) else { continue; };
+            let Some(source) = model.surfaces.get(*surface) else { continue; };
+            let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
+                meshes.get(handle).and_then(|mesh| mesh.attribute(super::view_geometry::PACKED_UV_0))
+                else { continue; };
+            packed_uv_pairs += uvs.len();
+            packed_uv_mismatches += source.uvs.len().abs_diff(uvs.len())
+                + source.uvs.iter().zip(uvs).filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits)).count();
+        }
+        eprintln!("MEMORY BML1 packed UV preparation: pairs={packed_uv_pairs} mismatches={packed_uv_mismatches}");
         fn capacity_bytes<T>(values: &Vec<T>) -> usize {
             values.capacity() * std::mem::size_of::<T>()
         }
