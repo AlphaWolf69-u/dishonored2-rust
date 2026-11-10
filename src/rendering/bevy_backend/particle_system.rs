@@ -56,6 +56,8 @@ pub(crate) struct ParticleSystem {
     pub trail_bounds: Option<[[f32; 3]; 2]>,
     /// System +0x39a: (declaration trail index, arkTrail).
     pub trails: Vec<(usize, crate::gameplay::particles::trail_system::DeclarationTrail)>,
+    /// System +0x39c: (declaration ribbon index, arkRibbon).
+    pub ribbons: Vec<(usize, crate::gameplay::particles::ribbon::Ribbon)>,
     /// System +0x398: (declaration beam index, arkBeam).
     pub beams: Vec<(usize, crate::gameplay::particles::beam_system::BeamEmitter)>,
     /// System +0x1d10 (1401fa780's defaults until an FX owner publishes).
@@ -494,6 +496,46 @@ impl ParticleSystem {
                 fog,
             });
         }
+        // 140207230: each ribbon draws its point chain. Its bounds never
+        // reach the system (see Ribbon::build).
+        for (index, ribbon) in &self.ribbons {
+            let asset = &declaration.ribbons[*index];
+            let Some(name) = asset.material.as_ref() else { continue };
+            let material = self.materials.get(name).ok_or_else(|| format!("particle ribbon material absent: {name}"))?;
+            let mut strip = Vec::new();
+            ribbon.build(asset, context.camera.position, publication.colour, publication.pose,
+                self.beam_noise.as_deref(), &mut strip)?;
+            if strip.is_empty() {
+                continue;
+            }
+            let mut transparency = context.transparency.get(material.state)?;
+            if material.distortion { transparency.mode = 0; }
+            let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
+                material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+            output.push(super::particle_pass::ParticleDraw {
+                masking_factor: self.masking_factor,
+                material: material.clone(),
+                lighting: if material.lighting.is_some() { lighting } else { None },
+                transparency,
+                state,
+                stencil_reference,
+                grid_level: 0,
+                mesh: None,
+                instances: vec![crate::rendering::particles::ParticleInstance {
+                    position: [0.; 3],
+                    axes: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                    parameters: crate::rendering::particles::PackedParticleParameters {
+                        colour: u32::MAX, flipbook_seed_uv: 0, size: 0,
+                    },
+                }],
+                strip,
+                clip_plane: self.clipping.as_ref().and_then(|planes| planes.rendering)
+                    .map_or(bevy::prelude::Vec4::W, bevy::prelude::Vec4::from_array),
+                clip_fade_distance: self.clipping.as_ref().filter(|planes| planes.rendering.is_some())
+                    .map_or(0., |planes| planes.fade_distance),
+                fog,
+            });
+        }
         self.trail_bounds = (trail_bounds[0][0] <= trail_bounds[1][0]).then_some(trail_bounds);
         Ok(())
     }
@@ -508,12 +550,22 @@ impl ParticleSystem {
         // 1c4b50 derives decl+618 bit1 from finite, non-looping lifetime
         // stages without an external burst-event producer. 1c4460 derives
         // bit4 from enabled sprite materials with a dark-vision layer.
+        // 1c4b50 also tests beams and declaration trails the same way, and
+        // ribbons by their cycle count alone.
         let force_simulate = declaration.stages.iter().any(|stage| {
             stage.enabled
                 && stage.emitter.cycles != 0
                 && !stage.infinite_life
                 && !(stage.burst && !stage.burst_event.is_empty())
-        });
+        }) || declaration.beams.iter().map(|beam| (beam.enabled, &beam.timings))
+            .chain(declaration.trails.iter().map(|trail| (trail.enabled, &trail.timings)))
+            .any(|(enabled, timings)| {
+                enabled
+                    && timings.emitter.cycles != 0
+                    && !timings.infinite_life
+                    && !(timings.burst && !timings.burst_event.is_empty())
+            })
+            || declaration.ribbons.iter().any(|ribbon| ribbon.enabled && ribbon.timings.cycles != 0);
         let texture_materials: Vec<_> = declaration
             .stages
             .iter()
@@ -527,7 +579,7 @@ impl ParticleSystem {
         let texture_images = texture_materials.iter().flat_map(|material| material.images.values())
             .filter(|image| image.scene_owned && seen.insert(image.path.clone()))
             .cloned().collect();
-        let (effect, (stages, beams, trails, system_seed)) = ParticleEffect::new(
+        let (effect, (stages, beams, trails, ribbons, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
             seed,
@@ -573,7 +625,15 @@ impl ParticleSystem {
                             trail, &mut system_seed, ReferenceFrame::default())?));
                     }
                 }
-                Ok((stages, beams, trails, system_seed))
+                // ...and an arkRibbon for each enabled ribbon with a
+                // material (1402042b0), after the trails.
+                let mut ribbons = Vec::new();
+                for (index, ribbon) in declaration.ribbons.iter().enumerate() {
+                    if ribbon.enabled && ribbon.material.is_some() {
+                        ribbons.push((index, crate::gameplay::particles::ribbon::Ribbon::new(ribbon, &mut system_seed)?));
+                    }
+                }
+                Ok((stages, beams, trails, ribbons, system_seed))
             },
         )?;
         Ok(Self {
@@ -586,6 +646,7 @@ impl ParticleSystem {
             stages,
             trails,
             beams,
+            ribbons,
             beam_target: Default::default(),
             beam_noise: definition.beam_noise.clone(),
             trail_bounds: None,
@@ -629,6 +690,10 @@ impl ParticleSystem {
             // 1401d9070 / 1401d8c60
             beam.live_count() == 0
                 && !emitting(beam.can_emit(&self.declaration.beams[*index]))
+        }) && self.ribbons.iter().all(|(index, ribbon)| {
+            // 14012d960 / 1402054b0
+            ribbon.live_count() == 0
+                && !emitting(ribbon.can_emit(&self.declaration.ribbons[*index]))
         })
     }
 
@@ -902,6 +967,17 @@ impl ParticleSystem {
             }
             trail.advance(&declaration.trails[*index], &declaration.wind, delta, publication.pose,
                 self.wind, publication.rate, true)?;
+        }
+        // 1402007b0 for each ribbon, after the trails, with the same warmup.
+        for (index, ribbon) in &mut self.ribbons {
+            let asset = &declaration.ribbons[*index];
+            let delta = if self.first_simulation {
+                crate::gameplay::particles::emitter::warmup_delta(delta, asset.timings.warmup, &mut self.system_seed)
+            } else {
+                delta
+            };
+            ribbon.advance(asset, &declaration, delta, publication.pose, self.wind,
+                self.source_motion.as_ref(), publication.rate, true)?;
         }
         self.first_simulation = false;
         self.simulated_frame = Some(frame);

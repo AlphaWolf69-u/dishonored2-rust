@@ -26,8 +26,9 @@ Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
 radial-ramp opacity, bare rotation orders, clipping planes, stage
 sorting, stage-to-stage spawning, attractors, stage trails and
-declaration trails and beams are connected; 884 particle declarations
-still fail (15 at beams whose end uses the FX target parameters, below).
+declaration trails, beams and ribbons are connected; 846 particle
+declarations still fail (15 at beams whose end uses the FX target
+parameters, below).
 
 | Count | First failure |
 |---|---|
@@ -385,7 +386,7 @@ point list (+0x70), which 1401ce790 turns into control-point anchors and
 per-frame deltas, is likewise unpublished. No installed beam position has
 a spawn mesh; one would be refused.
 
-## Particle ribbons (`m_ribbons`), next
+## Particle ribbons (`m_ribbons`), connected
 
 38 declarations' first failure. arkRibbonDesc (0x13b0 bytes, declaration
 list +0x5f8, system list +0x39c; enable check 1402042b0, constructor
@@ -425,5 +426,19 @@ the base velocity, wind over life, position += velocity x delta. Strip
 140207230: 140204df0 builds the point curve, section clamps to
 [m_minimumParticleLife, m_maximumParticleLife], segments 140206ed0,
 140204950, build 140206420 (strip mapping 140208ef0, 1401d1390/1401d1c30
-interpolation, 1401d5ce0, noise 14010e2e0, as beams). Decompiled dump:
-scratch `ribbon_a.c` (regenerate from chunk_000090.c).
+interpolation, 1401d5ce0, noise 14010e2e0, as beams).
+
+Runtime: `assets::fx::particle_ribbon` (reader, defaults 140203b70 and
+140204000) and `gameplay::particles::ribbon`, created after the
+declaration trails and simulated after them, drawing through the trail
+strip pipeline with the catalog's noise table. The point curve
+(140204df0) keys an origin point (section m_startFromOrigin, on by
+default) and the points from newest to oldest at their ages; every key's
+colour and width use the same seed copy. 1402054c0 measures 2n - 2 samples
+from the section start, never reaching the end. 140207230 grows the
+strip bounds on the stack only, so ribbons add nothing to the system
+bounds (original). 1c4b50's force-simulate flag now also covers beams,
+declaration trails and ribbons. `examples/beam_smoke.rs` drives the 18
+loadable installed ribbons: 17 draw, one needs the owner's published
+motion for velocity inheritance. No installed ribbon has a spawn or
+velocity mesh; one would be refused. Not verified on screen.

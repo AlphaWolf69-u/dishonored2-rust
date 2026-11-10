@@ -73,7 +73,7 @@ fn squared(d: [f32; 3]) -> f32 {
 }
 
 /// 140204d70's binary search over the point times.
-fn search(times: &[f32], time: f32) -> usize {
+pub(crate) fn search(times: &[f32], time: f32) -> usize {
     let (mut base, mut count, mut above) = (0usize, times.len(), 0usize);
     if count != 0 {
         loop {

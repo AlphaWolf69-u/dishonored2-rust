@@ -69,4 +69,44 @@ fn main() {
         }
     }
     println!("beams={beams} failures={failures} drawn={drawn} non_finite={bad} final_vertices={vertices}");
+    let (mut ribbons, mut failures, mut drawn, mut bad) = (0, 0, 0, 0);
+    let mut seen = std::collections::HashSet::new();
+    for declaration in sources.effects.values().filter_map(|e| e.as_ref().ok())
+        .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
+        .flat_map(|p| p.declarations.iter().flatten().cloned())
+    {
+        if !seen.insert(std::sync::Arc::as_ptr(&declaration)) {
+            continue;
+        }
+        for asset in declaration.ribbons.iter().filter(|r| r.enabled && r.material.is_some()) {
+            ribbons += 1;
+            let result = (|| -> Result<(usize, bool), String> {
+                let mut seed = 0x8765_4321;
+                let frame = |t: f32| ReferenceFrame {
+                    position: [t * 2., (t * 3.).cos(), 1.],
+                    basis: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                };
+                let mut ribbon = dishonored2_rust::gameplay::particles::ribbon::Ribbon::new(asset, &mut seed)?;
+                let (mut strip, mut peak, mut finite) = (Vec::new(), 0usize, true);
+                for step in 1..=180 {
+                    let t = step as f32 / 60.;
+                    ribbon.advance(asset, &declaration, 1. / 60., frame(t), [0.5, 0., 0.], None, 1., true)?;
+                    strip.clear();
+                    ribbon.build(asset, [0., -5., 1.], [1.; 4], frame(t), Some(&noise), &mut strip)?;
+                    peak = peak.max(strip.len());
+                    finite &= strip.iter().all(|v| v.position.iter().all(|c| c.is_finite()));
+                }
+                Ok((peak, finite))
+            })();
+            match result {
+                Ok((peak, finite)) => {
+                    drawn += usize::from(peak != 0);
+                    if peak == 0 { println!("{}: ribbon never drawn", asset.name); }
+                    if !finite { bad += 1; println!("{}: non-finite ribbon", asset.name); }
+                }
+                Err(error) => { failures += 1; println!("{}: {error}", asset.name); }
+            }
+        }
+    }
+    println!("ribbons={ribbons} failures={failures} drawn={drawn} non_finite={bad}");
 }

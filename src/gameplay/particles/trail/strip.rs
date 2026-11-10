@@ -295,6 +295,14 @@ impl StripFrame {
     /// unnormalized view vector, the normal side x tangent renormalized;
     /// beams have no edge-on fade.
     pub(crate) fn beam(centre: [f32; 3], tangent: [f32; 3], eye: [f32; 3]) -> Self {
+        Self::view(centre, tangent, eye, true)
+    }
+    /// 140206fe0: the ribbon frame, 1401d4580 without renormalizing the
+    /// normal.
+    pub(crate) fn ribbon(centre: [f32; 3], tangent: [f32; 3], eye: [f32; 3]) -> Self {
+        Self::view(centre, tangent, eye, false)
+    }
+    fn view(centre: [f32; 3], tangent: [f32; 3], eye: [f32; 3], normalize_normal: bool) -> Self {
         let inverse = |s: f32| divide(1., s.max(f32::MIN_POSITIVE).sqrt());
         let s = add(add(multiply(tangent[0], tangent[0]), multiply(tangent[1], tangent[1])), multiply(tangent[2], tangent[2]));
         let t = tangent.map(|c| multiply(c, inverse(s)));
@@ -312,7 +320,7 @@ impl StripFrame {
             subtract(multiply(side[1], t[0]), multiply(side[0], t[1])),
         ];
         let s = add(add(multiply(normal[1], normal[1]), multiply(normal[0], normal[0])), multiply(normal[2], normal[2]));
-        let normal = normal.map(|c| multiply(c, inverse(s)));
+        let normal = if normalize_normal { normal.map(|c| multiply(c, inverse(s))) } else { normal };
         Self { centre, tangent: t, side, normal, facing: 0. }
     }
     fn fade(&self) -> f32 {

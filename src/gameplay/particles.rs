@@ -12,6 +12,7 @@ pub mod mesh_appearance;
 pub mod orientation;
 pub mod parameters;
 pub mod periodic;
+pub mod ribbon;
 pub mod pose;
 pub mod simulation;
 pub mod space;

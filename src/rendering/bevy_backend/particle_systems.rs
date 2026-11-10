@@ -148,8 +148,8 @@ impl ParticleSystems {
                 instances += stage.particles.capacity() * (sprites+meshes) + trails;
                 draws += sprites+meshes+trails;
             }
-            instances += system.trails.len() + system.beams.len();
-            draws += system.trails.len() + system.beams.len();
+            instances += system.trails.len() + system.beams.len() + system.ribbons.len();
+            draws += system.trails.len() + system.beams.len() + system.ribbons.len();
         }
         (instances, draws)
     }

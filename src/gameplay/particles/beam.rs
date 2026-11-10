@@ -718,7 +718,7 @@ impl BeamRecord {
 
 /// 1401d1e80/1401d1c30's control fetch: the list value at `k`, its first
 /// or last pair extrapolated outside the list; one value repeats.
-fn control_point4(values: &[[f32; 4]], k: i64) -> [f32; 4] {
+pub(crate) fn control_point4(values: &[[f32; 4]], k: i64) -> [f32; 4] {
     match values.len() {
         0 => [0.; 4],
         1 => values[0],
@@ -737,7 +737,7 @@ fn control_point4(values: &[[f32; 4]], k: i64) -> [f32; 4] {
     }
 }
 
-fn control_scalar(values: &[f32], k: i64) -> f32 {
+pub(crate) fn control_scalar(values: &[f32], k: i64) -> f32 {
     match values.len() {
         0 => 0.,
         1 => values[0],

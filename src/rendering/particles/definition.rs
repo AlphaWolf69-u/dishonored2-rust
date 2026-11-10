@@ -356,12 +356,41 @@ impl ParticleDefinition {
             };
             materials.insert(name.clone(), material);
         }
-        let beam_noise = beams.iter().any(|beam| f32::from_bits(0x3400_0000) < beam.noise.scale).then(|| {
+        // 140201760 creates an arkRibbon for each enabled ribbon with a
+        // material (1402042b0).
+        let ribbons: Vec<&crate::assets::fx::particle_ribbon::ParticleRibbonAsset> = declarations.iter().flatten()
+            .flat_map(|declaration| declaration.ribbons.iter())
+            .filter(|ribbon| ribbon.enabled && ribbon.material.is_some())
+            .collect();
+        for ribbon in &ribbons {
+            // No installed ribbon spawns from a mesh (140204080).
+            if ribbon.spawn.spawn_mesh.source.is_some() || ribbon.spawn.velocity_mesh.source.is_some() {
+                return Err("particle ribbon spawn meshes are not loaded".into());
+            }
+            let name = ribbon.material.as_ref().unwrap();
+            let key = name.replace('\\', "/").to_ascii_lowercase();
+            let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+            let material = if let Some(material) = cached {
+                material
+            } else {
+                resources.material_reads += 1;
+                let material = Arc::new(ParticleMaterial::load_shared(
+                    catalog, library, name, &mut resources.images,
+                ).map_err(|error| format!("material {name}: {error}"))?);
+                resources.materials.insert(key, Arc::downgrade(&material));
+                material
+            };
+            materials.insert(name.clone(), material);
+        }
+        let noisy = beams.iter().any(|beam| f32::from_bits(0x3400_0000) < beam.noise.scale)
+            || ribbons.iter().any(|ribbon| f32::from_bits(0x3400_0000) < ribbon.noise.scale);
+        let beam_noise = noisy.then(|| {
             catalog.beam_noise.get_or_init(|| {
                 crate::gameplay::particles::beam_noise::SimplexTable::load(catalog.base()).map(Arc::new)
             }).clone()
         }).transpose()?;
-        let beam_materials: Vec<String> = beams.iter().filter_map(|beam| beam.material.clone()).collect();
+        let beam_materials: Vec<String> = beams.iter().filter_map(|beam| beam.material.clone())
+            .chain(ribbons.iter().filter_map(|ribbon| ribbon.material.clone())).collect();
         let strip_materials = declarations.iter().flatten()
             .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
             .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))

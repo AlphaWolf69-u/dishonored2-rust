@@ -77,3 +77,10 @@ would change, so it can be made opt-in without guessing.
   default 1 from 14020ee80) is never read (confirmed in the disassembly).
 - Rewrite: `TrailRecord::move_point` in `src/gameplay/particles/trail.rs`
   keeps it.
+
+## Particle ribbons add no bounds
+
+140207230 measures the ribbon strip's bounds (1402054c0 and 140204950) into
+a stack copy and never stores it; the emitter bounds (+0x140) it resets
+stay empty, so 1402007b0 never merges a ribbon into the system bounds. The
+rewrite keeps this (Ribbon::build returns no bounds).
