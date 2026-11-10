@@ -450,13 +450,14 @@ pub(crate) fn observe_catalog_scopes(base: &std::path::Path, map: &str) -> Resul
     if camera_materials.is_empty() || camera_materials != camera_blur::retained_material_paths(&b) {
         return Err("camera material retention differs between catalogs".into());
     }
-    let path = first.level.keys().filter(|path| a.kind(path) == Some("physicsMaterial"))
-        .min().ok_or("installed map-only physics material absent")?;
+    let (path, kind) = first.level.keys().filter_map(|path| a.kind(path).map(|kind| (path, kind)))
+        .min_by_key(|(path, _)| *path).ok_or("installed map-only contact source absent")?;
     let recorded = |catalog: &Catalog, kind, path| crate::loading::catalog_read_recorded(catalog.identity(), kind, path);
-    if !recorded(&a, "physicsMaterial", path) || !recorded(&b, "physicsMaterial", path) {
+    if !recorded(&a, kind, path) || !recorded(&b, kind, path) {
         return Err("map declaration read history absent".into());
     }
-    let mut sound_paths: Vec<_> = first.level.keys().filter(|path| a.kind(path) == Some("soundevent")).collect();
+    let mut sound_paths: Vec<_> = first.level.keys()
+        .filter(|candidate| *candidate != path && a.kind(candidate) == Some("soundevent")).collect();
     sound_paths.sort_unstable();
     let (sound_path, event) = sound_paths.into_iter().find_map(|path| {
         let name = path.strip_prefix("generated/decls/soundevent/")?.strip_suffix(".decl")?;
@@ -465,7 +466,7 @@ pub(crate) fn observe_catalog_scopes(base: &std::path::Path, map: &str) -> Resul
     }).ok_or("installed map-only sound event absent")?;
     drop(again);
     first.release_level_history(&a);
-    if recorded(&a, "physicsMaterial", path) || !recorded(&b, "physicsMaterial", path)
+    if recorded(&a, kind, path) || !recorded(&b, kind, path)
         || !recorded(&a, "soundevent", sound_path) {
         return Err("contact history crossed catalogs or removed a live sound event".into());
     }
