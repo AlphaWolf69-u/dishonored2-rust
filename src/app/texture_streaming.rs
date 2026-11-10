@@ -410,6 +410,14 @@ pub(super) enum GpuMipCopy {
 #[derive(Resource, Clone, Default)]
 pub(super) struct PreparedImageMailbox(pub(super) Arc<Mutex<PreparedImageState>>);
 
+impl PreparedImageMailbox {
+    pub(super) fn retire(&self) {
+        let mut state = self.0.lock().unwrap();
+        let generation = state.generation.wrapping_add(1);
+        *state = PreparedImageState { generation, ..Default::default() };
+    }
+}
+
 #[derive(Default)]
 pub(super) struct UploadStats {
     frames: u64,
@@ -706,10 +714,24 @@ struct TextureReadQueue {
     cancelled: bool,
 }
 
+struct ActiveTextureRead<'a> {
+    queue: &'a Mutex<TextureReadQueue>,
+    released: bool,
+}
+
+impl Drop for ActiveTextureRead<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            self.queue.lock().unwrap_or_else(|error| error.into_inner()).reading = false;
+        }
+    }
+}
+
 #[derive(Resource)]
 pub(super) struct TextureReadWorker {
     requests: TextureReadRequests,
     frame: FrameRequests,
+    closing: bool,
     pub(super) completed: Mutex<Receiver<TextureReadResult>>,
     pub(super) ready: VecDeque<TextureReadResult>,
     pub(super) inflight: Vec<bool>,
@@ -727,12 +749,7 @@ struct TextureReadRequests {
 
 impl Drop for TextureReadWorker {
     fn drop(&mut self) {
-        // Map teardown cancels queued acquisitions. A blocking archive read
-        // already executing can finish, but may neither publish nor start
-        // another outgoing-map request after the owner has been released.
-        let mut queue = self.requests.queue.lock().unwrap();
-        queue.cancelled = true;
-        queue.pending.clear();
+        self.close_acquisitions();
     }
 }
 
@@ -747,12 +764,29 @@ impl TextureReadWorker {
         Self {
             requests: TextureReadRequests { catalog, queue: Arc::default(), completed_tx },
             frame: FrameRequests::default(),
+            closing: false,
             completed: Mutex::new(completed),
             ready: VecDeque::new(),
             inflight: vec![false; image_count],
             inflight_count: 0,
             initial_failures: Default::default(),
         }
+    }
+
+    pub(super) fn close_acquisitions(&mut self) {
+        if self.closing { return; }
+        self.closing = true;
+        let mut queue = self.requests.queue.lock().unwrap();
+        queue.cancelled = true;
+        queue.pending.clear();
+        drop(queue);
+        self.ready.clear();
+    }
+
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        let reading = self.requests.queue.lock().unwrap().reading;
+        self.completed.get_mut().unwrap_or_else(|error| error.into_inner()).try_iter().for_each(drop);
+        !reading
     }
 
     /// Remove an unpublished read without reusing its index if the reader
@@ -773,7 +807,7 @@ impl TextureReadRequests {
     /// Queues a read; `Err` returns the request when the queue is full.
     fn request(&self, request: TextureReadRequest) -> Result<(), TextureReadRequest> {
         let mut queue = self.queue.lock().unwrap();
-        if queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
+        if queue.cancelled || queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
             return Err(request);
         }
         queue.pending.push_back(request);
@@ -789,12 +823,17 @@ impl TextureReadRequests {
         bevy::tasks::IoTaskPool::get()
             .spawn(async move {
                 let _tag = crate::platform::allocation_tags::tag("texture worker");
+                let mut lease = ActiveTextureRead { queue: &queue, released: false };
                 loop {
                     let Some((slot, stem, target)) = ({
                         let mut queue = queue.lock().unwrap();
                         if queue.cancelled { return; }
                         let next = queue.pending.pop_front();
-                        queue.reading = next.is_some();
+                        if next.is_none() {
+                            queue.reading = false;
+                            // Another task may be admitted after this unlock.
+                            lease.released = true;
+                        }
                         next
                     }) else {
                         return;
@@ -809,6 +848,15 @@ impl TextureReadRequests {
             .detach();
         Ok(())
     }
+}
+
+/// Queue a real level image for the windowless map-retirement observation.
+pub(super) fn observe_level_acquisition(world: &World) -> bool {
+    let (Some(worker), Some(scene)) = (world.get_resource::<TextureReadWorker>(),
+        world.get_resource::<SceneRenderQueue>()) else { return false };
+    let Some((slot, path)) = scene.diffuse_image_paths.iter().enumerate()
+        .find(|(_, path)| path.ends_with(".bimage7")) else { return false };
+    worker.requests.request((slot, path.clone(), TextureReadTarget::Initial(scene.preferred_mip))).is_ok()
 }
 
 pub(super) fn read_streamed_diffuse_image(
@@ -1452,6 +1500,7 @@ pub(super) fn stream_visible_textures(
     let Some(mut worker) = worker else {
         return;
     };
+    if worker.closing { return; }
     let settings = settings.get(adapter.as_deref());
     let worker = &mut *worker;
     queue.texture_stream_frame += 1;

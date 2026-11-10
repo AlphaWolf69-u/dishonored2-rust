@@ -119,18 +119,24 @@ impl LevelLifetime {
     }
 }
 
-pub(super) fn close_level_acquisitions(world: &World) {
+pub(super) fn close_level_acquisitions(world: &mut World) {
     if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
         effects.close_acquisitions();
     }
     if let Some(interactions) = world.get_resource::<super::interactions::Interactions>() {
         interactions.close_acquisitions();
     }
+    if let Some(mut textures) = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>() {
+        textures.close_acquisitions();
+    }
+    if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
+        mailbox.retire();
+    }
 }
 
 /// Called while the loading screen is active, before purging map identities.
-/// These workers can write to the shared Catalog, even after their outputs are
-/// no longer wanted. Keep their task handles until each decoder has returned.
+/// Outgoing decoders can still own source data or write catalog entries after
+/// their results are no longer wanted. Observe their retirement before purge.
 pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
     let sources = world.get_resource_mut::<super::usable_effects::UsableEffects>()
         .is_none_or(|mut effects| effects.retire_acquisitions());
@@ -140,7 +146,9 @@ pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut interactions| interactions.retire_acquisition());
     let usable_animations = world.get_resource_mut::<super::usable_animation::UsableAnimations>()
         .is_none_or(|mut animations| animations.retire_acquisitions());
-    sources && materials && readable && usable_animations
+    let textures = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>()
+        .is_none_or(|mut textures| textures.retire_acquisitions());
+    sources && materials && readable && usable_animations && textures
 }
 
 /// Plugin registration creates these empty owners before the first map.
@@ -222,8 +230,6 @@ fn reset_scene_publications(world: &mut World) {
     );
     super::audio::begin_level(world);
     if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
-        let mut state = mailbox.0.lock().unwrap();
-        let generation = state.generation.wrapping_add(1);
-        *state = super::texture_streaming::PreparedImageState { generation, ..Default::default() };
+        mailbox.retire();
     }
 }

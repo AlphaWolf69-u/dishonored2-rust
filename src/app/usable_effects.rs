@@ -423,6 +423,7 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
     world.resource_mut::<EffectRequests>().start_player(first_key, effect);
     advance(world)?;
     let admitted = world.resource::<UsableEffects>().loading.len();
+    let texture = super::texture_streaming::observe_level_acquisition(world);
     let readable = world.get_resource_mut::<super::interactions::Interactions>().is_some_and(|mut interactions| {
         if interactions.readable.is_empty() { return false; }
         interactions.request_readable(0);
@@ -436,7 +437,7 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let owner = world.resource::<UsableEffects>();
-    eprintln!("RESOURCE_FX_REQUEST phase=map_retirement admitted={admitted} readable={readable} rig={rig} loading={} retiring={} ready={} cached={}",
+    eprintln!("RESOURCE_FX_REQUEST phase=map_retirement admitted={admitted} readable={readable} rig={rig} texture={texture} loading={} retiring={} ready={} cached={}",
         owner.loading.len(), owner.retiring.len(), owner.ready.len(), owner.cache.len());
     Ok(())
 }
