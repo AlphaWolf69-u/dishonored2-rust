@@ -5892,6 +5892,29 @@ matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
 without a gameplay frame-time claim. The source was c40dcdbe and the same
 comparison artifact records both batches.
 
+Static model acquisition prediction. The original BML1 loader 14026a5a0
+feeds the model stream to 140259d50 and closes it after constructing the
+surfaces. The host currently inflates the entire member while also building
+the typed position, packed attribute and index arrays. Use the Catalog
+stream for installed members of at least 256 KiB, with 64 KiB of archive
+buffering and an 8 KiB stack block. Expect to remove one member-sized heap
+allocation per qualifying cold acquisition. Keep small and editable sources
+on the buffered route and keep packed channels, geometry, bounds, bindings
+and reuse policy unchanged. Compare decoded fields and acquisition costs on
+installed models before integrating the change.
+
+Installed static model comparison (`fb704c39`). The independent index and
+layout census found 102 qualifying BML1 members, all compressed, with 258
+surfaces and 1,315,706 vertices. The optimized tool compared buffered and
+streamed decoding twice and matched all model fields in all 102 resources,
+with no unsupported members. The largest decoded member was 2,226,130
+bytes. It no longer overlaps the typed mesh arrays as a whole-file buffer.
+Scoped elapsed read/parse totals were 138.686–142.428 ms buffered and
+129.899–131.034 ms streamed. Both routes use the same model parser. The
+comparison does not measure peak process memory, whole-map load time or
+rendered output. Evidence: `DH2/artifacts/static-model-stream-index-20261110.json`
+and `DH2-fx-level-lifetime/artifacts/static-model-stream-20261110-comparison.json`.
+
 Shared point-query owner acceptance (91584611). A windowless production
 scene observation prepared Edge of the World, Dust District and Edge of the
 World again. Gameplay and the particle query publication acquired the same
@@ -5914,3 +5937,23 @@ models. Predict four fewer bytes per decoded vertex and no UV0 widen/pack
 round trip for ordinary meshes. The sheared and diagnostic float layouts
 still widen at their consumers. Preserve the established decoded signatures
 and compare the installed GPU attribute bits and acquisition costs.
+
+Screen-shadow publication prediction. The host level teardown corresponds
+to 1408a4830 and the 1400410f0 resource purge. The standard Bevy extractor
+copies the optional ScreenShadowFrame when present but leaves the render
+copy in place when the main-world source disappears. That copy holds the
+outgoing visibility output, cloud and optional AO depth image handles even
+after ScreenGpu releases its cached bindings. Withdraw the main publication
+when its camera stops and remove the extracted frame when its source is
+absent. Expect one fewer outgoing frame lease and retirement of its private
+output before the next map's acquisition. Shared resident images remain
+with their own owners. The ordinary changed-frame extraction stays the same.
+
+Screen-shadow publication acceptance (`84c3fbe7`). On one windowless DX12
+host, Edge of the World, Dust District and Edge of the World each extracted
+the authored screen-shadow frame and uploaded its private output. All
+three releases removed the render-world frame and the exact CPU and GPU
+image identities. No GPU validation errors were reported. This observes
+the real setup and removal owners using the prepared 1×1 output. An active
+full-size draw and live handoff timing were outside this observation.
+Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
