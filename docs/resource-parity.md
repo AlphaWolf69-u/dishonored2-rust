@@ -6685,6 +6685,36 @@ the compact usable-skin build. The forced read interruptions and the
 normal worker retirement gate are separate observations.
 Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
 
+
+### Wwise Vorbis setup packet acquisition
+
+Prediction before implementation. Original 1411614e0 takes installed
+Vorbis metadata and 141161240 feeds installed packets. The host already
+decodes those packets in place. On a header miss it still copies the
+RIFF prefix, emits three synthetic Ogg header pages and parses their
+page table just to supply lewton the identification and setup packets.
+Give the pinned, BSD-licensed ww2ogg setup writer a raw-packet output
+and feed it the borrowed installed setup record. Construct the 30-byte
+identification packet from the same RIFF fields on the stack. Keep the
+existing setup reconstruction, shared setup/cache retirement and legacy
+full-file reader for layouts outside the installed packet path. Expect
+zero RIFF copies and zero Ogg pages for that path, with identical header
+packets and decoded samples. Compare raw packets to the converter's
+reference and record scoped cold acquisition work before integrating.
+The decoder bridge is host integration, not an original codec port.
+
+Installed Vorbis setup acceptance at c9e2429c. All 34 compared
+identification and setup packet pairs matched the converter, and all
+32 decoded PCM sample fingerprints matched. The conversion control
+recorded 13,755 bytes copied into RIFF staging and 107,432 bytes
+generated as Ogg pages. The direct path recorded zero bytes for both.
+Edge of the World, Dust District, and the return to Edge of the World
+matched media, streams, residency and retirement. The observer's cache
+miss counts differed, so its acquisition cycle totals do not establish
+a speedup.
+Evidence: DH2-fx-level-lifetime/artifacts/vorbis-packet-setup-20261111-comparison.json.
+
+
 ### Raw declaration buffer handoff
 
 Prediction before implementation. The installed resource identity and
