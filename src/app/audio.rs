@@ -1054,10 +1054,8 @@ pub(super) fn observe_bank_inventory(base: &std::path::Path) -> Result<(), Strin
         banks.sort_unstable();
         shared_banks.sort_unstable();
         shared_packages.sort_unstable();
-        eprintln!("AUDIO_BANK_CONTEXT {}", serde_json::json!({
-            "map": map, "language": language, "packages": selection.packages,
-            "banks": banks, "shared_packages": shared_packages, "shared_banks": shared_banks,
-        }));
+        eprintln!(r#"AUDIO_BANK_CONTEXT {{"map":{map:?},"language":{language:?},"packages":{:?},"banks":{banks:?},"shared_packages":{shared_packages:?},"shared_banks":{shared_banks:?}}}"#,
+            selection.packages);
         count += 1;
     }
     if count == 0 { return Err("no installed audio bank maps were resolved".into()); }
