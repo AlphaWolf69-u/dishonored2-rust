@@ -7061,3 +7061,24 @@ heap buffer per qualifying cold read, with no larger retained representation
 or per-frame work. Compare original packed vertex bytes for all473 members
 and affected read/parse cost for both modes in an optimized build before
 acceptance. No total RSS or gameplay frame-time gain is predicted.
+
+
+Particle model streaming acceptance at e74780d9. The optimized model-audit
+build compared all473 installed models/621,356 vertices with their original
+packed vertex bytes. Buffered parsing, forced stream parsing and the actual
+production selector match every float bit, all20 attribute bytes, vertex
+order, count and opaque-tail length. Eight members qualify for streaming.
+Alternating256 affected read/parse samples per mode recorded211,777us buffered
+versus184,308us streamed (about13% lower), with the same reader pool and
+warm installed files. The largest removed full-member heap buffer is969,740
+bytes; the stream decoder uses an8,192-byte stack block beside the unchanged
+final vertex array and existing archive buffering. This is a scoped acquisition
+result, not a whole-map loading, RSS, walking CPU or FPS claim.
+
+The coherent dev integration build completed buffered and streamed actual
+EotW/Dust/EotW preparation/publication with exit0. Prepared media, stream
+records, encoded residency, all scene preparation records and selected fades
+matched exactly. Resource identity, cancellation, map/session ownership and
+GPU paths are unchanged. No tests or visible launches were used. Evidence:
+DH2-fx-level-lifetime/artifacts/particle-model-streams-20261111-comparison.json
+and DH2/artifacts/particle-model-buffer-census-20261111.json.
