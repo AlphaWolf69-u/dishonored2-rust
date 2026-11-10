@@ -40,23 +40,32 @@ impl SkeletalHistoryScope {
 #[derive(Resource)]
 pub(super) struct PreparedPhysicsTexts(pub(crate) crate::assets::declaration_texts::PhysicsSeed);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CancellationPoint {
+    General,
+    CollisionShapes,
+    PlacedCollision,
+    CollisionIndex,
+}
+
 pub(super) fn prepare_level(
     base: PathBuf,
     catalog: std::sync::Arc<archive::Catalog>,
     level: crate::assets::level::LevelResources,
     needs_initial_inventory: bool,
-    cancelled: impl Fn() -> bool,
+    cancelled: impl Fn(CancellationPoint) -> bool,
 ) -> Result<super::loading_screen::PreparedLevel, Box<dyn std::error::Error>> {
     // Host worker shutdown: stop between acquisition phases instead of
     // loading the remaining map after its presentation owner has closed.
     // The caller owns cancellation; resource readers and gameplay are unchanged.
-    let check_cancelled = || -> Result<(), std::io::Error> {
-        if cancelled() {
+    let check_at = |point| -> Result<(), std::io::Error> {
+        if cancelled(point) {
             Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "level acquisition cancelled"))
         } else {
             Ok(())
         }
     };
+    let check_cancelled = || check_at(CancellationPoint::General);
     check_cancelled()?;
     let profile = env::var("DH2_PERF_PROFILE").as_deref() == Ok("1");
     let startup = Instant::now();
@@ -89,7 +98,7 @@ pub(super) fn prepare_level(
         catalog.as_ref().unwrap(), language,
     );
     let world_started = profile.then(Instant::now);
-    let world = level.load_world(catalog.as_ref().unwrap(), &cancelled)
+    let world = level.load_world(catalog.as_ref().unwrap(), || cancelled(CancellationPoint::General))
         .map_err(|error| format!("{}: {error}", path.display()))?;
     super::load_timing::mark("world mesh");
     check_cancelled()?;
@@ -610,7 +619,8 @@ pub(super) fn prepare_level(
         let physics = physworld::parse(&physics_bytes)?;
         let (world_triangles, retained_source) = {
             let shape_cycles = trace_physics.then(crate::loading::thread_cycles).flatten();
-            let geometry = physics.collision_for_navigation(&physics_bytes, keep_details, &cancelled)?;
+            let geometry = physics.collision_for_navigation(&physics_bytes, keep_details,
+                &|| cancelled(CancellationPoint::CollisionShapes))?;
             if let Some(start) = shape_cycles {
                 let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
                 eprintln!("MEMORY collision extraction: details={keep_details} detail_capacity_bytes={} cycles={cycles}",
@@ -640,7 +650,8 @@ pub(super) fn prepare_level(
                 .map(entities::rigid_body_settings)
                 .unwrap_or_default();
             let collision = super::view_geometry::acquire_static_model_collision_with_texts(
-                catalog, &placed_models, &bodies, &mut physics_texts, &check_cancelled,
+                catalog, &placed_models, &bodies, &mut physics_texts,
+                || check_at(CancellationPoint::PlacedCollision),
             )?;
             if trace_physics {
                 let mut crc = flate2::Crc::new();
@@ -761,7 +772,7 @@ pub(super) fn prepare_level(
             (
                 navigation::CollisionWorld::with_materials_until(
                     staged.into_iter().chain(placed_triangles), model_collision.owners, resolved,
-                    &cancelled,
+                    || cancelled(CancellationPoint::CollisionIndex),
                 )?,
                 bytes,
             )
@@ -770,7 +781,7 @@ pub(super) fn prepare_level(
             (
                 navigation::CollisionWorld::with_materials_until(
                     level_triangles.chain(placed_triangles), model_collision.owners, resolved,
-                    &cancelled,
+                    || cancelled(CancellationPoint::CollisionIndex),
                 )?,
                 0,
             )

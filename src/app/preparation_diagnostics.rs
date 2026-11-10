@@ -2,6 +2,8 @@
 //! No window, renderer, input, audio playback or settings writes are created.
 //! This observes prepared CPU resources, not GPU publication or live gameplay.
 use crate::assets::{archive::Catalog, level::LevelResources};
+use super::level_prepare::CancellationPoint;
+use std::cell::Cell;
 use std::{path::Path, sync::Arc};
 
 /// Run complete CPU loading batches and release their real prepared owners.
@@ -11,6 +13,13 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
     -> Result<(), Box<dyn std::error::Error>>
 {
     if levels.is_empty() { return Err("inspect-cpu-preparation requires level names".into()); }
+    let cancellation = match std::env::var("DH2_DEBUG_CPU_CANCEL_COLLISION").as_deref() {
+        Ok("shapes") => Some(CancellationPoint::CollisionShapes),
+        Ok("placed") => Some(CancellationPoint::PlacedCollision),
+        Ok("index") => Some(CancellationPoint::CollisionIndex),
+        Err(std::env::VarError::NotPresent) => None,
+        _ => return Err("DH2_DEBUG_CPU_CANCEL_COLLISION expects shapes, placed, or index".into()),
+    };
     // CPU readers use the same task pools as the client. No application
     // runner or window/render plugin is installed.
     let mut task_host = bevy::prelude::App::new();
@@ -25,9 +34,29 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 crate::gameplay::map_info::set_current_map(&format!("{map}.map"));
             }
             eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=begin");
-            let mut prepared = super::level_prepare::prepare_level(
-                base.to_owned(), catalog.clone(), level, true, || false,
-            )?;
+            let checkpoints = Cell::new(0u32);
+            let requested = Cell::new(None);
+            let prepared = super::level_prepare::prepare_level(
+                base.to_owned(), catalog.clone(), level, true, |point| {
+                    if requested.get().is_some() { return true; }
+                    if cancellation != Some(point) { return false; }
+                    checkpoints.set(checkpoints.get() + 1);
+                    if checkpoints.get() < 64 { return false; }
+                    requested.set(Some(std::time::Instant::now()));
+                    true
+                },
+            );
+            if let Some(point) = cancellation {
+                let requested = requested.get().ok_or("collision cancellation point was not reached")?;
+                let error = prepared.err().ok_or("cancelled collision preparation returned a world")?;
+                let release_ms = requested.elapsed().as_secs_f64() * 1000.0;
+                let error = error.to_string();
+                if !error.ends_with("cancelled") { return Err(error.into()); }
+                eprintln!("RESOURCE_COLLISION_CANCEL level={name} phase={point:?} checkpoints={} release_ms={release_ms:.3} result={error}",
+                    checkpoints.get());
+                return Ok(());
+            }
+            let mut prepared = prepared?;
             // AudioMix initializes these once per session after map preload.
             // Observe the same resource owner, without a device or audio output.
             if engine_controls.is_none()

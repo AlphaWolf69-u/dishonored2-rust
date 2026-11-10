@@ -175,6 +175,12 @@ impl RunningGraph {
         }
     }
     fn execute(&mut self, mut q: VecDeque<(u32, u32)>, placements: &[PlacedModel]) -> Vec<String> {
+        static OBSERVATION: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (copy, trace) = *OBSERVATION.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_CLONE_MOTION_NODES").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_MOTION_DISPATCH").is_some_and(|value| value == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
         let mut diagnostics = Vec::new();
         let mut steps = 0;
         while let Some((id, port)) = q.pop_front() {
@@ -186,6 +192,8 @@ impl RunningGraph {
             let result = (|| -> Result<(), String> {
                 let n = self.graph.nodes.iter().find(|node| node.id == id)
                     .ok_or_else(|| format!("missing node {id}"))?;
+                let owned = copy.then(|| n.clone());
+                let n = owned.as_ref().unwrap_or(n);
                 let p = n
                     .ports
                     .iter()
@@ -330,6 +338,10 @@ impl RunningGraph {
             if let Err(e) = result {
                 diagnostics.push(format!("{} node {id}: {e}", self.graph.owner));
             }
+        }
+        if let Some(started) = started {
+            let cycles = crate::loading::thread_cycles().unwrap_or(started).saturating_sub(started);
+            eprintln!("MOTION_DISPATCH owner={} copied={copy} steps={steps} errors={} cycles={cycles}", self.graph.owner, diagnostics.len());
         }
         diagnostics
     }
