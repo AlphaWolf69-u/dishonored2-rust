@@ -15,16 +15,21 @@ use crate::{
 
 /// 14020ba40's trail-life motion sample: acceleration (stage space unless
 /// world), gravity, velocity scale and linear acceleration, all at the
-/// particle's age. Indices 8..10 are 14020cfc0's zero vector.
+/// particle's age. Indices 8..10 are the wind force: 14020cfc0 passes
+/// zero for stage trails, 14020d160 the declaration trail's 1402121f0.
 #[derive(Clone, Copy)]
 pub struct TrailMotion {
     acceleration: [f32; 3],
     gravity: f32,
     velocity_scale: [f32; 3],
     linear: f32,
+    wind: [f32; 3],
 }
 
 pub struct TrailRecord {
+    /// +0: a declaration trail record's own lifetime (14020db70), zero for
+    /// stage trails, whose particle owns the lifetime.
+    lifetime: f32,
     pub(crate) life: f32,
     pub(crate) seed: u32,
     location: [f32; 3],
@@ -177,15 +182,25 @@ impl TrailRecord {
     /// particle's spawn seed chain; the record keeps a copy before drawing.
     /// 14020dd80 does not reset +0x13c, so the first point's offset is
     /// sampled at the slot's previous age (`previous_age`, zero when new).
+    /// `lifetime` is a declaration trail's m_timings.m_life (14020de30 ->
+    /// 14020db70 samples it before the trail life); `emitting` is
+    /// 14020db60's flag.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         previous_age: f32,
         trail: &ParticleTrailAsset,
+        lifetime: Option<&super::parameters::ScalarParameter>,
+        emitting: bool,
         fraction: f32,
         position: [f32; 3],
         basis: [[f32; 3]; 3],
         seed: &mut u32,
     ) -> Result<Self, String> {
         let copy = *seed;
+        let lifetime = match lifetime {
+            Some(parameter) => parameter.sample(fraction, seed)?,
+            None => 0.,
+        };
         let life = trail.life.sample(fraction, seed)?;
         let flips = [
             trail.flipbook.flips[0].enabled((crate::random::lcg_step(seed) >> 19) & 1 != 0),
@@ -216,6 +231,7 @@ impl TrailRecord {
         let frame = if trail.flipbook.cycle_rate { trail.flipbook.initial.sample(seed) } else { 0. };
         let point_seed = crate::random::lcg_step(seed);
         let mut record = Self {
+            lifetime,
             life,
             seed: copy,
             location,
@@ -224,7 +240,7 @@ impl TrailRecord {
             flips,
             pose,
             last_point_time: 0.,
-            emitting: true,
+            emitting,
             interpolation_distance,
             interpolation_squared,
             times: Vec::new(),
@@ -240,8 +256,10 @@ impl TrailRecord {
             segments: 0,
             bounds: EMPTY_BOUNDS,
         };
-        let point = record.initial_point(trail, position, &basis)?;
-        record.add_point(trail, fraction, 0., point, &basis)?;
+        if record.emitting {
+            let point = record.initial_point(trail, position, &basis)?;
+            record.add_point(trail, fraction, 0., point, &basis)?;
+        }
         Ok(record)
     }
 
@@ -257,6 +275,48 @@ impl TrailRecord {
     ) -> Result<(), String> {
         self.age = age;
         self.time = add(delta, self.time);
+        self.update(trail, fraction, delta, position, basis, [0.; 3])
+    }
+
+    /// 14020df10 -> 14020d160: a declaration trail record ages by its own
+    /// lifetime and retires (false) past it unless m_infiniteLife wraps it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn advance_declaration(
+        &mut self,
+        trail: &ParticleTrailAsset,
+        infinite_life: bool,
+        fraction: f32,
+        delta: f32,
+        position: [f32; 3],
+        basis: [[f32; 3]; 3],
+        wind: [f32; 3],
+    ) -> Result<bool, String> {
+        self.time = add(delta, self.time);
+        self.age = divide(self.time, self.lifetime);
+        if 1. < self.age {
+            if !infinite_life {
+                return Ok(false);
+            }
+            self.age = subtract(self.age, self.age.floor());
+        }
+        self.update(trail, fraction, delta, position, basis, wind)?;
+        Ok(true)
+    }
+
+    pub fn set_emitting(&mut self, emitting: bool) {
+        self.emitting = emitting;
+    }
+
+    /// 14020cfc0/14020d160 after the age and time are set.
+    fn update(
+        &mut self,
+        trail: &ParticleTrailAsset,
+        fraction: f32,
+        delta: f32,
+        position: [f32; 3],
+        basis: [[f32; 3]; 3],
+        wind: [f32; 3],
+    ) -> Result<(), String> {
         // 14020eb00
         if !trail.flipbook.cycle_rate {
             self.frame = self.age;
@@ -265,7 +325,8 @@ impl TrailRecord {
             self.frame = add(multiply(trail.flipbook.rate.sample(self.age, &mut seed)?, delta), self.frame);
         }
         self.prune();
-        let motion = self.motion(trail, &basis)?;
+        let mut motion = self.motion(trail, &basis)?;
+        motion.wind = wind;
         for point in 0..self.times.len() {
             self.move_point(trail, &motion, point, &basis, delta)?;
         }
@@ -348,7 +409,7 @@ impl TrailRecord {
         let gravity = curves.acceleration.gravity.sample(self.age, &mut seed)?;
         let velocity_scale = curves.velocity_over_life.sample(self.age, &mut seed)?;
         let linear = curves.acceleration.linear.sample(self.age, &mut seed)?;
-        Ok(TrailMotion { acceleration, gravity, velocity_scale, linear })
+        Ok(TrailMotion { acceleration, gravity, velocity_scale, linear, wind: [0.; 3] })
     }
 
     /// 14020c620. The gravity term samples the trail-life gravity at the
@@ -374,7 +435,7 @@ impl TrailRecord {
         let base = self.base_velocities[point];
         let scale = segment.velocity_over_life.sample(age, &mut seed)?;
         let velocity: [f32; 3] = std::array::from_fn(|i| {
-            add(add(multiply(multiply(base[i], motion.velocity_scale[i]), scale[i]), self.velocities[point][i]), 0.)
+            add(add(multiply(multiply(base[i], motion.velocity_scale[i]), scale[i]), self.velocities[point][i]), motion.wind[i])
         });
         let linear = segment.acceleration.linear.sample(age, &mut seed)?;
         let inverse = divide(1., squared(velocity).max(f32::MIN_POSITIVE).sqrt());

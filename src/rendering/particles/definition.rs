@@ -305,18 +305,30 @@ impl ParticleDefinition {
                     materials.insert(name.clone(), material);
                 }
             }
-        }
-        // 140201760 creates an arkTrail for each enabled declaration trail
-        // with a material (1402107a0); its emitter is not simulated yet.
-        if declarations.iter().flatten().any(|declaration| {
-            declaration.trails.iter().any(|trail| trail.enabled && trail.trail.material.is_some())
-        }) {
-            return Err("declaration particle trails are not simulated yet".into());
+            // Declaration trails (arkTrailDesc +0x2b0) load like the rest.
+            for trail in declaration.trails.iter().filter(|trail| trail.enabled) {
+                let Some(name) = &trail.trail.material else { continue };
+                let key = name.replace('\\', "/").to_ascii_lowercase();
+                let cached = resources.materials.get(&key).and_then(Weak::upgrade);
+                let material = if let Some(material) = cached {
+                    material
+                } else {
+                    resources.material_reads += 1;
+                    let material = Arc::new(ParticleMaterial::load_shared(
+                        catalog, library, name, &mut resources.images,
+                    ).map_err(|error| format!("material {name}: {error}"))?);
+                    resources.materials.insert(key, Arc::downgrade(&material));
+                    material
+                };
+                materials.insert(name.clone(), material);
+            }
         }
         let strip_materials = declarations.iter().flatten()
             .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
             .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
             .filter_map(|trail| trail.material.clone())
+            .chain(declarations.iter().flatten().flat_map(|declaration| declaration.trails.iter())
+                .filter(|trail| trail.enabled).filter_map(|trail| trail.trail.material.clone()))
             .collect();
         Ok(Self {
             strip_materials,

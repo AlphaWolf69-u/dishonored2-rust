@@ -328,7 +328,7 @@ impl EmitterBindings for Bindings<'_> {
             };
             let previous_age = slots[slot].as_ref().map_or(0., |record| record.age);
             let mut record = super::trail::TrailRecord::start(
-                previous_age, descriptor, context.cycle_fraction, position, basis, &mut sprite_seed,
+                previous_age, descriptor, None, true, context.cycle_fraction, position, basis, &mut sprite_seed,
             )?;
             record.advance(descriptor, age, context.cycle_fraction, context.remaining_delta, position, basis)?;
             slots[slot] = Some(record);

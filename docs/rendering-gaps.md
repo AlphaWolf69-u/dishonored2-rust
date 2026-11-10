@@ -25,8 +25,8 @@ All 8,909 installed FX declarations loaded through `WorldFxSources`
 Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
 radial-ramp opacity, bare rotation orders, clipping planes, stage
-sorting, stage-to-stage spawning, attractors and stage trails are
-connected; 990 particle declarations still fail.
+sorting, stage-to-stage spawning, attractors, stage trails and
+declaration trails are connected; 954 particle declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -124,7 +124,7 @@ radius and strength), and the integration loop adds 1cda40's pull scaled by
 m_strengthOverLife to the particle's accumulated velocity before each
 substep. Installed data: 197 attractors in 111 particle declarations.
 
-## Particle trails (`m_trails`): stage trails connected
+## Particle trails (`m_trails`): connected
 
 Stage trails (arkParticleTrailDesc, 0x15b0 bytes, list at stage +0x1938;
 183 in 134 installed declarations) and declaration trails (arkTrailDesc,
@@ -133,9 +133,14 @@ list at system +0x39a; 60 in 42 declarations). Stage trails are simulated
 renderer budget and drawn through `particle_strip_vertex`; examples/
 trail_smoke.rs drives all 82 loadable installed stage trails (vector-
 oriented ones through 1402100f0/14020f710/1402104b0) for 120 frames without
-errors. Not yet seen on screen. Remaining: declaration-level trails
-(arkTrailDesc, 37 declarations), and TEXCOORD5 (left unwritten by the
-original, zero here).
+errors; declaration trails (gameplay::particles::trail_system) run for
+all 44 installed ones, including trail-only systems, over 180 frames
+without errors. Not yet seen on screen. Known differences: TEXCOORD5 (left
+unwritten by the original, zero here), declaration-trail velocity
+inheritance (1401db7b0 is sampled into +0x94 but no trail code reads it, so
+it is not ported), trail bounds are not yet merged into the system bounds
+used for fog-volume selection and culling, and the system's restart path
+does not reset declaration trails.
 
 Descriptor (reflection, defaults 1401facf0): m_name +0, m_enabled +8 (1),
 m_worldspace +9 (1), m_trailLife +0x10 (0.5), m_material +0xd8 (required:

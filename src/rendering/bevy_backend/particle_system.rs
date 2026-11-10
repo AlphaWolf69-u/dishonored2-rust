@@ -49,7 +49,11 @@ pub(crate) struct ParticleSystem {
     /// Per-instance value; automatic owner overrides must update this alongside
     /// the instance block before masked submission is enabled.
     pub masking_factor: f32,
+    /// The system's declaration, shared by its stages and trails.
+    pub declaration: Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>,
     pub stages: Vec<StageSimulation>,
+    /// System +0x39a: (declaration trail index, arkTrail).
+    pub trails: Vec<(usize, crate::gameplay::particles::trail_system::DeclarationTrail)>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
     /// World-program mesh materials, drawn as material surfaces (1401fbad0).
     pub world_mesh_materials: Arc<std::collections::HashSet<String>>,
@@ -103,9 +107,7 @@ impl ParticleSystem {
         let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
             return Ok(());
         };
-        let Some(first) = self.stages.first() else {
-            return Ok(());
-        };
+        let declaration = self.declaration.clone();
         // 14031ad30 walks prepared surfaces without an instance-count test.
         // Prefetch inactive renderers too, before their next burst activates.
         for image in &self.texture_images { image.demand.submit_dynamic(self.texture_area); }
@@ -130,23 +132,21 @@ impl ParticleSystem {
         }
         let owner_scale = crate::float::multiply(
             context.view.owner_scale,
-            first
-                .declaration
+            declaration
                 .distance
                 .size
                 .sample_visibility(context.camera.emitter_distance)?,
         );
         let alpha_scale = crate::float::multiply(
             context.alpha_scale,
-            first
-                .declaration
+            declaration
                 .distance
                 .alpha
                 .sample_visibility(context.camera.emitter_distance)?,
         );
         let receiver_bounds = crate::rendering::particles::bounds::system_bounds(
             &self.stages,
-            &first.declaration.visibility,
+            &declaration.visibility,
             publication.pose,
             owner_scale,
         )?;
@@ -401,6 +401,44 @@ impl ParticleSystem {
                 });
             }
         }
+        // 140212410: each declaration trail draws its live records.
+        for (index, trail) in &self.trails {
+            let asset = &declaration.trails[*index];
+            let Some(name) = asset.trail.material.as_ref() else { continue };
+            let material = self.materials.get(name).ok_or_else(|| format!("particle trail material absent: {name}"))?;
+            let mut strip = Vec::new();
+            trail.build(asset, context.camera.position, publication.colour, None, &mut strip)?;
+            if strip.is_empty() {
+                continue;
+            }
+            let mut transparency = context.transparency.get(material.state)?;
+            if material.distortion { transparency.mode = 0; }
+            let (state, stencil_reference) = crate::render_state::alpha_surface_draw_state(
+                material.state, transparency.mode != 0, self.water_flags & 8 != 0);
+            output.push(super::particle_pass::ParticleDraw {
+                masking_factor: self.masking_factor,
+                material: material.clone(),
+                lighting: if material.lighting.is_some() { lighting } else { None },
+                transparency,
+                state,
+                stencil_reference,
+                grid_level: 0,
+                mesh: None,
+                instances: vec![crate::rendering::particles::ParticleInstance {
+                    position: [0.; 3],
+                    axes: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+                    parameters: crate::rendering::particles::PackedParticleParameters {
+                        colour: u32::MAX, flipbook_seed_uv: 0, size: 0,
+                    },
+                }],
+                strip,
+                clip_plane: self.clipping.as_ref().and_then(|planes| planes.rendering)
+                    .map_or(bevy::prelude::Vec4::W, bevy::prelude::Vec4::from_array),
+                clip_fade_distance: self.clipping.as_ref().filter(|planes| planes.rendering.is_some())
+                    .map_or(0., |planes| planes.fade_distance),
+                fog,
+            });
+        }
         Ok(())
     }
 
@@ -433,7 +471,7 @@ impl ParticleSystem {
         let texture_images = texture_materials.iter().flat_map(|material| material.images.values())
             .filter(|image| image.scene_owned && seen.insert(image.path.clone()))
             .cloned().collect();
-        let (effect, (stages, system_seed)) = ParticleEffect::new(
+        let (effect, (stages, trails, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
             seed,
@@ -461,7 +499,16 @@ impl ParticleSystem {
                         stage.parent = names.iter().position(|name| name == wanted);
                     }
                 }
-                Ok((stages, system_seed))
+                // 140201760 then creates an arkTrail for each enabled
+                // declaration trail with a material (1402107a0).
+                let mut trails = Vec::new();
+                for (index, trail) in declaration.trails.iter().enumerate() {
+                    if trail.enabled && trail.trail.material.is_some() {
+                        trails.push((index, crate::gameplay::particles::trail_system::DeclarationTrail::new(
+                            trail, &mut system_seed, ReferenceFrame::default())?));
+                    }
+                }
+                Ok((stages, trails, system_seed))
             },
         )?;
         Ok(Self {
@@ -470,7 +517,9 @@ impl ParticleSystem {
             masking_factor: definition.parameter_block.as_ref().map(|block|
                 block.numeric_parameter("rendering/masking/bendtimefactor"))
                 .transpose()?.flatten().map_or(0.0, |words| f32::from_bits(words[0])),
+            declaration: declaration.clone(),
             stages,
+            trails,
             materials: definition.materials.clone(),
             world_mesh_materials: Arc::new(definition.world_mesh_materials.clone()),
             system_seed,
@@ -499,13 +548,14 @@ impl ParticleSystem {
     /// Its rate threshold at141ad2734 is exactly 2^-23.
     fn finished(&self) -> bool {
         let rate = self.effect.published_rate();
+        let emitting = |can_emit: bool| f32::from_bits(0x3400_0000) < rate && can_emit;
         self.stages.iter().all(|stage| {
             stage.particles.is_empty()
-                && !(f32::from_bits(0x3400_0000) < rate
-                    && stage
-                        .emitter
-                        .cycle
-                        .can_emit(stage.emitter.definition.cycles))
+                && !emitting(stage.emitter.cycle.can_emit(stage.emitter.definition.cycles))
+        }) && self.trails.iter().all(|(index, trail)| {
+            // 1402122f0 / 140212720
+            trail.live_count() == 0
+                && !emitting(trail.can_emit(&self.declaration.trails[*index]))
         })
     }
 
@@ -517,14 +567,12 @@ impl ParticleSystem {
         seed: &mut u32,
     ) -> Result<(), String> {
         self.publication = self.effect.update(now, frame, self.finished(), seed)?;
-        if let Some(stage) = self.stages.first() {
-            crate::render_model::update_particle_water_flags(
-                &mut self.water_flags,
-                stage.declaration.underwater,
-                stage.declaration.handle_seen_from_underwater,
-                view_underwater,
-            );
-        }
+        crate::render_model::update_particle_water_flags(
+            &mut self.water_flags,
+            self.declaration.underwater,
+            self.declaration.handle_seen_from_underwater,
+            view_underwater,
+        );
         Ok(())
     }
 
@@ -549,10 +597,7 @@ impl ParticleSystem {
         let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
             return Ok(());
         };
-        let Some(stage) = self.stages.first() else {
-            return Ok(());
-        };
-        let declaration = &stage.declaration;
+        let declaration = self.declaration.clone();
         let delta = publication.simulation_delta;
         let camera = crate::rendering::particles::view::ParticleCamera::select(
             publication.pose.position,
@@ -643,8 +688,8 @@ impl ParticleSystem {
             self.simulated_frame = Some(frame);
             return Ok(());
         }
-        let settings = &self.stages[0].declaration.clipping;
-        self.wind = if self.stages[0].declaration.wind.enabled {
+        let settings = &self.declaration.clipping;
+        self.wind = if self.declaration.wind.enabled {
             wind.velocity(world, point_query, publication.pose.position)?
         } else {
             [0.; 3]
@@ -681,11 +726,7 @@ impl ParticleSystem {
         let Some(publication) = self.publication.as_ref().filter(|p| p.visible) else {
             return Ok(());
         };
-        let Some(first) = self.stages.first() else {
-            self.simulated_frame = Some(frame);
-            return Ok(());
-        };
-        self.clipping = ParticleClipPlanes::new(&first.declaration.clipping, publication.pose, surface);
+        self.clipping = ParticleClipPlanes::new(&self.declaration.clipping, publication.pose, surface);
         for stage_slot in 0..self.stages.len() {
             let parent_slot = self.stages[stage_slot].parent.filter(|&slot| slot != stage_slot);
             let (stage, parent) = match parent_slot {
@@ -764,6 +805,17 @@ impl ParticleSystem {
                 }
             }
             self.stages[stage_slot].events.pending = deliveries;
+        }
+        // 140200bf0 for each declaration trail. Its first frame (+0x1c9c
+        // bit 4) draws one system seed and starts the pose at the system.
+        let declaration = self.declaration.clone();
+        for (index, trail) in &mut self.trails {
+            if self.first_simulation {
+                crate::random::lcg_step(&mut self.system_seed);
+                trail.reset_pose(publication.pose);
+            }
+            trail.advance(&declaration.trails[*index], &declaration.wind, delta, publication.pose,
+                self.wind, publication.rate, true)?;
         }
         self.first_simulation = false;
         self.simulated_frame = Some(frame);

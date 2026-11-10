@@ -17,6 +17,7 @@ pub mod sprite;
 pub mod stage;
 pub mod timing;
 pub mod trail;
+pub mod trail_system;
 
 use crate::float::{add, divide, multiply, subtract};
 
