@@ -6397,3 +6397,19 @@ Unpublished 2D image rollback acceptance (7f877958). The installed-image observa
 Unpublished map rollback acceptance (b0582a32). Windowless Edge of the World preparation cancelled during collision index construction after registering the persistent map. The batch discarded 46,546 acquisition descriptors and the marker-1 registry sweep removed 2,318 observed headers across particle, audio, mass and FX graph classes while leaving bootstrap records available. Two subsequent preparations completed in the same catalog, and the normal Edge of the World and Dust District scene publication and release route completed without an unpublished rollback. Both commands exited zero. The observed boundary is CPU preparation cancellation and successful scene publication, with actual window close and GPU display outside the route. Evidence: DH2-fx-resources/artifacts/unpublished-level-rollback-20261110-comparison.json.
 
 Cancelled image acquisition history acceptance (62d5caa4). The installed stink-bug diffuse image was credited when staged, then lost its credit and unpublished UI binding when the scene image batch dropped. An independently loaded normal map and the same diffuse path in a separate catalog retained their credit. Retry restored credit with a fresh handle and the same BLAKE3 payload. The windowless DX12 Edge of the World, Dust District, Edge of the World route also published and released all three scenes. The installed ocean cube and caustics upload sizes and CRCs matched the layered rollback observation. Both commands exited zero with no graphics validation errors. Gameplay rendering and frame time were outside this observation. Evidence: DH2-fx-resources/artifacts/abandoned-image-read-history-20261110-comparison.json.
+
+### Parsed Iggy worker ownership
+
+Prediction before implementation. The current thread-local table discards all
+entries from a different catalog on each acquisition, and never explicitly
+retires the final catalog's parsed files. Give each UI worker a catalog-scoped
+lease and each installed player a short lease for callers outside that worker.
+Keep the current gameplay worker's across-open reuse. Two independent live
+catalogs should each parse a requested file once in an interleaved A/B/A route.
+After A's final lease ends, A's file should be reclaimable as soon as its
+last consumer releases it. B's lease must still reuse its own file. Editable
+overlays remain uncached. Expect identical Iggy bytes, imports, bitmap payloads,
+and runtime representation. The same source reader (141093380), resident
+identity lookup (1400607f0 / 14005feb0), and release boundary (140060180) apply.
+Scope leases are host integration for worker-local Rc objects. Measure source
+identity, bytes and retirement using installed movies; no frame-time claim.

@@ -112,6 +112,7 @@ pub fn install(vm: &mut Vm) {
 pub struct Player {
     pub vm: Vm,
     pub state: Shared,
+    _file_scope: Option<Rc<crate::assets::iggy::FileScope>>,
 }
 
 impl Drop for Player {
@@ -131,7 +132,7 @@ impl Player {
         let stage_class = avm2::builtins::native_class(&vm, "flash.display", "Stage");
         let stage = vm.construct_class(&stage_class, &[])?;
         state.borrow_mut().stage = stage.as_object().cloned();
-        Ok(Player { vm, state })
+        Ok(Player { vm, state, _file_scope: None })
     }
 
     /// Register a library (`IggyLibraryCreateFromMemory`): its SymbolClass
@@ -209,7 +210,8 @@ impl Player {
         thread_local! {
             static STRINGS: RefCell<Option<(u64, std::collections::HashMap<String, Rc<lang::StringTable>>)>> = RefCell::new(None);
         }
-        let read = |p: &str| crate::assets::iggy::acquire(catalog, p);
+        let file_scope = crate::assets::iggy::FileScope::for_catalog(catalog);
+        let read = |p: &str| file_scope.acquire(catalog, p);
         let movie = read(movie_path)?;
         let info = movie.movie().map_err(|e| e.to_string())?;
         let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
@@ -269,6 +271,7 @@ impl Player {
         player.load_shared_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
         player.initialize_sound_events().map_err(|e| format!("{movie_path} sound events: {}", player.describe(&e)))?;
         resources.push((player.state.borrow().libraries.len() - 1, movie_path.to_string()));
+        player._file_scope = Some(file_scope);
         Ok((player, resources))
     }
 
