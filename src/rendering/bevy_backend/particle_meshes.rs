@@ -66,6 +66,16 @@ pub(super) struct ParticleMeshBuffers {
     lighting: Option<Buffer>,
     instance_bytes: Vec<u8>,
     lighting_bytes: Vec<u8>,
+    previous: Vec<MainEntity>,
+}
+
+pub(super) fn release_level(world: &mut World) {
+    let retired = std::mem::take(&mut *world.resource_mut::<ParticleMeshBuffers>());
+    if retired.instances.is_some() && std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+        let gpu_bytes = retired.instances.iter().chain(&retired.lighting).map(|buffer| buffer.size()).sum::<u64>();
+        let staging_bytes = retired.instance_bytes.capacity() + retired.lighting_bytes.capacity();
+        eprintln!("MEMORY particle mesh buffers retired: gpu_bytes={gpu_bytes} staging_bytes={staging_bytes}");
+    }
 }
 
 /// The backend's view axes for game space (view_geometry::game_affine_to_view).
@@ -87,14 +97,13 @@ pub(super) fn prepare_particle_meshes(
     view: ViewQuery<&MainEntity>,
     mut reported: Local<Option<String>>,
     mut reported_active: Local<bool>,
-    mut previous: Local<Vec<MainEntity>>,
 ) {
     // Every proxy is listed before any pass can draw it.
     // Each owner replaces its own entries; decal receiver draws share this
     // service and are published later in the same FX preparation interval.
-    for entity in previous.drain(..) { draws.entities.remove(&entity); }
+    for entity in buffers.previous.drain(..) { draws.entities.remove(&entity); }
     for (entity, _) in &proxies {
-        previous.push(*entity);
+        buffers.previous.push(*entity);
         draws.entities.insert(*entity, (0, 0).into());
     }
     let Some(water) = water.0.as_ref() else {
@@ -103,12 +112,13 @@ pub(super) fn prepare_particle_meshes(
     if view.into_inner().id() != water.camera {
         return;
     }
-    let published = publication.0
+    let Some(published) = publication.0
         .as_ref()
         .filter(|published| published.camera == water.camera && published.frame == water.matrices.frame)
-        .and_then(|published| published.particles.as_ref());
+        .and_then(|published| published.particles.as_ref())
+        .filter(|particles| !particles.world_meshes.is_empty()) else { return };
     let mut by_key: HashMap<(&str, &str), Vec<&super::particle_system::WorldMeshDraw>> = HashMap::new();
-    for draw in published.iter().flat_map(|published| &published.world_meshes) {
+    for draw in &published.world_meshes {
         by_key.entry((draw.source.as_str(), draw.material.as_str())).or_default().push(draw);
     }
     let axes = game_to_view();
@@ -164,6 +174,7 @@ pub(super) fn prepare_particle_meshes(
             *reported = Some(error);
         }
     }
+    if buffers.instance_bytes.is_empty() { return; }
     let mut changed = false;
     for (buffer, bytes, label) in [
         (&mut buffers.instances, &buffers.instance_bytes, "particle surface instances"),

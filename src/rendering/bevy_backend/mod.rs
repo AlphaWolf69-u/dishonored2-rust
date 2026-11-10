@@ -29,6 +29,7 @@ pub(crate) fn release_level(world: &mut bevy::prelude::World) {
         area_light_scene::AreaLightScene::release_level(world);
         screen_shadow_pass::ScreenGpu::release_level(world);
         projected_decals::release_level(world);
+        particle_meshes::release_level(world);
         let mut draws = world.resource_mut::<bevy::pbr::DirectInstanceDraws>();
         draws.entities.clear();
         draws.bind_group = None;
