@@ -5929,3 +5929,13 @@ acoustic shape teardown paths. This observes the shared path and repeat
 acquisition. A direct comparison with the removed snapshot, active observer
 detach, frame timing and rendered particle output were outside the observation.
 Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
+
+Packed skeletal UV prediction. The installed BMD6 loader 14025aa00 calls
+140259960 for the authored vertex streams. Declarations 9 and 10 use two
+half-float UV sets. Host decode kept UV1 packed but widened UV0, which the
+normal mesh builder immediately packed again. Keep UV0 packed in ModelInfo
+and pass it through the existing packed mesh builder for placed and arm
+models. Predict four fewer bytes per decoded vertex and no UV0 widen/pack
+round trip for ordinary meshes. The sheared and diagnostic float layouts
+still widen at their consumers. Preserve the established decoded signatures
+and compare the installed GPU attribute bits and acquisition costs.
