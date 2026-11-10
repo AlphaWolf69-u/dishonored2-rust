@@ -4918,7 +4918,7 @@ fn ordinary_direct_tome_render_job_inner(
 /// 0x10000 query capacity is per worker, not a cap on this merged list. Do not
 /// deduplicate across jobs: the original bitset is local to each query, and
 /// texture demand consumes their aligned full-view projected-area metrics.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct RenderQueryObjectOutput {
     indices: Vec<u32>,
     area_metrics: Vec<Option<f32>>,

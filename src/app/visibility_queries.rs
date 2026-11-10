@@ -114,7 +114,7 @@ fn verify_tome_job_outputs(actual: &[tome::RenderQueryJob], expected: &[tome::Re
     );
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TomeRenderQueryKey {
     pub(super) camera_point: [u32; 3],
     pub(super) render_rows: [[u32; 4]; 4],
@@ -301,7 +301,7 @@ pub(super) fn begin_tome_query(
     early.pending = Some((key, tasks));
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct TomeRenderQueryCache {
     pub(super) key: Option<TomeRenderQueryKey>,
     pub(super) output: Option<tome::RenderQueryObjectOutput>,
@@ -319,22 +319,24 @@ impl TomeRenderQueryCache {
         result: &Result<Option<tome::RenderQueryObjectOutput>, String>,
         diagnostics: &[tome::RenderQueryJobDiagnostics],
     ) {
-        self.key = None;
+        let Ok(output) = result else {
+            *self = Self::default();
+            return;
+        };
         if diagnostics.iter().any(|job| job.error.is_some()) {
+            *self = Self::default();
             return;
         }
-        if let Ok(output) = result {
-            self.output = output.clone();
-            self.diagnostics = diagnostics.to_vec();
-            self.key = Some(key);
-        }
+        self.output = output.clone();
+        self.diagnostics = diagnostics.to_vec();
+        self.key = Some(key);
     }
 }
 
 /// Mirror only visibility membership, keeping the per-frame update scan off
 /// large mesh/material records. Pickup removal may leave an extra true bit;
 /// the next touched instance corrects it. Only this system makes bits true.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct VisibilityUpdateScratch {
     instance_buffer: usize,
     visible: Vec<bool>,
@@ -354,8 +356,6 @@ pub(super) fn stream_visible_models(
     mut timing: Option<ResMut<VisibilityElapsedTiming>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     mut last_tome_error: Local<Option<String>>,
-    mut query_cache: Local<TomeRenderQueryCache>,
-    mut updates: Local<VisibilityUpdateScratch>,
     view_settings: Option<Res<ViewSettings>>,
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
@@ -367,9 +367,10 @@ pub(super) fn stream_visible_models(
 ) {
     let (arms, particle_images) = texture_consumers;
     if scene.is_added() {
-        *query_cache = Default::default();
-        *updates = Default::default();
+        scene.tome_render_instances.query_cache = Default::default();
+        scene.tome_render_instances.updates = Default::default();
     }
+    let scene = &mut *scene;
     let started = Instant::now();
     // Host render-to-main feedback. The persistent scene owner still performs
     // the original conditional consumption, scheduling and pressure policy.
@@ -385,7 +386,7 @@ pub(super) fn stream_visible_models(
 
     let mut early_jobs = early.as_deref_mut().and_then(|early| early.pending.take());
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
-        *query_cache = TomeRenderQueryCache::default();
+        scene.tome_render_instances.query_cache = TomeRenderQueryCache::default();
     }
     // Every frame replaces these outputs, including frames without a usable
     // camera. Do not expose a previous view's cells or IDs to light selection.
@@ -430,6 +431,7 @@ pub(super) fn stream_visible_models(
             query_viewport = Some([viewport.x, viewport.y]);
             scene.texture_viewport_pixels = viewport.x.saturating_mul(viewport.y);
             let query_started = Instant::now();
+            let query_cache = &mut scene.tome_render_instances.query_cache;
             let query = tome_query_rows(transform, projection, viewport)
                 .and_then(|rows| {
                     query_rows = Some(rows);
@@ -678,7 +680,10 @@ pub(super) fn stream_visible_models(
     }
     let update_started = Instant::now();
     let mut active = scene.active;
-    let updates = &mut *updates;
+    if let Some(selection) = visible_instances.as_deref_mut() {
+        selection.begin(scene);
+    }
+    let updates = &mut scene.tome_render_instances.updates;
     let instance_buffer = scene.instances.as_ptr() as usize;
     if updates.instance_buffer != instance_buffer || updates.visible.len() != scene.instances.len()
     {
@@ -699,9 +704,6 @@ pub(super) fn stream_visible_models(
                 .all(|(instance, &recorded)| !instance.visible || recorded),
             "visibility membership missed a previously visible instance"
         );
-    }
-    if let Some(selection) = visible_instances.as_deref_mut() {
-        selection.begin(&scene);
     }
     // Most instances are neither visible now nor last frame: skip
     // 64-instance blocks where both lists are all false.
