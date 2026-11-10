@@ -351,19 +351,14 @@ pub(crate) fn forget(catalog: u64, kind: &str, path: &str) -> Option<usize> {
     })
 }
 
-/// Family owners call this after releasing their last scope across catalogs.
-pub(crate) fn forget_kind(kind: &str) -> Option<(usize, usize, usize)> {
+/// Release a family whose last scope in this archive namespace has closed.
+pub(crate) fn forget_catalog_kind(catalog: u64, kind: &str) -> Option<(usize, usize, usize)> {
     with(|s| {
-        let mut removed = None;
-        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
-            let Some(paths) = history.loaded.remove(kind) else { continue };
-            let totals = removed.get_or_insert((0, 0, 0));
-            totals.0 += paths.len();
-            totals.1 += paths.iter().map(|path| path.len()).sum::<usize>();
-            totals.2 += paths.capacity();
-        }
-        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
-        removed
+        let active = s.catalog == Some(catalog);
+        let history = if active { &mut s.history } else { s.other_histories.get_mut(&catalog)? };
+        let paths = history.loaded.remove(kind)?;
+        if active { s.acquired = s.acquired_by(catalog); }
+        Some((paths.len(), paths.iter().map(|path| path.len()).sum(), paths.capacity()))
     })
 }
 

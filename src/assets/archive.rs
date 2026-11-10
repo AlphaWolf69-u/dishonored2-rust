@@ -645,24 +645,37 @@ impl Catalog {
     }
 
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let mut output = Vec::new();
+        Ok(self.read_into(path, &mut output)?.then_some(output))
+    }
+
+    /// Reuse the caller's decoded storage across independent member reads.
+    /// A missing or failed member leaves the buffer empty.
+    pub(crate) fn read_into(&self, path: &str, output: &mut Vec<u8>) -> Result<bool> {
+        output.clear();
         let entry = self.entry(path);
         let result = if let Some(file) = self.overlay_file(path) {
-            Ok(Some(std::fs::read(file)?))
+            if output.capacity() == 0 {
+                *output = std::fs::read(file)?;
+                Ok(true)
+            } else {
+                File::open(file)?.read_to_end(output).map(|_| true).map_err(Into::into)
+            }
+        } else if let Some(entry) = entry {
+            let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
+            let length = reader.length;
+            read_file_into(&mut reader.file, length, path, entry, output).map(|()| true)
         } else {
-            entry
-                .map(|entry| {
-                    let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
-                    let length = reader.length;
-                    read_file(&mut reader.file, length, path, entry)
-                })
-                .transpose()
+            Ok(false)
         };
         // A failed acquisition cannot advance loading progress. Record only
         // actual payloads after archive/overlay IO and decompression succeed.
-        if matches!(&result, Ok(Some(_))) {
+        if matches!(&result, Ok(true)) {
             if let Some(entry) = entry {
                 crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
             }
+        } else if result.is_err() {
+            output.clear();
         }
         result
     }
@@ -752,6 +765,12 @@ fn validate_extent(path: &str, entry: &Entry, archive_size: u64) -> Result<()> {
 }
 
 fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    read_file_into(file, archive_size, path, entry, &mut output)?;
+    Ok(output)
+}
+
+fn read_file_into(file: &mut File, archive_size: u64, path: &str, entry: &Entry, output: &mut Vec<u8>) -> Result<()> {
     validate_extent(path, entry, archive_size)?;
     file.seek(SeekFrom::Start(entry.offset))?;
     // Native worlds exceed 128 MiB. Bound reads by the indexed archive
@@ -759,18 +778,17 @@ fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> R
     // Stream decompression so loading a world does not retain a second
     // allocation for its entire compressed representation.
     let input = file.take(u64::from(entry.stored_size));
-    let mut output = Vec::new();
     // The decoded size plus the one probe byte that detects an oversized
     // stream, so read_to_end never regrows and copies the buffer.
     output.try_reserve_exact(entry.size as usize + 1)?;
     if entry.size == entry.stored_size {
         input
             .take(u64::from(entry.size) + 1)
-            .read_to_end(&mut output)?;
+            .read_to_end(output)?;
     } else {
         ZlibDecoder::new(input)
             .take(entry.size as u64 + 1)
-            .read_to_end(&mut output)?;
+            .read_to_end(output)?;
     }
     if output.len() != entry.size as usize {
         return Err(invalid(format!(
@@ -781,7 +799,7 @@ fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> R
         ))
         .into());
     }
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]
