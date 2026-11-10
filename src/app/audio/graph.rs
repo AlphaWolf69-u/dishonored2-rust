@@ -515,9 +515,9 @@ impl Definition {
     }
     fn has_switch(&self) -> bool { self.nodes.iter().any(|node| matches!(node.kind, Kind::Switch(_))) }
     pub fn can_route(&self) -> bool { self.channels.get() == 2 && self.sounds.iter().all(|sound| sound.channels.get() <= 2) }
-    /// `locate` gives the package location of a streamed source's media id.
+    /// `locate` gives the package location for a streamed bank/media pair.
     pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-        locate: &dyn Fn(u32) -> Option<StreamLocator>, generation: u64) -> io::Result<Self> {
+        locate: &dyn Fn((usize, u32)) -> Option<StreamLocator>, generation: u64) -> io::Result<Self> {
         // The Play target owns its properties even when no source is selected
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
         // belong to the target, and empty graphs have no descendant to borrow.
@@ -534,7 +534,7 @@ impl Definition {
         fn node(source: PlaybackNode, nodes: &mut Vec<Node>, sounds: &mut Vec<Sound>,
             sources: &mut HashMap<u32, usize>,
             attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
-            locate: &dyn Fn(u32) -> Option<StreamLocator>, generation: u64) -> io::Result<usize> {
+            locate: &dyn Fn((usize, u32)) -> Option<StreamLocator>, generation: u64) -> io::Result<usize> {
             let properties = match &source {
                 PlaybackNode::Sound { variant, .. } => Some(&variant.properties),
                 PlaybackNode::Generator { properties, .. } | PlaybackNode::NoSource { properties, .. } |
