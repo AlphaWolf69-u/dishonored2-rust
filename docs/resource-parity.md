@@ -5946,3 +5946,23 @@ destination load, but run both player and world shutdown and always release
 the outgoing owners. Expect the same order and no additional work on a
 successful transition. This covers fallible teardown, without trying to
 restore gameplay after a corrupted chain.
+
+Screen-shadow publication prediction. The host level teardown corresponds
+to 1408a4830 and the 1400410f0 resource purge. The standard Bevy extractor
+copies the optional ScreenShadowFrame when present but leaves the render
+copy in place when the main-world source disappears. That copy holds the
+outgoing visibility output, cloud and optional AO depth image handles even
+after ScreenGpu releases its cached bindings. Withdraw the main publication
+when its camera stops and remove the extracted frame when its source is
+absent. Expect one fewer outgoing frame lease and retirement of its private
+output before the next map's acquisition. Shared resident images remain
+with their own owners. The ordinary changed-frame extraction stays the same.
+
+Screen-shadow publication acceptance (`84c3fbe7`). On one windowless DX12
+host, Edge of the World, Dust District and Edge of the World each extracted
+the authored screen-shadow frame and uploaded its private output. All
+three releases removed the render-world frame and the exact CPU and GPU
+image identities. No GPU validation errors were reported. This observes
+the real setup and removal owners using the prepared 1×1 output. An active
+full-size draw and live handoff timing were outside this observation.
+Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.

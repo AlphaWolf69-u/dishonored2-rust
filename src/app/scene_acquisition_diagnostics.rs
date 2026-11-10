@@ -468,6 +468,9 @@ fn scene_host(first_host: bool) -> App {
         .init_resource::<super::texture_streaming::SharedImages>()
         .init_resource::<super::resident_images::ResidentImages>();
     super::scene_preparation::SceneGpuInputs::install(&mut app);
+    app.sub_app_mut(RenderApp).add_systems(
+        bevy::render::ExtractSchedule, crate::screen_shadow_pass::extract_screen_shadow_frame,
+    );
     super::audio::initialize_resources(&mut app);
     app.finish();
     app.cleanup();
@@ -576,6 +579,14 @@ fn inspect_scene_resources(
             if let Mode::FxRequests(effect) = mode {
                 super::usable_effects::inspect_source_requests(app.world_mut(), effect)?;
             }
+            let screen_output = matches!(mode, Mode::Upload).then(|| {
+                let render = app.sub_app(RenderApp).world();
+                let frame = render.get_resource::<crate::screen_shadow_pass::ScreenShadowFrame>()?;
+                let output = frame.output.id();
+                let uploaded = render.resource::<RenderAssets<GpuImage>>().get(output).is_some();
+                eprintln!("SCREEN_SHADOW_OWNER step={step} phase=extracted gpu_image={uploaded}");
+                Some(output)
+            }).flatten();
             // No camera/view frame was produced. Upload mode completed its
             // asset queue work above; view-pass owners were not installed.
             // Use the actual main-world teardown and asset-removal owners.
@@ -596,6 +607,13 @@ fn inspect_scene_resources(
                 // events. Record actual final ownership rather than asserting
                 // that every remaining asset is a map leak.
                 for _ in 0..3 { render_epoch(&mut app)?; }
+                if let Some(output) = screen_output {
+                    let render = app.sub_app(RenderApp).world();
+                    let frame = render.contains_resource::<crate::screen_shadow_pass::ScreenShadowFrame>();
+                    let gpu_image = render.resource::<RenderAssets<GpuImage>>().get(output).is_some();
+                    let cpu_image = app.world().resource::<Assets<Image>>().get(output).is_some();
+                    eprintln!("SCREEN_SHADOW_OWNER step={step} phase=released extracted={frame} cpu_image={cpu_image} gpu_image={gpu_image}");
+                }
                 gpu_snapshot(&app, step, "after-gpu-removal");
                 resource_snapshot(app.world(), step, "after-gpu-removal");
             }
