@@ -38,6 +38,14 @@ impl Session {
     }
 }
 
+/// Close admission before the window runner drops world-owned workers.
+/// The session still waits for outstanding work before dropping caches.
+pub(in crate::app) fn close_admission() {
+    if let Some(inner) = CURRENT.lock().unwrap_or_else(|error| error.into_inner()).upgrade() {
+        inner.closing.store(true, Ordering::SeqCst);
+    }
+}
+
 /// Acquire during preparation and retain with a stream source. A closed
 /// handle never starts work in a later session, even if a decoder outlives it.
 pub(super) fn handle() -> Result<Handle, &'static str> {
