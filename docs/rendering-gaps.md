@@ -123,3 +123,35 @@ that glides to a new random target every m_randomPeriod, cut-off, target
 radius and strength), and the integration loop adds 1cda40's pull scaled by
 m_strengthOverLife to the particle's accumulated velocity before each
 substep. Installed data: 197 attractors in 111 particle declarations.
+
+## Particle trails (`m_trails`), in progress
+
+Stage trails (arkParticleTrailDesc, 0x15b0 bytes, list at stage +0x1938;
+183 in 134 installed declarations) and declaration trails (arkTrailDesc,
+list at system +0x39a; 60 in 42 declarations). Both still rejected by the
+reader until simulation, strip building and drawing all exist.
+
+Descriptor (reflection, defaults 1401facf0): m_name +0, m_enabled +8 (1),
+m_worldspace +9 (1), m_trailLife +0x10 (0.5), m_material +0xd8 (required:
+1401fada0), m_flipBook +0xe0, m_mapping +0x1c0 (arkStripMapping: axis 0,
+1.0, 0), m_spawn +0x1d0 (spawn_t: initialLocation +0, initialVelocity
++0x118, baseColor +0x230, initialColor +0x240, initialAlpha +0x350,
+initialWidth +0x418, minimalEmitterMove +0x4e0, minimalParticleDistance
++0x4e4, interpolationDistance +0x4e8), m_offsetOverLife +0x6c0,
+m_trailLifeCurves +0x7d8 and m_segmentLifeCurves +0xe30 (life_t:
+velocityOverLife +0, acceleration_t +0x110 {value, worldspace +0x110,
+linearAcceleration +0x118, gravity +0x1e0}, color +0x3b8, alpha +0x4c8,
+width +0x590; 14020f0f0 trail defaults alpha keys 0/0.2/0.8/1 = 0,1,1,0;
+14020ee80 segment defaults alpha 0/0.1/0.5/1 and gravity 1),
+m_tesselation +0x1488 (segments 10, isLengthScaled true, maxSegments
+256), m_orientation +0x1498 (isVectorOriented false, vector (0,0,1)).
+
+Runtime map (particle variant of a template pair): renderer 1402107b0
+(stage +0xd0 list; 0x168-byte record per particle slot, 140210980),
+budget r_prt_particletrailrenderer_budget; pose 140211a90; spawn
+1402117d0 -> 14020dd80 (14020dc10, 14020bec0, 14020dd00); per-substep
+140211bc0 -> 14020dea0 -> 14020cfc0 (14020dff0, 140209de0, 14020ba40,
+14020c620, 14020d7c0, 14020eb00); geometry 140210e90 -> 14020d5d0 ->
+14020a720 (idTriangleDrawVerts<ushort>); surface record 140210e30 from
+1401fbad0. The particle renderprog draws them through its
+non-`$useDirectInstancing` branch (vertex texcoord4, color, texcoord5).
