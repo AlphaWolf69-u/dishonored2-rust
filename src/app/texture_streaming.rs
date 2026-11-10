@@ -153,7 +153,6 @@ pub(super) fn reuse_shared_image(
     shared: &mut SharedImages,
     slot: usize,
     queue: &mut SceneRenderQueue,
-    images: &mut Assets<Image>,
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
@@ -168,9 +167,8 @@ pub(super) fn reuse_shared_image(
     };
     attach_prepared_diffuse_image(
         slot,
-        handle.clone(),
+        handle,
         queue,
-        images,
         probe_materials,
         decal_materials,
         sky_materials,
@@ -227,17 +225,17 @@ pub(super) fn reserve_scene_images(world: &mut World) {
     let mut prepared = world.remove_resource::<PreparedBaseImages>().unwrap_or_default();
     with_scene_images(world, |scene, images, probes, decals, skies, shared| {
         for slot in 0..scene.diffuse_image_paths.len() {
-            if reuse_shared_image(shared, slot, scene, images, probes, decals, skies) {
+            if reuse_shared_image(shared, slot, scene, probes, decals, skies) {
                 continue;
             }
             if let Some(view) = prepared.views.remove(&slot) {
-                attach_prepared_diffuse_image(slot, view.handle.clone(), scene, images, probes, decals, skies);
+                attach_prepared_diffuse_image(slot, view.handle.clone(), scene, probes, decals, skies);
                 commit_prepared_diffuse_level(scene, slot, view.level, view.mip_count);
                 scene.diffuse_image_attempted[slot] = true;
                 continue;
             }
             let handle = images.reserve_handle();
-            attach_prepared_diffuse_image(slot, handle, scene, images, probes, decals, skies);
+            attach_prepared_diffuse_image(slot, handle, scene, probes, decals, skies);
         }
     });
     world.insert_resource(prepared);
@@ -816,15 +814,14 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     }
     if let TextureReadTarget::Exact(mip, format) = target {
         let path = format!("{stem}_mip{mip}");
-        let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? else {
+        let Some(compressed) = texture::read_separate_mip(catalog, &path, u32::from(mip), format)? else {
             return Ok(None);
         };
-        let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
         let uploads = vec![CompressedMipUpload {
             mip_level: 0,
             width: compressed.width,
             height: compressed.height,
-            payload: compressed.payload.to_vec(),
+            payload: compressed.payload,
         }];
         return Ok(Some(StreamedDiffuse {
             image: empty_streamed_image(
@@ -1128,7 +1125,6 @@ pub(super) fn attach_prepared_diffuse_image(
     slot: usize,
     handle: Handle<Image>,
     queue: &mut SceneRenderQueue,
-    images: &mut Assets<Image>,
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
@@ -1171,9 +1167,9 @@ pub(super) fn attach_prepared_diffuse_image(
             }
         }
     }
-    if let Some(old) = queue.diffuse_image_handles[slot].replace(handle) {
-        images.remove(old.id());
-    }
+    // 1402df8c0 holds a snapshot of the prior view while its named wrapper
+    // survives. Bevy retires the asset after all strong handles are dropped.
+    queue.diffuse_image_handles[slot] = Some(handle);
 }
 
 /// Create the authored initial mip chain before any caster can reference it.
@@ -1229,7 +1225,6 @@ fn commit_resident_image(
             slot,
             handle,
             queue,
-            images,
             probe_materials,
             decal_materials,
             sky_materials,
@@ -1306,13 +1301,13 @@ impl Drop for FrameRequests {
 /// view. This also handles a UI acquisition racing an in-flight base read.
 fn reuse_runtime_fx_view(slot: usize, queue: &mut SceneRenderQueue,
     catalog: &archive::Catalog, registry: &super::resident_images::ResidentImages,
-    images: &mut Assets<Image>, probes: &mut Assets<ProbeMaterial>,
+    probes: &mut Assets<ProbeMaterial>,
     decals: &mut Assets<DecalMaterial>, skies: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>) -> bool {
     if queue.diffuse_image_handles[slot].is_some() || queue.diffuse_mip_states[slot].resident.is_some() { return false; }
     let paths = [queue.diffuse_image_paths[slot].clone()];
     let mut views = registry.scene_views(catalog, &paths, queue.preferred_mip, &Default::default());
     let Some(view) = views.remove(&0) else { return false };
-    attach_prepared_diffuse_image(slot, view.handle.clone(), queue, images, probes, decals, skies);
+    attach_prepared_diffuse_image(slot, view.handle.clone(), queue, probes, decals, skies);
     commit_prepared_diffuse_level(queue, slot, view.level, view.mip_count);
     queue.diffuse_image_attempted[slot] = true;
     true
@@ -1465,7 +1460,6 @@ pub(super) fn stream_visible_textures(
                     slot,
                     handle,
                     &mut queue,
-                    &mut images,
                     &mut probe_materials,
                     &mut decal_materials,
                     &mut sky_materials,
@@ -1605,7 +1599,7 @@ pub(super) fn stream_visible_textures(
         if matches!(target, TextureReadTarget::Initial(_))
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
-                worker.catalog(), registry, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+                worker.catalog(), registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_reuse_after_read slot={slot}");
             }
@@ -1681,7 +1675,6 @@ pub(super) fn stream_visible_textures(
                 slot,
                 handle,
                 &mut queue,
-                &mut images,
                 &mut probe_materials,
                 &mut decal_materials,
                 &mut sky_materials,
@@ -1727,7 +1720,7 @@ pub(super) fn stream_visible_textures(
                 id: handle.id(), previous: Some(previous), copy: GpuMipCopy::Reduce { dropped }, uploads: Vec::new(),
             });
         } else {
-            attach_prepared_diffuse_image(slot, handle, &mut queue, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials);
+            attach_prepared_diffuse_image(slot, handle, &mut queue, &mut probe_materials, &mut decal_materials, &mut sky_materials);
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
             if let Some(registry) = registry.as_deref() {
                 registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
@@ -1756,7 +1749,7 @@ pub(super) fn stream_visible_textures(
         if !worker.inflight[slot] && queue.diffuse_image_pending[slot].is_none()
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
-                worker.catalog(), registry, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+                worker.catalog(), registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_reuse_before_read slot={slot}");
             }
