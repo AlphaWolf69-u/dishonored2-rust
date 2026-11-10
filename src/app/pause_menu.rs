@@ -64,8 +64,9 @@ enum Command {
     Wheel(i32),
     /// The frame's time step, and when the frame sent it.
     Tick(f64, std::time::Instant),
-    /// OnExit: the movie is unloaded (`m_cacheResources` is 0).
-    Close,
+    /// OnExit: unload the player. Resume schedules the next Prepare;
+    /// teardown ends both the current player and any pending handoff.
+    Close { reprepare: bool },
     Loading { screen: (i32, i32), map: String, frames: Sender<Result<super::loading_movie::Frame, String>> },
     LoadingTick { dt: f64, progress: f64, ready: bool },
     EndLoading,
@@ -369,7 +370,7 @@ impl PauseMenu {
         self.hud_elapsed = 0.0;
         self.hud_phase = 0.0;
         self.hud_force = true;
-        let _ = self.commands.send(Command::Close);
+        let _ = self.commands.send(Command::Close { reprepare: false });
         let _ = self.commands.send(Command::EndLoading);
         self.open = false;
         self.ready = false;
@@ -524,7 +525,7 @@ fn batch(inbox: &Receiver<Command>) -> Option<Vec<Command>> {
             }
             Command::Cursor { .. } if matches!(out.last(), Some(Command::Cursor { .. })) => *out.last_mut().unwrap() = command,
             // A reload or unload ends the batch's earlier frames.
-            Command::Open { .. } | Command::Close => {
+            Command::Open { .. } | Command::Close { .. } => {
                 tick = None;
                 out.push(command);
             }
@@ -549,6 +550,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
     let mut unhandled = Vec::new();
     let mut timing = debug_timing::Timing::default();
     let mut prepared: Option<Prepared> = None;
+    let mut next_pause_bitmaps = None;
     // The last frame sent; it is sent again while nothing changed the movie
     // (no tick, input, notification or request), and keeps its uploaded vertices.
     let mut last_frame: Option<FlashFrame> = None;
@@ -626,6 +628,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         Err(e) => warn!("Pause movie: {e}"),
                     }
                 }
+                drop(next_pause_bitmaps.take());
                 crate::loading::complete(PAUSE_GATE);
             }
             Command::Open { screen } => {
@@ -637,9 +640,14 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                         let _ = outbox.send(Event::Failed(e));
                     }
                 }
+                drop(next_pause_bitmaps.take());
             }
-            Command::Close => {
-                loaded = None;
+            Command::Close { reprepare } => {
+                // Release VM and frame state now. The pending prewarm may
+                // acquire the same packs without going back to the archive.
+                next_pause_bitmaps = loaded.take()
+                    .filter(|_| reprepare)
+                    .map(|movie| movie.pause_images);
                 // 1410298b0 closes the movie and its draw ownership. Only an
                 // actually submitted frame may outlive it, not this reuse slot.
                 last_frame = None;
@@ -1202,7 +1210,7 @@ pub fn update_pause_menu(
             Event::Resume => {
                 menu.modal.end_pause(&mut journal_data);
                 // `FUN_14078ca40` pops the state; OnExit unloads the movie.
-                let _ = menu.commands.send(Command::Close);
+                let _ = menu.commands.send(Command::Close { reprepare: true });
                 menu.open = false;
                 menu.hud_force = true;
             }
