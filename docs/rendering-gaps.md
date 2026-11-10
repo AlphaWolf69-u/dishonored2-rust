@@ -230,3 +230,30 @@ shared record functions are the template twins of the stage-trail ones
 (c270/bec0, d160/cfc0, a280/9de0, bc80/ba40, caf0/c620, b0b0/a720) and read
 the arkTrailDesc offsets (spawn_t +0x3a8, etc.), which must be mapped per
 call before reusing the stage-trail port.
+
+## Particle beams (`m_beams`), next
+
+219 beams in 126 installed declarations (99 first failures). arkBeamDesc
+(reflection): m_name +0, m_enabled +8, m_enableWind +9,
+m_enableVelocityInheritance +0xa, m_worldspace +0xb, m_timings +0x10
+(arkStandardCycles + warmup/delay/duration), m_material +0x1e8, m_flipBook
++0x1f0, m_mapping +0x2d0, m_spawn +0x2e0 (spawn_t: m_startPosition +0
+position_t {initialLocation +0, initialVelocity +0x118, spawnMesh +0x230,
+trackOrigin +0x580}, m_endPosition +0x588 (position_t + useTargetParameters
++0x588, useTargetAxis +0x589, trackTargetParameters +0x58a), baseColor
++0xb18, initialColor +0xb28, initialAlpha +0xc38, initialWidth +0xd00),
+m_beamLifeCurves +0x10a8, m_startPointLifeCurves +0x1700,
+m_endPointLifeCurves +0x1d58 (life_t as trails), m_controlPointsExtended
+Parameters +0x23b0 (m_trackPositions +4), m_controlPoints +0x23b8
+(arkControlPoint, 0xae8 bytes: initialPosition +0, radius +0x118, mode
++0x1e0, randomizePeriod +0x1e4, randomizePosition +0x1ec, radialVelocity
++0x1f0, inheritedVelocity +0x2b8, initialVelocity +0x380, lifeCurves
++0x490), m_reprojectControlPoints +0x23c8, m_tesselation +0x23cc, m_noise
++0x23d8 (perlin_t {mode, octaves, persistence, frequency}, frequency
++0x10, scale +0x14). Defaults 1401cfe10: two control points (1401d09c0),
+tessellation 10/length scaled/256, perlin mode 0, 2 octaves, persistence
+0.9, frequency 100, noise frequency 10, scale 0. Runtime: list +0x398,
+constructor 1401d7be0 (material check 1401d0ff0), frame update 1401fde70
+(1401d8b20, 1401d9180, 1401d97b0/1401d9630 -> 1401d5e00 beam update,
+1401d5870, 1401d5390, 1401d6f70), strip 1401d8d50 -> 1401d32e0, bounds
+1401d9080 merged into the system bounds after the build.
