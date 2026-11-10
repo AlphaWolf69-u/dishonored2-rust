@@ -6006,3 +6006,14 @@ across the owner release call. All three scenes completed ordinary FX
 shutdown and released the extracted screen-shadow image again. Active
 particle shutdown errors, live resize and replacement binding draws were
 outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
+
+Instance probe record residency prediction. The original indirect-lighting
+owner retires buffer backing in 14035bca0. The host currently preserves
+the complete serialized probe buffer for byte comparisons on moving
+models and arms. Those writers use only records appended after static
+world geometry. Keep that contiguous writable tail with exact initial
+values and let extraction take the complete upload allocation. Keep the
+same asset ID, GPU bytes and patch order. Expect to release the static
+prefix after upload, with the same per-record compare and writes as the
+previous path. The existing EotW and Dust full CPU copies are 14,902,560
+and 21,835,296 bytes. Measure the actual retained tail and output CRC.

@@ -793,6 +793,8 @@ pub(super) fn prepare(
             .report("WORLD_MESH_PREPARATION", meshes, &render_instances[world_mesh_start..]);
     }
     super::load_timing::mark("setup: world geometry and materials");
+    // Only the later placed-model and arm writers can update their records.
+    let writable_probe_start = resolver.probe_sh_records.len();
 
     if trace_startup {
         eprintln!(
@@ -1327,12 +1329,11 @@ pub(super) fn prepare(
         records: resolver.probe_sh_buffer.clone(),
         indices: render_instances.iter().map(|instance| instance.probe_index).collect(),
     });
-    commands.insert_resource(super::model_motion::ModelProbeLighting(
-        resolver.probe_sh_buffer.clone(),
-    ));
     check_cancelled()?;
     super::load_timing::mark("setup: placed models");
-    resolver.upload_probe_records();
+    if let Some(lighting) = resolver.upload_probe_records(writable_probe_start) {
+        commands.insert_resource(lighting);
+    }
     println!(
         "Shared geometry: {} world meshes and {} placed-model surfaces; {} world instances baked for shear",
         world_shadow_mesh_sources.shared_mesh_count,
