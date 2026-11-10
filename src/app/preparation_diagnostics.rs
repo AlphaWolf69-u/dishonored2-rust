@@ -186,3 +186,67 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
     }
     Ok(())
 }
+
+
+/// Acquire installed bitmap packs through the movie worker's owner and
+/// observe their leases without advancing a player or rendering a frame.
+pub fn inspect_ui_bitmap_ownership(base: &Path, movies: &[String])
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::flash::{bitmap_resources::MovieBitmaps, Player};
+    if movies.is_empty() { return Err("provide at least one installed Iggy movie path".into()); }
+    let catalog = crate::assets::archive::Catalog::shared(base)?;
+    let language = crate::assets::lang::read_text_language(base)?;
+    let acquire = |movie: &str, phase: &str| -> Result<Arc<MovieBitmaps>, String> {
+        let (player, resources) = Player::load_installed(&catalog, language, movie)?;
+        let started = std::time::Instant::now();
+        let cycles = crate::loading::thread_cycles();
+        let images = super::pause_menu::library_images(&catalog, &player, &resources)?;
+        let elapsed = started.elapsed();
+        let cycles = cycles.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        let mut members: Vec<_> = images.iter().collect();
+        members.sort_unstable_by_key(|(id, _)| (id.library, id.id));
+        let mut crc = flate2::Crc::new();
+        let mut bytes = 0;
+        for (id, image) in &members {
+            crc.update(&id.library.to_le_bytes());
+            crc.update(&id.id.to_le_bytes());
+            crc.update(&image.width.to_le_bytes());
+            crc.update(&image.height.to_le_bytes());
+            crc.update(&image.mip_count.to_le_bytes());
+            crc.update(format!("{:?}", image.format).as_bytes());
+            crc.update(&image.bytes);
+            bytes += image.bytes.len();
+        }
+        println!("UI_BITMAP_OWNERSHIP phase={phase} movie={movie} images={} bytes={bytes} signature={:08x} acquisition_ms={:.3} acquisition_cycles={cycles}",
+            members.len(), crc.sum(), elapsed.as_secs_f64() * 1000.0);
+        Ok(Arc::new(images))
+    };
+    let mut active = Vec::new();
+    for movie in movies { active.push(acquire(movie, "opened")?); }
+    let mut observed = std::collections::HashMap::new();
+    for images in &active {
+        for image in images.values() {
+            observed.entry(Arc::as_ptr(image)).or_insert_with(|| Arc::downgrade(image));
+        }
+    }
+    let movie = movies.last().unwrap();
+    let overlapping = acquire(movie, "overlapping")?;
+    let previous = active.last().unwrap();
+    let reused = overlapping.iter().filter(|(id, image)| {
+        previous.get(*id).is_some_and(|other| Arc::ptr_eq(image, other))
+    }).count();
+    println!("UI_BITMAP_OWNERSHIP overlapping_reuses={reused} overlapping_images={}", overlapping.len());
+    drop(active);
+    let report = |phase| {
+        let bytes: usize = observed.values().filter_map(std::sync::Weak::upgrade)
+            .map(|image| image.bytes.len()).sum();
+        println!("UI_BITMAP_OWNERSHIP phase={phase} retained_payload_bytes={bytes}");
+    };
+    report("final-map-held");
+    drop(overlapping);
+    report("all-maps-released");
+    drop(acquire(movie, "reopened")?);
+    Ok(())
+}

@@ -5,7 +5,7 @@
 //! interpreter nests AS3 calls on the native stack); the main thread sends it
 //! input and frame ticks and receives draw lists.
 use crate::assets::{archive::Catalog, installation, lang};
-use crate::flash::{bitmap_resources, player::CharRef, render, Player};
+use crate::flash::{bitmap_resources::{self, MovieBitmaps}, render, Player};
 use crate::gameplay::game_clock_runtime::GamePaused;
 use crate::gameplay::pause_state::{self, Character, Movie, Request};
 use crate::platform::bindings::{self, Keyboard};
@@ -102,8 +102,8 @@ struct Loaded {
     pressed: Option<u32>,
     /// The pause movie's bitmaps, and those plus the open box's global
     /// movie (shifted by `LAYER_LIBRARY_OFFSET`).
-    pause_images: HashMap<CharRef, Arc<Image>>,
-    images: Arc<HashMap<CharRef, Arc<Image>>>,
+    pause_images: MovieBitmaps,
+    images: Arc<MovieBitmaps>,
     /// The focus entries (`iggyMain+0x18`); input goes to the top one.
     focus: Vec<Movie>,
     pending: f64,
@@ -116,10 +116,8 @@ struct Loaded {
 }
 
 thread_local! {
-    // What the movie thread keeps between opens: the installed catalog and
-    // each library resource's compressed bitmaps (the files do not change while
-    // the game runs). Every open still builds a new player, as the game does
-    // (`m_cacheResources` 0).
+    // The installed catalog spans movie opens. Each live player and its
+    // submitted frames hold their library bitmap leases (`m_cacheResources` 0).
     static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -133,12 +131,11 @@ fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
     Ok(c)
 }
 
-pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<HashMap<CharRef, Arc<Image>>, String> {
-    let mut out = HashMap::new();
+pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)]) -> Result<MovieBitmaps, String> {
+    let mut out = MovieBitmaps::default();
     for (index, path) in resources {
         let file = player.state.borrow().file(*index);
-        let images = bitmap_resources::acquire(catalog, path, &file)?;
-        out.extend(images.iter().map(|(id, image)| (CharRef { library: *index, id: *id }, image.clone())));
+        out.insert_pack(*index, bitmap_resources::acquire(catalog, path, &file)?);
     }
     Ok(out)
 }
@@ -166,7 +163,7 @@ pub(super) struct MovieResidency {
     libraries: Vec<(String, usize, bool, Vec<std::sync::Weak<Image>>)>,
 }
 impl MovieResidency {
-    pub(super) fn new(label: &'static str, catalog: &Catalog, resources: &[(usize, String)], images: &HashMap<CharRef, Arc<Image>>) -> Option<Self> {
+    pub(super) fn new(label: &'static str, catalog: &Catalog, resources: &[(usize, String)], images: &MovieBitmaps) -> Option<Self> {
         if !std::env::var_os("DH2_DEBUG_UI_RESIDENCY").is_some_and(|v| v == "1") { return None; }
         let libraries = resources.iter().map(|(index, path)| {
             let members: Vec<_> = images.iter().filter(|(id, _)| id.library == *index).map(|(_, image)| image).collect();
@@ -227,10 +224,7 @@ impl Loaded {
         let mut images = self.pause_images.clone();
         if let Some((g, resources)) = self.pause.boxes.global_with_resources() {
             let catalog = installed_catalog()?;
-            for (mut c, image) in library_images(&catalog, g, resources)? {
-                c.library += render::LAYER_LIBRARY_OFFSET;
-                images.insert(c, image);
-            }
+            images.append_layer(library_images(&catalog, g, resources)?, render::LAYER_LIBRARY_OFFSET);
         }
         self.images = Arc::new(images);
         Ok(())
@@ -416,7 +410,7 @@ pub(super) const PAUSE_GATE: &str = "pause menu";
 struct Prepared {
     screen: (i32, i32),
     player: Player,
-    images: HashMap<CharRef, Arc<Image>>,
+    images: MovieBitmaps,
     options: crate::gameplay::options::Options,
 }
 

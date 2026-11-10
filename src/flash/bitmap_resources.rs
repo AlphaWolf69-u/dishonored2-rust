@@ -1,7 +1,7 @@
 //! Library bitmap residency. GDraw `1402e2c00` uploads raw iggytex blocks
 //! directly (format 13 -> DXGI_FORMAT_BC7_UNORM), without an RGBA copy.
 use crate::assets::{archive::Catalog, iggy::IggyFile, texture::ImageFormat};
-use std::{ops::{Deref, Range}, sync::Arc};
+use std::{collections::HashMap, ops::{Deref, Range}, sync::{Arc, Weak}};
 
 /// Installed contiguous blocks can share their source member; decoded or
 /// partial records own their existing per-image output.
@@ -136,12 +136,53 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
     Ok(images)
 }
 
-/// Process resident library images. The resource registry returns the existing
-/// payload on reacquisition (1400607f0 -> 14005feb0); live movie state remains
-/// separate. Share immutable compressed images across loading and pause players.
-/// bevy_backend: Arc owns the payload independently of either movie thread.
-type LibraryImages = std::sync::Arc<Vec<(u16, std::sync::Arc<Image>)>>;
-static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(u64, String), LibraryImages>>> = std::sync::Mutex::new(None);
+type BitmapEntries = Vec<(u16, Arc<Image>)>;
+pub(crate) type LibraryImages = Arc<BitmapEntries>;
+
+/// A movie map and its submitted frames lease the exact immutable packs
+/// whose bitmap entries they publish.
+#[derive(Clone, Default)]
+pub struct MovieBitmaps {
+    characters: HashMap<super::player::CharRef, Arc<Image>>,
+    packs: Vec<LibraryImages>,
+}
+
+impl MovieBitmaps {
+    pub(crate) fn insert_pack(&mut self, library: usize, pack: LibraryImages) {
+        self.characters.extend(pack.iter().map(|(id, image)| {
+            (super::player::CharRef { library, id: *id }, image.clone())
+        }));
+        self.packs.push(pack);
+    }
+
+    pub(crate) fn append_layer(&mut self, layer: Self, library_offset: usize) {
+        self.characters.extend(layer.characters.into_iter().map(|(mut character, image)| {
+            character.library += library_offset;
+            (character, image)
+        }));
+        self.packs.extend(layer.packs);
+    }
+}
+
+impl Deref for MovieBitmaps {
+    type Target = HashMap<super::player::CharRef, Arc<Image>>;
+
+    fn deref(&self) -> &Self::Target { &self.characters }
+}
+
+enum CachedLibrary {
+    Live(Weak<BitmapEntries>),
+    /// Same-executable observation of the previous session retention.
+    Session(LibraryImages),
+}
+
+static RESIDENT: std::sync::Mutex<Option<HashMap<(u64, String), CachedLibrary>>> =
+    std::sync::Mutex::new(None);
+
+fn retain_session_payload() -> bool {
+    static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *RETAIN.get_or_init(|| std::env::var_os("DH2_DEBUG_RETAIN_UI_BITMAPS").is_some_and(|value| value == "1"))
+}
 
 /// Retire cache references only; submitted movies keep their own image Arcs.
 pub(crate) fn retire_catalog(catalog: u64) -> usize {
@@ -154,28 +195,46 @@ pub(crate) fn retire_catalog(catalog: u64) -> usize {
     removed
 }
 
-/// Diagnostic lookup only; does not acquire or extend the image lifetime.
+/// Diagnostic lookup for strong session ownership.
 pub(crate) fn debug_resident(catalog: u64, resource: &str) -> bool {
     let key = (catalog, resource.replace('\\', "/").to_ascii_lowercase());
-    RESIDENT.lock().unwrap_or_else(|error| error.into_inner())
-        .as_ref().is_some_and(|resident| resident.contains_key(&key))
+    matches!(
+        RESIDENT.lock().unwrap_or_else(|error| error.into_inner())
+            .as_ref().and_then(|resident| resident.get(&key)),
+        Some(CachedLibrary::Session(_))
+    )
 }
 
 pub fn acquire(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<LibraryImages, String> {
+    // Both the texture table and its companion member may come from an
+    // editable layer. Acquire that generation independently.
+    let mutable = catalog.has_overlays() && (catalog.has_overlay_file(resource)
+        || catalog.has_overlay_file(&resource.replace(".iggy", ".raw.iggytex")));
+    if mutable {
+        return Ok(Arc::new(load(catalog, resource, file)?.into_iter()
+            .map(|(id, image)| (id, Arc::new(image))).collect()));
+    }
     let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
     let mut resident = RESIDENT.lock().unwrap();
     let resident = resident.get_or_insert_with(Default::default);
-    // Movie/image leases keep their data if another catalog becomes active.
-    resident.retain(|(identity, _), _| *identity == catalog.identity());
-    // Both the library's texture table and its companion image member can
-    // come from an editable layer while this catalog identity remains stable.
-    let mutable = catalog.has_overlays() && (catalog.has_overlay_file(resource)
-        || catalog.has_overlay_file(&resource.replace(".iggy", ".raw.iggytex")));
-    if !mutable {
-        if let Some(images) = resident.get(&key) { return Ok(images.clone()); }
+    resident.retain(|_, entry| match entry {
+        CachedLibrary::Live(images) => images.strong_count() != 0,
+        CachedLibrary::Session(_) => true,
+    });
+    match resident.get(&key) {
+        Some(CachedLibrary::Session(images)) => return Ok(images.clone()),
+        Some(CachedLibrary::Live(images)) => {
+            if let Some(images) = images.upgrade() { return Ok(images); }
+        }
+        None => {}
     }
-    let images: LibraryImages = std::sync::Arc::new(load(catalog, resource, file)?.into_iter()
-        .map(|(id, image)| (id, std::sync::Arc::new(image))).collect());
-    if !mutable { resident.insert(key, images.clone()); }
+    let images: LibraryImages = Arc::new(load(catalog, resource, file)?.into_iter()
+        .map(|(id, image)| (id, Arc::new(image))).collect());
+    let entry = if retain_session_payload() {
+        CachedLibrary::Session(images.clone())
+    } else {
+        CachedLibrary::Live(Arc::downgrade(&images))
+    };
+    resident.insert(key, entry);
     Ok(images)
 }

@@ -3,10 +3,10 @@ use super::interaction_focus::{DocumentEntry, JournalItem};
 use crate::assets::inventory_item::{self, ReadableKind};
 use crate::{
     assets::{archive::Catalog, installation, lang},
-    flash::{Player, player::CharRef, render},
+    flash::{Player, bitmap_resources::MovieBitmaps, render},
     gameplay::pause_state,
     platform::bindings::{self, Keyboard},
-    rendering::bevy_backend::flash_ui::{FlashFrame, Image},
+    rendering::bevy_backend::flash_ui::FlashFrame,
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -69,7 +69,7 @@ pub(super) enum Action {
 
 pub(super) struct Movie {
     player: Player,
-    images: Arc<HashMap<CharRef, Arc<Image>>>,
+    images: Arc<MovieBitmaps>,
     cache: render::Cache,
     generation: u64,
     serial: u64,

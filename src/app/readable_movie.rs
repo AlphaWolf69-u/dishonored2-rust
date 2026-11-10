@@ -5,7 +5,7 @@
 //! string-table keys and the authored note type.
 use bevy::prelude::Resource;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::Arc,
 };
 
@@ -35,7 +35,7 @@ pub(super) struct Frame {
 
 pub(super) struct Movie {
     player: Player,
-    images: Arc<HashMap<crate::flash::player::CharRef, Arc<crate::flash::bitmap_resources::Image>>>,
+    images: Arc<crate::flash::bitmap_resources::MovieBitmaps>,
     cache: render::Cache,
     generation: u64,
     serial: u64,

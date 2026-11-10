@@ -5,7 +5,7 @@ use bevy::render::render_resource::{Texture, TextureView};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
-type BitmapMap = HashMap<crate::flash::player::CharRef, Arc<crate::flash::bitmap_resources::Image>>;
+use crate::flash::bitmap_resources::MovieBitmaps;
 
 const MAX_ENTRIES: usize = 0x800;
 const MAX_PAYLOAD_BYTES: u64 = 0x1428000;
@@ -16,7 +16,7 @@ struct Entry {
     bytes: u64,
     used: u64,
     ordinal: u64,
-    bitmap_owners: Vec<Weak<BitmapMap>>,
+    bitmap_owners: Vec<Weak<MovieBitmaps>>,
     bitmap_image: Option<Weak<crate::flash::bitmap_resources::Image>>,
     glyph_owner: Option<Weak<crate::flash::glyph_cache::Page>>,
 }
@@ -126,7 +126,7 @@ impl UiTextures {
     }
     /// A GPU bitmap is shared by every live movie that references the same
     /// immutable image. Weak maps do not retain the movie or its assets.
-    pub fn track_bitmap(&mut self, key: &TextureKey, images: &Arc<BitmapMap>, image: &Arc<crate::flash::bitmap_resources::Image>) {
+    pub fn track_bitmap(&mut self, key: &TextureKey, images: &Arc<MovieBitmaps>, image: &Arc<crate::flash::bitmap_resources::Image>) {
         let identity = Arc::downgrade(image);
         // Keep a weak allocation reference as well as the movie-map leases:
         // this prevents an address from being recycled before pruning and
@@ -145,8 +145,7 @@ impl UiTextures {
     pub fn track_glyph(&mut self, key: &TextureKey, page: &Arc<crate::flash::glyph_cache::Page>) {
         if let Some(entry) = self.entries.get_mut(key) { entry.glyph_owner = Some(Arc::downgrade(page)); }
     }
-    /// The session bitmap registry may outlive movies, so image Arc counts
-    /// alone do not establish that a GPU copy is still needed.
+    /// Prune entries once all movie and submitted-frame owners are gone.
     pub fn retire_unowned(&mut self, incoming_pages: &[Arc<crate::flash::glyph_cache::Page>]) {
         let started = self.trace.then(std::time::Instant::now);
         let mut removed = 0;
