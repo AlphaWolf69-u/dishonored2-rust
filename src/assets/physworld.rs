@@ -1855,16 +1855,10 @@ fn triangulate_convex_vertices(
                 > epsilon * dot(normal, normal).sqrt()
         };
         let mut horizon = Vec::<(usize, usize)>::new();
+        let mut edge_positions = None;
         for face in faces.iter().filter(|face| visible(face)) {
             for edge in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
-                if let Some(index) = horizon
-                    .iter()
-                    .position(|&(a, b)| a == edge.1 && b == edge.0)
-                {
-                    horizon.swap_remove(index);
-                } else {
-                    horizon.push(edge);
-                }
+                update_convex_horizon(&mut horizon, &mut edge_positions, edge);
             }
         }
         if horizon.is_empty() {
@@ -1886,6 +1880,44 @@ fn triangulate_convex_vertices(
         });
     }
     Ok(())
+}
+
+#[inline]
+fn update_convex_horizon(
+    edges: &mut Vec<(usize, usize)>,
+    positions: &mut Option<std::collections::BTreeSet<(usize, usize, usize)>>,
+    (a, b): (usize, usize),
+) {
+    const INDEX_THRESHOLD: usize = 64;
+    static LINEAR_SEARCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+    if let Some(positions) = positions {
+        // Repeated directed edges are possible. Match the first reversed
+        // entry by vector position, then mirror Vec::swap_remove exactly.
+        let reversed = positions.range((b, a, 0)..=(b, a, usize::MAX)).next().copied();
+        if let Some(reversed @ (_, _, index)) = reversed {
+            positions.remove(&reversed);
+            let last = edges.len() - 1;
+            if index != last {
+                let (x, y) = edges[last];
+                positions.remove(&(x, y, last));
+                positions.insert((x, y, index));
+            }
+            edges.swap_remove(index);
+        } else {
+            positions.insert((a, b, edges.len()));
+            edges.push((a, b));
+        }
+    } else if let Some(index) = edges.iter().position(|&edge| edge == (b, a)) {
+        edges.swap_remove(index);
+    } else {
+        edges.push((a, b));
+        if edges.len() == INDEX_THRESHOLD && !*LINEAR_SEARCH.get_or_init(|| {
+            std::env::var_os("DH2_DEBUG_LINEAR_CONVEX_HORIZON").is_some_and(|value| value == "1")
+        }) {
+            *positions = Some(edges.iter().enumerate().map(|(index, &(x, y))| (x, y, index)).collect());
+        }
+    }
 }
 
 fn float(bytes: &[u8], at: usize) -> Result<f32, String> {

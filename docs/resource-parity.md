@@ -5519,6 +5519,19 @@ samples varied in both directions, with index-only means 3.1% and 2.5%
 higher, respectively. Runtime queries and frame timings were outside this
 acquisition comparison. Evidence: DH2-collision-staging/artifacts/collision-lifetimes-20261110-comparison.json.
 
+Palace convex extraction prediction. The buffered high-chaos Palace run
+spent 1,223,622,028,106 thread cycles in shape extraction. A sample of the
+same executable's direct run located 9,209 instruction-pointer samples in
+the five instructions of the convex horizon's reversed-edge linear search
+(RVA 0x34f2704–0x34f2714). The large horizon path will index edge positions,
+preserving the first reversed match, swap-removal order and emitted triangles.
+Small horizons keep the linear scan. Expect the large-horizon search to
+cease dominating Palace decode cycles, with unchanged triangle identity and
+no extra allocations on the small-horizon path. Original 14127f590 dispatches
+the authored primitive. Hull triangulation here supplies the host query
+representation. Compare same-build extraction cycles and exact collision
+signatures before integration.
+
 ### Direct acquisition of whole inline image payloads
 
 Prediction before change. In the recorded Edge of the World / Dust District / Edge of the World acquisition, 11,838 whole-image reads used only indexed inline records; 7,421 of those members exceeded the archive stream's 65,536-byte buffer. The largest indexed member was 16,777,298 bytes. The current 2D resident path reads each complete member and copies its records into a second Bevy Image allocation. Original 1402e9ff0 sends authored mip records to 1402f5500. For large inline-only resident images, validate the same headers and read the authored bytes into their final upload allocation. Expect no full decoded member allocation on that route, lower or unchanged affected CPU cycles, and matching upload CRCs, descriptors and GPU retirement. The stream scratch bounds temporary member staging; the required Image allocation remains. Compare scoped acquisition cycles and output in the same executable before integrating. No gameplay or process peak claim is predicted.
