@@ -6757,3 +6757,15 @@ On EotW / Dust / EotW, expect six constants reads to become one, avoiding
 buffer still retires immediately after parsing. Measure constants
 acquisition and compare exact constants, prepared world inputs and
 acoustic publication and release in one executable.
+
+Installed material constants acceptance at 5e602b70. The same dev
+executable completed EotW / Dust / EotW preparation with separate and
+shared constants. Six acquisitions read the executable six times
+(246,807,792 bytes) in the control and once (41,134,632 bytes) with
+Catalog reuse. All six constants signatures and all 645 selected
+preparation records matched. Constants acquisition recorded
+435,938,440 versus 81,848,165 aggregate thread cycles. The shared
+path used one identity and destroyed it after final ownership ended;
+the control destroyed its six independent identities. No preparation
+error was reported. This measures metadata acquisition and ownership.
+Evidence: DH2-fx-level-lifetime/artifacts/physics-material-constants-20261111-comparison.json.
