@@ -402,6 +402,7 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Edge skeleton registry (`1400607f0`, `14024f2a0`, `140060180`). The process-static weak lookup can retain table capacity after every skeleton is gone. Give its existing coalescing registry to the Catalog, and let live skeletons hold weak retirement links to that registry. The common normalized-path hit can then borrow the path instead of allocating temporary normalized text and an Arc key. Expect zero skeleton-registry storage after the catalog and any in-progress retirement drop, unchanged live skeleton identities and decoded bytes, and no changes to animation/frame cost. Ordinary level purge still prunes dead entries and keeps live users. Installed acquisition and retirement observations remain pending.
 - Sound source release: `141122400` releases an old bank-backed source before
   assigning new media; `1410f1910` reuses the registered Sound object. The host
   now prunes unused Vorbis header/codebook cache entries after map voices and

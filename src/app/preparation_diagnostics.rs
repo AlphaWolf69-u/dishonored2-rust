@@ -138,7 +138,6 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         // above have already dropped, so use the live client's same purge.
         catalog.release_level_resources();
         crate::assets::render_parameter::report(&catalog, "level-released");
-        crate::edge_skeleton::release_unused();
         result?;
         eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=released");
         if let Some((labels, bytes)) = crate::platform::allocation_tags::phase_label_storage() {

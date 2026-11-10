@@ -82,6 +82,8 @@ pub struct Catalog {
     pub(crate) md6_loading: std::sync::Mutex<()>,
     /// One resource-list identity owner for this catalog's animation clips.
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
+    /// Weak live skeleton identities for this archive namespace.
+    pub(crate) skeleton_resources: std::sync::OnceLock<std::sync::Arc<crate::assets::edge_skeleton::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
@@ -199,6 +201,7 @@ impl Catalog {
     /// in the live client; this does not retire GPU resources on its behalf.
     pub(crate) fn release_level_resources(&self) {
         crate::edge_animation::release_level(self);
+        crate::edge_skeleton::release_unused(self);
         self.release_md6_level();
         self.release_animset_level();
         self.release_parameter_block_level();
@@ -408,6 +411,7 @@ impl Catalog {
             preload_bootstrap: Default::default(),
             preload_map: Default::default(),
             animation_resources: Default::default(),
+            skeleton_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
             common_models: Default::default(),
