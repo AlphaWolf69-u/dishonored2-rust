@@ -536,6 +536,10 @@ pub(super) fn prepare(
         vertex_probe_buffer.clone(),
         probe_sh_buffers,
     );
+    let secondary_probe_count = loaded_reflections.cube_count;
+    if let Some(probes) = scene.environment_probes.as_mut().and_then(Arc::get_mut) {
+        probes.release_reflection_preparation();
+    }
     commands.insert_resource(crate::rendering::bevy_backend::water_scene::WaterLighting(
         water_probes,
     ));
@@ -1555,7 +1559,7 @@ pub(super) fn prepare(
                 probe.position,
                 distance,
                 probe.static_lighting_sh[0],
-                probes.secondary_resources.len(),
+                secondary_probe_count,
             );
         }
     }
