@@ -300,13 +300,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let filter = args.next();
-    let world_bytes = if std::path::Path::new(&world_path).is_file() {
-        fs::read(&world_path)?
+    let world = if std::path::Path::new(&world_path).is_file() {
+        world_mesh::parse(&fs::read(&world_path)?)?
     } else {
-        dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &world_path)?
-            .read_world(&catalog)?
+        let level = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &world_path)?;
+        world_mesh::load(&catalog, &level.world, || false)?
     };
-    let world = world_mesh::parse(&world_bytes)?;
     if filter.as_deref() == Some("--program-census") {
         let mut programs = BTreeMap::<String, (usize, Vec<String>)>::new();
         for object in &world.objects {

@@ -314,13 +314,9 @@ pub(super) fn collision_report(
     };
     // Setup releases the world's vertex data after upload; the report reads
     // the installed world again instead of keeping it resident.
-    let world = reader.as_ref().ok_or("texture reader owns no catalog".to_string()).and_then(|reader| {
-        let path = scene.source_path.to_string_lossy();
-        let bytes = reader.catalog().read(&path).map_err(|e| e.to_string())?.ok_or(format!("{path} is not installed"))?;
-        crate::world_mesh::parse(&bytes).map_err(|e| e.to_string())
-    });
-    let visual = world.as_ref().ok().and_then(|world| {
-        sightline_world_surface(world, camera.translation, direction, distance_limit)
+    let visual = reader.as_ref().and_then(|reader| {
+        let world = world_mesh::load(reader.catalog(), &scene.source_path.to_string_lossy(), || false).ok()?;
+        sightline_world_surface(&world, camera.translation, direction, distance_limit)
     });
     let visual_text = match &visual {
         Some((distance, mesh, matrix, material)) => format!(
