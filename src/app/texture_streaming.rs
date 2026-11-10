@@ -524,6 +524,15 @@ pub(super) fn report_prepared_diffuse_images(
         }
     }
     let mut state = mailbox.0.lock().unwrap();
+    if *generation != Some(state.generation) {
+        // The main world retired this batch while the renderer held it.
+        // Never append outgoing work or its completions to the next level.
+        drop(state);
+        waiting.clear();
+        completed.clear();
+        failed.clear();
+        return;
+    }
     // Older deferred jobs precede jobs staged while this batch ran.
     waiting.append(&mut state.pending);
     if *timing {
