@@ -119,7 +119,7 @@ impl Pressure {
     }
 
     pub fn choose(
-        &mut self, queue: &SceneRenderQueue, worker: &TextureReadWorker,
+        &mut self, queue: &SceneRenderQueue, inflight: &[bool],
         images: &Assets<Image>, settings: settings::Settings, charged: u64,
     ) -> Option<Reduction> {
         if settings.frozen || pressure_bytes(settings, charged) <= 0 { return None; }
@@ -129,7 +129,7 @@ impl Pressure {
         for (slot, state) in queue.diffuse_mip_states.iter().enumerate() {
             let (Some(resident), Some(minimum)) = (state.resident, state.minimum) else { continue };
             if state.streamed_bytes == 0 || state.pending.is_some()
-                || queue.diffuse_image_pending[slot].is_some() || worker.inflight[slot] { continue; }
+                || queue.diffuse_image_pending[slot].is_some() || inflight[slot] { continue; }
             let Some(old) = queue.diffuse_image_handles[slot].as_ref().and_then(|h| images.get(h)) else { continue };
             let age = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
             let expired = age.saturating_add(1) > settings.unload_frames;
