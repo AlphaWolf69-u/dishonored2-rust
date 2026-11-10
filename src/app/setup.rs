@@ -1969,8 +1969,8 @@ pub(super) fn prepare(
         trace_bwm_lod,
         world_lods_by_render_instance,
         last_bwm_lod_visibility_report: None,
-        diffuse_image_demands: (0..diffuse_image_count)
-            .map(|slot| texture::ProjectedAreaDemand::with_priority(resolver.cache.image_priority(slot)))
+        diffuse_image_demands: resolver.diffuse_image_paths.iter().enumerate()
+            .map(|(slot, path)| super::texture_streaming::image_demand(path, resolver.cache.image_priority(slot)))
             .collect(),
         diffuse_image_paths: std::mem::take(&mut resolver.diffuse_image_paths),
         diffuse_image_materials,
