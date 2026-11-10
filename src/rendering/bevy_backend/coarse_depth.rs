@@ -764,7 +764,7 @@ pub(crate) fn observe_view_retirement(world: &mut World) -> Result<(), String> {
     use bevy::render::render_resource::{CommandEncoderDescriptor, PollType};
     let device = world.resource::<RenderDevice>().clone();
     let queue = world.resource::<RenderQueue>().clone();
-    let pipelines = crate::tiled_lighting_gpu::TlfPipelines::new(&device);
+    let pipelines = <crate::tiled_lighting_gpu::TlfPipelines as bevy::prelude::FromWorld>::from_world(world);
     let report = |phase| {
         if let Some(allocations) = device.wgpu_device().generate_allocator_report() {
             eprintln!("CAMERA_DEPTH_ALLOCATIONS phase={phase} live_bytes={} reserved_bytes={}",
