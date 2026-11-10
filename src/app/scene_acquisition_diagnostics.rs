@@ -148,6 +148,7 @@ pub fn inspect_scene_publication(
         match flag.as_str() {
             "--editable-sound-event" => return inspect_editable_sound_event(base, name),
             "--texture-read-cancellation" => return archive::observe_member_cancellation(base, name),
+            "--vorbis-header-samples" => return crate::assets::wwise::observe_header_samples(&base.join("pck").join(name)).map_err(Into::into),
             "--manifest-catalog-scopes" => {
                 return crate::assets::map_resources::observe_catalog_manifests(base, name).map_err(Into::into);
             }

@@ -39,7 +39,7 @@
 //! ```
 
 use crate::bit_ogg_stream::BitOggStream;
-use crate::bit_reader::BitReader;
+use crate::bit_reader::{BitReader, BitSliceReader};
 use crate::codebook::CodebookLibrary;
 use crate::error::{WemError, WemResult};
 use crate::packet::{Packet, Packet8};
@@ -307,6 +307,27 @@ pub struct WwiseRiffVorbis<R: Read + Seek> {
     mod_packets: bool,
     header_triad_present: bool,
     old_packet_headers: bool,
+}
+
+/// Rebuild one packed-codebook Wwise setup record into a Vorbis setup
+/// packet for an in-process decoder. The caller owns RIFF packet framing.
+pub fn rebuild_packed_setup(
+    packet: &[u8], channels: u16, codebooks: &CodebookLibrary,
+) -> WemResult<Vec<u8>> {
+    use crate::bit_reader::BitRead;
+    let mut reader = BitSliceReader::new(packet);
+    let mut output = BitOggStream::packet();
+    output.write_bits(5, 8)?;
+    for &byte in VORBIS_BYTES {
+        output.write_bits(u32::from(byte), 8)?;
+    }
+    WwiseRiffVorbis::<std::io::Cursor<&[u8]>>::write_setup_payload(
+        channels, codebooks, false, false, &mut reader, packet.len() as u64, &mut output,
+    )?;
+    if reader.total_bits_read().div_ceil(8) != packet.len() as u64 {
+        return Err(WemError::parse("didn't read exactly setup packet"));
+    }
+    output.into_packet()
 }
 
 impl<R: Read + Seek> WwiseRiffVorbis<R> {
@@ -1003,25 +1024,49 @@ impl<R: Read + Seek> WwiseRiffVorbis<R> {
 
         let mut setup_reader = BitReader::new(&mut self.input);
 
+        let (mode_blockflag, mode_bits) = Self::write_setup_payload(
+            self.channels, &self.codebooks, self.inline_codebooks, self.full_setup,
+            &mut setup_reader, setup_packet.size as u64, ogg,
+        )?;
+
+        ogg.flush_page(false, false)?;
+
+        if setup_reader.total_bits_read().div_ceil(8) != setup_packet.size as u64 {
+            return Err(WemError::parse("didn't read exactly setup packet"));
+        }
+
+        if setup_packet.next_offset != data.offset + self.first_audio_packet_offset as u64 {
+            return Err(WemError::parse(
+                "first audio packet doesn't follow setup packet",
+            ));
+        }
+
+        Ok((mode_blockflag, mode_bits))
+    }
+
+    fn write_setup_payload<B: crate::bit_reader::BitRead, W: Write>(
+        channels: u16, codebooks: &CodebookLibrary, inline_codebooks: bool,
+        full_setup: bool, setup_reader: &mut B, setup_size: u64, ogg: &mut BitOggStream<W>,
+    ) -> WemResult<(Vec<bool>, i32)> {
         // Codebook count
         let codebook_count_less1 = setup_reader.read_bits(8)?;
         let codebook_count = codebook_count_less1 + 1;
         ogg.write_bits(codebook_count_less1, 8)?;
 
         // Rebuild codebooks
-        if self.inline_codebooks {
+        if inline_codebooks {
             for _ in 0..codebook_count {
-                if self.full_setup {
-                    self.codebooks.copy(&mut setup_reader, ogg)?;
+                if full_setup {
+                    codebooks.copy(setup_reader, ogg)?;
                 } else {
-                    self.codebooks.rebuild_from_reader(&mut setup_reader, ogg)?;
+                    codebooks.rebuild_from_reader(setup_reader, ogg)?;
                 }
             }
         } else {
             for _ in 0..codebook_count {
                 let codebook_id = setup_reader.read_bits(10)?;
 
-                match self.codebooks.rebuild(codebook_id as usize, ogg) {
+                match codebooks.rebuild(codebook_id as usize, ogg) {
                     Ok(_) => {}
                     Err(WemError::InvalidCodebookId { .. }) => {
                         if codebook_id == 0x342 {
@@ -1043,28 +1088,16 @@ impl<R: Read + Seek> WwiseRiffVorbis<R> {
         ogg.write_bits(0, 6)?; // time_count_less1
         ogg.write_bits(0, 16)?; // dummy_time_value
 
-        let (mode_blockflag, mode_bits) = if self.full_setup {
+        let (mode_blockflag, mode_bits) = if full_setup {
             // Full setup - just copy remaining bits, no mode info needed
-            while setup_reader.total_bits_read() < setup_packet.size as u64 * 8 {
+            while setup_reader.total_bits_read() < setup_size * 8 {
                 ogg.write_bits(setup_reader.read_bits(1)?, 1)?;
             }
             (Vec::new(), 0)
         } else {
             // Parse and rebuild floor, residue, mapping, mode data
-            Self::rebuild_setup_data(self.channels, &mut setup_reader, ogg, codebook_count)?
+            Self::rebuild_setup_data(channels, setup_reader, ogg, codebook_count)?
         };
-
-        ogg.flush_page(false, false)?;
-
-        if setup_reader.total_bits_read().div_ceil(8) != setup_packet.size as u64 {
-            return Err(WemError::parse("didn't read exactly setup packet"));
-        }
-
-        if setup_packet.next_offset != data.offset + self.first_audio_packet_offset as u64 {
-            return Err(WemError::parse(
-                "first audio packet doesn't follow setup packet",
-            ));
-        }
 
         Ok((mode_blockflag, mode_bits))
     }

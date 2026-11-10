@@ -12,6 +12,7 @@ const SEGMENT_SIZE: usize = 255;
 pub struct BitOggStream<W: Write> {
     writer: W,
     page_buffer: Vec<u8>,
+    packet_only: bool,
     bit_buffer: u8,
     bits_stored: u8,
     payload_bytes: usize,
@@ -27,6 +28,7 @@ impl<W: Write> BitOggStream<W> {
         Self {
             writer,
             page_buffer: vec![0u8; HEADER_BYTES + MAX_SEGMENTS + SEGMENT_SIZE * MAX_SEGMENTS],
+            packet_only: false,
             bit_buffer: 0,
             bits_stored: 0,
             payload_bytes: 0,
@@ -70,7 +72,11 @@ impl<W: Write> BitOggStream<W> {
                 return Err(WemError::parse("ran out of space in an Ogg packet"));
             }
 
-            self.page_buffer[HEADER_BYTES + MAX_SEGMENTS + self.payload_bytes] = self.bit_buffer;
+            if self.packet_only {
+                self.page_buffer.push(self.bit_buffer);
+            } else {
+                self.page_buffer[HEADER_BYTES + MAX_SEGMENTS + self.payload_bytes] = self.bit_buffer;
+            }
             self.payload_bytes += 1;
             self.bits_stored = 0;
             self.bit_buffer = 0;
@@ -161,6 +167,29 @@ impl<W: Write> BitOggStream<W> {
     pub fn finish(mut self) -> WemResult<W> {
         self.flush_page(false, false)?;
         Ok(self.writer)
+    }
+}
+
+impl BitOggStream<std::io::Sink> {
+    /// Host decoder output: one raw packet without page storage or framing.
+    pub(crate) fn packet() -> Self {
+        Self {
+            writer: std::io::sink(),
+            page_buffer: Vec::new(),
+            packet_only: true,
+            bit_buffer: 0,
+            bits_stored: 0,
+            payload_bytes: 0,
+            granule: 0,
+            seq_no: 0,
+            first: true,
+            continued: false,
+        }
+    }
+
+    pub(crate) fn into_packet(mut self) -> WemResult<Vec<u8>> {
+        self.flush_bits()?;
+        Ok(self.page_buffer)
     }
 }
 

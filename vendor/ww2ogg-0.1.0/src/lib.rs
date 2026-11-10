@@ -106,5 +106,5 @@ pub use codebook::CodebookLibrary;
 pub use error::{WemError, WemResult};
 pub use validator::validate;
 pub use wwise_riff_vorbis::{
-    ConversionOptions, ForcePacketFormat, WwiseRiffVorbis, WwiseRiffVorbisBuilder,
+    rebuild_packed_setup, ConversionOptions, ForcePacketFormat, WwiseRiffVorbis, WwiseRiffVorbisBuilder,
 };

@@ -6630,3 +6630,20 @@ for those arrays. The scoped read/decode counters were 57.11 and
 57.72 million dev thread cycles respectively. This is an allocation
 result with no measured speedup or gameplay frame-time claim.
 Evidence: DH2-fx-level-lifetime/artifacts/usable-skin-source-20261111-comparison.json.
+
+### Wwise Vorbis setup packet acquisition
+
+Prediction before implementation. Original 1411614e0 takes installed
+Vorbis metadata and 141161240 feeds installed packets. The host already
+decodes those packets in place. On a header miss it still copies the
+RIFF prefix, emits three synthetic Ogg header pages and parses their
+page table just to supply lewton the identification and setup packets.
+Give the pinned, BSD-licensed ww2ogg setup writer a raw-packet output
+and feed it the borrowed installed setup record. Construct the 30-byte
+identification packet from the same RIFF fields on the stack. Keep the
+existing setup reconstruction, shared setup/cache retirement and legacy
+full-file reader for layouts outside the installed packet path. Expect
+zero RIFF copies and zero Ogg pages for that path, with identical header
+packets and decoded samples. Compare raw packets to the converter's
+reference and record scoped cold acquisition work before integrating.
+The decoder bridge is host integration, not an original codec port.

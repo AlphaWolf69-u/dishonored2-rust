@@ -9,6 +9,8 @@ use std::path::Path;
 mod bank;
 mod vorbis;
 pub use vorbis::VorbisCursor;
+#[cfg(feature = "game")]
+pub(crate) use vorbis::observe_header_samples;
 pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
 pub mod event_resources;

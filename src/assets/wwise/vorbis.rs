@@ -1,4 +1,4 @@
-//! Converted Wwise Vorbis media: a packet index for decoding from any frame.
+//! Installed Wwise Vorbis packets and random-access decoder preparation.
 //! Wwise positions its Vorbis sources with the media's seek table
 //! (141160ba0, used by the virtual-voice return 1411609c0). The converted
 //! Ogg stream's granules do not count frames across block-size changes, so
@@ -38,6 +38,7 @@ pub struct WwiseLayout {
     pub(super) first_audio: usize,
     channels: u8,
     sample_rate: u32,
+    byte_rate: u32,
     blocksizes: (u8, u8),
     pub(super) mod_packets: bool,
     pub(super) granule_headers: bool,
@@ -89,6 +90,7 @@ pub(super) fn wwise_layout_sized(bytes: &[u8], source_size: usize) -> Option<Wwi
         data,
         channels,
         sample_rate: u32_at(bytes, fmt.start + 4)?,
+        byte_rate: u32_at(bytes, fmt.start + 8)?,
         blocksizes: (*bytes.get(blocksizes)?, *bytes.get(blocksizes + 1)?),
         mod_packets,
         granule_headers,
@@ -159,13 +161,110 @@ pub(super) fn wwise_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<De
     if let Some(headers) = cached_packet(&WWISE_HEADERS, &lookup, "wwise") {
         return Ok(headers);
     }
+
+    static MODE: OnceLock<(bool, bool, bool)> = OnceLock::new();
+    let (converted, compare, trace) = *MODE.get_or_init(|| (
+        std::env::var_os("DH2_DEBUG_CONVERT_VORBIS_HEADERS").is_some_and(|value| value == "1"),
+        std::env::var_os("DH2_DEBUG_COMPARE_VORBIS_HEADERS").is_some_and(|value| value == "1"),
+        std::env::var_os("DH2_DEBUG_VORBIS_HEADER_ACQUISITION").is_some_and(|value| value == "1"),
+    ));
+    let started = trace.then(crate::loading::thread_cycles).flatten();
+    let (headers, prefix_bytes, ogg_bytes) = if converted {
+        converted_headers(bytes, layout)?
+    } else {
+        (decoder_headers(setup, layout)?, 0, 0)
+    };
+    if trace {
+        let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(a, b)| b.saturating_sub(a));
+        eprintln!("VORBIS_HEADER_ACQUISITION converted={converted} prefix_bytes={prefix_bytes} ogg_bytes={ogg_bytes} cycles={cycles}");
+    }
+    if compare && !converted {
+        let (reference, _, _) = converted_headers(bytes, layout)?;
+        // shared_setup compares the complete reconstructed setup packet and
+        // its format before returning an existing decoded setup identity.
+        let a = &headers.0;
+        let b = &reference.0;
+        let ident_equal = a.audio_channels == b.audio_channels && a.audio_sample_rate == b.audio_sample_rate
+            && a.bitrate_maximum == b.bitrate_maximum && a.bitrate_nominal == b.bitrate_nominal
+            && a.bitrate_minimum == b.bitrate_minimum && a.blocksize_0 == b.blocksize_0 && a.blocksize_1 == b.blocksize_1;
+        let setup_equal = Arc::ptr_eq(&headers.1, &reference.1);
+        eprintln!("VORBIS_HEADER_COMPARISON ident_equal={ident_equal} setup_equal={setup_equal}");
+        if !ident_equal || !setup_equal {
+            return Err(invalid("installed Vorbis setup differs from the converted header"));
+        }
+    }
+    Ok(WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).entry(lookup.owned()).or_insert(headers).clone())
+}
+
+fn decoder_headers(record: &[u8], layout: &WwiseLayout) -> io::Result<DecoderHeaders> {
+    let header_len = if layout.granule_headers { 6 } else { 2 };
+    let size = u16_at(record, 0).ok_or_else(|| invalid("Wwise setup packet header truncated"))? as usize;
+    if layout.granule_headers && u32_at(record, 2) != Some(0) {
+        return Err(invalid("Wwise setup packet granule is not zero"));
+    }
+    let packed = record.get(header_len..).filter(|bytes| bytes.len() == size)
+        .ok_or_else(|| invalid("Wwise audio does not immediately follow its setup packet"))?;
+
+    let mut ident = [0; 30];
+    ident[..7].copy_from_slice(b"\x01vorbis");
+    ident[11] = layout.channels;
+    ident[12..16].copy_from_slice(&layout.sample_rate.to_le_bytes());
+    let bitrate = layout.byte_rate.checked_mul(8).ok_or_else(|| invalid("Wwise Vorbis bitrate overflow"))?;
+    ident[20..24].copy_from_slice(&bitrate.to_le_bytes());
+    ident[28] = (layout.blocksizes.0 & 15) | (layout.blocksizes.1 << 4);
+    ident[29] = 1;
+    let ident = read_header_ident(&ident).map_err(|error| invalid(&format!("{error:?}")))?;
+    let codebooks = ww2ogg::CodebookLibrary::aotuv_codebooks().map_err(|error| invalid(&error.to_string()))?;
+    let setup_packet = ww2ogg::rebuild_packed_setup(packed, u16::from(layout.channels), &codebooks)
+        .map_err(|error| invalid(&error.to_string()))?;
+    let setup = shared_setup(&setup_packet, layout.channels, layout.blocksizes)?;
+    Ok((Arc::new(ident), setup))
+}
+
+/// Diagnostic control for the previous in-process header conversion.
+fn converted_headers(bytes: &[u8], layout: &WwiseLayout) -> io::Result<(DecoderHeaders, usize, usize)> {
     let mut header = bytes[..layout.data.start + layout.first_audio].to_vec();
     header[layout.data.start - 4..layout.data.start].copy_from_slice(&(layout.first_audio as u32).to_le_bytes());
     let riff = (header.len() - 8) as u32;
     header[4..8].copy_from_slice(&riff.to_le_bytes());
-    let index = PacketIndex::new(&super::decode_wem(&header)?)?;
-    let headers = (index.ident, index.setup);
-    Ok(WWISE_HEADERS.lock().unwrap_or_else(|e| e.into_inner()).entry(lookup.owned()).or_insert(headers).clone())
+    let converted = super::decode_wem(&header)?;
+    let index = PacketIndex::new(&converted)?;
+    Ok(((index.ident, index.setup), header.len(), converted.len()))
+}
+
+/// Compare the real in-process decoder on installed package entries.
+#[cfg(feature = "game")]
+pub(crate) fn observe_header_samples(path: &std::path::Path) -> io::Result<()> {
+    let package = super::Package::open(path)?;
+    let mut file = std::fs::File::open(path)?;
+    let mut sources = 0;
+    for &entry in package.media() {
+        if entry.size > 2 * 1024 * 1024 { continue; }
+        let bytes = package.read_entry(&mut file, entry)?;
+        if wwise_layout(&bytes).is_none() { continue; }
+        let super::SourceMedia::Vorbis(media) = super::prepare_shared_wem(&bytes.into())? else {
+            return Err(invalid("installed Vorbis media did not use its packet decoder"));
+        };
+        if media.frames < 256 { continue; }
+        let media = Arc::new(media);
+        let mut cursor = VorbisCursor::new(media.clone());
+        let mut fingerprint = blake3::Hasher::new();
+        for start in [0, media.frames / 2] {
+            for frame in start..start + 128 {
+                for channel in 0..usize::from(media.channels) {
+                    let sample = cursor.sample(frame, channel)
+                        .ok_or_else(|| invalid("installed Vorbis sample unavailable"))?;
+                    fingerprint.update(&sample.to_le_bytes());
+                }
+            }
+        }
+        println!("VORBIS_HEADER_SAMPLES id={} language={} channels={} rate={} frames={} signature={}",
+            entry.id, entry.language_id, media.channels, media.sample_rate, media.frames, fingerprint.finalize());
+        sources += 1;
+        if sources == 32 { break; }
+    }
+    if sources == 0 { return Err(invalid("package has no sampled installed Vorbis streams")); }
+    Ok(())
 }
 
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message.to_owned()) }
