@@ -6602,3 +6602,18 @@ unchanged pose reused its identity, and all observed pose leases
 released at level withdrawal. This measures the publisher, with no
 claim about whole-frame or gameplay rendering. Evidence:
 DH2-screen-shadow-retirement/artifacts/skin-publication-ownership-20261111-comparison.json.
+
+### Usable animation read withdrawal
+
+Prediction before implementation. Original 1407e5190 resolves AnimBasic
+items, 140257330 acquires animation records, and 14025aa00 consumes
+the compiled model. The rewrite's background usable task only checks
+close before and after building a full rig and its clips, then reads the
+model without another checkpoint. Carry the existing level signal to
+the clip reader and compiled mesh read, checking between AnimBasic
+items and MD6 surfaces. A stopped clip must leave its resource header
+retryable, preserving any earlier decoded generation. The load gate
+still waits for worker retirement before map purge. Ordinary callers
+keep their existing loaders, data and ownership. Observe an installed
+clip interrupted before decode and retried in the same catalog, plus
+the actual usable worker retirement path and unchanged prepared data.
