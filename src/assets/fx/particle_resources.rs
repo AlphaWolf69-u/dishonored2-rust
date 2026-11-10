@@ -58,18 +58,19 @@ pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
 }
 pub(crate) fn declaration(catalog: &Catalog, path: &str, shared: bool,
     load: impl FnOnce(u8) -> Result<Arc<ParticleDeclaration>, String>) -> Result<Arc<ParticleDeclaration>, String> {
-    // Editable generations remain exclusively leased by their actual users;
-    // neither their successful payload nor an earlier error is cached here.
-    if !share(catalog, shared) { return load(0); }
     // FX descriptors store suffixless declaration names; preload manifests
     // carry archive paths. Both must address the exact same header/history key.
     let resource = format!("generated/decls/particledt/{}.decl", key(path));
-    owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?.acquire(&resource, 0, load)
+    let mut declarations = owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?;
+    if share(catalog, shared) { declarations.acquire(&resource, 0, load) }
+    else { declarations.acquire_separate(&resource, 0, load) }
 }
 pub(crate) fn model(catalog: &Catalog, path: &str, marker: u8, shared: bool,
     load: impl FnOnce() -> Result<Arc<ParticleModel>, String>) -> Result<Arc<ParticleModel>, String> {
-    if !share(catalog, shared) { return load(); }
-    owner(catalog).models.lock().map_err(|_| "particle model registry is poisoned")?.acquire(&key(path), marker, |_| load())
+    let resource = key(path);
+    let mut models = owner(catalog).models.lock().map_err(|_| "particle model registry is poisoned")?;
+    if share(catalog, shared) { models.acquire(&resource, marker, |_| load()) }
+    else { models.acquire_separate(&resource, marker, |_| load()) }
 }
 pub(crate) fn field(catalog: &Catalog, path: &str, shared: bool,
     load: impl FnOnce() -> Result<Arc<super::particle_field::FieldPixels>, String>)

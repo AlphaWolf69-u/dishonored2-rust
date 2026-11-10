@@ -35,8 +35,6 @@ pub struct ParticleResources {
     pub field_image_reads: usize,
     pub material_reads: usize,
     shared: bool,
-    history: Option<Arc<particle_declaration::HistoryLease>>,
-    model_history: Option<Arc<crate::assets::particle_model::HistoryLease>>,
     parameter_blocks: Option<Box<crate::assets::parm_block::ParmBlockSources>>,
 }
 impl Default for ParticleResources {
@@ -55,8 +53,6 @@ impl Default for ParticleResources {
             field_image_reads: 0,
             material_reads: 0,
             shared: true,
-            history: None,
-            model_history: None,
             parameter_blocks: None,
         }
     }
@@ -84,11 +80,6 @@ impl ParticleResources {
         self.materials.retain(|_, value| value.strong_count() != 0);
         self.models.retain(|_, value| Arc::strong_count(value) > 1);
         self.field_images.retain(|_, value| Arc::strong_count(value) > 1);
-        // The declarations and models carry their own history leases. Once
-        // no acquisition entries remain, this owner must not pin those scopes
-        // after the last live runtime resource has gone away.
-        if self.declarations.is_empty() { self.history = None; }
-        if self.models.is_empty() { self.model_history = None; }
         let (images, payload_bytes) = self.images.retire_unused();
         if self.parameter_blocks.as_mut().is_some_and(|blocks| blocks.retire_unused()) {
             self.parameter_blocks = None;
@@ -109,14 +100,12 @@ impl ParticleResources {
     fn model(&mut self, catalog: &Catalog, resource: &str, marker: u8) -> Result<(), String> {
         if self.models.contains_key(resource) { return Ok(()); }
         let model = crate::assets::fx::particle_resources::model(catalog, resource, marker, self.shared, || {
-            let history = self.model_history.get_or_insert_with(crate::assets::particle_model::HistoryLease::acquire).clone();
             self.model_reads += 1;
             let bytes = catalog.read(resource).map_err(|error| format!("{resource}: {error}"))?
                 .ok_or_else(|| format!("missing particle model {resource}"))?;
-            let mut model = crate::assets::particle_model::parse(&bytes)
-                .map_err(|error| format!("{resource}: {error}"))?;
-            model.history = Some(history);
-            Ok(Arc::new(model))
+            crate::assets::particle_model::parse(&bytes)
+                .map(Arc::new)
+                .map_err(|error| format!("{resource}: {error}"))
         })?;
         self.models.insert(resource.to_owned(), model);
         Ok(())
@@ -134,7 +123,6 @@ impl ParticleResources {
             }
         }
         let loaded = crate::assets::fx::particle_resources::declaration(catalog, path, self.shared, |marker| {
-            let history = self.history.get_or_insert_with(particle_declaration::HistoryLease::acquire).clone();
             self.declaration_reads += 1;
             let _tag = crate::platform::allocation_tags::tag("particle definitions");
             // Preserve archive IO failures distinctly from absent declarations.
@@ -148,7 +136,6 @@ impl ParticleResources {
             let fields = fields?;
             let mut declaration = particle_declaration::declaration(&fields)
                 .map_err(|error| format!("{path}: {error}"))?;
-            declaration.history = Some(history);
             // Emission meshes are dedicated PMODEL archive resources,
             // independent of the ordinary rendered-prop mesh loader.
             for stage in &mut declaration.stages {
