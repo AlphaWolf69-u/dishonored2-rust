@@ -6017,6 +6017,27 @@ after warmup. This observes ownership and queue retirement, without measuring
 active rendering cost. Evidence:
 `DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
 
+Projected decal replacement prediction. The effect chain releases its final
+tail through 140199df0 and the resource purge follows 140060180. The host
+coordinator already removes expired decals, but the prior publication and
+proxy set still hold the same materials and images while a replacement is
+waiting for its reads. Withdraw expired entries from that publication on
+the retirement revision and let the proxy owner prune without admitting
+new decals. Keep all surviving effects and tails. Expect the retired image
+and geometry leases to end even if an unrelated replacement has not reached
+readiness. No change to decal program, sampling, geometry or draw ordering.
+
+Projected decal replacement acceptance (`e8697d4f`). The installed
+Dunwall Escape blood effect published four material variants, ten receiver
+proxies and seven new image slots. The material worker had a different
+installed effect pending when all ten outgoing proxies and all four
+prepared materials released. Superseding that pending generation discarded
+its result. Final release left zero of the tracked assets and all seven
+slots were free. The windowless observer used the actual publication and
+removal systems with cameras inactive. It did not measure active decal draw
+appearance or the duration of rendered tails. Evidence:
+`DH2-fx-resources/artifacts/decal-replacement-retirement-20261110-comparison.json`.
+
 Placed static model staging prediction. The BML1 loader retires its input at
 14026a5a0 and releases dispensable triangle arrays through 140278df0. The host
 needs decoded level triangles while resolving placements in authored order.
