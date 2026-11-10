@@ -18,6 +18,11 @@ pub fn inspect_scene_publication(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let [flag, level, effect] = levels {
+        if flag == "--fx-requests" {
+            return inspect_scene_resources(base, std::slice::from_ref(level), Mode::FxRequests(effect), false);
+        }
+    }
     inspect_scene_resources(base, levels, Mode::Publish, false)
 }
 
@@ -138,7 +143,7 @@ fn inspect_worker_images(
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Mode<'a> { Prepare, Publish, Upload, RuntimeFx(&'a [String]) }
+enum Mode<'a> { Prepare, Publish, Upload, RuntimeFx(&'a [String]), FxRequests(&'a str) }
 
 fn gpu_inputs(world: &World) -> super::scene_preparation::SceneGpuInputs {
     super::scene_preparation::SceneGpuInputs {
@@ -530,6 +535,9 @@ fn inspect_scene_resources(
             }
             if let Mode::RuntimeFx(effects) = mode {
                 inspect_runtime_fx(&mut app, &catalog, effects)?;
+            }
+            if let Mode::FxRequests(effect) = mode {
+                super::usable_effects::inspect_source_requests(app.world_mut(), effect)?;
             }
             // No camera/view frame was produced. Upload mode completed its
             // asset queue work above; view-pass owners were not installed.
