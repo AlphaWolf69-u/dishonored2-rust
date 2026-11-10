@@ -77,6 +77,18 @@ pub(super) struct PhysicsScene {
     executor: WorldPointQuery,
 }
 
+impl Drop for PhysicsScene {
+    fn drop(&mut self) {
+        match self.world.detach_shape_observers(&mut self.geometry) {
+            Ok(released) if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") => {
+                eprintln!("SHAPE_OBSERVERS_RELEASE owner=triggers registrations={released}");
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("Trigger shape observer retirement failed: {error}"),
+        }
+    }
+}
+
 impl PhysicsScene {
     pub(super) fn visit_audio(&mut self, mut visit: impl FnMut(ComponentHandle,
         &entities::audio::AudioBinding, &mut crate::gameplay::sound::component::AudioComponent) -> Result<(), String>) -> Result<(), String>
