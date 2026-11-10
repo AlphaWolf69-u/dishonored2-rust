@@ -98,6 +98,56 @@ impl EffectFloatCurve {
         })
     }
 
+    /// 1f3f10's inline life-restriction sampler: a Catmull-Rom spline over
+    /// the logical key values (tangents of tripled curves are skipped). The
+    /// neighbouring keys beyond either end are extrapolated linearly from
+    /// the first or last key pair, and key times come from 1d1ae0.
+    pub fn sample_key_spline(&self, time: f32) -> Result<f32, String> {
+        use crate::float::{add, divide, multiply, subtract};
+        let count = self.times.len();
+        if count == 0 {
+            return Err("parent-stage life restriction has an empty curve".into());
+        }
+        let triples = self.values.len() == count * 3;
+        let key = |index: usize| self.value(if triples { index * 3 + 1 } else { index });
+        if count == 1 || time <= self.times[0] {
+            return key(0);
+        }
+        if !(time < self.times[count - 1]) {
+            return key(count - 1);
+        }
+        let mut index = 0;
+        while index + 1 < count && !(time <= self.times[index + 1]) {
+            index += 1;
+        }
+        let [start, end] = curve_key_times(&self.times, index as i32);
+        let mut t = subtract(time, start);
+        let interval = subtract(end, start);
+        if f32::from_bits(0x3400_0000) < interval {
+            t = divide(t, interval);
+        }
+        let half = multiply(t, 0.5);
+        let point = |k: i64| -> Result<f32, String> {
+            if k < 0 {
+                let first = key(0)?;
+                Ok(add(multiply(subtract(key(1)?, first), k as f32), first))
+            } else if k as usize >= count {
+                let last = key(count - 1)?;
+                let steps = (k - (count as i64 - 1)) as f32;
+                Ok(add(multiply(subtract(last, key(count - 2)?), steps), last))
+            } else {
+                key(k as usize)
+            }
+        };
+        let i = index as i64;
+        let [p0, p1, p2, p3] = [point(i - 1)?, point(i)?, point(i + 1)?, point(i + 2)?];
+        let a = multiply(p1, add(multiply(multiply(subtract(multiply(t, 3.), 5.), t), half), 1.));
+        let b = multiply(multiply(p0, subtract(multiply(subtract(2., t), t), 1.)), half);
+        let c = multiply(multiply(p2, add(multiply(subtract(4., multiply(t, 3.)), t), 1.)), half);
+        let d = multiply(multiply(multiply(p3, subtract(t, 1.)), t), half);
+        Ok(add(add(add(a, b), c), d))
+    }
+
     /// 2266c0's FX constant-curve classification. Its reference is the first
     /// stored float, including the incoming tangent in a tripled curve.
     pub fn is_constant(&self) -> Result<bool, String> {

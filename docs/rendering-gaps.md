@@ -24,8 +24,9 @@ All 8,909 installed FX declarations loaded through `WorldFxSources`
 (local census `examples/fx_failure_census.rs`; `examples/` is not tracked): effects=8909 failed_effects=10 particles=2171 failed_particles=1233.
 Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
-radial-ramp opacity, bare rotation orders, clipping planes and stage
-sorting are connected; 1,097 particle declarations still fail.
+radial-ramp opacity, bare rotation orders, clipping planes, stage
+sorting and stage-to-stage spawning are connected; 1,070 particle
+declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -97,18 +98,17 @@ all 8,909 installed FX declarations (and every level's world FX) contain 0
 sprites with world materials; the 56 world-material particle surfaces are all
 meshes, which `particle_meshes` already draws.
 
-## Stage-to-stage spawning (`m_spawnStage`, 55 first failures)
+## Stage-to-stage spawning (`m_spawnStage`), connected
 
-`m_spawnStage { m_stageName, m_lifeRestriction, m_velocityRedirectionAngle,
-m_initialVelocity, m_spawnOnlyFromStage }` makes a stage emit from another
-stage's live particles (e.g. pipes_steam_02's "steam_body_+X"). The rewrite
-parses only m_spawnOnlyFromStage and has no stage-to-stage emission. Found
-(2026-11-10): `arkParentSpawnStage` is inline at stage descriptor +0
-(m_stageName idAtomicString +0, m_spawnOnlyFromStage +8, curves
-m_lifeRestriction +0x10, m_initialVelocity +0xD8, m_velocityRedirectionAngle
-+0x1A0). System setup 140201760 resolves the parent stage by descriptor and
-stores it at stage +0x110; the stage step 1f4e00 calls 1401f3f10 (2,578
-bytes), which returns at once without a parent and otherwise evaluates the
-spawn curves (keys +0x218, values +0x230 relative to the descriptor) to emit
-from the parent's particles. Next step: port 1401f3f10 whole and feed the
-parent stage's live particles into the child's emission.
+`arkParentSpawnStage` sits at stage descriptor +0x200 (m_spawn +0x1d8;
+defaults from 1f8b80). 140201760 links each enabled stage to the named
+stage (+0x110). For every particle, 1f3f10 runs after 1dbbe0's shape
+sampling: it evaluates m_lifeRestriction as a Catmull-Rom spline over key
+values, lets 1f4930 probe the parent's slots four times with the parent's
+seed for a live particle in that age window, then adds the parent's position
+and its velocity scaled by m_initialVelocity and redirected through 1dcf60
+by m_velocityRedirectionAngle. Without a match the emitter origin is added,
+and m_spawnOnlyFromStage marks the particle dead by setting its age to
+FLT_MAX. Installed data: 120 m_stageName references, 71 name a stage of
+their declaration, 49 name stages that no longer exist (no link, ordinary
+emission), none name their own stage.

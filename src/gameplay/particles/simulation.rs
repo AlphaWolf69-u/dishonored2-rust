@@ -44,12 +44,23 @@ pub struct StageSimulation {
     pub owner_pose: ReferenceFrame,
     /// 1fa780 initializes the source/target point to world zero.
     pub target_position: [f32; 3],
+    /// Stage +0x110: the system stage named by m_spawnStage.m_stageName,
+    /// linked by 140201760 after every enabled stage exists.
+    pub parent: Option<usize>,
     fields: [Vec<super::field::FieldState>; 3],
     field_velocity: Vec<[f32; 3]>,
 }
 
+/// The linked parent stage (stage +0x110): its live particles and its own
+/// mutable seed (+0x27c), which 1f4930 advances while choosing a parent.
+pub struct ParentStage<'a> {
+    pub particles: &'a ParticleStage,
+    pub seed: &'a mut u32,
+}
+
 struct Bindings<'a> {
     definition: &'a ParticleStageAsset,
+    parent: Option<ParentStage<'a>>,
     events: &'a mut super::events::StageEvents,
     fields: &'a mut [Vec<super::field::FieldState>; 3],
     field_velocity: &'a mut [[f32; 3]],
@@ -155,7 +166,41 @@ impl EmitterBindings for Bindings<'_> {
             0.5,
         );
         velocity = super::spawn::spray(velocity, cone, seed);
-        let position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
+        // 1f3f10 runs after 1dbbe0's shape sampling. Without a matching
+        // parent particle the emitter origin is added instead, and
+        // m_spawnOnlyFromStage marks the new particle dead by its age.
+        let mut killed = false;
+        let mut parented = false;
+        if let Some(parent) = self.parent.as_mut() {
+            let spawn = &definition.spawn_stage;
+            let restriction = &spawn.life_restriction;
+            let upper = restriction.curve.minimum.times.is_empty();
+            let maximum = restriction.curve.maximum.sample_key_spline(context.cycle_fraction)?;
+            let minimum = if upper {
+                maximum
+            } else {
+                restriction.curve.minimum.sample_key_spline(context.cycle_fraction)?
+            };
+            match parent.particles.pick_parent(
+                multiply(maximum, restriction.range[1]),
+                multiply(minimum, restriction.range[0]),
+                parent.seed,
+            ) {
+                None => killed = definition.spawn_only_from_stage,
+                Some(slot) => {
+                    let source = parent.particles.get(slot).ok_or("parent particle slot is empty")?.state;
+                    position = std::array::from_fn(|i| add(source.position[i], position[i]));
+                    parented = true;
+                    let angle = spawn.velocity_redirection_angle.sample(context.cycle_fraction, seed)?;
+                    let scale = spawn.initial_velocity.sample(context.cycle_fraction, seed)?;
+                    let redirected = super::spawn::spray(source.velocity.map(|v| multiply(scale, v)), angle, seed);
+                    velocity = std::array::from_fn(|i| add(velocity[i], redirected[i]));
+                }
+            }
+        }
+        if !parented {
+            position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
+        }
         let mut particle_seed = crate::random::lcg_step(seed);
         let mut motion_seed = particle_seed;
         if let Some(field) = super::field::sample(
@@ -176,6 +221,9 @@ impl EmitterBindings for Bindings<'_> {
             accumulated_velocity: [0.; 3],
             seed: particle_seed,
         };
+        if killed {
+            particle.state.age = f32::MAX;
+        }
         let mut field_velocity = [0.; 3];
         if let Some(field) = super::field::sample(
             &self.fields[1],
@@ -288,6 +336,7 @@ impl StageSimulation {
         self.prepare_pose(delta, pose);
         let mut bindings = Bindings {
             definition: &self.declaration.stages[self.index],
+            parent: None,
             events: &mut self.events,
             fields: &mut self.fields,
             field_velocity: &mut self.field_velocity,
@@ -349,6 +398,7 @@ impl StageSimulation {
         let mut mesh_cursor = 0;
         let inherited_velocity = super::spawn::SpawnVelocity::default();
         let mut bindings = Bindings {
+            parent: None,
             events: &mut events,
             fields: &mut fields,
             field_velocity: &mut field_velocity,
@@ -386,6 +436,7 @@ impl StageSimulation {
             events,
             owner_pose: pose,
             target_position: [0.; 3],
+            parent: None,
             fields,
             field_velocity,
         })
@@ -404,7 +455,7 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         wind: [f32; 3],
     ) -> Result<(), String> {
-        self.advance_frame_with_sources(delta, frame, wind, None)
+        self.advance_frame_with_sources(delta, frame, wind, None, None)
     }
 
     pub fn advance_frame_with_sources(
@@ -413,6 +464,7 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         wind: [f32; 3],
         source: Option<&super::spawn::SpawnVelocity>,
+        mut parent: Option<ParentStage<'_>>,
     ) -> Result<(), String> {
         use crate::float::subtract;
         self.owner_pose = frame.pose;
@@ -451,7 +503,11 @@ impl StageSimulation {
             if !step.is_finite() || step <= 0. {
                 return Err("particle cycle produces an invalid outer time slice".into());
             }
-            self.advance_chunk(step, frame, source_velocity, wind)?;
+            let chunk_parent = parent.as_mut().map(|parent| ParentStage {
+                particles: parent.particles,
+                seed: &mut *parent.seed,
+            });
+            self.advance_chunk(step, frame, source_velocity, wind, chunk_parent)?;
             remaining = subtract(remaining, step);
         }
         self.commit_pose(frame.pose);
@@ -544,6 +600,7 @@ impl StageSimulation {
         frame: &StageFrame<'_>,
         source_velocity: [f32; 3],
         wind: [f32; 3],
+        parent: Option<ParentStage<'_>>,
     ) -> Result<(), String> {
         let declaration = self.declaration.clone();
         let definition = &declaration.stages[self.index];
@@ -669,6 +726,7 @@ impl StageSimulation {
             },
         )?;
         let mut bindings = Bindings {
+            parent,
             events: &mut self.events,
             fields: &mut self.fields,
             field_velocity: &mut self.field_velocity,
@@ -684,10 +742,8 @@ impl StageSimulation {
             inherited_velocity: &self.inherited_velocity,
         };
         let free = bindings.particles.capacity() - bindings.particles.len();
-        // 1ffff0 calls ordinary emission after integration. The parent's
-        // spawnOnlyFromStage flag is not a blanket disable for this path:
-        // it only participates in linked parent-stage setup. Such links are
-        // still rejected by the reader until their producer is connected.
+        // 1ffff0 calls ordinary emission after integration. Each spawned
+        // particle consults the linked parent stage (1f3f10) when one exists.
         if definition.burst && !definition.burst_event.is_empty() {
             let mut inputs = std::mem::take(&mut bindings.particles.inputs);
             self.emitter.event_burst(

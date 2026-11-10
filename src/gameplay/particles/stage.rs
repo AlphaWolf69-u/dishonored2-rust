@@ -120,6 +120,30 @@ impl ParticleStage {
         sorted.chain(plain)
     }
 
+    /// 1f4930: up to four random slot probes, drawing from the parent's own
+    /// stage seed, for a live particle whose normalized age lies within
+    /// `[lower, upper]`. A stage without live particles draws nothing.
+    pub fn pick_parent(&self, lower: f32, upper: f32, seed: &mut u32) -> Option<usize> {
+        if self.len() == 0 {
+            return None;
+        }
+        let count = self.capacity();
+        for _ in 0..4 {
+            let slot = if (count as i32) - 1 < 1 {
+                0
+            } else {
+                ((crate::random::lcg_step(seed) >> 10) & 0x7fff) as usize % count
+            };
+            if let Some(particle) = self.get(slot) {
+                let age = particle.state.age;
+                if lower <= age && age <= upper {
+                    return Some(slot);
+                }
+            }
+        }
+        None
+    }
+
     /// The live particle in `slot`.
     pub fn get(&self, slot: usize) -> Option<&Particle> {
         self.slots.get(slot)?.as_ref()

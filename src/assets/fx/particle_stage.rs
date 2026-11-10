@@ -103,6 +103,30 @@ impl ParticleEvents {
     }
 }
 
+/// arkParticleSystemDescStructures::arkParentSpawnStage at stage +0x200
+/// (m_spawn +0x1d8), initialized by 1f8b80: m_stageName +0x200,
+/// m_spawnOnlyFromStage +0x208, m_lifeRestriction +0x210 (0.9 with its
+/// minimum endpoint 0.1), m_initialVelocity +0x2d8 (1) and
+/// m_velocityRedirectionAngle +0x3a0 (30). 140201760 links the named stage.
+pub struct ParentSpawnStage {
+    pub stage_name: String,
+    pub life_restriction: ScalarParameter,
+    pub initial_velocity: ScalarParameter,
+    pub velocity_redirection_angle: ScalarParameter,
+}
+impl Default for ParentSpawnStage {
+    fn default() -> Self {
+        let mut life_restriction = ScalarParameter::constant(f32::from_bits(0x3f66_6666));
+        life_restriction.range[1] = f32::from_bits(0x3dcc_cccd);
+        Self {
+            stage_name: String::new(),
+            life_restriction,
+            initial_velocity: ScalarParameter::constant(1.),
+            velocity_redirection_angle: ScalarParameter::constant(30.),
+        }
+    }
+}
+
 pub struct ParticleStageAsset {
     pub name: String,
     pub enabled: bool,
@@ -120,6 +144,7 @@ pub struct ParticleStageAsset {
     pub infinite_life: bool,
     pub warmup: [f32; 2],
     pub spawn_only_from_stage: bool,
+    pub spawn_stage: ParentSpawnStage,
     pub use_event_location: bool,
     pub event_velocity: ScalarParameter,
     pub event_normal: ScalarParameter,
@@ -170,6 +195,7 @@ impl Default for ParticleStageAsset {
             infinite_life: false,
             warmup: [0.; 2],
             spawn_only_from_stage: true,
+            spawn_stage: ParentSpawnStage::default(),
             use_event_location: true,
             event_velocity: ScalarParameter::constant(0.),
             event_normal: ScalarParameter::constant(0.),
@@ -303,9 +329,22 @@ impl ParticleStageAsset {
                     for (name, value) in scope(value)? {
                         match name.as_str() {
                             "m_spawnOnlyFromStage" => self.spawn_only_from_stage = boolean(value)?,
+                            "m_stageName" => self.spawn_stage.stage_name = atom(value)?.to_owned(),
+                            "m_lifeRestriction" => particles::scalar_parameter(
+                                &mut self.spawn_stage.life_restriction,
+                                scope(value)?,
+                            )?,
+                            "m_initialVelocity" => particles::scalar_parameter(
+                                &mut self.spawn_stage.initial_velocity,
+                                scope(value)?,
+                            )?,
+                            "m_velocityRedirectionAngle" => particles::scalar_parameter(
+                                &mut self.spawn_stage.velocity_redirection_angle,
+                                scope(value)?,
+                            )?,
                             _ => {
                                 return Err(format!(
-                                    "unresolved particle parent-stage field {name}"
+                                    "unknown particle parent-stage field {name}"
                                 ))
                             }
                         }

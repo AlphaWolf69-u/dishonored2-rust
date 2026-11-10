@@ -6,7 +6,7 @@ use crate::{
         effects::particle::{ParticleEffect, ParticleEffectFrame, ParticlePublication},
         particles::{
             pose::EmitterPose,
-            simulation::{StageFrame, StageSimulation},
+            simulation::{ParentStage, StageFrame, StageSimulation},
         },
         reference_frame::ReferenceFrame,
     },
@@ -390,6 +390,18 @@ impl ParticleSystem {
                         )?);
                     }
                 }
+                // 140201760 links each stage to the first enabled stage
+                // whose descriptor its m_spawnStage names.
+                let names: Vec<&str> = stages
+                    .iter()
+                    .map(|stage| declaration.stages[stage.index].name.as_str())
+                    .collect();
+                for stage in &mut stages {
+                    let wanted = &declaration.stages[stage.index].spawn_stage.stage_name;
+                    if !wanted.is_empty() {
+                        stage.parent = names.iter().position(|name| name == wanted);
+                    }
+                }
                 Ok((stages, system_seed))
             },
         )?;
@@ -616,7 +628,18 @@ impl ParticleSystem {
         };
         self.clipping = ParticleClipPlanes::new(&first.declaration.clipping, publication.pose, surface);
         for stage_slot in 0..self.stages.len() {
-            let stage = &mut self.stages[stage_slot];
+            let parent_slot = self.stages[stage_slot].parent.filter(|&slot| slot != stage_slot);
+            let (stage, parent) = match parent_slot {
+                Some(slot) if slot < stage_slot => {
+                    let (before, after) = self.stages.split_at_mut(stage_slot);
+                    (&mut after[0], Some(&mut before[slot]))
+                }
+                Some(slot) => {
+                    let (before, after) = self.stages.split_at_mut(slot);
+                    (&mut before[stage_slot], Some(&mut after[0]))
+                }
+                None => (&mut self.stages[stage_slot], None),
+            };
             let definition = &stage.declaration.stages[stage.index];
             let worldspace = definition.worldspace;
             let mut delta = delta;
@@ -660,6 +683,10 @@ impl ParticleSystem {
                 },
                 self.wind,
                 self.source_motion.as_ref(),
+                parent.map(|parent| ParentStage {
+                    particles: &parent.particles,
+                    seed: &mut parent.emitter.seed,
+                }),
             )?;
             let mut deliveries = std::mem::take(&mut stage.events.pending);
             for delivery in deliveries.drain(..) {
