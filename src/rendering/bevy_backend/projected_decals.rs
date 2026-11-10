@@ -306,6 +306,7 @@ fn prepare(
     gpu.remap.get_mut().clear();
     let result = (|| -> Result<(), String> {
         if scene.tree.is_none() {
+            gpu.lighting.clear();
             return Ok(());
         }
         let decals = &publication.0.as_ref()

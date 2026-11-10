@@ -569,13 +569,21 @@ impl LevelList {
     pub fn is_empty(&self) -> bool { self.sections.iter().all(|section| section.resources.is_empty()) }
     /// Counts section ownership; callers must account for shared Arc leases.
     pub(crate) fn logical_descriptor_bytes(&self) -> usize {
-        self.sections.iter().map(|section| descriptor_bytes(&section.resources)
-            + section.headers.capacity() * std::mem::size_of::<HeaderSelection>()
-            + section.reuse_path.as_ref().map_or(0, String::capacity) + section.language.len()
-            + section.reuse.get().and_then(|result| result.as_ref().ok()).and_then(Option::as_ref)
-                .map_or(0, |reuse| descriptor_bytes(&reuse.additional)
-                    + reuse.headers.capacity() * std::mem::size_of::<ReuseHeader>())).sum()
+        self.sections.iter().map(|section| section_descriptor_bytes(section)).sum()
     }
+    #[cfg(feature = "game")]
+    pub(crate) fn map_descriptor_bytes(&self) -> usize {
+        section_descriptor_bytes(&self.sections[2])
+    }
+}
+
+fn section_descriptor_bytes(section: &SourceList) -> usize {
+    descriptor_bytes(&section.resources)
+        + section.headers.capacity() * std::mem::size_of::<HeaderSelection>()
+        + section.reuse_path.as_ref().map_or(0, String::capacity) + section.language.len()
+        + section.reuse.get().and_then(|result| result.as_ref().ok()).and_then(Option::as_ref)
+            .map_or(0, |reuse| descriptor_bytes(&reuse.additional)
+                + reuse.headers.capacity() * std::mem::size_of::<ReuseHeader>())
 }
 impl std::ops::Index<usize> for LevelList {
     type Output = Resource;

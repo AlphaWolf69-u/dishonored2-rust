@@ -288,7 +288,7 @@ pub fn load_for_world(
     catalog: &archive::Catalog,
     world: &str,
 ) -> Result<Option<ProbeLightingSet>, String> {
-    load_world_probes(catalog, world, None)
+    load_world_probes(catalog, world, None, true)
 }
 
 #[cfg(feature = "game")]
@@ -296,11 +296,12 @@ pub(crate) fn load_for_rendered_world(
     catalog: &archive::Catalog, world: &str, instances: usize,
 ) -> Result<Option<ProbeLightingSet>, String> {
     let copy = std::env::var_os("DH2_DEBUG_COPY_PROBE_INDICES").is_some_and(|v| v == "1");
-    load_world_probes(catalog, world, (!copy).then_some(instances))
+    let retain_samples = std::env::var_os("DH2_DEBUG_RETAIN_PROBE_SAMPLES").is_some_and(|v| v == "1");
+    load_world_probes(catalog, world, (!copy).then_some(instances), retain_samples)
 }
 
 fn load_world_probes(
-    catalog: &archive::Catalog, world: &str, instances: Option<usize>,
+    catalog: &archive::Catalog, world: &str, instances: Option<usize>, retain_samples: bool,
 ) -> Result<Option<ProbeLightingSet>, String> {
     let level = crate::assets::level::LevelResources::resolve(catalog, world)
         .map_err(|error| error.to_string())?;
@@ -336,41 +337,68 @@ fn load_world_probes(
     }
     let mut probes = Vec::with_capacity(names.len());
     let mut reflection_probes = Vec::with_capacity(secondary_resources.len());
+    let sample_start = trace_staging.then(crate::loading::thread_cycles).flatten();
+    let mut cells_by_probe = std::collections::HashMap::new();
+    let mut next_cell = Vec::new();
+    let mut built_cells = Vec::new();
+    if !retain_samples {
+        next_cell.resize(spatial.cells.len(), usize::MAX);
+        built_cells.resize_with(spatial.cells.len(), || None);
+        // Preserve the first matching probe even if the ordered list contains
+        // repeats. A probe may supply geometry to multiple cells.
+        for (index, cell) in spatial.cells.iter().enumerate().rev() {
+            if let Some(next) = cells_by_probe.insert(cell.probe_name.as_str(), index) {
+                next_cell[index] = next;
+            }
+        }
+    }
     for name in &secondary_resources {
         let path = format!("{name}.bprobe");
         let bytes = catalog
             .read(&path)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("missing reflection probe {path}"))?;
-        reflection_probes
-            .push(bprobe::parse(&bytes).map_err(|e| format!("reflection probe {path}: {e}"))?);
+        let probe = if retain_samples { bprobe::parse(&bytes) }
+            else { bprobe::parse_for_lighting(&bytes, false) };
+        reflection_probes.push(probe.map_err(|error| format!("reflection probe {path}: {error}"))?);
     }
     let rejected_resources = Vec::new();
     for name in names {
         let resource = format!("{name}.bprobe");
+        let first_cell = cells_by_probe.remove(name.as_str());
         let parsed = catalog
             .read(&resource)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("PNW references missing probe resource {resource}"))
-            .and_then(|bytes| bprobe::parse(&bytes).map_err(|error| error.to_string()));
+            .and_then(|bytes| if retain_samples { bprobe::parse(&bytes) }
+                else { bprobe::parse_for_lighting(&bytes, first_cell.is_some()) });
         match parsed {
-            Ok(probe) => probes.push(ProbeLighting {
-                resource,
-                position: probe.position,
-                static_lights_illuminance: probe.static_lights_illuminance,
-                sky_occlusion_factor: probe.sky_occlusion_factor,
-                sun_irradiance_factor: probe.sun_irradiance_factor,
-                illuminance_estimate: probe.illuminance_estimate,
-                cubemap_name: probe.cubemap_name,
-                sources:probe.sources,
-                samples:probe.samples,
-                render_lighting_sh:probe.static_lighting_sh,
-                static_lighting_sh: probe.static_lighting_sh,
-                sun_factor_sh: probe.sun_factor_sh,
-                filtered_sun_factor_sh: probe.filtered_sun_factor_sh,
-                sky_occlusion_sh: probe.sky_occlusion_sh,
-                filtered_sky_occlusion_sh: probe.filtered_sky_occlusion_sh,
-            }),
+            Ok(probe) => {
+                let mut index = first_cell.unwrap_or(usize::MAX);
+                while index != usize::MAX {
+                    built_cells[index] = Some(query::geometry(
+                        probe.position, &probe.samples, &spatial.cells[index].occluder_samples,
+                    )?);
+                    index = next_cell[index];
+                }
+                probes.push(ProbeLighting {
+                    resource,
+                    position: probe.position,
+                    static_lights_illuminance: probe.static_lights_illuminance,
+                    sky_occlusion_factor: probe.sky_occlusion_factor,
+                    sun_irradiance_factor: probe.sun_irradiance_factor,
+                    illuminance_estimate: probe.illuminance_estimate,
+                    cubemap_name: probe.cubemap_name,
+                    sources: probe.sources,
+                    samples: if retain_samples { probe.samples } else { Vec::new() },
+                    render_lighting_sh: probe.static_lighting_sh,
+                    static_lighting_sh: probe.static_lighting_sh,
+                    sun_factor_sh: probe.sun_factor_sh,
+                    filtered_sun_factor_sh: probe.filtered_sun_factor_sh,
+                    sky_occlusion_sh: probe.sky_occlusion_sh,
+                    filtered_sky_occlusion_sh: probe.filtered_sky_occlusion_sh,
+                });
+            }
             // FUN_1402b15e0:160-166 writes a slot for every primary name.
             // Compacting failed decodes shifts every later native tetra ID.
             // An unsupported required probe must fail loading, not become a
@@ -378,20 +406,24 @@ fn load_world_probes(
             Err(error) => return Err(format!("required primary probe {resource}: {error}; native ordered probe IDs cannot be compacted")),
         }
     }
-    let mut cell_geometry = Vec::with_capacity(spatial.cells.len());
-    for cell in &spatial.cells {
-        let name = format!("{}.bprobe", cell.probe_name);
-        let probe = probes
-            .iter()
-            .find(|p| p.resource == name)
-            .ok_or_else(|| format!("missing CPU Voronoi probe {name}"))?;
-        cell_geometry.push(query::geometry(
-            probe.position,
-            &probe.samples,
-            &cell.occluder_samples,
-        )?);
-    }
+    let cell_geometry = if retain_samples {
+        spatial.cells.iter().map(|cell| {
+            let name = format!("{}.bprobe", cell.probe_name);
+            let probe = probes.iter().find(|probe| probe.resource == name)
+                .ok_or_else(|| format!("missing CPU Voronoi probe {name}"))?;
+            query::geometry(probe.position, &probe.samples, &cell.occluder_samples)
+        }).collect::<Result<Vec<_>, _>>()?
+    } else {
+        built_cells.into_iter().zip(&spatial.cells).map(|(geometry, cell)| {
+            geometry.ok_or_else(|| format!("missing CPU Voronoi probe {}.bprobe", cell.probe_name))
+        }).collect::<Result<Vec<_>, _>>()?
+    };
     if trace_staging {
+        let cycles = sample_start.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        let retained = probes.iter().map(|probe| probe.samples.capacity()).sum::<usize>() * size_of::<bprobe::Sample>();
+        eprintln!("PROBE_SAMPLE_STAGING retain={retain_samples} retained_primary_bytes={retained} geometry_crc={:08x} cycles={cycles}",
+            query::geometry_crc(&cell_geometry));
         let mut crc = flate2::Crc::new();
         for probe in &probes { crc.update(probe.resource.as_bytes()); crc.update(&[0]); }
         for name in &secondary_resources { crc.update(name.as_bytes()); crc.update(&[0]); }

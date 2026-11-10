@@ -65,8 +65,7 @@ pub(super) fn effect_spawn(state: &Usable, path: &str) -> EffectSpawn {
 }
 
 impl Interactions {
-    pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str,
-        loadout: &[(String, u32)], list: &crate::assets::map_resources::LevelList) -> Result<Self, String> {
+    pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str) -> Result<Self, String> {
         let read = |path: &str| -> Result<Option<String>, String> {
             Ok(catalog.read(path).map_err(|e| e.to_string())?
                 .map(entities::owned_declaration_text))
@@ -75,9 +74,7 @@ impl Interactions {
         let bindings = entities::usable::bindings(document, |path| read(path))?;
         let readable = entities::usable::readable_bindings(document, |path| read(path))?;
         super::pause_menu::trace_readable_ui(|| format!("READ_NOTE declarations admitted={} character={character}", readable.len()));
-        let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character,
-            readable.iter().map(|binding| binding.item.clone()).chain(loadout.iter().map(|(path, _)| path.clone()))
-                .chain(list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned)))?);
+        let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character)?);
         let definitions: HashMap<&str, &entities::Definition> = document.definitions.iter()
             .filter(|d| d.kind == "entity").map(|d| (d.id.as_str(), d)).collect();
         let mut actors = Vec::new();

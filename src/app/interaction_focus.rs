@@ -32,40 +32,6 @@ pub(super) struct RetiredPlacements(pub std::collections::HashSet<usize>);
 #[derive(Resource, Default)]
 pub(super) struct InitialInventory {
     pub items: Option<Vec<InitialItem>>,
-    pub registered: Option<RegisteredItems>,
-}
-
-/// The collection's registered slots retain the level list by lease and an
-/// index per admitted identity, not another copy of each resource path.
-#[derive(Clone)]
-pub(super) struct RegisteredItems {
-    list: std::sync::Arc<crate::assets::map_resources::LevelList>,
-    indices: std::sync::Arc<[usize]>,
-    limits: std::sync::Arc<crate::assets::inventory_item::ReadableLimits>,
-}
-impl RegisteredItems {
-    pub fn new(list: std::sync::Arc<crate::assets::map_resources::LevelList>,
-        limits: std::sync::Arc<crate::assets::inventory_item::ReadableLimits>) -> Self {
-        let mut seen = std::collections::HashSet::new();
-        let indices = list.iter().enumerate().filter_map(|(index, resource)| {
-            let path = registered_item_path(resource)?;
-            (limits.maximum(path) > 0 && seen.insert(path)).then_some(index)
-        }).collect::<Vec<_>>().into();
-        drop(seen);
-        Self { list, indices, limits }
-    }
-    pub fn paths(&self) -> impl Iterator<Item = &str> {
-        self.indices.iter().filter_map(|&index| registered_item_path(&self.list[index]))
-    }
-    pub fn same_collection(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.list, &other.list) && std::sync::Arc::ptr_eq(&self.indices, &other.indices)
-    }
-    pub fn maximum(&self, path: &str) -> u32 { self.limits.maximum(path) }
-}
-
-pub(super) fn registered_item_path(resource: &crate::assets::map_resources::Resource) -> Option<&str> {
-    if !resource.kind.eq_ignore_ascii_case("inventoryitem") { return None; }
-    resource.path.strip_prefix("generated/decls/inventoryitem/")?.strip_suffix(".decl")
 }
 
 pub(super) struct InitialItem {
@@ -89,7 +55,6 @@ struct OwnedEnhancement {
 pub(super) fn initialize_inventory(mut inventory: bevy::prelude::ResMut<DiscoveredDocuments>,
     initial: Option<bevy::prelude::ResMut<InitialInventory>>) {
     if let Some(mut initial) = initial {
-        if let Some(registered) = initial.registered.take() { inventory.registered = Some(registered); }
         if let Some(entries) = initial.items.take() { inventory.initialize(entries); }
     }
 }
@@ -150,7 +115,6 @@ pub(super) struct DiscoveredDocuments {
     audiographs: Vec<JournalItem>,
     quantities: std::collections::HashMap<String, u32>,
     initialized: bool,
-    registered: Option<RegisteredItems>,
     modifier_changes: std::collections::VecDeque<ModifierChange>,
     enhancements: Vec<OwnedEnhancement>,
 }
@@ -176,10 +140,6 @@ pub(super) struct JournalItem {
 }
 impl DiscoveredDocuments {
     pub fn items(&self) -> &[DocumentEntry] { &self.items }
-    pub fn registered_items(&self) -> Option<RegisteredItems> { self.registered.clone() }
-    /// A journal request takes one small snapshot; zero-quantity candidates
-    /// remain available separately through `registered_items`.
-    pub fn quantity_snapshot(&self) -> std::collections::HashMap<String, u32> { self.quantities.clone() }
     pub fn maps(&self) -> &[JournalItem] { &self.maps }
     pub fn audiographs(&self) -> &[JournalItem] { &self.audiographs }
     pub fn is_initialized(&self) -> bool { self.initialized }

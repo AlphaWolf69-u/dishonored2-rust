@@ -311,6 +311,15 @@ impl MaterialWork {
         let cache = std::mem::take(&mut resolver.cache);
         let image_paths = std::mem::take(&mut resolver.diffuse_image_paths);
         drop(resolver);
+        // Only the pending batches publish. Existing assets are resolved from
+        // the live world again, so their snapshot handles can retire here.
+        let probe_snapshots = std::mem::take(&mut self.assets.probes.existing);
+        let decal_snapshots = std::mem::take(&mut self.assets.decals.existing);
+        if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+            eprintln!("FX_LIFECYCLE material_snapshots_retired probe_values={} decal_values={}",
+                probe_snapshots.len(), decal_snapshots.len());
+        }
+        drop((probe_snapshots, decal_snapshots));
         let mut all_images = Vec::with_capacity(image_paths.len());
         for (slot, path) in image_paths.iter().enumerate() {
             check_active()?;

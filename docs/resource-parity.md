@@ -6081,6 +6081,29 @@ The affected placement span averaged 3.292B cycles with retention and
 in both directions. No frame timing was measured. Evidence:
 `DH2-collision-staging/artifacts/static-model-last-use-20261110-comparison.json`.
 
+Common model scope follow-up. The installed Edge of the World / Dust
+District / Edge of the World publication requested 13 / 11 / 13 common
+model sources. Adjacent maps shared nine identities and 483,146 bytes of
+decoded source geometry. Their session union was 15 sources and 800,242
+bytes. These are CPU source sizes, not GPU buffer sizes. The host mutates
+mesh vertex layouts for vegetation during preparation and packs world
+meshes into shared GPU slabs. Extending these mesh handles across maps
+would need an immutable layout key and separately scoped slab allocation.
+The current host keeps CPU source reuse and per-map GPU retirement until
+that separate layout and allocation path is measured. Evidence:
+`DH2-fx-level-lifetime/artifacts/loading-manifest-publication-20261110.log`.
+
+Runtime material snapshot prediction. Material lookup 1402d49b0 and release
+140060180 keep the registered material separate from the task that resolves
+it. The host worker clones existing material values to resolve a request.
+Its completed batch only publishes newly reserved values and reads existing
+values from the live world. Drop the worker's cloned values after resolution,
+before image admission or a wait for publication. This releases their image
+and buffer references while preserving live material IDs and their resolved
+roles. The empty projected-decal scene also clears the previous projection
+lighting rows while keeping reusable device buffers. No gameplay sampling,
+archive re-read, additional GPU allocation or frame timing gain is predicted.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
@@ -6126,6 +6149,27 @@ across the owner release call. All three scenes completed ordinary FX
 shutdown and released the extracted screen-shadow image again. Active
 particle shutdown errors, live resize and replacement binding draws were
 outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
+
+Map request table retirement follow-up. The original 1400661e0 frees its
+assembled request table at the end of loading. The host drops its loading
+lease there, but an unused inventory snapshot kept a second LevelList Arc
+in the session. The archived EotW release line reports 46,546 entries,
+8,628,721 logical bytes across the three sections and two strong owners.
+Remove the unused snapshot and its candidate scan. Initial inventory and
+readables still use the selected collection declaration, and discovered
+journal items retain their own identities. Expect one loading owner before
+play, zero surviving request-table owners after the gate, and release of
+the map-only descriptor section. Init/common still have their own owners.
+
+Windowless publication exposed an additional observer lease. The timing
+coverage reporter had stored a separate map-list reference for its PostUpdate
+report, while this acquisition observation calls the play gate directly. All
+three publications dropped from two owners to one. Route the same coverage
+calculation through the request list retired at play start and remove the
+independent timing acquisition. Expect one to zero owners with timing enabled
+and the same report content for the reads recorded before handoff. The isolated
+map sections measured 4,562,689 bytes in Edge of the World and 4,508,068 in
+Dust District. This counts descriptor ownership, rather than process memory.
 
 Instance probe record residency prediction. The original indirect-lighting
 owner retires buffer backing in 14035bca0. The host currently preserves
@@ -6180,3 +6224,58 @@ copies and private handles to retire after map clear while still forwarding
 changed bindings during play. No texture upload or draw-path change.
 
 Verified combined fog, fade and map-source retirement at 05e8fbad. The windowless DX12 route acquired Edge of the World, Dust District and Edge of the World in one host and exited zero without validation errors. Each publication acquired five fog/sampling images and four buffers. Each withdrawal removed all nine identities from CPU and GPU asset stores and cleared the three extracted owners. The screen-shadow image also released on all three transitions. Exactly five map-source history entries retired per transition. The installed fade acquisition returned one declaration per load, using the four-second initial fade and the two-second subsequent fade on both transitions. The route observes resource preparation and removal. On-screen fade playback and fog draw output were outside its scope. Evidence: DH2-screen-shadow-retirement/artifacts/fog-fade-map-source-ownership-20261110-comparison.json.
+
+Particle scene-image retirement prediction. Original image publication
+1402f5530 and residency 14030f3d0 own the active texture independently of
+particle bindings. The host GPU particle cache retained a strong reference
+to the previous map of scene image handles and its view objects. The final
+effect can end with no draws, bypassing image synchronization until a later
+effect starts. Track publication identity weakly and remove absent views
+when the particle pass is idle or preparing a changed publication. Active
+materials and submitted work keep their own leases. Retained path view
+changes still use the existing GPU-ready synchronization. Expect no uploads
+or view rebuilds for unchanged publications and no retired handles pinned
+by an idle particle pass.
+
+Probe sample staging prediction. PRB result reader 1402b8b30 reads 128
+samples per record. The installed Voronoi query 140382d90/140383d80 uses
+samples attached to its primary cell. The host builds equivalent query
+quads, then discards the samples. Resolve cells by their installed probe
+names before loading and build each cell while its primary PRB is in scope.
+Preserve cell order and first occurrence matching for duplicate probe names.
+Skip sample decode for secondary and alternate results where no query reads
+those arrays, and skip materializing strings in already ignored record lists.
+The prior route held 20,348,928 and 17,356,800 primary sample bytes in Edge
+of the World and Dust District. Expect at most one primary sample vector
+live in this part of setup, identical query geometry bits and lighting
+uploads, and lower scoped CPU cost from removing the per-cell linear scan.
+The standalone complete PRB/PNW readers still expose their full records.
+
+Integrated ownership acceptance (`116a0d59`). Windowless Edge of the World,
+Dust District and Edge of the World each transferred the final manifest
+lease from one owner to zero while retaining the coverage report. Their
+map-only descriptor capacities were 4,562,689, 4,508,068 and 4,562,689 bytes.
+An installed FX publication supplied seven committed scene image views to
+the idle particle cache. It retained zero after withdrawal and had no
+strong owner of the old handle table. The actual FX release also removed
+all seven GPU image assets and returned their slots. No active particle
+draw was observed. The decal replacement repeated the ten-proxy release
+result. Both FX preparations had zero existing material values in their
+worker snapshots, so they exercise batch handoff but do not quantify the
+snapshot fix for a cache hit.
+
+Two paired optimized acquisitions matched full probe cell geometry CRCs
+`714c76bc` / `d39ec98e`, vertex upload CRCs `bbc9941d` / `4fa1e3b9`, and
+instance records `089f05a5` / `d496779e`. The primary sample vectors held
+20,348,928 / 17,356,800 bytes at the old loop exit and zero after the
+change. Mean affected CPU cycles fell from 511.1M to 454.6M and 484.9M
+to 448.6M respectively. No frame timing was measured. All seven scoped
+observations exited successfully without reported graphics validation errors.
+Evidence: `DH2-collision-staging/artifacts/resource-ownership-integration-20261110-comparison.json`.
+
+All-level follow-up (`116a0d59`). The same optimized Tools binary completed
+all 36 installed CPU preparation and release phases in a single catalog.
+The 36 ordered probe acquisition records match the earlier full route,
+including primary, secondary and rejected counts. Geometry and GPU upload
+byte parity remain measured on Edge of the World and Dust District.
+Evidence: `DH2-collision-staging/artifacts/integrated-all-level-acquisition-20261110.json`.
