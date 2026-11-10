@@ -414,7 +414,9 @@ impl PreparedImageMailbox {
     pub(super) fn retire(&self) {
         let mut state = self.0.lock().unwrap();
         let generation = state.generation.wrapping_add(1);
-        *state = PreparedImageState { generation, ..Default::default() };
+        let outgoing = std::mem::replace(&mut *state, PreparedImageState { generation, ..Default::default() });
+        drop(state);
+        drop(outgoing);
     }
 }
 
@@ -486,8 +488,8 @@ pub(super) fn report_prepared_diffuse_images(
                     pending.len(), waiting.len(), completed.len(), failed.len(),
                     waiting_growth_frames, completed_growth_frames, failed_growth_frames, separate);
             }
-            // A mailbox reset follows outgoing-render acknowledgement. These
-            // empty vectors are map scratch, so do not retain peak capacity.
+            // A mailbox reset retires the outgoing generation. These vectors
+            // are map scratch, so do not retain their peak capacity.
             *pending = Vec::new();
             *waiting = Vec::new();
             *completed = Vec::new();
