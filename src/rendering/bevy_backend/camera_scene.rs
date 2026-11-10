@@ -53,8 +53,9 @@ impl Default for FxSimulation {
 impl FxSimulation {
     /// End the player chains, then retire the world FX manager (199df0).
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
-        self.screen_state.shutdown(&mut self.particle_systems)?;
-        self.world_particles.shutdown(&mut self.particle_systems)
+        let screen = self.screen_state.shutdown(&mut self.particle_systems);
+        let world = self.world_particles.shutdown(&mut self.particle_systems);
+        screen.and(world)
     }
 }
 

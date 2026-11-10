@@ -5937,3 +5937,12 @@ only. Read the mapped prefix into the existing CPU allocation and unmap it
 on consumption, ring reuse or owner teardown. Expect zero transient sample
 allocations and one CPU copy per consumed sample, with no new GPU work or
 wait. A dropped owner must cancel pending maps without publishing results.
+
+Level cleanup after an FX shutdown error. The host's 1408a4830 transition
+returned immediately if a particle chain reported an invalid handle. That
+skipped entity and asset release, the publication reset and 1400410f0's
+resource purge. Preserve the first FX error and the existing abort of the
+destination load, but run both player and world shutdown and always release
+the outgoing owners. Expect the same order and no additional work on a
+successful transition. This covers fallible teardown, without trying to
+restore gameplay after a corrupted chain.
