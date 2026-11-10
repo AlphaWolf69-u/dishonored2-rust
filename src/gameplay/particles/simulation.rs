@@ -47,6 +47,8 @@ pub struct StageSimulation {
     /// Stage +0x110: the system stage named by m_spawnStage.m_stageName,
     /// linked by 140201760 after every enabled stage exists.
     pub parent: Option<usize>,
+    /// Stage +0x1c8, one state per descriptor attractor.
+    attractors: Vec<super::attractor::AttractorState>,
     fields: [Vec<super::field::FieldState>; 3],
     field_velocity: Vec<[f32; 3]>,
 }
@@ -393,6 +395,13 @@ impl StageSimulation {
                 .map(|definition| super::field::FieldState::new(definition, &mut spawn_seed))
                 .collect()
         });
+        // 1efcc0 resets the attractors right after the field states; each
+        // keeps a copy of the stage seed without advancing it.
+        let attractors = definition
+            .attractors
+            .iter()
+            .map(|attractor| super::attractor::AttractorState::new(attractor, spawn_seed))
+            .collect();
         let mut field_velocity = vec![[0.; 3]; capacity];
         let mut events = super::events::StageEvents::new(&declaration, index);
         let mut mesh_cursor = 0;
@@ -437,6 +446,7 @@ impl StageSimulation {
             owner_pose: pose,
             target_position: [0.; 3],
             parent: None,
+            attractors,
             fields,
             field_velocity,
         })
@@ -642,6 +652,20 @@ impl StageSimulation {
                 )?;
             }
         }
+        // 1f5620 prepares the attractors after the fields, sharing their
+        // cycle-seed copy and drawing random targets from the stage seed.
+        for (state, attractor) in self.attractors.iter_mut().zip(&definition.attractors) {
+            state.prepare(
+                attractor,
+                origin,
+                &space,
+                self.emitter.cycle.fraction,
+                &mut cycle_seed,
+                &mut self.emitter.seed,
+                delta,
+            )?;
+        }
+        let attractors = &self.attractors;
         let field_velocity = &mut self.field_velocity;
         let fields = &self.fields;
         let sprites = &mut self.sprites;
@@ -722,6 +746,17 @@ impl StageSimulation {
                     frame.pose,
                     definition.worldspace,
                 );
+                Ok(())
+            },
+            |particle, seed, step, accumulated| {
+                for (state, attractor) in attractors.iter().zip(&definition.attractors) {
+                    if let Some(pull) = state.pull(particle.position, particle.velocity) {
+                        let scale = attractor.strength_over_life.sample_particle_rate(particle.age, seed)?;
+                        for i in 0..3 {
+                            accumulated[i] = add(multiply(multiply(pull[i], scale), step), accumulated[i]);
+                        }
+                    }
+                }
                 Ok(())
             },
         )?;

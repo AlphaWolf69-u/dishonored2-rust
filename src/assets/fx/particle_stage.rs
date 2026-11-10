@@ -13,13 +13,13 @@ pub struct SpawnVector {
     pub worldspace: bool,
 }
 impl SpawnVector {
-    fn new(value: [f32; 3]) -> Self {
+    pub(super) fn new(value: [f32; 3]) -> Self {
         Self {
             value: VectorParameter::constant(value),
             worldspace: false,
         }
     }
-    fn edit(&mut self, fields: &Fields) -> Result<(), String> {
+    pub(super) fn edit(&mut self, fields: &Fields) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
                 "m_value" => particles::vector_parameter(&mut self.value, scope(value)?)?,
@@ -165,6 +165,8 @@ pub struct ParticleStageAsset {
     pub spawn_fields: Vec<super::particle_field::ParticleField>,
     pub vector_fields: Vec<super::particle_field::ParticleField>,
     pub acceleration_fields: Vec<super::particle_field::ParticleField>,
+    /// Stage +0x1628.
+    pub attractors: Vec<super::particle_attractor::ParticleAttractor>,
 }
 impl Default for ParticleStageAsset {
     fn default() -> Self {
@@ -216,6 +218,7 @@ impl Default for ParticleStageAsset {
             spawn_fields: Vec::new(),
             vector_fields: Vec::new(),
             acceleration_fields: Vec::new(),
+            attractors: Vec::new(),
         }
     }
 }
@@ -412,6 +415,11 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
                 super::particle_field::field,
             )?,
             "m_meshes" => descriptor_list(&mut result.meshes, scope(value)?, super::particle_mesh::mesh)?,
+            "m_attractors" => descriptor_list(
+                &mut result.attractors,
+                scope(value)?,
+                super::particle_attractor::attractor,
+            )?,
             "m_sprites" => {
                 for (name, value) in scope(value)? {
                     if name == "num" {

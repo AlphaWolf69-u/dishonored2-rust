@@ -212,6 +212,7 @@ impl ParticleStage {
             |index, _, age, seed, force| motion(index, age, seed, force),
             after_advance,
             |_, _, _| Ok(()),
+            |_, _, _, _| Ok(()),
         )
     }
 
@@ -236,6 +237,7 @@ impl ParticleStage {
         ) -> Result<MotionSample, String>,
         mut after_advance: impl FnMut(usize, &ParticleState, &mut u32) -> Result<(), String>,
         mut particle_event: impl FnMut(&ParticleState, f32, bool) -> Result<(), String>,
+        mut attract: impl FnMut(&ParticleState, &mut u32, f32, &mut [f32; 3]) -> Result<(), String>,
     ) -> Result<(), String> {
         if !maximum_step.is_finite() || maximum_step <= 0. {
             return Err("particle integration step must be positive and finite".into());
@@ -250,6 +252,7 @@ impl ParticleStage {
                 let mut seed = particle.seed;
                 let (source_velocity, forces) = source_velocity(index, &particle.state, &mut seed)?;
                 let step = remaining.min(maximum_step);
+                attract(&particle.state, &mut seed, step, &mut particle.accumulated_velocity)?;
                 let position = particle.state.position;
                 let alive = particle.state.advance(
                     step,

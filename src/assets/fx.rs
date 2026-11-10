@@ -10,6 +10,7 @@ mod particle_emission_mesh;
 pub mod particle_mesh;
 pub mod particle_sprite;
 pub mod particle_stage;
+pub mod particle_attractor;
 pub mod particle_field;
 pub mod particles;
 pub mod screen_quad;

@@ -61,3 +61,12 @@ would change, so it can be made opt-in without guessing.
   the 0.1 s recentering delay applies only after the first activation.
 - Rewrite: `src/gameplay/player/states.rs` (lean update) keeps it.
 - Needs confirmation in the running game before treating it as a defect.
+
+### Particle attractors never read m_velocityOverCycle
+- `FUN_1401cde40` samples the attractor's `m_velocity` (+0x230) twice, once
+  at the attractor's time and once at the cycle fraction (confirmed in the
+  disassembly: both calls use `lea rcx, [rbp+0x230]`); `m_velocityOverCycle`
+  (+0x348) is parsed but never sampled. Its position counterpart uses
+  `m_positionOverCycle` (+0x118) as expected.
+- Rewrite: `AttractorState::prepare` in `src/gameplay/particles/attractor.rs`
+  keeps the double `m_velocity` sample.

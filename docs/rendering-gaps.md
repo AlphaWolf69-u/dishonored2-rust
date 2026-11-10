@@ -25,8 +25,8 @@ All 8,909 installed FX declarations loaded through `WorldFxSources`
 Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
 radial-ramp opacity, bare rotation orders, clipping planes, stage
-sorting and stage-to-stage spawning are connected; 1,070 particle
-declarations still fail.
+sorting, stage-to-stage spawning and attractors are connected; 1,054
+particle declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -112,3 +112,14 @@ and m_spawnOnlyFromStage marks the particle dead by setting its age to
 FLT_MAX. Installed data: 120 m_stageName references, 71 name a stage of
 their declaration, 49 name stages that no longer exist (no link, ordinary
 emission), none name their own stage.
+
+## Particle attractors (`m_attractors`), connected
+
+arkAttractorDesc (0xd88 bytes, defaults 1cd210/1cd520) is read whole. Each
+stage keeps one state per attractor: 1cdff0 resets it at stage creation
+with a copy of the stage seed, 1ce190 moves it once per simulation chunk
+after the field preparations (position, velocity integral, random offset
+that glides to a new random target every m_randomPeriod, cut-off, target
+radius and strength), and the integration loop adds 1cda40's pull scaled by
+m_strengthOverLife to the particle's accumulated velocity before each
+substep. Installed data: 197 attractors in 111 particle declarations.
