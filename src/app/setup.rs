@@ -212,7 +212,7 @@ pub(super) fn prepare(
 ) -> Result<(), String> {
     check_cancelled()?;
     // Setup mutates the parsed world. Borrow through a separate lease while
-    // the published scene keeps its catalog for late FX and sky acquisition.
+    // the published scene keeps its catalog for runtime FX and diagnostics.
     let catalog_storage = scene.catalog.clone();
     let catalog = catalog_storage.as_deref();
     let fog_material = crate::rendering::bevy_backend::fog_material::FogMaterialResources::new(
