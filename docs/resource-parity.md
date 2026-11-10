@@ -5627,3 +5627,15 @@ Prediction before change. In the recorded Edge of the World / Dust District / Ed
 Optimized acceptance rejected the read-direct variant (0ae65b15). Four same-executable observations matched 8,129 whole-image acquisitions and all mip descriptors, payload CRCs, material handoffs and GPU asset counts. The streamed reader avoided full-member temporaries but consumed 2,482–2,764 million versus 2,000–2,057 million affected cycles in Edge of the World, and 2,099–2,137 million versus 1,804–1,824 million in Dust District. Retain the faster archive acquisition call. Prediction for the replacement: validate the same indexed mip payload ranges, then compact the owned member in place using the same range compaction as layered images. This removes a second full-sized allocation, preserves one payload move, and avoids the per-image buffered decoder and output initialization of the rejected variant. Header slack is bounded by 62 + 20 times the mip count (plus archive read capacity). Keep the same large inline-only scope and baseline for a matched repeat. Evidence: DH2-fx-resources/artifacts/resident-inline-image-streaming-20261110-comparison.json.
 
 Installed compaction acceptance (99ea2165). Four same-executable optimized acquisitions matched all 8,129 prepared image payloads, format/extent/mip selection and CRC, material handoffs, and GPU upload/retirement counts. The 5,039 eligible inline reads per two-map route reuse the decoded member allocation as the upload allocation, removing a second overlapping buffer. The largest eligible member was 16,777,298 bytes; the old separate payload was 16,777,216 bytes. Affected Edge of the World cycles were 1,894–1,899 million buffered and 1,818–1,839 million compacted. Dust District measured 1,707–1,720 million buffered and 1,670–1,739 million compacted. The two-map acquisition total fell 1.7% and 2.5% in the two paired observations. Individual Dust samples vary around parity. These are scoped acquisition cycles and temporary allocation capacities, with no frame-time or peak RAM claim. Evidence: DH2-fx-resources/artifacts/resident-inline-image-compaction-20261110-comparison.json.
+
+### Runtime material batch publication
+
+Prediction before change. The host resolves material identity and purge through
+1400607f0 and 140060180. Its exclusive publication currently snapshots all live
+leases for rollback, yet a failure after an earlier binding cannot undo edits
+to a shared material asset. Resolve the complete slot, image, material and
+dependency mapping before any live asset or cache changes. Then publish the
+same ordered batch. Failed preparation should leave the preceding bindings
+and owners intact, and successful preparation should stop cloning their
+rollback snapshots. This is host transaction ownership. The installed
+dynamic FX route is needed to measure the affected publication work.
