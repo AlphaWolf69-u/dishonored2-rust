@@ -910,6 +910,11 @@ pub(super) fn read_resident_diffuse_image(catalog: &archive::Catalog, stem: &str
     Ok(result)
 }
 
+pub(super) fn initial_separate_mip(catalog: &archive::Catalog, stem: &str, preferred: Option<u8>) -> Option<u8> {
+    preferred.and_then(|preferred| (0..=preferred).rev()
+        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))))
+}
+
 fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureReadTarget,
     packed: bool) -> Result<Option<StreamedDiffuse>, String> {
     if let Some(payload) = material::intrinsic_image_pixels(stem) {
@@ -971,10 +976,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         .rev()
         .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
     let selected_separate = match target {
-        TextureReadTarget::Initial(None) => None,
-        TextureReadTarget::Initial(Some(preferred)) => (0..=preferred)
-            .rev()
-            .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
+        TextureReadTarget::Initial(preferred) => initial_separate_mip(catalog, stem, preferred),
         TextureReadTarget::Exact(_, _) => unreachable!(),
     };
     let compact_inline = packed && !copy_inline && selected_separate.is_none();
@@ -1616,6 +1618,7 @@ pub(super) fn stream_visible_textures(
                 .unwrap_or(0);
             let image_id = handle.id();
             let resident_before = queue.diffuse_mip_states[slot].resident;
+            let replaced_view = queue.diffuse_image_handles[slot].as_ref().map(Handle::id);
             // 14030d1e0 finishes admitted work; pressure owns later eviction.
             {
                 attach_prepared_diffuse_image(
@@ -1629,7 +1632,7 @@ pub(super) fn stream_visible_textures(
                 if let Some(level) = prepared_level {
                     commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
                     if let Some(registry) = registry.as_deref() {
-                        registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                        registry.publish_view(&queue.diffuse_image_paths[slot], replaced_view, queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
                     }
                 }
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
@@ -1863,7 +1866,7 @@ pub(super) fn stream_visible_textures(
             );
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
             if let Some(registry) = registry.as_deref() {
-                registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                registry.publish_view(&queue.diffuse_image_paths[slot], previous, queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
             }
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
                 let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
@@ -1905,7 +1908,7 @@ pub(super) fn stream_visible_textures(
             attach_prepared_diffuse_image(slot, handle, &mut queue, &mut probe_materials, &mut decal_materials, &mut sky_materials);
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
             if let Some(registry) = registry.as_deref() {
-                registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                registry.publish_view(&queue.diffuse_image_paths[slot], Some(previous), queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
             }
         }
         charged -= released_bytes;

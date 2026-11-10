@@ -18,6 +18,14 @@ pub fn inspect_scene_publication(
     base: &std::path::Path,
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some((flag, paths)) = levels.split_first() {
+        if flag == "--resident-views" {
+            if paths.is_empty() { return Err("--resident-views requires installed image paths".into()); }
+            let catalog = archive::Catalog::open(base)?;
+            for path in paths { super::resident_images::inspect_view_replacement(&catalog, path)?; }
+            return Ok(());
+        }
+    }
     if let [flag, level, effect] = levels {
         if flag == "--fx-requests" {
             return inspect_scene_resources(base, std::slice::from_ref(level), Mode::FxRequests(effect), false);

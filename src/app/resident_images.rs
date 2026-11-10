@@ -1,6 +1,6 @@
 //! Registered image views and named UI leases, shared with scene residency.
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
-use super::{archive, texture_streaming::{read_resident_diffuse_image, DiffuseMipLevel, SharedImages}, SceneRenderQueue};
+use super::{archive, texture_streaming::{initial_separate_mip, read_resident_diffuse_image, DiffuseMipLevel, SharedImages}, SceneRenderQueue};
 use bevy::prelude::*;
 use std::{collections::HashMap, sync::{Arc, Mutex, Weak}};
 
@@ -21,6 +21,7 @@ struct Registry {
     layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
     noise: Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource>,
     leases: HashMap<String, Weak<ResidentImage>>,
+    scene_leases: HashMap<String, Weak<ResidentImage>>,
     /// Editable views are never reused. Asset IDs also cover independent
     /// strong handles reconstructed by Bevy after the initial handle drops.
     editable: HashMap<String, Vec<(AssetId<Image>, Weak<bevy::asset::StrongHandle>)>>,
@@ -31,12 +32,14 @@ struct Registry {
 }
 
 impl Registry {
-    fn acquire_view(&mut self, path: &str, preferred: Option<u8>, inline_equivalent: bool) -> Option<Arc<ResidentImage>> {
+    fn acquire_view(&mut self, path: &str, preferred: Option<u8>, selected_mip: Option<u8>) -> Option<Arc<ResidentImage>> {
         let (requested, other) = if preferred.is_none() {
             (&self.inline, &self.resident)
         } else { (&self.resident, &self.inline) };
-        if let Some(image) = requested.get(path) { return Some(image.clone()); }
-        if !inline_equivalent { return None; }
+        if let Some(image) = requested.get(path).filter(|image| image.level.resource_mip == selected_mip) {
+            return Some(image.clone());
+        }
+        if selected_mip.is_some() { return None; }
         let image = other.get(path).filter(|image| image.level.resource_mip.is_none())?.clone();
         if preferred.is_none() { self.inline.insert(path.to_owned(), image.clone()); }
         else {
@@ -88,21 +91,22 @@ impl ResidentImages {
             .find(|image| image.handle.id() == handle.id()) {
             return existing.clone();
         }
-        if let Some(existing) = registry.leases.get(path).and_then(Weak::upgrade) {
-            if existing.handle.id() == handle.id() { return existing; }
+        if let Some(existing) = registry.scene_leases.get(path).into_iter().chain(registry.leases.get(path))
+            .filter_map(Weak::upgrade).find(|image| image.handle.id() == handle.id()) {
+            return existing;
         }
         let bytes = (0..mip_count).map(|mip| level.format.mip_bytes(
             (level.width >> mip).max(1), (level.height >> mip).max(1))).sum();
         let image = Arc::new(ResidentImage { handle: handle.clone(),
             extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false });
-        registry.leases.insert(path.to_owned(), Arc::downgrade(&image));
+        registry.scene_leases.insert(path.to_owned(), Arc::downgrade(&image));
         image
     }
 
     pub(super) fn retire_unused_scene_lease(&self, path: &str) {
         let mut registry = self.registry.lock().unwrap();
-        if registry.leases.get(path).is_some_and(|lease| lease.strong_count() == 0) {
-            registry.leases.remove(path);
+        if registry.scene_leases.get(path).is_some_and(|lease| lease.strong_count() == 0) {
+            registry.scene_leases.remove(path);
         }
     }
     /// Diagnostic restores the former per-consumer identity boundary.
@@ -124,19 +128,22 @@ impl ResidentImages {
         let editable = catalog.image_has_overlay(&path);
         // Fixed inline masks must not inherit a finer UI view. Conversely, a
         // full-image request can reuse inline data only if mip0 does not exist.
-        let inline_equivalent = preferred.is_none() || !catalog.contains(&format!("{path}_mip0"));
+        let selected_mip = initial_separate_mip(catalog, &path, preferred);
         {
             let mut registry = self.registry.lock().unwrap();
             registry.requests += 1;
             if !editable {
-                if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) {
+                if let Some(image) = registry.acquire_view(&path, preferred, selected_mip) {
                     return Ok(image);
                 }
             }
             // Named UI wrappers can outlive purge. Fixed inline sources are
             // held by their scope owner and ordinary frame/asset handles.
             if !editable && preferred.is_some() {
-                if let Some(image) = registry.leases.get(&path).and_then(Weak::upgrade) {
+                let image = registry.leases.get(&path).into_iter().chain(registry.scene_leases.get(&path))
+                    .filter_map(Weak::upgrade).find(|image| image.level.resource_mip == selected_mip);
+                if let Some(image) = image {
+                    registry.leases.insert(path.clone(), Arc::downgrade(&image));
                     registry.resident.insert(path, image.clone());
                     return Ok(image);
                 }
@@ -153,7 +160,7 @@ impl ResidentImages {
         let bytes = loaded.image.data.as_ref().map_or(0, Vec::len);
         let mut registry = self.registry.lock().unwrap();
         if !editable {
-            if let Some(image) = registry.acquire_view(&path, preferred, inline_equivalent) { return Ok(image); }
+            if let Some(image) = registry.acquire_view(&path, preferred, selected_mip) { return Ok(image); }
         }
         let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes, level, mip_count, initial_view: true});
         registry.loads += 1;
@@ -191,8 +198,8 @@ impl ResidentImages {
         let registry = self.registry.lock().unwrap();
         paths.iter().enumerate().filter_map(|(slot, path)| {
             if catalog.image_has_overlay(path) { return None; }
-            let selected = (!inline_slots.contains(&slot)).then_some(preferred).flatten().and_then(|mip| (0..=mip).rev()
-                .find(|mip| catalog.contains(&format!("{path}_mip{mip}"))));
+            let selected = initial_separate_mip(catalog, path,
+                if inline_slots.contains(&slot) { None } else { preferred });
             let image = registry.resident.get(path).into_iter().chain(registry.inline.get(path))
                 .find(|image| image.initial_view && image.level.resource_mip == selected)?;
             Some((slot, image.clone()))
@@ -214,12 +221,19 @@ impl ResidentImages {
     /// 1402f5530 replaces the resource's current view. A live named wrapper
     /// keeps its snapshot until its last reference releases (1402df8c0).
     /// Called at commits, never for unchanged images in the streaming hot loop.
-    pub(super) fn publish_view(&self, path: &str, handle: &Handle<Image>,
+    pub(super) fn publish_view(&self, path: &str, replaced: Option<AssetId<Image>>, handle: &Handle<Image>,
         level: DiffuseMipLevel, mip_count: u32) {
         if separate_scene_views() { return; }
         let mut registry = self.registry.lock().unwrap();
         let Some(previous) = registry.resident.get(path) else { return; };
+        if Some(previous.handle.id()) != replaced { return; }
         if previous.handle == *handle { return; }
+        if previous.level.resource_mip != level.resource_mip {
+            // The replacement is a different view. Release the shared old
+            // pin without replacing a fixed-view identity with a coarse one.
+            registry.resident.remove(path);
+            return;
+        }
         let bytes = (0..mip_count).map(|mip| level.format.mip_bytes(
             (level.width >> mip).max(1), (level.height >> mip).max(1))).sum();
         let image = Arc::new(ResidentImage {handle: handle.clone(),
@@ -270,6 +284,7 @@ impl ResidentImages {
         registry.inline.retain(|path, _| persistent(path));
         registry.layered.retain(|path, _| persistent(path));
         registry.leases.retain(|_, image| image.strong_count() != 0);
+        registry.scene_leases.retain(|_, image| image.strong_count() != 0);
         registry.editable_layered.retain(|_, generations| {
             generations.retain(|generation| generation.strong_count() != 0);
             !generations.is_empty()
@@ -288,6 +303,34 @@ impl ResidentImages {
                 registry.layered.keys().filter(|path| crate::material::intrinsic_image_kind(path).is_some()).count());
         }
     }
+}
+
+/// Observe the same view admission using a real separate mip and its inline
+/// chain. No gameplay view, GPU upload or movie is required for this lookup.
+pub(super) fn inspect_view_replacement(catalog: &archive::Catalog, path: &str) -> Result<(), String> {
+    let registry = ResidentImages::default();
+    let mut images = Assets::<Image>::default();
+    let full = registry.acquire(catalog, path, &mut images)?;
+    let mut coarse = read_resident_diffuse_image(catalog, path, None)?.ok_or("missing inline view")?;
+    coarse.pack_uploads();
+    let coarse_mips = coarse.image.texture_descriptor.mip_level_count;
+    let coarse_level = coarse.level;
+    let coarse_handle = images.add(coarse.image);
+    registry.publish_view(path, Some(full.handle.id()), &coarse_handle, coarse_level, coarse_mips);
+    let streamed = registry.lease_scene_view(path, &coarse_handle, coarse_level, coarse_mips);
+    let restored = registry.acquire(catalog, path, &mut images)?;
+    let shared = Arc::ptr_eq(&full, &restored);
+    let checksum = |images: &Assets<Image>, image: &ResidentImage| images.get(&image.handle).and_then(|image| image.data.as_ref())
+        .map(|bytes| { let mut crc = flate2::Crc::new(); crc.update(bytes); crc.sum() });
+    let expected_crc = checksum(&images, &full);
+    let full_mip = full.level.resource_mip;
+    drop(restored);
+    drop(full);
+    registry.release_level(&SharedImages::default());
+    let reacquired = registry.acquire(catalog, path, &mut images)?;
+    eprintln!("RESOURCE_RESIDENT_VIEWS path={path} full={full_mip:?} streamed={:?} shared={shared} restored={:?} full_crc={expected_crc:?} restored_crc={:?}",
+        streamed.level.resource_mip, reacquired.level.resource_mip, checksum(&images, &reacquired));
+    Ok(())
 }
 
 pub(super) fn prepare_image(catalog: &archive::Catalog, name: &str,
@@ -331,9 +374,7 @@ impl UiImages {
         };
         let image = if let Some((handle, level)) = current {
             let source = images.get(&handle).ok_or_else(|| format!("committed UI image view unavailable: {path}"))?;
-            Arc::new(ResidentImage {handle: handle.clone(), extent: [source.width() as f64, source.height() as f64],
-                bytes: source.data.as_ref().map_or(0, Vec::len), level,
-                mip_count: source.texture_descriptor.mip_level_count, initial_view: false})
+            self.registry.lease_scene_view(&path, &handle, level, source.texture_descriptor.mip_level_count)
         } else { self.registry.acquire(catalog, name, images)? };
         let binding = Arc::new(crate::flash::iggy_functions::TextureBinding::new(image.extent, image));
         self.bindings.insert(path, Arc::downgrade(&binding));
@@ -370,6 +411,7 @@ impl UiImages {
             .chain(registry.editable.keys().map(String::as_str))
             .chain(registry.editable_layered.keys().map(String::as_str))
             .chain(registry.leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
+            .chain(registry.scene_leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
             .chain(self.bindings.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()));
         for path in paths {
             if path.bytes().any(|byte| byte == b'\\' || byte.is_ascii_uppercase()) {
@@ -387,6 +429,7 @@ impl UiImages {
                 || registry.editable.contains_key(path)
                 || registry.editable_layered.contains_key(path)
                 || registry.leases.get(path).is_some_and(|lease| lease.strong_count() != 0)
+                || registry.scene_leases.get(path).is_some_and(|lease| lease.strong_count() != 0)
                 || self.bindings.get(path).is_some_and(|binding| binding.strong_count() != 0)
         });
         if trace {
