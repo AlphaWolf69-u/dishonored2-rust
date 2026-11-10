@@ -13,6 +13,8 @@ pub(super) struct SceneData {
     pub(super) world: world_mesh::WorldMesh,
     pub(super) player_start: Option<entities::PlayerStart>,
     pub(super) placed_models: Vec<entities::PlacedModel>,
+    /// Root count when placement preparation already expanded blueprint children.
+    pub(super) expanded_placement_roots: Option<usize>,
     pub(super) placed_lights: Vec<entities::PlacedLight>,
     pub(super) environment_lighting: Option<entities::EnvironmentLighting>,
     pub(super) environment_render_parameters: Option<entities::EnvironmentRenderParameters>,

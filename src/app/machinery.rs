@@ -35,8 +35,12 @@ impl AmbientMachinery {
         document: Option<&Document>,
         placements: &[PlacedModel],
     ) -> Result<Self, String> {
+        if document.is_none() {
+            return Ok(Self::default());
+        }
+        let placements = super::expanded_model_placements(placements, catalog);
         let mut sources = crate::physworld::source::ShapeSources::new(catalog);
-        Self::load_with_texts(catalog, document, placements, &mut Default::default(), &mut sources)
+        Self::load_with_texts(catalog, document, &placements, &mut Default::default(), &mut sources)
     }
 
     pub(super) fn load_with_texts(
@@ -49,8 +53,7 @@ impl AmbientMachinery {
         let Some(document) = document else {
             return Ok(Self::default());
         };
-        let placements = super::expanded_model_placements(placements, catalog);
-        let recipes = crate::entities::machinery::recipes::load_with_sources(catalog, document, &placements, texts, shape_sources)?;
+        let recipes = crate::entities::machinery::recipes::load_with_sources(catalog, document, placements, texts, shape_sources)?;
         for diagnostic in &recipes.unsupported {
             warn!("Ambient machinery assembly unsupported: {diagnostic}");
         }
@@ -69,7 +72,7 @@ impl AmbientMachinery {
         info!("Ambient machinery: {} assemblies, {} bodies, {} constraints, {} unsupported assemblies",recipes.assemblies.len(),world.bodies.iter().filter(|b|b.placement.is_some()).count(),world.joint_count(),recipes.unsupported.len());
         let graphs = crate::entities::scene_motion::load(catalog, document)?;
         let counter = crate::platform::performance_counter::counter()? as u64;
-        let scenes = crate::gameplay::scene_motion::SceneMotion::new(graphs, &placements, counter);
+        let scenes = crate::gameplay::scene_motion::SceneMotion::new(graphs, placements, counter);
         for diagnostic in &scenes.diagnostics {
             warn!("Ambient scene motion: {diagnostic}");
         }
@@ -78,7 +81,7 @@ impl AmbientMachinery {
             scenes.playing_count()
         );
         let visible_previous = vec![false; world.bodies.len()];
-        let skins = super::physics_skinning::load_skins(catalog, &world, &placements);
+        let skins = super::physics_skinning::load_skins(catalog, &world, placements);
         info!("Physics systems: {} simulated, {} skinned", world.systems.len(), skins.len());
         Ok(Self {
             physics: world,
