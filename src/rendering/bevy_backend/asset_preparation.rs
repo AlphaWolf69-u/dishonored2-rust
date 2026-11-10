@@ -51,6 +51,9 @@ impl<A: Asset> AssetBatch<A> {
             .filter_map(|(id, (_, value))| included(value).then_some(*id))
             .collect()
     }
+    pub fn contains(&self, id: AssetId<A>) -> bool {
+        self.values.contains_key(&id)
+    }
     pub fn publish(self, assets: &mut Assets<A>) {
         for (id, (_handle, value)) in self.values {
             assets.insert(id, value).expect("reserved asset identity");
