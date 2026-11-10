@@ -443,7 +443,7 @@ fn copy_layered(bytes: &[u8], ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
     payload
 }
 
-fn compact_layered(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
+fn compact_payload_ranges(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
     let mut written = 0;
     for range in ranges {
         bytes.copy_within(range.clone(), written);
@@ -460,7 +460,7 @@ pub fn compressed_inline_array(bytes: &[u8]) -> Result<InlineArrayChain, String>
 
 pub fn compressed_inline_array_owned(bytes: Vec<u8>) -> Result<InlineArrayChain, String> {
     let (info, layers, ranges) = layered_records(&bytes, false)?;
-    Ok(InlineArrayChain { info, layers, payload: compact_layered(bytes, &ranges) })
+    Ok(InlineArrayChain { info, layers, payload: compact_payload_ranges(bytes, &ranges) })
 }
 
 #[test]
@@ -524,7 +524,7 @@ pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
 
 pub fn compressed_inline_cube_owned(bytes: Vec<u8>) -> Result<InlineCubeChain, String> {
     let (info, _, ranges) = layered_records(&bytes, true)?;
-    Ok(InlineCubeChain { info, payload: compact_layered(bytes, &ranges) })
+    Ok(InlineCubeChain { info, payload: compact_payload_ranges(bytes, &ranges) })
 }
 
 #[test]
@@ -627,6 +627,13 @@ pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, St
 /// 1402e9ff0 hands each record to 1402f5500; no intermediate packed copy is needed.
 pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, CompressedMip<'a>))
     -> Result<BimageInfo, String> {
+    visit_inline_ranges(bytes, |level, width, height, range| {
+        visit(level, CompressedMip { width, height, payload: &bytes[range] });
+    })
+}
+
+fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, u32, std::ops::Range<usize>))
+    -> Result<BimageInfo, String> {
     let info = BimageInfo::parse(bytes)?;
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
         return Err("invalid BIM dimensions/mip count".into());
@@ -635,26 +642,30 @@ pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, Compres
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
         let height = (info.height >> level).max(1);
-        let header = bytes
-            .get(at..at + 20)
-            .ok_or("truncated inline mip header")?;
+        let start = at.checked_add(20).ok_or("inline mip size overflow")?;
+        let header = bytes.get(at..start).ok_or("truncated inline mip header")?;
         let size = word(header, 16)? as usize;
-        let end = at
-            .checked_add(20)
-            .and_then(|at| at.checked_add(size))
-            .ok_or("inline mip size overflow")?;
+        let end = start.checked_add(size).ok_or("inline mip size overflow")?;
         let record = bytes.get(at..end).ok_or("truncated inline mip payload")?;
         let mip = compressed_mip(record, level, info.format)?;
         if (mip.width, mip.height) != (width, height) {
             return Err("inline mip dimensions disagree with BIM header".into());
         }
-        visit(level, mip);
+        visit(level, width, height, start..end);
         at = end;
     }
     if at != bytes.len() {
         return Err("inline mip chain size mismatch".into());
     }
     Ok(info)
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn compressed_inline_chain_owned(bytes: Vec<u8>) -> Result<InlineCompressedChain, String> {
+    let mut ranges = [const { 0..0 }; 16];
+    let info = visit_inline_ranges(&bytes, |level, _, _, range| ranges[level as usize] = range)?;
+    let payload = compact_payload_ranges(bytes, &ranges[..info.mip_count as usize]);
+    Ok(InlineCompressedChain { info, payload })
 }
 
 pub struct RgbaImage {
