@@ -4,13 +4,14 @@ use super::{
     game_to_view, local_shadow_updates, material, placed_direction, placed_vertex, render_model,
     render_program, render_shadow, render_state, retain_vegetation_channels,
     screen_shadow_pass, shader_cache, shadow_pass,
-    shadow_pipeline, shadow_sampling, shadow_updates, source_mesh, surface_gpu, world_mesh, Arc,
+    shadow_pipeline, shadow_sampling, shadow_updates, surface_gpu, world_mesh, Arc,
     ExtendedMaterial, HashMap, MaterialExtension, MaterialHandle, ShadowImageAccess,
     RenderAssetUsages, SceneData, SceneRenderQueue, ShaderBuffer, DH2_BITANGENT,
 };
 use bevy::prelude::*;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use bevy::asset::AssetId;
+use super::view_geometry::{source_mesh_from_uvs, MeshUvs, PACKED_UV_0};
 
 /// Resolved once beside the real material/mesh association; the native CPU
 /// shadow owner consumes this rather than reparsing declarations every frame.
@@ -274,19 +275,33 @@ impl WorldShadowMeshSources {
     pub(super) fn prepare(world: &world_mesh::WorldMesh, meshes: &mut (impl AssetWrite<Mesh> + ?Sized)) -> Self {
         let mut shared = HashMap::<(usize, bool), (Handle<Mesh>, Result<usize, String>)>::new();
         let mut objects = Vec::with_capacity(world.objects.len());
+        let trace_uv = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+        let mut uv_pairs = 0;
+        let mut uv_mismatches = 0;
         for (object_id, object) in world.objects.iter().enumerate() {
             let source = &world.meshes[object.mesh_index];
             let key = (object.mesh_index, object.flipped);
             let (mesh, raw_vertex_count) = if let Some((mesh, count)) = shared.get(&key) {
                 (mesh.clone(), count.clone())
             } else {
-                let mut forward = source_mesh(
+                let mut forward = source_mesh_from_uvs(
                     &source.positions,
-                    &source.uvs,
+                    MeshUvs::Packed(&source.uvs),
                     &source.indices,
                     &source.packed_channels,
                     object.flipped,
                 );
+                if trace_uv {
+                    if let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
+                        forward.attribute(PACKED_UV_0)
+                    {
+                        uv_pairs += uvs.len();
+                        uv_mismatches += source.uvs.len().abs_diff(uvs.len())
+                            + source.uvs.iter().zip(uvs)
+                                .filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits))
+                                .count();
+                    }
+                }
                 // World shadow programs read the forward mesh's own position,
                 // NORMAL and COLOR; only vegetation and water meshes add
                 // game-space copies (retain_vegetation_channels, water_objects).
@@ -314,6 +329,12 @@ impl WorldShadowMeshSources {
                 gather_flags48: None,
                 layout: None,
             });
+        }
+        if trace_uv {
+            let staged_pairs: usize = world.meshes.iter().map(|mesh| mesh.uvs.capacity()).sum();
+            eprintln!(
+                "MEMORY BWM packed UV preparation: pairs={uv_pairs} mismatches={uv_mismatches} staged_pairs={staged_pairs}"
+            );
         }
         Self {
             objects,
