@@ -363,6 +363,7 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
             render_epoch(app)
         })?;
     }
+    let world = app.world_mut();
     let leases = Arc::new(vec![Arc::downgrade(&sources)]);
     let generation = if std::env::var_os("DH2_DEBUG_MATERIAL_SUPERSESSION").is_some_and(|value| value == "1") {
         // Submit the real installed material batch, then replace its revision
