@@ -85,6 +85,8 @@ pub(crate) struct ParticleSystem {
     visibility: crate::rendering::particles::visibility::ParticleVisibilityState,
     force_simulate: bool,
     force_visible: bool,
+    /// 1401ff460's occlusion kill (1401fcc10) released the system.
+    killed: bool,
     texture_area: f32,
     texture_images: Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>,
     world_texture_images: Option<Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
@@ -666,6 +668,7 @@ impl ParticleSystem {
             visibility: Default::default(),
             force_simulate,
             force_visible,
+            killed: false,
             texture_area: 0.,
             texture_images,
             world_texture_images: None,
@@ -677,6 +680,9 @@ impl ParticleSystem {
     /// 1fc170 considers both remaining emission and live particle storage.
     /// Its rate threshold at141ad2734 is exactly 2^-23.
     fn finished(&self) -> bool {
+        if self.killed {
+            return true;
+        }
         let rate = self.effect.published_rate();
         let emitting = |can_emit: bool| f32::from_bits(0x3400_0000) < rate && can_emit;
         self.stages.iter().all(|stage| {
@@ -795,6 +801,7 @@ impl ParticleSystem {
         } else { 0. };
         let schedule = self.visibility.prepare(
             &declaration.visibility,
+            &declaration.occlusion_kill,
             crate::rendering::particles::visibility::ParticleAdmission {
                 bounds,
                 camera: camera.position,
@@ -808,6 +815,12 @@ impl ParticleSystem {
             self.first_simulation,
             self.force_simulate || publication.stop,
         );
+        if schedule.kill {
+            self.killed = true;
+            self.visible_frame = None;
+            self.simulated_frame = Some(frame);
+            return Ok(());
+        }
         if schedule.flush {
             for stage in &mut self.stages {
                 stage.flush();

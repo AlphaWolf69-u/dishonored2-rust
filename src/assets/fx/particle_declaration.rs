@@ -289,8 +289,18 @@ impl Drop for HistoryLease {
     }
 }
 
+/// occlusionKill_t (+0x98): m_enabled, m_delay +4, m_occlusionTime +8;
+/// the declaration constructor clears all three.
+#[derive(Default, Clone, Copy)]
+pub struct ParticleOcclusionKill {
+    pub enabled: bool,
+    pub delay: f32,
+    pub occlusion_time: f32,
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
+    pub occlusion_kill: ParticleOcclusionKill,
     pub(crate) history: Option<std::sync::Arc<HistoryLease>>,
     pub visibility: ParticleVisibility,
     pub underwater: bool,
@@ -326,6 +336,16 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_underwater" => result.underwater = boolean(value)?,
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,
+            "m_occlusionKill" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_enabled" => result.occlusion_kill.enabled = boolean(value)?,
+                        "m_delay" => result.occlusion_kill.delay = number(value)?,
+                        "m_occlusionTime" => result.occlusion_kill.occlusion_time = number(value)?,
+                        _ => return Err(format!("unknown particle occlusion kill field {name}")),
+                    }
+                }
+            }
             "m_distance" => result.distance.edit(scope(value)?)?,
             "m_lod" => edit_list(&mut result.lod_distances, scope(value)?, 0., |slot, value| {
                 // lod_t contains just m_distance (15590a0); 1c1a30 initializes0.

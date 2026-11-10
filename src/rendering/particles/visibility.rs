@@ -10,6 +10,8 @@ pub struct ParticleSchedule {
     pub simulate: bool,
     pub update_cycles: bool,
     pub flush: bool,
+    /// 1401fcc10: the occlusion kill released the system this frame.
+    pub kill: bool,
     pub delta: f32,
 }
 
@@ -26,6 +28,10 @@ pub struct ParticleAdmission {
 pub struct ParticleVisibilityState {
     culled: bool,
     simulated: bool,
+    /// +0x1c94: the system age, advanced by each scheduled (clamped) delta.
+    age: f32,
+    /// +0x1c98: time culled since the occlusion-kill delay passed.
+    occluded: f32,
 }
 impl Default for ParticleVisibilityState {
     /// 1fcaa0 starts culled with no completed simulation (flags81 after the
@@ -34,6 +40,8 @@ impl Default for ParticleVisibilityState {
         Self {
             culled: true,
             simulated: false,
+            age: 0.,
+            occluded: 0.,
         }
     }
 }
@@ -52,12 +60,15 @@ impl ParticleVisibilityState {
     pub fn prepare(
         &mut self,
         settings: &ParticleVisibility,
+        kill: &crate::assets::fx::particle_declaration::ParticleOcclusionKill,
         input: ParticleAdmission,
         delta: f32,
         first_simulation: bool,
         force_simulate: bool,
     ) -> ParticleSchedule {
         let epsilon = f32::from_bits(0x3400_0000);
+        let delta = if 0.125 < delta { 0.125 } else { delta };
+        self.age = add(delta, self.age);
         let center: [f32; 3] =
             std::array::from_fn(|i| multiply(add(input.bounds[0][i], input.bounds[1][i]), 0.5));
         let length = |v: [f32; 3]| {
@@ -92,6 +103,23 @@ impl ParticleVisibilityState {
             || input.distance_size < epsilon
             || (settings.alpha_culling && !(epsilon <= input.distance_alpha))
             || !input.root_visible;
+        if culled {
+            if kill.enabled && kill.delay <= self.age {
+                self.occluded = add(delta, self.occluded);
+                if kill.occlusion_time <= self.occluded {
+                    return ParticleSchedule {
+                        draw: false,
+                        simulate: false,
+                        update_cycles: false,
+                        flush: false,
+                        kill: true,
+                        delta: 0.,
+                    };
+                }
+            }
+        } else {
+            self.occluded = 0.;
+        }
         let flush = culled && !self.culled && settings.flush_on_occlusion;
         let simulate = !culled
             || first_simulation
@@ -105,13 +133,8 @@ impl ParticleVisibilityState {
             simulate,
             update_cycles,
             flush,
-            delta: if !update_cycles {
-                0.
-            } else if 0.125 < delta {
-                0.125
-            } else {
-                delta
-            },
+            kill: false,
+            delta: if !update_cycles { 0. } else { delta },
         }
     }
 
