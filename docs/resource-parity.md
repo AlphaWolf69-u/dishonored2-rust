@@ -5730,10 +5730,23 @@ outside this observation.
 The first run (`cce7d92d`) resolved one world mesh and four decal material
 requests in both maps, then the production coordinator reported that the
 scene catalog was absent. Setup had moved the only `SceneData` reference into
-the texture worker, although late FX and sky requests still use `SceneData`.
+the texture worker, although late FX requests still use `SceneData`.
 Keep the scene lease and give the worker a clone of the same Catalog Arc.
 This should restore late acquisition with no second index, archive cache,
 or payload read. Both leases end at their existing level-owner boundaries.
+
+Installed publication and retirement (`f136cef7`): both EotW and Dust
+published four blood-splatter decal materials through the runtime coordinator.
+EotW published and retired seven FX-only GPU images. Dust published and
+retired six and reused one existing scene image. Both reused the dirt-fly mesh
+already owned by their scene. A Dunwall Tower request for `stink_bug_running_sub.fx`
+created and retired one new world mesh and two GPU images. The trace observed
+the proxy and its world material binding retire before those image slots. All
+runs exited successfully after release. They exercise actual successful
+publication, sharing, and disposal of the observed assets. They do not cover
+failed input, in-flight read cancellation, or camera-specific material readiness.
+Evidence: `DH2-fx-resources/artifacts/runtime-fx-publication-v2-20261110-comparison.json`
+and `runtime-fx-publication-v2-20261110-tower-stinkbug/result.json`.
 
 ### Runtime FX image binding retirement
 
