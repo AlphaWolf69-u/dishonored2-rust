@@ -1,8 +1,8 @@
 //! Registered image views and named UI leases, shared with scene residency.
-use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
+use crate::rendering::bevy_backend::asset_preparation::{AssetBatch, AssetWrite};
 use super::{archive, texture_streaming::{initial_separate_mip, read_resident_diffuse_image, DiffuseMipLevel, SharedImages}, SceneRenderQueue};
 use bevy::prelude::*;
-use std::{collections::HashMap, sync::{Arc, Mutex, Weak}};
+use std::{collections::HashMap, sync::{Arc, Mutex, Weak, atomic::{AtomicBool, Ordering}}};
 
 /// A binding may precede off-thread batch publication (1400607f0 placeholders).
 /// Dimensions belong to the identity, so UI layout never waits for that batch.
@@ -13,7 +13,34 @@ pub(super) struct ResidentImage {
     pub(super) level: DiffuseMipLevel,
     pub(super) mip_count: u32,
     initial_view: bool,
+    discarded: AtomicBool,
 }
+
+/// Drop reservations from the shared image registry if a scene worker fails
+/// or its finished batch is dropped before reaching the main asset store.
+pub(super) struct PreparedImages {
+    batch: Option<AssetBatch<Image>>,
+    registry: ResidentImages,
+}
+impl PreparedImages {
+    pub(super) fn new(assets: &Assets<Image>, registry: ResidentImages) -> Self {
+        Self { batch: Some(AssetBatch::new(assets)), registry }
+    }
+    pub(super) fn assets(&mut self) -> &mut AssetBatch<Image> {
+        self.batch.as_mut().expect("scene images already published")
+    }
+    pub(super) fn publish(mut self, assets: &mut Assets<Image>) {
+        self.batch.take().expect("scene images already published").publish(assets);
+    }
+}
+impl Drop for PreparedImages {
+    fn drop(&mut self) {
+        if let Some(batch) = &self.batch {
+            self.registry.discard_batch(batch);
+        }
+    }
+}
+
 #[derive(Default)]
 struct Registry {
     resident: HashMap<String, Arc<ResidentImage>>,
@@ -108,7 +135,8 @@ impl ResidentImages {
         let bytes = (0..mip_count).map(|mip| level.format.mip_bytes(
             (level.width >> mip).max(1), (level.height >> mip).max(1))).sum();
         let image = Arc::new(ResidentImage { handle: handle.clone(),
-            extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false });
+            extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false,
+            discarded: AtomicBool::new(false) });
         registry.scene_leases.insert(path.to_owned(), Arc::downgrade(&image));
         image
     }
@@ -172,7 +200,8 @@ impl ResidentImages {
         if !editable {
             if let Some(image) = registry.acquire_view(&path, preferred, selected_mip) { return Ok(image); }
         }
-        let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes, level, mip_count, initial_view: true});
+        let image = Arc::new(ResidentImage {handle: images.add(loaded.image), extent, bytes, level, mip_count,
+            initial_view: true, discarded: AtomicBool::new(false) });
         registry.loads += 1;
         registry.bytes += bytes;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
@@ -247,7 +276,8 @@ impl ResidentImages {
         let bytes = (0..mip_count).map(|mip| level.format.mip_bytes(
             (level.width >> mip).max(1), (level.height >> mip).max(1))).sum();
         let image = Arc::new(ResidentImage {handle: handle.clone(),
-            extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false});
+            extent: [level.width as f64, level.height as f64], bytes, level, mip_count, initial_view: false,
+            discarded: AtomicBool::new(false) });
         registry.leases.insert(path.to_owned(), Arc::downgrade(&image));
         registry.resident.insert(path.to_owned(), image);
     }
@@ -313,11 +343,31 @@ impl ResidentImages {
                 registry.layered.keys().filter(|path| crate::material::intrinsic_image_kind(path).is_some()).count());
         }
     }
+
+    fn discard_batch(&self, batch: &AssetBatch<Image>) {
+        let mut registry = self.registry.lock().unwrap_or_else(|error| error.into_inner());
+        let keep = |image: &ResidentImage| {
+            if !batch.contains(image.handle.id()) { return true; }
+            image.discarded.store(true, Ordering::Relaxed);
+            false
+        };
+        registry.resident.retain(|_, image| keep(image));
+        registry.inline.retain(|_, image| keep(image));
+        registry.leases.retain(|_, image| image.upgrade().is_some_and(|image| keep(&image)));
+        registry.scene_leases.retain(|_, image| image.upgrade().is_some_and(|image| keep(&image)));
+        registry.editable.retain(|_, generations| {
+            generations.retain(|(id, _)| !batch.contains(*id));
+            !generations.is_empty()
+        });
+    }
 }
 
 /// Observe the same view admission using a real separate mip and its inline
 /// chain. No gameplay view, GPU upload or movie is required for this lookup.
 pub(super) fn inspect_view_replacement(catalog: &archive::Catalog, path: &str) -> Result<(), String> {
+    if std::env::var_os("DH2_DEBUG_DISCARD_IMAGE_BATCH").is_some_and(|value| value == "1") {
+        return observe_discarded_batch(catalog, path);
+    }
     let registry = ResidentImages::default();
     let mut ui = UiImages::new(registry.clone());
     let mut images = Assets::<Image>::default();
@@ -367,6 +417,33 @@ pub(super) fn inspect_view_replacement(catalog: &archive::Catalog, path: &str) -
     Ok(())
 }
 
+fn observe_discarded_batch(catalog: &archive::Catalog, path: &str) -> Result<(), String> {
+    let registry = ResidentImages::default();
+    let mut ui = UiImages::new(registry.clone());
+    let mut assets = Assets::<Image>::default();
+    let published = registry.acquire(catalog, "_white", &mut assets)?;
+    let mut batch = PreparedImages::new(&assets, registry.clone());
+    let staged = registry.acquire(catalog, path, batch.assets())?;
+    let staged_bytes = batch.assets().get(&staged.handle).and_then(|image| image.data.as_ref())
+        .ok_or("installed image did not create a staged payload")?;
+    let expected = blake3::hash(staged_bytes);
+    let pending = ui.acquire(catalog, path, &mut assets, None, None)?;
+    let pending_id = pending.owner::<Arc<ResidentImage>>().ok_or("missing staged UI lease")?.handle.id();
+    drop(batch);
+    let replacement = ui.acquire(catalog, path, &mut assets, None, None)?;
+    let replacement_id = replacement.owner::<Arc<ResidentImage>>().ok_or("missing replacement UI lease")?.handle.id();
+    let matched = assets.get(replacement_id).and_then(|image| image.data.as_ref())
+        .is_some_and(|bytes| blake3::hash(bytes) == expected);
+    let preserved = registry.acquire(catalog, "_white", &mut assets)?.handle == published.handle;
+    let invalidated = staged.discarded.load(Ordering::Relaxed) && !assets.contains(pending_id);
+    let retried = replacement_id != pending_id && pending_id == staged.handle.id();
+    eprintln!("DISCARDED_IMAGE_BATCH invalidated={invalidated} retried={retried} matched={matched} preserved={preserved} payload={expected}");
+    if !(invalidated && retried && matched && preserved) {
+        return Err("discarded image batch left a stale registration or changed published bytes".into());
+    }
+    Ok(())
+}
+
 pub(super) fn prepare_image(catalog: &archive::Catalog, name: &str,
     images: &mut dyn AssetWrite<Image>, resident: &ResidentImages,
     aliases: &mut HashMap<String, Handle<Image>>) -> Result<Handle<Image>, String> {
@@ -398,7 +475,11 @@ impl UiImages {
         // 14101d290 reuses the live named wrapper across Iggy contexts.
         // Only its first acquisition calls 1402df8c0 for a view snapshot.
         if !editable {
-            if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) { return Ok(binding); }
+            if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) {
+                if binding.owner::<Arc<ResidentImage>>().is_some_and(|image| !image.discarded.load(Ordering::Relaxed)) {
+                    return Ok(binding);
+                }
+            }
         }
         let current = if editable || separate_scene_views() { None } else {
             scene.and_then(|scene| {

@@ -51,7 +51,7 @@ impl SceneGpuInputs {
 
 pub(super) struct ScenePreparation {
     meshes: AssetBatch<Mesh>,
-    images: AssetBatch<Image>,
+    images: super::resident_images::PreparedImages,
     probes: AssetBatch<ProbeMaterial>,
     decals: AssetBatch<DecalMaterial>,
     skies: AssetBatch<SkyMaterial>,
@@ -64,9 +64,10 @@ pub(super) struct ScenePreparation {
 }
 impl ScenePreparation {
     pub fn new(world: &mut World) -> Self {
+        let resident_images = world.resource::<super::resident_images::ResidentImages>().clone();
         Self {
             meshes: AssetBatch::new(world.resource::<Assets<Mesh>>()),
-            images: AssetBatch::new(world.resource::<Assets<Image>>()),
+            images: super::resident_images::PreparedImages::new(world.resource::<Assets<Image>>(), resident_images.clone()),
             probes: AssetBatch::new(world.resource::<Assets<ProbeMaterial>>()),
             decals: AssetBatch::new(world.resource::<Assets<DecalMaterial>>()),
             skies: AssetBatch::new(world.resource::<Assets<SkyMaterial>>()),
@@ -77,7 +78,7 @@ impl ScenePreparation {
                 .resource::<super::texture_streaming::SharedImages>()
                 .clone(),
             audio: super::audio::AudioPreparation::take(world),
-            resident_images: world.resource::<super::resident_images::ResidentImages>().clone(),
+            resident_images,
         }
     }
     pub fn prepare(
@@ -121,20 +122,20 @@ impl ScenePreparation {
             let (frame, source) = super::shadow_updates::prepare_screen_shadow_source(
                 &scene,
                 programs,
-                &mut self.images,
+                self.images.assets(),
                 &self.resident_images,
             )?;
             commands.insert_resource(frame);
             commands.insert_resource(source);
         }
-        commands.insert_resource(super::area_lights::prepare(&scene, &mut self.images, &self.resident_images));
+        commands.insert_resource(super::area_lights::prepare(&scene, self.images.assets(), &self.resident_images));
         super::setup::prepare(
             &mut commands,
             &mut scene,
             programs.as_mut(),
             navigation.as_ref(),
             &mut self.meshes,
-            &mut self.images,
+            self.images.assets(),
             &mut self.probes,
             &mut self.skies,
             &mut self.buffers,
@@ -151,7 +152,7 @@ impl ScenePreparation {
             &check_cancelled,
         )?;
         check_cancelled()?;
-        match super::ParallelShadowOwner::from_scene(&scene, &mut self.images) {
+        match super::ParallelShadowOwner::from_scene(&scene, self.images.assets()) {
             Ok(owner) => commands.insert_resource(owner),
             Err(error) => eprintln!("Parallel shadow owner unavailable: {error}"),
         }
@@ -160,7 +161,7 @@ impl ScenePreparation {
                 &scene,
                 tome.as_ref(),
                 &settings,
-                &mut self.images,
+                self.images.assets(),
                 programs,
             ) {
                 Ok(owner) => commands.insert_resource(owner),
@@ -168,7 +169,7 @@ impl ScenePreparation {
             }
         }
         check_cancelled()?;
-        let mut image_ids = self.images
+        let mut image_ids = self.images.assets()
             .ids(|image| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
         // The session LUT was reserved outside this batch, but it still
         // participates in the existing display readiness gate.
