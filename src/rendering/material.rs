@@ -931,7 +931,7 @@ pub fn load_2d_image(catalog: &crate::archive::Catalog, source: &str)
     }
     let bytes = catalog.read(&path).map_err(|e| e.to_string())?
         .ok_or_else(|| format!("material image absent: {path}"))?;
-    crate::texture::compressed_inline_chain(&bytes)
+    crate::texture::compressed_inline_chain_owned(bytes)
 }
 
 /// Volume counterpart of the shared2D loader. Installed intrinsic volumes use

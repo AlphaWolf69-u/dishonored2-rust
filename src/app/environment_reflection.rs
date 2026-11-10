@@ -182,7 +182,7 @@ pub(super) fn load(
             .read(path)
             .map_err(|e| e.to_string())?
             .ok_or("Ward BRDF lookup missing")?;
-        let chain = texture::compressed_inline_chain(&bytes)?;
+        let chain = texture::compressed_inline_chain_owned(bytes)?;
         if chain.info.format != texture::ImageFormat::Rg32Float {
             return Err("Ward BRDF lookup is not RG32Float".into());
         }
