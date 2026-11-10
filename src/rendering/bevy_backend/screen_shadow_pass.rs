@@ -8,18 +8,17 @@ use bevy::{
     core_pipeline::{core_3d::main_opaque_pass_3d, Core3d, Core3dSystems},
     prelude::*,
     render::{
-        extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_asset::RenderAssets,
         render_resource::*,
         renderer::{RenderContext, RenderDevice, RenderQueue},
         storage::GpuShaderBuffer,
         texture::GpuImage,
         view::{ExtractedView, ViewDepthTexture},
-        RenderApp,
+        Extract, ExtractSchedule, RenderApp,
     },
 };
 
-#[derive(Resource, Clone, ExtractResource)]
+#[derive(Resource, Clone)]
 pub struct ScreenShadowFrame {
     pub output: Handle<Image>,
     pub cloud: Handle<Image>,
@@ -68,15 +67,12 @@ pub fn visibility_image(width: u32, height: u32) -> Image {
 pub struct ScreenShadowScenePlugin;
 impl Plugin for ScreenShadowScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(ExtractResourcePlugin::<ScreenShadowFrame>::default())
-            .add_systems(
-                Update,
-                (ensure_screen_depth_source, capture_screen_visibility),
-            );
+        app.add_systems(Update, (ensure_screen_depth_source, capture_screen_visibility));
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
-        render.init_resource::<ScreenGpu>().add_systems(
+        render.add_systems(ExtractSchedule, extract_screen_shadow_frame)
+            .init_resource::<ScreenGpu>().add_systems(
             Core3d,
             (
                 clear_view_stencil.before(Core3dSystems::Prepass),
@@ -86,6 +82,21 @@ impl Plugin for ScreenShadowScenePlugin {
                     .before(main_opaque_pass_3d),
             ),
         );
+    }
+}
+
+pub(crate) fn extract_screen_shadow_frame(
+    mut commands: Commands,
+    source: Extract<Option<Res<ScreenShadowFrame>>>,
+    target: Option<ResMut<ScreenShadowFrame>>,
+) {
+    // The optional frame owns image handles. Mirror absence as well as
+    // changes so its assets can retire during the same level handoff.
+    match (source.as_ref(), target) {
+        (Some(source), Some(mut target)) if source.is_changed() => *target = (**source).clone(),
+        (Some(source), None) => commands.insert_resource((**source).clone()),
+        (None, Some(_)) => commands.remove_resource::<ScreenShadowFrame>(),
+        _ => {}
     }
 }
 
