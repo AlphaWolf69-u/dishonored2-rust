@@ -99,7 +99,7 @@ pub fn default_loadout(catalog: &Catalog, character: &str) -> Result<Vec<(String
 pub struct ReadableLimits { declaration: std::sync::Arc<configuration::Definition> }
 impl ReadableLimits {
     pub fn maximum(&self, item: &str) -> u32 { self.declaration.maximum(item) }
-    pub fn load(catalog: &Catalog, character: &str, _wanted: impl Iterator<Item = String>) -> Result<Self, String> {
+    pub fn load(catalog: &Catalog, character: &str) -> Result<Self, String> {
         let entity = format!("models/characters/player/{character}/body.def");
         let component = entities::player::entity_component(&entity, "cpntinventory", |path| {
             Ok(catalog.read(path).map_err(|error| error.to_string())?

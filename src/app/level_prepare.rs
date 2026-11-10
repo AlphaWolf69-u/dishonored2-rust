@@ -124,7 +124,6 @@ pub(super) fn prepare_level(
         Ok(loadout) => Some(loadout),
         Err(error) => { eprintln!("Initial inventory loadout unavailable: {error}"); None }
     }};
-    let entries = loadout.as_deref().unwrap_or(&[]);
     // The existing UI worker owns these concrete game-logic state backends;
     // register only those implementations, then use the authored transition matrix.
     if let Some(document) = entity_document.as_ref() {
@@ -143,7 +142,7 @@ pub(super) fn prepare_level(
         .map_err(std::io::Error::other)?);
     let mut interactions = match entity_document.as_ref() {
         Some(document) => match super::interactions::Interactions::load(
-            catalog.as_ref().unwrap().clone(), document, character, entries, &list,
+            catalog.as_ref().unwrap().clone(), document, character,
         ) {
             Ok(interactions) => Some(interactions),
             Err(error) => { eprintln!("Interaction declarations unavailable: {error}"); None }
@@ -153,16 +152,13 @@ pub(super) fn prepare_level(
     let limits = if let Some(interactions) = interactions.as_ref() {
         Some(interactions.limits())
     } else {
-        match crate::assets::inventory_item::ReadableLimits::load(catalog.as_ref().unwrap(), character,
-            entries.iter().map(|(path, _)| path.clone()).chain(
-                list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned))) {
+        match crate::assets::inventory_item::ReadableLimits::load(catalog.as_ref().unwrap(), character) {
             Ok(limits) => Some(std::sync::Arc::new(limits)),
             Err(error) => { eprintln!("Inventory collection unavailable: {error}"); None }
         }
     };
     let initial_inventory = loadout.as_ref().zip(limits.as_ref()).map(|(loadout, limits)|
         loadout.iter().map(|(path, quantity)| (path.clone(), *quantity, limits.maximum(path))).collect());
-    let registered = limits.as_ref().map(|limits| super::interaction_focus::RegisteredItems::new(list.clone(), limits.clone()));
     let initial_inventory = initial_inventory.map(|entries: Vec<(String, u32, u32)>| entries.into_iter()
         .map(|(path, quantity, maximum)| {
             let modifiers = crate::assets::inventory_item::modifiers(catalog.as_ref().unwrap(), &path)
@@ -1015,7 +1011,7 @@ pub(super) fn prepare_level(
         app.insert_resource(interactions);
     }
     app.insert_resource(super::interaction_focus::FocusedInteraction::default());
-    app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory, registered });
+    app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory });
     app.insert_resource(super::interaction_focus::RetiredPlacements::default());
     app.insert_resource(super::usable_animation::UsableAnimations::default());
     app.insert_resource(super::usable_effects::EffectRequests::default());

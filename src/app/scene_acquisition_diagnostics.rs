@@ -553,6 +553,9 @@ fn inspect_scene_resources(
             prepared.publish(app.world_mut());
             lifetime.published(app.world(), &before);
             resource_snapshot(app.world(), step, "published");
+            if std::env::var_os("DH2_DEBUG_MANIFEST_RETIREMENT").is_some_and(|value| value == "1") {
+                crate::loading::observe_descriptor_release();
+            }
             if std::env::var_os("DH2_DEBUG_LEVEL_POINT_QUERIES").is_some_and(|value| value == "1") {
                 let physics = app.world().get_resource::<super::physics_scene::PhysicsScene>()
                     .ok_or("published physics query owner is absent")?;

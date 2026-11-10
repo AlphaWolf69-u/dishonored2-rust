@@ -6006,3 +6006,14 @@ across the owner release call. All three scenes completed ordinary FX
 shutdown and released the extracted screen-shadow image again. Active
 particle shutdown errors, live resize and replacement binding draws were
 outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
+
+Map request table retirement follow-up. The original 1400661e0 frees its
+assembled request table at the end of loading. The host drops its loading
+lease there, but an unused inventory snapshot kept a second LevelList Arc
+in the session. The archived EotW release line reports 46,546 entries,
+8,628,721 logical bytes across the three sections and two strong owners.
+Remove the unused snapshot and its candidate scan. Initial inventory and
+readables still use the selected collection declaration, and discovered
+journal items retain their own identities. Expect one loading owner before
+play, zero surviving request-table owners after the gate, and release of
+the map-only descriptor section. Init/common still have their own owners.

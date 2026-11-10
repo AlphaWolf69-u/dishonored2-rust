@@ -416,6 +416,15 @@ pub fn play_started() {
     });
 }
 
+#[cfg(feature = "game")]
+pub(crate) fn observe_descriptor_release() {
+    let (list, map_bytes) = with(|s| (std::sync::Arc::downgrade(&s.required), s.required.map_descriptor_bytes()));
+    let owners_before = list.strong_count();
+    play_started();
+    eprintln!("LEVEL_MANIFEST_RETIREMENT map_bytes={map_bytes} owners_before={owners_before} owners_after={}",
+        list.strong_count());
+}
+
 /// Re-arm per-world readiness while retaining the session acquisition registry.
 pub fn restart_level() {
     with(|s| {
