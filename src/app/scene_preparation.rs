@@ -80,8 +80,9 @@ impl ScenePreparation {
     pub fn prepare(
         mut self,
         prepared: &mut super::loading_screen::PreparedLevel,
+        base_image_batch_bytes: Option<usize>,
         cancelled: impl Fn() -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<super::texture_streaming::BaseImageReader>, String> {
         let check_cancelled = || {
             if cancelled() {
                 Err("scene preparation cancelled".to_owned())
@@ -128,7 +129,7 @@ impl ScenePreparation {
         }
         commands.insert_resource(super::area_lights::prepare(&scene, self.images.assets(), &resident_images));
         let (images, shared) = self.images.setup_inputs();
-        super::setup::prepare(
+        let base_reader = super::setup::prepare(
             &mut commands,
             &mut scene,
             programs.as_mut(),
@@ -146,7 +147,7 @@ impl ScenePreparation {
             interactions.as_ref(),
             volumes.as_ref(),
             effects.as_ref(),
-            Some(shared),
+            Some((shared, base_image_batch_bytes)),
             &resident_images,
             &check_cancelled,
         )?;
@@ -233,6 +234,6 @@ impl ScenePreparation {
             drop(entities);
             super::load_timing::mark("prepared scene published");
         });
-        Ok(())
+        Ok(base_reader)
     }
 }

@@ -300,16 +300,119 @@ pub(super) fn initialize_scene_images(
 pub(super) struct PreparedBaseImages {
     payloads: std::collections::HashMap<usize, StreamedDiffuse>,
     views: std::collections::HashMap<usize, Arc<super::resident_images::ResidentImage>>,
+    incoming: Option<Mutex<Receiver<Result<BaseImageBatch, String>>>>,
 }
 
-pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages,
+struct BaseImageBatch {
+    common: bool,
+    last: bool,
+    images: Vec<(usize, StreamedDiffuse)>,
+}
+
+struct BaseImageRequest {
+    slot: usize,
+    path: String,
+    preferred: Option<u8>,
+}
+
+/// The map acquisition thread keeps reading after publishing scene metadata.
+/// The rendezvous channel bounds completed work to its current batch.
+pub(super) struct BaseImageReader {
+    catalog: Arc<archive::Catalog>,
+    budget: usize,
+    common: Vec<BaseImageRequest>,
+    map: Vec<BaseImageRequest>,
+    outgoing: mpsc::SyncSender<Result<BaseImageBatch, String>>,
+}
+
+impl BaseImageReader {
+    pub(super) fn read(self, cancelled: impl Fn() -> bool) {
+        for (common, requests) in [(true, self.common), (false, self.map)] {
+            let mut requests = requests.into_iter().peekable();
+            loop {
+                let mut bytes = 0;
+                let mut images = Vec::new();
+                while bytes < self.budget {
+                    if cancelled() { return; }
+                    let Some(request) = requests.next() else { break; };
+                    let result = read_resident_diffuse_image(&self.catalog, &request.path, request.preferred)
+                        .and_then(|image| image.ok_or_else(|| format!("resident image is absent: {}", request.path)));
+                    let mut image = match result {
+                        Ok(image) => image,
+                        Err(error) => { let _ = self.outgoing.send(Err(error)); return; }
+                    };
+                    image.pack_uploads();
+                    bytes += image.image.data.as_ref().map_or(0, Vec::len);
+                    images.push((request.slot, image));
+                }
+                let last = requests.peek().is_none();
+                if cancelled() || self.outgoing.send(Ok(BaseImageBatch { common, last, images })).is_err() { return; }
+                if last { break; }
+            }
+        }
+    }
+}
+
+/// Publish only one budget window at a time, retaining the reserved IDs
+/// established before the loading movie's first upload.
+pub(super) fn publish_initial_images(
+    world: &mut World, catalog: &archive::Catalog, common: bool,
+) -> Result<Option<(Vec<AssetId<Image>>, bool)>, String> {
+    let Some(receiver) = world.get_resource::<PreparedBaseImages>().and_then(|prepared| prepared.incoming.as_ref()) else {
+        return initialize_scene_images(world, catalog, common).map(|ids| Some((ids, true)));
+    };
+    let batch = match receiver.lock().unwrap().try_recv() {
+        Ok(result) => result?,
+        Err(mpsc::TryRecvError::Empty) => return Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => return Err("initial texture reader stopped before completing its batch".into()),
+    };
+    if batch.common != common { return Err("initial texture batch arrived out of phase".into()); }
+    let last = batch.last;
+    let ids = with_scene_images(world, |scene, images, probes, decals, skies, shared| {
+        let mut ids = Vec::with_capacity(batch.images.len());
+        let mut bytes = 0;
+        for (slot, image) in batch.images {
+            bytes += commit_resident_image(image, slot, scene, images, probes, decals, skies)?;
+            ids.push(scene.diffuse_image_handles[slot].as_ref().ok_or("initial texture handle missing")?.id());
+        }
+        if last {
+            // Include already-resident common/UI views, which had no read
+            // request but must satisfy the same GPU readiness gate.
+            ids.clear();
+            for (slot, path) in scene.diffuse_image_paths.iter().enumerate() {
+                if shared.paths.contains(path) != common { continue; }
+                if scene.diffuse_mip_states[slot].resident.is_none() {
+                    return Err(format!("initial texture was not published: {path}"));
+                }
+                ids.push(scene.diffuse_image_handles[slot].as_ref().ok_or("initial texture handle missing")?.id());
+            }
+        }
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+            eprintln!("INITIAL_TEXTURE_BATCH common={common} last={last} bytes={bytes} readiness_ids={}", ids.len());
+        }
+        Ok::<_, String>(ids)
+    })?;
+    if last && !common { world.remove_resource::<PreparedBaseImages>(); }
+    Ok(Some((ids, last)))
+}
+
+pub(super) fn prepare_base_images(catalog: &Arc<archive::Catalog>, queue: &SceneRenderQueue, shared: &SharedImages,
     resident: &super::resident_images::ResidentImages,
     inline_slots: &std::collections::HashSet<usize>,
+    batch_budget: Option<usize>,
     check_cancelled: &impl Fn() -> Result<(), String>,
-) -> Result<PreparedBaseImages, String> {
+) -> Result<(PreparedBaseImages, Option<BaseImageReader>), String> {
     check_cancelled()?;
+    let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+    let started = trace.then(std::time::Instant::now);
     let mut result = PreparedBaseImages { payloads: Default::default(),
-        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip, inline_slots) };
+        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip, inline_slots),
+        incoming: None };
+    let mut reader = batch_budget.map(|budget| {
+        let (outgoing, incoming) = mpsc::sync_channel(0);
+        result.incoming = Some(Mutex::new(incoming));
+        BaseImageReader { catalog: catalog.clone(), budget, common: Vec::new(), map: Vec::new(), outgoing }
+    });
     let mut reused_bytes = 0usize;
     let mut reused = 0;
     for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
@@ -317,7 +420,7 @@ pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRende
         if shared.can_reuse(path, queue.preferred_mip) { continue; }
         if let Some(view) = result.views.get(&slot) {
             reused += 1;
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            if trace {
                 eprintln!("MEMORY scene registered view: path={path} level={:?} mips={}", view.level, view.mip_count);
             }
             reused_bytes += (0..view.mip_count).map(|mip| view.level.format.mip_bytes(
@@ -325,15 +428,23 @@ pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRende
             continue;
         }
         let preferred = if inline_slots.contains(&slot) { None } else { queue.preferred_mip };
+        if let Some(reader) = &mut reader {
+            let requests = if shared.paths.contains(path) { &mut reader.common } else { &mut reader.map };
+            requests.push(BaseImageRequest { slot, path: path.clone(), preferred });
+            continue;
+        }
         let mut streamed = read_resident_diffuse_image(catalog, path, preferred)?
             .ok_or_else(|| format!("resident image is absent: {path}"))?;
         streamed.pack_uploads();
         result.payloads.insert(slot, streamed);
     }
-    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+    if let Some(started) = started {
         eprintln!("MEMORY scene registered views: reused={reused} reused_bytes={reused_bytes} prepared={}", result.payloads.len());
+        let bytes: usize = result.payloads.values().filter_map(|image| image.image.data.as_ref()).map(Vec::len).sum();
+        eprintln!("INITIAL_TEXTURE_PREPARED bytes={bytes} images={} elapsed_ms={:.3}",
+            result.payloads.len(), started.elapsed().as_secs_f64() * 1000.);
     }
-    Ok(result)
+    Ok((result, reader))
 }
 
 pub(super) struct StreamedDiffuse {

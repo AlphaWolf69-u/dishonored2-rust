@@ -253,9 +253,7 @@ pub(super) fn install(
         bevy::render::extract_resource::ExtractResourcePlugin::<ScenePublished>::default(),
     );
     super::scene_preparation::SceneGpuInputs::install(app);
-    app.init_resource::<SceneImageRequests>().add_plugins(
-        bevy::render::extract_resource::ExtractResourcePlugin::<SceneImageRequests>::default(),
-    );
+    install_scene_image_requests(app);
     crate::loading::gate(GPU_GATE);
     crate::loading::gate("initial view texture residency");
     crate::loading::gate("initial forward and shadow submissions");
@@ -520,27 +518,30 @@ fn acquire(world: &mut World) {
         ));
         super::load_timing::mark("outgoing world released");
     }
-    match state.gpu.0.load(std::sync::atomic::Ordering::Acquire) {
-        GPU_COMMON_IMAGES_READY => start_image_phase(world, &state, false),
-        GPU_MAP_IMAGES_READY => {
-            let cameras: Vec<_> = world
-                .query_filtered::<Entity, With<LoadingCamera>>()
-                .iter(world)
-                .collect();
-            for camera in cameras {
-                world.despawn(camera);
+    if state.published {
+        match advance_initial_images(world, &state.catalog, &state.gpu) {
+            Ok(true) => {
+                let cameras: Vec<_> = world
+                    .query_filtered::<Entity, With<LoadingCamera>>()
+                    .iter(world)
+                    .collect();
+                for camera in cameras {
+                    world.despawn(camera);
+                }
+                for mut camera in world.query_filtered::<&mut Camera, With<Camera3d>>().iter_mut(world) {
+                    camera.is_active = true;
+                }
+                world.resource_mut::<ScenePublished>().0 = true;
+                state.gpu.0.store(1, std::sync::atomic::Ordering::Release);
+                super::load_timing::mark("scene base images ready");
             }
-            for mut camera in world
-                .query_filtered::<&mut Camera, With<Camera3d>>()
-                .iter_mut(world)
-            {
-                camera.is_active = true;
+            Ok(false) => {}
+            Err(error) => {
+                fail_initial_images(world, &error);
+                world.insert_resource(state);
+                return;
             }
-            world.resource_mut::<ScenePublished>().0 = true;
-            state.gpu.0.store(1, std::sync::atomic::Ordering::Release);
-            super::load_timing::mark("scene base images ready");
         }
-        _ => {}
     }
     state.frames += 1;
     if state.movie.is_none() && !state.published {
@@ -617,6 +618,7 @@ fn acquire(world: &mut World) {
                 }
             };
             let preparation = super::scene_preparation::ScenePreparation::new(world);
+            let base_image_batch_bytes = initial_image_batch_bytes(world);
             let needs_initial_inventory = !world.resource::<super::interaction_focus::DiscoveredDocuments>().is_initialized();
             let initial_load = state.initial_load;
             let (send, receive) = mpsc::channel();
@@ -631,12 +633,19 @@ fn acquire(world: &mut World) {
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
                             if _audio_work.is_closing() { return Err("audio session is closing".into()); }
-                            if !prepared.diagnostic_exit {
-                                preparation.prepare(&mut prepared, || _audio_work.is_closing())?;
-                            }
-                            Ok(prepared)
+                            let reader = if prepared.diagnostic_exit { None } else {
+                                preparation.prepare(&mut prepared, base_image_batch_bytes, || _audio_work.is_closing())?
+                            };
+                            Ok((prepared, reader))
                         });
-                    let _ = send.send(result);
+                    match result {
+                        Ok((prepared, reader)) => {
+                            if send.send(Ok(prepared)).is_ok() {
+                                if let Some(reader) = reader { reader.read(|| _audio_work.is_closing()); }
+                            }
+                        }
+                        Err(error) => { let _ = send.send(Err(error)); }
+                    }
                 })
                 .expect("map acquisition thread");
         }
@@ -698,7 +707,9 @@ fn acquire(world: &mut World) {
                     bevy::camera::visibility::RenderLayers::none(),
                     LoadingCamera,
                 ));
-                start_image_phase(world, &state, true);
+                if let Err(error) = advance_initial_images(world, &state.catalog, &state.gpu) {
+                    fail_initial_images(world, &error);
+                }
                 state.published = true;
                 if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                     let windows: Vec<_> = world
@@ -751,11 +762,18 @@ fn initial_render_ready(
 /// Host: use the installed streaming budget to bound backend image acquisition
 /// while displaying loading UI. Restore the host's normal policy before play.
 /// Oversized single assets still progress, per Bevy's soft-limit contract.
-fn limit_loading_uploads(world: &mut World) {
+pub(super) fn limit_loading_uploads(world: &mut World) {
     let kb = crate::platform::console::shared().read().cvars.float("r_textureStreamingPerFrameBudgetKB")
         .unwrap_or(super::texture_streaming::TEXTURE_UPLOAD_BUDGET_KB);
     world.resource_mut::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes =
         (kb > 0.).then_some((kb * 1024.) as usize);
+}
+
+pub(super) fn initial_image_batch_bytes(world: &World) -> Option<usize> {
+    (!std::env::var_os("DH2_DEBUG_STAGE_ALL_BASE_IMAGES").is_some_and(|v| v == "1"))
+        .then(|| world.resource::<bevy::render::render_asset::RenderAssetBytesPerFrame>().max_bytes
+            .filter(|bytes| *bytes != 0)
+            .unwrap_or((super::texture_streaming::TEXTURE_UPLOAD_BUDGET_KB * 1024.) as usize))
 }
 
 fn finish_loading(
@@ -818,7 +836,14 @@ struct ScenePublished(bool);
 struct SceneImageRequests {
     generation: u64,
     phase: u8,
+    last: bool,
     images: Arc<Vec<bevy::asset::AssetId<Image>>>,
+}
+
+pub(super) fn install_scene_image_requests(app: &mut App) {
+    app.init_resource::<SceneImageRequests>().add_plugins(
+        bevy::render::extract_resource::ExtractResourcePlugin::<SceneImageRequests>::default(),
+    );
 }
 
 /// The outgoing render publication has been acknowledged. Keep the plugin
@@ -838,38 +863,93 @@ pub(super) fn image_uploads_deferred(world: &World) -> bool {
     world.contains_resource::<SceneImageRequests>()
 }
 
-fn start_image_phase(world: &mut World, state: &Acquisition, common: bool) {
-    let images =
-        match super::texture_streaming::initialize_scene_images(world, &state.catalog, common) {
-            Ok(images) => images,
-            Err(error) => {
-                error!("Scene image acquisition failed: {error}");
-                crate::platform::client_diagnostics::record(&format!(
-                    "Scene image acquisition failed: {error}"
-                ));
-                world.write_message(AppExit::error());
-                return;
-            }
-        };
+fn fail_initial_images(world: &mut World, error: &str) {
+    world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
+    error!("Scene image acquisition failed: {error}");
+    crate::platform::client_diagnostics::record(&format!("Scene image acquisition failed: {error}"));
+    world.write_message(AppExit::error());
+}
+
+/// Returns true once the final map batch and the scene's other GPU inputs
+/// are ready. The renderer acknowledges one submitted generation at a time.
+fn advance_initial_images(world: &mut World, catalog: &Catalog, gpu: &GpuReadiness) -> Result<bool, String> {
+    use std::sync::atomic::Ordering;
+    let common = match gpu.0.load(Ordering::Acquire) {
+        0 => true,
+        GPU_COMMON_IMAGES_READY => !world.resource::<SceneImageRequests>().last,
+        GPU_MAP_IMAGES_READY if world.resource::<SceneImageRequests>().last => return Ok(true),
+        GPU_MAP_IMAGES_READY => false,
+        _ => return Ok(false),
+    };
+    let Some((images, last)) = super::texture_streaming::publish_initial_images(world, catalog, common)? else {
+        return Ok(false);
+    };
     let phase = if common {
         GPU_COMMON_IMAGES
     } else {
         GPU_MAP_IMAGES
     };
-    let generation = state
-        .gpu
-        .1
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-        + 1;
+    let generation = gpu.1.fetch_add(1, Ordering::AcqRel) + 1;
     world.insert_resource(SceneImageRequests {
         generation,
         phase,
+        last,
         images: Arc::new(images),
     });
-    state
-        .gpu
-        .0
-        .store(phase, std::sync::atomic::Ordering::Release);
+    gpu.0.store(phase, Ordering::Release);
+    Ok(false)
+}
+
+fn acknowledge_initial_image_batch(
+    gpu: &GpuReadiness,
+    requested: &SceneImageRequests,
+    images: &bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>,
+    scene_inputs: (
+        &super::scene_preparation::SceneGpuInputs,
+        &bevy::render::render_asset::RenderAssets<bevy::render::mesh::RenderMesh>,
+        &bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>,
+    ),
+) {
+    use std::sync::atomic::Ordering;
+    let phase = gpu.0.load(Ordering::Acquire);
+    if matches!(phase, GPU_COMMON_IMAGES | GPU_MAP_IMAGES)
+        && requested.phase == phase
+        && requested.generation == gpu.1.load(Ordering::Acquire)
+        && requested.images.iter().all(|id| images.get(*id).is_some())
+        && (phase != GPU_MAP_IMAGES || !requested.last || (
+            scene_inputs.0.images.iter().all(|id| images.get(*id).is_some())
+            && scene_inputs.0.meshes.iter().all(|id| scene_inputs.1.get(*id).is_some())
+            && scene_inputs.0.buffers.iter().all(|id| scene_inputs.2.get(*id).is_some())
+        ))
+    {
+        gpu.0.store(phase + 1, Ordering::Release);
+    }
+}
+
+/// Windowless asset epochs run the same phase admission and GPU checks
+/// without installing the loading movie or the gameplay schedule.
+pub(super) fn observe_initial_image_phases(
+    app: &mut App,
+    catalog: &Catalog,
+    mut render_epoch: impl FnMut(&mut App) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bevy::render::RenderApp;
+    let gpu = GpuReadiness::default();
+    let started = std::time::Instant::now();
+    loop {
+        if advance_initial_images(app.world_mut(), catalog, &gpu)? {
+            eprintln!("INITIAL_TEXTURE_PHASES batches={} elapsed_ms={:.3}",
+                gpu.1.load(std::sync::atomic::Ordering::Relaxed), started.elapsed().as_secs_f64() * 1000.);
+            return Ok(());
+        }
+        render_epoch(app)?;
+        let render = app.sub_app(RenderApp).world();
+        acknowledge_initial_image_batch(&gpu, render.resource(), render.resource(),
+            (render.resource(), render.resource(), render.resource()));
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            return Err("initial texture phase observation timed out".into());
+        }
+    }
 }
 
 fn gpu_ready(
@@ -890,17 +970,7 @@ fn gpu_ready(
     use std::sync::atomic::Ordering;
     let phase = state.0.load(Ordering::Acquire);
     if !published.0 && matches!(phase, GPU_COMMON_IMAGES | GPU_MAP_IMAGES) {
-        if requested.phase == phase
-            && requested.generation == state.1.load(Ordering::Acquire)
-            && requested.images.iter().all(|id| images.get(*id).is_some())
-            && (phase != GPU_MAP_IMAGES || (
-                scene_inputs.0.images.iter().all(|id| images.get(*id).is_some())
-                && scene_inputs.0.meshes.iter().all(|id| scene_inputs.1.get(*id).is_some())
-                && scene_inputs.0.buffers.iter().all(|id| scene_inputs.2.get(*id).is_some())
-            ))
-        {
-            state.0.store(phase + 1, Ordering::Release);
-        }
+        acknowledge_initial_image_batch(&state, &requested, &images, (&scene_inputs.0, &scene_inputs.1, &scene_inputs.2));
         return;
     }
     if !published.0 && state.0.load(Ordering::Acquire) == 3 {

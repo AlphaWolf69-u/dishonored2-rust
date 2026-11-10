@@ -628,6 +628,10 @@ fn scene_host(first_host: bool) -> App {
         .init_resource::<super::texture_streaming::SharedImages>()
         .init_resource::<super::resident_images::ResidentImages>();
     super::scene_preparation::SceneGpuInputs::install(&mut app);
+    if std::env::var_os("DH2_DEBUG_OBSERVE_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1") {
+        super::loading_screen::install_scene_image_requests(&mut app);
+        super::loading_screen::limit_loading_uploads(app.world_mut());
+    }
     {
         use crate::rendering::bevy_backend::{extract_level_resource, fog_material::FogMaterialResources};
         app.sub_app_mut(RenderApp).add_systems(bevy::render::ExtractSchedule, (
@@ -670,6 +674,10 @@ fn inspect_scene_resources(
     let catalog = archive::Catalog::shared(base)?;
     let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
+    let observe_initial_images = std::env::var_os("DH2_DEBUG_OBSERVE_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1");
+    if observe_initial_images && mode != Mode::Upload {
+        return Err("initial texture phase observation requires GPU asset epochs".into());
+    }
     let mut host = None;
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
@@ -703,7 +711,9 @@ fn inspect_scene_resources(
             step == 0,
             |_| false,
         )?;
-        super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
+        let image_budget = observe_initial_images.then(|| super::loading_screen::initial_image_batch_bytes(app.world())).flatten();
+        let base_reader = super::scene_preparation::ScenePreparation::new(app.world_mut())
+            .prepare(&mut prepared, image_budget, || false)?;
         let inputs = prepared
             .get_resource::<super::scene_preparation::SceneGpuInputs>()
             .ok_or("scene worker did not produce its real asset inputs")?;
@@ -740,6 +750,16 @@ fn inspect_scene_resources(
                 let mut cameras = app.world_mut().query::<&mut Camera>();
                 for mut camera in cameras.iter_mut(app.world_mut()) {
                     camera.is_active = false;
+                }
+                if observe_initial_images {
+                    std::thread::scope(|scope| {
+                        if let Some(reader) = base_reader { scope.spawn(move || reader.read(|| false)); }
+                        let result = super::loading_screen::observe_initial_image_phases(&mut app, &catalog, render_epoch);
+                        // A failed render epoch must wake a waiting sender
+                        // before the scope joins the installed reader.
+                        app.world_mut().remove_resource::<super::texture_streaming::PreparedBaseImages>();
+                        result
+                    })?;
                 }
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;

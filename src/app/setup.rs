@@ -249,7 +249,7 @@ pub(super) fn setup(
     let (machinery, interactions) = moving;
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
-    prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
+    let _ = prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
         &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
         &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
@@ -275,10 +275,10 @@ pub(super) fn prepare(
     interactions: Option<&super::interactions::Interactions>,
     environment_volumes: Option<&super::state::EnvironmentVolumes>,
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
-    shared_images: Option<&super::texture_streaming::SharedImages>,
+    shared_images: Option<(&super::texture_streaming::SharedImages, Option<usize>)>,
     resident_images: &super::resident_images::ResidentImages,
     check_cancelled: &impl Fn() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Option<super::texture_streaming::BaseImageReader>, String> {
     check_cancelled()?;
     // Setup mutates the parsed world. Borrow through a separate lease while
     // the published scene keeps its catalog for runtime FX and diagnostics.
@@ -2179,11 +2179,13 @@ pub(super) fn prepare(
         diffuse_mip_upgrades: 0,
         preferred_mip,
     };
-    if let (Some(catalog), Some(shared)) = (catalog, shared_images) {
-        commands.insert_resource(super::texture_streaming::prepare_base_images(
-            catalog, &render_queue, shared, resident_images, &ocean_inline_slots, check_cancelled,
-        )?);
-    }
+    let base_reader = if let (Some(catalog), Some((shared, budget))) = (&catalog_storage, shared_images) {
+        let (prepared, reader) = super::texture_streaming::prepare_base_images(
+            catalog, &render_queue, shared, resident_images, &ocean_inline_slots, budget, check_cancelled,
+        )?;
+        commands.insert_resource(prepared);
+        reader
+    } else { None };
     resolver.cache.retire_staged_source();
     resolver.cache.report_source_handoff();
     resolver.cache.report_runtime_retention();
@@ -2213,7 +2215,7 @@ pub(super) fn prepare(
         }
     });
     super::load_timing::mark("setup: end");
-    Ok(())
+    Ok(base_reader)
 }
 
 /// 1401fbad0 makes a particle mesh renderer an ordinary model surface of its
