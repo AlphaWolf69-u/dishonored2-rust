@@ -129,6 +129,7 @@ pub(super) struct ScreenGpu {
     unhack: Option<super::depth_buffer_hack::DepthBufferHack>,
     cached: Option<ScreenTargets>,
     ambient: Option<AmbientTargets>,
+    programs: Option<ScreenPrograms>,
     reported: bool,
 }
 impl ScreenGpu {
@@ -162,10 +163,61 @@ struct ScreenTargets {
     output_id: TextureId,
     cloud_id: TextureId,
     atlas_id: TextureId,
+    parallel_id: BufferId,
+    scratch_id: TextureViewId,
     state: [u32; 9],
-    producer: [ScreenShadowPipelines; 2],
     parameters: [Buffer; 2],
     bindings: [BindGroup; 2],
+}
+
+struct ScreenPrograms {
+    depth_format: TextureFormat,
+    state: [u32; 9],
+    producer: [ScreenShadowPipelines; 2],
+}
+
+impl ScreenPrograms {
+    fn acquire<'a>(
+        current: &'a mut Option<Self>,
+        device: &RenderDevice,
+        depth_format: TextureFormat,
+        state: [u32; 9],
+    ) -> Result<&'a [ScreenShadowPipelines; 2], String> {
+        if current.as_ref().is_none_or(|old| old.depth_format != depth_format || old.state != state) {
+            let states = screen_producer_states(state, TextureFormat::Rgba8Unorm, depth_format)?;
+            let producer = states.map(|state| {
+                ScreenShadowPipelines::new(
+                    device,
+                    state.color,
+                    Some(state.depth),
+                    ColorTargetState {
+                        format: TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: ColorWrites::ALL,
+                    },
+                )
+            });
+            *current = Some(Self { depth_format, state, producer });
+        }
+        Ok(&current.as_ref().expect("screen programs prepared").producer)
+    }
+}
+
+/// Observe compiled program identity across the actual screen owner release.
+pub(crate) fn observe_program_reuse(world: &mut World, state: [u32; 9]) -> Result<(), String> {
+    let device = world.resource::<RenderDevice>().clone();
+    world.init_resource::<ScreenGpu>();
+    let acquire = |world: &mut World| {
+        let mut gpu = world.resource_mut::<ScreenGpu>();
+        ScreenPrograms::acquire(&mut gpu.programs, &device,
+            bevy::core_pipeline::core_3d::CORE_3D_DEPTH_FORMAT, state)
+            .map(|pair| pair.each_ref().map(|program| program.visibility.id()))
+    };
+    let first = acquire(world)?;
+    ScreenGpu::release_level(world);
+    let next = acquire(world)?;
+    eprintln!("SCREEN_SHADOW_PROGRAMS retained={} variants={}", first == next, next.len());
+    Ok(())
 }
 
 fn clear_view_stencil(
@@ -228,6 +280,7 @@ impl ScreenTargets {
         parallel: &Buffer,
         view: &ScreenShadowView,
         unused_source: &TextureView,
+        programs: &mut Option<ScreenPrograms>,
     ) -> Result<Self, String> {
         let extent = [output.texture.width(), output.texture.height()];
         if depth.texture.sample_count() != 1
@@ -236,23 +289,7 @@ impl ScreenTargets {
         {
             return Err("screen shadows require matching single-sample current-view depth and RGBA8 output".into());
         }
-        let states = screen_producer_states(
-            view.producer_state,
-            TextureFormat::Rgba8Unorm,
-            depth.texture.format(),
-        )?;
-        let producer = states.map(|state| {
-            ScreenShadowPipelines::new(
-                device,
-                state.color,
-                Some(state.depth),
-                ColorTargetState {
-                    format: TextureFormat::Rgba16Float,
-                    blend: None,
-                    write_mask: ColorWrites::ALL,
-                },
-            )
-        });
+        let producer = ScreenPrograms::acquire(programs, device, depth.texture.format(), view.producer_state)?;
         // screenShadows/DepthBuffer is the unhacked copy (0x21181874).
         let depth_view = sampled.create_view(&TextureViewDescriptor {
             aspect: TextureAspect::DepthOnly,
@@ -296,8 +333,9 @@ impl ScreenTargets {
             output_id: output.texture.id(),
             cloud_id: cloud.texture.id(),
             atlas_id: atlas.texture.id(),
+            parallel_id: parallel.id(),
+            scratch_id: unused_source.id(),
             state: view.producer_state,
-            producer,
             parameters,
             bindings,
         })
@@ -416,15 +454,19 @@ fn render_screen_shadow(
             .and_then(|s| buffers.get(s.buffer.id()))
             .ok_or("parallel parameters pending GPU upload")?;
         let unhacked = unhacked.as_ref().map_err(Clone::clone)?;
-        if gpu.cached.as_ref().is_none_or(|old| {
+        let ScreenGpu { ambient, cached, programs, .. } = &mut *gpu;
+        let scratch = ambient.as_ref().expect("ambient pass succeeded").filter.scratch();
+        if cached.as_ref().is_none_or(|old| {
             old.depth_id != depth.texture.id()
                 || old.sampled_id != unhacked.id()
                 || old.output_id != output.texture.id()
                 || old.cloud_id != cloud.texture.id()
                 || old.atlas_id != atlas.texture.id()
+                || old.parallel_id != parallel.buffer.id()
+                || old.scratch_id != scratch.id()
                 || old.state != view.producer_state
         }) {
-            gpu.cached = Some(ScreenTargets::new(
+            *cached = Some(ScreenTargets::new(
                 &device,
                 depth,
                 unhacked,
@@ -433,10 +475,12 @@ fn render_screen_shadow(
                 atlas,
                 &parallel.buffer,
                 view,
-                gpu.ambient.as_ref().unwrap().filter.scratch(),
+                scratch,
+                programs,
             )?);
         }
-        let cached = gpu.cached.as_mut().unwrap();
+        let cached = cached.as_ref().expect("screen targets prepared");
+        let producer = &programs.as_ref().expect("screen programs prepared").producer;
         view.parameters.validate()?;
         let mut cloud = view.parameters.cloud_density;
         cloud.w = view.parameters.options.z as f32;
@@ -479,7 +523,7 @@ fn render_screen_shadow(
             store: StoreOp::Store,
         };
         for i in 0..2 {
-            cached.producer[i].draw(
+            producer[i].draw(
                 encoder,
                 false,
                 &cached.bindings[i],

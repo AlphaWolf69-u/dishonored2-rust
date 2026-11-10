@@ -5930,6 +5930,25 @@ acquisition. A direct comparison with the removed snapshot, active observer
 detach, frame timing and rendered particle output were outside the observation.
 Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
 
+Ocean height readback prediction. The selected-slot consumer 140304c40
+waits, maps, copies straight into the persistent CPU ring, then unmaps.
+The host's asynchronous callback currently allocates a temporary vector and
+the consumer copies it into the persistent ring. Keep the existing queued
+mapping and exact slot selection, but let the callback publish readiness
+only. Read the mapped prefix into the existing CPU allocation and unmap it
+on consumption, ring reuse or owner teardown. Expect zero transient sample
+allocations and one CPU copy per consumed sample, with no new GPU work or
+wait. A dropped owner must cancel pending maps without publishing results.
+
+Level cleanup after an FX shutdown error. The host's 1408a4830 transition
+returned immediately if a particle chain reported an invalid handle. That
+skipped entity and asset release, the publication reset and 1400410f0's
+resource purge. Preserve the first FX error and the existing abort of the
+destination load, but run both player and world shutdown and always release
+the outgoing owners. Expect the same order and no additional work on a
+successful transition. This covers fallible teardown, without trying to
+restore gameplay after a corrupted chain.
+
 Packed skeletal UV prediction. The installed BMD6 loader 14025aa00 calls
 140259960 for the authored vertex streams. Declarations 9 and 10 use two
 half-float UV sets. Host decode kept UV1 packed but widened UV0, which the
@@ -5979,3 +5998,49 @@ samples, with no validation errors. The allocator reserved 268,435,456 bytes
 after warmup. This observes ownership and queue retirement, without measuring
 active rendering cost. Evidence:
 `DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
+
+Probe index upload backing prediction. The installed PNW loader 1402b15e0
+passes packed shader reference words to the GPU buffer constructor. The
+host now streams the archive, but it still builds a typed index array and
+copies it into a separate WGSL byte buffer. Installed acquisition reports
+54,300,976 index words in Edge of the World and 73,538,998 in Dust District.
+Read their little-endian bytes into the eventual upload allocation. Reserve
+the prefix from the already loaded world instance count and the suffix
+from the PNW tables. Use the actual parsed offset count for the header and
+relocate in place if it differs. Expect removal of 217,203,904 and
+294,155,992 overlapping index bytes, with matching full upload CRCs and
+unchanged runtime query data. Compare the affected read/pack cost and
+asset removal. This changes host staging, not the WGSL layout.
+
+Probe index upload backing acceptance (`eb285fd3`). Two windowless DX12
+copy/direct pairs matched PNW fingerprints and full upload CRCs `bbc9941d`
+and `4fa1e3b9`. Direct transfer reused the full backing on both maps, avoiding
+217,203,904 B of overlapping index storage in Edge of the World and
+294,155,992 B in Dust District. The measured upload packing step fell from
+142.5–152.7M to 6.6–7.1M cycles and from 182.4–187.8M to 6.1–6.4M cycles,
+respectively. PNW input CPU samples overlapped or differed by one scheduler
+tick. Both maps returned to 15 GPU images, four meshes and zero buffers after
+retirement. No frame timings were measured. Evidence:
+`DH2-scene-shutdown/artifacts/probe-index-upload-backing-20261110-comparison.json`.
+
+Screen-shadow binding replacement prediction. The original visibility and
+bilateral tasks bind the active view resources and reuse compiled programs
+(`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
+The host visibility bind groups also hold the parallel-sampling buffer and
+AO scratch view. Include both identities in invalidation so replacements
+release the previous bindings and cannot keep sampling an old buffer. Keep
+one compiled pair per device owner for the last producer state and depth
+format. A resize, level change or input swap with identical formats and
+state should recreate only the dependent bindings. The AO and depth-unhack
+owners also compile when replaced. Their independent reuse needs separate
+format and program ownership evidence.
+
+Renderer owner acceptance (`b1309447`). The windowless DX12 readback used
+the gameplay staging owner. Five selected-slot results matched the direct
+map result, the four staging buffers totalled 65,536 bytes, and the queued
+callback held no lease after cancellation. Installed Edge of the World,
+Dust District and Edge of the World retained both visibility pipeline IDs
+across the owner release call. All three scenes completed ordinary FX
+shutdown and released the extracted screen-shadow image again. Active
+particle shutdown errors, live resize and replacement binding draws were
+outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.

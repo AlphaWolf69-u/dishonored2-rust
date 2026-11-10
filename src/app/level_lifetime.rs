@@ -44,9 +44,8 @@ impl LevelLifetime {
         // support owners are still present. The caller has acknowledged the
         // outgoing render publication. This does not replace the GameLocal
         // component/entity/graph shutdown phases still being integrated.
-        if let Some(mut effects) = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() {
-            effects.shutdown()?;
-        }
+        let effects_shutdown = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>()
+            .map_or(Ok(()), |mut effects| effects.shutdown());
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
@@ -115,7 +114,7 @@ impl LevelLifetime {
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();
         }
-        Ok(())
+        effects_shutdown
     }
 }
 

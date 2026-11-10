@@ -4,9 +4,11 @@ use crate::rendering::ocean::OceanQueryQueue;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
-struct MappedReadback {
-    pending: bool,
-    result: Option<Result<Vec<[f32; 4]>, String>>,
+enum MapState {
+    #[default]
+    Idle,
+    Pending,
+    Ready(Result<(), BufferAsyncError>),
 }
 
 struct ReadbackSlot {
@@ -16,8 +18,33 @@ struct ReadbackSlot {
     // Only actually copied values are initialized/exposed. A shorter update
     // retains the previous tail, as in the source's fixed-capacity CPU array.
     completed: Vec<[f32; 4]>,
-    mapped: Arc<Mutex<MappedReadback>>,
+    mapped: Arc<Mutex<MapState>>,
     count: usize,
+}
+
+impl ReadbackSlot {
+    fn copy_mapped(&mut self, count: usize) {
+        let mapped = self.buffer.slice(..).get_mapped_range();
+        if self.completed.len() < count {
+            self.completed.resize(count, [0.0; 4]);
+        }
+        for (value, bytes) in self.completed[..count].iter_mut().zip(mapped.chunks_exact(16)) {
+            for (channel, bytes) in value.iter_mut().zip(bytes.chunks_exact(4)) {
+                *channel = f32::from_le_bytes(bytes.try_into().unwrap());
+            }
+        }
+        drop(mapped);
+        self.buffer.unmap();
+    }
+}
+
+impl Drop for ReadbackSlot {
+    fn drop(&mut self) {
+        let state = std::mem::take(&mut *self.mapped.lock().unwrap_or_else(|error| error.into_inner()));
+        if matches!(state, MapState::Pending | MapState::Ready(Ok(()))) {
+            self.buffer.unmap();
+        }
+    }
 }
 
 pub struct OceanQueryReadbacks {
@@ -57,13 +84,16 @@ impl OceanQueryReadbacks {
             .get_mut(ring)
             .ok_or("ocean query ring is outside four slots")?;
         if count > 0 {
-            if slot
-                .mapped
-                .lock()
-                .map_err(|_| "ocean readback poisoned")?
-                .pending
-            {
+            let mut state = slot.mapped.lock().map_err(|_| "ocean readback poisoned")?;
+            if matches!(*state, MapState::Pending) {
                 return Err("ocean query ring is still mapped".into());
+            }
+            // The selected ring normally consumes its map before reuse. A
+            // skipped read must still release the completed mapping.
+            let previous = std::mem::take(&mut *state);
+            drop(state);
+            if matches!(previous, MapState::Ready(Ok(()))) {
+                slot.buffer.unmap();
             }
             encoder.copy_buffer_to_buffer(evaluations, 0, &slot.buffer, 0, 16384);
             slot.encoded = true;
@@ -131,7 +161,6 @@ impl OceanQueryReadbacks {
         match rx.recv_timeout(std::time::Duration::from_secs(30)) {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                slot.buffer.unmap();
                 return Err(format!("ocean query map failed: {error}"));
             }
             Err(error) => {
@@ -139,20 +168,7 @@ impl OceanQueryReadbacks {
                 return Err(format!("ocean query map callback failed: {error}"));
             }
         }
-        let mapped = slot.buffer.slice(..).get_mapped_range();
-        if slot.completed.len() < count {
-            slot.completed.resize(count, [0.0; 4]);
-        }
-        for (value, bytes) in slot.completed[..count]
-            .iter_mut()
-            .zip(mapped.chunks_exact(16))
-        {
-            for (channel, bytes) in value.iter_mut().zip(bytes.chunks_exact(4)) {
-                *channel = f32::from_le_bytes(bytes.try_into().unwrap());
-            }
-        }
-        drop(mapped);
-        slot.buffer.unmap();
+        slot.copy_mapped(count);
         Ok(true)
     }
 
@@ -168,38 +184,18 @@ impl OceanQueryReadbacks {
             }
             slot.encoded = false;
             let mut state = slot.mapped.lock().map_err(|_| "ocean readback poisoned")?;
-            if state.pending {
+            if !matches!(*state, MapState::Idle) {
                 return Err("ocean staging buffer already mapped".into());
             }
-            state.pending = true;
-            state.result = None;
+            *state = MapState::Pending;
             drop(state);
             let state = slot.mapped.clone();
-            let buffer = slot.buffer.clone();
-            let count = slot.count;
             slot.buffer
                 .slice(..)
                 .map_async(MapMode::Read, move |result| {
-                    let result = result
-                        .map_err(|e| format!("ocean staging map failed: {e}"))
-                        .map(|_| {
-                            let mapped = buffer.slice(..).get_mapped_range();
-                            let values = mapped
-                                .chunks_exact(16)
-                                .take(count)
-                                .map(|v| {
-                                    std::array::from_fn(|c| {
-                                        f32::from_le_bytes(v[c * 4..c * 4 + 4].try_into().unwrap())
-                                    })
-                                })
-                                .collect();
-                            drop(mapped);
-                            values
-                        });
-                    buffer.unmap();
-                    if let Ok(mut state) = state.lock() {
-                        state.pending = false;
-                        state.result = Some(result);
+                    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+                    if matches!(*state, MapState::Pending) {
+                        *state = MapState::Ready(result);
                     }
                 });
         }
@@ -223,11 +219,10 @@ impl OceanQueryReadbacks {
         if slot.encoded {
             return Err("ocean copy has not reached queue submission".into());
         }
-        let pending = slot
-            .mapped
-            .lock()
-            .map_err(|_| "ocean readback poisoned")?
-            .pending;
+        let pending = matches!(
+            *slot.mapped.lock().map_err(|_| "ocean readback poisoned")?,
+            MapState::Pending
+        );
         // poll may execute the map callback synchronously. Release its mutex
         // before waiting, otherwise the render thread deadlocks in that callback.
         if pending {
@@ -238,23 +233,21 @@ impl OceanQueryReadbacks {
                 })
                 .map_err(|e| format!("ocean staging wait failed: {e}"))?;
         }
-        let Some(values) = slot
-            .mapped
-            .lock()
-            .map_err(|_| "ocean readback poisoned")?
-            .result
-            .take()
-        else {
-            return Ok(false);
+        let result = {
+            let mut state = slot.mapped.lock().map_err(|_| "ocean readback poisoned")?;
+            if !matches!(*state, MapState::Ready(_)) {
+                return Ok(false);
+            }
+            std::mem::take(&mut *state)
         };
-        let values = values?;
-        if values.len() != count {
+        if let MapState::Ready(Err(error)) = result {
+            return Err(format!("ocean staging map failed: {error}"));
+        }
+        if slot.count != count {
+            slot.buffer.unmap();
             return Err("ocean ring result count differs from its submission".into());
         }
-        if slot.completed.len() < count {
-            slot.completed.resize(count, [0.; 4]);
-        }
-        slot.completed[..count].copy_from_slice(&values);
+        slot.copy_mapped(count);
         Ok(true)
     }
     pub fn buffer_bytes(&self) -> u64 {
@@ -264,4 +257,46 @@ impl OceanQueryReadbacks {
     pub(super) fn buffer_ids(&self) -> [BufferId; 4] {
         self.slots.each_ref().map(|slot| slot.buffer.id())
     }
+}
+
+/// Windowless observation of the real staging owner and its queue boundary.
+pub(crate) fn observe_readback(device: &RenderDevice, queue: &RenderQueue) -> Result<(), String> {
+    let source = device.create_buffer(&BufferDescriptor {
+        label: Some("observed ocean height source"),
+        size: 16384,
+        usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let samples: [[f32; 4]; 5] = std::array::from_fn(|i| [i as f32, -0.25, 0.5, 1.0]);
+    let bytes: Vec<_> = samples.iter().flatten().flat_map(|value| value.to_le_bytes()).collect();
+    queue.write_buffer(&source, 0, &bytes);
+    let mut readbacks = OceanQueryReadbacks::new(device);
+    let mut requests = OceanQueryQueue::new();
+    let count = samples.len() as u32;
+    let submit = |readbacks: &mut OceanQueryReadbacks, ring| -> Result<_, String> {
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+        readbacks.record_copy(&mut encoder, &source, count, ring)?;
+        Ok(PollType::Wait { submission_index: Some(queue.submit([encoder.finish()])), timeout: None })
+    };
+    requests.register(3, &[[0.0; 2]; 5])?;
+    requests.record_submission(0)?;
+    let wait = submit(&mut readbacks, 0)?;
+    readbacks.mark_submitted(wait)?;
+    readbacks.read_current(device, true, 0, &requests)?;
+    requests.register(0, &[[0.0; 2]; 5])?;
+    requests.record_submission(1)?;
+    submit(&mut readbacks, 1)?;
+    readbacks.map_submitted()?;
+    let read = readbacks.read_current_mapped(device, 1, &requests)?;
+    let rings = readbacks.completed_rings();
+    eprintln!("OCEAN_READBACK_SELECTED read={read} samples={} matches={} staging_bytes={}",
+        rings[1].len(), rings[0] == rings[1] && rings[1] == samples, readbacks.buffer_bytes());
+    let wait = submit(&mut readbacks, 2)?;
+    readbacks.map_submitted()?;
+    let pending = matches!(*readbacks.slots[2].mapped.lock().unwrap(), MapState::Pending);
+    let callback = Arc::downgrade(&readbacks.slots[2].mapped);
+    drop(readbacks);
+    device.poll(wait).map_err(|error| error.to_string())?;
+    eprintln!("OCEAN_READBACK_RELEASE pending={pending} callback_leases={}", callback.strong_count());
+    Ok(())
 }
