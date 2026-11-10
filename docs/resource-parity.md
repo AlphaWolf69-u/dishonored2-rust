@@ -5696,6 +5696,16 @@ activation, proxy publication or image retirement is established by this
 acquisition. Evidence:
 `DH2-interactions/artifacts/runtime-fx-installed-usable-sources-20261110.json`.
 
+Named acquisition (`a813a5bf`) found two installed inputs for the remaining
+publication observation. `dirt_flies_few.fx` acquired two model resources and
+one particle material. Its mesh declaration pairs `dirt_flies_body.pmodel`
+with an `arkDefault` material. `blood_splat_01.fx` resolved a projected decal
+definition. Sword impacts and the other sampled model candidates are weaker
+inputs because they acquired no model records. These are acquisition results.
+Publication, pending-image failure, and final release are still separate
+observations. Evidence: `DH2-interactions/artifacts/runtime-fx-model-stage-source-acquisition-20261110.json`
+and `runtime-fx-material-route-source-acquisition-20261110.json`.
+
 ### Runtime FX image binding retirement
 
 Prediction before change. A dynamic material proxy retires after its final effect or tail lease, under the map material identity/release boundaries 1400607f0 and 140060180. RuntimeMaterialCoordinator publishes only the surviving surfaces to DynamicWorldMaterials. The host image synchronization previously removed absent bindings only inside its replacement-image readiness gate. While an unrelated image read is pending or fails, the stale world_materials entry can hold the old image's Arc and prevent its streaming slot and GPU lease from retiring. Drop absent dynamic bindings on the new surface revision, independently of incoming-image readiness. Existing tail and render-frame leases still defer the actual slot release, and startup keys are excluded from the dynamic entry set. Incoming binding publication retains its readiness gate. Expect the expired binding to release before a new pending/failed read completes, with the same ready materials and no new work on unchanged revisions. Live cancellation and tail evidence remain required; the runtime trace reports the binding release and the existing image-slot retirement.
