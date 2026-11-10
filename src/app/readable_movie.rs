@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    assets::{archive::Catalog, lang},
+    assets::lang,
     flash::{Player, render},
     rendering::bevy_backend::flash_ui::FlashFrame,
 };
@@ -48,9 +48,8 @@ pub(super) struct Movie {
 
 impl Movie {
     pub fn load(screen: (i32, i32), request: &Presentation, generation: u64, state_path: &str) -> Result<Self, String> {
-        let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = Catalog::shared(&base).map_err(|e| e.to_string())?;
-        let language = lang::read_text_language(&base)?;
+        let catalog = super::pause_menu::installed_catalog()?;
+        let language = lang::read_text_language(catalog.base())?;
         let resource = super::pause_menu::state_movie(
             &catalog,
             "gamelogicstatereadnote",
