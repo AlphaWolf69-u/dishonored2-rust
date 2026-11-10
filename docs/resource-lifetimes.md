@@ -9,7 +9,21 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
-## Latest continuation (2026-11-09)
+## Integrated acquisition and release evidence (2026-11-10)
+
+| Owner | Verified scope on main | Remaining evidence |
+|---|---|---|
+| Compiled world geometry | The archive reader opened all 36 installed worlds. Edge of the World and Dust District matched the buffered geometry and GPU asset counts. Shared geometry backing retires after its final CPU consumer, before base image reads. | The windowless observer leaves view drawing and live close latency outside its scope. |
+| Vertex probes | The two-map comparison matched the full GPU buffer CRCs. Shader-only position and lookup storage releases after packing while the CPU query data remains live. | This is load and ownership evidence. Walking-frame timings were outside the observation. |
+| Inline and separate texture mips | Inline compaction matched 8,129 prepared images and GPU retirement counts. Separate acquisition matched 70 archive samples across all five formats and four suffixes. The gameplay worker uses the measured acquisition owner. | Separate-mip demand, queued completion, and publication timing still need live evidence. |
+| Replaced texture views | Compilation and Bevy's asset-event path confirm that the CPU descriptor follows the existing final-handle lifetime of the GPU image. | A live named UI binding during scene texture replacement has yet to be observed. |
+
+The combined collision acquisition change remains on its verification branch.
+Dynamic FX image cancellation and early session close still require evidence
+from the corresponding live paths. The earlier all-level CPU run and the
+windowless GPU observations cover the stages listed in the parity ledger.
+
+## Earlier observations (2026-11-09)
 
 The current production capture reads148 resource kinds; all map to a named
 owner in the parity ledger. This counts resource consumers, not completed
