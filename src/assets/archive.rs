@@ -944,9 +944,16 @@ pub(crate) fn observe_member_cancellation(base: &Path, path: &str) -> Result<()>
     let stream_uncredited = !credited();
     let control = catalog.read(path)?.ok_or("installed member disappeared")?;
     let retry = catalog.read_cancellable(path, Some(&|| false))?.ok_or("retry lost member")?;
-    let exact = retry == control && retry.len() == entry.size as usize;
+    let streamed_retry = catalog.with_stream_cancellable(path, Some(&|| false), |input, size| {
+        let mut bytes = vec![0; size];
+        input.read_exact(&mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    })?;
+    let exact = retry == control && retry.len() == entry.size as usize
+        && streamed_retry.as_deref() == Some(retry.as_slice());
+    let retry_credited = credited();
     let checksum = blake3::hash(&retry);
-    println!("ARCHIVE_MEMBER_CANCELLATION path={path} stored={} decoded={} prefix_bytes={prefix_bytes} check_count={} member_cancelled={member_cancelled} partial_discarded={partial_discarded} cancelled_before_credit={cancelled_before_credit} stream_cancelled={stream_cancelled} stream_uncredited={stream_uncredited} exact={exact} checksum={checksum}",
+    println!("ARCHIVE_MEMBER_CANCELLATION path={path} stored={} decoded={} prefix_bytes={prefix_bytes} check_count={} member_cancelled={member_cancelled} partial_discarded={partial_discarded} cancelled_before_credit={cancelled_before_credit} stream_cancelled={stream_cancelled} stream_uncredited={stream_uncredited} exact={exact} retry_credited={retry_credited} checksum={checksum}",
         entry.stored_size, entry.size, checks.get());
     Ok(())
 }
