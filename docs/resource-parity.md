@@ -402,6 +402,8 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Camera depth owner retirement (`14036d0c0`, `1402fbe40`, `1402fc6a0`, `140351780`). The coarse reduction retains a binding to the outgoing camera depth along with its pyramid and staging ring, and alpha depth keeps an opacity image even without an active view. Release those view allocations at the existing render acknowledgement, while keeping device shader pipeline caches. Cancel outstanding readback mappings by retiring their generations before dropping the staging buffers. Predict zero outgoing pyramid, opacity, and ring identities at the map boundary. At 1920×1080 their own logical texture and readback payloads exceed 13 MB before allocator padding and the old bound depth texture. Allocation starts again at the next valid view; ordinary in-map rendering and resize policy stay the same.
+
 - Packed acoustic route lookup (`1400b7790`, `1400b7ce0`). The original resolves a zone pair to an offset and traverses the installed packed records in place. Both host audio admission and detailed path scoring currently allocate an owned route list and a portal vector for each record before applying distance and direction. Borrow validated portal words from the existing map-owned table. Predict zero route and portal allocations per gameplay lookup, with matching traversal order, cost and malformed-list rejection. Measure only lookup and traversal over actual installed zone pairs, including the added bounds-validation pass. The graph's retained table size and audio playback state stay the same.
 
   Installed lookup comparison `2e7959e1` matched the ordered routes and portal signatures for Edge of the World, Dust District and the Clockwork Mansion boat. Each of the two owned passes built 104,832 / 239,319 / 1,681,717 nonempty route-list and portal buffers. Each borrowed pass built zero. On the boat, lookup plus traversal used 338.8–345.8 million thread cycles with owned lists and 59.3–60.1 million with borrowed lists. This measures the changed traversal over installed pairs. Full mixer timing, in-game listening and malformed archive inputs were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/packed-acoustic-route-20261110-comparison.json`.
@@ -5985,6 +5987,36 @@ the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
 
+Owned declaration text extension. The 140135f70 lexer treats signed bytes
+as unquoted whitespace and preserves quoted/commented bytes. The measured
+contact-only handoff already avoids copying ASCII source. Extend ownership
+transfer to installed declaration consumers that already own their archive
+read. Normalize in that allocation and transfer it into the String when
+UTF-8 validates. Malformed quoted bytes keep the existing replacement
+behavior. Expect one fewer whole-text allocation for valid owned reads
+and matching parsed definitions, with no new retained source owner.
+
+Installed decoder comparison (`a7043617`). The previous decoder and both
+new entry points produced identical text for 1,593 installed declarations
+sampled across 511 index kind names. The sample includes 24 non-ASCII
+members and three whose decoded bytes changed from the source. Owned
+decoding kept the input allocation for 1,590 members covering 7,056,074
+cumulative source bytes. This isolates the decoder and does not measure
+full loading time or retained process memory. Evidence:
+`DH2-fx-resources/artifacts/owned-declaration-layout-20261110.json`.
+
+Camera depth owner acceptance (`e40c02cf`). Two windowless DX12 observations
+released the 1920×1080 opacity image, reduction pyramid, coarse output,
+constants and four staging slots with a readback map outstanding. The callback
+had zero leases after cancellation. The fence left one 65,536-byte coarse
+output and one 65,536-byte staging allocation in submitted device work.
+The next empty submission and drain retired both. Live allocations then
+returned to the same 655,360 bytes of labeled wgpu device resources on both
+samples, with no validation errors. The allocator reserved 268,435,456 bytes
+after warmup. This observes ownership and queue retirement, without measuring
+active rendering cost. Evidence:
+`DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
@@ -6051,3 +6083,24 @@ independent timing acquisition. Expect one to zero owners with timing enabled
 and the same report content for the reads recorded before handoff. The isolated
 map sections measured 4,562,689 bytes in Edge of the World and 4,508,068 in
 Dust District. This counts descriptor ownership, rather than process memory.
+
+Instance probe record residency prediction. The original indirect-lighting
+owner retires buffer backing in 14035bca0. The host currently preserves
+the complete serialized probe buffer for byte comparisons on moving
+models and arms. Those writers use only records appended after static
+world geometry. Keep that contiguous writable tail with exact initial
+values and let extraction take the complete upload allocation. Keep the
+same asset ID, GPU bytes and patch order. Expect to release the static
+prefix after upload, with the same per-record compare and writes as the
+previous path. The existing EotW and Dust full CPU copies are 14,902,560
+and 21,835,296 bytes. Measure the actual retained tail and output CRC.
+
+Instance probe record residency acceptance (`acca51c7`). Installed Edge of
+the World and Dust District produced the same full upload CRCs `089f05a5`
+and `d496779e`, with unchanged GPU buffer lengths. CPU backing went from
+14,902,560 to 902,592 bytes and from 21,835,296 to 766,368 bytes. The
+main-world asset retained no serialized upload payload after extraction;
+the separate mutable tails remain on the model lighting owner. Both maps
+returned to zero GPU buffers after release. Active motion and arm patches
+were traced in source and were outside the windowless observations.
+Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.

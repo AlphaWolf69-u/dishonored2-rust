@@ -71,7 +71,7 @@ impl Declaration {
     pub fn load_selected(catalog: &Catalog, path: &str) -> Result<Self, String> {
         let fields = crate::entities::player::resolved_decl("gamelogicmanager", path, |resource| {
             catalog.read(resource).map_err(|error| error.to_string()).map(|bytes|
-                bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                bytes.map(crate::entities::owned_declaration_text))
         })?;
         Self::from_fields(path.to_owned(), &fields)
     }

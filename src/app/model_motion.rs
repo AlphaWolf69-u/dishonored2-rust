@@ -6,6 +6,7 @@ use super::{
 };
 use bevy::prelude::*;
 use hashbrown::HashMap;
+use crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches;
 
 #[derive(Clone, Copy)]
 pub(super) struct ModelPose {
@@ -112,7 +113,52 @@ struct Binding {
 }
 
 #[derive(Resource)]
-pub(super) struct ModelProbeLighting(pub Handle<super::ShaderBuffer>);
+pub(super) struct ModelProbeLighting {
+    handle: Handle<super::ShaderBuffer>,
+    first: usize,
+    records: Option<Vec<ProbeRecord>>,
+}
+
+type ProbeRecord = [u8; 9 * 16];
+
+impl ModelProbeLighting {
+    pub(super) fn asset_id(&self) -> AssetId<super::ShaderBuffer> { self.handle.id() }
+
+    pub(super) fn new(handle: Handle<super::ShaderBuffer>, first: usize, buffer: &mut super::ShaderBuffer) -> Self {
+        let retain_full = std::env::var_os("DH2_DEBUG_RETAIN_PROBE_RECORDS").is_some_and(|value| value == "1");
+        let bytes = buffer.data.as_deref().expect("instance probe upload prepared");
+        let records = (!retain_full).then(|| {
+            bytes[first * size_of::<ProbeRecord>()..].chunks_exact(size_of::<ProbeRecord>())
+                .map(|record| record.try_into().expect("probe record extent"))
+                .collect::<Vec<ProbeRecord>>()
+        });
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            let mut crc = flate2::Crc::new();
+            crc.update(bytes);
+            let retained = records.as_ref().map_or(bytes.len(), |records| records.capacity() * size_of::<ProbeRecord>());
+            eprintln!("INSTANCE_PROBE_RECORDS bytes={} retained_cpu_bytes={retained} crc32={:08x}", bytes.len(), crc.sum());
+        }
+        if records.is_some() {
+            buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
+        }
+        Self { handle, first, records }
+    }
+
+    pub(super) fn write(&mut self, patches: &mut ShaderBufferPatches,
+        buffers: &mut Assets<super::ShaderBuffer>, index: u32, record: &[u8; 9 * 16]) {
+        let index = index as usize;
+        let offset = index * record.len();
+        let Some(records) = &mut self.records else {
+            patches.write(buffers, &self.handle, offset, record);
+            return;
+        };
+        let Some(target) = index.checked_sub(self.first).and_then(|index| records.get_mut(index)) else { return; };
+        if target != record {
+            *target = *record;
+            patches.enqueue(self.handle.id(), offset, record);
+        }
+    }
+}
 
 /// One object's nine SH coefficient rows as the shared probe buffer stores them.
 pub(super) fn probe_record_bytes(record: [[f32; 4]; 9]) -> [u8; 9 * 16] {
@@ -159,7 +205,7 @@ pub(super) fn publish_model_poses(
     mut queue: ResMut<SceneRenderQueue>,
     mut entities: Query<(&mut Transform, &mut GlobalTransform)>,
     scene: Option<Res<super::SceneData>>,
-    probe_buffer: Option<Res<ModelProbeLighting>>,
+    mut probe_buffer: Option<ResMut<ModelProbeLighting>>,
     mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
     mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     bound: Option<ResMut<BoundModels>>,
@@ -285,13 +331,13 @@ pub(super) fn publish_model_poses(
                 lighting
             });
         if let (Some(lighting), Some(handle), Some(buffers)) =
-            (lighting, probe_buffer.as_ref(), buffers.as_mut())
+            (lighting, probe_buffer.as_mut(), buffers.as_mut())
         {
             let record = probe_record_bytes(lighting.object_shader_record());
             for surface in &binding.surfaces {
                 let tag = queue.instances[surface.index].probe_index;
                 if tag & 0x80000000 == 0 {
-                    patches.write(buffers, &handle.0, tag as usize * record.len(), &record);
+                    handle.write(&mut patches, buffers, tag, &record);
                 }
             }
         }

@@ -191,7 +191,7 @@ impl PickableSources {
             }
             let bytes = catalog.read(path).map_err(|error| error.to_string())?;
             if bytes.is_some() { paths.push(Arc::from(normalized)); }
-            Ok(bytes.map(|bytes| entities::declaration_text(&bytes).into_owned()))
+            Ok(bytes.map(entities::owned_declaration_text))
         });
         self.reads.push(ReadGeneration { owner: Arc::downgrade(&source), paths });
         match fields {

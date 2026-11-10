@@ -111,7 +111,7 @@ pub(super) fn character_name(character: Character) -> &'static str {
 type ArmSceneRig = std::sync::Arc<Rig>;
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
-    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(crate::entities::owned_declaration_text))
 }
 
 /// One arm part (FUN_140770560 spawn + bind, FUN_140771a00 start): its

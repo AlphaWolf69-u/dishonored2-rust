@@ -26,7 +26,7 @@ pub fn resolve(catalog: &Catalog, item: &str) -> Result<Option<Map>, String> {
 pub fn resolve_fields(catalog: &Catalog, item: &str, fields: &[(String, Value)]) -> Result<Option<Map>, String> {
     if atom(fields, "m_type") != Some("TYPE_INTERACTIVE_MAP") { return Ok(None); }
     let read = |path: &str| -> Result<Option<String>, String> {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| entities::declaration_text(&bytes).into_owned()))
+        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(entities::owned_declaration_text))
     };
     let item_name = atom(fields, "m_name").unwrap_or("").to_owned();
     let can_be_picked_up = boolean(fields, "m_readableCanBePickedUp", true);

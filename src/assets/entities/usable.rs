@@ -162,7 +162,7 @@ pub fn player_sensor(catalog: &crate::archive::Catalog, character: &str) -> Resu
     let entity = format!("models/characters/player/{character}/body.def");
     let fields = super::player::entity_component(&entity, "cpntplayersensorinteraction", |path| {
         Ok(catalog.read(path).map_err(|e| e.to_string())?
-            .map(|bytes| super::declaration_text(&bytes).into_owned()))
+            .map(super::owned_declaration_text))
     })?.ok_or_else(|| format!("{entity}: missing interaction sensor"))?;
     let mut sensor = Sensor { max_distance: number(&fields, "m_maxDistance", 3.0)?, shape_radii: [0.005, 0.05, 0.1, 0.5, 0.7] };
     let radii = child(&fields, "m_shapeRadius");

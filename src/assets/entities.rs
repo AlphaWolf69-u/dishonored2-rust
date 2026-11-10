@@ -28,11 +28,31 @@ pub mod physics;
 /// invalid UTF-8 instead changes an installed MAIN name into `arkDefault�`.
 /// Preserve quoted content and comment boundaries before decoding the text.
 pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
-    let needs_normalization =
-        |byte: u8| byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace());
-    if !bytes.iter().copied().any(needs_normalization) {
+    if !bytes.iter().copied().any(normalized_whitespace) {
         return String::from_utf8_lossy(bytes);
     }
+    let mut bytes = bytes.to_vec();
+    normalize_declaration_text(&mut bytes);
+    std::borrow::Cow::Owned(decode_declaration_text(bytes))
+}
+
+pub(crate) fn owned_declaration_text(mut bytes: Vec<u8>) -> String {
+    if bytes.iter().copied().any(normalized_whitespace) {
+        normalize_declaration_text(&mut bytes);
+    }
+    decode_declaration_text(bytes)
+}
+
+fn decode_declaration_text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
+fn normalized_whitespace(byte: u8) -> bool {
+    byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace())
+}
+
+fn normalize_declaration_text(bytes: &mut Vec<u8>) {
     #[derive(Clone, Copy)]
     enum State {
         Plain,
@@ -42,7 +62,6 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     }
     let mut state = State::Plain;
     let mut escaped = false;
-    let mut normalized = bytes.to_vec();
     let mut at = 0;
     while at < bytes.len() {
         let byte = bytes[at];
@@ -69,11 +88,11 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
             }
             State::Plain => {
                 if byte == 0 {
-                    normalized.truncate(at);
+                    bytes.truncate(at);
                     break;
                 }
-                if needs_normalization(byte) {
-                    normalized[at] = b' ';
+                if normalized_whitespace(byte) {
+                    bytes[at] = b' ';
                 } else if byte == b'"' || byte == b'\'' {
                     state = State::Quoted(byte);
                 } else if byte == b'/' {
@@ -93,7 +112,6 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
         }
         at += 1;
     }
-    std::borrow::Cow::Owned(String::from_utf8_lossy(&normalized).into_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

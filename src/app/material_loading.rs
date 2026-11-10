@@ -624,10 +624,10 @@ impl MaterialResolver<'_> {
             || self.vegetation.parameters.contains_key(material)
     }
 
-    pub(super) fn upload_probe_records(&mut self) {
-        if let Some(mut buffer) = self.probe_sh_buffers.get_mut(&self.probe_sh_buffer) {
-            buffer.set_data(std::mem::take(&mut self.probe_sh_records));
-        }
+    pub(super) fn upload_probe_records(&mut self, writable_start: usize) -> Option<super::model_motion::ModelProbeLighting> {
+        let buffer = self.probe_sh_buffers.get_mut(&self.probe_sh_buffer)?;
+        buffer.set_data(std::mem::take(&mut self.probe_sh_records));
+        Some(super::model_motion::ModelProbeLighting::new(self.probe_sh_buffer.clone(), writable_start, buffer))
     }
 
     pub(super) fn register_image(&mut self, name: &str) -> Option<usize> {

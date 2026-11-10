@@ -16,22 +16,20 @@ fn owned_text(bytes: Vec<u8>) -> String {
     let started = trace.then(crate::loading::thread_cycles).flatten();
     let input_len = bytes.len();
     let input_pointer = bytes.as_ptr();
-    let mut direct = false;
-    let text = if copy || bytes.iter().any(|&byte|
-        byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace())) {
+    let text = if copy {
         crate::entities::declaration_text(&bytes).into_owned()
     } else {
-        direct = true;
         // Keep the archive reader's existing one-byte spare reservation.
         // Shrinking it moves the allocation on the measured Windows heap.
-        String::from_utf8(bytes).expect("validated ASCII declaration source")
+        crate::entities::owned_declaration_text(bytes)
     };
     if trace {
+        let direct = !copy && text.as_ptr() == input_pointer;
         let cycles = started.zip(crate::loading::thread_cycles())
             .map_or(0, |(start, end)| end.saturating_sub(start));
         for (counter, value) in HANDOFF_STATS.iter().zip([
             1, input_len as u64, u64::from(direct),
-            u64::from(direct && text.as_ptr() == input_pointer), text.capacity() as u64, cycles,
+            u64::from(direct), text.capacity() as u64, cycles,
         ]) { counter.fetch_add(value, std::sync::atomic::Ordering::Relaxed); }
     }
     text

@@ -68,7 +68,7 @@ impl Interactions {
     pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str) -> Result<Self, String> {
         let read = |path: &str| -> Result<Option<String>, String> {
             Ok(catalog.read(path).map_err(|e| e.to_string())?
-                .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+                .map(entities::owned_declaration_text))
         };
         let sensor = entities::usable::player_sensor(&catalog, character)?;
         let bindings = entities::usable::bindings(document, |path| read(path))?;

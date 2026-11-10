@@ -212,7 +212,7 @@ pub(super) fn load_player_arms(
         Ok(catalog
             .read(path)
             .map_err(|e| e.to_string())?
-            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+            .map(entities::owned_declaration_text))
     };
     let character = character_name(super::pause_menu::debug_character());
     let declarations = declarations_source.full(catalog, character)?;
@@ -464,7 +464,7 @@ pub(super) fn update_player_arms(
     arms: Option<ResMut<PlayerArms>>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     scene: Option<Res<SceneData>>,
-    probe_buffer: Option<Res<model_motion::ModelProbeLighting>>,
+    mut probe_buffer: Option<ResMut<model_motion::ModelProbeLighting>>,
     mut commands: Commands,
     mut inverse_bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     mut joint_transforms: Query<&mut GlobalTransform, Without<Mesh3d>>,
@@ -588,13 +588,12 @@ pub(super) fn update_player_arms(
             );
             arm.world_bounds = Some(bounds);
             let center = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
-            if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_ref()) {
+            if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_mut()) {
                 if let Some(lighting) = probes.interpolate_query_sh(center, &mut arm.lighting) {
                     let record = model_motion::probe_record_bytes(lighting.object_shader_record());
                     for part in &arm.surfaces {
                         if part.probe_index & 0x8000_0000 == 0 {
-                            let offset = part.probe_index as usize * record.len();
-                            patches.write(&mut buffers, &handle.0, offset, &record);
+                            handle.write(&mut patches, &mut buffers, part.probe_index, &record);
                         }
                     }
                 }
