@@ -691,6 +691,9 @@ fn inspect_scene_resources(
         // asset storage and render device across actual map retirement.
         let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
+        if new_host && observe_initial_images {
+            app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
+        }
         if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
             if new_host {
                 let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
@@ -758,6 +761,14 @@ fn inspect_scene_resources(
                         return Err("initial texture close observation requires bounded reads".into());
                     }
                     let closed = std::sync::atomic::AtomicBool::new(false);
+                    let ready_common = |world: &World| {
+                        let scene = world.resource::<SceneRenderQueue>();
+                        let shared = world.resource::<super::texture_streaming::SharedImages>();
+                        scene.diffuse_image_paths.iter().enumerate()
+                            .filter(|(slot, path)| shared.contains(path) && scene.diffuse_mip_states[*slot].resident.is_some())
+                            .count()
+                    };
+                    let ready_before = ready_common(app.world());
                     std::thread::scope(|scope| {
                         if let Some(reader) = base_reader {
                             let closed = &closed;
@@ -772,6 +783,8 @@ fn inspect_scene_resources(
                         result
                     })?;
                     if stop_initial_images { eprintln!("INITIAL_TEXTURE_READER_DRAINED step={step}"); }
+                    let resident = ready_common(app.world());
+                    eprintln!("INITIAL_TEXTURE_COMMON step={step} before={ready_before} resident={resident}");
                 }
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;
