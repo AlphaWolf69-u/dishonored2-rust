@@ -6850,3 +6850,17 @@ registry's own class ranges. The comparison now records the raw
 numeric ranges separately and checks the complete named acceptance
 matrix, source metadata, factory/definition tables and resolved ranks.
 No class registration or runtime range algorithm was changed.
+
+Installed component metadata acceptance at f2620b67. The same dev
+executable completed EotW / Dust / EotW with three independent metadata
+owners and one Catalog owner. All 1,904 named classes, their complete
+acceptance relations and source fields, all 350 factory/type/definition
+descriptors and initialization ranks matched. This repeat also matched
+raw numeric ID ranges. All 645 selected preparation records matched.
+Metadata source reads fell from three (123,403,896 bytes) to one
+(41,134,632 bytes), and affected acquisition recorded 970,111,240
+versus 323,649,025 aggregate thread cycles. Three control owners and
+the one shared owner all reached final destruction. This verifies
+metadata construction and map preparation, with gameplay timings
+outside the observation.
+Evidence: DH2-collision-staging/artifacts/component-metadata-relations-20261111-comparison.json.
