@@ -5532,6 +5532,22 @@ the authored primitive. Hull triangulation here supplies the host query
 representation. Compare same-build extraction cycles and exact collision
 signatures before integration.
 
+Installed collision acceptance. The menu and high-chaos Palace comparison
+(`d69007b6`) matched all geometry signatures, material tables and navigation
+counts. The Palace path no longer constructs the 190,361,808-byte tuple
+vector or retains the 23,525,626-byte decoded member at index construction.
+It also omits 13,547,616 bytes of audit detail capacity. The old linear hull
+search dominated Palace in both ownership modes. In the unchanged optimized
+executable `c9ada5e4`, the indexed and linear searches produced the same
+triangle signatures as the preceding builds, with matching authored counts,
+placed collision, materials and navigation counts. Palace extraction cycles
+fell from 1,345.58 billion to 6.82 billion (about 197 times lower). Edge of
+the World measured 1.28 billion to 0.98 billion, with one run per setting.
+Palace index construction stayed at 1.55–1.56 billion cycles. These are
+windowless acquisition measurements, without gameplay CPU or peak RAM
+claims. Evidence: DH2-collision-staging/artifacts/collision-lifetime-extremes-20261110-comparison.json
+and DH2-collision-staging/artifacts/convex-horizon-20261110-comparison.json.
+
 ### Direct acquisition of whole inline image payloads
 
 Prediction before change. In the recorded Edge of the World / Dust District / Edge of the World acquisition, 11,838 whole-image reads used only indexed inline records; 7,421 of those members exceeded the archive stream's 65,536-byte buffer. The largest indexed member was 16,777,298 bytes. The current 2D resident path reads each complete member and copies its records into a second Bevy Image allocation. Original 1402e9ff0 sends authored mip records to 1402f5500. For large inline-only resident images, validate the same headers and read the authored bytes into their final upload allocation. Expect no full decoded member allocation on that route, lower or unchanged affected CPU cycles, and matching upload CRCs, descriptors and GPU retirement. The stream scratch bounds temporary member staging; the required Image allocation remains. Compare scoped acquisition cycles and output in the same executable before integrating. No gameplay or process peak claim is predicted.
