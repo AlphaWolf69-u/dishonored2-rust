@@ -29,14 +29,12 @@ struct Definitions {
 }
 
 impl Definitions {
-    fn load(seed: declaration_texts::PhysicsSeed) -> Result<Self, String> {
-        let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
-        let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
+    fn load(catalog: Arc<Catalog>, map: &str, seed: declaration_texts::PhysicsSeed) -> Result<Self, String> {
+        let base = catalog.base();
         let database = ContactDatabase::acquire(&catalog)?;
         let texts = (|| {
-            let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
-            let language = crate::assets::lang::read_text_language(&base)?;
-            declaration_texts::acquire(&base, &catalog, &map, language, seed)
+            let language = crate::assets::lang::read_text_language(base)?;
+            declaration_texts::acquire(base, &catalog, map.trim_end_matches(".entities"), language, seed)
         })().unwrap_or_else(|error: String| {
             warn!("Contact declarations not read with the level: {error}");
             Default::default()
@@ -49,16 +47,19 @@ impl Definitions {
         Ok(TimedEvent { delay: asset.delay, event })
     }
 
+    fn prepare_material_chain(&mut self, name: &str) -> Result<(), String> {
+        if !self.chains.contains_key(name) {
+            let material = crate::assets::entities::physics_material::resources::acquire_with(
+                &self.catalog, name, |path| declaration_texts::read(&self.catalog, &self.texts, path),
+            )?;
+            self.chains.insert(name.to_owned(), material);
+        }
+        Ok(())
+    }
+
     fn resolve(&mut self, contact: &Contact) -> Result<Arc<Vec<Group>>, String> {
         use crate::{entities::scene_motion::child, gameplay::options::decl::list_items};
-        for name in [&contact.source, &contact.target] {
-            if !self.chains.contains_key(name) {
-                let material = crate::assets::entities::physics_material::resources::acquire_with(
-                    &self.catalog, name, |path| declaration_texts::read(&self.catalog, &self.texts, path),
-                )?;
-                self.chains.insert(name.clone(), material);
-            }
-        }
+        for name in [&contact.source, &contact.target] { self.prepare_material_chain(name)?; }
         let Some(effect) = self.database.effect(self.chains[&contact.source].contact_chain(),
             self.chains[&contact.target].contact_chain()) else {
             return Ok(Arc::new(Vec::new()));
@@ -114,11 +115,18 @@ impl ContactSounds {
         self.definitions.as_ref()?.as_ref().ok().map(|definitions| &definitions.texts)
     }
     pub(super) fn acquire() -> Self {
-        Self::acquire_with_seed(Default::default())
+        let definitions = (|| {
+            let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
+            let catalog = Catalog::shared(&base).map_err(|error| error.to_string())?;
+            let map = crate::gameplay::map_info::current_map().unwrap_or_default();
+            Definitions::load(catalog, &map, Default::default())
+        })();
+        Self { definitions: Some(definitions), ..Default::default() }
     }
-    pub(super) fn acquire_with_seed(seed: declaration_texts::PhysicsSeed) -> Self {
+    pub(super) fn acquire_with_seed(catalog: Arc<Catalog>, map: &str,
+        seed: declaration_texts::PhysicsSeed) -> Self {
         let _span = crate::app::load_timing::Span::new("contact declaration acquisition");
-        Self { definitions: Some(Definitions::load(seed)), ..Default::default() }
+        Self { definitions: Some(Definitions::load(catalog, map, seed)), ..Default::default() }
     }
 }
 
@@ -191,4 +199,61 @@ pub(super) fn update(mut state: ResMut<ContactSounds>, mut contacts: MessageRead
                 front: None, parameter: Some(active.parameter) }));
         }
     }
+}
+
+/// Acquire actual contact inputs in two independent archive namespaces.
+pub(in crate::app) fn observe_catalogs(base: &std::path::Path, map: &str) -> Result<(), String> {
+    let left = Arc::new(Catalog::open(base).map_err(|error| error.to_string())?);
+    let right = Arc::new(Catalog::open(base).map_err(|error| error.to_string())?);
+    let level = crate::assets::level::LevelResources::resolve(&left, map).map_err(|error| error.to_string())?;
+    let language = crate::assets::lang::read_text_language(base)?;
+    let manifest = crate::assets::map_resources::acquire_level_list(base, &left,
+        level.entities.trim_start_matches("maps/").trim_end_matches(".entities"), language)?;
+    let material = manifest.iter().find(|entry| entry.kind == "physicsMaterial")
+        .and_then(|entry| entry.path.strip_prefix("generated/decls/physicsmaterial/"))
+        .and_then(|path| path.strip_suffix(".decl")).ok_or("contact material is absent")?;
+    let mut a = ContactSounds::acquire_with_seed(left.clone(), &level.entities, Default::default());
+    let mut b = ContactSounds::acquire_with_seed(right.clone(), &level.entities, Default::default());
+    let first = a.definitions.as_mut().ok_or("first contact owner is absent")?.as_mut().map_err(|error| error.clone())?;
+    let second = b.definitions.as_mut().ok_or("second contact owner is absent")?.as_mut().map_err(|error| error.clone())?;
+    if !Arc::ptr_eq(&first.catalog, &left) || !Arc::ptr_eq(&second.catalog, &right) {
+        return Err("contact preparation used a different archive namespace".into());
+    }
+    first.prepare_material_chain(material)?;
+    second.prepare_material_chain(material)?;
+    let first_material = &first.chains[material];
+    let second_material = &second.chains[material];
+    if *first.database != *second.database
+        || first_material.material() != second_material.material()
+        || first_material.contact_chain() != second_material.contact_chain()
+        || Arc::ptr_eq(first_material, second_material) {
+        return Err("independent contact definitions or material namespaces differ".into());
+    }
+    let mut signature = blake3::Hasher::new();
+    let mut records = 0;
+    for entry in manifest.iter() {
+        if entry.kind != "physicsMaterial" && entry.kind != "soundevent"
+            && !(entry.kind == "fx" && entry.path.contains("/contactsystem/")) { continue; }
+        let one = first.texts.get(&entry.path);
+        let two = second.texts.get(&entry.path);
+        if one != two { return Err(format!("contact source differs for {}", entry.path)); }
+        if let Some(text) = one {
+            signature.update(entry.path.as_bytes());
+            signature.update(text.as_bytes());
+            records += 1;
+        }
+    }
+    let weak_left = Arc::downgrade(&left);
+    let weak_right = Arc::downgrade(&right);
+    drop(manifest);
+    drop(a);
+    drop(left);
+    if weak_left.strong_count() != 0 || weak_right.strong_count() != 2 {
+        return Err("retiring one contact catalog affected the other".into());
+    }
+    drop(b);
+    drop(right);
+    if weak_right.strong_count() != 0 { return Err("contact resources retained their catalog".into()); }
+    eprintln!("CONTACT_CATALOG_SCOPES records={records} namespaces=true materials=true independent_release=true final_release=true signature={}", signature.finalize());
+    Ok(())
 }

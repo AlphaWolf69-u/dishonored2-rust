@@ -160,6 +160,9 @@ pub fn inspect_scene_publication(
             "--map-info-catalog-scopes" => {
                 return crate::gameplay::map_info::observe_catalog_scopes(base, name).map_err(Into::into);
             }
+            "--contact-owner-catalogs" => {
+                return super::audio::contacts::observe_catalogs(base, name).map_err(Into::into);
+            }
             "--physics-material-scopes" => {
                 return crate::assets::entities::physics_material::resources::observe_resource_scopes(base, name).map_err(Into::into);
             }

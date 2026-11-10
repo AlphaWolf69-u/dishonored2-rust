@@ -6909,3 +6909,17 @@ decoding of new map declarations. Expect zero separate contact-chain parses
 for already decoded materials, identical ancestry for every installed
 material, and identical physical values. Measure the extra retained names
 rather than treating the compact chain as free storage.
+
+### Contact preparation catalog context
+
+The scene acquisition worker owns the exact Catalog and archived map
+companions. ContactSounds previously reopened Catalog::shared and selected
+the process-global current_map while consuming that scene's PhysicsSeed.
+That can combine source caches from one namespace with declarations and
+resource leases from another during explicit catalog preparation. Pass
+the preparing Catalog and actual entities companion through AudioPreparation
+to the contact loader. The plugin's standalone initialization retains its
+existing shared-installation lookup. Expect contact owner identity to equal
+the preparing scene's identity for each independent catalog, unchanged
+declaration and sound-event data, and independent final lease release.
+This adds one Arc lease per prepared contact owner and no frame work.

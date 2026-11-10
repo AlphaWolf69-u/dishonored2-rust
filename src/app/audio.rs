@@ -7,7 +7,7 @@ mod pcm;
 mod graph;
 mod bevy_backend;
 mod fade;
-mod contacts;
+pub(super) mod contacts;
 mod acquisition;
 use crate::assets::declaration_texts;
 mod effects;
@@ -1009,8 +1009,8 @@ impl AudioPreparation {
         }
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands,
-        seed: declaration_texts::PhysicsSeed) {
-        let contacts = contacts::ContactSounds::acquire_with_seed(seed);
+        catalog: Arc<crate::archive::Catalog>, map: &str, seed: declaration_texts::PhysicsSeed) {
+        let contacts = contacts::ContactSounds::acquire_with_seed(catalog, map, seed);
         prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
         // Host: cold media reads/decodes must not occupy the frame executor.
         // Keep its existing parallelism rather than the smaller async pool,

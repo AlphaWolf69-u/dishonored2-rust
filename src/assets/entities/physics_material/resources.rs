@@ -173,7 +173,7 @@ pub(crate) fn observe_inventory(base: &std::path::Path) -> Result<(), String> {
     let mut ancestry_names = 0;
     let mut signature = blake3::Hasher::new();
     for path in catalog.paths_with_suffix(".decl") {
-        if catalog.kind(path) != Some("physicsMaterial") { continue; }
+        if catalog.kind(&path) != Some("physicsMaterial") { continue; }
         let name = path.strip_prefix("generated/decls/physicsmaterial/")
             .and_then(|path| path.strip_suffix(".decl")).ok_or("invalid physics material path")?;
         let chain = crate::entities::contacts::material_chain(name, read)?;

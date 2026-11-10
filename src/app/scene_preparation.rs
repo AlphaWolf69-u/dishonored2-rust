@@ -115,7 +115,9 @@ impl ScenePreparation {
         };
         let physics_texts = prepared.take_resource::<super::level_prepare::PreparedPhysicsTexts>()
             .map_or_else(Default::default, |texts| texts.0);
-        self.audio.prepare(&mut commands, physics_texts);
+        let (contact_catalog, contact_map) = prepared.get_resource::<super::level_prepare::LevelSourceReads>()
+            .ok_or("prepared contact resource context is absent")?.acquisition_source();
+        self.audio.prepare(&mut commands, contact_catalog.clone(), contact_map, physics_texts);
         check_cancelled()?;
         if let Some(programs) = &mut programs {
             let (frame, source) = super::shadow_updates::prepare_screen_shadow_source(

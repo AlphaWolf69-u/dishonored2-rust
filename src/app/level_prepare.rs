@@ -48,6 +48,12 @@ pub(super) struct LevelSourceReads {
     level: crate::assets::level::LevelResources,
 }
 
+impl LevelSourceReads {
+    pub(super) fn acquisition_source(&self) -> (&Arc<archive::Catalog>, &str) {
+        (&self.catalog, &self.level.entities)
+    }
+}
+
 impl Drop for LevelSourceReads {
     fn drop(&mut self) {
         let level = &self.level;
