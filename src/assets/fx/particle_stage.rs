@@ -107,6 +107,9 @@ pub struct ParticleStageAsset {
     pub name: String,
     pub enabled: bool,
     pub worldspace: bool,
+    /// arkSorting m_mode (stage +0x1910): 0 NONE, 1 BACK_TO_FRONT,
+    /// 2 FRONT_TO_BACK (enum 141a10070).
+    pub sorting: u8,
     pub enable_wind: bool,
     pub enable_velocity_inheritance: bool,
     pub emitter: EmitterDefinition,
@@ -144,6 +147,7 @@ impl Default for ParticleStageAsset {
             name: String::new(),
             enabled: true,
             worldspace: true,
+            sorting: 0,
             enable_wind: false,
             enable_velocity_inheritance: false,
             emitter: EmitterDefinition {
@@ -323,6 +327,21 @@ pub fn stage(fields: &Fields) -> Result<ParticleStageAsset, String> {
         match name.as_str() {
             "m_enabled" => result.enabled = boolean(value)?,
             "m_worldspace" => result.worldspace = boolean(value)?,
+            "m_sorting" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_mode" => {
+                            result.sorting = match atom(value)?.rsplit("::").next().unwrap_or("") {
+                                "NONE" => 0,
+                                "BACK_TO_FRONT" => 1,
+                                "FRONT_TO_BACK" => 2,
+                                mode => return Err(format!("unknown particle sorting mode {mode}")),
+                            }
+                        }
+                        _ => return Err(format!("unknown particle sorting field {name}")),
+                    }
+                }
+            }
             "m_enableWind" => result.enable_wind = boolean(value)?,
             "m_enableVelocityInheritance" => result.enable_velocity_inheritance = boolean(value)?,
             "m_main" => {

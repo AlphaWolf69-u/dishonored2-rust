@@ -17,6 +17,7 @@ pub fn stage_instances(
     alpha_scale: f32,
     admission_plane: [f32; 4],
     minimum_distance: f32,
+    order: Option<&[usize]>,
     output: &mut Vec<ParticleInstance>,
 ) -> Result<Option<[[f32; 3]; 2]>, String> {
     let definition = &stage.declaration.stages[stage.index];
@@ -46,7 +47,7 @@ pub fn stage_instances(
         [f32::from_bits(0xf149_f2ca); 3],
     ];
     let first = output.len();
-    for (slot, particle) in stage.particles.iter() {
+    for (slot, particle) in stage.particles.in_order(order) {
         let mut state = particle.state;
         let transform = |value: [f32; 3]| {
             std::array::from_fn(|i| {

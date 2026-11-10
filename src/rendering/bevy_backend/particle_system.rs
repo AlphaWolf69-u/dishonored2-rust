@@ -230,6 +230,9 @@ impl ParticleSystem {
             } else {
                 publication.pose
             };
+            // 1f2420: one publication order per stage, shared by its renderers.
+            let order = stage.particles.publication_order(definition.sorting,
+                context.camera.position, context.camera.axes[0]);
             for (index, sprite) in definition.sprites.iter().enumerate() {
                 if !sprite.enabled {
                     continue;
@@ -251,6 +254,7 @@ impl ParticleSystem {
                     alpha_scale,
                     context.camera.admission_plane,
                     sprite.minimal_distance,
+                    order.as_deref(),
                     &mut instances,
                 )?;
                 if bounds.is_none() {
@@ -312,7 +316,7 @@ impl ParticleSystem {
                 if self.world_mesh_materials.contains(name) {
                     let mut instances=Vec::with_capacity(stage.particles.len());
                     crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
-                        &view,context.query_visibility,alpha_scale,&mut instances)?;
+                        &view,context.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                     if !instances.is_empty() {
                         world_meshes.push(WorldMeshDraw{source:source.clone(),material:name.clone(),
                             lighting:lighting.ok_or("world particle mesh lighting was not selected")?,instances});
@@ -322,7 +326,7 @@ impl ParticleSystem {
                 let material=self.materials.get(name).ok_or_else(||format!("particle mesh material absent: {name}"))?;
                 let mut instances=Vec::with_capacity(stage.particles.len());
                 crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
-                    &view,context.query_visibility,alpha_scale,&mut instances)?;
+                    &view,context.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                 if instances.is_empty(){continue;}
                 let mut transparency=context.transparency.get(material.state)?;
                 if material.distortion{transparency.mode=0;}

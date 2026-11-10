@@ -105,6 +105,7 @@ pub fn stage_instances(
     view: &SpriteView,
     query: f32,
     alpha_scale: f32,
+    order: Option<&[usize]>,
     output: &mut Vec<ParticleInstance>,
 ) -> Result<(), String> {
     let descriptor = &stage.declaration.stages[stage.index].meshes[index];
@@ -121,7 +122,7 @@ pub fn stage_instances(
         descriptor.query_size.sample_visibility(query)?,
         view.owner_scale,
     );
-    for (slot, particle) in stage.particles.iter() {
+    for (slot, particle) in stage.particles.in_order(order) {
         let mut state = particle.state;
         let rotate = |v: [f32; 3]| {
             std::array::from_fn(|i| {
