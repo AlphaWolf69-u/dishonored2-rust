@@ -29,15 +29,20 @@ pub fn request_level(name: impl Into<String>) {
 pub(super) struct PreparedLevel {
     resources: Vec<PreparedResource>,
     publications: Vec<Box<dyn FnOnce(&mut World) + Send + Sync>>,
+    unpublished_catalog: Option<Arc<Catalog>>,
     diagnostic_exit: bool,
 }
 impl PreparedLevel {
     pub(super) fn diagnostic_exit() -> Self {
-        Self {
-            resources: Vec::new(),
-            publications: Vec::new(),
-            diagnostic_exit: true,
-        }
+        let mut prepared = Self::default();
+        prepared.diagnostic_exit = true;
+        prepared
+    }
+    pub(super) fn own_preload(&mut self, catalog: Arc<Catalog>) {
+        self.unpublished_catalog = Some(catalog);
+    }
+    pub(super) fn keep_registered_resources(&mut self) {
+        self.unpublished_catalog = None;
     }
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
         self.resources.push(PreparedResource {
@@ -56,9 +61,19 @@ impl PreparedLevel {
     pub(super) fn on_publish(&mut self, publish: impl FnOnce(&mut World) + Send + Sync + 'static) {
         self.publications.push(Box::new(publish));
     }
-    pub(super) fn publish(self, world: &mut World) {
-        for resource in self.resources { (resource.publish)(resource.value, world); }
-        for publish in self.publications { publish(world); }
+    pub(super) fn publish(mut self, world: &mut World) {
+        for resource in self.resources.drain(..) { (resource.publish)(resource.value, world); }
+        for publish in self.publications.drain(..) { publish(world); }
+        self.keep_registered_resources();
+    }
+}
+
+impl Drop for PreparedLevel {
+    fn drop(&mut self) {
+        let Some(catalog) = self.unpublished_catalog.take() else { return; };
+        self.resources.clear();
+        self.publications.clear();
+        catalog.discard_unpublished_level();
     }
 }
 

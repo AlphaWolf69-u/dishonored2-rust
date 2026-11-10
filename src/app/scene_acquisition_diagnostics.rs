@@ -820,6 +820,7 @@ fn inspect_scene_resources(
                 resource_snapshot(app.world(), step, "after-gpu-removal");
             }
         } else {
+            prepared.keep_registered_resources();
             drop(prepared);
         }
         if reuse_host {

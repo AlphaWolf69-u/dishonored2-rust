@@ -442,15 +442,29 @@ pub(crate) fn observe_descriptor_release() {
 
 /// Re-arm per-world readiness while retaining the session acquisition registry.
 pub fn restart_level() {
+    with(reset_level);
+}
+
+fn reset_level(s: &mut State) {
+    s.playing = false;
+    s.required = Default::default();
+    s.required_heads.clear();
+    s.required_next.clear();
+    s.acquired = 0;
+    s.requested = 0;
+    for (_, ready) in &mut s.gates { *ready = false; }
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn discard_level(catalog: u64) -> usize {
     with(|s| {
-        s.playing = false;
-        s.required = Default::default();
-        s.required_heads.clear();
-        s.required_next.clear();
-        s.acquired = 0;
-        s.requested = 0;
-        for (_, ready) in &mut s.gates { *ready = false; }
-    });
+        if s.catalog != Some(catalog) { return 0; }
+        let count = s.required.len();
+        reset_level(s);
+        s.required_heads = Default::default();
+        s.required_next = Default::default();
+        count
+    })
 }
 
 /// Start the map resource phase while keeping registry/resident identities.

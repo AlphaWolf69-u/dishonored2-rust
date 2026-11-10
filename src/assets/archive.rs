@@ -214,6 +214,33 @@ impl Catalog {
         crate::assets::physworld::mass::resources::release_marker(self, 0);
         self.release_pickable_level();
     }
+
+    pub(crate) fn release_persistent_level_resources(&self) {
+        crate::assets::parm_block::release_marker(self, 1);
+        crate::assets::fx::particle_resources::release_marker(self, 1);
+        crate::assets::wwise::event_resources::release_marker(self, 1);
+        crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
+        crate::assets::wwise::rtpc_resources::release_marker(self, 1);
+        crate::assets::physworld::mass::resources::release_marker(self, 1);
+        crate::assets::entities::effects::declarations::release_marker(self, 1);
+        crate::assets::inventory_item::configuration::release_persistent(self);
+        crate::edge_animation::release_marker(self, crate::edge_animation::PurgeMarker::PersistentHeap);
+        crate::assets::animation_rig::animset::release_scoped(self, crate::edge_animation::PurgeMarker::PersistentHeap);
+        crate::assets::animation_rig::declaration::release_marker(self,
+            crate::assets::animation_rig::declaration::PurgeMarker::PersistentHeap);
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn discard_unpublished_level(&self) {
+        let mut map = self.preload_map.lock().unwrap_or_else(|error| error.into_inner());
+        self.release_level_resources();
+        self.release_persistent_level_resources();
+        let discarded = map.take();
+        let descriptors = crate::loading::discard_level(self.identity());
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("UNPUBLISHED_LEVEL_RETIREMENT map={discarded:?} descriptors={descriptors}");
+        }
+    }
     /// Trim dead level AnimSet identities without dropping the session root
     /// or declarations still retained by live model/scene owners.
     pub(crate) fn release_md6_level(&self) {

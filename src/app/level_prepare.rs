@@ -118,6 +118,7 @@ pub(super) fn prepare_level(
     )
     .map_err(std::io::Error::other)?;
     crate::loading::begin_level(list.clone(), catalog.as_ref().unwrap());
+    app.own_preload(catalog.as_ref().unwrap().clone());
     let persistent_heap = crate::platform::console::shared().read().cvars
         .int("com_usePersistentHeap").ok_or("com_usePersistentHeap is not registered")? != 0;
     list.register_preload_headers(catalog.as_ref().unwrap(), map, persistent_heap)

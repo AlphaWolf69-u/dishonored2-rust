@@ -20,6 +20,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
         Err(std::env::VarError::NotPresent) => None,
         _ => return Err("DH2_DEBUG_CPU_CANCEL_COLLISION expects shapes, placed, or index".into()),
     };
+    let retry_cancelled = std::env::var_os("DH2_DEBUG_CPU_RETRY_CANCELLED").is_some_and(|value| value == "1");
     // CPU readers use the same task pools as the client. No application
     // runner or window/render plugin is installed.
     let mut task_host = bevy::prelude::App::new();
@@ -28,6 +29,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
     let _audio_session = super::audio::AudioSession::begin()?;
     let mut engine_controls = None;
     for (step, name) in levels.iter().enumerate() {
+        let cancellation = cancellation.filter(|_| !retry_cancelled || step == 0);
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let level = LevelResources::resolve(&catalog, name)?;
             if let Some(map) = level.entities.strip_suffix(".entities") {
@@ -131,6 +133,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                     instances.events.len(), errors.len(), digest.finalize());
                 resources.retire_unused();
             }
+            prepared.keep_registered_resources();
             drop(prepared);
             if let Some(texts) = contact_texts { texts.release_level_history(); }
             Ok(())

@@ -379,18 +379,7 @@ impl LevelList {
         // com_usePersistentHeap. 062bd0 then gives its inverse to 0410f0,
         // which purges marker1 for a different map or disabled persistence.
         if !persistent_heap || previous.as_deref() != Some(map) {
-            crate::assets::parm_block::release_marker(catalog, 1);
-            crate::assets::fx::particle_resources::release_marker(catalog, 1);
-            crate::assets::wwise::event_resources::release_marker(catalog, 1);
-            crate::assets::wwise::auxiliary_resources::release_marker(catalog, 1);
-            crate::assets::wwise::rtpc_resources::release_marker(catalog, 1);
-            crate::assets::physworld::mass::resources::release_marker(catalog, 1);
-            crate::assets::entities::effects::declarations::release_marker(catalog, 1);
-            crate::assets::inventory_item::configuration::release_persistent(catalog);
-            crate::edge_animation::release_marker(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
-            crate::assets::animation_rig::animset::release_scoped(catalog, crate::edge_animation::PurgeMarker::PersistentHeap);
-            crate::assets::animation_rig::declaration::release_marker(catalog,
-                crate::assets::animation_rig::declaration::PurgeMarker::PersistentHeap);
+            catalog.release_persistent_level_resources();
         }
         let map_count = self.register_declaration_headers(catalog, 2, &[0; 24], context, persistent_heap)?;
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
