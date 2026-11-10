@@ -404,6 +404,7 @@ trailing `*` covers a family of kinds.
 
 - Decal declaration leases (`143ae3730`, `140217d50`, `140060180`). The installed FX scan found 85 references to 25 decal declarations, with 15 referenced by multiple effects. The previous per-call resolver reparsed the same declaration when separate live FX acquisitions requested it. Keep a weak decal lookup in the existing level FX acquisition owner. Two overlapping requests should read and resolve it once, with unchanged variant names. Editable overlays still resolve on demand, and a later request after the last owner drops reacquires the declaration. Expect fewer declaration reads only where live requests overlap, with no change to the frame path or permanent decoded decal residency. Evidence: `DH2-interactions/artifacts/decal-cross-effect-declaration-reuse-20261110.json`.
 - Cancelled FX acquisition (`140022fd0`, `140060180`, `140199df0`). The host drops an unused task handle and schedules cache pruning immediately. A synchronous decoder already running can acquire resources after that prune. Signal a per-path cancellation, keep the cancelled task until it acknowledges completion, then schedule another prune after its result is dropped. Stop at declaration/group boundaries and before acquiring the shared resource locks. A separate live requester still shares a pending load, and a revived path can start a fresh load. Expect no cancelled definition publication or cache prune race, with unchanged successful output. An in-progress group or archive read may finish. Installed cancellation and retirement observations remain pending.
+- Late FX catalog ownership (`1400607f0`, `140060180`). Setup keeps the scene's reference to the same Catalog that the texture worker uses. Previously both EotW and Dust reached runtime material preparation and failed because setup had moved the scene reference away. The windowless rerun (`f136cef7`) published four installed decal materials per map and released every FX-only image and decal asset after the requests ended. EotW published seven new GPU images and Dust six, with one reused scene image. Existing world-mesh proxies were reused in both. The observation covers successful publication and asset retirement, without camera specialization or active effect tails. Evidence: `DH2-fx-resources/artifacts/runtime-fx-publication-v2-20261110-comparison.json`.
 - Close admission before host teardown. Winit receives `AppExit` after the final update and clears its main world before `App::run` returns. Waiting until the external `AudioSession` drops leaves its cancellation flag unset while the world's acquisition owners begin to retire. Signal the existing session after the final loading and window-exit systems observe a real exit. This is host scheduling for the shutdown boundary (`1408a4830`, `1400bc8f0`); final cache retirement still waits for admitted work. Expect one close signal per exit, earlier cancellation at existing worker checkpoints, and zero new steady-state allocations or locks. A file read already in progress still has to return. The saved windowless cancellation samples prove the checkpoints only.
 - Edge skeleton registry (`1400607f0`, `14024f2a0`, `140060180`). The Catalog owns the weak coalescing table, and live skeletons hold weak retirement links. Normalized-path hits borrow the path and reuse the existing key. In the EotW and Dust publication comparison (`e33ec311`), all 131 acquisitions and 79 installed source signatures matched. Both runs decoded 122 skeletons, reused nine and released all live payloads. The catalog-owned table retired with zero entries and seven reserved slots. This observes acquisition, reuse and retirement, without a timing inference. Evidence: `DH2-interactions/artifacts/catalog-skeleton-registry-20261110-comparison.json`.
 - Wwise stream location ownership (`1400bc8f0`, `1410bf740`, `1410f1910` / `141122400`). The event resolver already looks up a Sound's package using its owning bank and language. Retain that bank identity in the streamed reference until graph decoding and keep the locator table local to that acquisition. Expect zero level-retained lookup entries, no cross-event lock or overwrite during parallel preload, and unchanged media extents for unambiguous IDs. Only the graph's actual stream sources retain their locators. The existing resident package-entry reader can also fill fallback resident media directly, avoiding one temporary buffer and payload copy per full package read. Header-only and prefetched stream acquisition retain their current reads. The lifetime prediction concerns acquisition and its scratch storage, with no steady-state voice cost or lower frame-time prediction. Installed publication and scoped timing observations remain pending.
@@ -5683,6 +5684,78 @@ Prediction before change. In the recorded Edge of the World / Dust District / Ed
 Optimized acceptance rejected the read-direct variant (0ae65b15). Four same-executable observations matched 8,129 whole-image acquisitions and all mip descriptors, payload CRCs, material handoffs and GPU asset counts. The streamed reader avoided full-member temporaries but consumed 2,482–2,764 million versus 2,000–2,057 million affected cycles in Edge of the World, and 2,099–2,137 million versus 1,804–1,824 million in Dust District. Retain the faster archive acquisition call. Prediction for the replacement: validate the same indexed mip payload ranges, then compact the owned member in place using the same range compaction as layered images. This removes a second full-sized allocation, preserves one payload move, and avoids the per-image buffered decoder and output initialization of the rejected variant. Header slack is bounded by 62 + 20 times the mip count (plus archive read capacity). Keep the same large inline-only scope and baseline for a matched repeat. Evidence: DH2-fx-resources/artifacts/resident-inline-image-streaming-20261110-comparison.json.
 
 Installed compaction acceptance (99ea2165). Four same-executable optimized acquisitions matched all 8,129 prepared image payloads, format/extent/mip selection and CRC, material handoffs, and GPU upload/retirement counts. The 5,039 eligible inline reads per two-map route reuse the decoded member allocation as the upload allocation, removing a second overlapping buffer. The largest eligible member was 16,777,298 bytes; the old separate payload was 16,777,216 bytes. Affected Edge of the World cycles were 1,894–1,899 million buffered and 1,818–1,839 million compacted. Dust District measured 1,707–1,720 million buffered and 1,670–1,739 million compacted. The two-map acquisition total fell 1.7% and 2.5% in the two paired observations. Individual Dust samples vary around parity. These are scoped acquisition cycles and temporary allocation capacities, with no frame-time or peak RAM claim. Evidence: DH2-fx-resources/artifacts/resident-inline-image-compaction-20261110-comparison.json.
+
+### Runtime material batch publication
+
+Prediction before change. The host resolves material identity and purge through
+1400607f0 and 140060180. Its exclusive publication currently snapshots all live
+leases for rollback, yet a failure after an earlier binding cannot undo edits
+to a shared material asset. Resolve the complete slot, image, material and
+dependency mapping before any live asset or cache changes. Then publish the
+same ordered batch. Failed preparation should leave the preceding bindings
+and owners intact, and successful preparation should stop cloning their
+rollback snapshots. This is host transaction ownership. The installed
+dynamic FX route is needed to measure the affected publication work.
+
+Installed usable-family acquisition (`ff26580f`): all 12 declarations under
+`models/effects/usable/` resolved. Only the toilet flush acquired a particle
+model. Its authored programs are `particle/add_default` and
+`particle/dist_blur`, which keep it on the particle renderer, and none of the
+12 declarations has a decal group. Edge of the World and Dust District both
+reference the flush and sink definitions. These are candidates for observing
+particle image, model and sound release. A world-material or decal batch needs
+an installed definition with the corresponding dependency. No live usable
+activation, proxy publication or image retirement is established by this
+acquisition. Evidence:
+`DH2-interactions/artifacts/runtime-fx-installed-usable-sources-20261110.json`.
+
+Named acquisition (`a813a5bf`) found two installed inputs for the remaining
+publication observation. `dirt_flies_few.fx` acquired two model resources and
+one particle material. Its mesh declaration pairs `dirt_flies_body.pmodel`
+with an `arkDefault` material. `blood_splat_01.fx` resolved a projected decal
+definition. Sword impacts and the other sampled model candidates are weaker
+inputs because they acquired no model records. These are acquisition results.
+Publication, pending-image failure, and final release are still separate
+observations. Evidence: `DH2-interactions/artifacts/runtime-fx-model-stage-source-acquisition-20261110.json`
+and `runtime-fx-material-route-source-acquisition-20261110.json`.
+
+The windowless runtime FX observer requests installed sources in a prepared
+level and drives the existing material coordinator, texture read worker,
+upload mailbox and asset retirement systems. The input is a resource request,
+with no interaction or simulation. It identifies FX-only GPU images and
+meshes, and newly published decal material assets. Expect those identities to
+retire after both request leases end, while the loaded level stays alive. A
+camera-specific decal pipeline, active effect tails, and failure recovery are
+outside this observation.
+
+The first run (`cce7d92d`) resolved one world mesh and four decal material
+requests in both maps, then the production coordinator reported that the
+scene catalog was absent. Setup had moved the only `SceneData` reference into
+the texture worker, although late FX requests still use `SceneData`.
+Keep the scene lease and give the worker a clone of the same Catalog Arc.
+This should restore late acquisition with no second index, archive cache,
+or payload read. Both leases end at their existing level-owner boundaries.
+
+Installed publication and retirement (`f136cef7`): both EotW and Dust
+published four blood-splatter decal materials through the runtime coordinator.
+EotW published and retired seven FX-only GPU images. Dust published and
+retired six and reused one existing scene image. Both reused the dirt-fly mesh
+already owned by their scene. A Dunwall Tower request for `stink_bug_running_sub.fx`
+created and retired one new world mesh and two GPU images. The trace observed
+the proxy and its world material binding retire before those image slots. All
+runs exited successfully after release. They exercise actual successful
+publication, sharing, and disposal of the observed assets. They do not cover
+failed input, in-flight read cancellation, or camera-specific material readiness.
+Evidence: `DH2-fx-resources/artifacts/runtime-fx-publication-v2-20261110-comparison.json`
+and `runtime-fx-publication-v2-20261110-tower-stinkbug/result.json`.
+
+### Runtime FX image binding retirement
+
+Prediction before change. A dynamic material proxy retires after its final effect or tail lease, under the map material identity/release boundaries 1400607f0 and 140060180. RuntimeMaterialCoordinator publishes only the surviving surfaces to DynamicWorldMaterials. The host image synchronization previously removed absent bindings only inside its replacement-image readiness gate. While an unrelated image read is pending or fails, the stale world_materials entry can hold the old image's Arc and prevent its streaming slot and GPU lease from retiring. Drop absent dynamic bindings on the new surface revision, independently of incoming-image readiness. Existing tail and render-frame leases still defer the actual slot release, and startup keys are excluded from the dynamic entry set. Incoming binding publication retains its readiness gate. Expect the expired binding to release before a new pending/failed read completes, with the same ready materials and no new work on unchanged revisions. Live cancellation and tail evidence remain required; the runtime trace reports the binding release and the existing image-slot retirement.
+
+### Abandoned runtime texture reads
+
+Prediction before change. The original image owner limits residency by live resource demand and releases it through 140060180; its mip budgeting path is 14030f3d0. The host tracks FX-only slot leases separately from the shared scene. Before this change an orphan slot waited for its read, but the completed read still created an image and enqueued GPU upload. Cancel queued reads for FX-only slots once their final effect or tail lease ends. For a blocking read that already started, keep the slot assigned until its completion is acknowledged, discard the payload outside the upload budget and release the outstanding read reservation. A revived consumer of the same slot before completion may still use the result. Ordinary scene slots and already submitted GPU work keep their current ownership. Expect no new upload for a read abandoned before submission, with unchanged live texture output and no read cancellation based only on camera motion. Live FX tracing is still required for this ownership edge.
 
 Collision cancellation prediction. The closing audio session waits for the
 map worker's lease, and the former checks bracket the whole collision phase.

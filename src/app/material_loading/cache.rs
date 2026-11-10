@@ -151,9 +151,8 @@ impl MaterialCache {
     }
     pub(in crate::app) fn disable_dependency_trace(&mut self) { self.dependency_trace = None; }
 
-    /// Transfer worker-local identities to existing scene slots only after the
-    /// coordinator has verified that every mapped slot is resident.
-    pub(in crate::app) fn merge_dynamic(&mut self, other: MaterialCache, slots: &[usize])
+    /// Remap worker-local identities without publishing them to the live cache.
+    pub(in crate::app) fn map_dynamic(&self, other: MaterialCache, slots: &[usize])
         -> Result<Vec<(String, MaterialGeometry, CachedMaterial)>, String> {
         let mut mapped = Vec::new();
         for (name, entries) in other.entries {
@@ -167,7 +166,6 @@ impl MaterialCache {
                 mapped.push((name.clone(), geometry, material));
             }
         }
-        for (name, geometry, material) in &mapped { self.insert(name.clone(), *geometry, Some(material.clone())); }
         Ok(mapped)
     }
     pub(in crate::app) fn remove_dynamic(&mut self, name: &str, geometry: MaterialGeometry) {

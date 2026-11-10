@@ -29,6 +29,11 @@ pub fn inspect_scene_gpu_resources(
         if flag == "--worker-images" {
             return inspect_worker_images(base, paths);
         }
+        if flag == "--runtime-fx" {
+            let (level, effects) = paths.split_first().filter(|(_, effects)| !effects.is_empty())
+                .ok_or("--runtime-fx requires a level and at least one installed effect")?;
+            return inspect_scene_resources(base, std::slice::from_ref(level), Mode::RuntimeFx(effects), false);
+        }
     }
     let reuse_host = levels.first().is_some_and(|arg| arg == "--reuse-host");
     inspect_scene_resources(base, &levels[usize::from(reuse_host)..], Mode::Upload, reuse_host)
@@ -133,7 +138,7 @@ fn inspect_worker_images(
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Mode { Prepare, Publish, Upload }
+enum Mode<'a> { Prepare, Publish, Upload, RuntimeFx(&'a [String]) }
 
 fn gpu_inputs(world: &World) -> super::scene_preparation::SceneGpuInputs {
     super::scene_preparation::SceneGpuInputs {
@@ -262,6 +267,113 @@ fn track_assets<A: bevy::asset::Asset>(world: &mut World) -> Result<(), std::io:
         })
 }
 
+/// Observe real runtime material and texture publication, with no view or
+/// effect simulation. The requested definitions come from installed assets.
+fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[String])
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use super::{runtime_fx_images, runtime_materials, usable_effects::{DynamicDecalMaterials, DynamicWorldMaterials, ParticleResourceOwner}};
+    use crate::rendering::{bevy_backend::{projected_decals::DynamicProxyReadiness, world_effects::DynamicMaterialPrewarm}, particles::world_sources::WorldFxSources};
+    use std::sync::{Arc, atomic::Ordering};
+
+    let mailbox = PreparedImageMailbox::default();
+    app.insert_resource(mailbox.clone())
+        .init_resource::<DynamicProxyReadiness>().init_resource::<DynamicMaterialPrewarm>();
+    app.sub_app_mut(RenderApp).insert_resource(mailbox)
+        .add_systems(Render, report_prepared_diffuse_images.after(RenderSystems::PrepareAssets));
+    let world = app.world_mut();
+    let sources = {
+        let mut programs = world.resource::<ProgramCacheSource>().0.lock().unwrap_or_else(|error| error.into_inner());
+        let mut particles = world.resource::<ParticleResourceOwner>().0.lock().unwrap_or_else(|error| error.into_inner());
+        Arc::new(WorldFxSources::load_named_shared(effects.to_vec(), catalog,
+            programs.as_mut().map_err(|error| error.clone())?, &mut particles))
+    };
+    let meshes = sources.world_meshes().len();
+    let decals = sources.decal_materials().len();
+    if meshes == 0 && decals == 0 { return Err("installed FX has no admitted world meshes or decals".into()); }
+    eprintln!("RESOURCE_RUNTIME_FX_REQUEST meshes={meshes} decals={decals}");
+    let baseline_slots = world.resource::<SceneRenderQueue>().diffuse_image_paths.len();
+    let baseline_meshes: std::collections::HashSet<_> = world.resource::<Assets<Mesh>>().ids().collect();
+    let baseline_decals: std::collections::HashSet<_> = world.resource::<Assets<DecalMaterial>>().ids().collect();
+
+    let request = |world: &mut World, generation, sources: Arc<WorldFxSources>, leases: Arc<Vec<std::sync::Weak<WorldFxSources>>>| {
+        let mut materials = world.resource_mut::<DynamicWorldMaterials>();
+        materials.generation = generation;
+        materials.sources = sources.clone();
+        materials.leases = leases.clone();
+        let mut decals = world.resource_mut::<DynamicDecalMaterials>();
+        decals.generation = generation;
+        decals.sources = sources;
+        decals.leases = leases;
+    };
+    let epoch = |app: &mut App| -> Result<(), Box<dyn std::error::Error>> {
+        let world = app.world_mut();
+        world.run_system_once(super::texture_streaming::stream_visible_textures)
+            .map_err(|error| format!("FX texture worker: {error:?}"))?;
+        world.run_system_once(runtime_fx_images::synchronize)
+            .map_err(|error| format!("FX image bindings: {error:?}"))?;
+        runtime_materials::coordinate(world);
+        render_epoch(app)
+    };
+    let leases = Arc::new(vec![Arc::downgrade(&sources)]);
+    request(world, 1, sources, leases);
+    let started = std::time::Instant::now();
+    loop {
+        epoch(app)?;
+        let world = app.world();
+        let materials = world.resource::<DynamicWorldMaterials>();
+        let prepared = world.resource::<DynamicDecalMaterials>();
+        if materials.failed.load(Ordering::Acquire) == 1 || prepared.failed.load(Ordering::Acquire) == 1 {
+            return Err("runtime FX publication failed; see material and texture diagnostics".into());
+        }
+        if prepared.prepared_generation == 1 && materials.images_ready == materials.image_revision {
+            break;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            return Err("runtime FX publication observation timed out".into());
+        }
+    }
+    let published = gpu_inputs(app.world());
+    upload_assets(app, &published)?;
+    let world = app.world();
+    let proxies = &world.resource::<DynamicProxyReadiness>().world_meshes.proxies;
+    let queue = world.resource::<SceneRenderQueue>();
+    let slots = world.resource::<runtime_fx_images::RuntimeFxImages>();
+    let images: std::collections::HashSet<_> = world.resource::<DynamicWorldMaterials>().extra_images.iter()
+        .filter_map(|image| slots.slot(&image.path)).filter(|&slot| slot >= baseline_slots)
+        .filter_map(|slot| queue.diffuse_image_handles[slot].as_ref().map(Handle::id)).collect();
+    let meshes: std::collections::HashSet<_> = proxies.iter().filter_map(|&entity| world.get::<Mesh3d>(entity))
+        .map(|mesh| mesh.0.id()).filter(|id| !baseline_meshes.contains(id)).collect();
+    let decal_materials: std::collections::HashSet<_> = world.resource::<DynamicDecalMaterials>().prepared.iter()
+        .map(|decal| decal.handle.id()).filter(|id| !baseline_decals.contains(id)).collect();
+    eprintln!("RESOURCE_RUNTIME_FX_PUBLISH proxies={} images={} meshes={} decal_materials={}",
+        proxies.len(), images.len(), meshes.len(), decal_materials.len());
+    if images.is_empty() && meshes.is_empty() && decal_materials.is_empty() {
+        return Err("runtime FX reused startup assets; select a level without those resources".into());
+    }
+
+    request(app.world_mut(), 2, Arc::default(), Arc::default());
+    let started = std::time::Instant::now();
+    loop {
+        epoch(app)?;
+        let world = app.world_mut();
+        track_assets::<ProbeMaterial>(world)?;
+        track_assets::<DecalMaterial>(world)?;
+        track_assets::<Mesh>(world)?;
+        track_assets::<Image>(world)?;
+        let decals_left = decal_materials.iter().filter(|id| world.resource::<Assets<DecalMaterial>>().get(**id).is_some()).count();
+        let render = app.sub_app(RenderApp).world();
+        let images_left = images.iter().filter(|id| render.resource::<RenderAssets<GpuImage>>().get(**id).is_some()).count();
+        let meshes_left = meshes.iter().filter(|id| render.resource::<RenderAssets<RenderMesh>>().get(**id).is_some()).count();
+        if (images_left, meshes_left, decals_left) == (0, 0, 0) { break; }
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            return Err(format!("runtime FX release timed out: images={images_left} meshes={meshes_left} decals={decals_left}").into());
+        }
+    }
+    eprintln!("RESOURCE_RUNTIME_FX_RELEASE images=0 meshes=0 decal_materials=0");
+    Ok(())
+}
+
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
     eprintln!(
         "RESOURCE_SCENE_ASSETS step={step} phase={phase} meshes={} images={} probes={} decals={} skies={} buffers={}",
@@ -346,7 +458,7 @@ fn scene_host(first_host: bool) -> App {
 fn inspect_scene_resources(
     base: &std::path::Path,
     levels: &[String],
-    mode: Mode,
+    mode: Mode<'_>,
     reuse_host: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if levels.is_empty() {
@@ -366,7 +478,7 @@ fn inspect_scene_resources(
         // asset storage and render device across actual map retirement.
         let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
-        if mode == Mode::Upload {
+        if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
             if new_host {
                 let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
                 resident.prepare_intrinsics(&catalog, &mut *app.world_mut().resource_mut::<Assets<Image>>())?;
@@ -404,7 +516,7 @@ fn inspect_scene_resources(
             prepared.publish(app.world_mut());
             lifetime.published(app.world(), &before);
             resource_snapshot(app.world(), step, "published");
-            if mode == Mode::Upload {
+            if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
                 // Only asset upload/removal is observed. No camera produces a
                 // view, and no gameplay or audio systems were registered.
                 let mut cameras = app.world_mut().query::<&mut Camera>();
@@ -415,6 +527,9 @@ fn inspect_scene_resources(
                 acquire_water_images(app.world(), step)?;
                 upload_assets(&mut app, &inputs)?;
                 gpu_snapshot(&app, step, "uploaded");
+            }
+            if let Mode::RuntimeFx(effects) = mode {
+                inspect_runtime_fx(&mut app, &catalog, effects)?;
             }
             // No camera/view frame was produced. Upload mode completed its
             // asset queue work above; view-pass owners were not installed.
@@ -430,7 +545,7 @@ fn inspect_scene_resources(
             track_assets::<ShaderBuffer>(app.world_mut())?;
             track_assets::<Image>(app.world_mut())?;
             resource_snapshot(app.world(), step, "asset-handles-tracked");
-            if mode == Mode::Upload {
+            if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
                 // GPU material removal releases image handles; the following
                 // tracking epoch removes those images, then consumes removal
                 // events. Record actual final ownership rather than asserting
