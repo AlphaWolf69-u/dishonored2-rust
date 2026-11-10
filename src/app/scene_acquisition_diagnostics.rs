@@ -689,6 +689,9 @@ fn inspect_scene_resources(
         // asset storage and render device across actual map retirement.
         let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
+        if new_host && observe_initial_images {
+            app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
+        }
         if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
             if new_host {
                 let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
@@ -760,6 +763,12 @@ fn inspect_scene_resources(
                         app.world_mut().remove_resource::<super::texture_streaming::PreparedBaseImages>();
                         result
                     })?;
+                    let scene = app.world().resource::<SceneRenderQueue>();
+                    let shared = app.world().resource::<super::texture_streaming::SharedImages>();
+                    let common = scene.diffuse_image_paths.iter().enumerate()
+                        .filter(|(slot, path)| shared.contains(path) && scene.diffuse_mip_states[*slot].resident.is_some())
+                        .count();
+                    eprintln!("INITIAL_TEXTURE_COMMON step={step} resident={common}");
                 }
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;
