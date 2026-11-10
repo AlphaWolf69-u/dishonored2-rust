@@ -1,21 +1,13 @@
 //! Immutable render-parameter metadata shared by the session's program owners.
 //! The original resource registry retains initialized declarations separately
 //! from each world's prepared render programs (1400607f0/14005feb0).
-use super::{Arc, HashMap, LazyLock, Mutex, Path, Result};
+use super::{Arc, HashMap, Result};
 use crate::{assets::archive::Catalog, rendering::render_program::RenderParameterKind};
 
 #[derive(Clone)]
-pub(super) struct Parameters {
+pub(crate) struct Parameters {
     pub kinds: Arc<HashMap<Vec<u8>, RenderParameterKind>>,
     pub options: Arc<HashMap<Vec<u8>, i32>>,
-}
-
-static RESIDENT: LazyLock<Mutex<Option<(u64, std::path::PathBuf, Parameters)>>> = LazyLock::new(Default::default);
-
-pub(crate) fn retire_catalog(catalog: u64) -> usize {
-    let retired = RESIDENT.lock().unwrap_or_else(|e| e.into_inner())
-        .take_if(|(identity, _, _)| *identity == catalog);
-    usize::from(retired.is_some())
 }
 
 /// 1402d8820 registers the numeric union subtype and color annotation used
@@ -24,19 +16,18 @@ pub(super) fn value_metadata(catalog: &Catalog, name: &str) -> Result<crate::ren
     crate::assets::render_parameter::acquire(catalog, name)?.metadata()
 }
 
-pub(super) fn acquire(base: &Path, catalog: &Catalog) -> Result<Parameters> {
+pub(super) fn acquire(catalog: &Catalog) -> Result<Parameters> {
     let started = std::time::Instant::now();
-    let mut resident = RESIDENT.lock().unwrap_or_else(|error| error.into_inner());
     // A loose declaration can change while the catalog identity remains the same.
     let shared = !catalog.has_overlay_declaration("generated/decls/renderparm/")
         && std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
-    if resident.as_ref().is_some_and(|(identity, path, _)| *identity != catalog.identity() || path != base) {
-        *resident = None;
-    }
-    let (parameters, reused) = if let Some((_, _, parameters)) = resident.as_ref().filter(|(identity, path, _)| *identity == catalog.identity() && path == base && shared) {
+    let mut resident = shared.then(|| {
+        catalog.render_parameters.get_or_init(Default::default).shader_metadata
+            .lock().unwrap_or_else(|error| error.into_inner())
+    });
+    let (parameters, reused) = if let Some(parameters) = resident.as_ref().and_then(|slot| slot.as_ref()) {
         (parameters.clone(), true)
     } else {
-        if shared { *resident = None; }
         let mut kinds = HashMap::new();
         let mut options = HashMap::new();
         crate::render_program::visit_render_parameters(catalog, |name, kind, source| {
@@ -47,7 +38,7 @@ pub(super) fn acquire(base: &Path, catalog: &Catalog) -> Result<Parameters> {
             Ok(())
         })?;
         let parameters = Parameters { kinds: Arc::new(kinds), options: Arc::new(options) };
-        if shared { *resident = Some((catalog.identity(), base.to_owned(), parameters.clone())); }
+        if let Some(slot) = resident.as_mut() { **slot = Some(parameters.clone()); }
         (parameters, false)
     };
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {

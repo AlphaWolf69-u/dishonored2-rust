@@ -137,6 +137,9 @@ pub fn inspect_scene_publication(
         if flag == "--catalog-history-scopes" {
             return inspect_catalog_history_scopes(base);
         }
+        if flag == "--shader-session-scopes" {
+            return crate::assets::shader_cache::observe_session_scopes(base).map_err(Into::into);
+        }
     }
     if let [flag, name] = levels {
         match flag.as_str() {
