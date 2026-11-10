@@ -459,7 +459,7 @@ impl ProbeLightingSet {
         let instances = refs.instance_offsets.len();
         let indices = refs.tetrahedron_indices.len();
         let tetrahedra = self.spatial.tetrahedra.len();
-        let vertices = self.spatial.vertices.len();
+        let vertices = self.spatial.vertex_positions.len();
         let probes = self.probes.len();
         let instance_start = 10;
         let index_start = instance_start + instances;
@@ -486,9 +486,9 @@ impl ProbeLightingSet {
                 u32::from(tetra.probe_indices[2]) | u32::from(tetra.probe_indices[3]) << 16,
             ]);
         }
-        for vertex in &self.spatial.vertices {
-            append(&vertex.position.map(f32::to_bits));
-            append(&[u32::from_le_bytes(vertex.probe_weights)]);
+        for (position, weights) in self.spatial.vertex_positions.iter().zip(&self.spatial.vertex_probe_weights) {
+            append(&position.map(f32::to_bits));
+            append(&[u32::from_le_bytes(*weights)]);
         }
         for probe in 0..self.probes.len() {
             let (index, luminance) = self.reflection_info(probe);
@@ -511,9 +511,9 @@ impl ProbeLightingSet {
             words.push(u32::from(tetra.probe_indices[2]) | u32::from(tetra.probe_indices[3]) << 16);
         }
         words[3] = words.len().try_into().expect("PNW GPU word count");
-        for vertex in &self.spatial.vertices {
-            words.extend(vertex.position.map(f32::to_bits));
-            words.push(u32::from_le_bytes(vertex.probe_weights));
+        for (position, weights) in self.spatial.vertex_positions.iter().zip(&self.spatial.vertex_probe_weights) {
+            words.extend(position.map(f32::to_bits));
+            words.push(u32::from_le_bytes(*weights));
         }
         words[4] = refs
             .instance_offsets
@@ -533,7 +533,7 @@ impl ProbeLightingSet {
             .expect("PNW tetrahedron count");
         words[7] = self
             .spatial
-            .vertices
+            .vertex_positions
             .len()
             .try_into()
             .expect("PNW vertex count");
@@ -609,7 +609,7 @@ impl ProbeLightingSet {
 
             let mut probe_weights = [0.0; 4];
             for (vertex, barycentric) in tetrahedron.vertex_indices.iter().zip(barycentrics) {
-                let packed = self.spatial.vertices[*vertex as usize].probe_weights;
+                let packed = self.spatial.vertex_probe_weights[*vertex as usize];
                 for probe in 0..4 {
                     probe_weights[probe] += barycentric * (packed[probe] as f32 / 255.0);
                 }
