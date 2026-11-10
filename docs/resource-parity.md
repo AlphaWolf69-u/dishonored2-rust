@@ -5999,6 +5999,17 @@ after warmup. This observes ownership and queue retirement, without measuring
 active rendering cost. Evidence:
 `DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
 
+Placed static model staging prediction. The BML1 loader retires its input at
+14026a5a0 and releases dispensable triangle arrays through 140278df0. The host
+needs decoded level triangles while resolving placements in authored order.
+The last placement that uses each source is known before setup. Record it in
+the same source table and drop level triangles after that placement, leaving
+session sources with the catalog. The archived Edge of the World load kept
+30,145,962 bytes of combined static and skeletal geometry until the end of
+setup. Expect lower peak live static geometry within this scope, one source
+acquisition per path, identical mesh bytes and placement order, and no change
+to gameplay CPU. Compare the placement loop including the new table pass.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
