@@ -6438,6 +6438,46 @@ identity lookup (1400607f0 / 14005feb0), and release boundary (140060180) apply.
 Scope leases are host integration for worker-local Rc objects. Measure source
 identity, bytes and retirement using installed movies; no frame-time claim.
 
+Installed parsed Iggy acceptance. The combined windowless build at
+5a218eb1 parsed the 518,171-byte Corvo pause source once per catalog in an
+interleaved A/B/A observation. A's file survived until its consumer released
+it and B reused its own independent copy. Loading and pause matched all
+bitmap counts, payload sizes and signatures, including 290 transferred
+loading images and 408 overlapping pause images. This verifies source
+reuse, withdrawal and bitmap inputs. Evidence:
+DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-ui-comparison.json.
+
+
+### Vorbis decoder cache keys
+
+Prediction before implementation. The original streams the installed Vorbis
+format (1411614e0, 141161240); the rewrite's host cache shares the decoded
+setup required by lewton. Both host header lookups currently allocate and
+copy the entire setup packet before checking for a hit. Use the existing
+numeric format discriminators and look up the complete key
+by borrowed bytes. Expect no packet-key allocation on a hit and one owned
+byte slice on a new entry. Exact byte equality, independent sample-rate
+identities, setup sharing across rates and session retirement remain the
+same. This does not change the existing cold setup reconstruction, source
+metadata or PCM. Observe avoided key allocations and bytes in the real
+resident/streamed acquisition route and compare source fingerprints and
+retirement. Original memory-tag evidence is the installed EotW budget and
+the existing per-source acquisition comparison.
+
+Installed Vorbis key comparison at 5a218eb1. Copy-key control and borrowed
+lookups matched all media and stream fingerprints, encoded residency,
+package read counts and final header/setup retirement. Across the
+Edge of the World, Dust District, Edge of the World route the control
+copied 1,235,787 packet-key bytes during lookup and the borrowed path
+copied zero. The median for Wwise header hits was 3,150 versus 2,730
+thread cycles in this dev observation. The parallel runs did not produce
+identical lookup counters. There were four more Wwise hits in the borrowed
+run and two of the 29 decoder lookups were misses instead of hits.
+Published source fingerprints and retirement counts were identical.
+This measures the affected lookup only and does not measure walking or
+audio mixing. Cold setup reconstruction still uses the existing converter.
+Evidence: DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-audio-comparison.json.
+
 
 ### Installed localization dictionary lifetime
 
