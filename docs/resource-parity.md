@@ -388,13 +388,13 @@ trailing `*` covers a family of kinds.
 | `pblock` | `assets::parm_block`, `rendering::render_program`, `rendering::particles::definition` | partial: the installed registry has 96 declarations; typed acquisition and weak declaration/history ownership are connected to particle definitions and retained through runtime tails, and compile in the integrated game build. Metadata is acquired lazily through the shared program library; mutable overlays bypass sharing. FX descriptors preserve `m_parmBlock` but the world FX owner still rejects those systems because per-instance binding and actual masking-pass activation remain unconnected. Original registration is `141351ed0`, value deserialization `14098cdd0`, and particle application `140227cd0` / `140228110` / `1403421e0`. The masking executor is `1403222f0`, registered by `14034fe00`: it binds maskBuffer with scene depth, selects slots 15/16, and preserves material state except depth writes; `render_state::masking_surface_draw_state`, `material_lists::model_masking_admitted`, and `render_model::update_particle_parameters` port the traced rules but await renderer integration. EotW / Dust / Dust return / EotW measured coverage remains 0/33, 0/37, 0/31, 0/33 listed declarations. Complete per-instance binding, target execution and color-grading consumer before lifting rejection. |
 | `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Model collision and machinery requests now route through the physics source owner. The candidate cache of alias targets was removed after the Dust return comparison showed extra temporary storage and slower acquisition with no saved reads. Full resource registry lifetime remains partial. Original 14006a910 pushes the map heap for named maps; physhape is absent from 1400661e0's conditional persistent-type promotion table at 142280ee0. Init/common inherit their caller's scope |
 | `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
-| `physSystem` | `assets::physworld::physics_system` | host: machinery acquires immutable decoded systems through the physics owner; repeated paths share during level preparation and each instance constructs independent bodies and constraints. Four sampled loads required 5 reads instead of 12 with matching per-instance definition fingerprints. The original MD6 definition parser `1401c9630` acquires the ragdoll's physics-system identity through `1400607f0` on registry `142bf86f0`; `14076abc0` constructs its live bodies from that resource, and `14008d7b0` releases the resource's owned Havok object at destruction. Session/common residency and full registry purge remain partial |
+| `physSystem` | `assets::physworld::physics_system` | host: Catalog-owned selected headers, lazy shared decoded systems and immutable failures, bootstrap promotion, explicit map markers and scoped purge. Recipes retain generation leases and instantiate independent mutable bodies and constraints. Original lookup and instance boundaries `1401c9630` / `1400607f0` / `14076abc0` / `14008d7b0`. Installed four-map acquisition matches all twelve admitted recipe/mapping inputs. Bootstrap reuse, live-map purge protection, exact read-history release and final consumer release were observed at b7bacad0. Unsupported character-system parser inputs remain explicitly rejected. See physics-system registry acceptance below |
 | `physworld` | `assets::level`, `assets::physworld`, `gameplay::navigation`, `app::level_lifetime` | host: the selected map companion is acquired once by level preparation; source bytes and Havok schema/decoded construction tables retire at the end of the physics phase. Only owned full-precision collision triangles, packed cell indices, material/filter and owner state survive in NavigationWorld; it releases with the outgoing level. Failed/cancelled preparation drops the same owned values. Native registration141388640 and compressed-mesh tree141262020; no per-query source decoding, GPU upload or session pin. This covers the supported static-query representation, not a port of the whole Havok world runtime or generic native resource registry |
 | `playerLocomotion` | `assets::entities::player::DeclarationSource`, `app::player`, `gameplay::player::animation` | host: inherited declaration syntax is acquired during player setup and shared with arm/body consumers through the temporary setup owner. Runtime body/bob/arm LocoData owns model-specific clip indices, speed sets and transitions; mutable playback remains per node. Generic syntax is dropped after setup consumers, with no frame-time archive reads or permanent source cache. Original registration14138cdb0, common identity1400607f0 and animation update1406f4c70; selected native registry header/purge phases remain a host deviation, not ported |
 | `playerMode` | `assets::entities::player::DeclarationSource`, `gameplay::player::decls`, `gameplay::player::states` | host: startup and swimming modes resolve inherited sources during setup; typed rules, default IDs and supported state records move to level-owned runtime StateMachine data. Generic mode syntax drops after the player/arms consumers; no mode-declaration source trees survive in the player runtime. Original registration14138f7d0 and common identity1400607f0. Unsupported player modes are not acquired for runtime use. Selected native registry header/purge phases remain a host deviation, not ported |
 | `playerStatisticsManager` | none | none: no owner yet |
 | `proceduralLookAt` | none | none: no owner yet |
-| `ragdoll` | `assets::physworld::physics_system` | host: machinery resolves a skeleton/system pair and shares the immutable decoded ragdoll mapping, with independent runtime bodies and skinning state. Four sampled loads required 5 reads instead of 12 and matched the per-instance definitions. Original `14009a3c0` acquires the associated physics-system and skeleton identities before constructing the generated ragdoll path. Session/common residency and full registry purge remain partial |
+| `ragdoll` | `assets::physworld::physics_system` | host: Catalog-owned selected headers, lazy shared immutable mapping slices and retained failures, bootstrap promotion, explicit map markers and scoped purge. Original generated identity/read boundaries `14009a3c0` / `14009a530` / `14009a670`. Ragdoll instances retain their mapping generation while mutable bodies and skinning remain separate. Installed four-map definition fingerprints and b7bacad0 bootstrap/map/final-lease observations passed. Session requests survived map purge and reused their identity without IO. See physics-system registry acceptance below |
 | `ratLocomotion` | none | none: no owner yet |
 | `renderParm` | `assets::render_parameter` | host: Catalog-owned static code-default bytes, coalesced immutable reads/failures and lazy numeric metadata; editable paths create fresh leases. Catalog retirement drops session ownership; renderer/environment/sampler readers share this owner. Original1402d82c0/1402d8310/1402d8820/1400606f0; no native purge marker inferred. Four-load acquisition/storage and installed decal-material observations passed; see scope below |
 | `renderProg` | `assets::shader_cache::ProgramLibrary`, `app::scene_preparation`, `app::runtime_materials` | host: immutable compiled indices share Catalog ownership; definitions decode on demand into the level program library, temporary compressed/unpacked RPD/RPVD/UCD buffers retire after conversion/admission, and prepared variants retain their required binding metadata. Validated UCD stage checksums share the level library so material variants avoid re-inflating the same stage. Runtime preparation leases the same library; final level/worker release closes its cursors and drops definitions/variant caches. Original141352730/1402ca9c0/1402c9f00/1402ca440; native GPU-bank publication, source/include validation and optional preload are not implemented by this serialized-source owner. Backend GPU objects retain their existing renderer owners |
@@ -6713,6 +6713,60 @@ matched media, streams, residency and retirement. The observer's cache
 miss counts differed, so its acquisition cycle totals do not establish
 a speedup.
 Evidence: DH2-fx-level-lifetime/artifacts/vorbis-packet-setup-20261111-comparison.json.
+
+
+### Raw declaration buffer handoff
+
+Prediction before implementation. The installed resource identity and
+release boundaries are 1400607f0 and 140060180. Four host readers still
+copy a valid UTF-8 archive buffer into a String before its only parser
+uses it. Move the existing allocation into the string for placed light,
+area environment, pause environment and fallback MD6 declarations.
+Preserve the current byte-for-byte lossy UTF-8 semantics, including
+invalid bytes, and keep the lexer-normalized readers on their existing
+route. The prior Edge of the World and Dust District light comparison
+read 56,215 and 67,341 bytes per load. Expect those source bytes to
+require no second copy when valid, with no read-count or runtime
+ownership change. Compare actual buffer adoption and installed outputs
+in the same build. This is a host acquisition change, without a
+steady-state memory or frame-time prediction.
+
+Installed declaration handoff acceptance at 71a4c2c5. In the same
+development executable, 304 acquisitions across light, area-environment,
+MD6 and pause-environment readers adopted 284,590 bytes of existing
+archive buffers in Edge of the World and Dust District. The control
+copied the same bytes. The scoped handoff recorded 958,615 versus
+384,580 aggregate thread cycles. Exact text fingerprints, scene and
+GPU preparation signatures, and initial texture and material handoff
+outputs matched. This measures the declaration handoff, not a frame
+timing or peak-memory result.
+Evidence: DH2-collision-staging/artifacts/raw-declaration-buffer-handoff-20261111-comparison.json.
+
+
+### Iggy string buffer ownership
+
+Prediction before implementation. Iggy 141093380 loads serialized
+sections, and the import path at 141023b00 consumes the installed names.
+The rewrite already owns each source section but copies UTF-16 units
+to a temporary vector before decoding the result. Find the terminator
+within the borrowed section and decode directly into the resulting
+string, preserving invalid-unit replacement and the exact out-of-range
+offset when a terminator is missing. The byte-string reader can borrow
+its range as well. Expect the same decoded strings and installed movie
+inputs, with no separate UTF-16 buffer per wide-string read. Compare
+actual loading, pause and Journal acquisition output in the same build.
+This is a host representation change with no frame-time prediction.
+
+Installed Iggy string acceptance at 6a190f9c. Both paths decoded the
+same 22,505 strings and 622,190 UTF-16 code units from loading, pause
+and Journal resources. Temporary UTF-16 buffer capacity fell from
+1,691,464 cumulative bytes to zero. Scoped string decoding recorded
+71,412,129 versus 34,067,916 thread cycles in this dev comparison.
+All string fingerprints, movie bitmap records and numeric Journal
+font raster outputs matched. The observation covers resource
+decoding and software raster output.
+Evidence: DH2-screen-shadow-retirement/artifacts/iggy-string-buffer-borrow-20261111-comparison.json.
+
 
 ### Edge clip joint weight backing
 

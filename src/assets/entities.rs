@@ -33,17 +33,17 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     }
     let mut bytes = bytes.to_vec();
     normalize_declaration_text(&mut bytes);
-    std::borrow::Cow::Owned(decode_declaration_text(bytes))
+    std::borrow::Cow::Owned(decode_utf8_lossy(bytes))
 }
 
 pub(crate) fn owned_declaration_text(mut bytes: Vec<u8>) -> String {
     if bytes.iter().copied().any(normalized_whitespace) {
         normalize_declaration_text(&mut bytes);
     }
-    decode_declaration_text(bytes)
+    decode_utf8_lossy(bytes)
 }
 
-fn decode_declaration_text(bytes: Vec<u8>) -> String {
+pub(crate) fn decode_utf8_lossy(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes)
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }

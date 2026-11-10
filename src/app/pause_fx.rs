@@ -59,7 +59,8 @@ pub(super) fn load(catalog: &Catalog) -> Result<ScreenFx, String> {
 pub(super) fn environment_parameters(catalog: &Catalog, name: &str) -> Result<crate::assets::entities::EnvironmentRenderParameters, String> {
     let read = |name: &str| -> Result<Option<String>, String> {
         let resource = format!("generated/decls/env/{name}.decl");
-        catalog.read(&resource).map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned())).map_err(|e| e.to_string())
+        catalog.read(&resource).map(|bytes| bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "pause-env")))
+            .map_err(|error| error.to_string())
     };
     let source = read(name)?.ok_or_else(|| format!("environment {name} is not installed"))?;
     crate::assets::entities::environment_render_parameters_with_inheritance(name, &source, read)
