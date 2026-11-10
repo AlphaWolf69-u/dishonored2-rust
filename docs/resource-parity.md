@@ -404,6 +404,9 @@ trailing `*` covers a family of kinds.
 
 - Close admission before host teardown. Winit receives `AppExit` after the final update and clears its main world before `App::run` returns. Waiting until the external `AudioSession` drops leaves its cancellation flag unset while the world's acquisition owners begin to retire. Signal the existing session after the final loading and window-exit systems observe a real exit. This is host scheduling for the shutdown boundary (`1408a4830`, `1400bc8f0`); final cache retirement still waits for admitted work. Expect one close signal per exit, earlier cancellation at existing worker checkpoints, and zero new steady-state allocations or locks. A file read already in progress still has to return. The saved windowless cancellation samples prove the checkpoints only.
 - World and player FX ownership (`1408a4830`, `140199df0`, `140821350`, `14021f820`). The map owns simulation state and its particle pools. The player-water/view update supplies frame inputs and does not own those pools. End player particle chains at map teardown before the world manager clears its chains. Prediction: no pool recreation on first camera publication or a temporary missing frame, one fewer initialization of both 1,024-slot pools per normal map entry, and no live player particle slots at the world shutdown boundary. Missing view inputs still withdraw the draw publication. This concerns host ownership and level acquisition, with no lower frame-time claim. Live camera-gap and active player-particle teardown observations remain pending.
+- Wwise stream location ownership (`1400bc8f0`, `1410bf740`, `1410f1910` / `141122400`). The event resolver already looks up a Sound's package using its owning bank and language. Retain that bank identity in the streamed reference until graph decoding and keep the locator table local to that acquisition. Expect zero level-retained lookup entries, no cross-event lock or overwrite during parallel preload, and unchanged media extents for unambiguous IDs. Only the graph's actual stream sources retain their locators. The existing resident package-entry reader can also fill fallback resident media directly, avoiding one temporary buffer and payload copy per full package read. Header-only and prefetched stream acquisition retain their current reads. The lifetime prediction concerns acquisition and its scratch storage, with no steady-state voice cost or lower frame-time prediction. Installed publication and scoped timing observations remain pending.
+
+  Installed publication (`ff26580f`) matched the previously accepted EotW / Dust / EotW run across 27,177 prepared-media records and 5,837 stream-format records. Encoded residency and stream acquisition counts and read byte totals matched at all three map checkpoints. An independent installed package comparison found 76 cross-package IDs in the EotW selection and 81 in Dust, with byte-identical duplicates in both. The observer used actual installed source acquisition and publication. Voice playback, the full-media fallback and scoped performance were outside that observation. Evidence: `DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-comparison.json` and `wwise-stream-bank-identities-20261110.json`.
 - Sound source release: `141122400` releases an old bank-backed source before
   assigning new media; `1410f1910` reuses the registered Sound object. The host
   now prunes unused Vorbis header/codebook cache entries after map voices and
@@ -5639,6 +5642,29 @@ Palace index construction stayed at 1.55–1.56 billion cycles. These are
 windowless acquisition measurements, without gameplay CPU or peak RAM
 claims. Evidence: DH2-collision-staging/artifacts/collision-lifetime-extremes-20261110-comparison.json
 and DH2-collision-staging/artifacts/convex-horizon-20261110-comparison.json.
+
+Placed model mesh preparation prediction. The host shares a nondeforming
+BMD6 mesh by model, surface, mirrored winding and skin influence count.
+Its rest palette is shared by model, and `apply_rest_pose` uses no placement
+transform for model-local meshes. The current setup still builds the four
+skin input arrays and applies the same rest pose again for each handle reuse.
+Move those writes to creation of the mesh. Baked and deforming meshes keep
+per-placement preparation, and vegetation still admits its channels by the
+actual material. Static BML1 shadow positions likewise attach at mesh creation.
+Expect one fewer initialization per shared handle hit, with identical final
+vertex and index bytes. This is a host consequence of preparing the shared
+geometry from the BMD6 source (14025aa00); it does not move runtime skinning
+or change GPU residency. Measure the affected setup work before integration.
+
+Installed acceptance (`a813a5bf`). Two pairs of optimized runs from the same
+executable matched final vertex/index fingerprints, instances and mesh counts.
+Edge of the World dropped from 6,259 to 908 initializations and from
+136.8–138.7 million to 131.8–133.4 million affected cycles. Dust District
+dropped from 5,313 to 961 initializations and from 137.5–139.4 million to
+121.9–123.2 million affected cycles. These are mesh initialization counts and
+scoped setup cycles. Frame timing and live GPU memory were outside this
+observation. Evidence:
+`DH2-collision-staging/artifacts/placed-model-mesh-v2-20261110-comparison.json`.
 
 ### Direct acquisition of whole inline image payloads
 

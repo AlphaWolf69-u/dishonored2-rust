@@ -157,8 +157,6 @@ struct WwiseRegistry {
     /// The level's listed sound events were prepared at load.
     preloaded: bool,
     level_prepared: bool,
-    /// Package location of every media read, for streamed sources.
-    locators: Arc<std::sync::Mutex<HashMap<u32, graph::StreamLocator>>>,
     stream_acquisition: Arc<std::sync::Mutex<(u64, u64, u64, std::time::Duration)>>,
     stream_io: Arc<crate::assets::wwise::stream_io::ReadPool>,
     /// The plugin owns the worker. Snapshots/queued inputs use a weak link so
@@ -173,28 +171,32 @@ impl WwiseRegistry {
     /// references while an already-running read finishes safely.
     fn decode_snapshot(&self) -> Self {
         Self { banks: self.banks.clone(), attenuations: self.attenuations.clone(),
-            library: self.library.clone(), locators: Arc::default(),
+            library: self.library.clone(),
             stream_acquisition: self.stream_acquisition.clone(), stream_io: self.stream_io.clone(),
             source_jobs: self.source_jobs.clone(),
             media_generation: self.media_generation,
             ..Default::default() }
     }
-    fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
+    fn playback(&self, event: u32, resident_streams: bool,
+        locators: &mut HashMap<(usize, u32), graph::StreamLocator>,
+    ) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
         let mut files = HashMap::<usize, std::fs::File>::new();
         self.library.event_playback_shared(event, |owner, media_id, stream_type| {
             let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
-            self.locators.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, graph::StreamLocator {
-                path: bank.path.clone(), offset: media.offset,
-                size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
-                pool: self.stream_io.clone(),
-                source_jobs: self.source_jobs.clone(),
-            });
+            let size = usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?;
+            if !resident_streams && stream_type != 0 {
+                locators.entry((owner, media_id)).or_insert_with(|| graph::StreamLocator {
+                    path: bank.path.clone(), offset: media.offset, size,
+                    pool: self.stream_io.clone(),
+                    source_jobs: self.source_jobs.clone(),
+                });
+            }
             if stream_type == 1 && crate::assets::wwise::stream_io::enabled() {
                 // The bank owns the prefetch bytes. Publish the package extent
                 // without reading the full file or duplicating that prefix.
-                return Ok(Some(crate::assets::wwise::MediaBytes::stream_header(Vec::new(), media.size as usize)));
+                return Ok(Some(crate::assets::wwise::MediaBytes::stream_header(Vec::new(), size)));
             }
             let file = match files.entry(owner) {
                 hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -203,16 +205,15 @@ impl WwiseRegistry {
             if stream_type == 2 {
                 use std::io::{Seek, SeekFrom};
                 let started = std::time::Instant::now();
-                let size = usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise stream too large"))?;
                 let header_only = std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1")
-                    && std::env::var("DH2_DEBUG_RESIDENT_STREAMS").as_deref() != Ok("1");
+                    && !resident_streams;
                 let acquired = if header_only {
                     file.seek(SeekFrom::Start(media.offset))?;
                     let header = crate::assets::wwise::read_stream_header(file, size)?;
                     if crate::assets::wwise::stream_format(&header, size)?.is_some() {
                         crate::assets::wwise::MediaBytes::stream_header(header, size)
-                    } else { bank.package.read_entry(file, media)?.into() }
-                } else { bank.package.read_entry(file, media)?.into() };
+                    } else { bank.package.read_resident_entry(file, media)? }
+                } else { bank.package.read_resident_entry(file, media)? };
                 let mut totals = self.stream_acquisition.lock().unwrap_or_else(|e| e.into_inner());
                 totals.0 += 1;
                 totals.1 += acquired.len() as u64;
@@ -220,7 +221,7 @@ impl WwiseRegistry {
                 totals.3 += started.elapsed();
                 return Ok(Some(acquired));
             }
-            bank.package.read_entry(file, media).map(|bytes| Some(bytes.into()))
+            bank.package.read_resident_entry(file, media).map(Some)
         })?.ok_or_else(|| "event has no supported Wwise actions".into())
     }
     fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
@@ -236,9 +237,11 @@ impl WwiseRegistry {
     /// The event's actions with every Play source decoded.
     fn decode_event(&self, event: u32) -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
         use crate::assets::wwise::PlaybackCommand;
+        let resident_streams = std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1");
+        let mut locators = HashMap::new();
         let graph_actions = {
             let _tag = crate::platform::allocation_tags::tag("sound bank lookup");
-            self.playback(event)?
+            self.playback(event, resident_streams, &mut locators)?
         };
         let _tag = crate::platform::allocation_tags::tag("sound graph");
         let mut actions = Vec::new();
@@ -262,11 +265,8 @@ impl WwiseRegistry {
             // 14113b5c0 sends every Play through the same source
             // and bus clock, including plain PCM and UI sounds.
             PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
-                definition: Arc::new(graph::Definition::decode(node, &self.attenuations, &|id| {
-                    // Diagnostic A/B: DH2_DEBUG_RESIDENT_STREAMS=1 keeps streamed sources resident.
-                    if std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1") { return None; }
-                    self.locators.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
-                }, self.media_generation)?) }),
+                definition: Arc::new(graph::Definition::decode(node, &self.attenuations,
+                    &|source| locators.get(&source).cloned(), self.media_generation)?) }),
             } })();
             match decoded {
                 Ok(action) => actions.push(action),
@@ -357,7 +357,6 @@ pub(super) fn begin_level(world: &mut World) {
     world.resource::<bevy_backend::Engine>().release_level();
     let mut registry = world.resource_mut::<WwiseRegistry>();
     registry.sources.clear();
-    registry.locators.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let keep = registry.shared_banks;
     Arc::make_mut(&mut registry.library).truncate(keep);
     Arc::make_mut(&mut registry.banks).truncate(keep);
