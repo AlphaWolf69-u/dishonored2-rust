@@ -7,6 +7,7 @@ override particle_water_mesh:u32=0u;
 override particle_masking:u32=0u;
 override particle_liquid:u32=0u;
 override particle_dissolve:u32=0u;
+override particle_add_liquid:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
 struct ParticleViewParameters {
@@ -75,6 +76,8 @@ struct ParticleMaterialParameters {
     liquid_options:vec4<u32>,
     dissolve:vec4<f32>,
     dissolve_options:vec4<u32>,
+    add_liquid:vec4<f32>,
+    add_liquid_options:vec4<u32>,
 }
 @group(1) @binding(0) var<uniform> particle_material:ParticleMaterialParameters;
 @group(1) @binding(1) var particle_opacity:texture_2d<f32>;
@@ -147,7 +150,8 @@ struct ParticleFragment {
     output.position=clip;
     output.texture_coordinates=vec4(uv,unpack2x16float(word&0xffffu).x,
         f32((word>>16u)&0x3fffu)*(1.0/16383.0));
-    if particle_distortion_mode!=0u {
+    if particle_distortion_mode!=0u || particle_add_liquid!=0u {
+        // particles::Fog(eyeDist) from fogStart/fogEnd/fogScale.
         let f=particle_material.distortion_fog;
         output.texture_coordinates.w=clamp(exp2(-clamp(clip.w-f.x,0.0,f.y)*f.z),0.0,1.0);
     }
@@ -305,6 +309,56 @@ fn particle_dissolve_colour(input:ParticleFragment,front_face:bool)->ParticleCol
     let rgb=material_fog_composite(colour*exposure*particle_view.exposure_extent.x,input.fog);
     return ParticleColour(vec4(rgb,alpha),colour);
 }
+// particle/add_liquid fragment: two panned distortion layers, a
+// threshold on their sum for opacity, and per-pixel fog. texcoords.w is
+// the vertex Fog(eyeDist), which the panning uses as its time seed.
+fn particle_add_liquid_colour(input:ParticleFragment)->ParticleColour {
+    let material=particle_material;
+    let texcoords=input.texture_coordinates;
+    let legacy=input.colour;
+    var one=textureSample(particle_distortion_one,particle_trilinear,particle_pan(texcoords,material.layers[0])).xy;
+    if material.distort_options.z!=0u {one.y=one.x;}
+    var two=vec2(0.0);
+    if material.distort_options.y!=0u {
+        two=textureSample(particle_distortion_two,particle_trilinear,particle_pan(texcoords,material.layers[1])).xy;
+        if material.distort_options.w!=0u {two.y=two.x;}
+    }
+    // Without disto2 its zero still contributes 2*0-1, as authored.
+    var offset=(one*2.0-1.0)+(two*2.0-1.0);
+    if material.colour_options.x!=0u {offset=(one*2.0-1.0)*(two*2.0-1.0);}
+    offset*=material.add_liquid.xy/2.0;
+    var colour=vec3(1.0);
+    if material.colour_options.y!=0u {
+        colour=textureSample(particle_diffuse,particle_trilinear,texcoords.xy*material.layers[2].tiling_pan.xy+offset).rgb;
+    }
+    var threshold=material.add_liquid.z;
+    if material.add_liquid_options.x!=0u {threshold+=1.0-clamp(legacy.w,0.0,1.0);}
+    var alpha=clamp((one.x+two.x-threshold)*2.0,0.0,1.0);
+    if material.add_liquid_options.y==0u {
+        // PanAndReadDistUV(texcoords + uv_offset.xyyy) also shifts the seed.
+        let shifted=texcoords+vec4(offset.x,offset.y,offset.y,offset.y);
+        alpha*=textureSample(particle_opacity,particle_trilinear,particle_pan(shifted,material.layers[2])).x;
+    }
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    let distance=1.0/input.position.w;
+    alpha*=particle_soft_contact(input,distance);
+    if material.fade_options.y!=0u {
+        alpha*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
+    }
+    if particle_masking!=0u {
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    // The output alpha is the texture alpha; the program computes but does
+    // not write the vertex-alpha product.
+    let adjusted=colour*legacy.rgb*material.colour_adjust.rgb*material.colour_adjust.a;
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    let p=input.world_position;
+    let rgb=material_fog_pixel(adjusted*exposure*particle_view.exposure_extent.x,input.position,
+        vec3(p.x,p.z,-p.y),input.lighting_record);
+    return ParticleColour(vec4(rgb,alpha),colour);
+}
 // particles::SoftContact (fx/opt/use_softcontact 1 linear, 2 cubic,
 // 3 spherical) against the scene depth.
 fn particle_soft_contact(input:ParticleFragment,distance:f32)->f32 {
@@ -388,6 +442,7 @@ fn particle_liquid_colour(input:ParticleFragment)->ParticleColour {
 fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     if particle_liquid!=0u {return particle_liquid_colour(input);}
     if particle_dissolve!=0u {return particle_dissolve_colour(input,front_face);}
+    if particle_add_liquid!=0u {return particle_add_liquid_colour(input);}
     let material=particle_material;
     let coordinates=input.texture_coordinates;
     let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u &&

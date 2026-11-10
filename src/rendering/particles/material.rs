@@ -123,6 +123,9 @@ pub struct ParticleMaterial {
     /// `particle/dissolve`: distorted opacity through the lookup_fire ramp,
     /// alpha from the alpha_Adjust smoothstep; fully fogged.
     pub dissolve: bool,
+    /// `particle/add_liquid`: thresholded sum of two panned distortion
+    /// layers, fog-seeded panning and per-pixel fog.
+    pub add_liquid: bool,
     /// 1402d5210 derives the mask variant from MAIN only when no distinct
     /// authored masking program is present. Such programs need their own owner.
     pub masking_uses_main: bool,
@@ -177,9 +180,10 @@ impl ParticleMaterial {
         let scrolling_water = program.eq_ignore_ascii_case("particle/scrolling_water");
         let liquid = program.eq_ignore_ascii_case("particle/liquid");
         let dissolve = program.eq_ignore_ascii_case("particle/dissolve");
+        let add_liquid = program.eq_ignore_ascii_case("particle/add_liquid");
         let masking_uses_main = crate::material::authored_program_override(&bytes, "maskingProgram")
             .is_none_or(|masking| masking.eq_ignore_ascii_case(&program));
-        if !distortion && !scrolling_water && !liquid && !dissolve && !program.eq_ignore_ascii_case("particle/add_default") {
+        if !distortion && !scrolling_water && !liquid && !dissolve && !add_liquid && !program.eq_ignore_ascii_case("particle/add_default") {
             return Err(format!("particle program {program} is not connected"));
         }
         let definition = library
@@ -263,6 +267,13 @@ impl ParticleMaterial {
             // program; 14 installed liquid materials still author it.
             options.insert("fx/opt/use_lighting".into(), 0);
         }
+        if add_liquid {
+            for name in ["fx/opt/fade_threshold", "fx/opt/no_opacity_map"] {
+                options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
+            }
+            // The program has no lighting; the option belongs to add_default.
+            options.insert("fx/opt/use_lighting".into(), 0);
+        }
         if dissolve {
             for name in ["fx/opt/tile_alpha", "fx/opt/use_mesh"] {
                 options.insert(name.into(), library.option_value(program.as_bytes(), &overrides, name.as_bytes())?);
@@ -297,6 +308,9 @@ impl ParticleMaterial {
         if distortion { extra_uniforms.extend(["fogStart", "fogEnd", "fogScale"]); }
         if scrolling_water { extra_uniforms.push("liquid_Disto_amount"); }
         if dissolve { extra_uniforms.extend(["distoStrength", "alpha_Adjust"]); }
+        if add_liquid {
+            extra_uniforms.extend(["distoStrength", "liquid_Threshold", "fogStart", "fogEnd", "fogScale"]);
+        }
         if liquid {
             extra_uniforms.extend(["flowmap_strength", "liquid_outer_alpha", "liquid_inner_alpha",
                 "fresnel_power", "fresnel_intensity", "fresnel_color", "liquid_Disto_amount"]);
@@ -345,6 +359,16 @@ impl ParticleMaterial {
             }
             // particle/dissolve samples opacity and the distortion layers.
             if dissolve && !matches!(image, "fx/opacity" | "fx/disto1" | "fx/disto2") {
+                continue;
+            }
+            // particle/add_liquid always samples disto1; disto2 and diffuse
+            // follow their options.
+            if add_liquid && !matches!(image, "fx/opacity" | "fx/disto1" | "fx/disto2" | "fx/diffuse") {
+                continue;
+            }
+            if add_liquid && image == "fx/disto1" {
+                let source = scopes.image_source(image)?;
+                images.insert(image.to_ascii_lowercase(), image_resources.image(catalog, &source)?);
                 continue;
             }
             let liquid_required = liquid && matches!(image, "fx/lookup" | "fx/diffuse");
@@ -556,7 +580,7 @@ impl ParticleMaterial {
         } else {
             None
         };
-        let volume = if !scrolling_water && !liquid && !dissolve && options["fx/opt/use_flipbook"] != 0 {
+        let volume = if !scrolling_water && !liquid && !dissolve && !add_liquid && options["fx/opt/use_flipbook"] != 0 {
             Some(image_resources.volume(catalog, &scopes.image_source("fx/flipbook")?)?)
         } else {
             None
@@ -577,6 +601,7 @@ impl ParticleMaterial {
             scrolling_water,
             liquid,
             dissolve,
+            add_liquid,
             masking_uses_main,
             state,
             darkvision_layer,
