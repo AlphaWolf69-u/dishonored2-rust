@@ -223,14 +223,13 @@ pub(crate) fn set_common_texts(catalog: u64, common: Option<std::sync::Arc<crate
 /// 1400661e0's init/common resources remain available across those transitions.
 pub(crate) fn retire_catalog(
     catalog: u64, animations: usize, declarations: usize, blur: usize, contacts: usize,
-    parameters: usize, manifests: usize,
+    parameters: usize, manifests: usize, map_info: usize,
 ) {
     // Each owner removes only cache references for this exact identity. Live
     // actor/movie/render leases keep their immutable payload until final use.
     // Do not hold STATE while dropping owners: release diagnostics can use it.
     let parameters = parameters + crate::assets::shader_cache::retire_indices();
     let bitmaps = crate::flash::bitmap_resources::retire_catalog(catalog);
-    let map_info = crate::gameplay::map_info::retire_catalog(catalog);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!("MEMORY catalog cache retirement: catalog={catalog} animations={animations} blur={blur} contacts={contacts} declarations={declarations} parameters={parameters} bitmap_libraries={bitmaps} manifests={manifests} map_info={map_info}");
     }

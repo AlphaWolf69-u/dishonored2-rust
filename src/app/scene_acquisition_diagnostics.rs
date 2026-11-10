@@ -140,12 +140,18 @@ pub fn inspect_scene_publication(
         if flag == "--shader-session-scopes" {
             return crate::assets::shader_cache::observe_session_scopes(base).map_err(Into::into);
         }
+        if flag == "--map-info-inventory" {
+            return crate::gameplay::map_info::observe_inventory(base).map_err(Into::into);
+        }
     }
     if let [flag, name] = levels {
         match flag.as_str() {
             "--editable-sound-event" => return inspect_editable_sound_event(base, name),
             "--manifest-catalog-scopes" => {
                 return crate::assets::map_resources::observe_catalog_manifests(base, name).map_err(Into::into);
+            }
+            "--map-info-catalog-scopes" => {
+                return crate::gameplay::map_info::observe_catalog_scopes(base, name).map_err(Into::into);
             }
             "--physics-system-scopes" => {
                 return crate::assets::physworld::physics_system::observe_resource_scopes(base, name).map_err(Into::into);
