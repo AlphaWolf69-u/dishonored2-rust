@@ -607,7 +607,8 @@ pub(super) fn acquire_static_model_collision_with_texts(
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
     texts: &mut crate::assets::declaration_texts::PhysicsSeed,
-) -> ModelCollision {
+    check_cancelled: impl Fn() -> std::io::Result<()>,
+) -> std::io::Result<ModelCollision> {
     let roots: HashMap<_, _> = placements
         .iter()
         .map(|placement| (placement.id.as_str(), placement))
@@ -622,6 +623,7 @@ pub(super) fn acquire_static_model_collision_with_texts(
     let mut matched = 0usize;
     let mut failed = 0usize;
     for body in bodies {
+        check_cancelled()?;
         let Some(&placement) = roots.get(body.entity_id.as_str()) else {
             continue;
         };
@@ -744,7 +746,7 @@ pub(super) fn acquire_static_model_collision_with_texts(
         )));
         extra_hd += 1;
     }
-    ModelCollision { triangles, owners, materials, matched, failed, extra_hd, extra_hd_failed }
+    Ok(ModelCollision { triangles, owners, materials, matched, failed, extra_hd, extra_hd_failed })
 }
 
 #[cfg(test)]
@@ -753,7 +755,8 @@ pub(super) fn static_model_collision(
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
 ) -> (Vec<([Vec3; 3], u32, u32)>, Vec<String>, usize, usize) {
-    let result = acquire_static_model_collision_with_texts(catalog, placements, bodies, &mut Default::default());
+    let result = acquire_static_model_collision_with_texts(catalog, placements, bodies, &mut Default::default(), || Ok(()))
+        .expect("uncancelled static-model collision acquisition");
     (result.triangles.into_iter().map(|(vertices, owner, _, filter)| (vertices, owner, filter)).collect(),
      result.owners, result.matched, result.failed)
 }
