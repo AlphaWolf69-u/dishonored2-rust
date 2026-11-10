@@ -6676,3 +6676,14 @@ zero RIFF copies and zero Ogg pages for that path, with identical header
 packets and decoded samples. Compare raw packets to the converter's
 reference and record scoped cold acquisition work before integrating.
 The decoder bridge is host integration, not an original codec port.
+
+Installed Vorbis setup acceptance at c9e2429c. All 34 compared
+identification and setup packet pairs matched the converter, and all
+32 decoded PCM sample fingerprints matched. The conversion control
+recorded 13,755 bytes copied into RIFF staging and 107,432 bytes
+generated as Ogg pages. The direct path recorded zero bytes for both.
+Edge of the World, Dust District, and the return to Edge of the World
+matched media, streams, residency and retirement. The observer's cache
+miss counts differed, so its acquisition cycle totals do not establish
+a speedup.
+Evidence: DH2-fx-level-lifetime/artifacts/vorbis-packet-setup-20261111-comparison.json.
