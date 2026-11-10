@@ -166,6 +166,12 @@ fn resource_snapshot(world: &World, step: usize, phase: &str) {
 }
 
 fn scene_host(first_host: bool) -> App {
+    use bevy::render::settings::MemoryHints;
+    let memory_hints = if std::env::var_os("DH2_DEBUG_GPU_SMALL_HEAPS").is_some_and(|v| v == "1") {
+        MemoryHints::MemoryUsage
+    } else {
+        MemoryHints::default()
+    };
     let mut app = App::new();
     let mut plugins = DefaultPlugins
             .set(bevy::window::WindowPlugin {
@@ -182,6 +188,7 @@ fn scene_host(first_host: bool) -> App {
                             | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
                             | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
                             | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D,
+                        memory_hints,
                         ..default()
                     },
                 )),
@@ -232,8 +239,13 @@ fn inspect_scene_resources(
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=begin");
         // Fresh hosts isolate each sample by default. Reuse mode carries the
         // asset storage and render device across actual map retirement.
+        let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
         if mode == Mode::Upload {
+            if new_host {
+                let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
+                resident.prepare_intrinsics(&catalog, &mut *app.world_mut().resource_mut::<Assets<Image>>())?;
+            }
             let inputs = gpu_inputs(app.world());
             upload_assets(&mut app, &inputs)?;
             gpu_snapshot(&app, step, "before-preparation");

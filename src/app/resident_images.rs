@@ -62,6 +62,21 @@ impl Default for ResidentImages {
     }
 }
 impl ResidentImages {
+    /// 1402ec020 / 1402f5920 initialize the supported builtin views during
+    /// renderer bootstrap. Use the same owner as their subsequent consumers.
+    pub(super) fn prepare_intrinsics(&self, catalog: &archive::Catalog,
+        images: &mut dyn AssetWrite<Image>) -> Result<(), String> {
+        if self.separate || std::env::var_os("DH2_DEBUG_DEFER_INTRINSIC_IMAGES").is_some_and(|v| v == "1") {
+            return Ok(());
+        }
+        for name in ["_default", "_black", "_white"] {
+            if !catalog.image_has_overlay(name) {
+                self.acquire(catalog, name, images)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Lease a streamed scene view for other named consumers without making
     /// the registry itself keep a runtime-only image alive. UI owners that
     /// acquire it retain their own strong lease.
