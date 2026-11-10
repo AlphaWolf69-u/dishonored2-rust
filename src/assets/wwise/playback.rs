@@ -418,7 +418,9 @@ impl<'a> PlaybackBanks<'a> {
             };
             let properties = self.media_properties(id)?;
             visited.remove(&id);
-            return Ok(source.map(|(media, streamed)| PlaybackNode::Sound { node: id, variant: MediaVariant { media, streamed, weight: 1, properties } }));
+            return Ok(source.map(|(media, streamed)| PlaybackNode::Sound { node: id, variant: MediaVariant {
+                media, streamed: streamed.map(|media_id| (object.bank, media_id)), weight: 1, properties,
+            } }));
         }
         if object.kind == 7 {
             let properties = self.media_properties(id)?;
