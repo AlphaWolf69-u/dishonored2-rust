@@ -2248,8 +2248,11 @@ The retained host table is 524 typed bytes, plus its Arc allocation header.
 Its Catalog adds one mutex-protected optional Arc. In the ordinary level
 both world libraries share that table. Between levels the Catalog keeps
 the small table rather than the executable bytes. A failed source read
-leaves the owner empty so the next request can retry. ClassDeclarations
-still reparses the installed executable for component metadata in each
-trigger-world initialization. That broader registry preparation has its
-own initialized hierarchy and dependency plan, so it needs a complete
-sharing and retirement design before retaining it across maps.
+leaves the owner empty so the next request can retry. The adjacent component
+metadata work is also implemented: ComponentTypes::acquire shares the immutable
+class hierarchy, factory descriptors and dependency plan through Catalog.
+The installed EotW/Dust/EotW comparison reduced three executable reads to one;
+all named class relations, factory/definition descriptors and 645 selected
+preparation records matched, and final owner destruction was observed.
+See component-metadata-relations-20261111-comparison.json and its acceptance
+entry in the resource parity ledger. No walking CPU timing is inferred.
