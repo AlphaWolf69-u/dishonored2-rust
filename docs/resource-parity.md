@@ -5911,3 +5911,12 @@ when its camera stops and remove the extracted frame when its source is
 absent. Expect one fewer outgoing frame lease and retirement of its private
 output before the next map's acquisition. Shared resident images remain
 with their own owners. The ordinary changed-frame extraction stays the same.
+
+Screen-shadow publication acceptance (`84c3fbe7`). On one windowless DX12
+host, Edge of the World, Dust District and Edge of the World each extracted
+the authored screen-shadow frame and uploaded its private output. All
+three releases removed the render-world frame and the exact CPU and GPU
+image identities. No GPU validation errors were reported. This observes
+the real setup and removal owners using the prepared 1×1 output. An active
+full-size draw and live handoff timing were outside this observation.
+Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
