@@ -6603,6 +6603,35 @@ released at level withdrawal. This measures the publisher, with no
 claim about whole-frame or gameplay rendering. Evidence:
 DH2-screen-shadow-retirement/artifacts/skin-publication-ownership-20261111-comparison.json.
 
+
+### Usable animation skin-source storage
+
+Prediction before implementation. Original 14025aa00 consumes the
+compiled MD6 model and 14025e4d0 selects the streams and offset for a
+skin surface. The usable worker has already-published render meshes.
+Its CPU pose only needs bind positions, packed normal/tangent
+channels, joint indices/weights and the matrix offset. The worker
+currently assembles and retains a second UV0 and triangle-index copy.
+Decode through the same member and structural checks, keeping only
+the needed arrays for this owner. Expect four bytes per vertex and
+two bytes per index of unused allocation removed, with unchanged
+source bytes, skin fields, render meshes and actor behavior. The
+normal model reader and physics owners retain their existing payload.
+Compare capacities and the affected acquisition spans using installed
+usable models and a full-data reference in the same build.
+
+Installed usable skin source acceptance at a9fd5eeb. Edge of the
+World, Dust District, Edge of the World matched all 140 skin source
+acquisitions, 63 unique models, compiled member fingerprints and
+prepared instances. The full decode allocated 1,352,190 bytes for
+UV0 and indices, matching four bytes per 119,931 vertices and two
+bytes per 436,233 indices. The skin-only decode allocated zero bytes
+for those arrays. The scoped read/decode counters were 57.11 and
+57.72 million dev thread cycles respectively. This is an allocation
+result with no measured speedup or gameplay frame-time claim.
+Evidence: DH2-fx-level-lifetime/artifacts/usable-skin-source-20261111-comparison.json.
+
+
 ### Usable animation read withdrawal
 
 Prediction before implementation. Original 1407e5190 resolves AnimBasic

@@ -358,7 +358,7 @@ impl Reader<'_> {
 }
 
 pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
-    inspect_cancellable(bytes, None)
+    inspect_model::<true>(bytes, None)
 }
 
 fn check_model_acquisition(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
@@ -366,7 +366,7 @@ fn check_model_acquisition(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), S
     Ok(())
 }
 
-fn inspect_cancellable(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Result<ModelInfo, String> {
+fn inspect_model<const RENDER_DATA: bool>(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Result<ModelInfo, String> {
     check_model_acquisition(cancelled)?;
     let mut input = Reader { bytes, at: 0 };
     if input.take(4)? != b"MM6B" {
@@ -458,7 +458,7 @@ fn inspect_cancellable(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Re
             .get(..(vertex_count as usize * 8))
             .ok_or("MD6 texture-coordinate stream truncated")?;
         let mut positions = Vec::with_capacity(vertex_count as usize);
-        let mut uvs = Vec::with_capacity(vertex_count as usize);
+        let mut uvs = if RENDER_DATA { Vec::with_capacity(vertex_count as usize) } else { Vec::new() };
         let mut packed_channels = Vec::with_capacity(vertex_count as usize);
         let mut skin_weights = Vec::with_capacity(vertex_count as usize);
         let mut skin_indices = Vec::with_capacity(vertex_count as usize);
@@ -489,7 +489,7 @@ fn inspect_cancellable(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Re
                 return Err(format!("surface {number} has non-finite UV0"));
             }
             if geometry_valid {
-                uvs.push([u, v]);
+                if RENDER_DATA { uvs.push([u, v]); }
                 let mut packed = [0; 12];
                 packed[..4].copy_from_slice(&uv[4..8]);
                 packed[4..8]
@@ -528,10 +528,11 @@ fn inspect_cancellable(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Re
                 return Err(format!("surface {number} index exceeds vertex count"));
             }
         }
-        let indices = indices
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes(pair.try_into().unwrap()))
-            .collect();
+        let indices = if RENDER_DATA {
+            indices.chunks_exact(2)
+                .map(|pair| u16::from_le_bytes(pair.try_into().unwrap()))
+                .collect()
+        } else { Vec::new() };
         input.take(28)?; // six bounds floats and one extent field
         let attachment_count = input.u32()?;
         if attachment_count > 100_000 {
@@ -609,13 +610,13 @@ mod acquisition {
         *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_MODEL_ACQUISITION").is_some_and(|v| v == "1"))
     }
 
-    pub(super) fn decoded(catalog: &crate::archive::Catalog, path: &str, cancelled: Option<&dyn Fn() -> bool>)
+    pub(super) fn decoded<const RENDER_DATA: bool>(catalog: &crate::archive::Catalog, path: &str, cancelled: Option<&dyn Fn() -> bool>)
         -> Result<ModelInfo, String> {
         let tracing = tracing();
         let cycles = tracing.then(crate::loading::thread_cycles).flatten();
         let bytes = catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{path} is absent"))?;
-        let mut model = super::inspect_cancellable(&bytes, cancelled)?;
+        let mut model = super::inspect_model::<RENDER_DATA>(&bytes, cancelled)?;
         if model.tail.is_none() { return Err(format!("{path}: installed MD6 resource has no closing tail")); }
         let decode_cycles = cycles.zip(if tracing { crate::loading::thread_cycles() } else { None })
             .map(|(start, end)| end.saturating_sub(start));
@@ -695,6 +696,14 @@ mod acquisition {
 
 }
 
+/// Bind-pose streams for an already-published usable mesh. Render-only
+/// UV/index arrays are deliberately absent from this acquisition.
+pub(crate) struct SkinModel(std::sync::Arc<ModelInfo>);
+
+impl SkinModel {
+    pub(crate) fn surfaces(&self) -> &[SurfaceInfo] { &self.0.surfaces }
+}
+
 /// Preparation-scoped references to shared immutable MD6 models.
 pub(crate) struct ModelSources {
     catalog: u64,
@@ -711,21 +720,29 @@ impl ModelSources {
     pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, resource: &str)
         -> Result<std::sync::Arc<ModelInfo>, String>
     {
-        self.acquire_resolved(catalog, resource, None, || None)
+        self.acquire_resolved::<true>(catalog, resource, None, || None)
     }
 
-    pub(crate) fn acquire_for_rig(&mut self, catalog: &crate::archive::Catalog, resource: &str,
+    pub(crate) fn acquire_skin_for_rig(catalog: &crate::archive::Catalog, resource: &str,
         rig: &crate::assets::animation_rig::Rig, cancelled: Option<&dyn Fn() -> bool>,
-    ) -> Result<std::sync::Arc<ModelInfo>, String> {
-        static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let separate = *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_RIG_MESH_DECLARATION")
-            .is_some_and(|value| value == "1"));
-        self.acquire_resolved(catalog, resource, cancelled, || {
-            if separate { None } else { rig.model_reference().compiled_mesh() }
-        })
+    ) -> Result<SkinModel, String> {
+        static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (full, separate) = *MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_KEEP_USABLE_MODEL_RENDER_DATA").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_SEPARATE_RIG_MESH_DECLARATION").is_some_and(|value| value == "1"),
+        ));
+        let admitted = || if separate { None } else { rig.model_reference().compiled_mesh() };
+        // This short scope cannot mix skin-only entries with render consumers.
+        let mut sources = Self::new(catalog);
+        let model = if full {
+            sources.acquire_resolved::<true>(catalog, resource, cancelled, admitted)
+        } else {
+            sources.acquire_resolved::<false>(catalog, resource, cancelled, admitted)
+        }?;
+        Ok(SkinModel(model))
     }
 
-    fn acquire_resolved(&mut self, catalog: &crate::archive::Catalog, resource: &str,
+    fn acquire_resolved<const RENDER_DATA: bool>(&mut self, catalog: &crate::archive::Catalog, resource: &str,
         cancelled: Option<&dyn Fn() -> bool>, admitted_mesh: impl FnOnce() -> Option<String>,
     ) -> Result<std::sync::Arc<ModelInfo>, String> {
         check_model_acquisition(cancelled)?;
@@ -782,7 +799,7 @@ impl ModelSources {
                 return Ok(model);
             }
         }
-        let decoded = acquisition::decoded(catalog, &path, cancelled)?;
+        let decoded = acquisition::decoded::<RENDER_DATA>(catalog, &path, cancelled)?;
         check_model_acquisition(cancelled)?;
         let model = acquisition::wrap(decoded);
         if self.share {
