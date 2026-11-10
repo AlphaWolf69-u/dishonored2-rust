@@ -215,15 +215,14 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 | Fonts/glyphs/library bitmaps | `assets/iggy/font`, `flash/glyph_cache`, `flash/bitmap_resources`, `bevy_backend/flash_ui` | Metadata-only lookups; lazy outlines; R8 glyph pages; BC7 library images passed through; obsolete movie-generation GPU textures removed on close | Original page creation/update and unused-slot reuse are implemented (`14107b7e0`, `14107b2d0`, `14107a980`); versions update one GPU identity with dirty rectangles. Loading-only CPU bitmap packs release with the movie and submitted frames, retiring 3,242,736 bytes in the installed ownership comparison. Shared packs transfer to warm consumers without another read; Journal, pause, HUD and readables keep session reuse. Source-backed CPU page snapshots preserve in-flight draws and copy only while an older version is leased. UI GPU texture leases now have the installed 2,048-entry / 0x1428000-byte limits, with inactive eviction; real loading/pause peak is 44 entries / 8,495,572 bytes, closing leaves only the 4-byte white builtin |
 | Movie runtime | `flash::Player`, `flash/avm2::heap` | Per-movie roots, tracing of objects/shared scopes, weak listeners and Dictionary keys, explicit closed-VM teardown | Original `141062a90`/`141063ed0`/`141064cd0` collection and weak-handle behavior implemented with host reference tracing; automatic scheduling is a host difference. Three-map production run completed, zero retained objects on close; measured live loading heaps contained no garbage |
 | Render targets/descriptors/history | `bevy_backend/{camera_scene,fog_scene,display_scene,shadow_pass,auto_exposure}` | Level acknowledgement releases world/view references before destination acquisition; device pipelines and reusable viewport capacity survive | Prior repeated-map measurements verified static shadow cache no longer accumulates. Repeated production resizes completed in EotW and Dust. The Dust ocean pass retained culled 960x540 targets/bindings: pre-admission invalidation now releases 21,954,560 B of obsolete live GPU allocations, with identical streamed bytes and upgrade counts in the same-binary comparison. Size-independent wave history and resources remain. Quality-setting replacement still needs separate coverage |
-| Pending IO/uploads/diagnostics | `TextureReadWorker`, `PreparedImageMailbox`, render extraction, F8 histories | Receiver drop stops outgoing reader after the current read; publication mailboxes reset; pending extraction retains handles until prepared | Bounded in-flight work can briefly outlive map teardown; do not treat allocator-reserved GPU heaps or OS file cache as live resources |
+| Pending IO/uploads/diagnostics | `TextureReadWorker`, `PreparedImageMailbox`, render extraction, F8 histories | The map request closes the outgoing reader and advances the upload generation. Queued and unclaimed results are discarded. The loading screen waits for the active reader before clearing the map. Pending render extraction retains handles until its acknowledgement | The installed Dunwall Tower and Edge of the World runs submitted a real texture request and completed retirement before map clear. They did not distinguish cancellation before I/O from completion of a read already inside I/O. Allocator-reserved GPU heaps and OS file cache are separate |
 
 Absent systems remain `none` in `resource-parity.md`; they are not silently
 counted as audited implementations. The table records ownership findings; it is not completion of the requested implementation.
 Rows marked partial/under measurement still require the stated runtime or
 original-code evidence before claiming a complete, correct lifecycle.
 
-Live quality replacement (source written; coordinated build and production
-observation pending): native `5120d0 -> 511a70` applies changed widgets and
+Live quality replacement: `5120d0 -> 511a70` applies changed widgets and
 `50ff40` writes the shadow row into live CVars; fog/blur case 14 writes
 `r_downsampleQuality`. These paths do not reload the level. The host previously
 refreshed lens settings but retained the level's fog settings and shadow
@@ -249,8 +248,11 @@ matching B/C states by live allocation labels/counts/bytes and unchanged streame
 image payload, separately from allocator-reserved bytes/blocks. A warm pipeline
 or reserved block plateau is reusable device capacity, not evidence of obsolete
 world targets. Format and dimension keys are present in fog/lens/camera/shadow
-owners; single-sample admission remains explicit. This source repair makes no
-claim of measured byte savings or complete physical driver-cache accounting.
+owners; single-sample admission remains explicit. The main release observation
+completed all seven quality changes with stable live allocation totals and
+unchanged finer-mip bytes. Individual shadow atlas labels and attribution of
+the additional reserved heap capacity remain incomplete. See the live quality
+replacement observation in `resource-parity.md`.
 
 ## Audit result and remaining gaps
 
