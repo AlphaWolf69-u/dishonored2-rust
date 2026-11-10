@@ -451,6 +451,9 @@ impl MaterialBinding {
         }
         let queue = world.resource::<super::SceneRenderQueue>();
         let resident = images.iter().map(|&(slot, role)| {
+            if queue.diffuse_image_materials.get(slot).is_none() {
+                return Err(format!("runtime material image slot {slot} has no binding list"));
+            }
             queue.diffuse_image_handles.get(slot).and_then(Option::as_ref).cloned()
                 .map(|image| (slot, role, image))
                 .ok_or_else(|| format!("runtime material image slot {slot} has no resident handle"))

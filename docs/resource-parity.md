@@ -5706,6 +5706,15 @@ Publication, pending-image failure, and final release are still separate
 observations. Evidence: `DH2-interactions/artifacts/runtime-fx-model-stage-source-acquisition-20261110.json`
 and `runtime-fx-material-route-source-acquisition-20261110.json`.
 
+The windowless runtime FX observer requests installed sources in a prepared
+level and drives the existing material coordinator, texture read worker,
+upload mailbox and asset retirement systems. The input is a resource request,
+with no interaction or simulation. It identifies FX-only GPU images and
+meshes, and newly published decal material assets. Expect those identities to
+retire after both request leases end, while the loaded level stays alive. A
+camera-specific decal pipeline, active effect tails, and failure recovery are
+outside this observation.
+
 ### Runtime FX image binding retirement
 
 Prediction before change. A dynamic material proxy retires after its final effect or tail lease, under the map material identity/release boundaries 1400607f0 and 140060180. RuntimeMaterialCoordinator publishes only the surviving surfaces to DynamicWorldMaterials. The host image synchronization previously removed absent bindings only inside its replacement-image readiness gate. While an unrelated image read is pending or fails, the stale world_materials entry can hold the old image's Arc and prevent its streaming slot and GPU lease from retiring. Drop absent dynamic bindings on the new surface revision, independently of incoming-image readiness. Existing tail and render-frame leases still defer the actual slot release, and startup keys are excluded from the dynamic entry set. Incoming binding publication retains its readiness gate. Expect the expired binding to release before a new pending/failed read completes, with the same ready materials and no new work on unchanged revisions. Live cancellation and tail evidence remain required; the runtime trace reports the binding release and the existing image-slot retirement.
