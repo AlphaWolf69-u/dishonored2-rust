@@ -2235,6 +2235,15 @@ World particle surface submission (`bevy_backend/particle_meshes`): active frame
 
 Iggy section residency (2026-11-10). The installed Iggy reader 141093380 executes relocation programs for the section mask 0x102 supplied by 141028ea0. The host retains the serialized member and resolves section-relative pointers in place. An index census of all 55 selected installed .iggy paths found 90,786,940 member bytes, of which 90,457,592 are the loaded sections. The 15 sampled paths from the loading/pause trace and the named HUD/Journal entries account for 7,332,452 source bytes and at most 74,040 removable bytes, including 46,160 relocation bytes. This is a maximum for that sampled set, not an estimate of a session's resident heap. Compaction would copy the data sections or require an additional selective archive reader and a change to the complete-file byte interface. Keep the source-backed format on this evidence. The existing owner already reuses Iggy/ABC identities and reads the selected language on demand. Relocation lookup metadata is a separate cost. Evidence: DH2-collision-staging/artifacts/iggy-payload-census-20261110.json.
 
+The Edge channel indices (+0x60, accessed by 1412e6a70 and its channel
+functions) are currently decoded once into u16 arrays as well as
+retained in the clip. A source-backed view could eliminate up to two
+bytes per channel plus the eight Vec headers per clip. Unlike the
+joint-weight slice this view would replace a hot per-channel iterator.
+Keep the arrays until same-build installed pose sampling shows that
+checked little-endian source iteration does not cost more in playback.
+
+
 The retained host table is 524 typed bytes, plus its Arc allocation header.
 Its Catalog adds one mutex-protected optional Arc. In the ordinary level
 both world libraries share that table. Between levels the Catalog keeps
