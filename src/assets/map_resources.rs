@@ -12,41 +12,31 @@
 use super::archive::index::{self, IndexEntry};
 use super::archive::Catalog;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 
 type Result<T> = std::result::Result<T, String>;
 
-type ListKey = (u64, std::path::PathBuf, String, String);
-static SOURCE_LISTS: std::sync::Mutex<Option<HashMap<ListKey, std::sync::Arc<SourceList>>>> = std::sync::Mutex::new(None);
-type CachedLevel = (std::sync::Weak<LevelList>, Option<std::sync::Arc<LevelList>>);
-static LEVEL_LISTS: std::sync::Mutex<Option<HashMap<ListKey, CachedLevel>>> = std::sync::Mutex::new(None);
+type ListKey = (PathBuf, String, String);
+type CachedLevel = (Weak<LevelList>, Option<Arc<LevelList>>);
 
-/// Session request metadata belongs to its archive namespace. Live loading
-/// consumers retain their section leases independently of these cache entries.
-pub(crate) fn retire_catalog(catalog: u64) -> usize {
-    let sources = {
-        let mut owner = SOURCE_LISTS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(lists) = owner.as_mut() {
-            let before = lists.len();
-            lists.retain(|(identity, _, _, _), _| *identity != catalog);
-            let removed = before - lists.len();
-            if lists.is_empty() { *owner = None; }
-            removed
-        } else {
-            0
-        }
-    };
-    sources + retire_level_lists(catalog)
+/// Init/common descriptors belong to the catalog. A combined list normally
+/// survives only while an acquisition or publication consumer holds it.
+#[derive(Default)]
+pub(crate) struct ManifestCache {
+    sources: Mutex<HashMap<ListKey, Arc<SourceList>>>,
+    levels: Mutex<HashMap<ListKey, CachedLevel>>,
 }
 
-fn retire_level_lists(catalog: u64) -> usize {
-    let mut owner = LEVEL_LISTS.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(lists) = owner.as_mut() else { return 0; };
-    let before = lists.len();
-    lists.retain(|(identity, _, _, _), _| *identity != catalog);
-    let removed = before - lists.len();
-    if lists.is_empty() { *owner = None; }
-    removed
+impl ManifestCache {
+    pub(crate) fn entry_count(&mut self) -> usize {
+        self.sources.get_mut().unwrap_or_else(|error| error.into_inner()).len()
+            + self.levels.get_mut().unwrap_or_else(|error| error.into_inner()).len()
+    }
+}
+
+fn manifest_cache(catalog: &Catalog) -> &ManifestCache {
+    catalog.manifests.get_or_init(Default::default)
 }
 
 const HEADER: usize = 12;
@@ -319,11 +309,8 @@ fn acquire_source_list(base: &Path, catalog: &Catalog, name: &str, language: &st
     if catalog.has_overlay_file(&manifest) || catalog.has_overlay_file(&reuse_manifest) {
         return Ok(std::sync::Arc::new(load_source_list(base, catalog, name, language)?));
     }
-    let key = (catalog.identity(), base.to_owned(), normalized, language.to_ascii_lowercase());
-    let mut lists = SOURCE_LISTS.lock().unwrap();
-    let lists = lists.get_or_insert_with(Default::default);
-    // Existing callers keep their Arc; the owner no longer pins another catalog.
-    lists.retain(|(identity, _, _, _), _| *identity == catalog.identity());
+    let key = (base.to_owned(), normalized, language.to_ascii_lowercase());
+    let mut lists = manifest_cache(catalog).sources.lock().unwrap();
     if let Some(list) = lists.get(&key) { return Ok(list.clone()); }
     let list = std::sync::Arc::new(load_source_list(base, catalog, name, language)?);
     if matches!(name, "init" | "common")
@@ -493,28 +480,32 @@ impl LevelList {
     }
     fn acquire(base: &Path, catalog: &Catalog, map: &str, language: &str) -> Result<Self> {
         enum BatchItem { Primary(usize), Reuse(usize) }
-        if let Some(lists) = SOURCE_LISTS.lock().unwrap().as_mut() {
-            lists.retain(|(identity, _, _, _), _| *identity == catalog.identity());
-        }
+        // Keep direct and combined source acquisitions in one admission
+        // scope. The combined-list owner, when present, takes its lock first.
+        let mut sources = manifest_cache(catalog).sources.lock().unwrap();
         let names = ["init", "common", map];
-        let mut sections: Vec<Option<std::sync::Arc<SourceList>>> = vec![None; names.len()];
+        let mut sections: [Option<Arc<SourceList>>; 3] = [None, None, None];
         let mut manifests = Vec::new();
         let mut items = Vec::new();
         for (index, name) in names.iter().enumerate() {
             let normalized = name.to_ascii_lowercase();
             let primary = format!("generated/buildgame/{normalized}.mapresources");
             let reuse = format!("generated/buildgame/{normalized}.maprscreusechunk0");
-            let header_container = catalog.resource_header_container(&primary)?
-                .ok_or_else(|| format!("manifest has no primary header container: {primary}"))?;
             let overlay = catalog.has_overlay_file(&primary) || catalog.has_overlay_file(&reuse);
-            let key = (catalog.identity(), base.to_owned(), normalized, language.to_ascii_lowercase());
+            let key = (base.to_owned(), normalized, language.to_ascii_lowercase());
             if !overlay {
-                sections[index] = SOURCE_LISTS.lock().unwrap().as_ref().and_then(|lists| lists.get(&key)).cloned();
+                sections[index] = sources.get(&key).cloned();
             }
-            if sections[index].is_none() {
-                manifests.push((primary, false));
-                items.push(BatchItem::Primary(index));
-            }
+            let header_container = match &sections[index] {
+                Some(source) => source.header_container,
+                None => {
+                    let container = catalog.resource_header_container(&primary)?
+                        .ok_or_else(|| format!("manifest has no primary header container: {primary}"))?;
+                    manifests.push((primary, false));
+                    items.push(BatchItem::Primary(index));
+                    container
+                }
+            };
             let already_prepared = sections[index].as_ref().is_some_and(|source| source.reuse.get().is_some());
             if header_container != 0 && !already_prepared && catalog.resource_container(&reuse).is_some() {
                 manifests.push((reuse, true));
@@ -539,22 +530,20 @@ impl LevelList {
                 }
             }
         }
-        let mut complete = Vec::with_capacity(names.len());
-        for (index, source) in sections.into_iter().enumerate() {
-            let source = source.ok_or("manifest section was not acquired")?;
+        let [init, common, map] = sections.map(|source| source.ok_or("manifest section was not acquired"));
+        let sections = [init?, common?, map?];
+        for (index, source) in sections.iter().enumerate() {
             let _ = source.reuse.set(Ok(None));
             if matches!(names[index], "init" | "common") {
                 let normalized = names[index].to_ascii_lowercase();
                 let primary = format!("generated/buildgame/{normalized}.mapresources");
                 let reuse = format!("generated/buildgame/{normalized}.maprscreusechunk0");
                 if !catalog.has_overlay_file(&primary) && !catalog.has_overlay_file(&reuse) {
-                    let key = (catalog.identity(), base.to_owned(), normalized, language.to_ascii_lowercase());
-                    SOURCE_LISTS.lock().unwrap().get_or_insert_with(Default::default).insert(key, source.clone());
+                    let key = (base.to_owned(), normalized, language.to_ascii_lowercase());
+                    sources.insert(key, source.clone());
                 }
             }
-            complete.push(source);
         }
-        let sections = complete.try_into().map_err(|_| "manifest section count differs")?;
         Ok(Self { sections })
     }
     pub fn iter(&self) -> impl Iterator<Item = &Resource> {
@@ -606,10 +595,9 @@ pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &
     // 1400661e0 releases its assembled request table after acquisition. Source
     // manifests above remain reusable metadata; a combined view belongs only
     // to its active consumers, not every map visited during this session.
-    let key = (catalog.identity(), base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
-    let mut lists = LEVEL_LISTS.lock().unwrap();
-    let lists = lists.get_or_insert_with(Default::default);
-    lists.retain(|(identity, _, _, _), (list, _)| *identity == catalog.identity() && list.strong_count() != 0);
+    let key = (base.to_owned(), map.to_ascii_lowercase(), language.to_ascii_lowercase());
+    let mut lists = manifest_cache(catalog).levels.lock().unwrap();
+    lists.retain(|_, (list, _)| list.strong_count() != 0);
     if let Some(list) = lists.get(&key).and_then(|(list, _)| list.upgrade()) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("LOAD manifest reuse: {map} identity={:p}", std::sync::Arc::as_ptr(&list));
@@ -627,6 +615,73 @@ pub fn acquire_level_list(base: &Path, catalog: &Catalog, map: &str, language: &
         eprintln!("MEMORY combined manifests: lists={} logical_section_bytes={bytes}", lists.len());
     }
     Ok(list)
+}
+
+/// Observe direct and combined installed manifest ownership across two catalogs.
+#[cfg(feature = "game")]
+pub(crate) fn observe_catalog_manifests(base: &Path, requested: &str) -> Result<()> {
+    let a = Catalog::open(base).map_err(|error| error.to_string())?;
+    let b = Catalog::open(base).map_err(|error| error.to_string())?;
+    let level = crate::assets::level::LevelResources::resolve(&a, requested).map_err(|error| error.to_string())?;
+    let map = level.entities.trim_start_matches("maps/").trim_end_matches(".entities");
+    let language = crate::assets::lang::read_text_language(base)?;
+    let direct_init = acquire_list(base, &a, "init", language)?;
+    let direct_common = acquire_list(base, &a, "common", language)?;
+    let first = acquire_level_list(base, &a, map, language)?;
+    let other = acquire_level_list(base, &b, map, language)?;
+    let again = acquire_level_list(base, &a, map, language)?;
+    if !Arc::ptr_eq(&first, &again) || Arc::ptr_eq(&first, &other)
+        || !Arc::ptr_eq(&first.sections[0].resources, &direct_init)
+        || !Arc::ptr_eq(&first.sections[1].resources, &direct_common) {
+        return Err("interleaved manifest acquisition lost an active catalog identity".into());
+    }
+
+    let same = |left: &LevelList, right: &LevelList| {
+        let header = |value: &HeaderSelection| (value.resource, value.mask, value.flags);
+        left.sections.iter().zip(&right.sections).all(|(a, b)| {
+            a.resources == b.resources && a.header_container == b.header_container
+                && a.headers.iter().map(header).eq(b.headers.iter().map(header))
+                && match (a.reuse.get(), b.reuse.get()) {
+                    (Some(Ok(Some(a))), Some(Ok(Some(b)))) => a.additional == b.additional
+                        && a.headers.iter().map(|value| (value.primary, header(&value.selection)))
+                            .eq(b.headers.iter().map(|value| (value.primary, header(&value.selection)))),
+                    (Some(Ok(None)), Some(Ok(None))) => true,
+                    _ => false,
+                }
+        })
+    };
+    if !same(&first, &other) { return Err("independent manifest descriptors differ".into()); }
+    let old_list = Arc::downgrade(&first);
+    let old_init = Arc::downgrade(&first.sections[0]);
+    let old_common = Arc::downgrade(&first.sections[1]);
+    let old_map = Arc::downgrade(&first.sections[2]);
+    drop((first, again));
+    if old_list.strong_count() != 0 || old_map.strong_count() != 0 {
+        return Err("the ordinary combined manifest retained its outgoing map".into());
+    }
+    let rebuilt = acquire_level_list(base, &a, map, language)?;
+    if !std::ptr::eq(old_init.as_ptr(), Arc::as_ptr(&rebuilt.sections[0]))
+        || !std::ptr::eq(old_common.as_ptr(), Arc::as_ptr(&rebuilt.sections[1])) || !same(&rebuilt, &other) {
+        return Err("rebuilding a map lost its bootstrap descriptors".into());
+    }
+    let map_entries = rebuilt.sections[2].resources.len();
+    let other_source = Arc::downgrade(&other.sections[1]);
+    drop(a);
+    if old_common.strong_count() == 0 {
+        return Err("catalog close invalidated a live combined manifest".into());
+    }
+    drop(rebuilt);
+    if old_init.strong_count() != 0 || old_common.strong_count() != 0 || other_source.strong_count() == 0 {
+        return Err("catalog close did not retire only its manifest sources".into());
+    }
+    if !Arc::ptr_eq(&other, &acquire_level_list(base, &b, map, language)?) {
+        return Err("closing the first catalog disrupted the second combined manifest".into());
+    }
+    drop((other, b));
+    if other_source.strong_count() != 0 { return Err("manifest source outlived its final catalog".into()); }
+    eprintln!("MANIFEST_CATALOG_SCOPES map={map} init={} common={} map_entries={map_entries} descriptors_match=true reused=true retired=true",
+        direct_init.len(), direct_common.len());
+    Ok(())
 }
 
 #[cfg(test)]
