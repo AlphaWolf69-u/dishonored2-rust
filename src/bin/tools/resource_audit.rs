@@ -100,6 +100,16 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                     mip.width, mip.height, mip.payload.len(), crc.sum());
             }
         }
+        "inspect-acoustics" => {
+            use dishonored2_rust::assets::{archive::Catalog, sound_propagation::Propagation};
+            let catalog = Catalog::open(base)?;
+            for path in catalog.paths_with_suffix(".soundpropa") {
+                let graph = Propagation::load(&catalog, &path)?
+                    .ok_or_else(|| invalid(format!("indexed acoustic resource is absent: {path}")))?;
+                println!("ACOUSTIC_RESOURCE path={path} zones={} portals={} route_dimension={}",
+                    graph.zones.len(), graph.portals.len(), graph.routes.zone_count);
+            }
+        }
         "inspect-inline-volumes" => {
             use dishonored2_rust::{archive::Catalog, texture};
             let catalog = Catalog::open(base)?;
