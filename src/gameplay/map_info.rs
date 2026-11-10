@@ -238,6 +238,21 @@ pub(crate) fn observe_catalog_scopes(base: &std::path::Path, requested: &str) ->
     Ok(())
 }
 
+/// Compare the real loading labels and selected declarations for installed worlds.
+#[cfg(feature = "game")]
+pub(crate) fn observe_inventory(base: &std::path::Path) -> Result<(), String> {
+    let catalog = Catalog::open(base).map_err(|error| error.to_string())?;
+    for path in catalog.paths_with_suffix(".bwm") {
+        let level = crate::assets::level::LevelResources::resolve(&catalog, &path).map_err(|error| error.to_string())?;
+        let map = format!("{}.map", level.entities.trim_end_matches(".entities"));
+        let declaration = find(&catalog, &map);
+        let label = declaration.as_deref().and_then(loading_info);
+        let signature = declaration.as_ref().map(|edit| blake3::hash(format!("{edit:?}").as_bytes()).to_string());
+        eprintln!("MAP_INFO_INVENTORY map={map} label={label:?} declaration={signature:?}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
