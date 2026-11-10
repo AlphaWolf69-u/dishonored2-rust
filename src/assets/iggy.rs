@@ -512,13 +512,46 @@ impl<'a> Node<'a> {
         self.file.sections[self.section].pointers.contains(&(self.offset + delta))
     }
 
+    fn remaining_bytes(&self) -> Result<&'a [u8]> {
+        let remaining = self.file.sections[self.section].len().saturating_sub(self.offset);
+        self.bytes(0, remaining)
+    }
+
     /// A NUL-terminated UTF-16LE string, as Iggy stores library names.
     pub fn wide_str(&self) -> Result<String> {
+        static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (copy, trace) = *MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_COPY_IGGY_STRINGS").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_IGGY_STRINGS").is_some_and(|value| value == "1"),
+        ));
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let (text, units, temporary) = if copy {
+            self.wide_str_copied()?
+        } else {
+            let bytes = self.remaining_bytes()?;
+            let units = bytes.chunks_exact(2).position(|pair| pair == [0, 0])
+                .ok_or(Error::Range { section: self.section, offset: self.offset + bytes.len() / 2 * 2 })?;
+            let words = bytes[..units * 2].chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+            let mut text = String::with_capacity(units);
+            text.extend(char::decode_utf16(words).map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER)));
+            (text, units, 0)
+        };
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles())
+                .map_or(0, |(a, b)| b.saturating_sub(a));
+            eprintln!("IGGY_WIDE_STRING units={units} temporary={temporary} cycles={cycles} signature={}",
+                blake3::hash(text.as_bytes()));
+        }
+        Ok(text)
+    }
+
+    fn wide_str_copied(&self) -> Result<(String, usize, usize)> {
         let mut units = Vec::new();
         loop {
             let unit = self.u16(2 * units.len())?;
             if unit == 0 {
-                return Ok(String::from_utf16_lossy(&units));
+                return Ok((String::from_utf16_lossy(&units), units.len(), units.capacity() * 2));
             }
             units.push(unit);
         }
@@ -526,14 +559,10 @@ impl<'a> Node<'a> {
 
     /// A NUL-terminated byte string.
     pub fn c_str(&self) -> Result<String> {
-        let mut out = Vec::new();
-        loop {
-            let b = self.u8(out.len())?;
-            if b == 0 {
-                return Ok(String::from_utf8_lossy(&out).into_owned());
-            }
-            out.push(b);
-        }
+        let bytes = self.remaining_bytes()?;
+        let end = bytes.iter().position(|&byte| byte == 0)
+            .ok_or(Error::Range { section: self.section, offset: self.offset + bytes.len() })?;
+        Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
     }
 }
 
