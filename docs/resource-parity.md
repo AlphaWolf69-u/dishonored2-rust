@@ -6027,6 +6027,17 @@ new decals. Keep all surviving effects and tails. Expect the retired image
 and geometry leases to end even if an unrelated replacement has not reached
 readiness. No change to decal program, sampling, geometry or draw ordering.
 
+Projected decal replacement acceptance (`e8697d4f`). The installed
+Dunwall Escape blood effect published four material variants, ten receiver
+proxies and seven new image slots. The material worker had a different
+installed effect pending when all ten outgoing proxies and all four
+prepared materials released. Superseding that pending generation discarded
+its result. Final release left zero of the tracked assets and all seven
+slots were free. The windowless observer used the actual publication and
+removal systems with cameras inactive. It did not measure active decal draw
+appearance or the duration of rendered tails. Evidence:
+`DH2-fx-resources/artifacts/decal-replacement-retirement-20261110-comparison.json`.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
