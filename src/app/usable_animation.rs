@@ -1,7 +1,7 @@
 //! Per-instance AnimBasic playback for authored usable components.
 //! Rig/mesh acquisition runs on the IO worker; immutable assets are shared
 //! only while placements actually retain them.
-use std::{collections::HashMap, sync::{Arc, Weak}};
+use std::{collections::HashMap, sync::{Arc, Weak, atomic::Ordering}};
 use bevy::{prelude::*, tasks::{IoTaskPool, Task, block_on, futures_lite::future::poll_once}};
 use crate::{assets::animation_rig::BasicRig, gameplay::player::animation::{AnimBasicCommand, AnimBasicNode}};
 
@@ -10,12 +10,14 @@ struct Asset {
     model: Arc<crate::bmd6::ModelInfo>,
 }
 impl Asset {
-    fn load(catalog: &crate::archive::Catalog, path: &str) -> Result<Arc<Self>, String> {
+    fn load(catalog: &crate::archive::Catalog, path: &str, cancelled: impl Fn() -> bool) -> Result<Arc<Self>, String> {
+        if cancelled() { return Err("usable animation acquisition cancelled".into()); }
         let declaration = crate::bmd6::declaration_path(path).ok_or("usable model is not a compiled MD6")?;
         let rig_name = declaration.strip_prefix("generated/decls/md6def/")
             .and_then(|name| name.strip_suffix(".decl"))
             .ok_or("usable MD6 declaration path is invalid")?;
         let rig = BasicRig::load(catalog, rig_name)?;
+        if cancelled() { return Err("usable animation acquisition cancelled".into()); }
         let model = crate::bmd6::ModelSources::new(catalog).acquire(catalog, path)?;
         Ok(Arc::new(Self { rig, model }))
     }
@@ -57,6 +59,14 @@ pub(super) struct UsableAnimations {
 }
 
 impl UsableAnimations {
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        self.loading.retain(|_, task| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            block_on(poll_once(task)).is_none()
+        });
+        self.loading.is_empty()
+    }
+
     /// Physics publishes until an overlap has an actual animation pose; then
     /// this owner publishes their combined pose exactly once per frame.
     pub(super) fn combines_physics(&self, placement: usize) -> bool {
@@ -116,8 +126,9 @@ pub(super) fn advance(
         } else if !owner.loading.contains_key(&key) {
             let catalog = interactions.catalog.clone();
             let path = model.clone();
+            let closed = interactions.acquisitions_closed.clone();
             owner.loading.insert(key, std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
-                Asset::load(&catalog, &path)
+                Asset::load(&catalog, &path, || closed.load(Ordering::Acquire))
             })));
         }
     }
@@ -264,7 +275,7 @@ pub(super) fn observe_resources(catalog: &crate::archive::Catalog,
         if animated_actor(interactions, placement).is_none() { continue; }
         let path = &placement.resource_path;
         let key = if catalog.has_overlays() { format!("{path}#{index}") } else { path.clone() };
-        let asset = assets.entry(key).or_insert_with(|| Asset::load(catalog, path));
+        let asset = assets.entry(key).or_insert_with(|| Asset::load(catalog, path, || false));
         match asset {
             Ok(asset) => {
                 let node = asset.instantiate();
