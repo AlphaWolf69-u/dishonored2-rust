@@ -65,6 +65,11 @@ impl ParticleResourceOwner {
 type Sources = crate::rendering::particles::world_sources::WorldFxSources;
 type Acquisition = Task<Result<Arc<Sources>, String>>;
 
+struct PendingSource {
+    task: Mutex<Acquisition>,
+    cancelled: Arc<AtomicBool>,
+}
+
 struct Wanted {
     path: String,
     revision: u64,
@@ -104,7 +109,8 @@ pub(super) struct UsableEffects {
     pub(super) placements: HashMap<EffectOwner, super::interactions::EffectSpawn>,
     pub(super) ready: HashMap<EffectOwner, Arc<Sources>>,
     cache: HashMap<String, Weak<Sources>>,
-    loading: HashMap<String, Mutex<Acquisition>>,
+    loading: HashMap<String, PendingSource>,
+    retiring: Vec<Mutex<Acquisition>>,
     completed: Vec<(String, Result<Arc<Sources>, String>)>,
     pub(super) revision: u64,
     next_revision: u64,
@@ -156,46 +162,57 @@ impl UsableEffects {
         }
         if self.loading.contains_key(&path) { return; }
         let name = path.clone();
-        let cancelled = self.cancelled.clone();
+        let level_closed = self.cancelled.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
         let programs = programs.0.clone();
         let resources = resources.0.clone();
-        self.loading.insert(path, Mutex::new(IoTaskPool::get().spawn(async move {
+        let task = IoTaskPool::get().spawn(async move {
             let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
-            if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
+            let cancelled = || level_closed.load(Ordering::Acquire) || stop.load(Ordering::Acquire);
+            if cancelled() { return Err("effect acquisition cancelled".into()); }
             let mut programs = programs.lock().unwrap_or_else(|error| error.into_inner());
             let programs = programs.as_mut().map_err(|error| error.clone())?;
+            if cancelled() { return Err("effect acquisition cancelled".into()); }
             let mut resources = resources.lock().unwrap_or_else(|error| error.into_inner());
-            if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
-            let sources = Sources::load_named_shared(vec![name.clone()], &catalog, programs, &mut resources);
+            let sources = Sources::load_named_cancellable(vec![name.clone()], &catalog, programs, &mut resources, cancelled)?;
             sources.effects.get(&name).ok_or_else(|| format!("effect {name} was not acquired"))?
                 .as_ref().map_err(Clone::clone)?;
-            if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
             if let Some(started) = started {
                 eprintln!("FX_LIFECYCLE source=io effect={name} definitions={} acquire_ms={:.3}",
                     sources.effects.len(), started.elapsed().as_secs_f64() * 1000.0);
             }
             Ok(Arc::new(sources))
-        })));
+        });
+        self.loading.insert(path, PendingSource { task: Mutex::new(task), cancelled });
     }
 
     fn cancel_unwanted_acquisitions(&mut self) {
-        let before = self.loading.len();
         let wanted = &self.wanted;
-        self.loading.retain(|path, _| wanted.values().any(|request| &request.path == path));
-        if self.loading.len() != before {
-            self.cleanup_dirty = true;
-            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
-                eprintln!("FX_LIFECYCLE source_acquisitions_cancelled={}", before - self.loading.len());
-            }
+        let before = self.retiring.len();
+        for (_, pending) in self.loading.extract_if(|path, _| !wanted.values().any(|request| &request.path == path)) {
+            pending.cancelled.store(true, Ordering::Release);
+            self.retiring.push(pending.task);
+        }
+        if self.retiring.len() != before && crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+            eprintln!("FX_LIFECYCLE source_acquisitions_cancelled={}", self.retiring.len() - before);
         }
     }
 
     fn poll(&mut self) {
+        let retiring = self.retiring.len();
+        self.retiring.retain_mut(|task| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none()
+        });
+        // The cancelled decoder and its output have dropped. A prune can now
+        // retire their dependencies even if a previous prune already ran.
+        self.cleanup_dirty |= self.retiring.len() != retiring;
         if self.loading.is_empty() { return; }
         self.completed.clear();
         let completed = &mut self.completed;
-        self.loading.retain(|name, task| {
-            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+        self.loading.retain(|name, pending| {
+            let task = pending.task.get_mut().unwrap_or_else(|error| error.into_inner());
             if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
                 completed.push((name.clone(), result));
                 false
@@ -246,7 +263,7 @@ pub(super) fn prepare_requests(
 ) {
     let (Some(mut owner), Some(programs), Some(resources), Some(world), Some(catalog)) =
         (owner, programs, resources, world, scene.catalog.as_ref()) else { return };
-    if !owner.loading.is_empty() { owner.poll(); }
+    if !owner.loading.is_empty() || !owner.retiring.is_empty() { owner.poll(); }
     let retired = prewarm.retired_signal.load(Ordering::Acquire);
     if retired != owner.seen_retired {
         owner.seen_retired = retired;
