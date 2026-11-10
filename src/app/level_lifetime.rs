@@ -122,6 +122,8 @@ impl LevelLifetime {
 }
 
 pub(super) fn close_level_acquisitions(world: &mut World) {
+    // Release a blocked base-image handoff before joining the map reader.
+    world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
     if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
         effects.close_acquisitions();
     }

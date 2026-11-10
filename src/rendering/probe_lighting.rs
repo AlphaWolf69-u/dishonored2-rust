@@ -482,6 +482,30 @@ fn shader_word_bytes(words: &[u32]) -> std::borrow::Cow<'_, [u8]> {
 }
 
 impl ProbeLightingSet {
+    /// Reflection preparation has consumed the secondary records. Runtime
+    /// queries still use primary probes and the spatial reflection indices.
+    #[cfg(feature = "game")]
+    pub(crate) fn release_reflection_preparation(&mut self) {
+        let retain = std::env::var_os("DH2_DEBUG_RETAIN_REFLECTION_PROBE_SOURCES").is_some_and(|v| v == "1");
+        let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+        let capacity = |set: &Self| {
+            let records = set.reflection_probes.capacity() * size_of::<bprobe::Probe>();
+            let names = set.secondary_resources.capacity() * size_of::<String>()
+                + set.secondary_resources.iter().map(String::capacity).sum::<usize>()
+                + set.reflection_probes.iter().map(|probe| probe.cubemap_name.capacity()).sum::<usize>();
+            (records, names)
+        };
+        let before = trace.then(|| capacity(self));
+        if !retain {
+            self.reflection_probes = Vec::new();
+            self.secondary_resources = Vec::new();
+        }
+        if let Some((records, names)) = before {
+            let (remaining_records, remaining_names) = capacity(self);
+            eprintln!("REFLECTION_PROBE_SOURCES retain={retain} records_bytes={records} names_bytes={names} remaining_records={remaining_records} remaining_names={remaining_names}");
+        }
+    }
+
     /// Host queries use the prepared quads, in place of reading PRB samples
     /// through 382d90/383d80 at runtime. Retire superseded preparation backing;
     /// retain the complete parsed representation for standalone asset readers.

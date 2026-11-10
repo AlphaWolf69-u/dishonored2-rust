@@ -628,6 +628,10 @@ fn scene_host(first_host: bool) -> App {
         .init_resource::<super::texture_streaming::SharedImages>()
         .init_resource::<super::resident_images::ResidentImages>();
     super::scene_preparation::SceneGpuInputs::install(&mut app);
+    if std::env::var_os("DH2_DEBUG_OBSERVE_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1") {
+        super::loading_screen::install_scene_image_requests(&mut app);
+        super::loading_screen::limit_loading_uploads(app.world_mut());
+    }
     {
         use crate::rendering::bevy_backend::{extract_level_resource, fog_material::FogMaterialResources};
         app.sub_app_mut(RenderApp).add_systems(bevy::render::ExtractSchedule, (
@@ -670,6 +674,12 @@ fn inspect_scene_resources(
     let catalog = archive::Catalog::shared(base)?;
     let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
+    let observe_initial_images = std::env::var_os("DH2_DEBUG_OBSERVE_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1");
+    let stop_initial_images = observe_initial_images
+        && std::env::var_os("DH2_DEBUG_STOP_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1");
+    if observe_initial_images && mode != Mode::Upload {
+        return Err("initial texture phase observation requires GPU asset epochs".into());
+    }
     let mut host = None;
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
@@ -681,6 +691,9 @@ fn inspect_scene_resources(
         // asset storage and render device across actual map retirement.
         let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
+        if new_host && observe_initial_images {
+            app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
+        }
         if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
             if new_host {
                 let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
@@ -703,7 +716,9 @@ fn inspect_scene_resources(
             step == 0,
             |_| false,
         )?;
-        super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
+        let image_budget = observe_initial_images.then(|| super::loading_screen::initial_image_batch_bytes(app.world())).flatten();
+        let base_reader = super::scene_preparation::ScenePreparation::new(app.world_mut())
+            .prepare(&mut prepared, image_budget, || false)?;
         let inputs = prepared
             .get_resource::<super::scene_preparation::SceneGpuInputs>()
             .ok_or("scene worker did not produce its real asset inputs")?;
@@ -740,6 +755,36 @@ fn inspect_scene_resources(
                 let mut cameras = app.world_mut().query::<&mut Camera>();
                 for mut camera in cameras.iter_mut(app.world_mut()) {
                     camera.is_active = false;
+                }
+                if observe_initial_images {
+                    if stop_initial_images && base_reader.is_none() {
+                        return Err("initial texture close observation requires bounded reads".into());
+                    }
+                    let closed = std::sync::atomic::AtomicBool::new(false);
+                    let ready_common = |world: &World| {
+                        let scene = world.resource::<SceneRenderQueue>();
+                        let shared = world.resource::<super::texture_streaming::SharedImages>();
+                        scene.diffuse_image_paths.iter().enumerate()
+                            .filter(|(slot, path)| shared.contains(path) && scene.diffuse_mip_states[*slot].resident.is_some())
+                            .count()
+                    };
+                    let ready_before = ready_common(app.world());
+                    std::thread::scope(|scope| {
+                        if let Some(reader) = base_reader {
+                            let closed = &closed;
+                            scope.spawn(move || reader.read(|| closed.load(std::sync::atomic::Ordering::Acquire)));
+                        }
+                        let result = super::loading_screen::observe_initial_image_phases(
+                            &mut app, &catalog, stop_initial_images, render_epoch);
+                        closed.store(true, std::sync::atomic::Ordering::Release);
+                        // A failed render epoch must wake a waiting sender
+                        // before the scope joins the installed reader.
+                        app.world_mut().remove_resource::<super::texture_streaming::PreparedBaseImages>();
+                        result
+                    })?;
+                    if stop_initial_images { eprintln!("INITIAL_TEXTURE_READER_DRAINED step={step}"); }
+                    let resident = ready_common(app.world());
+                    eprintln!("INITIAL_TEXTURE_COMMON step={step} before={ready_before} resident={resident}");
                 }
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;
