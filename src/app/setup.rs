@@ -29,6 +29,58 @@ enum SceneSkeletalModel {
     Shared(Arc<bmd6::ModelInfo>),
 }
 
+struct TransformScratch {
+    points: Vec<Vec3>,
+    separate: bool,
+    observation: Option<TransformScratchObservation>,
+}
+
+#[derive(Default)]
+struct TransformScratchObservation {
+    fills: usize,
+    growths: usize,
+    vertices: usize,
+    peak_capacity: usize,
+    cycles: u64,
+}
+
+impl TransformScratch {
+    fn new(separate: bool, observe: bool) -> Self {
+        Self { points: Vec::new(), separate, observation: observe.then(TransformScratchObservation::default) }
+    }
+
+    fn fill(&mut self, positions: &[[f32; 3]], transform: impl Fn([f32; 3]) -> Vec3) {
+        let started = self.observation.as_ref().and_then(|_| crate::loading::thread_cycles());
+        let capacity = if self.separate { 0 } else { self.points.capacity() };
+        let transformed = positions.iter().copied().map(transform);
+        if self.separate {
+            self.points = Vec::new();
+            self.points = transformed.collect();
+        } else {
+            self.points.clear();
+            self.points.reserve_exact(positions.len());
+            self.points.extend(transformed);
+        }
+        if let Some(observation) = &mut self.observation {
+            observation.fills += 1;
+            observation.growths += usize::from(self.points.capacity() > capacity);
+            observation.vertices += positions.len();
+            observation.peak_capacity = observation.peak_capacity.max(self.points.capacity());
+            if let Some(started) = started {
+                observation.cycles += crate::loading::thread_cycles().unwrap_or(started).saturating_sub(started);
+            }
+        }
+    }
+
+    fn report(self, phase: &str) {
+        if let Some(observation) = self.observation {
+            eprintln!("SCENE_TRANSFORM_SCRATCH phase={phase} separate={} fills={} growths={} vertices={} peak_bytes={} cycles={}",
+                self.separate, observation.fills, observation.growths, observation.vertices,
+                observation.peak_capacity * std::mem::size_of::<Vec3>(), observation.cycles);
+        }
+    }
+}
+
 #[derive(Default)]
 struct ModelMeshObservation {
     enabled: bool,
@@ -51,7 +103,7 @@ impl ModelMeshObservation {
         }
     }
 
-    fn report(&self, meshes: &dyn AssetWrite<Mesh>, instances: &[RenderInstance]) {
+    fn report(&self, marker: &str, meshes: &dyn AssetWrite<Mesh>, instances: &[RenderInstance]) {
         if !self.enabled { return; }
         let mut known = HashMap::new();
         let mut digest = blake3::Hasher::new();
@@ -83,7 +135,7 @@ impl ModelMeshObservation {
             });
             digest.update(&index.to_le_bytes());
         }
-        eprintln!("MODEL_MESH_PREPARATION repeated={} instances={} meshes={} initializations={} skinned_vertices={} cycles={} signature={}",
+        eprintln!("{marker} repeated={} instances={} meshes={} initializations={} skinned_vertices={} cycles={} signature={}",
             self.repeated, instances.len(), known.len(), self.initializations, self.skinned_vertices,
             self.cycles, digest.finalize());
     }
@@ -536,6 +588,10 @@ pub(super) fn prepare(
             }
         }
     }
+    let separate_points = env::var_os("DH2_DEBUG_SEPARATE_TRANSFORM_SCRATCH").is_some_and(|value| value == "1");
+    let observe_points = env::var_os("DH2_DEBUG_TRANSFORM_SCRATCH").is_some_and(|value| value == "1");
+    let mut world_points = TransformScratch::new(separate_points, observe_points);
+    let world_mesh_start = render_instances.len();
     let mut bwm_visibility_render_instances = vec![Vec::new(); scene.world.visibility.len()];
     for (object_number, object) in scene.world.objects.iter().enumerate() {
         if object_number % 32 == 0 {
@@ -575,16 +631,12 @@ pub(super) fn prepare(
             .clone();
         world_shadow_mesh_sources.objects[object_number].gather_flags48 = Some(admission);
         let first_material = if let Some(matrix) = scene.world.matrices.get(object.matrix_start) {
-            let points: Vec<Vec3> = source
-                .positions()
-                .iter()
-                .map(|&position| transformed(matrix, position))
-                .collect();
+            world_points.fill(source.positions(), |position| transformed(matrix, position));
             let _tag = crate::platform::allocation_tags::tag("world material resolution");
             resolver.get_world(
                 &object.material_path,
                 object_number,
-                mean_game_position(&points),
+                mean_game_position(&world_points.points),
             )
         } else {
             None
@@ -621,11 +673,10 @@ pub(super) fn prepare(
         for matrix_index in object.matrix_start..object.matrix_end {
             let matrix = &scene.world.matrices[matrix_index];
             let visibility_record = &scene.world.visibility[matrix_index];
-            let points: Vec<Vec3> = source
-                .positions()
-                .iter()
-                .map(|&position| transformed(matrix, position))
-                .collect();
+            if matrix_index != object.matrix_start || separate_points {
+                world_points.fill(source.positions(), |position| transformed(matrix, position));
+            }
+            let points = world_points.points.as_slice();
             if trace_startup {
                 eprintln!(
                     "Startup trace: resolving BWM material object={} matrix={} path={}",
@@ -638,7 +689,7 @@ pub(super) fn prepare(
                 resolver.get_world(
                     &object.material_path,
                     object_number,
-                    mean_game_position(&points),
+                    mean_game_position(points),
                 )
             };
             let Some(mat) = mat else {
@@ -656,7 +707,7 @@ pub(super) fn prepare(
             world_shadow_mesh_sources
                 .bind_material(object_number, &mat.handle)
                 .expect("resolved BWM object/material ownership");
-            for &point in &points {
+            for &point in points {
                 whole_world.add(point);
                 regions
                     .entry((point.x / 35.0).floor() as i32)
@@ -665,11 +716,11 @@ pub(super) fn prepare(
             }
             let instance = game_affine_to_view(matrix);
             let bounds = authored_world_bounds(visibility_record);
-            let render_instance = if needs_exact_world_mesh(&instance, source.positions(), &points) {
+            let render_instance = if needs_exact_world_mesh(&instance, source.positions(), points) {
                 // Bevy's Transform cannot express shear. Preserve the exact
                 // authored affine transform in this instance's vertex data.
                 let baked = meshes.add(super::view_geometry::authored_mesh_from_uvs(
-                    &points,
+                    points,
                     super::view_geometry::MeshUvs::Packed(source.uvs()),
                     source.indices(),
                     source.packed_channels(),
@@ -735,6 +786,11 @@ pub(super) fn prepare(
             render_instances.push(render_instance);
         }
     }
+    world_points.report("world");
+    if observe_points {
+        ModelMeshObservation { enabled: true, ..Default::default() }
+            .report("WORLD_MESH_PREPARATION", meshes, &render_instances[world_mesh_start..]);
+    }
     super::load_timing::mark("setup: world geometry and materials");
 
     if trace_startup {
@@ -796,6 +852,7 @@ pub(super) fn prepare(
             expanded_placements.get(index).map(|placement| (placement.resource_path.as_str(), model))
         }).collect()
     } else { HashMap::new() };
+    let mut placed_points = TransformScratch::new(separate_points, observe_points);
     for (number, placement) in expanded_placements.iter().enumerate() {
         if number % 32 == 0 {
             check_cancelled()?;
@@ -872,11 +929,8 @@ pub(super) fn prepare(
                     if material::is_null_material(material_path) {
                         continue;
                     }
-                    let points: Vec<Vec3> = surface
-                        .positions
-                        .iter()
-                        .map(|&vertex| placed_vertex(placement, vertex))
-                        .collect();
+                    placed_points.fill(&surface.positions, |vertex| placed_vertex(placement, vertex));
+                    let points = placed_points.points.as_slice();
                     if points.is_empty() || surface.indices.is_empty() {
                         continue;
                     }
@@ -887,11 +941,11 @@ pub(super) fn prepare(
                     ) else {
                         continue;
                     };
-                    let bounds = render_bounds(&points);
+                    let bounds = render_bounds(points);
                     let instance = placed_transform(placement);
                     let deforms = deformed.contains(&number);
                     let world_baked = !deforms
-                        && needs_exact_world_mesh(&instance, &surface.positions, &points);
+                        && needs_exact_world_mesh(&instance, &surface.positions, points);
                     let skin_influences = resolver.shadow_materials.skin_influences(&mat.handle);
                     let flipped = instance.to_matrix().determinant() < 0.0;
                     let repeated = mesh_observation.repeated;
@@ -922,7 +976,7 @@ pub(super) fn prepare(
                     let (mesh, transform) = if world_baked {
                         (
                             prepare_mesh(authored_mesh(
-                                &points,
+                                points,
                                 &surface.uvs,
                                 &surface.indices,
                                 &surface.packed_channels,
@@ -1109,12 +1163,9 @@ pub(super) fn prepare(
             if material::is_null_material(material_path) {
                 continue;
             }
-            let points: Vec<Vec3> = surface
-                .positions
-                .iter()
-                .map(|&vertex| placed_vertex(placement, vertex))
-                .collect();
-            for &point in &points {
+            placed_points.fill(&surface.positions, |vertex| placed_vertex(placement, vertex));
+            let points = placed_points.points.as_slice();
+            for &point in points {
                 whole_world.add(point);
                 regions
                     .entry((point.x / 35.0).floor() as i32)
@@ -1128,9 +1179,9 @@ pub(super) fn prepare(
             ) else {
                 continue;
             };
-            let bounds = render_bounds(&points);
+            let bounds = render_bounds(points);
             let instance = placed_transform(placement);
-            let world_baked = needs_exact_world_mesh(&instance, &surface.positions, &points);
+            let world_baked = needs_exact_world_mesh(&instance, &surface.positions, points);
             let repeated = mesh_observation.repeated;
             let mut initialize_mesh = |mesh: &mut Mesh| mesh_observation.prepare(0, || {
                 retain_model_shadow_position(mesh, &surface.positions);
@@ -1143,7 +1194,7 @@ pub(super) fn prepare(
                 baked_shear_instances += 1;
                 (
                     prepare_mesh(super::view_geometry::authored_mesh_from_uvs(
-                        &points,
+                        points,
                         super::view_geometry::MeshUvs::Packed(&surface.uvs),
                         &surface.indices,
                         &surface.packed_channels,
@@ -1248,6 +1299,7 @@ pub(super) fn prepare(
             }
         }
     }
+    placed_points.report("placed-models");
     println!(
         "Initial BML/MD6 query groups: {}; constructor-default range models: {}; blueprint and surface bit40 producers remain unsupported",
         placed_model_queries.len(),
@@ -1296,7 +1348,7 @@ pub(super) fn prepare(
     // Host decoding scratch ends here, before later water/FX acquisition.
     // Runtime meshes/query/skinning owners already hold their required data;
     // as with input retirement at 14025aa00's exit, staging is not residency.
-    mesh_observation.report(meshes, &render_instances[placed_mesh_start..]);
+    mesh_observation.report("MODEL_MESH_PREPARATION", meshes, &render_instances[placed_mesh_start..]);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         let mut packed_uv_pairs = 0;
         let mut packed_uv_mismatches = 0;
