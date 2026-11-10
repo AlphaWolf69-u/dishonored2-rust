@@ -182,3 +182,14 @@ first point time) to the newest point; colour/alpha/width from trail-life
 curves at the normalized age; centre and side from 140210240/1402100f0 and
 14020f940/14020f710; vertices written by 140212f90 (40 bytes each),
 strips joined by duplicated vertices; bounds grow by the widest width.
+Trail vertex (140212f90, 40 bytes, pair per step): +0 position (centre -/+
+width x side), +0xc half2 uv from the strip mapping (140208ef0: m_mapping
+axis/mode/scale with flip bits, stepped by 140208eb0), +0x10 two halves
+(mapping +0x28: half(0), half(random) from the seed), +0x14 packed
+signed-byte normal (frame row 9..11), +0x18 packed tangent (mapping basis x
+frame, sign in w), +0x1c packed colour (140164340), +0x20/+0x24 untouched.
+Side frame (14020f940): forward = normalized centre-line tangent, view =
+normalized (eye - centre), side = normalize(forward x view), normal =
+side x forward; +0x30 |forward.view| feeds 14020f6f0's fade
+min((1 - dot) x 20, 1) on width. Renderer sets vertex format 4 (+0x148)
+with index size 2 (+0x14c).
