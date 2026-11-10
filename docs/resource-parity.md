@@ -6964,3 +6964,19 @@ bank/package/output owners and all selected payload formats. Expect the
 same package names, bank/media/event fingerprints and streaming totals
 on ordinary maps, with source identities tied to the preparing Catalog.
 No gameplay query, mixer callback, per-voice decode or GPU work changes.
+
+
+Audio context acceptance (2a04e459, 2026-11-11). The clean dev tools build
+completed the corrected bank inventory for all 36 installed maps. Package
+names, bank IDs and shared-package/bank selections match the independently
+parsed wwisedescription.txt in every map. The saved actual EotW/Dust/EotW
+preparation/publication comparison matches all 27,177 prepared-media records,
+5,837 stream records, three encoded-residency snapshots and nine scene
+preparation records, with no acquisition errors. Only the inventory observer
+changed after that acquisition capture; its exact source diff and executable
+provenance were checked before reuse. Normal audio preparation now receives
+the scene's explicit Catalog and entities companion instead of rediscovering
+global installation/map state. This is source-context correctness, with no
+CPU-speed, gameplay playback or GPU upload claim. No tests or visible game
+launches were used. Evidence:
+DH2-fx-level-lifetime/artifacts/audio-acquisition-context-v3-20261111-comparison.json.
