@@ -164,21 +164,27 @@ impl UsableEffects {
         self.next_revision = self.next_revision.wrapping_add(1);
         self.wanted.insert(actor.clone(), Wanted { path: path.clone(), revision: self.next_revision });
         self.revision = self.revision.wrapping_add(1);
+        let cached = self.cache.get(&path).and_then(Weak::upgrade);
         if self.ready.remove(&actor).is_some() {
             self.retirement = self.retirement.wrapping_add(1);
             self.cleanup_dirty = true;
         }
-        if world.effects.get(&path).is_some_and(Result::is_ok) {
-            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() { eprintln!("FX_LIFECYCLE source=world effect={path}"); }
-            match world.subset(&path) {
-                Ok(source) => { self.ready.insert(actor, Arc::new(source)); return; }
-                Err(error) => { bevy::log::warn!("Usable effect {path} dependencies unavailable: {error}"); }
-            }
-        }
-        if let Some(source) = self.cache.get(&path).and_then(Weak::upgrade) {
+        if let Some(source) = cached {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() { eprintln!("FX_LIFECYCLE source=weak effect={path}"); }
             self.ready.insert(actor, source);
             return;
+        }
+        if world.effects.get(&path).is_some_and(Result::is_ok) {
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() { eprintln!("FX_LIFECYCLE source=world effect={path}"); }
+            match world.subset(&path) {
+                Ok(source) => {
+                    let source = Arc::new(source);
+                    self.cache.insert(path, Arc::downgrade(&source));
+                    self.ready.insert(actor, source);
+                    return;
+                }
+                Err(error) => { bevy::log::warn!("Usable effect {path} dependencies unavailable: {error}"); }
+            }
         }
         if self.loading.contains_key(&path) { return; }
         let name = path.clone();
@@ -264,7 +270,6 @@ impl UsableEffects {
                 }
             }
         }
-        self.cache.retain(|_, sources| sources.strong_count() != 0);
     }
 }
 
@@ -288,7 +293,6 @@ pub(super) fn prepare_requests(
     if retired != owner.seen_retired {
         owner.seen_retired = retired;
         owner.cleanup_dirty = true;
-        owner.cache.retain(|_, source| source.strong_count() != 0);
     }
     if owner.cleanup.is_some() {
         let task = owner.cleanup.as_mut().unwrap().get_mut().unwrap_or_else(|error| error.into_inner());
@@ -296,6 +300,7 @@ pub(super) fn prepare_requests(
     }
     if owner.cleanup_dirty && owner.cleanup.is_none() {
         owner.cleanup_dirty = false;
+        owner.cache.retain(|_, source| source.strong_count() != 0);
         let resources = resources.0.clone();
         let cancelled = owner.cancelled.clone();
         owner.cleanup = Some(Mutex::new(IoTaskPool::get().spawn(async move {
@@ -345,6 +350,76 @@ pub(super) fn prepare_requests(
     if owner.revision != previous_revision && !owner.loading.is_empty() {
         owner.cancel_unwanted_acquisitions();
     }
+}
+
+/// Observe installed source leases through the same request and publication
+/// systems as gameplay. No simulation, player input, audio, or draw runs.
+pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: &str) -> Result<(), String> {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::rendering::bevy_backend::{particle_images::SceneParticleImages,
+        world_effects::{DynamicEffects, DynamicMaterialPrewarm, WorldEffectSources}, world_sounds::WorldSounds};
+
+    world.init_resource::<EffectRequests>();
+    world.init_resource::<DynamicMaterialPrewarm>();
+    world.init_resource::<DynamicEffects>();
+    world.init_resource::<SceneParticleImages>();
+    world.init_resource::<WorldSounds>();
+    let first_key = "resource-observer-a";
+    let second_key = "resource-observer-b";
+    let first = EffectOwner::Player(first_key.into());
+    let second = EffectOwner::Player(second_key.into());
+    let sources = world.get_resource::<WorldEffectSources>().ok_or("scene did not publish world FX sources")?;
+    if sources.0.effects.contains_key(effect) {
+        return Err(format!("{effect} is already in the scene's FX sources"));
+    }
+    let advance = |world: &mut bevy::prelude::World| -> Result<(), String> {
+        world.run_system_once(prepare_requests).map_err(|error| format!("FX requests: {error:?}"))?;
+        world.run_system_once(publish).map_err(|error| format!("FX publication: {error:?}"))
+    };
+    let drain = |world: &mut bevy::prelude::World| -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            advance(world)?;
+            let owner = world.resource::<UsableEffects>();
+            if owner.loading.is_empty() && owner.retiring.is_empty() && owner.cleanup.is_none() && !owner.cleanup_dirty {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline { return Err("FX acquisition did not settle".into()); }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+
+    {
+        let mut requests = world.resource_mut::<EffectRequests>();
+        requests.start_player(first_key, effect);
+        requests.stop_player(first_key);
+    }
+    advance(world)?;
+    let retiring = world.resource::<UsableEffects>().retiring.len();
+    drain(world)?;
+    let owner = world.resource::<UsableEffects>();
+    eprintln!("RESOURCE_FX_REQUEST phase=cancelled admitted={retiring} ready={} retiring={} cached={}",
+        owner.ready.len(), owner.retiring.len(), owner.cache.len());
+
+    world.resource_mut::<EffectRequests>().start_player(first_key, effect);
+    drain(world)?;
+    let source = world.resource::<UsableEffects>().ready.get(&first).map(Arc::downgrade)
+        .ok_or_else(|| format!("{effect} did not acquire a source"))?;
+    world.resource_mut::<EffectRequests>().start_player(second_key, effect);
+    drain(world)?;
+    let owner = world.resource::<UsableEffects>();
+    let shared = owner.ready.get(&second).is_some_and(|second| Weak::ptr_eq(&source, &Arc::downgrade(second)));
+    eprintln!("RESOURCE_FX_REQUEST phase=overlap ready={} shared={shared} cached={}", owner.ready.len(), owner.cache.len());
+    {
+        let mut requests = world.resource_mut::<EffectRequests>();
+        requests.stop_player(first_key);
+        requests.stop_player(second_key);
+    }
+    drain(world)?;
+    let owner = world.resource::<UsableEffects>();
+    eprintln!("RESOURCE_FX_REQUEST phase=released ready={} cached={} source_leases={}",
+        owner.ready.len(), owner.cache.len(), source.strong_count());
+    Ok(())
 }
 
 /// Publish shared immutable sources first so the existing audio and image
