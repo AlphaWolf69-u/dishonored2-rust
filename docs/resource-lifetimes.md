@@ -17,7 +17,7 @@ does not regress. Backend differences must remain labelled and measured.
 | Vertex probes | The two-map comparison matched the full GPU buffer CRCs. Shader-only position and lookup storage releases after packing while the CPU query data remains live. | This is load and ownership evidence. Walking-frame timings were outside the observation. |
 | Inline and separate texture mips | Inline compaction matched 8,129 prepared images and GPU retirement counts. Separate acquisition matched 70 archive samples across all five formats and four suffixes. The gameplay worker uses the measured acquisition owner. | Separate-mip demand, queued completion, and publication timing still need live evidence. |
 | Replaced texture views | The windowless named UI route acquired the current committed image and changed to its replacement through the existing GPU registry. The displaced wrapper retired after its final lease. | Active movie drawing during replacement was outside the observation. |
-| Texture request state | The per-map worker owns its scratch. A reused FX slot classifies the incoming image using the same priority rules as a fresh slot. The installed FX observation retired seven slots, GPU images and cached particle views. | Streaming demand and revival during active gameplay are separate from the idle withdrawal observation. |
+| Texture request state | The per-map worker owns its scratch. A reused FX slot classifies the incoming image using the same priority rules as a fresh slot. The installed FX observations retired seven slots, GPU images and cached particle views, suppressed a stale read after final release, and discarded a completed 21,840-byte payload before upload. | The withdrawal checks cover the boundaries before admission and GPU submission. In-progress archive decompression and active gameplay revival remain separate. |
 | Initial worker mip uploads | 32 installed images across five formats matched their payload signatures and retired through the normal upload queue. Reusing their decoded archive members removed 25.8 MB of overlapping copied payload capacity per observation. | The windowless route covers the reader and GPU mailbox. Live demand, revivals and cancellation remain separate. |
 | Collision geometry | Four installed maps matched collision geometry and materials after removing tuple staging and audit-only shape details. High-chaos Palace avoids a 190 MB tuple buffer. Its indexed convex hull search matched the previous triangle order and reduced same-build shape extraction cycles from 1,346 billion to 6.8 billion. | Runtime queries use the existing decoded index. Live close during collision preparation remains unobserved. |
 | Fog and shadow sampling | Each of three transitions cleared three extracted resources, five fog and sampling images, four buffers and the separate screen-shadow image. | The windowless route covers upload and release. |
@@ -25,9 +25,9 @@ does not regress. Backend differences must remain labelled and measured.
 | Loading fade and map sources | On the three-map sequence each load acquired one authored fade, with durations of four, two and two seconds, and each retirement removed five map-source history entries. | Scripted fade consumers are separate from direct loading. |
 
 The joined movie worker and Catalog shutdown were observed through final
-retirement. Closing during individual in-flight map stages and cancellation of
-dynamic FX image work still need scoped evidence. The [parity ledger](resource-parity.md)
-records the original functions and the limits of each observation.
+retirement. Closing during individual in-flight map stages still needs scoped
+evidence. The [parity ledger](resource-parity.md) records the original functions
+and the limits of each observation.
 
 ## Earlier observations (2026-11-09)
 
