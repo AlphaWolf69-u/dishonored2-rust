@@ -127,6 +127,7 @@ pub struct Catalog {
     containers: containers::Containers,
     /// 068c30/0658b0 primary header order, distinct from data archive slots.
     header_order: std::sync::OnceLock<std::result::Result<Box<[u8]>, String>>,
+    pub(crate) map_info: std::sync::OnceLock<crate::gameplay::map_info::MapInfoCache>,
     pub(crate) preload_bootstrap: std::sync::OnceLock<std::result::Result<usize, String>>,
     pub(crate) preload_map: std::sync::Mutex<Option<Box<str>>>,
 }
@@ -171,7 +172,8 @@ impl Drop for Catalog {
             .unwrap_or_else(|error| error.into_inner()).take().is_some());
         let contacts = usize::from(self.contact_database.get_mut()
             .unwrap_or_else(|error| error.into_inner()).take().is_some());
-        crate::loading::retire_catalog(self.identity, animations, declarations, blur, contacts, parameters);
+        let map_info = self.map_info.take().map_or(0, |mut owner| owner.entry_count());
+        crate::loading::retire_catalog(self.identity, animations, declarations, blur, contacts, parameters, map_info);
     }
 }
 
@@ -469,6 +471,7 @@ impl Catalog {
             animset_declarations: Default::default(),
             md6_declarations: Default::default(),
             md6_loading: Default::default(),
+            map_info: Default::default(),
             preload_bootstrap: Default::default(),
             preload_map: Default::default(),
             common_declaration_texts: Default::default(),

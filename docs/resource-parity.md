@@ -3259,6 +3259,8 @@ interactive-map movie.
 
 ### Map-info lookup prediction
 
+Map-info catalog ownership prediction (2026-11-10). The original keeps the loaded idDeclMapInfo pointer at gameLocal+0x337118 and uses declaration identity lookup 1400607f0/14005feb0. The host's single map-info registry and current-label cache evict an independently open catalog. Store the existing lazy index and loading label in their Catalog and remove its redundant resolved-path map. The target index and parsed declaration table already cover hits, and the exhausted scan cursor covers misses. A/B/A should read each catalog once, reuse low/high-chaos aliases, release each cache at its own Catalog close, and keep edited declarations fresh. Predict one fewer key and shared pointer per successful lookup and no cached negative path string. Compare actual installed declarations and loading labels.
+
 The original init/common manifests register 28/39 mapInfo resources and
 `1400607f0` / `14005feb0` resolve their resident identities. The rewrite
 currently scans and parses mapInfo declarations in archive order for every
