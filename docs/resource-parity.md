@@ -2115,9 +2115,17 @@ The host image owner will reuse an already acquired scene-base view only when
 its initial complete-chain view selects the scene loader's requested source mip.
 Already replaced/trimmed views are not treated as complete base chains. This
 preserves the scene minimum/residency policy rather than pinning full chains.
-Later UI acquisitions use the committed scene/common view; existing wrappers
-retain their previous view. Registered current views change only on successful
-streaming commits, including inactive common-image reductions.
+The first live named wrapper uses the committed scene/common view.
+`14101d290` first searches the global Iggy wrapper table by name and adds the
+new context reference through `14100d6f0`. It calls the texture resolver only
+when no wrapper is live. `1402df8c0` likewise acquires the SRV on its first
+reference and reuses the saved handle for further references. A streamed
+replacement leaves that named snapshot available to all holders of its live
+wrapper. After the last wrapper reference releases, the next wrapper uses
+the current committed view. The host's weak named-binding lookup represents
+this sharing without extending the wrapper lifetime. Registered current
+views change only on successful streaming commits, including inactive
+common-image reductions. This scope is established by executable code.
 
 Prediction: each eligible base slot removes exactly one independent payload
 preparation and upload, equal to that registered view's payload bytes. Mip and
@@ -2954,6 +2962,38 @@ ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
 
+Streaming priority ownership prediction: original 14030cdb0 derives the
+priority class from the current image record's path. The host cache currently
+rebuilds classifications only when the slot array changes length. Reusing a
+retired FX slot can keep its previous path class and therefore change the new
+image's request and reduction order. Classify each path on admission and keep
+its class beside the projected demand in the existing record's alignment
+padding. Inactive shared images retain that class with the mip state. This
+removes the separate two-byte-per-slot cache, its full
+path rescan on append, and the second classification on shared-image capture.
+Existing slots should keep the same priority keys. Reused slots should get
+the same key as a fresh slot for the same path and demand, apart from the
+existing slot-index tie break. No per-frame path processing is added.
+
+Texture request scratch lifetime prediction: the streaming system currently
+retains its request flags, priority keys and instance-to-image index in Bevy
+system locals. They survive `LevelLifetime::clear` and are rebuilt when the
+next scene queue is first observed. Giving those buffers to the per-map
+texture worker should release their outgoing capacities with the worker,
+including on close. The same instance and request order should reach the
+streamer, with no new allocations on ordinary gameplay frames. This is a host
+ownership change at the map retirement boundary (1408a4830), separate from
+the earlier mailbox-scratch measurements.
+
+The game-feature check on db1cb92a compiled the exact texture sources now
+integrated. LevelLifetime removes the texture worker with the outgoing map,
+which owns its request state and cached instance slots. Projected demand
+carries the original name-based priority initialized for each newly admitted
+identity, including reused FX slots. Existing priority-key construction is
+unchanged. Live slot reuse, affected CPU cost and mip publication still need
+runtime observations. Evidence: DH2-scene-shutdown/artifacts/resource-shutdown-batch-20261110-check-provenance.json.
+
+
 Initial texture worker prediction. Original 1402e9ff0 hands validated
 authored inline records to 1402f5500. The host worker currently allocates one
 new byte buffer per inline mip even when the upload already owns the decoded
@@ -2963,6 +3003,21 @@ allocation or copy, with only record headers and the archive capacity slack
 retained until upload. Keep separately streamed mip jobs on their existing
 direct acquisition path. Compare matching mip order, dimensions, payload
 signatures and GPU publication before claiming a gameplay memory or CPU gain.
+
+Installed worker upload acceptance (0b3f82fa). Four same-executable
+observations loaded 32 archived images across five formats and one to seven
+inline levels. All inputs matched the previously observed installed CRC,
+dimensions, format, mip count and next finer suffix. The real GPU upload
+mailbox accepted every job. After upload all decoded archive owners were
+released, and after the diagnostic released its image handles all 32 GPU
+identities retired. Per run the old path copied 25,838,832 payload bytes
+into new mip buffers. The new path reused one decoded member per image
+(25,843,168 bytes of total member capacity, including 4,336 bytes of
+headers and slack). These figures describe overlapping copies avoided
+during acquisition, not steady-state memory saved. Scoped reader cycles
+were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
+Live gameplay demand and cancellation were outside this windowless
+observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
 
 ### Fog curve resource ownership
 
@@ -5498,6 +5553,10 @@ Installed acceptance (fdd41322). The streamed reader opened all 36 indexed world
 
 Installed BWM capture and audit consumers now use the same bounded archive loader. The F8 report retains only the nearest-hit data after the ray query, releasing the temporary geometry before collecting the other diagnostics. The predicted capture-only saving is the same avoided whole-member allocation as level loading, with the existing ray query and report fields preserved. Tools that explicitly read a local BWM or export source bytes retain their file-input paths.
 
+### Retire collision acquisition staging at its last consumer
+
+Prediction before change. The installed compiled physics decoder owns independent triangles and material mappings after reading .bphysworld. The host currently retains the decoded archive member and geometry metadata while copying all world triangles into an intermediate position/filter tuple vector, then constructing the final query index. The installed Edge of the World and Dust District files decode to 37,930,026 and 46,325,954 bytes. Their 1,479,026 and 1,590,070 world triangles create 70,993,248 and 76,323,360 bytes of 48-byte intermediate tuples. Retire archive bytes and unused extraction metadata immediately after shape decoding and feed the same transformed triangles and filters directly into the existing index constructor. The final decoded geometry, original shape-tag handling (140853b80), query order, material indices, owner IDs and runtime query implementation are unchanged. Expect the intermediate tuple allocation to be absent and the source allocations to have shorter lifetimes. Compare the existing installed-map acquisition and query observations before integration. No gameplay CPU or peak process memory claim is predicted.
+The installed-data observer can run the prior tuple allocation with DH2_DEBUG_STAGE_COLLISION_TRIANGLES=1. DH2_DEBUG_PHYSICS_SIGNATURES=1 reports the retained archive and tuple capacities, CPU thread cycles around construction, and a checksum of every final triangle's vertices, bounds, owner, material and filter. The checksum runs after the cycle counter and before any mutable interaction boxes are installed. Both modes use the same collision index and actual installed source files.
 ### Direct acquisition of separately streamed mips
 
 Prediction before change. All 16,393 selected installed .bimage7_mip members exceed the existing archive buffer size, with 10,059 compressed and 6,334 stored directly. Decoded member extents run from 65,556 to 16,777,236 bytes. Original 14030e840 reads the five header words and hands the still-open stream to the upload worker via 14030f030. The host worker currently allocates and reads the whole member, then copies its payload into the completed queue entry. Preserve the authored header validation and read directly into the existing queue-owned payload allocation. Expect one fewer temporary decoded member per requested mip, with identical bytes, dimensions, next-suffix selection and queue handoff. No change to demand, GPU submission, or resident byte budgets is predicted. Compare scoped acquisition cycles and exact output on a matched installed inventory across all four suffixes and both archive storage modes before integration.
@@ -5506,6 +5565,52 @@ Installed acceptance (b482d770). The optimized game-feature tools build complete
 ### Retire replaced scene images after the last view owner
 
 Prediction before change. Original 1402df8c0 leases the current SRV through 1402bd380 and stores it in the named wrapper. Publication at 1402f5530 can replace the current view while that wrapper still holds its snapshot. The previous host scene commit removed the CPU descriptor after updating material slots even when a snapshot still leased the asset. The vendored render extractor retains the GPU texture until AssetEvent::Unused. Drop only the scene handle at the existing commit point so the descriptor follows the same last-handle lifetime as the GPU view. The shared registry and particle consumers already update current views independently. Unleased descriptors and textures retire through Assets::track_assets and the existing render removal events. No new registry, pin, GPU copy or per-frame scan is needed. The game-feature compilation check passed on 61cf1407. This is source and compile verification of handle ownership. Live UI replacement was outside the observation. Evidence: DH2-interactions/artifacts/scene-image-leases-20261110-check-provenance.json.
+
+### Keep collision decoder detail on its audit callers
+
+Prediction before change. Original compiled physics registration is 141388640, with shape-key and material lookup at 1400922d0 and 140853b80. The host retains the current decoded runtime triangle index for query cost. During level preparation the existing decoder also saves every convex vertex vector, transformed compressed-shape bounds and reverse shape-to-body list, although the client only uses triangles and summary counts. The existing installed loads generate 82,846 and 107,123 convex records and 1,132 and 1,457 compressed records in Edge of the World and Dust District. The convex records alone occupy at least 2,651,072 and 3,427,936 bytes of 32-byte record storage, excluding vertices and reserve capacity. Count successful shapes in the navigation acquisition and release per-shape scratch after triangulation. Keep full audit output for explicit shape inspection. Decode, failure rollback, triangle order, authored filter/material assignment and runtime queries must match. Compare the same installed levels with and without the detail tables, measure capacities and decode-thread cycles, and compare all final triangle data. No frame-time or process-peak claim is predicted.
+
+The optimized same-executable comparison (`d69007b6`) matched every final
+triangle signature, material table and navigation count in both orders on
+Edge of the World and Dust District. The direct path has no retained source
+member at index construction (formerly 37,930,027 and 46,325,955 bytes of
+capacity) and no transformed tuple staging (70,993,248 and 76,323,360 bytes).
+It also omits 15,479,532 and 17,700,024 bytes of extraction-detail capacity.
+These counters measure different stages and are not additive peak RAM.
+Decode plus index cycles averaged 2,885.3 to 2,915.4 million in Edge of the
+World (+1.0%) and 2,179.4 to 2,003.1 million in Dust District (-8.1%). Paired
+samples varied in both directions, with index-only means 3.1% and 2.5%
+higher, respectively. Runtime queries and frame timings were outside this
+acquisition comparison. Evidence: DH2-collision-staging/artifacts/collision-lifetimes-20261110-comparison.json.
+
+Palace convex extraction prediction. The buffered high-chaos Palace run
+spent 1,223,622,028,106 thread cycles in shape extraction. A sample of the
+same executable's direct run located 9,209 instruction-pointer samples in
+the five instructions of the convex horizon's reversed-edge linear search
+(RVA 0x34f2704–0x34f2714). The large horizon path will index edge positions,
+preserving the first reversed match, swap-removal order and emitted triangles.
+Small horizons keep the linear scan. Expect the large-horizon search to
+cease dominating Palace decode cycles, with unchanged triangle identity and
+no extra allocations on the small-horizon path. Original 14127f590 dispatches
+the authored primitive. Hull triangulation here supplies the host query
+representation. Compare same-build extraction cycles and exact collision
+signatures before integration.
+
+Installed collision acceptance. The menu and high-chaos Palace comparison
+(`d69007b6`) matched all geometry signatures, material tables and navigation
+counts. The Palace path no longer constructs the 190,361,808-byte tuple
+vector or retains the 23,525,626-byte decoded member at index construction.
+It also omits 13,547,616 bytes of audit detail capacity. The old linear hull
+search dominated Palace in both ownership modes. In the unchanged optimized
+executable `c9ada5e4`, the indexed and linear searches produced the same
+triangle signatures as the preceding builds, with matching authored counts,
+placed collision, materials and navigation counts. Palace extraction cycles
+fell from 1,345.58 billion to 6.82 billion (about 197 times lower). Edge of
+the World measured 1.28 billion to 0.98 billion, with one run per setting.
+Palace index construction stayed at 1.55–1.56 billion cycles. These are
+windowless acquisition measurements, without gameplay CPU or peak RAM
+claims. Evidence: DH2-collision-staging/artifacts/collision-lifetime-extremes-20261110-comparison.json
+and DH2-collision-staging/artifacts/convex-horizon-20261110-comparison.json.
 
 ### Direct acquisition of whole inline image payloads
 

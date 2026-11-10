@@ -48,6 +48,11 @@ pub(super) struct DiffuseMipState {
     pub(super) path_priority: u16,
 }
 
+pub(super) fn image_demand(path: &str, sampling_priority: u8) -> texture::ProjectedAreaDemand {
+    texture::ProjectedAreaDemand::with_priority(sampling_priority)
+        .with_path_priority(residency::path_priority(path))
+}
+
 /// Explicit init/common image references survive world destruction. Capture
 /// the current streamed identity at a map boundary, never a second base copy.
 /// No registry lookup or lock is added to ordinary gameplay streaming.
@@ -134,7 +139,7 @@ impl SharedImages {
             state.pending = None;
             state.pending_reduction = false;
             state.reserved_bytes = 0;
-            state.path_priority = residency::path_priority(path);
+            state.path_priority = queue.diffuse_image_demands[slot].path_priority();
             state.idle_frames = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
             self.resident
                 .insert(path.clone(), (queue.preferred_mip, handle.clone(), state));
@@ -684,9 +689,8 @@ struct TextureReadQueue {
 
 #[derive(Resource)]
 pub(super) struct TextureReadWorker {
-    catalog: Arc<archive::Catalog>,
-    queue: Arc<Mutex<TextureReadQueue>>,
-    completed_tx: mpsc::Sender<TextureReadResult>,
+    requests: TextureReadRequests,
+    frame: FrameRequests,
     pub(super) completed: Mutex<Receiver<TextureReadResult>>,
     pub(super) ready: VecDeque<TextureReadResult>,
     pub(super) inflight: Vec<bool>,
@@ -696,12 +700,18 @@ pub(super) struct TextureReadWorker {
     pub(super) initial_failures: std::collections::HashMap<usize, InitialTextureFailure>,
 }
 
+struct TextureReadRequests {
+    catalog: Arc<archive::Catalog>,
+    queue: Arc<Mutex<TextureReadQueue>>,
+    completed_tx: mpsc::Sender<TextureReadResult>,
+}
+
 impl Drop for TextureReadWorker {
     fn drop(&mut self) {
         // Map teardown cancels queued acquisitions. A blocking archive read
         // already executing can finish, but may neither publish nor start
         // another outgoing-map request after the owner has been released.
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.requests.queue.lock().unwrap();
         queue.cancelled = true;
         queue.pending.clear();
     }
@@ -710,15 +720,14 @@ impl Drop for TextureReadWorker {
 impl TextureReadWorker {
     /// The installed archives, for on-demand diagnostic reads.
     pub(super) fn catalog(&self) -> &archive::Catalog {
-        &self.catalog
+        &self.requests.catalog
     }
 
     pub(super) fn new(catalog: Arc<archive::Catalog>, image_count: usize) -> Self {
         let (completed_tx, completed) = mpsc::channel();
         Self {
-            catalog,
-            queue: Arc::default(),
-            completed_tx,
+            requests: TextureReadRequests { catalog, queue: Arc::default(), completed_tx },
+            frame: FrameRequests::default(),
             completed: Mutex::new(completed),
             ready: VecDeque::new(),
             inflight: vec![false; image_count],
@@ -727,6 +736,9 @@ impl TextureReadWorker {
         }
     }
 
+}
+
+impl TextureReadRequests {
     /// Queues a read; `Err` returns the request when the queue is full.
     fn request(&self, request: TextureReadRequest) -> Result<(), TextureReadRequest> {
         let mut queue = self.queue.lock().unwrap();
@@ -1322,7 +1334,9 @@ pub(super) fn commit_prepared_diffuse_level(
 }
 
 /// Host scratch belongs to the loaded world's streaming jobs, not one frame.
-pub(super) struct FrameRequests {
+struct FrameRequests {
+    instance_slots: InstanceImageSlots,
+    initial_view_ready: bool,
     flags: Vec<bool>,
     order: Vec<usize>,
     allocate_each_frame: bool,
@@ -1341,6 +1355,7 @@ pub(super) struct FrameRequests {
 impl Default for FrameRequests {
     fn default() -> Self {
         Self { flags: Vec::new(), order: Vec::new(), flag_growth_frames: 0, order_growth_frames: 0, pressure: Default::default(),
+            instance_slots: Default::default(), initial_view_ready: false,
             collect_completions: std::env::var("DH2_DEBUG_COLLECT_TEXTURE_COMPLETIONS").as_deref() == Ok("1"),
             completion_batches: 0, completion_items: 0, completion_temp_bytes: 0,
             clone_completion_paths: std::env::var("DH2_DEBUG_CLONE_TEXTURE_COMPLETION_PATHS").as_deref() == Ok("1"),
@@ -1355,6 +1370,9 @@ impl Drop for FrameRequests {
             eprintln!("MEMORY texture completion map release: collect={} batches={} items={} temporary_capacity_bytes={} path_clones={} path_clone_bytes={}",
                 self.collect_completions, self.completion_batches, self.completion_items, self.completion_temp_bytes,
                 self.completion_path_clones, self.completion_path_bytes);
+            eprintln!("MEMORY texture request map release: flags={} order={} instance_ranges={} instance_slots={}",
+                self.flags.capacity(), self.order.capacity(), self.instance_slots.ranges.capacity(),
+                self.instance_slots.slots.capacity());
         }
     }
 }
@@ -1389,9 +1407,6 @@ pub(super) fn stream_visible_textures(
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     owners: (Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::resident_images::ResidentImages>>,
         Option<Res<super::runtime_fx_images::RuntimeFxImages>>),
-    mut instance_slots: Local<InstanceImageSlots>,
-    mut scratch: Local<FrameRequests>,
-    mut initial_view_ready: Local<bool>,
     mut settings: Local<settings::SettingsCache>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
     mut shared_images: Option<ResMut<SharedImages>>,
@@ -1401,17 +1416,14 @@ pub(super) fn stream_visible_textures(
         return;
     };
     let settings = settings.get(adapter.as_deref());
-    if queue.is_added() {
-        *initial_view_ready = false;
-        *instance_slots = Default::default();
-        *scratch = Default::default();
-    }
+    let worker = &mut *worker;
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
-    let FrameRequests { flags: requested, order: request_order, allocate_each_frame, timing,
+    let FrameRequests { instance_slots, initial_view_ready, flags: requested, order: request_order, allocate_each_frame, timing,
         flag_growth_frames, order_growth_frames, collect_completions, completion_batches,
         completion_items, completion_temp_bytes, clone_completion_paths, completion_path_clones,
-        completion_path_bytes, pressure } = &mut *scratch;
+        completion_path_bytes, pressure } = &mut worker.frame;
+    let requests = &worker.requests;
     if *allocate_each_frame { *requested = Vec::new(); *request_order = Vec::new(); }
     let flag_capacity = requested.capacity();
     let order_capacity = request_order.capacity();
@@ -1577,7 +1589,6 @@ pub(super) fn stream_visible_textures(
         }
     }
     let completion_count = {
-        let worker = &mut *worker;
         let receiver = worker.completed.lock().unwrap();
         let incoming = std::iter::from_fn(|| receiver.try_recv().ok());
         if *collect_completions {
@@ -1661,7 +1672,7 @@ pub(super) fn stream_visible_textures(
         if matches!(target, TextureReadTarget::Initial(_))
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
-                worker.catalog(), registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+                &requests.catalog, registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_reuse_after_read slot={slot}");
             }
@@ -1757,7 +1768,7 @@ pub(super) fn stream_visible_textures(
     if let Some(shared) = shared_images.as_deref_mut() { shared.age(); }
     let inactive_bytes = shared_images.as_deref().map_or(0, |shared| shared.charged_bytes());
     let mut charged = residency::charged_bytes(&queue) + inactive_bytes;
-    let mut reduction = pressure.choose(&queue, &worker, &images, settings, charged);
+    let mut reduction = pressure.choose(&queue, &worker.inflight, &images, settings, charged);
     if let Some(shared) = shared_images.as_deref_mut() {
         if let Some(released) = shared.reduce(&mut images, prepared_images.as_deref(), settings, charged, reduction.as_ref().map(|r| r.key)) {
             charged -= released;
@@ -1811,7 +1822,7 @@ pub(super) fn stream_visible_textures(
         if !worker.inflight[slot] && queue.diffuse_image_pending[slot].is_none()
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
-                worker.catalog(), registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+                &requests.catalog, registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_reuse_before_read slot={slot}");
             }
@@ -1879,7 +1890,7 @@ pub(super) fn stream_visible_textures(
             }
             TextureReadTarget::Initial(queue.preferred_mip)
         };
-        match worker.request((slot, queue.diffuse_image_paths[slot].clone(), target)) {
+        match requests.request((slot, queue.diffuse_image_paths[slot].clone(), target)) {
             Ok(()) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format_args!(
@@ -1935,7 +1946,7 @@ pub(super) fn stream_visible_textures(
 /// built and instances are only appended, so each instance is resolved once
 /// instead of hashing its material for every visible instance every frame.
 #[derive(Default)]
-pub(super) struct InstanceImageSlots {
+struct InstanceImageSlots {
     instances: usize,
     ranges: Vec<(u32, u32)>,
     slots: Vec<u32>,

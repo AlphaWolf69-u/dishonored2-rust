@@ -813,11 +813,12 @@ pub fn image_sampling_priority(parameter: &str, alpha_test: bool) -> u8 {
 }
 
 /// Coherent material area, mode and sampling-role publication (14031a410).
-/// The request scheduler separately owns path priority and frame age.
+/// Path priority is fixed on slot admission. The scheduler owns frame age.
 #[derive(Debug)]
 pub struct ProjectedAreaDemand {
     demand: PackedTextureVisibilityDemand,
     image_priority: u8,
+    path_priority: u16,
 }
 
 impl Default for ProjectedAreaDemand {
@@ -826,8 +827,15 @@ impl Default for ProjectedAreaDemand {
 
 impl ProjectedAreaDemand {
     pub fn with_priority(image_priority: u8) -> Self {
-        Self { demand: Default::default(), image_priority }
+        Self { demand: Default::default(), image_priority, path_priority: 128 }
     }
+
+    pub(crate) fn with_path_priority(mut self, path_priority: u16) -> Self {
+        self.path_priority = path_priority;
+        self
+    }
+
+    pub(crate) fn path_priority(&self) -> u16 { self.path_priority }
 
     pub fn raise_priority(&mut self, priority: u8) {
         raise_image_priority(&mut self.image_priority, priority);
