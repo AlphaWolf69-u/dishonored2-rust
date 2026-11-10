@@ -1629,6 +1629,14 @@ revision reuse, but this route did not replace an atlas within one map. No
 measured GPU memory saving or live quality/resolution coverage is claimed;
 that broader coverage remains open. Existing map-boundary cleanup is unchanged.
 
+A later seven-snapshot EotW quality route (`6b15daea`) observed four real
+parallel/local target replacements at settings generations 3, 4, 6, and 7.
+Each replacement retired one old parallel target and kept the current one.
+All four local atlas/cache identity pairs changed, and the two settings-only
+snapshots retained their existing pairs. This covers ordinary replacement
+while both owners are present. It does not cover an owner first created after
+startup. Evidence: `artifacts/resource-quality-blocks-20261109/stderr.log`.
+
 Late shadow owner retirement (`1400410f0`). A quality change can create a
 parallel or local shadow owner after startup, including a level that started
 without that owner. The startup snapshot cannot record this later insertion.
