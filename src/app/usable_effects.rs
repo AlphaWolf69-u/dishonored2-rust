@@ -178,6 +178,18 @@ impl UsableEffects {
         })));
     }
 
+    fn cancel_unwanted_acquisitions(&mut self) {
+        let before = self.loading.len();
+        let wanted = &self.wanted;
+        self.loading.retain(|path, _| wanted.values().any(|request| &request.path == path));
+        if self.loading.len() != before {
+            self.cleanup_dirty = true;
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE source_acquisitions_cancelled={}", before - self.loading.len());
+            }
+        }
+    }
+
     fn poll(&mut self) {
         if self.loading.is_empty() { return; }
         self.completed.clear();
@@ -257,6 +269,7 @@ pub(super) fn prepare_requests(
             if let Some(started) = started { eprintln!("FX_LIFECYCLE acquisition_cache_retire_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0); }
         })));
     }
+    let previous_revision = owner.revision;
     if let Some(mut interactions) = interactions.filter(|interactions| !interactions.pending.is_empty()) {
         for change in &mut interactions.pending {
             let actor = EffectOwner::Usable(change.actor);
@@ -289,6 +302,11 @@ pub(super) fn prepare_requests(
                 }
             }
         }
+    }
+    // Keep a queued acquisition if another actor still needs it, including
+    // a stop and restart of the same path in this command batch.
+    if owner.revision != previous_revision && !owner.loading.is_empty() {
+        owner.cancel_unwanted_acquisitions();
     }
 }
 
@@ -329,6 +347,7 @@ pub(super) fn publish(
             owner.revision = owner.revision.wrapping_add(1);
             owner.retirement = owner.retirement.wrapping_add(1);
             owner.cleanup_dirty = true;
+            owner.cancel_unwanted_acquisitions();
         }
     }
     if owner.base.is_some() && owner.published_revision == Some(owner.revision)
