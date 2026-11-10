@@ -14,6 +14,52 @@ pub fn inspect_scene_preparation(
     inspect_scene_resources(base, levels, Mode::Prepare, false)
 }
 
+/// Observe a real overlay file edited by the diagnostic caller between reads.
+fn inspect_editable_sound_event(base: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::assets::wwise::event_resources;
+    let catalog = archive::Catalog::open(base)?;
+    let path = format!("generated/decls/soundevent/{name}.decl");
+    if catalog.kind(&path) != Some("soundevent") || !catalog.has_overlay_file(&path) {
+        return Err("editable sound observation requires a mounted replacement for an installed event".into());
+    }
+    let acquire = || event_resources::acquire_with(&catalog, name, |path| {
+        catalog.read(path).map(|bytes| bytes.map(crate::entities::owned_declaration_text))
+            .map_err(|error| error.to_string())
+    });
+    let recorded = || crate::loading::catalog_read_recorded(catalog.identity(), "soundevent", &path);
+    let next_edit = |phase| -> Result<(), Box<dyn std::error::Error>> {
+        eprintln!("EDITABLE_SOUND_OBSERVATION phase={phase}");
+        if std::io::stdin().read_line(&mut String::new())? == 0 {
+            return Err("editable sound observation ended before the next edit".into());
+        }
+        Ok(())
+    };
+
+    let error = acquire().err().ok_or("initial malformed event was accepted")?;
+    if !error.contains("no engine ID") {
+        return Err(format!("unexpected initial sound declaration error: {error}").into());
+    }
+    next_edit("repair")?;
+    let first = acquire()?;
+    let first_id = first.id;
+    next_edit("replace")?;
+    let second = acquire()?;
+    let second_id = second.id;
+    if first_id == second_id || first.id != first_id {
+        return Err("the edited event did not publish a distinct generation".into());
+    }
+    catalog.release_level_resources();
+    if !recorded() { return Err("live editable event lost its read history".into()); }
+    drop(first);
+    catalog.release_level_resources();
+    if !recorded() { return Err("the older generation removed the replacement's history".into()); }
+    drop(second);
+    catalog.release_level_resources();
+    if recorded() { return Err("editable event history outlived both generations".into()); }
+    eprintln!("EDITABLE_SOUND_OBSERVATION first_id={first_id} second_id={second_id} retired=true");
+    Ok(())
+}
+
 fn inspect_fx_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use crate::assets::{
         fx::{particle_declaration, particle_resources},
@@ -90,6 +136,11 @@ pub fn inspect_scene_publication(
         }
         if flag == "--catalog-history-scopes" {
             return inspect_catalog_history_scopes(base);
+        }
+    }
+    if let [flag, name] = levels {
+        if flag == "--editable-sound-event" {
+            return inspect_editable_sound_event(base, name);
         }
     }
     if let [flag, level, effect] = levels {
