@@ -58,24 +58,22 @@ pub(super) struct ScenePreparation {
     buffers: AssetBatch<ShaderBuffer>,
     allocator: bevy::ecs::entity::RemoteAllocator,
     device: RenderDevice,
-    shared_images: super::texture_streaming::SharedImages,
     audio: super::audio::AudioPreparation,
 }
 impl ScenePreparation {
     pub fn new(world: &mut World) -> Self {
         let resident_images = world.resource::<super::resident_images::ResidentImages>().clone();
+        let shared_images = world.resource::<super::texture_streaming::SharedImages>().clone();
         Self {
             meshes: AssetBatch::new(world.resource::<Assets<Mesh>>()),
-            images: super::resident_images::PreparedImages::new(world.resource::<Assets<Image>>(), resident_images),
+            images: super::resident_images::PreparedImages::new(
+                world.resource::<Assets<Image>>(), resident_images, shared_images),
             probes: AssetBatch::new(world.resource::<Assets<ProbeMaterial>>()),
             decals: AssetBatch::new(world.resource::<Assets<DecalMaterial>>()),
             skies: AssetBatch::new(world.resource::<Assets<SkyMaterial>>()),
             buffers: AssetBatch::new(world.resource::<Assets<ShaderBuffer>>()),
             allocator: world.entity_allocator().build_remote_allocator(),
             device: world.resource::<RenderDevice>().clone(),
-            shared_images: world
-                .resource::<super::texture_streaming::SharedImages>()
-                .clone(),
             audio: super::audio::AudioPreparation::take(world),
         }
     }
@@ -96,6 +94,7 @@ impl ScenePreparation {
         let mut scene = prepared
             .take_resource::<SceneData>()
             .expect("prepared scene");
+        self.images.begin_acquisition(scene.catalog.as_deref());
         let mut programs = prepared.take_resource::<ProgramCacheSource>();
         let navigation = prepared.take_resource::<NavigationWorld>();
         let tome = prepared.take_resource::<TomeWorld>();
@@ -128,13 +127,14 @@ impl ScenePreparation {
             commands.insert_resource(source);
         }
         commands.insert_resource(super::area_lights::prepare(&scene, self.images.assets(), &resident_images));
+        let (images, shared) = self.images.setup_inputs();
         super::setup::prepare(
             &mut commands,
             &mut scene,
             programs.as_mut(),
             navigation.as_ref(),
             &mut self.meshes,
-            self.images.assets(),
+            images,
             &mut self.probes,
             &mut self.skies,
             &mut self.buffers,
@@ -146,7 +146,7 @@ impl ScenePreparation {
             interactions.as_ref(),
             volumes.as_ref(),
             effects.as_ref(),
-            Some(&self.shared_images),
+            Some(shared),
             &resident_images,
             &check_cancelled,
         )?;

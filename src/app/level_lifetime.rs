@@ -103,11 +103,12 @@ impl LevelLifetime {
         world.remove_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
-        if let (Some(images), Some(shared)) = (
+        if let (Some(catalog), Some(images), Some(shared)) = (
+            self.catalog.as_ref(),
             world.get_resource::<super::resident_images::UiImages>(),
             world.get_resource::<super::texture_streaming::SharedImages>(),
         ) {
-            images.release_read_history(shared, world.get_resource::<Assets<Image>>());
+            images.release_read_history(catalog.identity(), shared, world.get_resource::<Assets<Image>>());
         }
         drop(model_history);
         drop(material_history);

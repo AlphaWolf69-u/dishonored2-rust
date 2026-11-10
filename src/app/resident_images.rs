@@ -21,15 +21,23 @@ pub(super) struct ResidentImage {
 pub(super) struct PreparedImages {
     batch: Option<AssetBatch<Image>>,
     registry: ResidentImages,
+    shared: SharedImages,
+    catalog: Option<u64>,
 }
 impl PreparedImages {
-    pub(super) fn new(assets: &Assets<Image>, mut registry: ResidentImages) -> Self {
+    pub(super) fn new(assets: &Assets<Image>, mut registry: ResidentImages, shared: SharedImages) -> Self {
         registry.layered_batch = Some(Arc::new(()));
-        Self { batch: Some(AssetBatch::new(assets)), registry }
+        Self { batch: Some(AssetBatch::new(assets)), registry, shared, catalog: None }
     }
     pub(super) fn registry(&self) -> &ResidentImages { &self.registry }
+    pub(super) fn begin_acquisition(&mut self, catalog: Option<&archive::Catalog>) {
+        self.catalog = catalog.map(archive::Catalog::identity);
+    }
     pub(super) fn assets(&mut self) -> &mut AssetBatch<Image> {
         self.batch.as_mut().expect("scene images already published")
+    }
+    pub(super) fn setup_inputs(&mut self) -> (&mut AssetBatch<Image>, &SharedImages) {
+        (self.batch.as_mut().expect("scene images already published"), &self.shared)
     }
     pub(super) fn publish(mut self, assets: &mut Assets<Image>) {
         self.batch.take().expect("scene images already published").publish(assets);
@@ -41,6 +49,9 @@ impl Drop for PreparedImages {
         if let Some(batch) = &self.batch {
             self.registry.discard_batch(batch);
             self.registry.finish_layered_batch(false);
+            if let Some(catalog) = self.catalog {
+                self.registry.release_read_history(catalog, &self.shared, None, None);
+            }
         }
     }
 }
@@ -443,19 +454,33 @@ pub(super) fn inspect_view_replacement(catalog: &archive::Catalog, path: &str) -
 }
 
 fn observe_discarded_batch(catalog: &archive::Catalog, path: &str) -> Result<(), String> {
+    const RETAINED: &str = "generated/image/models/effects/env/animals/stink_bug/bug01_n.bimage7";
     let registry = ResidentImages::default();
     let mut ui = UiImages::new(registry.clone());
     let mut assets = Assets::<Image>::default();
     let published = registry.acquire(catalog, "_white", &mut assets)?;
-    let mut batch = PreparedImages::new(&assets, registry.clone());
+    let _retained = registry.acquire(catalog, RETAINED, &mut assets)?;
+    let other_catalog = archive::Catalog::open(catalog.base()).map_err(|error| error.to_string())?;
+    other_catalog.read(path).map_err(|error| error.to_string())?.ok_or("image absent in independent catalog")?;
+    let mut batch = PreparedImages::new(&assets, registry.clone(), SharedImages::default());
+    batch.begin_acquisition(Some(catalog));
     let staged = registry.acquire(catalog, path, batch.assets())?;
     let staged_bytes = batch.assets().get(&staged.handle).and_then(|image| image.data.as_ref())
         .ok_or("installed image did not create a staged payload")?;
     let expected = blake3::hash(staged_bytes);
     let pending = ui.acquire(catalog, path, &mut assets, None, None)?;
     let pending_id = pending.owner::<Arc<ResidentImage>>().ok_or("missing staged UI lease")?.handle.id();
+    let recorded = crate::loading::catalog_read_recorded(catalog.identity(), "image", path);
     drop(batch);
+    let read_retired = !crate::loading::catalog_read_recorded(catalog.identity(), "image", path);
+    let committed_read = crate::loading::catalog_read_recorded(catalog.identity(), "image", RETAINED);
+    let other_read = crate::loading::catalog_read_recorded(other_catalog.identity(), "image", path);
     let replacement = ui.acquire(catalog, path, &mut assets, None, None)?;
+    let retry_read = crate::loading::catalog_read_recorded(catalog.identity(), "image", path);
+    eprintln!("DISCARDED_IMAGE_READ_HISTORY recorded={recorded} retired={read_retired} committed={committed_read} other_catalog={other_read} reacquired={retry_read}");
+    if !(recorded && read_retired && committed_read && other_read && retry_read) {
+        return Err("discarded image did not retire only its own acquisition credit".into());
+    }
     let replacement_id = replacement.owner::<Arc<ResidentImage>>().ok_or("missing replacement UI lease")?.handle.id();
     let matched = assets.get(replacement_id).and_then(|image| image.data.as_ref())
         .is_some_and(|bytes| blake3::hash(bytes) == expected);
@@ -488,17 +513,17 @@ fn observe_discarded_layered_batch(catalog: &archive::Catalog, registry: &Reside
             Ok(LayeredImageSource::array(CAUSTICS.to_owned(), chain))
         })
     };
-    let abandoned = PreparedImages::new(assets, registry.clone());
+    let abandoned = PreparedImages::new(assets, registry.clone(), SharedImages::default());
     let abandoned_cube = Arc::downgrade(&cube(abandoned.registry(), DUST_CUBE)?);
     let abandoned_array = Arc::downgrade(&array(abandoned.registry())?);
-    let committed = PreparedImages::new(assets, registry.clone());
+    let committed = PreparedImages::new(assets, registry.clone(), SharedImages::default());
     let committed_cube = cube(committed.registry(), EOTW_CUBE)?;
     committed.publish(assets);
     let staged = abandoned_cube.strong_count() == 1 && abandoned_array.strong_count() == 1;
     drop(abandoned);
     let retired = abandoned_cube.strong_count() == 0 && abandoned_array.strong_count() == 0;
     let preserved = Arc::ptr_eq(&committed_cube, &cube(registry, EOTW_CUBE)?);
-    let next = PreparedImages::new(assets, registry.clone());
+    let next = PreparedImages::new(assets, registry.clone(), SharedImages::default());
     let next_cube = cube(next.registry(), DUST_CUBE)?;
     let next_array = array(next.registry())?;
     next.publish(assets);
@@ -528,6 +553,12 @@ pub(super) struct UiImages {
 }
 impl UiImages {
     pub(super) fn new(registry: ResidentImages) -> Self { Self {registry, bindings: HashMap::new()} }
+    fn live_binding(binding: &Weak<crate::flash::iggy_functions::TextureBinding>)
+        -> Option<crate::flash::iggy_functions::BoundTexture> {
+        binding.upgrade().filter(|binding| binding.owner::<Arc<ResidentImage>>()
+            .is_some_and(|image| !image.discarded.load(Ordering::Relaxed)))
+    }
+
     fn acquire(&mut self, catalog: &archive::Catalog, name: &str,
         images: &mut Assets<Image>, scene: Option<&SceneRenderQueue>, shared: Option<&SharedImages>) -> Result<crate::flash::iggy_functions::BoundTexture, String> {
         let path = crate::material::image_load_resource(catalog, name)
@@ -542,10 +573,8 @@ impl UiImages {
         // 14101d290 reuses the live named wrapper across Iggy contexts.
         // Only its first acquisition calls 1402df8c0 for a view snapshot.
         if !editable {
-            if let Some(binding) = self.bindings.get(&path).and_then(Weak::upgrade) {
-                if binding.owner::<Arc<ResidentImage>>().is_some_and(|image| !image.discarded.load(Ordering::Relaxed)) {
-                    return Ok(binding);
-                }
+            if let Some(binding) = self.bindings.get(&path).and_then(Self::live_binding) {
+                return Ok(binding);
             }
         }
         let current = if editable || separate_scene_views() { None } else {
@@ -564,21 +593,29 @@ impl UiImages {
     }
     pub(super) fn release_level(&mut self, shared: &super::texture_streaming::SharedImages) {
         self.registry.release_level(shared);
-        self.bindings.retain(|_, binding| binding.strong_count() != 0);
+        self.bindings.retain(|_, binding| Self::live_binding(binding).is_some());
     }
 
+    pub(super) fn release_read_history(&self, catalog: u64, shared: &SharedImages, assets: Option<&Assets<Image>>) {
+        self.registry.release_read_history(catalog, shared, assets, Some(self));
+    }
+}
+
+impl ResidentImages {
     /// Only identities that can actually be acquired from a surviving owner
     /// retain their loading credit; manifest membership by itself is not a
     /// resident image. Original 140060180 purges outgoing map resources.
-    pub(super) fn release_read_history(&self, shared: &SharedImages, images: Option<&Assets<Image>>) {
+    fn release_read_history(&self, catalog: u64, shared: &SharedImages,
+        images: Option<&Assets<Image>>, named: Option<&UiImages>) {
         let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
         let started = trace.then(crate::loading::thread_cycles).flatten();
-        let mut registry = self.registry.registry.lock().unwrap();
-        registry.editable.retain(|_, generations| {
-            generations.retain(|(id, generation)| generation.strong_count() != 0
-                || images.is_some_and(|images| images.contains(*id)));
-            !generations.is_empty()
-        });
+        let mut registry = self.registry.lock().unwrap();
+        if let Some(images) = images {
+            registry.editable.retain(|_, generations| {
+                generations.retain(|(id, generation)| generation.strong_count() != 0 || images.contains(*id));
+                !generations.is_empty()
+            });
+        }
         registry.editable_layered.retain(|_, generations| {
             generations.retain(|generation| generation.strong_count() != 0);
             !generations.is_empty()
@@ -594,7 +631,8 @@ impl UiImages {
             .chain(registry.editable_layered.keys().map(String::as_str))
             .chain(registry.leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
             .chain(registry.scene_leases.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()))
-            .chain(self.bindings.iter().filter(|(_, value)| value.strong_count() != 0).map(|(path, _)| path.as_str()));
+            .chain(named.into_iter().flat_map(|ui| ui.bindings.iter())
+                .filter(|(_, binding)| UiImages::live_binding(binding).is_some()).map(|(path, _)| path.as_str()));
         for path in paths {
             if path.bytes().any(|byte| byte == b'\\' || byte.is_ascii_uppercase()) {
                 let mut key = path.replace('\\', "/");
@@ -602,7 +640,7 @@ impl UiImages {
                 aliases.insert(key);
             }
         }
-        let (removed, bytes, slots_before, slots_after) = crate::loading::retain_kind("image", |path| {
+        let (removed, bytes, slots_before, slots_after) = crate::loading::retain_catalog_kind(catalog, "image", |path| {
             (!aliases.is_empty() && aliases.contains(path))
                 || shared.is_resident(path)
                 || registry.resident.contains_key(path)
@@ -612,7 +650,7 @@ impl UiImages {
                 || registry.editable_layered.contains_key(path)
                 || registry.leases.get(path).is_some_and(|lease| lease.strong_count() != 0)
                 || registry.scene_leases.get(path).is_some_and(|lease| lease.strong_count() != 0)
-                || self.bindings.get(path).is_some_and(|binding| binding.strong_count() != 0)
+                || named.and_then(|ui| ui.bindings.get(path)).and_then(UiImages::live_binding).is_some()
         });
         if trace {
             let cycles = started.zip(crate::loading::thread_cycles())

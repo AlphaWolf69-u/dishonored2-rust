@@ -391,6 +391,33 @@ pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (us
     })
 }
 
+#[cfg(feature = "game")]
+pub(crate) fn retain_catalog_kind(catalog: u64, kind: &str, mut keep: impl FnMut(&str) -> bool)
+    -> (usize, usize, usize, usize) {
+    with(|state| {
+        let active = state.catalog == Some(catalog);
+        let history = if active { Some(&mut state.history) } else { state.other_histories.get_mut(&catalog) };
+        let Some(paths) = history.and_then(|history| history.loaded.get_mut(kind)) else { return (0, 0, 0, 0); };
+        let before = paths.capacity();
+        let mut removed = 0;
+        let mut bytes = 0;
+        paths.retain(|path| {
+            if keep(path) { return true; }
+            removed += 1;
+            bytes += path.len();
+            false
+        });
+        let after = paths.capacity();
+        if active { state.acquired = state.acquired_by(catalog); }
+        (removed, bytes, before, after)
+    })
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn catalog_read_recorded(catalog: u64, kind: &str, path: &str) -> bool {
+    with(|state| state.history_for(catalog).is_some_and(|history| history.contains(kind, path)))
+}
+
 /// The level is shown: later first reads are late loads.
 pub fn play_started() {
     let coverage = with(|s| {
