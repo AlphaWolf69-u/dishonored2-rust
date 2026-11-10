@@ -356,6 +356,11 @@ impl ParticleDefinition {
             };
             materials.insert(name.clone(), material);
         }
+        // 1401ffbc0 needs the renderer's occlusion query results, which no
+        // GPU pass produces yet (rendering::occlusion_query holds the CPU side).
+        if declarations.iter().flatten().any(|declaration| declaration.occlusion_query.enabled) {
+            return Err("particle occlusion queries await the GPU query pass".into());
+        }
         // 140201760 creates an arkRibbon for each enabled ribbon with a
         // material (1402042b0).
         let ribbons: Vec<&crate::assets::fx::particle_ribbon::ParticleRibbonAsset> = declarations.iter().flatten()

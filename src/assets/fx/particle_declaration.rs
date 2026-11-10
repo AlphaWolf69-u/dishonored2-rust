@@ -298,9 +298,28 @@ pub struct ParticleOcclusionKill {
     pub occlusion_time: f32,
 }
 
+/// occlusionQuery_t (+0xe8): m_enabled, m_radius +4, m_offset +8 and
+/// m_queryVisibility (+0x10 size, +0x70 alpha curves keyed by the query
+/// result). The declaration constructor: disabled, radius 1, offset 0,
+/// one-key curves of 1.
+pub struct ParticleOcclusionQuery {
+    pub enabled: bool,
+    pub radius: f32,
+    pub offset: f32,
+    pub size: crate::gameplay::effects::curve::EffectFloatCurve,
+    pub alpha: crate::gameplay::effects::curve::EffectFloatCurve,
+}
+impl Default for ParticleOcclusionQuery {
+    fn default() -> Self {
+        let one = || crate::gameplay::effects::curve::EffectFloatCurvePair::constant(1.).maximum;
+        Self { enabled: false, radius: 1., offset: 0., size: one(), alpha: one() }
+    }
+}
+
 #[derive(Default)]
 pub struct ParticleDeclaration {
     pub occlusion_kill: ParticleOcclusionKill,
+    pub occlusion_query: ParticleOcclusionQuery,
     pub(crate) history: Option<std::sync::Arc<HistoryLease>>,
     pub visibility: ParticleVisibility,
     pub underwater: bool,
@@ -336,6 +355,26 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_underwater" => result.underwater = boolean(value)?,
             "m_handleSeenFromUnderwater" => result.handle_seen_from_underwater = boolean(value)?,
             "m_clipping" => result.clipping.edit(scope(value)?)?,
+            "m_occlusionQuery" => {
+                let query = &mut result.occlusion_query;
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_enabled" => query.enabled = boolean(value)?,
+                        "m_radius" => query.radius = number(value)?,
+                        "m_offset" => query.offset = number(value)?,
+                        "m_queryVisibility" => {
+                            for (name, value) in scope(value)? {
+                                match name.as_str() {
+                                    "m_size" => curve(&mut query.size, scope(value)?)?,
+                                    "m_alpha" => curve(&mut query.alpha, scope(value)?)?,
+                                    _ => return Err(format!("unknown particle query visibility field {name}")),
+                                }
+                            }
+                        }
+                        _ => return Err(format!("unknown particle occlusion query field {name}")),
+                    }
+                }
+            }
             "m_occlusionKill" => {
                 for (name, value) in scope(value)? {
                     match name.as_str() {
