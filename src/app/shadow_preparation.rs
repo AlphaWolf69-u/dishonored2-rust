@@ -446,13 +446,9 @@ impl VegetationMeshInputs {
 }
 
 pub(super) fn retain_model_shadow_position(
-    meshes: &mut (impl AssetWrite<Mesh> + ?Sized),
-    handle: &Handle<Mesh>,
+    mesh: &mut Mesh,
     positions: &[[f32; 3]],
 ) {
-    let mut mesh = meshes
-        .get_mut(handle)
-        .expect("new native model Mesh retains its startup owner");
     if !mesh.contains_attribute(shadow_pass::VEGETATION_POSITION) {
         mesh.insert_attribute(shadow_pass::VEGETATION_POSITION, positions.to_vec());
     }
