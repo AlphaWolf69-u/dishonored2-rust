@@ -442,3 +442,35 @@ declaration trails and ribbons. `examples/beam_smoke.rs` drives the 18
 loadable installed ribbons: 17 draw, one needs the owner's published
 motion for velocity inheritance. No installed ribbon has a spawn or
 velocity mesh; one would be refused. Not verified on screen.
+
+## Particle occlusion queries (`m_occlusionQuery`), next
+
+12 declarations' first failure (light glows: search lights, watchtower,
+Wall of Light). occlusionQuery_t (declaration +0xe8, 0xd0 bytes):
+m_enabled +0, m_radius +4, m_offset +8, m_queryVisibility +0x10 (size
+curve +0x10 and alpha curve +0x70, keyed by the query result). Each frame
+1401ffbc0 sets the system query visibility (+0x1d98) to 1, and when the
+query is enabled and the system draws, stores the query sphere (system
+position, radius, offset, averaging on) and sets +0x1d98 to the last
+result (+0x1bcc); the size and alpha curves at that result scale the
+system size (+0x1de0) and alpha. The sprite/mesh m_queryVisibility curves
+(already read, `SpriteView::with_query_visibility`) take that value; the
+rewrite still passes 1.
+
+Renderer side (14031d7e0): one query manager of 256 slots (0x24 bytes:
+result +4, radius +8, offset +0xc, position +0x10, state +0x20 (0 free,
+2 pending, 1 issued), averaging +0x21/+0x22) allocated by 140292cc0 and
+toggled by 140292f80; 140292fb0 fills a slot; 140292d10 returns the
+result, the average of the last six (140292d80) when averaging. Draw
+1402926d0: per issued slot, project the centre (view +0x7450 rows,
++0x73c0 for w), screen radius from the radius (or radius x 0.01 when
++0x22), result = samples passed (previous query, +0x24000 table) / (pi r^2
+x viewport x 0.97 x scale) x 1.4 - 0.4, clamped to [0, 1]; then a GPU
+occlusion query (140293030/140293160) around a draw of
+`OcclusionQuery_1.material` (depth tested) or `OcclusionQuery_0.material`
+with parameters `OcclusionQuery/Transform1` (radius, radius x aspect) and
+`OcclusionQuery/Transform2` (projected centre). Installed:
+generated/decls/material/occlusionquery_{0,1}.material.decl,
+renderparm/occlusionquery/transform{1,2}.decl and renderprog/occlusionquery.
+The rewrite has no GPU occlusion query path yet; it needs a wgpu
+QuerySet with resolve and delayed readback owned by the render backend.
