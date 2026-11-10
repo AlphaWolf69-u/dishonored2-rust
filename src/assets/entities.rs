@@ -727,19 +727,23 @@ pub fn world_far_shadow_bounds(document: &Document) -> Result<Option<[[f32; 3]; 
 /// Env decl text with its escapes decoded and line breaks unified: some
 /// shipped env decls (the FX environments, e.g. `env/fx/ui_pause`) separate
 /// lines with a bare CR, which the decl lexer also treats as a line break.
-fn decode_environment_source(source: &str) -> String {
+fn decode_environment_source(source: &str) -> std::borrow::Cow<'_, str> {
+    let mut source = std::borrow::Cow::Borrowed(source.trim_matches('"'));
+    for (from, to) in [("\\t", "\t"), ("\\n", "\n"), ("\\\"", "\""), ("\r\n", "\n"), ("\r", "\n")] {
+        if source.contains(from) {
+            source = std::borrow::Cow::Owned(source.replace(from, to));
+        }
+    }
     source
-        .trim_matches('"')
-        .replace("\\t", "\t")
-        .replace("\\n", "\n")
-        .replace("\\\"", "\"")
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
 }
 
 /// idDeclEnv constructor 140017b30 initializes blendDuration to one second.
 pub fn environment_blend_duration(source: &str) -> Result<f32, String> {
-    for line in decode_environment_source(source).lines() {
+    environment_blend_duration_decoded(&decode_environment_source(source))
+}
+
+fn environment_blend_duration_decoded(source: &str) -> Result<f32, String> {
+    for line in source.lines() {
         let Some(value) = line.trim().strip_prefix("blendDuration") else {
             continue;
         };
@@ -751,11 +755,15 @@ pub fn environment_blend_duration(source: &str) -> Result<f32, String> {
     Ok(1.0)
 }
 
+#[cfg(test)]
 fn parse_environment_render_parameters(source: &str) -> Vec<(String, String)> {
-    let decoded = decode_environment_source(source);
+    environment_render_parameters_decoded(&decode_environment_source(source))
+}
+
+fn environment_render_parameters_decoded(source: &str) -> Vec<(String, String)> {
     let mut in_render_parms = false;
     let mut parameters = Vec::new();
-    for line in decoded.lines() {
+    for line in source.lines() {
         let line = line.trim();
         if !in_render_parms {
             if line
@@ -795,7 +803,10 @@ fn parse_env_rgb(value: &str) -> Option<[f32; 3]> {
 
 /// Parse lighting keys from an authored env declaration's renderParms block.
 pub fn environment_lighting(source: &str) -> EnvironmentLighting {
-    let decoded = decode_environment_source(source);
+    environment_lighting_decoded(&decode_environment_source(source))
+}
+
+fn environment_lighting_decoded(source: &str) -> EnvironmentLighting {
     let mut result = EnvironmentLighting {
         ambient_high: None,
         ambient_low: None,
@@ -817,7 +828,7 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
         auto_exposure_adapt_speed_up: None,
         auto_exposure_adapt_speed_down: None,
     };
-    for line in decoded.lines() {
+    for line in source.lines() {
         let line = line.trim();
         let Some((key, value)) = line.split_once(char::is_whitespace) else {
             continue;
@@ -871,10 +882,9 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
     result
 }
 
-fn environment_parent(source: &str) -> Option<String> {
-    let decoded = decode_environment_source(source);
+fn environment_parent_decoded(source: &str) -> Option<String> {
     let mut in_inherit = false;
-    for line in decoded.lines() {
+    for line in source.lines() {
         let line = line.trim();
         if !in_inherit {
             if line.starts_with("inherit") && line.contains('{') {
@@ -963,11 +973,12 @@ where
     where
         F: FnMut(&str) -> Result<Option<String>, String>,
     {
-        let local = environment_lighting(source);
+        let decoded = decode_environment_source(source);
+        let local = environment_lighting_decoded(&decoded);
         if depth >= 16 {
             return Ok(local);
         }
-        let Some(parent) = environment_parent(source) else {
+        let Some(parent) = environment_parent_decoded(&decoded) else {
             return Ok(local);
         };
         if visited.iter().any(|existing| existing == &parent) {
@@ -996,6 +1007,41 @@ where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
     environment_parameters_with_parent_cache(resource, source, resolve, None)
+}
+
+/// Acquire one coherent world declaration chain for lighting and render settings.
+pub fn load_world_environment(
+    catalog: &crate::archive::Catalog,
+    resource: &str,
+) -> std::io::Result<Option<(EnvironmentLighting, EnvironmentRenderParameters, f32)>> {
+    let mut current = resource.to_owned();
+    let mut layers = Vec::new();
+    let mut lighting = Vec::new();
+    let mut duration = Ok(1.0);
+    loop {
+        let Some(bytes) = catalog.read(&format!("generated/decls/env/{current}.decl"))? else { break; };
+        let text = String::from_utf8_lossy(&bytes);
+        let source = decode_environment_source(&text);
+        if layers.is_empty() {
+            duration = environment_blend_duration_decoded(&source);
+        }
+        lighting.push(environment_lighting_decoded(&source));
+        let parent = environment_parent_decoded(&source);
+        layers.push(EnvironmentRenderParameterLayer {
+            resource: current,
+            parameters: environment_render_parameters_decoded(&source),
+        });
+        let Some(parent) = parent else { break; };
+        // Depths 0 through 16 are valid. The old walks track ancestors only.
+        if layers.len() > 16 || layers[1..].iter().any(|layer| layer.resource == parent) {
+            break;
+        }
+        current = parent;
+    }
+    let Some(lighting) = lighting.into_iter().rev().reduce(overlay_environment_lighting) else {
+        return Ok(None);
+    };
+    Ok(Some((lighting, EnvironmentRenderParameters { layers }, duration.map_err(std::io::Error::other)?)))
 }
 
 #[derive(Clone)]
@@ -1027,10 +1073,11 @@ pub(crate) fn environment_parameters_with_parent_cache<F>(
     resource: &str, source: &str, mut resolve: F, mut cache: Option<&mut EnvironmentParentCache>,
 ) -> Result<EnvironmentRenderParameters, String>
 where F: FnMut(&str) -> Result<Option<String>, String> {
+    let source = decode_environment_source(source);
     let mut layers = vec![EnvironmentRenderParameterLayer {
-        resource: resource.to_owned(), parameters: parse_environment_render_parameters(source),
+        resource: resource.to_owned(), parameters: environment_render_parameters_decoded(&source),
     }];
-    let mut next = environment_parent(source);
+    let mut next = environment_parent_decoded(&source);
     let mut visited = Vec::<String>::new();
     // The source pushes depth 0 through depth 16, then stops.
     while layers.len() <= 16 {
@@ -1043,9 +1090,10 @@ where F: FnMut(&str) -> Result<Option<String>, String> {
         } else {
             if let Some(owner) = cache.as_deref_mut() { owner.misses += 1; }
             let Some(source) = resolve(&parent)? else { break; };
+            let source = decode_environment_source(&source);
             let entry = CachedEnvironmentParent {
-                layer: EnvironmentRenderParameterLayer { resource: parent.clone(), parameters: parse_environment_render_parameters(&source) },
-                parent: if layers.len() < 16 || cache.is_some() { environment_parent(&source) } else { None },
+                layer: EnvironmentRenderParameterLayer { resource: parent.clone(), parameters: environment_render_parameters_decoded(&source) },
+                parent: if layers.len() < 16 || cache.is_some() { environment_parent_decoded(&source) } else { None },
             };
             if let Some(owner) = cache.as_deref_mut() { owner.parents.insert(parent.clone(), entry.clone()); }
             entry

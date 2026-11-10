@@ -391,46 +391,7 @@ pub(super) fn prepare_level(
         .as_ref()
         .and_then(entities::world_environment);
     let environment_data = match (world_environment.as_deref(), catalog.as_ref()) {
-        (Some(environment), Some(catalog)) => {
-            let resource = format!("generated/decls/env/{environment}.decl");
-            catalog
-                .read(&resource)?
-                .map(|bytes| {
-                    let source = String::from_utf8_lossy(&bytes).into_owned();
-                    let lighting =
-                        entities::environment_lighting_with_inheritance(&source, |parent| {
-                            let parent_resource = format!("generated/decls/env/{parent}.decl");
-                            catalog
-                                .read(&parent_resource)
-                                .map(|bytes| {
-                                    bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                                })
-                                .map_err(|error| error.to_string())
-                        })
-                        .map_err(std::io::Error::other)?;
-                    let render_parameters =
-                        entities::environment_render_parameters_with_inheritance(
-                            environment,
-                            &source,
-                            |parent| {
-                                let parent_resource = format!("generated/decls/env/{parent}.decl");
-                                catalog
-                                    .read(&parent_resource)
-                                    .map(|bytes| {
-                                        bytes.map(|bytes| {
-                                            String::from_utf8_lossy(&bytes).into_owned()
-                                        })
-                                    })
-                                    .map_err(|error| error.to_string())
-                            },
-                        )
-                        .map_err(std::io::Error::other)?;
-                    let duration = entities::environment_blend_duration(&source)
-                        .map_err(std::io::Error::other)?;
-                    Ok::<_, std::io::Error>((lighting, render_parameters, duration))
-                })
-                .transpose()?
-        }
+        (Some(environment), Some(catalog)) => entities::load_world_environment(catalog, environment)?,
         _ => None,
     };
     let (environment_lighting, environment_render_parameters, environment_blend_duration) =

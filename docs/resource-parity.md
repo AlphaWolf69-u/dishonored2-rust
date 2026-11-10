@@ -6281,6 +6281,8 @@ including primary, secondary and rejected counts. Geometry and GPU upload
 byte parity remain measured on Edge of the World and Dust District.
 Evidence: `DH2-collision-staging/artifacts/integrated-all-level-acquisition-20261110.json`.
 
+World environment declaration acquisition prediction (2026-11-10). The game owns an idDeclEnv with a default blend duration at 140017b30, and its environment stack at 14088e220 consumes the authored world and area assignments. The host reads each ancestor twice while preparing the world environment and normalizes the same source separately for lighting, render parameters, inheritance and duration. Build one ordered profile per installed world load from a single pass over the inheritance chain. Expect one read rather than two per ancestor, one normalization per visited source, unchanged order and exact typed lighting/parameter/duration values. Release source text at each iteration. Area profiles should also share one normalization for their parameter and parent readers. Preserve the lossy UTF-8 behavior of the current text path, depth 16, missing parents, cycle stopping, and fresh overlay reads on each acquisition. No new retained source cache or frame work is expected.
+
 Tiled-light publication prediction. Original `140371750` owns the
 1,152,000 four-byte light-node links and the lighting records. The host
 releases its view-scoped TLF pass at the render handoff, but the forward
