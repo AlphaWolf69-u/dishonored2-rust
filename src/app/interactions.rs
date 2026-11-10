@@ -126,6 +126,23 @@ impl Interactions {
         true
     }
 
+    pub(super) fn request_readable(&mut self, index: usize) {
+        if self.pending_read.is_some() || self.pending_activation.is_some() { return; }
+        let item = self.readable[index].item.clone();
+        super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
+        let entity = self.readable[index].entity.clone();
+        let catalog = self.catalog.clone();
+        let sources = self.item_sources.clone();
+        let closed = self.acquisitions_closed.clone();
+        self.pending_read = Some(std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
+            if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
+            let mut sources = sources.0.lock().map_err(|_| "readable item source is poisoned")?;
+            if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
+            let declaration = sources.acquire(&catalog, &item)?;
+            Ok(ReadResult { entity, path: item, item: declaration })
+        })));
+    }
+
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> { self.limits.clone() }
 
     /// Start the same fake bodies used by the original component. Their owner
@@ -325,21 +342,7 @@ pub(super) fn focus_and_interact(
     if !pressed || focused.current.as_ref().is_none_or(|prompt| prompt.locked) { return; }
     let Some((is_readable, index, _)) = selected else { return };
     if is_readable {
-        if interactions.pending_read.is_none() && interactions.pending_activation.is_none() {
-            let item = interactions.readable[index].item.clone();
-            super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
-            let entity = interactions.readable[index].entity.clone();
-            let catalog = interactions.catalog.clone();
-            let sources = interactions.item_sources.clone();
-            let closed = interactions.acquisitions_closed.clone();
-            interactions.pending_read = Some(std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-                if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
-                let mut sources = sources.0.lock().map_err(|_| "readable item source is poisoned")?;
-                if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
-                let declaration = sources.acquire(&catalog, &item)?;
-                Ok(ReadResult { entity, path: item, item: declaration })
-            })));
-        }
+        interactions.request_readable(index);
     } else {
         let changes = {
             let actor = &mut interactions.actors[index];

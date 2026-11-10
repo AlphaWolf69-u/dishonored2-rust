@@ -59,6 +59,16 @@ pub(super) struct UsableAnimations {
 }
 
 impl UsableAnimations {
+    fn request_asset(&mut self, key: String, path: String, interactions: &super::interactions::Interactions) {
+        self.loading.entry(key).or_insert_with(|| {
+            let catalog = interactions.catalog.clone();
+            let closed = interactions.acquisitions_closed.clone();
+            std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
+                Asset::load(&catalog, &path, || closed.load(Ordering::Acquire))
+            }))
+        });
+    }
+
     pub(super) fn retire_acquisitions(&mut self) -> bool {
         self.loading.retain(|_, task| {
             let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
@@ -123,13 +133,8 @@ pub(super) fn advance(
             let slot = owner.placements.get_mut(&index).unwrap();
             slot.node = Some(asset.instantiate());
             slot.asset = Some(asset);
-        } else if !owner.loading.contains_key(&key) {
-            let catalog = interactions.catalog.clone();
-            let path = model.clone();
-            let closed = interactions.acquisitions_closed.clone();
-            owner.loading.insert(key, std::sync::Mutex::new(IoTaskPool::get().spawn(async move {
-                Asset::load(&catalog, &path, || closed.load(Ordering::Acquire))
-            })));
+        } else {
+            owner.request_asset(key, model, &interactions);
         }
     }
     let owner = &mut *owner;
@@ -260,6 +265,19 @@ pub(super) fn advance(
             slot.initialized = false;
         }
     }
+}
+
+/// Submit a real installed usable model without advancing any actor.
+pub(super) fn observe_level_acquisition(world: &mut World) -> bool {
+    if !world.contains_resource::<UsableAnimations>() { return false; }
+    world.resource_scope(|world, mut owner: Mut<UsableAnimations>| {
+        let (Some(interactions), Some(placements)) = (world.get_resource::<super::interactions::Interactions>(),
+            world.get_resource::<super::RenderSourcePlacements>()) else { return false };
+        let Some(placement) = placements.0.iter().find(|placement| animated_actor(interactions, placement).is_some())
+            else { return false };
+        owner.request_asset(placement.resource_path.clone(), placement.resource_path.clone(), interactions);
+        true
+    })
 }
 
 

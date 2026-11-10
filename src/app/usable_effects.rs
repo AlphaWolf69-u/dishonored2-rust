@@ -423,6 +423,12 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
     world.resource_mut::<EffectRequests>().start_player(first_key, effect);
     advance(world)?;
     let admitted = world.resource::<UsableEffects>().loading.len();
+    let readable = world.get_resource_mut::<super::interactions::Interactions>().is_some_and(|mut interactions| {
+        if interactions.readable.is_empty() { return false; }
+        interactions.request_readable(0);
+        true
+    });
+    let rig = super::usable_animation::observe_level_acquisition(world);
     super::level_lifetime::close_level_acquisitions(world);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !super::level_lifetime::retire_level_acquisitions(world) {
@@ -430,7 +436,7 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let owner = world.resource::<UsableEffects>();
-    eprintln!("RESOURCE_FX_REQUEST phase=map_retirement admitted={admitted} loading={} retiring={} ready={} cached={}",
+    eprintln!("RESOURCE_FX_REQUEST phase=map_retirement admitted={admitted} readable={readable} rig={rig} loading={} retiring={} ready={} cached={}",
         owner.loading.len(), owner.retiring.len(), owner.ready.len(), owner.cache.len());
     Ok(())
 }
