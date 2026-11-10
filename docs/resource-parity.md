@@ -7044,3 +7044,18 @@ and the independent installed-reuse census. The v3 report explicitly records
 the saved reference log's source/binary provenance; the v2 reference binary
 field names the immediately preceding build, not that earlier saved log.
 No tests, visible launches, gameplay appearance or frame-time claims.
+
+
+Allocation provenance review (2026-11-11). The completed tagged shutdown
+observation retained256 bytes under sound graph after actual audio tables
+retired. Source review of the diagnostic allocator found record_big captures
+stacks and grows its process-wide metadata while the allocating resource tag
+is still active. RECORDING prevents recursive stack capture but does not
+exclude those bookkeeping allocations from resource byte totals. Attribute
+the profiler's own allocations to untagged, preserving the original tag on
+the measured block. Prediction: actual resource allocations, output and total
+requested bytes do not change; only profiler metadata moves out of incidental
+resource/phase categories. In particular the256-byte sound residue may move
+if it belongs to this owner; that attribution must be observed rather than
+assumed. Keep a same-binary former-attribution control. No game-performance
+or RAM-reduction claim; the diagnostic feature is disabled in ordinary builds.
