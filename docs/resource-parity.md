@@ -1613,6 +1613,14 @@ pool mutex, loose overlays keep their direct-read behavior, and no decoded
 payload cache was introduced. These counts establish eliminated filesystem
 operations, not measured CPU milliseconds or resident MB savings.
 
+Final owner observations recorded 15 cached readers after 55,629 acquisitions
+in the EotW / Dust / EotW route and 16 after 29,113 acquisitions in the EotW
+quality route. Both counts were emitted by the catalog reader pool's destructor.
+Keeping the readers for that session preserves map-to-map reuse while the
+catalog drop closes the physical files. Evidence:
+`DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-publication/stderr.log`
+and `artifacts/resource-quality-blocks-20261109/stderr.log`.
+
 Shadow retirement acceptance: the same production client exited 0 without
 shadow-target retirement events. Source-absent entries are now pruned before
 revision reuse, but this route did not replace an atlas within one map. No
