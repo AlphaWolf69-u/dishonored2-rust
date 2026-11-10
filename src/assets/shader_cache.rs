@@ -528,7 +528,7 @@ pub(crate) fn observe_session_scopes(base: &Path) -> Result<()> {
         || first.cache.index.stage_counts != other.cache.index.stage_counts {
         return Err("interleaved shader libraries changed or lost their session metadata".into());
     }
-    let program = b"postfx_dof";
+    let program = b"postfx_dof_combine";
     let definition = first.cache.raw_definition(program)?.ok_or("installed DOF program is absent")?;
     if other.cache.raw_definition(program)?.as_ref() != Some(&definition)
         || again.cache.raw_definition(program)?.as_ref() != Some(&definition) {
