@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "texture/volume.rs"]
 mod volume;
-pub use volume::{compressed_inline_volume, InlineVolumeChain};
+pub use volume::{compressed_inline_volume, compressed_inline_volume_owned, InlineVolumeChain};
 
 /// FUN_1402eab10: image priority is a monotonic byte maximum, not a
 /// replacement value. The owning material enumerator supplies the request.
