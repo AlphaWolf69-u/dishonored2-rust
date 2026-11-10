@@ -1,6 +1,6 @@
 //! Exact cached stage admission for the already-verified placed-water depth ABI.
 use super::{name_key, ProgramLibrary, Result};
-use crate::render_program::{D3dVariantData, SerializedParameterBlock, StageBytecode};
+use crate::render_program::{D3dVariantData, SerializedParameterBlock};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -89,24 +89,16 @@ impl ProgramLibrary {
     ) -> Result<[Option<[u8; 16]>; 2]> {
         let mut pair = [None; 2];
         for stage in &variant.stages {
-            let bytes = match &stage.bytecode {
-                StageBytecode::Absent => continue,
-                StageBytecode::Inline(bytes) => bytes.clone(),
-                StageBytecode::Cached(id) => self.cache.stage(*id as usize)?.bytes,
-            };
-            if bytes.len() < 32
-                || bytes.get(..4) != Some(b"DXBC".as_slice())
-                || u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len()
-            {
-                return Err("invalid water colour DXBC container".into());
-            }
+            let Some(checksum) = self.cache.stage_checksum(
+                &stage.bytecode, ["invalid water colour DXBC container"; 2],
+            )? else { continue; };
             let slot = pair
                 .get_mut(stage.kind as usize)
                 .ok_or("unsupported water colour stage kind")?;
             if slot.is_some() {
                 return Err("duplicate water colour stage".into());
             }
-            *slot = Some(<[u8; 16]>::try_from(&bytes[4..20]).unwrap());
+            *slot = Some(checksum);
         }
         Ok(pair)
     }
@@ -205,18 +197,9 @@ impl ProgramLibrary {
             let mut vertex = None;
             let mut pixel = None;
             for stage in &variant.stages {
-                let bytes = match &stage.bytecode {
-                    StageBytecode::Absent => continue,
-                    StageBytecode::Inline(bytes) => bytes.clone(),
-                    StageBytecode::Cached(id) => self.cache.stage(*id as usize)?.bytes,
-                };
-                if bytes.len() < 32
-                    || bytes.get(..4) != Some(b"DXBC".as_slice())
-                    || u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len()
-                {
-                    return Err("invalid water depth DXBC extent/container".into());
-                }
-                let checksum: [u8; 16] = bytes[4..20].try_into().unwrap();
+                let Some(checksum) = self.cache.stage_checksum(
+                    &stage.bytecode, ["invalid water depth DXBC extent/container"; 2],
+                )? else { continue; };
                 match stage.kind {
                     0 if vertex.is_none() => vertex = Some(checksum),
                     1 if pixel.is_none() => pixel = Some(checksum),

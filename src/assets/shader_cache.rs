@@ -6,6 +6,7 @@
 //! This ports synchronous data access, NOT optional preload, GPU-object
 //! creation, source/include validation, or render-program bank publication.
 
+use crate::render_program::StageBytecode;
 use flate2::read::DeflateDecoder;
 use std::collections::HashMap;
 use std::fs::File;
@@ -78,6 +79,33 @@ pub struct ShaderCache {
     definitions: File,
     variants: File,
     bytecode: File,
+    admission: StageAdmission,
+}
+
+#[derive(Debug)]
+struct StageAdmission {
+    checksums: Option<HashMap<u32, [u8; 16]>>,
+    trace: bool,
+}
+
+impl Default for StageAdmission {
+    fn default() -> Self {
+        let reuse = std::env::var_os("DH2_DEBUG_SEPARATE_SHADER_STAGES").is_none_or(|value| value != "1");
+        Self {
+            checksums: reuse.then(HashMap::new),
+            trace: std::env::var_os("DH2_DEBUG_TRACE_SHADER_STAGES").is_some_and(|value| value == "1"),
+        }
+    }
+}
+
+fn dxbc_checksum(bytes: &[u8], errors: [&str; 2]) -> Result<[u8; 16]> {
+    if bytes.len() < 32 || !bytes.starts_with(b"DXBC") {
+        return Err(errors[0].into());
+    }
+    if u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len() {
+        return Err(errors[1].into());
+    }
+    Ok(bytes[4..20].try_into().unwrap())
 }
 
 #[derive(Debug)]
@@ -183,7 +211,13 @@ impl ShaderCache {
         indices.retain(|(installation, _), entry| installation == base && entry.current.strong_count() != 0);
         let shared = std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
         if let Some(index) = indices.get(&key).filter(|_| shared).and_then(|entry| entry.current.upgrade()) {
-            let cache = Self { index, definitions: open("rpd")?, variants: open("rpvd")?, bytecode: open("ucd")? };
+            let cache = Self {
+                index,
+                definitions: open("rpd")?,
+                variants: open("rpvd")?,
+                bytecode: open("ucd")?,
+                admission: StageAdmission::default(),
+            };
             cache.report_index(true, 0, started);
             return Ok(cache);
         }
@@ -277,6 +311,7 @@ impl ShaderCache {
             definitions,
             variants,
             bytecode,
+            admission: StageAdmission::default(),
         })
     }
 
@@ -340,6 +375,37 @@ impl ShaderCache {
             bytes: inflate(&bytes, unpacked)?,
         })
     }
+
+    /// Backend admission needs the validated checksum, not the stage payload.
+    /// 1402ca440 likewise identifies resident stages by the UCD index.
+    fn stage_checksum(&mut self, stage: &StageBytecode, errors: [&str; 2])
+        -> Result<Option<[u8; 16]>>
+    {
+        let id = match stage {
+            StageBytecode::Absent => return Ok(None),
+            StageBytecode::Inline(bytes) => return dxbc_checksum(bytes, errors).map(Some),
+            StageBytecode::Cached(id) => *id,
+        };
+        let start = self.admission.trace.then(crate::loading::thread_cycles).flatten();
+        let resident = self.admission.checksums.as_ref()
+            .and_then(|checksums| checksums.get(&id)).copied();
+        let (checksum, decoded_bytes) = if let Some(checksum) = resident {
+            (checksum, 0)
+        } else {
+            let stage = self.stage(id as usize)?;
+            let checksum = dxbc_checksum(&stage.bytes, errors)?;
+            if let Some(checksums) = &mut self.admission.checksums {
+                checksums.insert(id, checksum);
+            }
+            (checksum, stage.bytes.len())
+        };
+        if self.admission.trace {
+            let cycles = start.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("SHADER_STAGE_ADMISSION id={id} decoded_bytes={decoded_bytes} cycles={cycles} checksum={checksum:02x?}");
+        }
+        Ok(Some(checksum))
+    }
 }
 
 /// Bytecode-identified shadow source (legacy type name), not an engine pointer
@@ -398,33 +464,25 @@ pub struct CachedWorldShadowSource {
     pub variant: crate::render_program::D3dVariantData,
 }
 
-fn is_captured_rigid_opaque_stage(bytes: &[u8]) -> bool {
+fn captured_rigid_opaque_checksum(checksum: [u8; 16]) -> bool {
     // The liquid-container VS has extra unused varyings and a different CB
     // layout, but its only rasterized output is exactly the same rigid MVP
-    // and depth multiplier.768 native stream-output positions verify the
+    // and depth multiplier. 768 installed stream-output positions verify the
     // canonical transport shared with Vista (no liquid pixel stage exists).
-    if bytes.get(..4) == Some(b"DXBC".as_slice())
-        && bytes.get(4..20)
-            == Some(
-                [
-                    0x17, 0xfa, 0x7d, 0x8c, 0x1d, 0x94, 0x16, 0xae, 0xb8, 0x75, 0x94, 0x3a, 0x6c,
-                    0x9e, 0xe7, 0x9a,
-                ]
-                .as_slice(),
-            )
-    {
-        return true;
-    }
-    // Actual DXBC checksum of captured VS17296, NOT its transient resource ID.
-    bytes.get(..4) == Some(b"DXBC".as_slice())
-        && bytes.get(4..20)
-            == Some(
-                [
-                    0x78, 0x6c, 0x59, 0xbe, 0xb2, 0xf0, 0x23, 0x7b, 0x2f, 0xf5, 0x1a, 0x92, 0x02,
-                    0xe6, 0xb1, 0x29,
-                ]
-                .as_slice(),
-            )
+    checksum == [
+        0x17, 0xfa, 0x7d, 0x8c, 0x1d, 0x94, 0x16, 0xae, 0xb8, 0x75, 0x94, 0x3a, 0x6c,
+        0x9e, 0xe7, 0x9a,
+    ] || checksum == [
+        0x78, 0x6c, 0x59, 0xbe, 0xb2, 0xf0, 0x23, 0x7b, 0x2f, 0xf5, 0x1a, 0x92, 0x02,
+        0xe6, 0xb1, 0x29,
+    ]
+}
+
+#[cfg(test)]
+fn is_captured_rigid_opaque_stage(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"DXBC") && bytes.get(4..20)
+        .and_then(|bytes| bytes.try_into().ok())
+        .is_some_and(captured_rigid_opaque_checksum)
 }
 
 /// Resident declaration metadata plus lazy decoded definitions. These are
@@ -766,23 +824,13 @@ impl ProgramLibrary {
             let mut pixel = None;
             let mut opaque_vertex = false;
             for stage in &variant.stages {
-                let bytes = match &stage.bytecode {
-                    crate::render_program::StageBytecode::Absent => continue,
-                    crate::render_program::StageBytecode::Inline(bytes) => bytes.clone(),
-                    crate::render_program::StageBytecode::Cached(id) => {
-                        self.cache.stage(*id as usize)?.bytes
-                    }
-                };
-                if bytes.get(..4) != Some(b"DXBC".as_slice()) || bytes.len() < 32 {
-                    return Err("invalid rigid shadow DXBC container".into());
-                }
-                if u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len() {
-                    return Err("rigid shadow DXBC extent differs from resident payload".into());
-                }
-                let checksum: [u8; 16] = bytes[4..20].try_into().unwrap();
+                let Some(checksum) = self.cache.stage_checksum(&stage.bytecode, [
+                    "invalid rigid shadow DXBC container",
+                    "rigid shadow DXBC extent differs from resident payload",
+                ])? else { continue; };
                 match stage.kind {
                     0 if vertex.is_none() => {
-                        opaque_vertex = is_captured_rigid_opaque_stage(&bytes);
+                        opaque_vertex = captured_rigid_opaque_checksum(checksum);
                         vertex = Some(checksum);
                     }
                     1 if pixel.is_none() => pixel = Some(checksum),
@@ -972,19 +1020,9 @@ impl ProgramLibrary {
             let mut vertex = None;
             let mut pixel = None;
             for stage in &variant.stages {
-                let bytes = match &stage.bytecode {
-                    crate::render_program::StageBytecode::Absent => continue,
-                    crate::render_program::StageBytecode::Inline(bytes) => bytes.clone(),
-                    crate::render_program::StageBytecode::Cached(id) => {
-                        self.cache.stage(*id as usize)?.bytes
-                    }
-                };
-                if bytes.len() < 32
-                    || bytes.get(..4) != Some(b"DXBC".as_slice())
-                    || u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize != bytes.len()
-                {
-                    return Err("invalid world shadow DXBC extent/container".into());
-                }
+                let error = "invalid world shadow DXBC extent/container";
+                let Some(checksum) = self.cache.stage_checksum(&stage.bytecode, [error; 2])?
+                    else { continue; };
                 // Explicit offline test capture only; never writes game data
                 // from production. Capture unsupported pairs before rejection
                 // so the next class is ported from its real installed shader.
@@ -993,14 +1031,17 @@ impl ProgramLibrary {
                     let directory = std::path::PathBuf::from(directory);
                     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
                     let file = directory.join(format!("{hash:08x}-{}.dxbc", stage.kind));
-                    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+                    match &stage.bytecode {
+                        StageBytecode::Absent => unreachable!("checksum requires bytecode"),
+                        StageBytecode::Inline(bytes) => std::fs::write(&file, bytes),
+                        StageBytecode::Cached(id) => std::fs::write(&file, self.cache.stage(*id as usize)?.bytes),
+                    }.map_err(|e| e.to_string())?;
                     eprintln!(
                         "WORLD EVIDENCE {} {}",
                         String::from_utf8_lossy(name),
                         file.display()
                     );
                 }
-                let checksum: [u8; 16] = bytes[4..20].try_into().unwrap();
                 match stage.kind {
                     0 if vertex.is_none() => vertex = Some(checksum),
                     1 if pixel.is_none() => pixel = Some(checksum),
