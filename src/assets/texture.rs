@@ -407,7 +407,7 @@ fn copy_layered(bytes: &[u8], ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
     payload
 }
 
-fn compact_layered(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
+fn compact_payload_ranges(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
     let mut written = 0;
     for range in ranges {
         bytes.copy_within(range.clone(), written);
@@ -424,7 +424,7 @@ pub fn compressed_inline_array(bytes: &[u8]) -> Result<InlineArrayChain, String>
 
 pub fn compressed_inline_array_owned(bytes: Vec<u8>) -> Result<InlineArrayChain, String> {
     let (info, layers, ranges) = layered_records(&bytes, false)?;
-    Ok(InlineArrayChain { info, layers, payload: compact_layered(bytes, &ranges) })
+    Ok(InlineArrayChain { info, layers, payload: compact_payload_ranges(bytes, &ranges) })
 }
 
 #[test]
@@ -488,7 +488,7 @@ pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
 
 pub fn compressed_inline_cube_owned(bytes: Vec<u8>) -> Result<InlineCubeChain, String> {
     let (info, _, ranges) = layered_records(&bytes, true)?;
-    Ok(InlineCubeChain { info, payload: compact_layered(bytes, &ranges) })
+    Ok(InlineCubeChain { info, payload: compact_payload_ranges(bytes, &ranges) })
 }
 
 #[test]
@@ -587,51 +587,35 @@ pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, St
     Ok(InlineCompressedChain { info, payload })
 }
 
-const INLINE_HEADER_BYTES: usize = 62;
-const MIP_HEADER_BYTES: usize = 20;
-
-fn inline_info(header: &[u8]) -> Result<BimageInfo, String> {
-    let info = BimageInfo::parse(header)?;
-    if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
-        return Err("invalid BIM dimensions/mip count".into());
-    }
-    Ok(info)
-}
-
-fn inline_mip_size(header: &[u8], level: u32, format: ImageFormat, width: u32, height: u32) -> Result<usize, String> {
-    if word(header, 0)? != level {
-        return Err("bimage mip level differs from request".into());
-    }
-    if (word(header, 8)?, word(header, 12)?) != (width, height) {
-        return Err("inline mip dimensions disagree with BIM header".into());
-    }
-    let size = word(header, 16)? as usize;
-    let blocks_wide = width.div_ceil(format.block_width()) as usize;
-    let blocks_high = height.div_ceil(format.block_width()) as usize;
-    let expected = blocks_wide.checked_mul(blocks_high)
-        .and_then(|blocks| blocks.checked_mul(format.block_bytes()))
-        .ok_or("inline mip size overflow")?;
-    if size != expected {
-        return Err(format!("invalid {format:?} mip payload: expected {expected}, got {size}"));
-    }
-    Ok(size)
-}
-
 /// Validate installed inline records while borrowing their compiled payloads.
 /// 1402e9ff0 hands each record to 1402f5500; no intermediate packed copy is needed.
 pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, CompressedMip<'a>))
     -> Result<BimageInfo, String> {
-    let info = inline_info(bytes)?;
-    let mut at = INLINE_HEADER_BYTES;
+    visit_inline_ranges(bytes, |level, width, height, range| {
+        visit(level, CompressedMip { width, height, payload: &bytes[range] });
+    })
+}
+
+fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, u32, std::ops::Range<usize>))
+    -> Result<BimageInfo, String> {
+    let info = BimageInfo::parse(bytes)?;
+    if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
+        return Err("invalid BIM dimensions/mip count".into());
+    }
+    let mut at = 62usize;
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
         let height = (info.height >> level).max(1);
-        let start = at.checked_add(MIP_HEADER_BYTES).ok_or("inline mip size overflow")?;
+        let start = at.checked_add(20).ok_or("inline mip size overflow")?;
         let header = bytes.get(at..start).ok_or("truncated inline mip header")?;
-        let size = inline_mip_size(header, level, info.format, width, height)?;
+        let size = word(header, 16)? as usize;
         let end = start.checked_add(size).ok_or("inline mip size overflow")?;
-        let payload = bytes.get(start..end).ok_or("truncated inline mip payload")?;
-        visit(level, CompressedMip { width, height, payload });
+        let record = bytes.get(at..end).ok_or("truncated inline mip payload")?;
+        let mip = compressed_mip(record, level, info.format)?;
+        if (mip.width, mip.height) != (width, height) {
+            return Err("inline mip dimensions disagree with BIM header".into());
+        }
+        visit(level, width, height, start..end);
         at = end;
     }
     if at != bytes.len() {
@@ -641,29 +625,10 @@ pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, Compres
 }
 
 #[cfg(feature = "game")]
-pub(crate) fn read_inline_chain(input: &mut dyn std::io::Read, size: usize) -> Result<InlineCompressedChain, String> {
-    let mut header = [0; INLINE_HEADER_BYTES];
-    input.read_exact(&mut header).map_err(|error| error.to_string())?;
-    let info = inline_info(&header)?;
-    let payload_size = size.checked_sub(INLINE_HEADER_BYTES + info.mip_count as usize * MIP_HEADER_BYTES)
-        .ok_or("truncated inline mip headers")?;
-    let mut payload = Vec::new();
-    payload.try_reserve_exact(payload_size).map_err(|error| error.to_string())?;
-    let mut header = [0; MIP_HEADER_BYTES];
-    for level in 0..info.mip_count {
-        let width = (info.width >> level).max(1);
-        let height = (info.height >> level).max(1);
-        input.read_exact(&mut header).map_err(|error| error.to_string())?;
-        let size = inline_mip_size(&header, level, info.format, width, height)?;
-        let start = payload.len();
-        let end = start.checked_add(size).filter(|&end| end <= payload_size)
-            .ok_or("truncated inline mip payload")?;
-        payload.resize(end, 0);
-        input.read_exact(&mut payload[start..end]).map_err(|error| error.to_string())?;
-    }
-    if payload.len() != payload_size {
-        return Err("inline mip chain size mismatch".into());
-    }
+pub(crate) fn compressed_inline_chain_owned(bytes: Vec<u8>) -> Result<InlineCompressedChain, String> {
+    let mut ranges = [const { 0..0 }; 16];
+    let info = visit_inline_ranges(&bytes, |level, _, _, range| ranges[level as usize] = range)?;
+    let payload = compact_payload_ranges(bytes, &ranges[..info.mip_count as usize]);
     Ok(InlineCompressedChain { info, payload })
 }
 

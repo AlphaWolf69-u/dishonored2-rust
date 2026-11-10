@@ -859,25 +859,26 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
         TextureReadTarget::Exact(_, _) => unreachable!(),
     };
-    let stream_size = if packed && !copy_inline && selected_separate.is_none() && !catalog.has_overlays() {
-        catalog.resource_size(stem).filter(|&size| size > archive::STREAM_BUFFER_BYTES)
-    } else {
-        None
-    };
-    let acquisition_start = if report_staging && stream_size.is_some() {
+    let compact_inline = packed && !copy_inline && selected_separate.is_none();
+    let acquisition_start = if report_staging && compact_inline {
         crate::loading::thread_cycles()
     } else {
         None
     };
-    let report_acquisition = |streamed: bool| {
-        if let (Some(bytes), Some(start)) = (stream_size, acquisition_start) {
+    let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
+        return Err(format!("missing base BIM format descriptor {stem}"));
+    };
+    // Match the large-image acquisition scope of the buffered comparison.
+    let member_bytes = bytes.len();
+    let compact_inline = compact_inline && member_bytes > 65_536;
+    let report_acquisition = |compacted: bool| {
+        if let Some(start) = acquisition_start.filter(|_| compact_inline) {
             let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
-            eprintln!("MEMORY resident image acquisition: path={stem} streamed={streamed} member_bytes={bytes} cycles={cycles}");
+            eprintln!("MEMORY resident image acquisition: path={stem} compacted={compacted} member_bytes={member_bytes} cycles={cycles}");
         }
     };
-    if stream_size.is_some() && !buffer_resident {
-        let chain = catalog.with_stream(stem, texture::read_inline_chain)?
-            .ok_or_else(|| format!("missing base BIM format descriptor {stem}"))?;
+    if compact_inline && !buffer_resident {
+        let chain = texture::compressed_inline_chain_owned(bytes)?;
         let info = chain.info;
         let mut image = empty_streamed_image(info.width, info.height, info.mip_count, gpu_image_format(info.format));
         image.data = Some(chain.payload);
@@ -894,9 +895,6 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             },
         }));
     }
-    let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
-        return Err(format!("missing base BIM format descriptor {stem}"));
-    };
     // The worker and separate-mip consumers still need individual authored records.
     let copied = if copy_inline { Some(texture::compressed_inline_chain(&bytes)?) } else { None };
     let mut inline_mips = [None; 16];

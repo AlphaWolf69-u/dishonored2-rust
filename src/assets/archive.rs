@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-pub(crate) const STREAM_BUFFER_BYTES: usize = 65_536;
-
 #[derive(Clone, Copy)]
 struct Entry {
     group: u8,
@@ -597,7 +595,7 @@ impl Catalog {
         let value = if let Some(file) = self.overlay_file(path) {
             let input = File::open(file).map_err(|e| e.to_string())?;
             let size = input.metadata().map_err(|e| e.to_string())?.len() as usize;
-            let mut input = std::io::BufReader::with_capacity(STREAM_BUFFER_BYTES, input);
+            let mut input = std::io::BufReader::with_capacity(65536, input);
             consume(&mut input, size)?
         } else {
             let Some(entry) = entry else { return Ok(None); };
@@ -606,10 +604,10 @@ impl Catalog {
             reader.file.seek(SeekFrom::Start(entry.offset)).map_err(|e| e.to_string())?;
             let input = (&mut reader.file).take(u64::from(entry.stored_size));
             if entry.size == entry.stored_size {
-                let mut input = std::io::BufReader::with_capacity(STREAM_BUFFER_BYTES, input);
+                let mut input = std::io::BufReader::with_capacity(65536, input);
                 consume(&mut input, entry.size as usize)?
             } else {
-                let mut input = std::io::BufReader::with_capacity(STREAM_BUFFER_BYTES, ZlibDecoder::new(input));
+                let mut input = std::io::BufReader::with_capacity(65536, ZlibDecoder::new(input));
                 let value = consume(&mut input, entry.size as usize)?;
                 // read_file probes beyond the indexed decoded size, forcing
                 // trailer validation and detecting oversized output.
