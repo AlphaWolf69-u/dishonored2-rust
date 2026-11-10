@@ -6108,6 +6108,27 @@ shutdown and released the extracted screen-shadow image again. Active
 particle shutdown errors, live resize and replacement binding draws were
 outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
 
+Map request table retirement follow-up. The original 1400661e0 frees its
+assembled request table at the end of loading. The host drops its loading
+lease there, but an unused inventory snapshot kept a second LevelList Arc
+in the session. The archived EotW release line reports 46,546 entries,
+8,628,721 logical bytes across the three sections and two strong owners.
+Remove the unused snapshot and its candidate scan. Initial inventory and
+readables still use the selected collection declaration, and discovered
+journal items retain their own identities. Expect one loading owner before
+play, zero surviving request-table owners after the gate, and release of
+the map-only descriptor section. Init/common still have their own owners.
+
+Windowless publication exposed an additional observer lease. The timing
+coverage reporter had stored a separate map-list reference for its PostUpdate
+report, while this acquisition observation calls the play gate directly. All
+three publications dropped from two owners to one. Route the same coverage
+calculation through the request list retired at play start and remove the
+independent timing acquisition. Expect one to zero owners with timing enabled
+and the same report content for the reads recorded before handoff. The isolated
+map sections measured 4,562,689 bytes in Edge of the World and 4,508,068 in
+Dust District. This counts descriptor ownership, rather than process memory.
+
 Instance probe record residency prediction. The original indirect-lighting
 owner retires buffer backing in 14035bca0. The host currently preserves
 the complete serialized probe buffer for byte comparisons on moving
@@ -6149,3 +6170,15 @@ The renderer binds from the extracted handle and retains no named cache
 entry. These observations cover wrapper identity and CPU view selection.
 Active movie drawing was outside the windowless observation. Evidence:
 `DH2-screen-shadow-retirement/artifacts/ui-registered-image-leases-20261110-comparison.json`.
+
+Particle scene-image retirement prediction. Original image publication
+1402f5530 and residency 14030f3d0 own the active texture independently of
+particle bindings. The host GPU particle cache retained a strong reference
+to the previous map of scene image handles and its view objects. The final
+effect can end with no draws, bypassing image synchronization until a later
+effect starts. Track publication identity weakly and remove absent views
+when the particle pass is idle or preparing a changed publication. Active
+materials and submitted work keep their own leases. Retained path view
+changes still use the existing GPU-ready synchronization. Expect no uploads
+or view rebuilds for unchanged publications and no retired handles pinned
+by an idle particle pass.

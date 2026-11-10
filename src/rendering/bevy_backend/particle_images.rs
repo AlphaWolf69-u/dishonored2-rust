@@ -3,14 +3,16 @@
 //! Compiled blocks are uploaded unchanged; samplers belong to material bindings.
 use bevy::render::{render_resource::*, renderer::{RenderDevice, RenderQueue}};
 use bevy::{prelude::{Resource, Handle, Image}, render::{extract_resource::ExtractResource, render_asset::RenderAssets, texture::GpuImage}};
-use std::{collections::HashMap, sync::Arc, time::{Duration, Instant}};
+use std::{collections::HashMap, sync::{Arc, Weak}, time::{Duration, Instant}};
+
+type SceneHandles = HashMap<Arc<str>, Handle<Image>>;
 
 /// Material consumers of scene-owned 2D images. Handle snapshots change only
 /// at residency commits; immutable definitions/demands share their identity.
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub(crate) struct SceneParticleImages {
     pub slots: Arc<Vec<(usize, Arc<crate::rendering::particles::image_resources::ParticleImage>)>>,
-    pub handles: Arc<HashMap<Arc<str>, Handle<Image>>>,
+    pub handles: Arc<SceneHandles>,
     pub world_materials: Arc<HashMap<String, Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>>,
 }
 
@@ -24,7 +26,8 @@ struct ResidentImage {
 
 pub(super) struct ParticleImagesGpu {
     resident: HashMap<(TextureDimension, usize), ResidentImage>,
-    scene_handles: Option<Arc<HashMap<Arc<str>, Handle<Image>>>>,
+    scene_handles: Weak<SceneHandles>,
+    scene_views_current: bool,
     scene_views: HashMap<Arc<str>, TextureView>,
     pub changed_paths: std::collections::HashSet<Arc<str>>,
     shared: bool,
@@ -39,7 +42,7 @@ pub(super) struct ParticleImagesGpu {
 impl Default for ParticleImagesGpu {
     fn default() -> Self {
         Self {
-            resident: Default::default(), scene_handles: None,
+            resident: Default::default(), scene_handles: Weak::new(), scene_views_current: false,
             scene_views: Default::default(), changed_paths: Default::default(),
             shared: std::env::var("DH2_DEBUG_DUPLICATE_PARTICLE_IMAGES").as_deref() != Ok("1"),
             timing: std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
@@ -70,13 +73,21 @@ impl ParticleImagesGpu {
         }
     }
 
-    /// Preserve all committed views until every replacement is GPU-ready.
-    /// Stable frames compare one Arc identity; no per-draw lock or map copy.
+    /// Drop outgoing view leases even when the next publication has no draws
+    /// or its new textures are still being prepared. Retained paths still own
+    /// their previously committed views until replacement succeeds.
+    pub(super) fn retire_scene_views(&mut self, sources: &SceneParticleImages) {
+        if self.scene_handles.as_ptr() == Arc::as_ptr(&sources.handles) { return; }
+        self.scene_handles = Arc::downgrade(&sources.handles);
+        self.scene_views_current = false;
+        self.scene_views.retain(|path, _| sources.handles.contains_key(path));
+    }
+
+    /// Stable frames compare one publication identity without copying its map.
     pub fn sync_scene(&mut self, sources: &SceneParticleImages,
         images: &RenderAssets<GpuImage>, force: bool) -> Result<bool, String> {
-        if !force && self.scene_handles.as_ref().is_some_and(|old| Arc::ptr_eq(old, &sources.handles)) {
-            return Ok(false);
-        }
+        self.retire_scene_views(sources);
+        if !force && self.scene_views_current { return Ok(false); }
         if sources.handles.len() != sources.slots.len() {
             return Err("particle image handles await scene registration".into());
         }
@@ -91,11 +102,8 @@ impl ParticleImagesGpu {
                 self.changed_paths.insert(path.clone());
             }
         }
-        for path in self.scene_views.keys().filter(|path| !next.contains_key(*path)) {
-            self.changed_paths.insert(path.clone());
-        }
         self.scene_views = next;
-        self.scene_handles = Some(sources.handles.clone());
+        self.scene_views_current = true;
         Ok(!self.changed_paths.is_empty())
     }
 
@@ -147,4 +155,26 @@ impl Drop for ParticleImagesGpu {
                 self.shared, self.requests, self.uploads, self.bytes, self.resident.len(), self.cpu_released_bytes, self.scene_views.len(), self.elapsed.as_secs_f64() * 1000.0);
         }
     }
+}
+
+/// Observe the idle cache with GPU assets from an installed FX publication.
+pub(crate) fn observe_scene_retirement(
+    sources: &SceneParticleImages,
+    images: &RenderAssets<GpuImage>,
+    retired: &std::collections::HashSet<bevy::asset::AssetId<Image>>,
+) -> Result<(), String> {
+    let handles: SceneHandles = sources.handles.iter().filter(|(_, handle)| images.get(handle.id()).is_some())
+        .map(|(path, handle)| (path.clone(), handle.clone())).collect();
+    let slots = sources.slots.iter().filter(|(_, source)| handles.contains_key(&source.path)).cloned().collect();
+    let mut current = SceneParticleImages { handles: Arc::new(handles), slots: Arc::new(slots), ..Default::default() };
+    let old_handles = Arc::downgrade(&current.handles);
+    let mut gpu = ParticleImagesGpu::default();
+    gpu.sync_scene(&current, images, false)?;
+    let before = gpu.scene_views.len();
+    let removed = current.handles.values().filter(|handle| retired.contains(&handle.id())).count();
+    Arc::make_mut(&mut current.handles).retain(|_, handle| !retired.contains(&handle.id()));
+    gpu.retire_scene_views(&current);
+    eprintln!("PARTICLE_SCENE_IMAGE_RETIREMENT before={before} retired={removed} after={} old_snapshot_owners={}",
+        gpu.scene_views.len(), old_handles.strong_count());
+    Ok(())
 }
