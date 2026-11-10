@@ -6527,3 +6527,16 @@ whole-scene cancellation, the same payloads for completed reads, and
 unchanged ownership and GPU submissions. Compare installed interrupted
 member reads and retry signatures, then observe normal scene publication
 and retirement. This is host cancellation, not an original decoder port.
+
+Installed cancellation acceptance at 822faa90. Both archive read routes
+stopped after a partial read of the compressed 16,777,298-byte Edge of
+the World sky member and a stored and compressed 16,777,236-byte
+separate mip. Cancelled members had no read credit or retained payload.
+Both successful retry paths matched the full reference bytes. The normal
+Edge of the World and Dust District windowless publication matched the
+image payload, material handoff and GPU ownership records. Dunwall Tower
+admitted an actual texture request and settled the outgoing worker before
+purge. The forced partial-read route and the normal worker gate are
+separate observations. No interruption of a blocking operating-system
+read or gameplay frame-time gain is claimed. Evidence:
+DH2-scene-shutdown/artifacts/texture-read-cancellation-retry-20261110-comparison.json.
