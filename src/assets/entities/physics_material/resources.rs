@@ -31,7 +31,7 @@ pub(crate) fn acquire_with(
     read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<Arc<Definition>, String> {
     let path = format!("generated/decls/physicsmaterial/{}.decl",
-        name.replace('\', "/").to_ascii_lowercase());
+        name.replace('\\', "/").to_ascii_lowercase());
     let trace = std::env::var_os("DH2_DEBUG_PHYSICS_MATERIAL_RESOURCES").is_some_and(|value| value == "1");
     let shared = !catalog.has_overlays()
         && std::env::var_os("DH2_DEBUG_SEPARATE_PHYSICS_MATERIAL_RESOURCES").is_none_or(|value| value != "1");
