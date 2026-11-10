@@ -679,29 +679,42 @@ impl Catalog {
     }
 
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        self.read_cancellable(path, None)
+    }
+
+    pub(crate) fn read_cancellable(&self, path: &str, cancelled: Option<&dyn Fn() -> bool>) -> Result<Option<Vec<u8>>> {
         let mut output = Vec::new();
-        Ok(self.read_into(path, &mut output)?.then_some(output))
+        Ok(self.read_member(path, &mut output, cancelled)?.then_some(output))
     }
 
     /// Reuse the caller's decoded storage across independent member reads.
     /// A missing or failed member leaves the buffer empty.
     pub(crate) fn read_into(&self, path: &str, output: &mut Vec<u8>) -> Result<bool> {
+        self.read_member(path, output, None)
+    }
+
+    fn read_member(&self, path: &str, output: &mut Vec<u8>, cancelled: Option<&dyn Fn() -> bool>) -> Result<bool> {
         output.clear();
+        check_read_cancelled(cancelled)?;
         let entry = self.entry(path);
         let result = if let Some(file) = self.overlay_file(path) {
-            if output.capacity() == 0 {
+            if output.capacity() == 0 && cancelled.is_none() {
                 *output = std::fs::read(file)?;
                 Ok(true)
             } else {
-                File::open(file)?.read_to_end(output).map(|_| true).map_err(Into::into)
+                read_member_bytes(&mut File::open(file)?, output, cancelled).map(|()| true).map_err(Into::into)
             }
         } else if let Some(entry) = entry {
             let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
             let length = reader.length;
-            read_file_into(&mut reader.file, length, path, entry, output).map(|()| true)
+            read_file_into(&mut reader.file, length, path, entry, output, cancelled).map(|()| true)
         } else {
             Ok(false)
         };
+        let result = result.and_then(|found| {
+            check_read_cancelled(cancelled)?;
+            Ok(found)
+        });
         // A failed acquisition cannot advance loading progress. Record only
         // actual payloads after archive/overlay IO and decompression succeed.
         if matches!(&result, Ok(true)) {
@@ -736,6 +749,20 @@ impl Catalog {
     /// container lease remains owned here until the consumer returns, so a
     /// compressed member need not be expanded into a whole-file allocation.
     pub(crate) fn with_stream<T>(&self, path: &str, consume: impl FnOnce(&mut dyn Read, usize) -> std::result::Result<T, String>) -> std::result::Result<Option<T>, String> {
+        self.with_stream_cancellable(path, None, consume)
+    }
+
+    pub(crate) fn with_stream_cancellable<T>(&self, path: &str, cancelled: Option<&dyn Fn() -> bool>,
+        consume: impl FnOnce(&mut dyn Read, usize) -> std::result::Result<T, String>,
+    ) -> std::result::Result<Option<T>, String> {
+        check_read_cancelled(cancelled).map_err(|error| error.to_string())?;
+        let consume = |input: &mut dyn Read, size| {
+            if let Some(cancelled) = cancelled {
+                consume(&mut CancellableMember { input, cancelled }, size)
+            } else {
+                consume(input, size)
+            }
+        };
         let entry = self.entry(path);
         let value = if let Some(file) = self.overlay_file(path) {
             let input = File::open(file).map_err(|e| e.to_string())?;
@@ -754,6 +781,7 @@ impl Catalog {
             } else {
                 let mut input = std::io::BufReader::with_capacity(65536, ZlibDecoder::new(input));
                 let value = consume(&mut input, entry.size as usize)?;
+                check_read_cancelled(cancelled).map_err(|error| error.to_string())?;
                 // read_file probes beyond the indexed decoded size, forcing
                 // trailer validation and detecting oversized output.
                 let mut extra = [0u8; 1];
@@ -763,6 +791,7 @@ impl Catalog {
                 value
             }
         };
+        check_read_cancelled(cancelled).map_err(|error| error.to_string())?;
         self.record_payload_read(entry, path);
         Ok(Some(value))
     }
@@ -815,11 +844,13 @@ fn validate_extent(path: &str, entry: &Entry, archive_size: u64) -> Result<()> {
 
 fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> Result<Vec<u8>> {
     let mut output = Vec::new();
-    read_file_into(file, archive_size, path, entry, &mut output)?;
+    read_file_into(file, archive_size, path, entry, &mut output, None)?;
     Ok(output)
 }
 
-fn read_file_into(file: &mut File, archive_size: u64, path: &str, entry: &Entry, output: &mut Vec<u8>) -> Result<()> {
+fn read_file_into(file: &mut File, archive_size: u64, path: &str, entry: &Entry, output: &mut Vec<u8>,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<()> {
     validate_extent(path, entry, archive_size)?;
     file.seek(SeekFrom::Start(entry.offset))?;
     // Native worlds exceed 128 MiB. Bound reads by the indexed archive
@@ -831,13 +862,9 @@ fn read_file_into(file: &mut File, archive_size: u64, path: &str, entry: &Entry,
     // stream, so read_to_end never regrows and copies the buffer.
     output.try_reserve_exact(entry.size as usize + 1)?;
     if entry.size == entry.stored_size {
-        input
-            .take(u64::from(entry.size) + 1)
-            .read_to_end(output)?;
+        read_member_bytes(&mut input.take(u64::from(entry.size) + 1), output, cancelled)?;
     } else {
-        ZlibDecoder::new(input)
-            .take(entry.size as u64 + 1)
-            .read_to_end(output)?;
+        read_member_bytes(&mut ZlibDecoder::new(input).take(u64::from(entry.size) + 1), output, cancelled)?;
     }
     if output.len() != entry.size as usize {
         return Err(invalid(format!(
@@ -848,6 +875,79 @@ fn read_file_into(file: &mut File, archive_size: u64, path: &str, entry: &Entry,
         ))
         .into());
     }
+    Ok(())
+}
+
+fn check_read_cancelled(cancelled: Option<&dyn Fn() -> bool>) -> io::Result<()> {
+    if cancelled.is_some_and(|cancelled| cancelled()) {
+        // read_exact and read_to_end retry ErrorKind::Interrupted.
+        return Err(io::Error::other("archive acquisition cancelled"));
+    }
+    Ok(())
+}
+
+struct CancellableMember<'a, R: Read + ?Sized> {
+    input: &'a mut R,
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl<R: Read + ?Sized> Read for CancellableMember<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        check_read_cancelled(Some(self.cancelled))?;
+        let size = output.len().min(64 * 1024);
+        self.input.read(&mut output[..size])
+    }
+}
+
+fn read_member_bytes(input: &mut impl Read, output: &mut Vec<u8>, cancelled: Option<&dyn Fn() -> bool>) -> io::Result<()> {
+    if let Some(cancelled) = cancelled {
+        CancellableMember { input, cancelled }.read_to_end(output)?;
+    } else {
+        input.read_to_end(output)?;
+    }
+    Ok(())
+}
+
+/// Interrupt both installed member readers before they can publish read
+/// history, then compare their successful output in a fresh lease.
+#[cfg(feature = "game")]
+pub(crate) fn observe_member_cancellation(base: &Path, path: &str) -> Result<()> {
+    use std::cell::Cell;
+    let catalog = Catalog::open(base)?;
+    let entry = catalog.entry(path).ok_or("installed member missing")?;
+    if entry.size <= 2 * 64 * 1024 || catalog.has_overlay_file(path) {
+        return Err("select a large installed archive member".into());
+    }
+    let kind = &catalog.kinds[entry.kind as usize];
+    let credited = || crate::loading::catalog_read_recorded(catalog.identity(), kind, path);
+    let checks = Cell::new(0);
+    let mut buffer = Vec::new();
+    let cancelled = catalog.read_member(path, &mut buffer, Some(&|| {
+        let next = checks.get() + 1;
+        checks.set(next);
+        next == 4
+    }));
+    let member_cancelled = cancelled.is_err_and(|error| error.to_string() == "archive acquisition cancelled");
+    let partial_discarded = buffer.is_empty();
+    let cancelled_before_credit = !credited();
+
+    let closed = Cell::new(false);
+    let prefix_bytes = 32 * 1024;
+    let streamed = catalog.with_stream_cancellable(path, Some(&|| closed.get()), |input, _| {
+        let mut prefix = vec![0; prefix_bytes];
+        input.read_exact(&mut prefix).map_err(|error| error.to_string())?;
+        closed.set(true);
+        let mut next = [0; 1];
+        input.read_exact(&mut next).map_err(|error| error.to_string())
+    });
+    let stream_cancelled = streamed.is_err_and(|error| error == "archive acquisition cancelled");
+    let stream_uncredited = !credited();
+    let control = catalog.read(path)?.ok_or("installed member disappeared")?;
+    let retry = catalog.read_cancellable(path, Some(&|| false))?.ok_or("retry lost member")?;
+    let exact = retry == control && retry.len() == entry.size as usize;
+    let checksum = blake3::hash(&retry);
+    println!("ARCHIVE_MEMBER_CANCELLATION path={path} stored={} decoded={} prefix_bytes={prefix_bytes} check_count={} member_cancelled={member_cancelled} partial_discarded={partial_discarded} cancelled_before_credit={cancelled_before_credit} stream_cancelled={stream_cancelled} stream_uncredited={stream_uncredited} exact={exact} checksum={checksum}",
+        entry.stored_size, entry.size, checks.get());
     Ok(())
 }
 

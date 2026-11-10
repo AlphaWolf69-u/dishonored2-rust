@@ -6445,3 +6445,23 @@ bitmap counts, payload sizes and signatures, including 290 transferred
 loading images and 408 overlapping pause images. This verifies source
 reuse, withdrawal and bitmap inputs. Evidence:
 DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-ui-comparison.json.
+
+### Cancelled texture acquisition
+
+Prediction before implementation. The installed image loader 1402ea140
+and streamed-mip reader 14030e840/14030f030 feed the image owner, and
+140060180 releases the outgoing map registry. The rewrite closes the
+texture request queue and waits for its reader to acknowledge withdrawal.
+A worker that already started an archive member currently decodes it in
+full, even though the outgoing scene will discard the result. Let the
+existing scene cancellation reach the bounded member reader, including
+separate mip payloads. Keep current member validation and archive read
+credit for successful reads. A cancelled read must drop partial output
+and release its archive lease without publishing or crediting a partial
+resource. The worker still acknowledges retirement before map purge.
+Ordinary camera changes and FX-only slot revivals retain their current
+behavior. Predict no decoded output past the next bounded read after
+whole-scene cancellation, the same payloads for completed reads, and
+unchanged ownership and GPU submissions. Compare installed interrupted
+member reads and retry signatures, then observe normal scene publication
+and retirement. This is host cancellation, not an original decoder port.
