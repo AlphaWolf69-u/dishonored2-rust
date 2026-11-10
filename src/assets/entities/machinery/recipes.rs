@@ -91,7 +91,7 @@ fn physics_systems(
             .read(path)
             .ok()
             .flatten()
-            .map(|bytes| entities::declaration_text(&bytes).into_owned())
+            .map(entities::owned_declaration_text)
     };
     let mut systems = Vec::new();
     let mut sources = physworld::physics_system::SystemSources::new(catalog);

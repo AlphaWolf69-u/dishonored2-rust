@@ -56,9 +56,14 @@ impl ShaderBufferPatches {
         };
         if target != bytes {
             target.copy_from_slice(bytes);
-            self.0.push((id, offset as u64, bytes.to_vec()));
+            self.enqueue(id, offset, bytes);
         }
         true
+    }
+
+    /// The caller already owns and has compared the corresponding CPU bytes.
+    pub(crate) fn enqueue(&mut self, id: AssetId<ShaderBuffer>, offset: usize, bytes: &[u8]) {
+        self.0.push((id, offset as u64, bytes.to_vec()));
     }
 }
 

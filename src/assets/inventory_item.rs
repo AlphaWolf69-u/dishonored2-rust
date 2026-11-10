@@ -84,7 +84,7 @@ pub fn default_loadout(catalog: &Catalog, character: &str) -> Result<Vec<(String
     let entity = format!("models/characters/player/{character}/body.def");
     let component = entities::player::entity_component(&entity, "cpntinventory", |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+            .map(entities::owned_declaration_text))
     })?.ok_or_else(|| format!("{entity} has no inventory component"))?;
     let Some(name) = atom(&component, "m_defaultLoadout").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")) else { return Ok(Vec::new()) };
     let sources = PickableSourceLease::for_catalog(catalog)?;
@@ -103,7 +103,7 @@ impl ReadableLimits {
         let entity = format!("models/characters/player/{character}/body.def");
         let component = entities::player::entity_component(&entity, "cpntinventory", |path| {
             Ok(catalog.read(path).map_err(|error| error.to_string())?
-                .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+                .map(entities::owned_declaration_text))
         })?.ok_or_else(|| format!("{entity} has no inventory component"))?;
         let name = atom(&component, "m_collection").ok_or("inventory collection is absent")?;
         let sources = PickableSourceLease::for_catalog(catalog)?;

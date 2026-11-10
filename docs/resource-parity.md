@@ -5987,6 +5987,24 @@ the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
 
+Owned declaration text extension. The 140135f70 lexer treats signed bytes
+as unquoted whitespace and preserves quoted/commented bytes. The measured
+contact-only handoff already avoids copying ASCII source. Extend ownership
+transfer to installed declaration consumers that already own their archive
+read. Normalize in that allocation and transfer it into the String when
+UTF-8 validates. Malformed quoted bytes keep the existing replacement
+behavior. Expect one fewer whole-text allocation for valid owned reads
+and matching parsed definitions, with no new retained source owner.
+
+Installed decoder comparison (`a7043617`). The previous decoder and both
+new entry points produced identical text for 1,593 installed declarations
+sampled across 511 index kind names. The sample includes 24 non-ASCII
+members and three whose decoded bytes changed from the source. Owned
+decoding kept the input allocation for 1,590 members covering 7,056,074
+cumulative source bytes. This isolates the decoder and does not measure
+full loading time or retained process memory. Evidence:
+`DH2-fx-resources/artifacts/owned-declaration-layout-20261110.json`.
+
 Camera depth owner acceptance (`e40c02cf`). Two windowless DX12 observations
 released the 1920×1080 opacity image, reduction pyramid, coarse output,
 constants and four staging slots with a readback map outstanding. The callback
@@ -6066,3 +6084,24 @@ across the owner release call. All three scenes completed ordinary FX
 shutdown and released the extracted screen-shadow image again. Active
 particle shutdown errors, live resize and replacement binding draws were
 outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
+
+Instance probe record residency prediction. The original indirect-lighting
+owner retires buffer backing in 14035bca0. The host currently preserves
+the complete serialized probe buffer for byte comparisons on moving
+models and arms. Those writers use only records appended after static
+world geometry. Keep that contiguous writable tail with exact initial
+values and let extraction take the complete upload allocation. Keep the
+same asset ID, GPU bytes and patch order. Expect to release the static
+prefix after upload, with the same per-record compare and writes as the
+previous path. The existing EotW and Dust full CPU copies are 14,902,560
+and 21,835,296 bytes. Measure the actual retained tail and output CRC.
+
+Instance probe record residency acceptance (`acca51c7`). Installed Edge of
+the World and Dust District produced the same full upload CRCs `089f05a5`
+and `d496779e`, with unchanged GPU buffer lengths. CPU backing went from
+14,902,560 to 902,592 bytes and from 21,835,296 to 766,368 bytes. The
+main-world asset retained no serialized upload payload after extraction;
+the separate mutable tails remain on the model lighting owner. Both maps
+returned to zero GPU buffers after release. Active motion and arm patches
+were traced in source and were outside the windowless observations.
+Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.

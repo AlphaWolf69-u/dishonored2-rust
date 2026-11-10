@@ -199,7 +199,7 @@ pub(crate) fn trigger_wind_sources_with_sources(
     let read = |name: &str| {
         catalog
             .read(name)
-            .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+            .map(|bytes| bytes.map(crate::entities::owned_declaration_text))
             .map_err(|error| error.to_string())
     };
     let result: Vec<_> = crate::entities::wind::trigger_winds(document, read)?

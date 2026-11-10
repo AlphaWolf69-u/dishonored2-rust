@@ -89,7 +89,7 @@ fn property_groups(tokens: &[String], layer: usize) -> Result<Vec<PropertyGroup>
 }
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
-    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(crate::entities::owned_declaration_text))
 }
 
 fn track_crc(crc: &mut flate2::Crc, bytes: &[u8], cycles: &mut u64, measure: bool) {

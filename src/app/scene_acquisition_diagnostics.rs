@@ -578,6 +578,14 @@ fn inspect_scene_resources(
                 acquire_water_images(app.world(), step)?;
                 upload_assets(&mut app, &inputs)?;
                 gpu_snapshot(&app, step, "uploaded");
+                if let Some(lighting) = app.world().get_resource::<super::model_motion::ModelProbeLighting>() {
+                    let id = lighting.asset_id();
+                    let cpu = app.world().resource::<Assets<ShaderBuffer>>().get(id)
+                        .and_then(|buffer| buffer.data.as_ref()).map_or(0, Vec::len);
+                    let gpu = app.sub_app(RenderApp).world().resource::<RenderAssets<GpuShaderBuffer>>().get(id)
+                        .map_or(0, |buffer| buffer.buffer.size());
+                    eprintln!("INSTANCE_PROBE_UPLOAD step={step} cpu_upload_bytes={cpu} gpu_bytes={gpu}");
+                }
                 if std::env::var_os("DH2_DEBUG_SCREEN_SHADOW_PROGRAMS").is_some_and(|value| value == "1") {
                     let state = app.world().resource::<super::shadow_updates::ScreenShadowSource>().producer_state()?;
                     crate::screen_shadow_pass::observe_program_reuse(app.sub_app_mut(RenderApp).world_mut(), state)?;
