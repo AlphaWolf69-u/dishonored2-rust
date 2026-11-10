@@ -119,6 +119,15 @@ impl LevelLifetime {
     }
 }
 
+pub(super) fn close_level_acquisitions(world: &World) {
+    if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
+        effects.close_acquisitions();
+    }
+    if let Some(interactions) = world.get_resource::<super::interactions::Interactions>() {
+        interactions.close_acquisitions();
+    }
+}
+
 /// Called while the loading screen is active, before purging map identities.
 /// These workers can write to the shared Catalog, even after their outputs are
 /// no longer wanted. Keep their task handles until each decoder has returned.
@@ -127,7 +136,11 @@ pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut effects| effects.retire_acquisitions());
     let materials = world.get_resource_mut::<super::runtime_materials::RuntimeMaterialCoordinator>()
         .is_none_or(|mut materials| materials.retire_acquisition());
-    sources && materials
+    let readable = world.get_resource_mut::<super::interactions::Interactions>()
+        .is_none_or(|mut interactions| interactions.retire_acquisition());
+    let usable_animations = world.get_resource_mut::<super::usable_animation::UsableAnimations>()
+        .is_none_or(|mut animations| animations.retire_acquisitions());
+    sources && materials && readable && usable_animations
 }
 
 /// Plugin registration creates these empty owners before the first map.

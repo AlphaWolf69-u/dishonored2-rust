@@ -422,9 +422,8 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
 
     world.resource_mut::<EffectRequests>().start_player(first_key, effect);
     advance(world)?;
-    let owner = world.resource::<UsableEffects>();
-    let admitted = owner.loading.len();
-    owner.close_acquisitions();
+    let admitted = world.resource::<UsableEffects>().loading.len();
+    super::level_lifetime::close_level_acquisitions(world);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !super::level_lifetime::retire_level_acquisitions(world) {
         if std::time::Instant::now() >= deadline { return Err("outgoing FX worker did not retire".into()); }

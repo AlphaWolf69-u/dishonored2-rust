@@ -309,7 +309,7 @@ pub(super) fn install(
     .add_systems(Last, (initial_render_ready, finish_loading).chain())
     .add_systems(
         Last,
-        super::audio::close_session_admission
+        close_session_acquisitions
             .after(finish_loading)
             .after(bevy::window::ExitSystems)
             .run_if(on_message::<AppExit>),
@@ -353,6 +353,11 @@ fn show_bootstrap(
         LoadingBackground,
     ));
     super::load_timing::mark("startup loading display");
+}
+
+fn close_session_acquisitions(world: &mut World) {
+    super::level_lifetime::close_level_acquisitions(world);
+    super::audio::close_session_admission();
 }
 
 fn acquire(world: &mut World) {
@@ -423,9 +428,7 @@ fn acquire(world: &mut World) {
                         .0 = true;
                     // Stop map producers now. Cleanup waits for the render
                     // world and for the workers using outgoing identities.
-                    if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
-                        effects.close_acquisitions();
-                    }
+                    super::level_lifetime::close_level_acquisitions(world);
                     world
                         .non_send_mut::<super::pause_menu::PauseMenu>()
                         .begin_level();
