@@ -6436,3 +6436,12 @@ and runtime representation. The same source reader (141093380), resident
 identity lookup (1400607f0 / 14005feb0), and release boundary (140060180) apply.
 Scope leases are host integration for worker-local Rc objects. Measure source
 identity, bytes and retirement using installed movies; no frame-time claim.
+
+Installed parsed Iggy acceptance. The combined windowless build at
+5a218eb1 parsed the 518,171-byte Corvo pause source once per catalog in an
+interleaved A/B/A observation. A's file survived until its consumer released
+it and B reused its own independent copy. Loading and pause matched all
+bitmap counts, payload sizes and signatures, including 290 transferred
+loading images and 408 overlapping pause images. This verifies source
+reuse, withdrawal and bitmap inputs. Evidence:
+DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-ui-comparison.json.
