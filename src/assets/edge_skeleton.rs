@@ -5,7 +5,7 @@
 
 // Host equivalent of the resource registry's scoped purge (140060180).
 mod residency;
-pub(crate) use residency::{acquire, release_unused};
+pub(crate) use residency::{Registry, acquire, release_unused};
 static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 pub(crate) struct HistoryLease;
 impl HistoryLease {

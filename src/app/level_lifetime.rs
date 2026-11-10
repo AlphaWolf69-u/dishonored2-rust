@@ -110,7 +110,6 @@ impl LevelLifetime {
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();
         }
-        crate::edge_skeleton::release_unused();
         Ok(())
     }
 }
