@@ -6561,3 +6561,16 @@ twice. Reuse the allocation passed to Assets::add for that first pose,
 avoiding one converted 48-byte matrix per joint and a redundant asset
 modification. Existing buffer updates keep their current publication.
 No whole-frame speed or RAM claim is predicted.
+
+Installed skin publication acceptance at 368e0c50. Four Edge of the
+World placements and three Dust District placements published 1,485
+vertices with the same bounds and palette buffer bytes. Removing the
+previous bounds arrays avoided 53,460 bytes of temporary capacity
+across these seven publications. Shared poses avoided 4,704 bytes of
+CPU palette copies and initial buffer creation avoided a second
+4,704-byte converted palette. Direct versus copied bounds arithmetic
+used 47,950 versus 62,440 thread cycles in this dev observation. The
+unchanged pose reused its identity, and all observed pose leases
+released at level withdrawal. This measures the publisher, with no
+claim about whole-frame or gameplay rendering. Evidence:
+DH2-screen-shadow-retirement/artifacts/skin-publication-ownership-20261111-comparison.json.
