@@ -132,6 +132,26 @@ impl Drop for UsableEffects {
 impl UsableEffects {
     pub(super) fn cancellation_token(&self) -> Arc<AtomicBool> { self.cancelled.clone() }
 
+    pub(super) fn close_acquisitions(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        let still_running = |task: &mut Mutex<Acquisition>| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none()
+        };
+        self.loading.retain(|_, pending| still_running(&mut pending.task));
+        self.retiring.retain_mut(still_running);
+        if let Some(cleanup) = &mut self.cleanup {
+            let cleanup = cleanup.get_mut().unwrap_or_else(|error| error.into_inner());
+            if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(cleanup)).is_some() {
+                self.cleanup = None;
+            }
+        }
+        self.loading.is_empty() && self.retiring.is_empty() && self.cleanup.is_none()
+    }
+
     fn request(
         &mut self,
         actor: EffectOwner,

@@ -422,7 +422,10 @@ fn acquire(world: &mut World) {
                         .resource_mut::<crate::gameplay::game_clock_runtime::GamePaused>()
                         .0 = true;
                     // Stop map producers now. Cleanup waits for the render
-                    // world to acknowledge its last outgoing publication.
+                    // world and for the workers using outgoing identities.
+                    if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
+                        effects.close_acquisitions();
+                    }
                     world
                         .non_send_mut::<super::pause_menu::PauseMenu>()
                         .begin_level();
@@ -454,7 +457,9 @@ fn acquire(world: &mut World) {
     if state.movie_visible { state.movie_max_gap = state.movie_max_gap.max(gap); }
     state.last_loading_update = now;
     if state.next.is_some() {
-        if state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4 {
+        if !super::level_lifetime::retire_level_acquisitions(world)
+            || state.gpu.0.load(std::sync::atomic::Ordering::Acquire) != 4
+        {
             world.insert_resource(state);
             return;
         }

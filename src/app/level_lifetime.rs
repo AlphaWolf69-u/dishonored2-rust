@@ -119,6 +119,17 @@ impl LevelLifetime {
     }
 }
 
+/// Called while the loading screen is active, before purging map identities.
+/// These workers can write to the shared Catalog, even after their outputs are
+/// no longer wanted. Keep their task handles until each decoder has returned.
+pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
+    let sources = world.get_resource_mut::<super::usable_effects::UsableEffects>()
+        .is_none_or(|mut effects| effects.retire_acquisitions());
+    let materials = world.get_resource_mut::<super::runtime_materials::RuntimeMaterialCoordinator>()
+        .is_none_or(|mut materials| materials.retire_acquisition());
+    sources && materials
+}
+
 /// Plugin registration creates these empty owners before the first map.
 /// Reset their map payloads while retaining the plugins/device themselves.
 fn reset_scene_publications(world: &mut World) {
