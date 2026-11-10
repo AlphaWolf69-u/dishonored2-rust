@@ -1635,6 +1635,19 @@ revision reuse, but this route did not replace an atlas within one map. No
 measured GPU memory saving or live quality/resolution coverage is claimed;
 that broader coverage remains open. Existing map-boundary cleanup is unchanged.
 
+The `14030cce0` request order operates on registered images. On the host an
+FX slot can outlive its old image as an empty reusable index. `r_addAllMips`
+previously admitted those empty indices and could queue a read that completed
+after another image reused the same index. Skip unassigned slots when building
+the request order. Expect zero reads for retired slots and unchanged ordering
+for live images, including in all-mips mode. The installed DX12 observer
+(`5ac96a60`) published and released two Tower FX image slots and seven
+Edge of the World slots. The production all-mips ordering returned 1,974
+and 4,143 registered requests respectively and zero retired slots. All
+observed FX assets released while their level stayed alive. This exercises
+request ordering on real retired slots. A subsequent slot reassignment,
+live rendering, and map-generation overlap were outside this observation.
+Evidence: `DH2-fx-level-lifetime/artifacts/runtime-fx-retired-slots-20261110-comparison.json`.
 
 Named UI image lifetime evidence/prediction (before implementation):
 1410150f0 replaces a bitmap's texture wrapper; 14101d290/14100d6f0 share

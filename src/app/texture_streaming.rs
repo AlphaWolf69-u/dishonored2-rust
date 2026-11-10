@@ -15,6 +15,15 @@ use super::{
 use bevy::prelude::*;
 use std::borrow::Cow;
 
+pub(super) fn inspect_retired_slot_demand(queue: &SceneRenderQueue) -> (usize, usize, usize) {
+    let paths = &queue.diffuse_image_paths;
+    let mut order = Vec::new();
+    residency::Pressure::default().request_order(queue, &vec![false; paths.len()], true, &mut order);
+    let free = paths.iter().filter(|path| path.is_empty()).count();
+    let requested_free = order.iter().filter(|&&slot| paths[slot].is_empty()).count();
+    (free, order.len(), requested_free)
+}
+
 /// Immutable post-process images use the same installed-image reader and mip
 /// layout as streamed materials, with the complete initial chain resident.
 pub(super) fn load_resident_2d(
