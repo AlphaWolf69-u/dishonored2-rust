@@ -603,10 +603,12 @@ pub(super) fn prepare_level(
     check_cancelled()?;
     if let Some(physics_bytes) = level.read_physics(catalog.as_ref().unwrap())? {
         let physics_start = std::time::Instant::now();
+        let stage_triangles = env::var_os("DH2_DEBUG_STAGE_COLLISION_TRIANGLES").is_some_and(|value| value == "1");
+        let trace_physics = env::var_os("DH2_DEBUG_PHYSICS_SIGNATURES").is_some_and(|value| value == "1");
         let physics = physworld::parse(&physics_bytes)?;
-        let world_triangles = {
+        let (world_triangles, retained_source) = {
             let geometry = physics.collision_shapes(&physics_bytes)?;
-            drop(physics_bytes);
+            let retained_source = stage_triangles.then_some(physics_bytes);
             if profile {
                 println!(
                     "PERF authored physics parse and decode: {:.3}s",
@@ -620,7 +622,7 @@ pub(super) fn prepare_level(
                 geometry.triangles.len(),
                 geometry.compressed_decode_failures.len()
             );
-            geometry.triangles
+            (geometry.triangles, retained_source)
         };
         let model_start = std::time::Instant::now();
         let model_collision = if let Some(catalog) = catalog.as_ref() {
@@ -631,7 +633,7 @@ pub(super) fn prepare_level(
             let collision = super::view_geometry::acquire_static_model_collision_with_texts(
                 catalog, &placed_models, &bodies, &mut physics_texts,
             );
-            if env::var("DH2_DEBUG_PHYSICS_SIGNATURES").as_deref() == Ok("1") {
+            if trace_physics {
                 let mut crc = flate2::Crc::new();
                 crc.update(format!("{:?}", collision.materials).as_bytes());
                 eprintln!("MEMORY model collision materials: count={} signature={:08x}", collision.materials.len(), crc.sum());
@@ -669,7 +671,7 @@ pub(super) fn prepare_level(
                 })
             })
             .collect();
-        if env::var("DH2_DEBUG_PHYSICS_SIGNATURES").as_deref() == Ok("1") {
+        if trace_physics {
             let mut crc = flate2::Crc::new();
             for (name, material) in physics.materials.iter().zip(&materials) {
                 crc.update(name.as_bytes());
@@ -695,6 +697,7 @@ pub(super) fn prepare_level(
             })
             .collect();
         let index_start = std::time::Instant::now();
+        let index_cycles = trace_physics.then(crate::loading::thread_cycles).flatten();
         // FUN_140853b80 hands each world-table tag's material block flags to
         // the triangle's filter word; an unresolved declaration keeps the
         // arkCollisionSettings_t default.
@@ -708,53 +711,67 @@ pub(super) fn prepare_level(
                 )
         };
         let mut undecoded_filters = 0usize;
-        let level_triangles = world_triangles
-            .into_iter()
-            .map(|triangle| {
-                let material = triangle
-                    .material
-                    .and_then(|index| slot.get(index as usize).copied())
-                    .unwrap_or(navigation::NO_MATERIAL);
-                let filter = match triangle.body_material {
-                    Some(body_material) => {
-                        let (filter, decoded) = physworld::shape_tag_filter(
-                            body_material,
-                            triangle.body_filter,
-                            &triangle.shape_tags,
-                            &physics.material_map,
-                            block_flags,
-                        );
-                        undecoded_filters += usize::from(!decoded);
-                        filter
-                    }
-                    None => triangle.body_filter,
-                };
-                (
-                    triangle.vertices.map(game_to_view),
-                    u32::MAX,
-                    material,
-                    filter,
-                )
-            });
+        let mut resolve_triangle = |triangle: &physworld::MeshTriangle| {
+            let material = triangle
+                .material
+                .and_then(|index| slot.get(index as usize).copied())
+                .unwrap_or(navigation::NO_MATERIAL);
+            let filter = match triangle.body_material {
+                Some(body_material) => {
+                    let (filter, decoded) = physworld::shape_tag_filter(
+                        body_material,
+                        triangle.body_filter,
+                        &triangle.shape_tags,
+                        &physics.material_map,
+                        block_flags,
+                    );
+                    undecoded_filters += usize::from(!decoded);
+                    filter
+                }
+                None => triangle.body_filter,
+            };
+            (triangle.vertices.map(game_to_view), u32::MAX, material, filter)
+        };
         let model_material_base = resolved.len() as u32;
         resolved.extend(model_collision.materials);
-        let mut world = navigation::CollisionWorld::with_materials(
-            level_triangles
-                .chain(model_collision.triangles.into_iter().map(
-                    |(triangle, owner, material, filter)| {
-                        let material = if material == navigation::NO_MATERIAL {
-                            material
-                        } else {
-                            model_material_base + material
-                        };
-                        (triangle, owner, material, filter)
-                    },
-                )),
-            model_collision.owners,
-            resolved,
+        let placed_triangles = model_collision.triangles.into_iter().map(
+            |(triangle, owner, material, filter)| {
+                let material = if material == navigation::NO_MATERIAL {
+                    material
+                } else {
+                    model_material_base + material
+                };
+                (triangle, owner, material, filter)
+            },
         );
+        let (mut world, staging_bytes) = if stage_triangles {
+            // Retain the previous borrowed-input allocation for measurement.
+            let staged: Vec<_> = world_triangles.iter().map(&mut resolve_triangle).collect();
+            let bytes = staged.capacity() * std::mem::size_of::<([Vec3; 3], u32, u32, u32)>();
+            (
+                navigation::CollisionWorld::with_materials(
+                    staged.into_iter().chain(placed_triangles), model_collision.owners, resolved,
+                ),
+                bytes,
+            )
+        } else {
+            let level_triangles = world_triangles.into_iter().map(|triangle| resolve_triangle(&triangle));
+            (
+                navigation::CollisionWorld::with_materials(
+                    level_triangles.chain(placed_triangles), model_collision.owners, resolved,
+                ),
+                0,
+            )
+        };
+        let retained_source_bytes = retained_source.as_ref().map_or(0, Vec::capacity);
+        drop(retained_source);
         drop(physics);
         drop(materials);
+        if let Some(start) = index_cycles {
+            let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            eprintln!("MEMORY collision staging: staged={stage_triangles} source_capacity_bytes={retained_source_bytes} tuple_capacity_bytes={staging_bytes} cycles={cycles} signature={:08x}",
+                world.preparation_signature());
+        }
         if undecoded_filters > 0 {
             println!(
                 "Collision filters: {undecoded_filters} triangles keep a partly decoded shape-tag path"
