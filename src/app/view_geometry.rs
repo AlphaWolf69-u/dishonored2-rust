@@ -807,7 +807,7 @@ pub(super) fn mesh_from_points(points: &[Vec3], uvs: &[[f32; 2]], indices: &[u16
             .map(|normal| normal.normalize_or_zero().to_array())
             .collect::<Vec<_>>(),
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.floats())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
     .with_inserted_indices(render_indices(indices))
 }
 
@@ -887,7 +887,7 @@ pub(super) fn authored_mesh_from_uvs<const N: usize>(
         Mesh::ATTRIBUTE_POSITION,
         points.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.floats())
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, uv1)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
