@@ -80,6 +80,13 @@ struct MaterialParameters {
     fuzz: Vec4,
     translucency_phase: Vec4,
     translucency_ramp: [Vec4; 3],
+    /// particle/liquid: (flowmap_strength, liquid_outer_alpha,
+    /// liquid_inner_alpha, fresnel_power), (fresnel_intensity,
+    /// liquid_Disto_amount, liquid_Disto_reflx, liquid_rflx_intensity),
+    /// fresnel_color.
+    liquid: [Vec4; 3],
+    /// particle/liquid use_flow_map, use_flow_mask, use_reflexion.
+    liquid_options: UVec4,
 }
 impl MaterialParameters {
     fn resolve(source: &ParticleMaterial) -> Result<Self, String> {
@@ -132,7 +139,25 @@ impl MaterialParameters {
         };
         let fresnel = source.option("fx/opt/fresnel")? != 0;
         let pixel = source.lighting.as_ref().and_then(|lighting| lighting.pixel.as_ref());
+        let (liquid, liquid_options) = if source.liquid {
+            let reflexion = option("fx/opt/use_reflexion")?;
+            let (reflx, rflx) = if reflexion != 0 {
+                (scalar("liquid_Disto_reflx")?, scalar("liquid_rflx_intensity")?)
+            } else {
+                (0., 0.)
+            };
+            ([
+                Vec4::new(scalar("flowmap_strength")?, scalar("liquid_outer_alpha")?,
+                    scalar("liquid_inner_alpha")?, scalar("fresnel_power")?),
+                Vec4::new(scalar("fresnel_intensity")?, scalar("liquid_Disto_amount")?, reflx, rflx),
+                Vec4::from_array(source.uniform("fresnel_color")?),
+            ], UVec4::new(option("fx/opt/use_flow_map")?, option("fx/opt/use_flow_mask")?, reflexion, 0))
+        } else {
+            ([Vec4::ZERO; 3], UVec4::ZERO)
+        };
         Ok(Self {
+            liquid,
+            liquid_options,
             distortion_fog: if source.distortion {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)}
                 else if source.scrolling_water {Vec4::new(0.,0.,0.,scalar("liquid_Disto_amount")?)} else {Vec4::ZERO},
             pixel_effects: pixel.map_or(UVec4::ZERO, |p| UVec4::new(
@@ -347,7 +372,7 @@ pub(super) struct ParticlePrograms {
     lighting_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
     shader: ShaderModule,
-    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, i32, u8, bool), RenderPipeline>,
+    pipelines: HashMap<(crate::render_state::RenderState, bool, bool, bool, bool, i32, u8, bool), RenderPipeline>,
 }
 impl ParticlePrograms {
     fn new(device: &RenderDevice, formats: (TextureFormat, TextureFormat)) -> Self {
@@ -439,59 +464,7 @@ impl ParticlePrograms {
             ],
             immediate_size: 0,
         });
-        let fog = include_str!("../../../assets/shaders/dh2_fog_material.wgsl")
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("#import"))
-            .collect::<Vec<_>>()
-            .join("\n")
-            .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
-        // Directives are stripped; only the particle-surface instancing branch
-        // (never defined for the FX pass) is removed with its body.
-        let shared_source = |source: &str| {
-            let mut instanced = None;
-            source
-                .lines()
-                .filter(|line| {
-                    let directive = line.trim_start();
-                    match (directive, instanced) {
-                        ("#ifdef DH2_PARTICLE_INSTANCES", _) => instanced = Some(true),
-                        ("#else", Some(true)) => instanced = Some(false),
-                        ("#endif", Some(_)) => instanced = None,
-                        _ => return instanced != Some(true) && !directive.starts_with('#'),
-                    }
-                    false
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let lighting_source = [
-            super::probe_weights::SHADER_SOURCE.to_owned(),
-            shared_source(include_str!("../../../assets/shaders/dh2_shadow.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_tlf_list.wgsl")),
-            shared_source(include_str!(
-                "../../../assets/shaders/dh2_light_scattering.wgsl"
-            )),
-            shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
-            shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
-            include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
-            shared_source(include_str!(
-                "../../../assets/shaders/dh2_parallel_receiver.wgsl"
-            )),
-            shared_source(include_str!(
-                "../../../assets/shaders/dh2_local_receiver.wgsl"
-            )),
-            include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl").to_owned(),
-        ]
-        .join("\n")
-        .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(3)");
-        let source = format!(
-            "{lighting_source}\n{}\n{}\n{}\n{fog}",
-            include_str!("../../../assets/shaders/dh2_fog_math.wgsl"),
-            include_str!("../../../assets/shaders/dh2_fog_alpha.wgsl"),
-            include_str!("../../../assets/shaders/dh2_particles.wgsl")
-        );
+        let source = particle_shader_source();
         let shader = device.create_and_validate_shader_module(ShaderModuleDescriptor {
             label: Some("particle colour"),
             source: ShaderSource::Wgsl(source.into()),
@@ -499,6 +472,65 @@ impl ParticlePrograms {
         Self {formats, view_layout, material_layout, fog_layout, lighting_layout,
             pipeline_layout, shader, pipelines: HashMap::new()}
     }
+}
+
+/// The FX colour pass shader: shared lighting and fog modules with the
+/// particle programs.
+pub fn particle_shader_source() -> String {
+    let fog = include_str!("../../../assets/shaders/dh2_fog_material.wgsl")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("#import"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(2)");
+    // Directives are stripped; only the particle-surface instancing branch
+    // (never defined for the FX pass) is removed with its body.
+    let shared_source = |source: &str| {
+        let mut instanced = None;
+        source
+            .lines()
+            .filter(|line| {
+                let directive = line.trim_start();
+                match (directive, instanced) {
+                    ("#ifdef DH2_PARTICLE_INSTANCES", _) => instanced = Some(true),
+                    ("#else", Some(true)) => instanced = Some(false),
+                    ("#endif", Some(_)) => instanced = None,
+                    _ => return instanced != Some(true) && !directive.starts_with('#'),
+                }
+                false
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let lighting_source = [
+        super::probe_weights::SHADER_SOURCE.to_owned(),
+        shared_source(include_str!("../../../assets/shaders/dh2_shadow.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_tlf_list.wgsl")),
+        shared_source(include_str!(
+            "../../../assets/shaders/dh2_light_scattering.wgsl"
+        )),
+        shared_source(include_str!("../../../assets/shaders/dh2_indirect.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_reflection.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_fresnel.wgsl")),
+        shared_source(include_str!("../../../assets/shaders/dh2_ward.wgsl")),
+        include_str!("../../../assets/shaders/dh2_area_light.wgsl").to_owned(),
+        shared_source(include_str!(
+            "../../../assets/shaders/dh2_parallel_receiver.wgsl"
+        )),
+        shared_source(include_str!(
+            "../../../assets/shaders/dh2_local_receiver.wgsl"
+        )),
+        include_str!("../../../assets/shaders/dh2_particle_lighting.wgsl").to_owned(),
+    ]
+    .join("\n")
+    .replace("@group(#{MATERIAL_BIND_GROUP})", "@group(3)");
+    let source = format!(
+        "{lighting_source}\n{}\n{}\n{}\n{fog}",
+        include_str!("../../../assets/shaders/dh2_fog_math.wgsl"),
+        include_str!("../../../assets/shaders/dh2_fog_alpha.wgsl"),
+        include_str!("../../../assets/shaders/dh2_particles.wgsl")
+    );
+    source
 }
 
 /// Mutable level buffers and material bindings, separate from device programs.
@@ -970,7 +1002,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::TextureView(
-                        views.get("fx/disto1").unwrap_or(opacity),
+                        views.get(if source.liquid { "fx/flowmap" } else { "fx/disto1" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
@@ -1028,7 +1060,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 19,
                     resource: BindingResource::TextureView(
-                        views.get(if source.scrolling_water { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
+                        views.get(if source.scrolling_water || source.liquid { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
                 },
                 BindGroupEntry {
                     binding: 20,
@@ -1048,7 +1080,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 11,
                     resource: BindingResource::TextureView(
-                        views.get("fx/macrouvmap").unwrap_or(opacity),
+                        views.get(if source.liquid { "fx/reflexion" } else { "fx/macrouvmap" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
@@ -1066,7 +1098,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 10,
                     resource: BindingResource::TextureView(
-                        views.get("fx/opacity_scroll_mask").unwrap_or(opacity),
+                        views.get(if source.liquid { "fx/liquid_mask" } else { "fx/opacity_scroll_mask" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry { binding: 28, resource: BindingResource::TextureView(
@@ -1139,12 +1171,12 @@ impl ParticlePass {
         let mut parameters = UniformBuffer::from(MaterialParameters::resolve(&source)?);
         parameters.write_buffer(device, queue);
         let binding = self.material_binding(images, device, queue, &source, &parameters, anisotropic_sampler)?;
-        let lighting_mode = if source.distortion { 0 } else { source.option("fx/opt/use_lighting")? };
+        let lighting_mode = if source.distortion || source.liquid { 0 } else { source.option("fx/opt/use_lighting")? };
         let water_options = if source.scrolling_water {
             u8::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
                 | (u8::from(source.option("fx/opt/use_mesh")? != 0) << 1)
         } else { 0 };
-        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, lighting_mode, water_options, masking);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options, masking);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
@@ -1183,6 +1215,7 @@ impl ParticlePass {
             let constants = [("particle_lighting_mode", f64::from(lighting_mode)),
                 ("particle_distortion_mode", f64::from(u32::from(source.distortion))),
                 ("particle_scrolling_water", f64::from(u32::from(source.scrolling_water))),
+                ("particle_liquid", f64::from(u32::from(source.liquid))),
                 ("particle_water_alpha_mask_spec", f64::from(u32::from(water_options & 1 != 0))),
                 ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0))),
                 ("particle_masking", f64::from(u32::from(masking)))];
@@ -1929,3 +1962,4 @@ impl Drop for ParticlePass {
         }
     }
 }
+
