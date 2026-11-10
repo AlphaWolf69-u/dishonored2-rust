@@ -107,11 +107,8 @@ impl ParticleResources {
         if self.models.contains_key(resource) { return Ok(()); }
         let model = crate::assets::fx::particle_resources::model(catalog, resource, marker, self.shared, cancelled, || {
             self.model_reads += 1;
-            let bytes = catalog.read_cancellable(resource, cancelled).map_err(|error| format!("{resource}: {error}"))?
-                .ok_or_else(|| format!("missing particle model {resource}"))?;
-            crate::assets::particle_model::parse(&bytes)
-                .map(Arc::new)
-                .map_err(|error| format!("{resource}: {error}"))
+            crate::assets::particle_model::load(catalog, resource, cancelled)?
+                .map(Arc::new).ok_or_else(|| format!("missing particle model {resource}"))
         })?;
         check_active(cancelled)?;
         self.models.insert(resource.to_owned(), model);

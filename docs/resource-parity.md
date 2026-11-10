@@ -6980,3 +6980,20 @@ global installation/map state. This is source-context correctness, with no
 CPU-speed, gameplay playback or GPU upload claim. No tests or visible game
 launches were used. Evidence:
 DH2-fx-level-lifetime/artifacts/audio-acquisition-context-v3-20261111-comparison.json.
+
+
+Particle model stream prediction (2026-11-11). Original140232220 opens
+PMODEL, validates its two magic words, reads the count and fills the final
+32-byte vertex records directly from the stream. The host currently holds
+a full decoded archive member beside the typed vertex array. The independent
+installed index census found473 models/19,889,068 source bytes, eight at
+least256KiB and a maximum969,740 bytes. Apply the existing large-model
+stream policy to PMODEL: retain small/editable buffered acquisition and
+use the Catalog's bounded reader plus an8KiB stack block for larger immutable
+members. Preserve every float bit, all20 attribute bytes, vertex order and
+opaque-tail length. Cancellation continues through the same Catalog reader;
+identity/reuse and GPU owners do not change. Expect one fewer full-member
+heap buffer per qualifying cold read, with no larger retained representation
+or per-frame work. Compare original packed vertex bytes for all473 members
+and affected read/parse cost for both modes in an optimized build before
+acceptance. No total RSS or gameplay frame-time gain is predicted.
