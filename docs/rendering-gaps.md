@@ -280,3 +280,25 @@ width and flips (1401d5180), +0x160 length and +0x164 segments
 or target pose, wind on the points, reprojection, control-point
 re-randomization (1401d21b0), point accelerations from beam/start/control/
 end life curves (1401d30f0), velocities from velocityOverLife, length.
+
+Beam spawn (1401d2a70): n = control points; the point curve gets n + 2
+keys at times k/(n+1) (start, controls, end); base velocities (+0x58) zero
+at both ends; start point from m_startPosition through 1401d0d60 (+ the
+emitter position when world space); end point from m_endPosition through
+1401d0d60, or with m_useTargetParameters from the target pose (+0x48 when
+m_useTargetAxis) plus the target position; each control point placed by
+1401d21b0(.., first = true); velocities (+0x68) zeroed; then every point's
+inherited velocity (1401db630) is added to its base velocity.
+Control point placement (1401d21b0, also at each m_randomizePeriod expiry
+with first = false): timer reset; new period from the randomize range
+(140001050) when both endpoints > 0, else 0. Anchor = lerp of the end and
+start points at the key time (each component flushed below 1e-18), or the
+target's per-point anchor (+0xc8) when the target supplies points. The
+direction is three random signed units on the first placement, otherwise
+the current offset from the anchor; on the first placement the position is
+anchor + m_initialPosition (1401f6ca0) + direction * radius. RADIAL
+CONSTRAINED: base velocity = (anchor + random unit direction * radius) -
+position, divided by the period when positive (zero otherwise). FREE: base
+velocity = unit direction * m_radialVelocity + lerp(start, end base
+velocity) * m_inheritedVelocity + m_initialVelocity. Several scalar samples
+lost their arguments in the decompile and need the disassembly.
