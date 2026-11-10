@@ -5947,3 +5947,16 @@ image identities. No GPU validation errors were reported. This observes
 the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
+
+Probe index upload backing prediction. The installed PNW loader 1402b15e0
+passes packed shader reference words to the GPU buffer constructor. The
+host now streams the archive, but it still builds a typed index array and
+copies it into a separate WGSL byte buffer. Installed acquisition reports
+54,300,976 index words in Edge of the World and 73,538,998 in Dust District.
+Read their little-endian bytes into the eventual upload allocation. Reserve
+the prefix from the already loaded world instance count and the suffix
+from the PNW tables. Use the actual parsed offset count for the header and
+relocate in place if it differs. Expect removal of 217,203,904 and
+294,155,992 overlapping index bytes, with matching full upload CRCs and
+unchanged runtime query data. Compare the affected read/pack cost and
+asset removal. This changes host staging, not the WGSL layout.

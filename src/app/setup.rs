@@ -387,13 +387,19 @@ pub(super) fn prepare(
     // layout straight into its upload backing, then retire setup-only arrays.
     let trace_probe = env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
     let copy_probe = env::var_os("DH2_DEBUG_COPY_VERTEX_PROBE_BUFFER").is_some_and(|v| v == "1");
+    let copy_indices = env::var_os("DH2_DEBUG_COPY_PROBE_INDICES").is_some_and(|v| v == "1");
     let started = trace_probe.then(crate::loading::thread_cycles).flatten();
     let mut word_capacity_bytes = 0;
+    let mut reuse_index_backing = false;
     let mut vertex_probe_buffer = if let Some(set) = scene.environment_probes.as_mut() {
         let buffer = if copy_probe {
             let words = set.vertex_shader_words();
             word_capacity_bytes = words.capacity() * size_of::<u32>();
             ShaderBuffer::from(words)
+        } else if let Some(set) = Arc::get_mut(set).filter(|_| !copy_indices) {
+            let (bytes, direct) = set.take_vertex_shader_bytes();
+            reuse_index_backing = direct;
+            ShaderBuffer { data: Some(bytes), ..default() }
         } else {
             ShaderBuffer {
                 data: Some(set.vertex_shader_bytes()),
@@ -402,7 +408,7 @@ pub(super) fn prepare(
         };
         if let Some(set) = std::sync::Arc::get_mut(set) {
             set.vertex_references.instance_offsets = Vec::new();
-            set.vertex_references.tetrahedron_indices = Vec::new();
+            set.vertex_references.tetrahedron_indices = Default::default();
             let retain_source = env::var_os("DH2_DEBUG_RETAIN_VERTEX_PROBE_SOURCES").is_some_and(|v| v == "1");
             if trace_probe {
                 let position_bytes = set.spatial.vertex_positions.capacity() * size_of::<[f32; 3]>();
@@ -429,7 +435,7 @@ pub(super) fn prepare(
         let mut crc = flate2::Crc::new();
         crc.update(data);
         eprintln!(
-            "MEMORY vertex probe buffer: copy={copy_probe} bytes={bytes} capacity={} word_capacity_bytes={word_capacity_bytes} cycles={cycles} signature={:08x}",
+            "MEMORY vertex probe buffer: copy={copy_probe} bytes={bytes} capacity={} word_capacity_bytes={word_capacity_bytes} cycles={cycles} signature={:08x} reuse_index_backing={reuse_index_backing}",
             data.capacity(), crc.sum(),
         );
     }
