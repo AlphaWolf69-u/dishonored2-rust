@@ -459,7 +459,7 @@ impl ParticleSystem {
     pub fn simulate_in_world(
         &mut self,
         frame: u32,
-        world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+        world: &crate::gameplay::world_point_query::level::LevelPointQueries,
         point_query: &mut crate::gameplay::world_point_query::WorldPointQuery,
         ray_query: &mut crate::gameplay::world_ray_query::WorldRayQuery,
         ocean_height: Option<f32>,

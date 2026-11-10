@@ -380,19 +380,19 @@ pub(super) fn publish_water_frame(
     match result {
         Ok(frame) => {
             if let Some(physics) = physics.as_ref() {
-                match physics.query_snapshot() {
+                match physics.point_queries() {
                     Ok(world) => {
-                        queries.0 = Some(Arc::new(crate::rendering::bevy_backend::physics_queries::PhysicsQueryPublication {
+                        queries.0 = Some(crate::rendering::bevy_backend::physics_queries::PhysicsQueryPublication {
                             camera: frame.camera,
                             frame: frame.matrices.frame,
                             world,
-                        }));
+                        });
                         *query_error = None;
                     }
                     Err(error) => {
-                        if query_error.as_ref() != Some(&error) {
+                        if query_error.as_deref() != Some(error) {
                             warn!("Physics query publication pending: {error}");
-                            *query_error = Some(error);
+                            *query_error = Some(error.to_owned());
                         }
                     }
                 }
