@@ -3,10 +3,45 @@
 use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_owned,
     media_from_sound, read_u32_slice, MediaProperties, MediaVariant, PlaybackCommand,
     PlaybackContainer, PlaybackNode, PlaybackSwitch, MediaBytes};
-use std::{borrow::Cow, collections::{HashMap, HashSet}, io, sync::{Arc, Mutex, Weak}};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, io, ops::Range,
+    sync::{Arc, Mutex, OnceLock, Weak, atomic::{AtomicU64, Ordering}}};
 
 #[derive(Clone)]
-struct LoadedBank<'a> { bytes: BankBytes<'a>, feedback: bool }
+struct LoadedBank<'a> {
+    bytes: BankBytes<'a>,
+    feedback: bool,
+    media_index: Option<Range<usize>>,
+    media_data: Option<Range<usize>>,
+}
+
+static MEDIA_SECTION_MODE: OnceLock<(bool, bool)> = OnceLock::new();
+static MEDIA_SECTION_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+static MEDIA_SECTION_CYCLES: AtomicU64 = AtomicU64::new(0);
+
+impl LoadedBank<'_> {
+    fn media_sections(&self) -> io::Result<(Option<&[u8]>, Option<&[u8]>)> {
+        let &(walk, trace) = MEDIA_SECTION_MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_WALK_WWISE_BANK_CHUNKS").is_some_and(|v| v == "1"),
+            std::env::var_os("DH2_DEBUG_WWISE_MEDIA_SECTIONS").is_some_and(|v| v == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let sections = if walk {
+            let chunks = bank_chunks(&self.bytes)?;
+            (chunks.get(b"DIDX").copied(), chunks.get(b"DATA").copied())
+        } else {
+            (self.media_index.as_ref().map(|range| &self.bytes[range.clone()]),
+                self.media_data.as_ref().map(|range| &self.bytes[range.clone()]))
+        };
+        if trace {
+            MEDIA_SECTION_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+            if let Some(cycles) = started.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start)) {
+                MEDIA_SECTION_CYCLES.fetch_add(cycles, Ordering::Relaxed);
+            }
+        }
+        Ok(sections)
+    }
+}
 
 #[derive(Clone)]
 enum BankBytes<'a> {
@@ -126,7 +161,13 @@ impl<'a> PlaybackBanks<'a> {
         let bank = self.banks.len();
         let records = objects.into_iter().map(|((kind, id), object)| (id, Object { kind, bank,
             start: object.as_ptr() as usize - bytes.as_ptr() as usize, length: object.len() })).collect::<Vec<_>>();
-        self.banks.push(LoadedBank { bytes, feedback });
+        let range = |tag: &[u8; 4]| chunks.get(tag).map(|chunk| {
+            let start = chunk.as_ptr() as usize - bytes.as_ptr() as usize;
+            start..start + chunk.len()
+        });
+        let media_index = range(b"DIDX");
+        let media_data = range(b"DATA");
+        self.banks.push(LoadedBank { bytes, feedback, media_index, media_data });
         for (id, object) in records {
             match object.kind {
                 // 141150a90 loads music kinds 10..13 into the same actor
@@ -146,6 +187,17 @@ impl<'a> PlaybackBanks<'a> {
     pub fn event_count(&self) -> usize { self.events.len() }
     pub fn actor_count(&self) -> usize { self.actors.len() }
     pub fn actor_ids(&self) -> impl Iterator<Item = u32> + '_ { self.actors.keys().copied() }
+    #[cfg(feature = "game")]
+    pub(crate) fn report_media_sections(&self) {
+        if let Some(&(walk, true)) = MEDIA_SECTION_MODE.get() {
+            let lookups = MEDIA_SECTION_LOOKUPS.swap(0, Ordering::Relaxed);
+            let cycles = MEDIA_SECTION_CYCLES.swap(0, Ordering::Relaxed);
+            let directory_walks = if walk { lookups } else { 0 };
+            let banks = self.banks.len();
+            let range_bytes = banks * 2 * std::mem::size_of::<Option<Range<usize>>>();
+            println!("WWISE_MEDIA_SECTIONS banks={banks} range_bytes={range_bytes} lookups={lookups} directory_walks={directory_walks} cycles={cycles}");
+        }
+    }
     pub fn music_actor_ids(&self) -> impl Iterator<Item = (u32, u8)> + '_ {
         self.actors.iter().filter_map(|(&id, object)|
             matches!(object.kind, 10..=13).then_some((id, object.kind)))
@@ -410,9 +462,10 @@ impl<'a> PlaybackBanks<'a> {
             let source = match sources.entry(id) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    let chunks = bank_chunks(&self.banks[object.bank].bytes)?;
-                    let source = media_from_sound(bytes, &chunks, &mut |id, stream| media(object.bank, id, stream),
-                        |bytes| self.banks[object.bank].bytes.media(bytes))?;
+                    let bank = &self.banks[object.bank];
+                    let (index, data) = bank.media_sections()?;
+                    let source = media_from_sound(bytes, index, data,
+                        &mut |id, stream| media(object.bank, id, stream), |bytes| bank.bytes.media(bytes))?;
                     entry.insert(source).clone()
                 },
             };
