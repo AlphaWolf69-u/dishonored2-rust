@@ -490,8 +490,16 @@ pub(super) fn expanded_model_placements(
     placements: &[entities::PlacedModel],
     catalog: &archive::Catalog,
 ) -> Vec<entities::PlacedModel> {
-    let mut sources = entities::blueprint::Sources::new(catalog);
     let mut expanded = placements.to_vec();
+    expand_model_placements(&mut expanded, catalog);
+    expanded
+}
+
+pub(super) fn expand_model_placements(
+    expanded: &mut Vec<entities::PlacedModel>,
+    catalog: &archive::Catalog,
+) {
+    let mut sources = entities::blueprint::Sources::new(catalog);
     let mut index = 0;
     while index < expanded.len() {
         let placement = &expanded[index];
@@ -508,7 +516,6 @@ pub(super) fn expanded_model_placements(
         }
         index += 1;
     }
-    expanded
 }
 
 pub(super) fn model_havok_path(

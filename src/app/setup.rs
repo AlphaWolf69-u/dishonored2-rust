@@ -2,7 +2,7 @@
 use super::{
     apply_rest_pose, authored_area_light_transform, authored_light_cosines, authored_mesh,
     authored_world_bounds, auto_exposure, bmd6, bmodel, camera_projection, coarse_depth, entities,
-    env, environment_sun_ray, expanded_model_placements, f8_camera_pose, f8_reference_fov, fs,
+    env, environment_sun_ray, f8_camera_pose, f8_reference_fov, fs,
     game_affine_to_view, game_to_view, initial_placed_model_query, light_backend_intensity,
     light_distance, light_preset, light_projection_bounds, light_proximity_from_cached_bounds,
     local_light_clip_to_world, local_shadow_updates, material, mean_game_position,
@@ -75,6 +75,26 @@ fn parallel_light_inputs(
         authored
     };
     (color, direction)
+}
+
+fn report_placement_storage(
+    source: &Vec<entities::PlacedModel>,
+    expanded: &Vec<entities::PlacedModel>,
+) {
+    fn capacity_bytes(placements: &Vec<entities::PlacedModel>) -> usize {
+        placements.capacity() * std::mem::size_of::<entities::PlacedModel>()
+            + placements.iter().map(|placement| {
+                placement.id.capacity() + placement.resource_path.capacity()
+                    + placement.custom_materials.capacity() * std::mem::size_of::<Option<String>>()
+                    + placement.custom_materials.iter().flatten().map(String::capacity).sum::<usize>()
+            }).sum::<usize>()
+    }
+    let mut signature = flate2::Crc::new();
+    for placement in expanded {
+        signature.update(format!("{placement:?}").as_bytes());
+    }
+    eprintln!("MEMORY model placement storage: staging={} render={} count={} signature={:08x}",
+        capacity_bytes(source), capacity_bytes(expanded), expanded.len(), signature.sum());
 }
 
 pub(super) fn setup(
@@ -656,10 +676,20 @@ pub(super) fn prepare(
             resolver.diffuse_image_paths.len()
         );
     }
-    let expanded_placements = catalog
-        .as_ref()
-        .map(|catalog| expanded_model_placements(&scene.placed_models, catalog))
-        .unwrap_or_else(|| scene.placed_models.clone());
+    let root_placement_count = scene.placed_models.len();
+    let mut expanded_placements =
+        if env::var_os("DH2_DEBUG_RETAIN_PLACEMENT_STAGING").is_some_and(|value| value == "1") {
+            scene.placed_models.clone()
+        } else {
+            // RenderSourcePlacements is the only live owner after setup.
+            std::mem::take(&mut scene.placed_models)
+        };
+    if let Some(catalog) = catalog {
+        super::view_geometry::expand_model_placements(&mut expanded_placements, catalog);
+    }
+    if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+        report_placement_storage(&scene.placed_models, &expanded_placements);
+    }
     let mut model_cache = HashMap::<String, Option<bmodel::ModelSource>>::new();
     let common_models = catalog.and_then(bmodel::CommonModels::shared);
     let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
@@ -1165,7 +1195,7 @@ pub(super) fn prepare(
     println!("BWM authored instance counts by LOD tag: {authored_lod_instances:?}");
     println!(
         "Placed models: {model_instances}/{} instances, {} unique resources, {model_surfaces} surfaces",
-        scene.placed_models.len(),
+        root_placement_count,
         model_cache.len()
     );
     println!(
