@@ -717,7 +717,12 @@ where
                         vacant_entry.insert(slab_to_reallocate);
                     }
                 }
-                SlabGrowthResult::CantGrow => continue,
+                SlabGrowthResult::CantGrow => {
+                    // Host: failed backing allocation must not retain an
+                    // uncommitted offset that no item owner can release.
+                    slab.allocator.free(allocation);
+                    continue;
+                }
             }
 
             data_allocation = Some(SlabItemAllocation {
@@ -1125,6 +1130,8 @@ where
                     .min((settings.max_slab_size / self.element_layout.slot_size()) as u32);
             if new_slab_slot_capacity == self.current_slot_capacity {
                 // The slab is full.
+                // No buffer replacement will be scheduled for this failure.
+                self.current_slot_capacity = initial_slot_capacity;
                 return SlabGrowthResult::CantGrow;
             }
 
