@@ -210,3 +210,14 @@ shader-cache census, examples/vertex_input_census.rs). Strips are drawn
 from the shared index buffer 1402d1ae0(registry, 2).
 Segment motion (14020c620) samples the trail-life gravity (+0xac8) at the
 segment age; the segment-life gravity (+0x1120, default 1) is never read.
+
+Declaration trails (arkTrailDesc, next): system list +0x39a, constructor
+140211de0, emission 140212760 (rate from desc+0x28/+0x2c and curve +0x30
+at the cycle time, cycle clock 1401d9b70/1401d9c20 with desc+0x1e0/0x1e4,
+one record per spawn via 140212ae0 -> 14020de30/14020c270), burst
+1402120f0, update 140212c70 (14020df10 returns false to retire a record),
+strip 140212410 -> 14020b0b0 (the arkTrailDesc copy of 14020a720). The
+shared record functions are the template twins of the stage-trail ones
+(c270/bec0, d160/cfc0, a280/9de0, bc80/ba40, caf0/c620, b0b0/a720) and read
+the arkTrailDesc offsets (spawn_t +0x3a8, etc.), which must be mapped per
+call before reusing the stage-trail port.
