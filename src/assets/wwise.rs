@@ -611,7 +611,7 @@ impl Package {
         Ok(bytes)
     }
 
-    /// The resident bank and its embedded media share this allocation.
+    /// Read a bank or resident media item into its final shared allocation.
     pub(crate) fn read_resident_entry<R: Read + Seek>(
         &self, reader: &mut R, entry: Entry,
     ) -> io::Result<MediaBytes> {
@@ -810,11 +810,9 @@ pub struct MediaGroup {
 #[derive(Clone, Debug)]
 pub struct MediaVariant {
     pub media: MediaBytes,
-    /// The package media id of a streamed source (stream type 2), which the
-    /// original reads through its stream manager while it plays instead of
-    /// keeping it resident. A prefetched source keeps its bank prefix and
-    /// streams the continuation when using the extent-aware provider.
-    pub streamed: Option<u32>,
+    /// The owning bank index and package media ID of a streamed source.
+    /// A prefetched source keeps its bank prefix and streams the continuation.
+    pub streamed: Option<(usize, u32)>,
     pub weight: u32,
     pub properties: MediaProperties,
 }
