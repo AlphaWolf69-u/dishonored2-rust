@@ -5927,3 +5927,15 @@ acoustic shape teardown paths. This observes the shared path and repeat
 acquisition. A direct comparison with the removed snapshot, active observer
 detach, frame timing and rendered particle output were outside the observation.
 Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
+
+Screen-shadow binding replacement prediction. The original visibility and
+bilateral tasks bind the active view resources and reuse compiled programs
+(`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
+The host visibility bind groups also hold the parallel-sampling buffer and
+AO scratch view. Include both identities in invalidation so replacements
+release the previous bindings and cannot keep sampling an old buffer. Keep
+one compiled pair per device owner for the last producer state and depth
+format. A resize, level change or input swap with identical formats and
+state should recreate only the dependent bindings. The AO and depth-unhack
+owners also compile when replaced. Their independent reuse needs separate
+format and program ownership evidence.
