@@ -3738,8 +3738,9 @@ and `artifacts/shape-parent-comparison.json`.
 
 `1401653e0` and `140165420` resolve numeric IDs and text keys to the same
 original language-dictionary entry. `assets::lang::StringTable` retains one
-immutable value shared by both lookup indexes; the session UI worker owns the
-table and catalog changes release its cache lease. The parser moves each
+immutable value shared by both lookup indexes. The catalog owns the currently
+selected installed table, with existing movies retaining their own leases.
+The parser moves each
 original key into its temporary collision map and reuses the computed ID,
 while retaining the previous collision message. This is a host ownership
 optimization; language contents, key case rules and fallbacks remain unchanged.
@@ -6476,6 +6477,35 @@ Published source fingerprints and retirement counts were identical.
 This measures the affected lookup only and does not measure walking or
 audio mixing. Cold setup reconstruction still uses the existing converter.
 Evidence: DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-audio-comparison.json.
+
+
+### Installed localization dictionary lifetime
+
+Prediction before implementation. Original 1400a3ed0 clears the shared
+dictionary before loading a new language. 1400a43c0 and 140164a30 load
+its installed .lang member and release the member after parsing. Lookups
+1401653e0 and 140165420 use that single dictionary. The rewrite currently
+holds every opened language in a thread-local table, discards unrelated
+catalog entries on acquisition, and ignores subsequent edits to an
+overlay. Keep one current installed dictionary in each catalog. Shared
+movie leases let an already opened player finish using its dictionary
+during a language switch, while older dictionaries retire once those
+leases close. The editable .lang route reads fresh and takes no catalog
+lease. Predict one parse per active installed language, unchanged keys,
+text, fallbacks and Iggy imports, and release of inactive dictionaries
+after the last movie closes. Compare both lookup forms and installed
+content before claiming parity. The host wrapper costs one Arc per
+dictionary and preserves the existing thread-local player API.
+
+Installed localization acceptance at b6e68a2b. The two catalog scopes read
+one and two installed members. Both lookup forms matched for all 6,226
+Russian entries. The first catalog reused its Russian table after the
+second loaded one, and switching the first to English left its old
+dictionary usable only while its existing consumer held it. The current
+dictionary likewise released after catalog and consumer retirement.
+Loading and pause bitmap payloads matched the preceding Iggy build.
+This covers installed immutable dictionaries and the source lifetime.
+Evidence: DH2-collision-staging/artifacts/catalog-language-dictionary-20261110-comparison.json.
 
 
 ### Cancelled texture acquisition

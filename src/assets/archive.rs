@@ -130,6 +130,7 @@ pub struct Catalog {
     header_order: std::sync::OnceLock<std::result::Result<Box<[u8]>, String>>,
     pub(crate) manifests: std::sync::OnceLock<crate::assets::map_resources::ManifestCache>,
     pub(crate) map_info: std::sync::OnceLock<crate::gameplay::map_info::MapInfoCache>,
+    pub(crate) language_table: std::sync::Mutex<Option<crate::assets::lang::LoadedTable>>,
     pub(crate) preload_bootstrap: std::sync::OnceLock<std::result::Result<usize, String>>,
     pub(crate) preload_map: std::sync::Mutex<Option<Box<str>>>,
 }
@@ -480,6 +481,7 @@ impl Catalog {
             md6_loading: Default::default(),
             manifests: Default::default(),
             map_info: Default::default(),
+            language_table: Default::default(),
             preload_bootstrap: Default::default(),
             preload_map: Default::default(),
             common_declaration_texts: Default::default(),
