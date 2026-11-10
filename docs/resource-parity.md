@@ -2967,6 +2967,16 @@ Existing slots should keep the same priority keys. Reused slots should get
 the same key as a fresh slot for the same path and demand, apart from the
 existing slot-index tie break. No per-frame path processing is added.
 
+Texture request scratch lifetime prediction: the streaming system currently
+retains its request flags, priority keys and instance-to-image index in Bevy
+system locals. They survive `LevelLifetime::clear` and are rebuilt when the
+next scene queue is first observed. Giving those buffers to the per-map
+texture worker should release their outgoing capacities with the worker,
+including on close. The same instance and request order should reach the
+streamer, with no new allocations on ordinary gameplay frames. This is a host
+ownership change at the map retirement boundary (1408a4830), separate from
+the earlier mailbox-scratch measurements.
+
 
 ### Fog curve resource ownership
 
