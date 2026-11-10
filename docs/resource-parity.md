@@ -6728,3 +6728,14 @@ Absent weights and short masks keep their existing pose behavior.
 There is no change to archive bytes, clip identity, sampling math,
 pose allocation, or release policy. Compare the authored mask bytes
 and production acquisition and retirement before integrating.
+
+Installed Edge joint-weight acceptance at 4f17827f. The three-map CPU
+preparation route matched all 903 clip acquisitions, prepared usable
+instances and three retirement checkpoints. An independent read of the
+installed archives matched mask lengths and CRCs for all 335 unique
+decoded clips. The 569 decodes included 75 weighted clips, avoiding
+1,500 cumulative bytes of duplicate mask allocation. Across all
+acquisition records, the smaller header and borrowed masks accounted
+for 9,324 fewer retained bytes summed over requests. That sum includes
+reuse and does not measure concurrent or peak RAM.
+Evidence: DH2-scene-shutdown/artifacts/edge-clip-weight-storage-20261111-comparison.json.
