@@ -115,20 +115,26 @@ struct Loaded {
     screen: (i32, i32),
 }
 
-thread_local! {
-    // The installed catalog spans movie opens. Each live player and its
-    // submitted frames hold their library bitmap leases (`m_cacheResources` 0).
-    static CATALOG: std::cell::RefCell<Option<std::sync::Arc<Catalog>>> = const { std::cell::RefCell::new(None) };
+struct InstalledUi {
+    _files: std::rc::Rc<crate::assets::iggy::FileScope>,
+    catalog: std::sync::Arc<Catalog>,
 }
 
-fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
-    if let Some(c) = CATALOG.with(|c| c.borrow().clone()) {
-        return Ok(c);
+thread_local! {
+    // The catalog and parsed source files span movie opens on this worker.
+    // Live players and submitted frames separately lease their bitmap packs.
+    static INSTALLED_UI: std::cell::RefCell<Option<InstalledUi>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn installed_catalog() -> Result<std::sync::Arc<Catalog>, String> {
+    if let Some(catalog) = INSTALLED_UI.with(|slot| slot.borrow().as_ref().map(|ui| ui.catalog.clone())) {
+        return Ok(catalog);
     }
     let base = installation::game_base().map_err(|e| e.to_string())?;
-    let c = Catalog::shared(&base).map_err(|e| e.to_string())?;
-    CATALOG.with(|slot| *slot.borrow_mut() = Some(c.clone()));
-    Ok(c)
+    let catalog = Catalog::shared(&base).map_err(|e| e.to_string())?;
+    let ui = InstalledUi { _files: crate::assets::iggy::FileScope::for_catalog(&catalog), catalog: catalog.clone() };
+    INSTALLED_UI.with(|slot| *slot.borrow_mut() = Some(ui));
+    Ok(catalog)
 }
 
 pub(super) fn library_images(catalog: &Catalog, player: &Player, resources: &[(usize, String)],

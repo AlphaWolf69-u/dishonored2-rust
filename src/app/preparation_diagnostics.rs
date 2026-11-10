@@ -220,18 +220,51 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
 }
 
 
+fn inspect_ui_file_scopes(base: &Path, movie: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::assets::{archive::Catalog, iggy::FileScope};
+    use std::rc::Rc;
+
+    let a = Catalog::open(base)?;
+    let b = Catalog::open(base)?;
+    let worker_a = FileScope::for_catalog(&a);
+    let worker_b = FileScope::for_catalog(&b);
+
+    let first = worker_a.acquire(&a, movie)?;
+    let other = worker_b.acquire(&b, movie)?;
+    let reopened = FileScope::for_catalog(&a).acquire(&a, movie)?;
+    let bytes = first.bytes().len();
+    let identical = first.bytes() == other.bytes();
+    let isolated = !Rc::ptr_eq(&first, &other);
+    let reused = Rc::ptr_eq(&first, &reopened);
+    let previous = Rc::downgrade(&first);
+    drop(first);
+    drop(worker_a);
+    let consumer_kept_file = previous.upgrade().is_some();
+    drop(reopened);
+    let retired = previous.upgrade().is_none();
+    let other_reused = Rc::ptr_eq(&other, &FileScope::for_catalog(&b).acquire(&b, movie)?);
+
+    println!("UI_FILE_SCOPES movie={movie} bytes={bytes} identical={identical} isolated={isolated} reused={reused} consumer_kept_file={consumer_kept_file} retired={retired} other_reused={other_reused}");
+    Ok(())
+}
+
 /// Acquire installed bitmap packs through the movie worker's owner and
 /// observe their leases without advancing a player or rendering a frame.
 pub fn inspect_ui_bitmap_ownership(base: &Path, movies: &[String])
     -> Result<(), Box<dyn std::error::Error>>
 {
     use crate::flash::{bitmap_resources::{MovieBitmaps, PackLifetime}, Player};
+    if movies.first().is_some_and(|arg| arg == "--file-scopes") {
+        let movie = movies.get(1).ok_or("provide an installed Iggy movie path")?;
+        return inspect_ui_file_scopes(base, movie);
+    }
     let loading_first = movies.first().is_some_and(|arg| arg == "--loading-first");
     let movies = &movies[usize::from(loading_first)..];
     if movies.is_empty() { return Err("provide at least one installed Iggy movie path".into()); }
     let mut task_host = bevy::prelude::App::new();
     task_host.add_plugins(bevy::app::TaskPoolPlugin::default());
     let catalog = crate::assets::archive::Catalog::shared(base)?;
+    let _files = crate::assets::iggy::FileScope::for_catalog(&catalog);
     let language = crate::assets::lang::read_text_language(base)?;
     let acquire = |movie: &str, phase: &str, lifetime| -> Result<Arc<MovieBitmaps>, String> {
         let (player, resources) = Player::load_installed(&catalog, language, movie)?;

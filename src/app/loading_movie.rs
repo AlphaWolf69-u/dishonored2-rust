@@ -3,7 +3,7 @@
 //! tips and animations; the host supplies actual acquisition progress.
 use crate::rendering::bevy_backend::flash_ui::FlashFrame;
 use crate::{
-    assets::{archive::Catalog, lang},
+    assets::lang,
     flash::{Player, avm2::value::Value, render},
     gameplay::options::decl::{atom, boolean, int, list_items, scope},
 };
@@ -28,15 +28,14 @@ pub(super) struct Movie {
 }
 impl Movie {
     pub fn load(screen: (i32, i32), map: &str, generation: u64) -> Result<Self, String> {
-        let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = Catalog::shared(&base).map_err(|e| e.to_string())?;
+        let catalog = super::pause_menu::installed_catalog()?;
         let edit = crate::gameplay::map_info::find(&catalog, map)
             .ok_or_else(|| format!("no mapinfo for {map}"))?;
         let info = scope(&edit, "m_loadingInfo").ok_or("mapinfo has no loading presentation")?;
         let resource = atom(info, "m_iggyFile")
             .ok_or("loading presentation has no movie")?
             .replace(".iggyfile", ".iggy");
-        let language = lang::read_text_language(&base)?;
+        let language = lang::read_text_language(catalog.base())?;
         let (mut player, resources) = Player::load_installed(&catalog, language, &resource)?;
         crate::gameplay::pause_state::file_ready(&mut player, screen)?;
         let strings = player

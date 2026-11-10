@@ -6419,6 +6419,25 @@ reused the first catalog's entry on return and retired each catalog
 independently. Evidence:
 DH2-scene-shutdown/artifacts/map-info-catalog-cache-20261110-comparison.json.
 
+
+
+### Parsed Iggy worker ownership
+
+Prediction before implementation. The current thread-local table discards all
+entries from a different catalog on each acquisition, and never explicitly
+retires the final catalog's parsed files. Give each UI worker a catalog-scoped
+lease and each installed player a short lease for callers outside that worker.
+Keep the current gameplay worker's across-open reuse. Two independent live
+catalogs should each parse a requested file once in an interleaved A/B/A route.
+After A's final lease ends, A's file should be reclaimable as soon as its
+last consumer releases it. B's lease must still reuse its own file. Editable
+overlays remain uncached. Expect identical Iggy bytes, imports, bitmap payloads,
+and runtime representation. The same source reader (141093380), resident
+identity lookup (1400607f0 / 14005feb0), and release boundary (140060180) apply.
+Scope leases are host integration for worker-local Rc objects. Measure source
+identity, bytes and retirement using installed movies; no frame-time claim.
+
+
 ### Vorbis decoder cache keys
 
 Prediction before implementation. The original streams the installed Vorbis
