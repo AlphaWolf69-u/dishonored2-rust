@@ -132,6 +132,26 @@ impl Drop for UsableEffects {
 impl UsableEffects {
     pub(super) fn cancellation_token(&self) -> Arc<AtomicBool> { self.cancelled.clone() }
 
+    pub(super) fn close_acquisitions(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        let still_running = |task: &mut Mutex<Acquisition>| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none()
+        };
+        self.loading.retain(|_, pending| still_running(&mut pending.task));
+        self.retiring.retain_mut(still_running);
+        if let Some(cleanup) = &mut self.cleanup {
+            let cleanup = cleanup.get_mut().unwrap_or_else(|error| error.into_inner());
+            if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(cleanup)).is_some() {
+                self.cleanup = None;
+            }
+        }
+        self.loading.is_empty() && self.retiring.is_empty() && self.cleanup.is_none()
+    }
+
     fn request(
         &mut self,
         actor: EffectOwner,
@@ -399,6 +419,20 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
     let owner = world.resource::<UsableEffects>();
     eprintln!("RESOURCE_FX_REQUEST phase=released ready={} cached={} source_leases={}",
         owner.ready.len(), owner.cache.len(), source.strong_count());
+
+    world.resource_mut::<EffectRequests>().start_player(first_key, effect);
+    advance(world)?;
+    let owner = world.resource::<UsableEffects>();
+    let admitted = owner.loading.len();
+    owner.close_acquisitions();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !super::level_lifetime::retire_level_acquisitions(world) {
+        if std::time::Instant::now() >= deadline { return Err("outgoing FX worker did not retire".into()); }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let owner = world.resource::<UsableEffects>();
+    eprintln!("RESOURCE_FX_REQUEST phase=map_retirement admitted={admitted} loading={} retiring={} ready={} cached={}",
+        owner.loading.len(), owner.retiring.len(), owner.ready.len(), owner.cache.len());
     Ok(())
 }
 

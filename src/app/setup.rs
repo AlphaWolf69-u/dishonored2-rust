@@ -1939,6 +1939,7 @@ pub(super) fn prepare(
                 super::player::character_name(super::pause_menu::debug_character()), &mut particle_resources, &mut player_declarations)
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
+        commands.insert_resource(crate::rendering::bevy_backend::camera_scene::FxSimulation::default());
     }
     // World FX load after the water and ocean programs, as before. Particle
     // surface proxies may register further images: extend the tables.

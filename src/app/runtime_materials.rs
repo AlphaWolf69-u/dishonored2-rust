@@ -426,6 +426,20 @@ impl Drop for RuntimeMaterialCoordinator {
     }
 }
 
+impl RuntimeMaterialCoordinator {
+    pub(super) fn retire_acquisition(&mut self) -> bool {
+        self.waiting = None;
+        let Some(work) = &mut self.task else { return true };
+        work.superseded.store(true, Ordering::Release);
+        let task = work.task.get_mut().unwrap_or_else(|error| error.into_inner());
+        if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none() {
+            return false;
+        }
+        self.task = None;
+        true
+    }
+}
+
 fn add_lease(leases: &mut Vec<SourceLease>, lease: &SourceLease) {
     if !leases.iter().any(|old| std::sync::Weak::ptr_eq(old, lease)) { leases.push(lease.clone()); }
 }
