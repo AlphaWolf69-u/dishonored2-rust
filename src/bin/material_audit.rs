@@ -590,7 +590,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .map(|axis| hi[axis] - lo[axis])
                 .fold(0.0f32, f32::max);
             let alpha_range = mesh
-                .packed_channels
+                .packed_channels()
                 .iter()
                 .map(|value| value[channel + 8])
                 .fold((u8::MAX, 0u8), |(lo, hi), value| {
@@ -672,7 +672,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let channels = (0..16)
                 .map(|channel| {
                     let values: HashSet<_> = mesh
-                        .packed_channels
+                        .packed_channels()
                         .iter()
                         .map(|packed| packed[channel])
                         .collect();
