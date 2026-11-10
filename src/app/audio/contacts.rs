@@ -102,7 +102,7 @@ pub(super) struct ContactSounds {
 impl ContactSounds {
     pub(super) fn release_level_history(&self) {
         if let Some(Ok(definitions)) = &self.definitions {
-            definitions.texts.release_level_history();
+            definitions.texts.release_level_history(&definitions.catalog);
         }
     }
 

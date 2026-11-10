@@ -52,21 +52,11 @@ struct TextLoads {
     reads: usize,
     bytes: usize,
 }
-struct SharedTexts {
-    catalog: u64,
+pub(crate) struct SharedTexts {
     language: String,
     // None means that a mutable overlay requires the existing per-level scan.
     common: Option<Arc<TextMap>>,
 }
-static COMMON_TEXTS: std::sync::Mutex<Option<SharedTexts>> = std::sync::Mutex::new(None);
-
-/// Host archive-namespace retirement, separate from ordinary map unload.
-pub(crate) fn retire_catalog(catalog: u64) -> usize {
-    let retired = COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner())
-        .take_if(|entry| entry.catalog == catalog);
-    usize::from(retired.is_some())
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum PhysicsUse { World, Model, Machinery, Runtime }
 
@@ -100,8 +90,8 @@ impl PhysicsSeed {
             && std::env::var("DH2_DEBUG_SEPARATE_PHYSICS_TEXTS").as_deref() != Ok("1")
             && std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() != Ok("1");
         let common = if enabled {
-            COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-                .filter(|entry| entry.catalog == catalog.identity() && entry.language == language)
+            catalog.common_declaration_texts.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                .filter(|entry| entry.language == language)
                 .and_then(|entry| entry.common.clone())
         } else { None };
         Self { enabled, common, ..Default::default() }
@@ -181,9 +171,8 @@ pub(crate) fn read_common_or_catalog(catalog: &Catalog, path: &str) -> Result<Op
     if !catalog.has_overlays()
         && std::env::var("DH2_DEBUG_SEPARATE_PHYSICS_TEXTS").as_deref() != Ok("1")
     {
-        let owner = COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(value) = owner.as_ref().filter(|entry| entry.catalog == catalog.identity())
-            .and_then(|entry| entry.common.as_deref()).and_then(|texts| texts.get(path))
+        let owner = catalog.common_declaration_texts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(value) = owner.as_ref().and_then(|entry| entry.common.as_deref()).and_then(|texts| texts.get(path))
         {
             return Ok(Some(value.clone()));
         }
@@ -238,14 +227,19 @@ impl Drop for DeclarationTexts {
 impl DeclarationTexts {
     /// Called after world FX and audio owners stop. The separately retained
     /// common table remains available to subsequent levels.
-    pub(crate) fn release_level_history(&self) {
+    pub(crate) fn release_level_history(&self, catalog: &Catalog) {
         let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
         let started = trace.then(crate::loading::thread_cycles).flatten();
         let mut removed = 0usize;
         let mut bytes = 0usize;
         for kind in ["fx", "soundevent", "physicsMaterial"] {
-            let (count, capacity, _, _) = crate::loading::retain_kind(kind, |path| {
+            // Typed event acquisition takes its registry before recording
+            // a read. Hold it in that same order through this history sweep.
+            let events = (kind == "soundevent").then(|| catalog.sound_events.get()).flatten()
+                .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
+            let (count, capacity, _, _) = crate::loading::retain_catalog_kind(catalog.identity(), kind, |path| {
                 self.common.as_deref().is_some_and(|values| values.contains_key(path))
+                    || events.as_ref().is_some_and(|registry| registry.owns_read_history(path))
             });
             removed += count;
             bytes += capacity;
@@ -286,7 +280,7 @@ fn shared_texts(
     if std::env::var("DH2_DEBUG_SEPARATE_CONTACT_TEXTS").as_deref() == Ok("1") {
         return Ok(None);
     }
-    let mut owner = COMMON_TEXTS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut owner = catalog.common_declaration_texts.lock().unwrap_or_else(|e| e.into_inner());
     // Loose bootstrap manifests can change their membership during a session.
     if catalog.has_overlays()
         && (catalog.has_overlay_file("generated/buildgame/init.mapresources")
@@ -294,7 +288,6 @@ fn shared_texts(
     {
         crate::loading::set_common_texts(catalog.identity(), None);
         *owner = Some(SharedTexts {
-            catalog: catalog.identity(),
             language: language.to_owned(),
             common: None,
         });
@@ -302,11 +295,11 @@ fn shared_texts(
     }
     if let Some(entry) = owner
         .as_ref()
-        .filter(|entry| entry.catalog == catalog.identity() && entry.language == language)
+        .filter(|entry| entry.language == language)
     {
         return Ok(entry.common.clone());
     }
-    // A different catalog/language cannot keep the old session's table pinned.
+    // A different language replaces this catalog's previous session table.
     crate::loading::set_common_texts(catalog.identity(), None);
     *owner = None;
     let lists = [
@@ -330,7 +323,6 @@ fn shared_texts(
     {
         crate::loading::set_common_texts(catalog.identity(), None);
         *owner = Some(SharedTexts {
-            catalog: catalog.identity(),
             language: language.to_owned(),
             common: None,
         });
@@ -354,7 +346,6 @@ fn shared_texts(
     }
     let shared = Arc::new(shared);
     *owner = Some(SharedTexts {
-        catalog: catalog.identity(),
         language: language.to_owned(),
         common: Some(shared.clone()),
     });
@@ -421,4 +412,41 @@ pub(crate) fn acquire(
     }
     seed.report(map);
     Ok(DeclarationTexts { common, level })
+}
+
+/// Observe the installed contact acquisition and final namespace release
+/// across an interleaved pair of catalogs, without opening the client.
+#[cfg(feature = "game")]
+pub(crate) fn observe_catalog_scopes(base: &std::path::Path, map: &str) -> Result<(), String> {
+    let a = Catalog::open(base).map_err(|error| error.to_string())?;
+    let b = Catalog::open(base).map_err(|error| error.to_string())?;
+    let language = crate::assets::lang::read_text_language(base)?;
+    let load = |catalog: &Catalog| acquire(base, catalog, map, language, PhysicsSeed::new(catalog, language));
+    let first = load(&a)?;
+    let other = load(&b)?;
+    let again = load(&a)?;
+    let a_common = first.common.as_ref().ok_or("first common declaration table absent")?;
+    let b_common = other.common.as_ref().ok_or("second common declaration table absent")?;
+    if !again.common.as_ref().is_some_and(|common| Arc::ptr_eq(common, a_common))
+        || Arc::ptr_eq(a_common, b_common)
+        || a_common != b_common
+        || first.level != other.level || first.level != again.level {
+        return Err("interleaved catalog declaration sources did not retain their exact scope".into());
+    }
+    let path = first.level.keys().filter(|path| a.kind(path) == Some("physicsMaterial"))
+        .min().ok_or("installed map-only physics material absent")?;
+    let recorded = |catalog: &Catalog| crate::loading::catalog_read_recorded(catalog.identity(), "physicsMaterial", path);
+    if !recorded(&a) || !recorded(&b) { return Err("map declaration read history absent".into()); }
+    first.release_level_history(&a);
+    if recorded(&a) || !recorded(&b) { return Err("contact history crossed catalogs".into()); }
+    let a_common = Arc::downgrade(a_common);
+    let b_common = Arc::downgrade(b_common);
+    drop((first, again, a));
+    if a_common.strong_count() != 0 || b_common.strong_count() == 0 {
+        return Err("common declaration session did not retire independently".into());
+    }
+    drop((other, b));
+    if b_common.strong_count() != 0 { return Err("common declaration text outlived its catalog".into()); }
+    eprintln!("CONTACT_CATALOG_SCOPES reused=true independent=true payloads_match=true");
+    Ok(())
 }

@@ -29,6 +29,11 @@ pub fn inspect_scene_publication(
             return inspect_catalog_history_scopes(base);
         }
     }
+    if let [flag, level] = levels {
+        if flag == "--contact-catalog-scopes" {
+            return crate::assets::declaration_texts::observe_catalog_scopes(base, level).map_err(Into::into);
+        }
+    }
     if let [flag, level, effect] = levels {
         if flag == "--fx-requests" {
             return inspect_scene_resources(base, std::slice::from_ref(level), Mode::FxRequests(effect), false);
