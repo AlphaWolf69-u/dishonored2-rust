@@ -302,3 +302,19 @@ position, divided by the period when positive (zero otherwise). FREE: base
 velocity = unit direction * m_radialVelocity + lerp(start, end base
 velocity) * m_inheritedVelocity + m_initialVelocity. Several scalar samples
 lost their arguments in the decompile and need the disassembly.
+
+Reprojection (1401d47b0, m_reprojectControlPoints, beams with 3+ points):
+unless both end points stayed within 1.19e-7 of the stored ends, the
+interior points are carried along by the rotation (14010e5e0, axis-angle
+from the acos 1411afeb4 of the old and new end-to-end directions, skipped
+below DAT_141ab3b04) plus the projection onto the new chord scaled by the
+length ratio; base and accumulated velocities rotate with them; the ends
+are then stored again. Point motion (1401d30f0) per point: acceleration =
+life_t.m_acceleration value (rotated by the frame unless world space) +
+(0, 0, gravity x scale x -9.8) + the beam-life wind/acceleration term,
+plus the normalized current velocity times (linear acceleration + the
+beam-life linear term). 1401d5e00 applies it as velocity += acceleration
+x delta, then position += (velocity + base velocity x beam colour?
+...velocityOverLife products) x delta for the start point, control points
+(with the wind term) and end point. Flipbook rate 1401cfde0 = m_flipBook
+rate (+0x208) sample x delta unless static (1401d0fe0: +0x1f8 type 0).
