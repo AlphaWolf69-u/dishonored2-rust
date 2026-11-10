@@ -8,7 +8,7 @@ pub enum DofPass {
 }
 
 /// Validated filter metadata; authored fixed points remain installed assets.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlurKernel {
     kind: u8,
     samples: u32,

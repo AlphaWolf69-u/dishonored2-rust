@@ -693,23 +693,24 @@ pub fn constant_color_pixels(color: [f32; 4]) -> Option<[u8; 64]> {
 // Host scope for the 140060180 material purge. Session material metadata is
 // retained by its own owner and reported separately at level release.
 static MATERIAL_HISTORY_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
-pub(crate) struct MaterialHistoryLease(u64);
+pub(crate) struct MaterialHistoryLease(std::sync::Arc<crate::archive::Catalog>);
 impl MaterialHistoryLease {
-    pub(crate) fn acquire(catalog: u64) -> std::sync::Arc<Self> {
-        MATERIAL_HISTORY_SCOPES.acquire(catalog);
-        std::sync::Arc::new(Self(catalog))
+    pub(crate) fn acquire(catalog: &std::sync::Arc<crate::archive::Catalog>) -> std::sync::Arc<Self> {
+        MATERIAL_HISTORY_SCOPES.acquire(catalog.identity());
+        std::sync::Arc::new(Self(catalog.clone()))
     }
 }
 impl Drop for MaterialHistoryLease {
     fn drop(&mut self) {
-        MATERIAL_HISTORY_SCOPES.release(self.0, || {
+        let catalog = self.0.identity();
+        MATERIAL_HISTORY_SCOPES.release(catalog, || {
             let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
             let start = trace.then(crate::loading::thread_cycles).flatten();
-            let retained = crate::assets::camera_blur::retained_material_paths(self.0);
-            let (count, bytes, slots, _) = crate::loading::retain_catalog_kind(self.0, "material", |path| retained.contains(path));
+            let retained = crate::assets::camera_blur::retained_material_paths(&self.0);
+            let (count, bytes, slots, _) = crate::loading::retain_catalog_kind(catalog, "material", |path| retained.contains(path));
             if trace {
                 let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(a,b)| b.saturating_sub(a));
-                eprintln!("MEMORY material history release: entries={count} path_capacity_bytes={bytes} slots={slots} retained={} cycles={cycles} catalog={}", retained.len(), self.0);
+                eprintln!("MEMORY material history release: entries={count} path_capacity_bytes={bytes} slots={slots} retained={} cycles={cycles} catalog={catalog}", retained.len());
             }
         });
     }

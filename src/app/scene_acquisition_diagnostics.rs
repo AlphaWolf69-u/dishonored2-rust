@@ -47,7 +47,7 @@ fn inspect_catalog_history_scopes(base: &std::path::Path) -> Result<(), Box<dyn 
     let b = Arc::new(archive::Catalog::open(base)?);
     let leases = |catalog: &Arc<archive::Catalog>| (
         crate::bmodel::ModelHistoryLease::acquire(catalog),
-        crate::material::MaterialHistoryLease::acquire(catalog.identity()),
+        crate::material::MaterialHistoryLease::acquire(catalog),
         crate::physworld::source::ShapeSources::new(catalog),
         super::level_prepare::SkeletalHistoryScope::new(catalog),
     );

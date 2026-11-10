@@ -1,40 +1,35 @@
 //! Authored camera-blur sample banks, read directly from the installed include.
 use super::archive::Catalog;
 use crate::rendering::depth_of_field::{BlurKernel, DofMaterialVariant, DofPass};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 /// Immutable inputs prepared during level loading and shared with render views.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlurResources {
     pub kernels: KernelBank,
     pub materials: MaterialBank,
 }
-// 1400607f0 returns already acquired declaration identities. This host
-// owner shares their immutable prepared camera metadata between levels.
-static RESIDENT: std::sync::Mutex<Option<(u64, std::sync::Arc<BlurResources>)>> = std::sync::Mutex::new(None);
-pub(crate) fn retire_catalog(catalog: u64) -> usize {
-    let retired = RESIDENT.lock().unwrap_or_else(|e| e.into_inner())
-        .take_if(|(identity, _)| *identity == catalog);
-    usize::from(retired.is_some())
-}
-/// Names whose parsed material metadata is still owned by the session cache.
-pub(crate) fn retained_material_paths(catalog: u64) -> std::collections::HashSet<String> {
-    let resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());
-    resident.as_ref().filter(|(identity, _)| *identity == catalog)
-        .into_iter().flat_map(|(_, resources)| resources.materials.materials.keys())
+/// Names whose parsed material metadata is still owned by this catalog.
+pub(crate) fn retained_material_paths(catalog: &Catalog) -> std::collections::HashSet<String> {
+    let resident = catalog.camera_blur.lock().unwrap_or_else(|error| error.into_inner());
+    resident.iter().flat_map(|resources| resources.materials.materials.keys())
         .map(|variant| format!("generated/decls/material/{}.decl", variant.material_name().to_ascii_lowercase()))
         .collect()
 }
+
 impl BlurResources {
-    pub(crate) fn acquire(catalog: &Catalog) -> Result<std::sync::Arc<Self>, String> {
-        let shared = !catalog.has_overlays();
-        let mut resident = RESIDENT.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, value)) = resident.as_ref().filter(|(id, _)| shared && *id == catalog.identity()) {
+    /// 1400607f0 returns an acquired identity. The host keeps the prepared
+    /// camera tables in the same catalog as their source materials.
+    pub(crate) fn acquire(catalog: &Catalog) -> Result<Arc<Self>, String> {
+        if catalog.has_overlays() {
+            return Self::load(catalog).map(Arc::new);
+        }
+        let mut resident = catalog.camera_blur.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(value) = resident.as_ref() {
             return Ok(value.clone());
         }
-        *resident = None;
-        let value = std::sync::Arc::new(Self::load(catalog)?);
-        if shared { *resident = Some((catalog.identity(), value.clone())); }
+        let value = Arc::new(Self::load(catalog)?);
+        *resident = Some(value.clone());
         Ok(value)
     }
     pub fn load(catalog: &Catalog) -> Result<Self, String> {
@@ -46,7 +41,7 @@ impl BlurResources {
 }
 
 /// A selected material's actual options, including the unspecialized fallback.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlurMaterial {
     pub pass: DofPass,
     pub filter: u8,
@@ -55,7 +50,7 @@ pub struct BlurMaterial {
     pub state: crate::render_state::RenderState,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MaterialBank {
     materials: HashMap<DofMaterialVariant, BlurMaterial>,
 }
@@ -162,7 +157,7 @@ impl MaterialBank {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KernelBank {
     kernels: [BlurKernel; 6],
 }

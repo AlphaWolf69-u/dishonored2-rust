@@ -433,20 +433,59 @@ pub(crate) fn observe_catalog_scopes(base: &std::path::Path, map: &str) -> Resul
         || first.level != other.level || first.level != again.level {
         return Err("interleaved catalog declaration sources did not retain their exact scope".into());
     }
+    use crate::assets::{camera_blur, entities::contacts::ContactDatabase, wwise::event_resources};
+    let a_blur = camera_blur::BlurResources::acquire(&a)?;
+    let b_blur = camera_blur::BlurResources::acquire(&b)?;
+    let a_database = ContactDatabase::acquire(&a)?;
+    let b_database = ContactDatabase::acquire(&b)?;
+    if !Arc::ptr_eq(&a_blur, &camera_blur::BlurResources::acquire(&a)?)
+        || !Arc::ptr_eq(&a_database, &ContactDatabase::acquire(&a)?)
+        || Arc::ptr_eq(&a_blur, &b_blur) || Arc::ptr_eq(&a_database, &b_database)
+        || a_blur != b_blur || a_database != b_database {
+        return Err("camera or contact database acquisition crossed catalogs".into());
+    }
+    let camera_materials = camera_blur::retained_material_paths(&a);
+    if camera_materials.is_empty() || camera_materials != camera_blur::retained_material_paths(&b) {
+        return Err("camera material retention differs between catalogs".into());
+    }
     let path = first.level.keys().filter(|path| a.kind(path) == Some("physicsMaterial"))
         .min().ok_or("installed map-only physics material absent")?;
-    let recorded = |catalog: &Catalog| crate::loading::catalog_read_recorded(catalog.identity(), "physicsMaterial", path);
-    if !recorded(&a) || !recorded(&b) { return Err("map declaration read history absent".into()); }
+    let recorded = |catalog: &Catalog, kind, path| crate::loading::catalog_read_recorded(catalog.identity(), kind, path);
+    if !recorded(&a, "physicsMaterial", path) || !recorded(&b, "physicsMaterial", path) {
+        return Err("map declaration read history absent".into());
+    }
+    let mut sound_paths: Vec<_> = first.level.keys().filter(|path| a.kind(path) == Some("soundevent")).collect();
+    sound_paths.sort_unstable();
+    let (sound_path, event) = sound_paths.into_iter().find_map(|path| {
+        let name = path.strip_prefix("generated/decls/soundevent/")?.strip_suffix(".decl")?;
+        event_resources::acquire_with(&a, name, |path| read(&a, &first, path))
+            .ok().map(|event| (path, event))
+    }).ok_or("installed map-only sound event absent")?;
+    drop(again);
     first.release_level_history(&a);
-    if recorded(&a) || !recorded(&b) { return Err("contact history crossed catalogs".into()); }
+    if recorded(&a, "physicsMaterial", path) || !recorded(&b, "physicsMaterial", path)
+        || !recorded(&a, "soundevent", sound_path) {
+        return Err("contact history crossed catalogs or removed a live sound event".into());
+    }
+    drop(event);
+    a.release_level_resources();
+    if recorded(&a, "soundevent", sound_path) { return Err("sound event history survived its marker".into()); }
     let a_common = Arc::downgrade(a_common);
     let b_common = Arc::downgrade(b_common);
-    drop((first, again, a));
-    if a_common.strong_count() != 0 || b_common.strong_count() == 0 {
+    let databases = a_database.len();
+    let first_blur = Arc::downgrade(&a_blur);
+    let first_database = Arc::downgrade(&a_database);
+    let second_blur = Arc::downgrade(&b_blur);
+    let second_database = Arc::downgrade(&b_database);
+    drop((first, a_blur, a_database, a));
+    if a_common.strong_count() != 0 || first_blur.strong_count() != 0 || first_database.strong_count() != 0
+        || b_common.strong_count() == 0 || second_blur.strong_count() == 0 || second_database.strong_count() == 0 {
         return Err("common declaration session did not retire independently".into());
     }
-    drop((other, b));
-    if b_common.strong_count() != 0 { return Err("common declaration text outlived its catalog".into()); }
-    eprintln!("CONTACT_CATALOG_SCOPES reused=true independent=true payloads_match=true");
+    drop((other, b_blur, b_database, b));
+    if b_common.strong_count() != 0 || second_blur.strong_count() != 0 || second_database.strong_count() != 0 {
+        return Err("session resources outlived their catalog".into());
+    }
+    eprintln!("CONTACT_CATALOG_SCOPES reused=true independent=true payloads_match=true sound_credit=true camera_materials={} database_entries={databases}", camera_materials.len());
     Ok(())
 }
