@@ -19,6 +19,7 @@ struct Registry {
     resident: HashMap<String, Arc<ResidentImage>>,
     inline: HashMap<String, Arc<ResidentImage>>,
     layered: HashMap<String, Arc<crate::rendering::bevy_backend::layered_images::LayeredImageSource>>,
+    default_colour_cube: Option<Handle<Image>>,
     noise: Arc<crate::rendering::bevy_backend::noise_textures::NoiseTextureSource>,
     leases: HashMap<String, Weak<ResidentImage>>,
     scene_leases: HashMap<String, Weak<ResidentImage>>,
@@ -77,7 +78,16 @@ impl ResidentImages {
                 self.acquire(catalog, name, images)?;
             }
         }
+        if std::env::var_os("DH2_DEBUG_MAP_DEFAULT_COLOUR_CUBE").is_none_or(|v| v != "1") {
+            self.registry.lock().unwrap().default_colour_cube.get_or_insert_with(|| {
+                images.add(crate::rendering::bevy_backend::colour_cube::identity_image())
+            });
+        }
         Ok(())
+    }
+
+    pub(super) fn default_colour_cube(&self) -> Option<Handle<Image>> {
+        self.registry.lock().unwrap().default_colour_cube.clone()
     }
 
     /// Lease a streamed scene view for other named consumers without making

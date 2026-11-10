@@ -184,10 +184,26 @@ impl AcousticWorld {
     }
 
     pub fn release(mut self) -> Result<(), String> {
-        self.world.release(&mut Geometry {
+        self.detach_shape_observers().map(|_| ())
+    }
+
+    fn detach_shape_observers(&mut self) -> Result<usize, String> {
+        self.world.detach_shape_observers(&mut Geometry {
             graph: &self.graph,
             signals: &mut self.signals,
         })
+    }
+}
+
+impl Drop for AcousticWorld {
+    fn drop(&mut self) {
+        match self.detach_shape_observers() {
+            Ok(released) if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") => {
+                eprintln!("SHAPE_OBSERVERS_RELEASE owner=acoustics registrations={released}");
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("Acoustic shape observer retirement failed: {error}"),
+        }
     }
 }
 

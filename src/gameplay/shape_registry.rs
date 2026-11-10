@@ -174,23 +174,29 @@ impl ShapeRegistry {
     /// cdfcb0/ce03d0 release active entries, then pooled entries. The resource
     /// owner supplies each live shape's signal pair before dropping that shape.
     pub fn release(mut self, signals: &mut impl ShapeSignalStore) -> Result<(), String> {
-        let order: Vec<usize> = self.active.iter().chain(&self.recycled).copied().collect();
+        self.detach_all(signals).map(|_| ())
+    }
+
+    pub fn detach_all(&mut self, signals: &mut impl ShapeSignalStore) -> Result<usize, String> {
+        let order = std::mem::take(&mut self.active).into_iter()
+            .chain(std::mem::take(&mut self.recycled));
+        let mut released = 0;
+        let mut failure = None;
         for entry in order {
             if let Some(shape) = self.registrations[entry].shape {
-                let pair = signals.signals_mut(shape)?;
-                self.detach(
-                    ShapeObserver {
-                        owner: self.owner,
-                        entry,
-                    },
-                    shape,
-                    &mut pair.mutated,
-                    &mut pair.destroyed,
-                )?;
+                let result = signals.signals_mut(shape).and_then(|pair| {
+                    self.detach(ShapeObserver { owner: self.owner, entry }, shape,
+                        &mut pair.mutated, &mut pair.destroyed)
+                });
+                match result {
+                    Ok(()) => released += 1,
+                    Err(error) => { failure.get_or_insert(error); }
+                }
             }
-            self.registrations[entry].bodies.clear();
         }
-        Ok(())
+        self.registrations.clear();
+        self.pending = false;
+        failure.map_or(Ok(released), Err)
     }
 }
 

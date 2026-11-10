@@ -168,11 +168,15 @@ impl ScenePreparation {
             }
         }
         check_cancelled()?;
+        let mut image_ids = self.images
+            .ids(|image| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
+        // The session LUT was reserved outside this batch, but it still
+        // participates in the existing display readiness gate.
+        if let Some(cube) = self.resident_images.default_colour_cube() {
+            image_ids.push(cube.id());
+        }
         prepared.insert_resource(SceneGpuInputs {
-            images: Arc::new(
-                self.images
-                    .ids(|image| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),
-            ),
+            images: Arc::new(image_ids),
             meshes: Arc::new(
                 self.meshes
                     .ids(|mesh| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),

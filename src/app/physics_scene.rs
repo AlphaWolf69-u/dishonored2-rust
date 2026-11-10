@@ -21,7 +21,7 @@ use crate::{
         shape_point_query::ShapePointContact,
         trigger_body::{DeferredPhysicsState, TriggerComponent, TriggerComponentStore},
         water_component::WaterComponent,
-        world_point_query::{WorldPointQuery, WorldPointRequest, WorldQueryShape},
+        world_point_query::{level::LevelPointQueries, WorldPointQuery, WorldPointRequest, WorldQueryShape},
     },
     rendering::environment_contacts::{ContactEntity, EnvironmentViewContacts},
 };
@@ -47,8 +47,7 @@ struct PhysicsEntity {
 
 #[derive(Resource)]
 pub(super) struct PhysicsScene {
-    world: WorldStorage,
-    geometry: TriggerAssets,
+    world: Arc<LevelPointQueries>,
     types: ComponentTypes,
     factories: [u32; 5],
     classes: [i32; 5],
@@ -88,30 +87,13 @@ impl PhysicsScene {
         Ok(())
     }
 
-    pub(super) fn query_snapshot(
-        &self,
-    ) -> Result<Arc<crate::gameplay::world_point_query::snapshot::PointQuerySnapshot>, String> {
-        crate::gameplay::world_point_query::snapshot::PointQuerySnapshot::capture(
-            &self.world.bodies,
-            &self.world.broadphase.query_trees(),
-            crate::gameplay::point_query::PointQuantization {
-                offset: self.world.quantization.offset[..3].try_into().unwrap(),
-                scale: self.world.quantization.inverse_scale[..3]
-                    .try_into()
-                    .unwrap(),
-            },
-            crate::gameplay::ray_query::RayQuantization {
-                offset: self.world.quantization.offset[..3].try_into().unwrap(),
-                scale: self.world.quantization.scale[..3].try_into().unwrap(),
-            },
-            self.geometry
-                .shapes
-                .iter()
-                .map(|shape| shape.query_shapes.clone())
-                .collect(),
-            |body| self.world.quantization.packed.unpack_bounds(body.bounds)[1][2],
-        )?
-        .with_wind_owners(|body| {
+    pub(super) fn point_queries(&self) -> Result<Arc<LevelPointQueries>, &str> {
+        self.world.ready()?;
+        Ok(self.world.clone())
+    }
+
+    fn finish_point_queries(&mut self) -> Result<(), String> {
+        let owners = self.world.resolve_wind_owners(|body| {
             let data =
                 crate::gameplay::collision_user_data::CollisionUserData::decode(body.user_data)?;
             let entity = data.entity(|handle| self.owner(handle).ok())?;
@@ -144,8 +126,13 @@ impl PhysicsScene {
                     .name
                     .clone(),
             ))
-        })
-        .map(Arc::new)
+        });
+        // Component startup is the last writer to the trigger query world.
+        // Once published, render/FX leases share the same immutable geometry.
+        let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
+        world.geometry.release_immutable_sources();
+        world.publish_wind_owners(owners);
+        Ok(())
     }
 
     /// The point-query half of1fc710. This returns the selected body's packed
@@ -155,25 +142,7 @@ impl PhysicsScene {
         &mut self,
         position: [f32; 3],
     ) -> Result<Option<f32>, String> {
-        let hit = self.executor.closest_hit(
-            &self.world.bodies,
-            &self.world.broadphase.query_trees(),
-            crate::gameplay::point_query::PointQuantization {
-                offset: self.world.quantization.offset[..3].try_into().unwrap(),
-                scale: self.world.quantization.inverse_scale[..3].try_into().unwrap(),
-            },
-            &WorldPointRequest::water(position),
-            |shape| Ok(WorldQueryShape {
-                shapes: &self.geometry.shapes.get(shape)
-                    .ok_or("particle water-query shape absent")?.query_shapes,
-                materials: None,
-            }),
-        )?;
-        let Some((contact, _)) = hit else { return Ok(None) };
-        let body = self.world.bodies.get(contact.target.body_id
-            .ok_or("particle water-query hit has no body")?)
-            .ok_or("particle water-query body absent")?;
-        Ok(Some(self.world.quantization.packed.unpack_bounds(body.bounds)[1][2]))
+        self.world.particle_water_body_height(&mut self.executor, position)
     }
 
     pub(super) fn load(
@@ -282,8 +251,7 @@ impl PhysicsScene {
         )?;
         let cvars = crate::platform::console::shared().read();
         let mut scene = Self {
-            world,
-            geometry,
+            world: Arc::new(LevelPointQueries::new(world, geometry)),
             triggers: types.create_pool(factories[0], &cvars.cvars)?,
             waters: types.create_pool(factories[1], &cvars.cvars)?,
             winds: types.create_pool(factories[2], &cvars.cvars)?,
@@ -322,8 +290,8 @@ impl PhysicsScene {
             .take()
             .ok_or("physics component registry absent")?;
         let mut entity_indices = HashMap::<String, usize>::new();
-        for index in 0..scene.geometry.placements.len() {
-            let placement = &scene.geometry.placements[index];
+        for index in 0..scene.world.geometry.placements.len() {
+            let placement = &scene.world.geometry.placements[index];
             let existing = entity_indices.get(&placement.binding.entity_id).copied();
             let entity_index = existing.unwrap_or(scene.entities.len());
             let definition = definitions
@@ -467,7 +435,7 @@ impl PhysicsScene {
         }
         registry.initialize_and_start(&mut scene)?;
         scene.registry = Some(registry);
-        scene.geometry.release_immutable_sources();
+        scene.finish_point_queries()?;
         Ok(scene)
     }
 
@@ -488,9 +456,9 @@ impl PhysicsScene {
     /// the group. This Boolean result is independent of the distance sort.
     pub(super) fn water_at(&mut self, position: [f32; 3]) -> Result<bool, String> {
         let mut contacts = Vec::new();
-        self.world.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
+        self.world.storage.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
             Ok(WorldQueryShape {
-                shapes: &self.geometry.shapes.get(shape).ok_or("water query shape absent")?.query_shapes,
+                shapes: &self.world.geometry.shapes.get(shape).ok_or("water query shape absent")?.query_shapes,
                 materials: None,
             })
         }, &mut contacts)?;
@@ -520,12 +488,12 @@ impl PhysicsScene {
         let mut head_water_is_ocean = false;
         let mut head_water_current = None;
         let completed = view.resolve(
-            &self.world,
+            &self.world.storage,
             &mut self.executor,
             &mut self.queries,
             |shape| {
                 Ok(WorldQueryShape {
-                    shapes: &self
+                    shapes: &self.world
                         .geometry
                         .shapes
                         .get(shape)
@@ -697,8 +665,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .owner(handle)?
                 .declaration
                 .ok_or("trigger declaration absent")?;
-            let position = self.geometry.placements[placement].position;
-            let collision = self.geometry.placements[placement].binding.collision;
+            let position = self.world.geometry.placements[placement].position;
+            let collision = self.world.geometry.placements[placement].binding.collision;
             let entity = &mut self.entities[entity];
             let mut level = startup::TriggerLevel {
                 entity: &entity.components,
@@ -724,9 +692,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 signals: &mut self.signals,
                 dispatch: startup::dispatch_observer,
             };
+            let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
             crate::gameplay::trigger_body::initialization::physics::TriggerPhysicsInitialization {
-                world: &mut self.world,
-                geometry: &mut self.geometry,
+                world: &mut world.storage,
+                geometry: &mut world.geometry,
                 events: &mut events,
                 level: &mut level,
             }
@@ -774,7 +743,7 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .owner(handle)?
                 .declaration
                 .ok_or("trigger declaration absent")?;
-            let keyframed = self.geometry.placements[declaration]
+            let keyframed = self.world.geometry.placements[declaration]
                 .binding
                 .collision
                 .keyframed;
@@ -795,9 +764,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 signals: &mut self.signals,
                 dispatch: startup::dispatch_observer,
             };
+            let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
             crate::gameplay::trigger_body::startup::start_trigger(
-                &mut self.world,
-                &mut self.geometry,
+                &mut world.storage,
+                &mut world.geometry,
                 &mut events,
                 handle,
                 &scheduling,
@@ -838,9 +808,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 signals: &mut self.signals,
                 dispatch: startup::dispatch_observer,
             };
+            let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
             crate::gameplay::water_component::startup::physics::WaterPhysicsStartup {
-                world: &mut self.world,
-                geometry: &mut self.geometry,
+                world: &mut world.storage,
+                geometry: &mut world.geometry,
                 events: &mut events,
                 level: &mut level,
             }
