@@ -452,7 +452,7 @@ fn wwise_id(name: &str) -> u32 {
 
 /// wwisedescription.txt ("cooked level descriptions", 1400c0cb0): "V1", an
 /// entry count, then per entry its name, package prefixes and bank names.
-fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box<dyn std::error::Error>> {
+fn level_banks(base: &std::path::Path, language: &str, map: &str) -> Result<LevelBanks, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(base.join("wwisedescription.txt"))?;
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("V1") { return Err("wwisedescription.txt is not V1".into()); }
@@ -464,8 +464,7 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
         let banks = lines.next().unwrap_or("").split_whitespace().collect::<Vec<_>>();
         entries.insert(name, (packages, banks));
     }
-    let map = crate::gameplay::map_info::current_map().ok_or("no current map for its sound banks")?;
-    let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
+    let map = map.trim_start_matches("maps/").trim_end_matches(".entities").trim_end_matches(".map").to_owned();
     let mut selection = LevelBanks { packages: vec!["main-init.pck".to_owned()], banks: Default::default(),
         shared_packages: ["main-init.pck".to_owned()].into(), shared_banks: Default::default() };
     for name in ["common", "init", map.as_str()] {
@@ -489,24 +488,27 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
 }
 
 fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
-    mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
+    mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, commands: Commands,
+    source: Option<Res<super::level_prepare::LevelSourceReads>>) {
     if registry.preloaded { return; }
+    let Some(source) = source else { return };
+    let (catalog, map) = source.acquisition_source();
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
-    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands);
+    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands, catalog, map);
 }
 
 fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
     engine: &mut bevy_backend::Engine,
     outputs: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<bevy_backend::OutputAudio>,
-    commands: &mut super::setup_commands::SetupCommands) {
+    commands: &mut super::setup_commands::SetupCommands, catalog: &crate::archive::Catalog, map: &str) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
-        let base = crate::assets::installation::game_base()?;
+        let base = catalog.base();
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
         let package_language = crate::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
         // 1400bd510 (LoadSharedCookedGamePackages): the "common", "init" and
         // current-map entries of wwisedescription.txt name the packages
         // (prefix + language / "sfx.pck") and banks to load, plus main-init.pck.
-        let selection = level_banks(&base, package_language)?;
+        let selection = level_banks(base, package_language, map)?;
         let paths = selection.packages.iter().map(|name| base.join("pck").join(name))
             .filter(|path| path.is_file()).collect::<Vec<_>>();
 
@@ -581,8 +583,7 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
                 registry.library.resident_allocations().take(registry.shared_banks).take(4).collect::<Vec<_>>());
         }
         if mix.mixer.is_some() { return Ok(None); }
-        let catalog = crate::archive::Catalog::shared(&base)?;
-        let controls = crate::assets::wwise::engine_controls::EngineControls::acquire(&catalog)?;
+        let controls = crate::assets::wwise::engine_controls::EngineControls::acquire(catalog)?;
         let bindings = controls.volumes.into_iter().zip([
             "s_MasterBus_Gain", "s_SFX_Gain", "s_Voices_Gain", "s_Music_Gain", "s_Video_Gain",
         ]).collect::<Vec<_>>();
@@ -599,7 +600,7 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
             mix.bindings = bindings;
             mix.apply_settings();
             if let Some(mixer) = &mix.mixer {
-                match bevy_backend::Engine::new(mixer, registry.states.clone()) {
+                match bevy_backend::Engine::new(mixer, registry.states.clone(), catalog.base()) {
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
@@ -621,16 +622,19 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
 /// is then decoded while it plays. Every listed event's media is read and
 /// prepared here, on all cores, instead of on the main thread at its first
 /// post.
-fn preload_level_events(mut registry: ResMut<WwiseRegistry>, contacts: Option<Res<contacts::ContactSounds>>) {
-    if !registry.preloaded { prepare_listed_events(&mut registry, None, contacts.as_deref().and_then(|c| c.declarations())); }
+fn preload_level_events(mut registry: ResMut<WwiseRegistry>, contacts: Option<Res<contacts::ContactSounds>>,
+    source: Option<Res<super::level_prepare::LevelSourceReads>>) {
+    if registry.preloaded { return; }
+    let Some(source) = source else { return };
+    let (catalog, map) = source.acquisition_source();
+    prepare_listed_events(&mut registry, None, contacts.as_deref().and_then(|c| c.declarations()), catalog, map);
 }
-fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>, declarations: Option<&declaration_texts::DeclarationTexts>) {
+fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>,
+    declarations: Option<&declaration_texts::DeclarationTexts>, catalog: &crate::archive::Catalog, map: &str) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
-        let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = crate::archive::Catalog::shared(&base).map_err(|e| e.to_string())?;
-        let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
-        let map = map.trim_start_matches("maps/").trim_end_matches(".map");
+        let base = catalog.base();
+        let map = map.trim_start_matches("maps/").trim_end_matches(".entities").trim_end_matches(".map");
         let language = crate::assets::lang::read_text_language(&base)?;
         let list = crate::assets::map_resources::acquire_level_list(&base, &catalog, map, language)?;
         let mut events = Vec::new();
@@ -1010,8 +1014,8 @@ impl AudioPreparation {
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands,
         catalog: Arc<crate::archive::Catalog>, map: &str, seed: declaration_texts::PhysicsSeed) {
-        let contacts = contacts::ContactSounds::acquire_with_seed(catalog, map, seed);
-        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
+        let contacts = contacts::ContactSounds::acquire_with_seed(catalog.clone(), map, seed);
+        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands, &catalog, map);
         // Host: cold media reads/decodes must not occupy the frame executor.
         // Keep its existing parallelism rather than the smaller async pool,
         // and release these workers before scene preparation continues.
@@ -1020,7 +1024,7 @@ impl AudioPreparation {
                 .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num().max(1))
                 .thread_name("sound acquisition".to_owned())
                 .build());
-        prepare_listed_events(&mut self.registry, pool.as_ref(), contacts.declarations());
+        prepare_listed_events(&mut self.registry, pool.as_ref(), contacts.declarations(), &catalog, map);
         commands.insert_resource(contacts);
     }
     pub fn publish(self, world: &mut World) {
@@ -1029,4 +1033,34 @@ impl AudioPreparation {
         world.insert_resource(self.engine);
         self.outputs.publish(&mut world.resource_mut::<Assets<bevy_backend::OutputAudio>>());
     }
+}
+
+/// Resolve every installed map's bank selection without acquiring media.
+pub(super) fn observe_bank_inventory(base: &std::path::Path) -> Result<(), String> {
+    let catalog = crate::archive::Catalog::open(base).map_err(|error| error.to_string())?;
+    let language = crate::assets::lang::read_audio_language(base)?;
+    let language = crate::assets::wwise::language_name(language).ok_or("unsupported audio package language")?;
+    let mut count = 0;
+    for path in catalog.paths_with_suffix(".mapresources") {
+        let Some(name) = path.strip_prefix("generated/buildgame/")
+            .and_then(|path| path.strip_suffix(".mapresources")) else { continue };
+        if matches!(name, "init" | "common") { continue; }
+        let level = crate::assets::level::LevelResources::resolve(&catalog, name).map_err(|error| error.to_string())?;
+        let map = level.entities.trim_start_matches("maps/").trim_end_matches(".entities");
+        let selection = level_banks(base, language, &level.entities).map_err(|error| error.to_string())?;
+        let mut banks = selection.banks.into_iter().collect::<Vec<_>>();
+        let mut shared_banks = selection.shared_banks.into_iter().collect::<Vec<_>>();
+        let mut shared_packages = selection.shared_packages.into_iter().collect::<Vec<_>>();
+        banks.sort_unstable();
+        shared_banks.sort_unstable();
+        shared_packages.sort_unstable();
+        eprintln!("AUDIO_BANK_CONTEXT {}", serde_json::json!({
+            "map": map, "language": language, "packages": selection.packages,
+            "banks": banks, "shared_packages": shared_packages, "shared_banks": shared_banks,
+        }));
+        count += 1;
+    }
+    if count == 0 { return Err("no installed audio bank maps were resolved".into()); }
+    eprintln!("AUDIO_BANK_CONTEXT_COMPLETE maps={count}");
+    Ok(())
 }

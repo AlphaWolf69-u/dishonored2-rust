@@ -124,8 +124,7 @@ impl Engine {
         });
     }
 
-    pub fn new(mixer: &crate::gameplay::sound::mix::Mixer, states: StateGroups) -> Result<(Self, OutputAudio), String> {
-        let base = crate::assets::installation::game_base().map_err(|error| error.to_string())?;
+    pub fn new(mixer: &crate::gameplay::sound::mix::Mixer, states: StateGroups, base: &std::path::Path) -> Result<(Self, OutputAudio), String> {
         let activity = Arc::new(Activity::new(mixer)?);
         let ducking = Ducking::new(mixer)?;
         ducking.publish(&activity);

@@ -6923,3 +6923,17 @@ existing shared-installation lookup. Expect contact owner identity to equal
 the preparing scene's identity for each independent catalog, unchanged
 declaration and sound-event data, and independent final lease release.
 This adds one Arc lease per prepared contact owner and no frame work.
+
+### Audio preparation source context
+
+Original bank selection 1400bd510 / 1400c0cb0 loads the preparing map's
+packages, and declaration acquisition 1400607f0 uses its resource manager.
+The host AudioPreparation already receives the scene Catalog/map for
+contacts, but bank selection, engine controls, bus setup and listed sound
+events still rediscover the installation or global current_map. Pass that
+same source context to those existing owners. Startup fallbacks obtain
+their source from the published LevelSourceReads. Preserve the session
+bank/package/output owners and all selected payload formats. Expect the
+same package names, bank/media/event fingerprints and streaming totals
+on ordinary maps, with source identities tied to the preparing Catalog.
+No gameplay query, mixer callback, per-voice decode or GPU work changes.
