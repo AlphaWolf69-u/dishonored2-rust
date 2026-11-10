@@ -761,15 +761,14 @@ impl Plugin for ShadowScenePlugin {
         app.init_resource::<ShadowSceneFrame>()
             .init_resource::<ShadowSceneCompletion>()
             .add_plugins(ExtractResourcePlugin::<ShadowSceneFrame>::default())
-            .add_plugins(ExtractResourcePlugin::<ShadowSceneCompletion>::default())
-            .add_plugins(ExtractResourcePlugin::<
-                crate::shadow_sampling::ParallelSamplingBuffer,
-            >::default());
+            .add_plugins(ExtractResourcePlugin::<ShadowSceneCompletion>::default());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
             .init_resource::<ShadowSceneGpu>()
+            .add_systems(bevy::render::ExtractSchedule,
+                super::extract_level_resource::<crate::shadow_sampling::ParallelSamplingBuffer>)
             .add_systems(
                 Render,
                 prepare_shadow_uniform_ring.in_set(RenderSystems::PrepareResources),

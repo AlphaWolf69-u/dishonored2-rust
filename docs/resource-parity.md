@@ -6126,3 +6126,13 @@ The renderer binds from the extracted handle and retains no named cache
 entry. These observations cover wrapper identity and CPU view selection.
 Active movie drawing was outside the windowless observation. Evidence:
 `DH2-screen-shadow-retirement/artifacts/ui-registered-image-leases-20261110-comparison.json`.
+
+Fog and shadow extraction prediction. Level destruction at 1408a4830 and
+resource purge at 1400410f0 separate world views from device programs. The
+host removes FogMaterialResources and both shadow sampling resources from
+the gameplay world, but Bevy's standard extraction keeps the last render
+copy when a source disappears. These copies hold exact map-owned image and
+shader-buffer handles, including the fog attachments. Extend the existing
+screen-shadow absence handoff to these three sources. Expect their extracted
+copies and private handles to retire after map clear while still forwarding
+changed bindings during play. No texture upload or draw-path change.
