@@ -51,6 +51,8 @@ pub type EnvironmentGroupAsset = EffectGroupAsset;
 /// arkFXSubFXDesc: nested FX played by a group (group+0x120, 0x38 bytes).
 /// Ranges keep the serialized maximum-then-minimum order of arkFXMinMax.
 pub struct SubEffectAsset {
+    /// arkSubFXDesc +0: m_name (idAtomicString).
+    pub name: String,
     pub enabled: bool,
     /// arkStandardEventTimings: m_delay, m_cycles and m_period.
     pub delay: [f32; 2],
@@ -68,6 +70,7 @@ impl Default for SubEffectAsset {
     /// m_sequentialMode and m_randomStart clear; delay 0, one cycle, period 1.
     fn default() -> Self {
         Self {
+            name: String::new(),
             enabled: true,
             delay: [0.; 2],
             cycles: [1; 2],
@@ -84,6 +87,7 @@ fn sub_effect(fields: &Fields) -> Result<SubEffectAsset, String> {
     let mut effect = SubEffectAsset::default();
     for (name, value) in fields {
         match name.as_str() {
+            "m_name" => effect.name = atom(value)?.to_owned(),
             "m_enabled" => effect.enabled = boolean(value)?,
             "m_waitFXEnd" => effect.wait_end = boolean(value)?,
             "m_sequentialMode" => effect.sequential = boolean(value)?,
