@@ -6418,3 +6418,19 @@ catalog observation matched declaration bytes, shared the low/high alias,
 reused the first catalog's entry on return and retired each catalog
 independently. Evidence:
 DH2-scene-shutdown/artifacts/map-info-catalog-cache-20261110-comparison.json.
+
+### Vorbis decoder cache keys
+
+Prediction before implementation. The original streams the installed Vorbis
+format (1411614e0, 141161240); the rewrite's host cache shares the decoded
+setup required by lewton. Both host header lookups currently allocate and
+copy the entire setup packet before checking for a hit. Use the existing
+numeric format discriminators and look up the complete key
+by borrowed bytes. Expect no packet-key allocation on a hit and one owned
+byte slice on a new entry. Exact byte equality, independent sample-rate
+identities, setup sharing across rates and session retirement remain the
+same. This does not change the existing cold setup reconstruction, source
+metadata or PCM. Observe avoided key allocations and bytes in the real
+resident/streamed acquisition route and compare source fingerprints and
+retirement. Original memory-tag evidence is the installed EotW budget and
+the existing per-source acquisition comparison.
