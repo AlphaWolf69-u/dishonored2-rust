@@ -6039,6 +6039,29 @@ The affected placement span averaged 3.292B cycles with retention and
 in both directions. No frame timing was measured. Evidence:
 `DH2-collision-staging/artifacts/static-model-last-use-20261110-comparison.json`.
 
+Common model scope follow-up. The installed Edge of the World / Dust
+District / Edge of the World publication requested 13 / 11 / 13 common
+model sources. Adjacent maps shared nine identities and 483,146 bytes of
+decoded source geometry. Their session union was 15 sources and 800,242
+bytes. These are CPU source sizes, not GPU buffer sizes. The host mutates
+mesh vertex layouts for vegetation during preparation and packs world
+meshes into shared GPU slabs. Extending these mesh handles across maps
+would need an immutable layout key and separately scoped slab allocation.
+The current host keeps CPU source reuse and per-map GPU retirement until
+that separate layout and allocation path is measured. Evidence:
+`DH2-fx-level-lifetime/artifacts/loading-manifest-publication-20261110.log`.
+
+Runtime material snapshot prediction. Material lookup 1402d49b0 and release
+140060180 keep the registered material separate from the task that resolves
+it. The host worker clones existing material values to resolve a request.
+Its completed batch only publishes newly reserved values and reads existing
+values from the live world. Drop the worker's cloned values after resolution,
+before image admission or a wait for publication. This releases their image
+and buffer references while preserving live material IDs and their resolved
+roles. The empty projected-decal scene also clears the previous projection
+lighting rows while keeping reusable device buffers. No gameplay sampling,
+archive re-read, additional GPU allocation or frame timing gain is predicted.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
