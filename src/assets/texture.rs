@@ -660,7 +660,6 @@ pub(crate) fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, 
     Ok(info)
 }
 
-#[cfg(feature = "game")]
 pub(crate) fn compressed_inline_chain_owned(bytes: Vec<u8>) -> Result<InlineCompressedChain, String> {
     let mut ranges = [const { 0..0 }; 16];
     let info = visit_inline_ranges(&bytes, |level, _, _, range| ranges[level as usize] = range)?;
