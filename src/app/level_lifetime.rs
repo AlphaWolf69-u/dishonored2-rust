@@ -96,6 +96,10 @@ impl LevelLifetime {
                 }
             }
         }
+        // A quality change can create an owner that was absent when
+        // published() recorded the startup resources.
+        world.remove_resource::<super::ParallelShadowOwner>();
+        world.remove_resource::<super::local_shadow_updates::LocalShadowOwner>();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
         if let (Some(images), Some(shared)) = (

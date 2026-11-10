@@ -1629,6 +1629,14 @@ revision reuse, but this route did not replace an atlas within one map. No
 measured GPU memory saving or live quality/resolution coverage is claimed;
 that broader coverage remains open. Existing map-boundary cleanup is unchanged.
 
+Late shadow owner retirement (`1400410f0`). A quality change can create a
+parallel or local shadow owner after startup, including a level that started
+without that owner. The startup snapshot cannot record this later insertion.
+Release both owners explicitly after the outgoing render acknowledgement and
+the ordinary level resource removals. Expect any late-created image leases to
+retire at this boundary, with two resource checks per level unload and no
+frame work. This edge still needs an actual late-admission observation.
+
 
 Named UI image lifetime evidence/prediction (before implementation):
 1410150f0 replaces a bitmap's texture wrapper; 14101d290/14100d6f0 share
