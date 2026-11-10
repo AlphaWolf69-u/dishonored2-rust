@@ -39,6 +39,14 @@ pub fn inspect_scene_gpu_resources(
     levels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some((flag, paths)) = levels.split_first() {
+        if flag == "--ocean-readback" {
+            let app = scene_host(true);
+            let world = app.sub_app(RenderApp).world();
+            crate::rendering::bevy_backend::ocean_height_queries::observe_readback(
+                world.resource(), world.resource(),
+            )?;
+            return Ok(());
+        }
         if flag == "--worker-images" {
             return inspect_worker_images(base, paths);
         }

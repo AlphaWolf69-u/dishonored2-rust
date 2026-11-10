@@ -7,6 +7,7 @@ use bevy::render::{
     renderer::{RenderDevice, RenderQueue},
 };
 mod readback;
+pub(crate) use readback::observe_readback;
 pub use readback::OceanQueryReadbacks;
 
 /// 140302960 allocates 8192 input bytes and 16384 output bytes.

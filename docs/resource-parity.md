@@ -5900,3 +5900,13 @@ acoustic shape teardown paths. This observes the shared path and repeat
 acquisition. A direct comparison with the removed snapshot, active observer
 detach, frame timing and rendered particle output were outside the observation.
 Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
+
+Ocean height readback prediction. The selected-slot consumer 140304c40
+waits, maps, copies straight into the persistent CPU ring, then unmaps.
+The host's asynchronous callback currently allocates a temporary vector and
+the consumer copies it into the persistent ring. Keep the existing queued
+mapping and exact slot selection, but let the callback publish readiness
+only. Read the mapped prefix into the existing CPU allocation and unmap it
+on consumption, ring reuse or owner teardown. Expect zero transient sample
+allocations and one CPU copy per consumed sample, with no new GPU work or
+wait. A dropped owner must cancel pending maps without publishing results.
