@@ -422,15 +422,23 @@ pub(super) struct RuntimeMaterialCoordinator {
 }
 impl Drop for RuntimeMaterialCoordinator {
     fn drop(&mut self) {
-        if let Some(task) = &self.task { task.superseded.store(true, Ordering::Release); }
+        self.cancel_acquisition();
     }
 }
 
 impl RuntimeMaterialCoordinator {
+    fn cancel_acquisition(&self) {
+        // Dropping a task handle cannot stop synchronous archive or program
+        // work already running. Keep the slot until the worker returns.
+        if let Some(work) = &self.task {
+            work.superseded.store(true, Ordering::Release);
+        }
+    }
+
     pub(super) fn retire_acquisition(&mut self) -> bool {
         self.waiting = None;
+        self.cancel_acquisition();
         let Some(work) = &mut self.task else { return true };
-        work.superseded.store(true, Ordering::Release);
         let task = work.task.get_mut().unwrap_or_else(|error| error.into_inner());
         if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none() {
             return false;
@@ -585,7 +593,7 @@ pub(super) fn coordinate(world: &mut World) {
             if let Some(request) = world.get_resource::<super::usable_effects::DynamicWorldMaterials>() { request.failed.store(generation, Ordering::Release); }
             if let Some(request) = world.get_resource::<super::usable_effects::DynamicDecalMaterials>() { request.failed.store(generation, Ordering::Release); }
         }
-        if let Some(task) = state.task.take() { task.superseded.store(true, Ordering::Release); }
+        state.cancel_acquisition();
         state.waiting = None;
         if world.get_resource::<super::runtime_fx_images::RuntimeFxImages>()
             .and_then(|images| images.failure.as_ref()).is_some_and(|(failed, _)| *failed == generation) {
@@ -639,7 +647,7 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
     let expired = state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0);
     let changed = state.revision != Some(generation) || retirement_changed || expired;
     if changed {
-        if let Some(task) = state.task.take() { task.superseded.store(true, Ordering::Release); }
+        state.cancel_acquisition();
         state.waiting = None;
         state.published_generation = None;
         for lease in leases.iter() { add_lease(&mut state.leases, lease); }
@@ -684,11 +692,13 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         let task = work.task.get_mut().unwrap_or_else(|error| error.into_inner());
         if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
             let task_generation = work.generation;
+            let superseded = work.superseded.load(Ordering::Acquire);
             state.task = None;
-            let batch = result?;
-            if task_generation == generation {
-                state.waiting = Some(WaitingMaterialBatch { generation, batch });
+            if !superseded && task_generation == generation {
+                state.waiting = Some(WaitingMaterialBatch { generation, batch: result? });
                 refresh_images(world, state);
+            } else if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE material_discard generation={task_generation} current={generation} superseded={superseded}");
             }
         }
     }
