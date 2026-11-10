@@ -221,13 +221,10 @@ pub(crate) fn set_common_texts(catalog: u64, common: Option<std::sync::Arc<crate
 /// Retire host session caches when their archive namespace ends, then remove
 /// its diagnostic read identities. This does not run on ordinary map unload:
 /// 1400661e0's init/common resources remain available across those transitions.
-pub(crate) fn retire_catalog(catalog: u64, animations: usize) {
+pub(crate) fn retire_catalog(catalog: u64, animations: usize, declarations: usize, blur: usize, contacts: usize) {
     // Each owner removes only cache references for this exact identity. Live
     // actor/movie/render leases keep their immutable payload until final use.
     // Do not hold STATE while dropping owners: release diagnostics can use it.
-    let blur = crate::assets::camera_blur::retire_catalog(catalog);
-    let contacts = crate::assets::entities::contacts::retire_catalog(catalog);
-    let declarations = crate::assets::declaration_texts::retire_catalog(catalog);
     let parameters = crate::assets::shader_cache::retire_catalog(catalog);
     let bitmaps = crate::flash::bitmap_resources::retire_catalog(catalog);
     let manifests = crate::assets::map_resources::retire_catalog(catalog);
@@ -359,30 +356,6 @@ pub(crate) fn forget_catalog_kind(catalog: u64, kind: &str) -> Option<(usize, us
         let paths = history.loaded.remove(kind)?;
         if active { s.acquired = s.acquired_by(catalog); }
         Some((paths.len(), paths.iter().map(|path| path.len()).sum(), paths.capacity()))
-    })
-}
-
-/// Family owners aggregate all live resource identities. Keep each catalog's
-/// independent history and adjust only the active level's acquisition count.
-pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (usize, usize, usize, usize) {
-    with(|s| {
-        let mut removed = 0;
-        let mut bytes = 0;
-        let mut slots_before = 0;
-        let mut slots_after = 0;
-        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
-            let Some(paths) = history.loaded.get_mut(kind) else { continue };
-            slots_before += paths.capacity();
-            paths.retain(|path| {
-                if keep(path) { return true; }
-                removed += 1;
-                bytes += path.len();
-                false
-            });
-            slots_after += paths.capacity();
-        }
-        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
-        (removed, bytes, slots_before, slots_after)
     })
 }
 

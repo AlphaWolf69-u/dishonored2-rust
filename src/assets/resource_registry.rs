@@ -30,6 +30,12 @@ impl<T> Default for Registry<T> {
 }
 impl<T> Registry<T> {
     pub(crate) fn len(&self) -> usize { self.entries.len() }
+    pub(crate) fn owns_read_history(&self, path: &str) -> bool {
+        self.entries.get(path).is_some_and(|entry|
+            entry.current.strong_count() != 0 || entry.failure.is_some())
+            || self.separate.as_ref().and_then(|generations| generations.get(path))
+                .is_some_and(|values| values.iter().any(|generation| generation.strong_count() != 0))
+    }
     pub(crate) fn producer_scope(&self, path: &str) -> u8 {
         self.entries.get(path).map_or(0, |entry| if entry.bootstrap_phase { 2 } else { entry.marker })
     }

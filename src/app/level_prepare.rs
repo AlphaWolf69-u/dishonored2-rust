@@ -101,7 +101,7 @@ pub(super) fn prepare_level(
     let game_base = Some(base);
     let mut app = super::loading_screen::PreparedLevel::default();
     app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
-    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(catalog.identity())));
+    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(&catalog)));
     app.insert_resource(SkeletalHistoryScope::new(&catalog));
     let catalog = Some(catalog);
     let map = level

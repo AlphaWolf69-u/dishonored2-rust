@@ -135,7 +135,7 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
             }
             prepared.keep_registered_resources();
             drop(prepared);
-            if let Some(texts) = contact_texts { texts.release_level_history(); }
+            if let Some(texts) = contact_texts { texts.release_level_history(&catalog); }
             Ok(())
         })();
         // No renderer owns these unpublished CPU batches. Their consumers

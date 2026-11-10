@@ -106,6 +106,11 @@ pub struct Catalog {
         crate::assets::shader_cache::ShaderCacheBackend, std::sync::Arc<crate::assets::shader_cache::ShaderIndex>>>>,
     /// Inventory/history leases can outlive a map's item acquisition table.
     pub(crate) pickable_sources: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::inventory_item::PickableSources>>>,
+    /// Prepared session resources resolved from installed declarations.
+    pub(crate) camera_blur: std::sync::Mutex<Option<std::sync::Arc<crate::assets::camera_blur::BlurResources>>>,
+    pub(crate) contact_database: std::sync::Mutex<Option<std::sync::Arc<crate::assets::entities::contacts::ContactDatabase>>>,
+    /// Installed init/common declaration texts for the current session language.
+    pub(crate) common_declaration_texts: std::sync::Mutex<Option<crate::assets::declaration_texts::SharedTexts>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
@@ -158,7 +163,13 @@ impl Drop for Catalog {
         // releasing it must not leave credits for a later Catalog identity.
         let animations = crate::assets::edge_animation::retire_catalog(
             self.animation_resources.get_mut().unwrap_or_else(|error| error.into_inner()).take());
-        crate::loading::retire_catalog(self.identity, animations);
+        let declarations = usize::from(self.common_declaration_texts.get_mut()
+            .unwrap_or_else(|error| error.into_inner()).take().is_some());
+        let blur = usize::from(self.camera_blur.get_mut()
+            .unwrap_or_else(|error| error.into_inner()).take().is_some());
+        let contacts = usize::from(self.contact_database.get_mut()
+            .unwrap_or_else(|error| error.into_inner()).take().is_some());
+        crate::loading::retire_catalog(self.identity, animations, declarations, blur, contacts);
     }
 }
 
@@ -458,6 +469,9 @@ impl Catalog {
             md6_loading: Default::default(),
             preload_bootstrap: Default::default(),
             preload_map: Default::default(),
+            common_declaration_texts: Default::default(),
+            camera_blur: Default::default(),
+            contact_database: Default::default(),
             animation_resources: Default::default(),
             skeleton_resources: Default::default(),
             parameter_blocks: Default::default(),
