@@ -40,7 +40,7 @@ fn inspect_worker_images(
     base: &std::path::Path,
     paths: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use super::texture_streaming::{GpuMipCopy, PendingGpuImageUpload, TextureReadTarget};
+    use super::texture_streaming::{GpuMipCopy, MipPayload, PendingGpuImageUpload, TextureReadTarget};
     if paths.is_empty() { return Err("--worker-images requires installed image paths".into()); }
     let catalog = archive::Catalog::open(base)?;
     let mut app = scene_host(true);
@@ -49,6 +49,7 @@ fn inspect_worker_images(
         .insert_resource(mailbox.clone())
         .add_systems(Render, report_prepared_diffuse_images.after(RenderSystems::PrepareAssets));
     let mut handles = Vec::with_capacity(paths.len());
+    let mut archive_members = Vec::new();
     for path in paths {
         let start = crate::loading::thread_cycles();
         let streamed = super::texture_streaming::read_streamed_diffuse_at_target(
@@ -58,11 +59,20 @@ fn inspect_worker_images(
             .map_or(0, |(start, end)| end.saturating_sub(start));
         let mut crc = flate2::Crc::new();
         let mut bytes = 0;
+        let mut owned_capacity = 0;
         for mip in &streamed.uploads {
             crc.update(&mip.payload);
             bytes += mip.payload.len();
+            if let MipPayload::Owned(payload) = &mip.payload { owned_capacity += payload.capacity(); }
         }
-        eprintln!("RESOURCE_WORKER_IMAGE path={path} bytes={bytes} extent={}x{} mips={} format={:?} next={:?} crc32={:08x} cycles={cycles}",
+        let member_capacity = match streamed.uploads.first().map(|mip| &mip.payload) {
+            Some(MipPayload::Member(member, _)) => {
+                archive_members.push(Arc::downgrade(member));
+                member.capacity()
+            }
+            _ => 0,
+        };
+        eprintln!("RESOURCE_WORKER_IMAGE path={path} bytes={bytes} extent={}x{} mips={} format={:?} next={:?} crc32={:08x} cycles={cycles} owned_capacity={owned_capacity} member_capacity={member_capacity}",
             streamed.level.width, streamed.level.height, streamed.uploads.len(), streamed.image.texture_descriptor.format,
             streamed.level.next_separate_suffix, crc.sum());
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(streamed.image);
@@ -90,8 +100,10 @@ fn inspect_worker_images(
     for _ in 0..3 { render_epoch(&mut app)?; }
     let gpu = app.sub_app(RenderApp).world().resource::<RenderAssets<GpuImage>>();
     let remaining = ids.iter().filter(|id| gpu.get(**id).is_some()).count();
-    eprintln!("RESOURCE_WORKER_IMAGE_LIFETIME uploaded={} retained={remaining}", completed.len());
+    let retained_members = archive_members.iter().filter(|member| member.strong_count() != 0).count();
+    eprintln!("RESOURCE_WORKER_IMAGE_LIFETIME uploaded={} retained={remaining} retained_members={retained_members}", completed.len());
     if remaining != 0 { return Err(format!("{remaining} worker images remain resident").into()); }
+    if retained_members != 0 { return Err(format!("{retained_members} worker members remain owned after upload").into()); }
     Ok(())
 }
 
