@@ -286,7 +286,7 @@ fn load_cube(
             .read(&key)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("missing colour cube {key}"))?;
-        let volume = crate::texture::compressed_inline_volume(&bytes)?;
+        let volume = crate::texture::compressed_inline_volume_owned(bytes)?;
         if (
             volume.info.width,
             volume.info.height,

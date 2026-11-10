@@ -948,7 +948,7 @@ pub fn load_3d_image(catalog: &crate::archive::Catalog, source: &str)
     }
     let bytes = catalog.read(&path).map_err(|error| error.to_string())?
         .ok_or_else(|| format!("material volume absent: {path}"))?;
-    crate::texture::compressed_inline_volume(&bytes)
+    crate::texture::compressed_inline_volume_owned(bytes)
 }
 
 #[test]

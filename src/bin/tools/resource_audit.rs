@@ -100,6 +100,39 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                     mip.width, mip.height, mip.payload.len(), crc.sum());
             }
         }
+        "inspect-inline-volumes" => {
+            use dishonored2_rust::{archive::Catalog, texture};
+            let catalog = Catalog::open(base)?;
+            let mut count = 0;
+            let mut payload_bytes = 0;
+            let mut copy_capacity = 0;
+            let mut retained_headers = 0;
+            let mut digest = blake3::Hasher::new();
+            for path in catalog.paths_with_suffix(".bimage7") {
+                let header = catalog.read_prefix(&path, 12)?.ok_or("indexed image is absent")?;
+                if header.get(8..12) != Some(1u32.to_le_bytes().as_slice()) {
+                    continue;
+                }
+                let bytes = catalog.read(&path)?.ok_or("indexed volume is absent")?;
+                let allocation = bytes.as_ptr();
+                let reference = texture::compressed_inline_volume(&bytes)
+                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+                let owned = texture::compressed_inline_volume_owned(bytes)
+                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+                if owned.info != reference.info || owned.depth != reference.depth
+                    || owned.payload != reference.payload || owned.payload.as_ptr() != allocation
+                {
+                    return Err(invalid(format!("inline volume staging mismatch: {path}")).into());
+                }
+                count += 1;
+                payload_bytes += owned.payload.len();
+                copy_capacity += reference.payload.capacity();
+                retained_headers += owned.payload.capacity() - owned.payload.len();
+                digest.update(path.as_bytes());
+                digest.update(blake3::hash(&owned.payload).as_bytes());
+            }
+            println!("BIMAGE_VOLUME count={count} payload_bytes={payload_bytes} copy_capacity={copy_capacity} retained_slack={retained_headers} signature={}", digest.finalize());
+        }
         "inspect-world-geometry" => {
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
             let worlds = if args.is_empty() {
