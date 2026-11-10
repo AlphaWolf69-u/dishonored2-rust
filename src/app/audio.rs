@@ -13,7 +13,7 @@ use crate::assets::declaration_texts;
 mod effects;
 mod spatial;
 mod session;
-pub(super) use session::{work as acquire_audio_work, Session as AudioSession};
+pub(super) use session::{close_admission as close_session_admission, work as acquire_audio_work, Session as AudioSession};
 pub(super) mod level;
 pub(super) use contacts::ContactSound;
 
