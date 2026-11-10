@@ -4,13 +4,14 @@ use super::{
     entities::{declaration_text, parse_declaration},
 };
 use crate::gameplay::options::decl::{atom, scope};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::{Arc, Weak}};
 
 /// One declaration-reference owner for a level's projected-decal effects.
 /// Instanced and ordinary receiver variants retain their own material names.
 #[derive(Default)]
 pub struct DecalResources {
-    declarations: HashMap<String, Result<Option<Arc<DecalMaterials<String>>>, String>>,
+    catalog: Option<u64>,
+    declarations: HashMap<String, Weak<DecalMaterials<String>>>,
 }
 impl DecalResources {
     pub fn resolve(
@@ -18,15 +19,27 @@ impl DecalResources {
         catalog: &Catalog,
         name: &str,
     ) -> Result<Option<Arc<DecalMaterials<String>>>, String> {
+        let load = || DecalMaterials::read(catalog, name)?
+            .map(|materials| materials.resolve(catalog).map(Arc::new))
+            .transpose();
+        if catalog.has_overlays() { return load(); }
+        if self.catalog != Some(catalog.identity()) {
+            self.declarations.clear();
+            self.catalog = Some(catalog.identity());
+        }
         let key = name.replace('\\', "/").to_ascii_lowercase();
-        self.declarations
-            .entry(key)
-            .or_insert_with(|| {
-                DecalMaterials::read(catalog, name)?
-                    .map(|materials| materials.resolve(catalog).map(Arc::new))
-                    .transpose()
-            })
-            .clone()
+        if let Some(declaration) = self.declarations.get(&key).and_then(Weak::upgrade) {
+            return Ok(Some(declaration));
+        }
+        let declaration = load()?;
+        if let Some(declaration) = &declaration {
+            self.declarations.insert(key, Arc::downgrade(declaration));
+        }
+        Ok(declaration)
+    }
+
+    pub(crate) fn retire_unused(&mut self) {
+        self.declarations.retain(|_, declaration| declaration.strong_count() != 0);
     }
 }
 

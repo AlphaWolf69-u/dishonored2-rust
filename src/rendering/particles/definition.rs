@@ -21,6 +21,7 @@ use std::{
 /// state. These host caches never share a particle's age, RNG or pool slot.
 pub struct ParticleResources {
     images: super::image_resources::ParticleImages,
+    pub(super) decal_resources: crate::assets::decal::DecalResources,
     declarations: HashMap<String, Result<Arc<particle_declaration::ParticleDeclaration>, String>>,
     models: HashMap<String, Arc<crate::assets::particle_model::ParticleModel>>,
     field_images: HashMap<String, Arc<crate::assets::fx::particle_field::FieldPixels>>,
@@ -42,6 +43,7 @@ impl Default for ParticleResources {
     fn default() -> Self {
         Self {
             images: Default::default(),
+            decal_resources: Default::default(),
             declarations: Default::default(),
             models: Default::default(),
             field_images: Default::default(),
@@ -72,6 +74,7 @@ impl ParticleResources {
     /// residency. Runtime declarations/materials own their required backing.
     pub fn retire_unused(&mut self) {
         let before = (self.declarations.len(), self.materials.len(), self.models.len(), self.field_images.len());
+        self.decal_resources.retire_unused();
         // 0607f0 reuses registered identities, including failed loads. Do not
         // turn retirement into a retry loop for immutable source failures.
         self.declarations.retain(|_, value| match value {

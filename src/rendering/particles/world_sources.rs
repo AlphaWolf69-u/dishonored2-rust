@@ -316,7 +316,6 @@ impl WorldFxSources {
         let result = self;
         let trace = std::env::var_os("DH2_TRACE_WORLD_FX").is_some();
         let mut sound_events = HashMap::new();
-        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Sub-FX declarations (m_subFXs) are loaded as further effects, in
         // reference order after the declarations that name them.
         let mut next = 0;
@@ -376,7 +375,7 @@ impl WorldFxSources {
                     let decals = match descriptor_fields(scope(fields, "m_decals").unwrap_or(&[])) {
                         Ok(descriptors) => descriptors.iter()
                             .filter(|fields| atom(fields, "m_enabled") != Some("false"))
-                            .map(|fields| crate::assets::fx::decal::DecalDefinition::load(fields, catalog, &mut decal_resources).map(Arc::new))
+                            .map(|fields| crate::assets::fx::decal::DecalDefinition::load(fields, catalog, &mut resources.decal_resources).map(Arc::new))
                             .collect(),
                         Err(error) => vec![Err(error)],
                     };
