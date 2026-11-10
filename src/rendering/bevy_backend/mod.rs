@@ -25,6 +25,8 @@ pub(crate) fn release_level(world: &mut bevy::prelude::World) {
     fog_scene::FogGpu::release_level(world);
     display_scene::release_level(world);
     auto_exposure::release_level(world);
+    alpha_depth_scene::AlphaGpu::release_level(world);
+    coarse_depth::CoarseDepthGpu::release_level(world);
     if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() != Ok("1") {
         area_light_scene::AreaLightScene::release_level(world);
         screen_shadow_pass::ScreenGpu::release_level(world);
