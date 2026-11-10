@@ -1,7 +1,7 @@
 //! Material packing constants read directly from the audited installed image.
 //! The compression table stays with the installation, not in rewrite assets.
 use super::executable::{word, Image};
-use std::path::Path;
+use std::{path::Path, sync::{Arc, OnceLock}};
 
 pub(crate) struct MaterialConstants {
     pub distances: [u16; 256],
@@ -11,6 +11,48 @@ pub(crate) struct MaterialConstants {
     pub material_limit: u16,
 }
 impl MaterialConstants {
+    pub(crate) fn acquire(catalog: &crate::archive::Catalog) -> Result<Arc<Self>, String> {
+        static MODE: OnceLock<(bool, bool)> = OnceLock::new();
+        let (separate, trace) = *MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SEPARATE_MATERIAL_CONSTANTS").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_MATERIAL_CONSTANTS").is_some_and(|value| value == "1"),
+        ));
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let mut loaded = false;
+        let mut load = || {
+            let constants = Self::load(catalog.base()).map(Arc::new)?;
+            loaded = true;
+            Ok::<_, String>(constants)
+        };
+        let constants = if separate {
+            load()?
+        } else {
+            let mut owner = catalog.material_constants.lock()
+                .map_err(|_| "physics material constants owner is poisoned")?;
+            if owner.is_none() { *owner = Some(load()?); }
+            owner.as_ref().unwrap().clone()
+        };
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            let mut signature = blake3::Hasher::new();
+            for value in constants.distances { signature.update(&value.to_le_bytes()); }
+            for value in [constants.maximum_distance, constants.trigger_distance] {
+                signature.update(&value.to_bits().to_le_bytes());
+            }
+            for value in [constants.contact_tolerance, constants.material_limit] {
+                signature.update(&value.to_le_bytes());
+            }
+            let source_bytes = if loaded {
+                catalog.base().parent().and_then(|path| std::fs::metadata(path.join("Dishonored2.exe")).ok())
+                    .map_or(0, |metadata| metadata.len())
+            } else { 0 };
+            eprintln!("MATERIAL_CONSTANTS_ACQUIRE catalog={} identity={:p} loaded={loaded} source_bytes={source_bytes} cycles={cycles} signature={}",
+                catalog.identity(), Arc::as_ptr(&constants), signature.finalize());
+        }
+        Ok(constants)
+    }
+
     pub fn load(game_base: &Path) -> Result<Self, String> {
         let path = game_base
             .parent()
@@ -63,5 +105,13 @@ impl MaterialConstants {
             middle += 1;
         }
         middle as u8
+    }
+}
+
+impl Drop for MaterialConstants {
+    fn drop(&mut self) {
+        if std::env::var_os("DH2_DEBUG_MATERIAL_CONSTANTS").is_some_and(|value| value == "1") {
+            eprintln!("MATERIAL_CONSTANTS_RETIRE identity={:p}", self);
+        }
     }
 }

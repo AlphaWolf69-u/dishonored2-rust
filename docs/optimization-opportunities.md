@@ -2234,3 +2234,13 @@ Shader stage admission follow-up: the implemented level-local checksum cache avo
 World particle surface submission (`bevy_backend/particle_meshes`): active frames still group borrowed draws by model/material in a temporary map with one vector per active key. Removing that grouping could save one map allocation and at least one vector allocation per active key, with unchanged proxy ordering and lighting-record indices. Measure the active-key count and the grouping span on real particle frames before changing the grouping. Empty publications now bypass this work.
 
 Iggy section residency (2026-11-10). The installed Iggy reader 141093380 executes relocation programs for the section mask 0x102 supplied by 141028ea0. The host retains the serialized member and resolves section-relative pointers in place. An index census of all 55 selected installed .iggy paths found 90,786,940 member bytes, of which 90,457,592 are the loaded sections. The 15 sampled paths from the loading/pause trace and the named HUD/Journal entries account for 7,332,452 source bytes and at most 74,040 removable bytes, including 46,160 relocation bytes. This is a maximum for that sampled set, not an estimate of a session's resident heap. Compaction would copy the data sections or require an additional selective archive reader and a change to the complete-file byte interface. Keep the source-backed format on this evidence. The existing owner already reuses Iggy/ABC identities and reads the selected language on demand. Relocation lookup metadata is a separate cost. Evidence: DH2-collision-staging/artifacts/iggy-payload-census-20261110.json.
+
+The retained host table is 524 typed bytes, plus its Arc allocation header.
+Its Catalog adds one mutex-protected optional Arc. In the ordinary level
+both world libraries share that table. Between levels the Catalog keeps
+the small table rather than the executable bytes. A failed source read
+leaves the owner empty so the next request can retry. ClassDeclarations
+still reparses the installed executable for component metadata in each
+trigger-world initialization. That broader registry preparation has its
+own initialized hierarchy and dependency plan, so it needs a complete
+sharing and retirement design before retaining it across maps.

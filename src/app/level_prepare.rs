@@ -992,7 +992,6 @@ pub(super) fn prepare_level(
             super::audio::level::LevelAudio::load(
                 catalog,
                 &level.entities,
-                game_base.as_deref().unwrap(),
             )
             .map_err(std::io::Error::other)?,
         );

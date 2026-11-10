@@ -6741,3 +6741,19 @@ GPU preparation signatures, and initial texture and material handoff
 outputs matched. This measures the declaration handoff, not a frame
 timing or peak-memory result.
 Evidence: DH2-collision-staging/artifacts/raw-declaration-buffer-handoff-20261111-comparison.json.
+
+### Physics material packing constants
+
+Prediction before implementation. The material record and distance packer
+140c9c210 / 140ae3630 use the executable's constant data, including
+141e9b130 and 141ad3814. The host currently reads and verifies the complete
+41,134,632-byte installed executable independently for every trigger world
+and acoustic world. Share the existing small typed constants through their
+Catalog, acquiring on first use and releasing with that Catalog and the
+last material-library lease. Retry failed acquisition. Preserve the complete
+version check and each world's independent mutable material records.
+On EotW / Dust / EotW, expect six constants reads to become one, avoiding
+205,673,160 cumulative bytes read and hashed in this function. The source
+buffer still retires immediately after parsing. Measure constants
+acquisition and compare exact constants, prepared world inputs and
+acoustic publication and release in one executable.

@@ -229,9 +229,7 @@ impl PhysicsScene {
             .enumerate()
             .map(|(i, v)| (v.id.as_str(), (i, v.is_water_volume)))
             .collect::<HashMap<_, _>>();
-        let constants = Arc::new(crate::assets::physics_material::MaterialConstants::load(
-            &base,
-        )?);
+        let constants = crate::assets::physics_material::MaterialConstants::acquire(catalog)?;
         let mut materials = crate::gameplay::materials::MaterialOwner::new(constants, 16)?;
         let declaration = materials.declaration_with_texts(catalog, "narrow_phase_trigger", texts)?;
         let trigger_material = materials.resolve(declaration, |_, _, _, _| {
