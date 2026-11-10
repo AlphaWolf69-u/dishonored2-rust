@@ -490,7 +490,7 @@ impl ProbeLightingSet {
             append(&vertex.position.map(f32::to_bits));
             append(&[u32::from_le_bytes(vertex.probe_weights)]);
         }
-        for probe in &self.probes {
+        for probe in 0..self.probes.len() {
             let (index, luminance) = self.reflection_info(probe);
             append(&[index, luminance.to_bits()]);
         }
