@@ -103,7 +103,7 @@ pub mod coarse_depth;
 #[cfg(feature = "game")]
 pub mod area_light_pool;
 #[cfg(feature = "game")]
-mod area_light_scene;
+pub(crate) mod area_light_scene;
 #[cfg(feature = "game")]
 pub mod shader_buffer_patches;
 #[cfg(feature = "game")]

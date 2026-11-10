@@ -56,6 +56,12 @@ pub fn inspect_scene_gpu_resources(
                 app.sub_app_mut(RenderApp).world_mut(),
             ).map_err(Into::into);
         }
+        if flag == "--area-tile-retirement" {
+            let mut app = scene_host(true);
+            return crate::rendering::bevy_backend::area_light_scene::observe_tile_retirement(
+                app.sub_app_mut(RenderApp).world_mut(),
+            ).map_err(Into::into);
+        }
         if flag == "--runtime-fx" {
             let (level, effects) = paths.split_first().filter(|(_, effects)| !effects.is_empty())
                 .ok_or("--runtime-fx requires a level and at least one installed effect")?;

@@ -6281,3 +6281,16 @@ byte parity remain measured on Edge of the World and Dust District.
 Evidence: `DH2-collision-staging/artifacts/integrated-all-level-acquisition-20261110.json`.
 
 World environment declaration acquisition prediction (2026-11-10). The game owns an idDeclEnv with a default blend duration at 140017b30, and its environment stack at 14088e220 consumes the authored world and area assignments. The host reads each ancestor twice while preparing the world environment and normalizes the same source separately for lighting, render parameters, inheritance and duration. Build one ordered profile per installed world load from a single pass over the inheritance chain. Expect one read rather than two per ancestor, one normalization per visited source, unchanged order and exact typed lighting/parameter/duration values. Release source text at each iteration. Area profiles should also share one normalization for their parameter and parent readers. Preserve the lossy UTF-8 behavior of the current text path, depth 16, missing parents, cycle stopping, and fresh overlay reads on each acquisition. No new retained source cache or frame work is expected.
+
+Tiled-light publication prediction. Original `140371750` owns the
+1,152,000 four-byte light-node links and the lighting records. The host
+releases its view-scoped TLF pass at the render handoff, but the forward
+area-light publisher still holds the outgoing records, list heads and node
+pool. Save the forward renderer's initial empty bindings and restore them
+at the existing release boundary with a disabled grid. At 1920×1080 and
+16-pixel tiles the three outgoing buffers total 4,788,736 logical bytes.
+Expect their allocations to retire after submitted GPU work drains. The
+shared texture array and device pipelines remain with their own owners.
+No additional upload, draw work or per-frame reference clone is expected.
+
+Tiled-light retirement observation (964f7f2a). Windowless DX12 created the production 1920x1080 tiled-light pass, published the buffers through the forward publisher, and dropped the pass. Its forward bindings alone kept the light-node pool (4,653,056 allocated bytes), lighting records (65,536) and per-type list heads (131,072) live. The normal area-light level release restored the exact empty binding identities and removed all three allocator entries after queue drain. Their logical buffer size was 4,788,736 bytes and their reported allocations totaled 4,849,664 bytes. The observer exited zero with no validation errors. It did not submit gameplay draws or measure frame time. Evidence: DH2-fx-level-lifetime/artifacts/area-light-tile-retirement-20261110-comparison.json.
