@@ -121,6 +121,18 @@ fn gpu_snapshot(app: &App, step: usize, phase: &str) {
         world.resource::<RenderAssets<GpuShaderBuffer>>().iter().count(),
         world.resource::<RenderAssets<crate::rendering::bevy_backend::sky_mask::GpuSkyMaterial>>().iter().count());
     if matches!(phase, "before-preparation" | "after-gpu-removal") {
+        let atlases = app.world().resource::<bevy::text::FontAtlasSet>();
+        let gpu_images = world.resource::<RenderAssets<GpuImage>>();
+        for (font, pages) in atlases.iter() {
+            for atlas in pages {
+                let id = atlas.texture.id();
+                let gpu = gpu_images.get(id).map(|image| {
+                    (image.texture.id(), image.texture_descriptor.size)
+                });
+                eprintln!("RESOURCE_SCENE_OVERLAY_ATLAS step={step} phase={phase} font_px={} asset={id:?} gpu={gpu:?}",
+                    f32::from_bits(font.font_size_bits));
+            }
+        }
         let allocator = world.resource::<bevy::render::mesh::allocator::MeshAllocator>();
         for (id, mesh) in world.resource::<RenderAssets<RenderMesh>>().iter() {
             let vertex = allocator.mesh_vertex_slice(&id).map(|slice| (slice.range, slice.buffer.size()));
@@ -210,6 +222,16 @@ fn scene_host(first_host: bool) -> App {
     super::audio::initialize_resources(&mut app);
     app.finish();
     app.cleanup();
+    // Give UI layout a target size without allocating a window or drawing a view.
+    app.world_mut().spawn((
+        Camera3d::default(),
+        Camera { is_active: false, ..default() },
+        bevy::camera::RenderTarget::None { size: UVec2::new(1366, 768) },
+        bevy::ui::IsDefaultUiCamera,
+    ));
+    app.world_mut()
+        .run_system_once(super::performance::bootstrap_overlay)
+        .expect("prepare the diagnostic host overlay");
     let resident = app
         .world()
         .resource::<super::resident_images::ResidentImages>()
@@ -245,6 +267,10 @@ fn inspect_scene_resources(
             if new_host {
                 let resident = app.world().resource::<super::resident_images::ResidentImages>().clone();
                 resident.prepare_intrinsics(&catalog, &mut *app.world_mut().resource_mut::<Assets<Image>>())?;
+            }
+            if new_host {
+                // UI layout creates the glyph image; include it in the real upload set.
+                render_epoch(&mut app)?;
             }
             let inputs = gpu_inputs(app.world());
             upload_assets(&mut app, &inputs)?;

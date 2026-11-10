@@ -295,7 +295,7 @@ pub(super) fn install(
         movie_max_gap: std::time::Duration::ZERO,
         upload_budget,
     })
-    .add_systems(Startup, show_bootstrap)
+    .add_systems(Startup, (show_bootstrap, super::performance::bootstrap_overlay))
     .add_systems(First, acquire)
     .add_systems(
         First,
@@ -390,6 +390,11 @@ fn acquire(world: &mut World) {
                     state.finished = false;
                     for mut colour in world.query_filtered::<&mut BackgroundColor, With<super::loading_fade::FadeLayer>>().iter_mut(world) { colour.0 = Color::BLACK; }
                     state.next = Some(level);
+                    let mut overlays = world
+                        .query_filtered::<&mut Visibility, With<super::state::GameplayOverlay>>();
+                    for mut visibility in overlays.iter_mut(world) {
+                        *visibility = Visibility::Hidden;
+                    }
                     // Stop outgoing view submission before the render-world
                     // release acknowledgement. Merely gating our publishers
                     // leaves Bevy's previous mesh phases drawable for another

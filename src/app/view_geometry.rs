@@ -816,9 +816,40 @@ pub(super) fn mean_game_position(points: &[Vec3]) -> [f32; 3] {
     view_to_game(mean)
 }
 
+pub(super) enum MeshUvs<'a> {
+    Float(&'a [[f32; 2]]),
+    Packed(&'a [[half::f16; 2]]),
+}
+
+impl MeshUvs<'_> {
+    fn floats(self) -> Vec<[f32; 2]> {
+        match self {
+            Self::Float(uvs) => uvs.to_vec(),
+            Self::Packed(uvs) => uvs.iter().map(|uv| uv.map(half::f16::to_f32)).collect(),
+        }
+    }
+
+    fn packed(self) -> Vec<[half::f16; 2]> {
+        match self {
+            Self::Float(uvs) => uvs.iter().map(|uv| uv.map(half::f16::from_f32)).collect(),
+            Self::Packed(uvs) => uvs.to_vec(),
+        }
+    }
+}
+
 pub(super) fn authored_mesh<const N: usize>(
     points: &[Vec3],
     uvs: &[[f32; 2]],
+    indices: &[u16],
+    packed: &[[u8; N]],
+    transform_direction: impl Fn(Vec3) -> Vec3,
+) -> Mesh {
+    authored_mesh_from_uvs(points, MeshUvs::Float(uvs), indices, packed, transform_direction)
+}
+
+pub(super) fn authored_mesh_from_uvs<const N: usize>(
+    points: &[Vec3],
+    uvs: MeshUvs<'_>,
     indices: &[u16],
     packed: &[[u8; N]],
     transform_direction: impl Fn(Vec3) -> Vec3,
@@ -856,7 +887,7 @@ pub(super) fn authored_mesh<const N: usize>(
         Mesh::ATTRIBUTE_POSITION,
         points.iter().map(|p| p.to_array()).collect::<Vec<_>>(),
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs.floats())
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, uv1)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
@@ -895,13 +926,13 @@ fn packed_view_direction(x: u8, y: u8, z: u8, w: u8) -> [i8; 4] {
     [x as i8, z as i8, negated(y), w as i8]
 }
 
-/// The installed vertex in view axes, packed as installed: positions and UVs
-/// as floats, normal/tangent SNORM8x4, colour UNORM8x4. The bitangent is
+/// The installed vertex in view axes: float positions, half-float UVs,
+/// SNORM8x4 normal/tangent and UNORM8x4 colour. The bitangent is
 /// derived in the vertex shader (DH2_DERIVED_BITANGENT) from the same values
 /// `authored_mesh` takes it from, cross(N, T) * sign.
 fn packed_authored_mesh<const N: usize>(
     points: &[Vec3],
-    uvs: &[[f32; 2]],
+    uvs: MeshUvs<'_>,
     indices: &[u16],
     packed: &[[u8; N]],
 ) -> Mesh {
@@ -910,10 +941,7 @@ fn packed_authored_mesh<const N: usize>(
     let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, points.iter().map(|p| p.to_array()).collect::<Vec<_>>())
-        // Both UV sets are installed half floats (the parser widened UV0;
-        // narrowing a widened half restores its bits exactly).
-        .with_inserted_attribute(PACKED_UV_0, bevy::mesh::VertexAttributeValues::Float16x2(
-            uvs.iter().map(|uv| uv.map(half::f16::from_f32)).collect()))
+        .with_inserted_attribute(PACKED_UV_0, bevy::mesh::VertexAttributeValues::Float16x2(uvs.packed()))
         .with_inserted_attribute(PACKED_UV_1, bevy::mesh::VertexAttributeValues::Float16x2(
             packed.iter().map(|p| [half::f16::from_le_bytes([p[0], p[1]]), half::f16::from_le_bytes([p[2], p[3]])]).collect()))
         .with_inserted_attribute(PACKED_NORMAL, bevy::mesh::VertexAttributeValues::Snorm8x4(
@@ -936,10 +964,20 @@ pub(super) fn source_mesh<const N: usize>(
     packed: &[[u8; N]],
     flipped: bool,
 ) -> Mesh {
+    source_mesh_from_uvs(positions, MeshUvs::Float(uvs), indices, packed, flipped)
+}
+
+pub(super) fn source_mesh_from_uvs<const N: usize>(
+    positions: &[[f32; 3]],
+    uvs: MeshUvs<'_>,
+    indices: &[u16],
+    packed: &[[u8; N]],
+    flipped: bool,
+) -> Mesh {
     let points: Vec<Vec3> = positions.iter().copied().map(game_to_view).collect();
     // Diagnostic A/B: DH2_DEBUG_FLOAT_VERTICES=1 builds the expanded float layout.
     if std::env::var_os("DH2_DEBUG_FLOAT_VERTICES").is_some_and(|v| v == "1") {
-        return mirrored_render_mesh(authored_mesh(&points, uvs, indices, packed, |n| game_to_view(n.to_array())), indices, flipped);
+        return mirrored_render_mesh(authored_mesh_from_uvs(&points, uvs, indices, packed, |n| game_to_view(n.to_array())), indices, flipped);
     }
     mirrored_render_mesh(packed_authored_mesh(&points, uvs, indices, packed), indices, flipped)
 }
