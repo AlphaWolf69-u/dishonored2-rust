@@ -315,6 +315,29 @@ impl ParticleStageAsset {
                 )?,
                 "m_spawnMesh" => particle_emission_mesh::edit(&mut self.spawn_mesh, scope(value)?)?,
                 "m_velocityMesh" => particle_emission_mesh::velocity_edit(&mut self.velocity_mesh, scope(value)?)?,
+                // arkInitialAngularOrientation (spawn_t +0xf38): m_value +0,
+                // m_worldspace +0x110, m_rotationOrder +0x114.
+                "m_velocityCycleOrientation" => {
+                    let orientation = &mut self.velocity_orientation;
+                    for (name, value) in scope(value)? {
+                        match name.as_str() {
+                            "m_value" => particles::vector_parameter(&mut orientation.angles, scope(value)?)?,
+                            "m_worldspace" => orientation.worldspace = boolean(value)?,
+                            "m_rotationOrder" => {
+                                orientation.order = match atom(value)?.trim_start_matches("idAngles::") {
+                                    "XYZ" => 0,
+                                    "YZX" => 1,
+                                    "ZXY" => 2,
+                                    "XZY" => 3,
+                                    "YXZ" => 4,
+                                    "ZYX" => 5,
+                                    mode => return Err(format!("unknown velocity orientation rotation order {mode}")),
+                                }
+                            }
+                            _ => return Err(format!("unknown velocity cycle orientation field {name}")),
+                        }
+                    }
+                }
                 "m_velocityPeriodicOrientation" => {
                     for (name, value) in scope(value)? {
                         let parameter = match name.as_str() {
