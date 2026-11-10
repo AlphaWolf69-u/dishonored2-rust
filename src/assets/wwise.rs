@@ -1038,9 +1038,66 @@ pub(crate) fn retire_stream_diagnostics() {
     }
 }
 
+const BANK_MEDIA_RECORD_BYTES: usize = 12;
+type BankMediaRecord = [u8; BANK_MEDIA_RECORD_BYTES];
+
+#[derive(Clone, Copy)]
+struct BankMediaIndex<'a> {
+    bytes: &'a [u8],
+    ordered: bool,
+}
+
+static BANK_INDEX_MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+static BANK_INDEX_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static BANK_INDEX_CYCLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl<'a> BankMediaIndex<'a> {
+    fn id(record: &BankMediaRecord) -> u32 {
+        u32::from_le_bytes(record[..4].try_into().unwrap())
+    }
+
+    fn ordered(bytes: &[u8]) -> bool {
+        let (rows, remainder) = bytes.as_chunks::<BANK_MEDIA_RECORD_BYTES>();
+        remainder.is_empty() && rows.is_sorted_by_key(Self::id)
+    }
+
+    fn entry(self, id: u32) -> Option<&'a BankMediaRecord> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let &(scan, trace) = BANK_INDEX_MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SCAN_WWISE_BANK_MEDIA").is_some_and(|v| v == "1"),
+            std::env::var_os("DH2_DEBUG_WWISE_MEDIA_SECTIONS").is_some_and(|v| v == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let (rows, _) = self.bytes.as_chunks::<BANK_MEDIA_RECORD_BYTES>();
+        let result = if self.ordered && !scan {
+            rows.get(rows.partition_point(|row| Self::id(row) < id)).filter(|row| Self::id(row) == id)
+        } else {
+            rows.iter().find(|row| Self::id(row) == id)
+        };
+        if trace {
+            BANK_INDEX_LOOKUPS.fetch_add(1, Relaxed);
+            if let Some(cycles) = started.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start)) {
+                BANK_INDEX_CYCLES.fetch_add(cycles, Relaxed);
+            }
+        }
+        result
+    }
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn report_bank_index_lookup() {
+    use std::sync::atomic::Ordering::Relaxed;
+    if let Some(&(scan, true)) = BANK_INDEX_MODE.get() {
+        let lookups = BANK_INDEX_LOOKUPS.swap(0, Relaxed);
+        let cycles = BANK_INDEX_CYCLES.swap(0, Relaxed);
+        println!("WWISE_BANK_INDEX_LOOKUP linear_control={scan} lookups={lookups} cycles={cycles}");
+    }
+}
+
 fn media_from_sound(
     sound: &[u8],
-    media_index: Option<&[u8]>,
+    media_index: Option<BankMediaIndex<'_>>,
     media_data: Option<&[u8]>,
     package_media: &mut impl FnMut(u32, u8) -> io::Result<Option<MediaBytes>>,
     hold_bank: impl Fn(&[u8]) -> MediaBytes,
@@ -1052,6 +1109,8 @@ fn media_from_sound(
     if sound[8] != 0 {
         if let Some(mut media) = package_media(media_id, sound[8])? {
             let (track, metrics) = stream_diagnostic_mode();
+            let prefetched = sound[8] == 1 && media.is_stream_header();
+            let entry = if track || prefetched { media_index.and_then(|index| index.entry(media_id)) } else { None };
             if metrics {
                 use std::sync::atomic::Ordering::Relaxed;
                 STREAM_DIAGNOSTIC_REQUESTS.fetch_add(1, Relaxed);
@@ -1060,16 +1119,11 @@ fn media_from_sound(
                 STREAM_DIAGNOSTIC_SIGNATURE.fetch_add(signature, Relaxed);
             }
             if track {
-                let prefix = media_index.and_then(|didx| didx.chunks_exact(12)
-                    .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
-                    .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
+                let prefix = entry.and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize));
                 STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
                 if metrics { STREAM_DIAGNOSTIC_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
             }
-            let prefetched = sound[8] == 1 && media.is_stream_header();
             if prefetched {
-                let entry = media_index.and_then(|didx| didx.chunks_exact(12)
-                    .find(|record| read_u32_slice(record, 0).ok() == Some(media_id)));
                 let bank_prefix = entry.zip(media_data).map(|(entry, data)| {
                     let start = read_u32_slice(entry, 4)? as usize;
                     let end = start.checked_add(read_u32_slice(entry, 8)? as usize).ok_or_else(|| invalid("prefetch range overflow"))?;
@@ -1084,10 +1138,9 @@ fn media_from_sound(
             return Ok(Some((media, (sound[8] == 2 || prefetched).then_some(media_id))));
         }
     }
-    if let (Some(didx), Some(data)) = (media_index, media_data) {
-        if didx.len() % 12 != 0 { return Err(invalid("invalid Wwise DIDX size")); }
-        for record in didx.chunks_exact(12) {
-            if read_u32_slice(record, 0)? != media_id { continue; }
+    if let (Some(index), Some(data)) = (media_index, media_data) {
+        if index.bytes.len() % BANK_MEDIA_RECORD_BYTES != 0 { return Err(invalid("invalid Wwise DIDX size")); }
+        if let Some(record) = index.entry(media_id) {
             let start = read_u32_slice(record, 4)? as usize;
             let end = start.checked_add(read_u32_slice(record, 8)? as usize).ok_or_else(|| invalid("Wwise media range overflow"))?;
             return Ok(Some((hold_bank(data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?), None)));
