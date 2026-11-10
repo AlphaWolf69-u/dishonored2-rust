@@ -5715,6 +5715,14 @@ retire after both request leases end, while the loaded level stays alive. A
 camera-specific decal pipeline, active effect tails, and failure recovery are
 outside this observation.
 
+The first run (`cce7d92d`) resolved one world mesh and four decal material
+requests in both maps, then the production coordinator reported that the
+scene catalog was absent. Setup had moved the only `SceneData` reference into
+the texture worker, although late FX and sky requests still use `SceneData`.
+Keep the scene lease and give the worker a clone of the same Catalog Arc.
+This should restore late acquisition with no second index, archive cache,
+or payload read. Both leases end at their existing level-owner boundaries.
+
 ### Runtime FX image binding retirement
 
 Prediction before change. A dynamic material proxy retires after its final effect or tail lease, under the map material identity/release boundaries 1400607f0 and 140060180. RuntimeMaterialCoordinator publishes only the surviving surfaces to DynamicWorldMaterials. The host image synchronization previously removed absent bindings only inside its replacement-image readiness gate. While an unrelated image read is pending or fails, the stale world_materials entry can hold the old image's Arc and prevent its streaming slot and GPU lease from retiring. Drop absent dynamic bindings on the new surface revision, independently of incoming-image readiness. Existing tail and render-frame leases still defer the actual slot release, and startup keys are excluded from the dynamic entry set. Incoming binding publication retains its readiness gate. Expect the expired binding to release before a new pending/failed read completes, with the same ready materials and no new work on unchanged revisions. Live cancellation and tail evidence remain required; the runtime trace reports the binding release and the existing image-slot retirement.

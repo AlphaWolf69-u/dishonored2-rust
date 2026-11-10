@@ -211,9 +211,9 @@ pub(super) fn prepare(
     check_cancelled: &impl Fn() -> Result<(), String>,
 ) -> Result<(), String> {
     check_cancelled()?;
-    // Take the catalog to avoid borrowing the scene while setup mutates its
-    // parsed world, then transfer ownership to the texture worker below.
-    let catalog_storage = scene.catalog.take();
+    // Setup mutates the parsed world. Borrow through a separate lease while
+    // the published scene keeps its catalog for late FX and sky acquisition.
+    let catalog_storage = scene.catalog.clone();
     let catalog = catalog_storage.as_deref();
     let fog_material = crate::rendering::bevy_backend::fog_material::FogMaterialResources::new(
         images,
