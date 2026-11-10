@@ -147,6 +147,9 @@ pub fn inspect_scene_publication(
             "--manifest-catalog-scopes" => {
                 return crate::assets::map_resources::observe_catalog_manifests(base, name).map_err(Into::into);
             }
+            "--physics-system-scopes" => {
+                return crate::assets::physworld::physics_system::observe_resource_scopes(base, name).map_err(Into::into);
+            }
             "--contact-catalog-scopes" => {
                 return crate::assets::declaration_texts::observe_catalog_scopes(base, name).map_err(Into::into);
             }

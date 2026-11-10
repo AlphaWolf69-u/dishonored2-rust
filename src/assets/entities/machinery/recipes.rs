@@ -93,8 +93,8 @@ fn physics_systems(
             .flatten()
             .map(entities::owned_declaration_text)
     };
+    let trace = std::env::var_os("DH2_DEBUG_PHYSICS_SYSTEM_RESOURCES").is_some_and(|value| value == "1");
     let mut systems = Vec::new();
-    let mut sources = physworld::physics_system::SystemSources::new(catalog);
     for binding in entities::component_bindings(document) {
         if binding.class != "cpntPhysicsSystem" {
             continue;
@@ -112,7 +112,7 @@ fn physics_systems(
             unsupported.push(format!("{id}: physics system on layer {layer:?} needs contacts"));
             continue;
         }
-        let mut load = || -> Result<Option<SystemRecipe>, String> {
+        let load = || -> Result<Option<SystemRecipe>, String> {
             let Some((index, p)) = placements
                 .iter()
                 .enumerate()
@@ -129,21 +129,25 @@ fn physics_systems(
                 .strip_suffix(".hkt")
                 .ok_or_else(|| format!("{id}: unsupported ragdoll {ragdoll}"))?;
             let path = format!("generated/physsystem/{stem}.hkx");
-            let system = sources.system(catalog, &path)
-                .map_err(|error| match error {
-                    physworld::physics_system::AcquireError::Read(error) => error,
-                    physworld::physics_system::AcquireError::Parse(error) => format!("{id}: {error}"),
-                })?
-                .ok_or_else(|| format!("{id}: missing {path}"))?;
+            use physworld::physics_system::{acquire_ragdoll, acquire_system, AcquireError};
+            let system = acquire_system(catalog, &path).map_err(|error| match error {
+                AcquireError::Missing => format!("{id}: missing {path}"),
+                AcquireError::Read(error) => error,
+                AcquireError::Parse(error) => format!("{id}: {error}"),
+            })?;
             let map = physworld::physics_system::ragdoll_path(&skeleton, &ragdoll);
-            let ragdoll = sources.ragdoll(catalog, &map)
-                .map_err(|error| match error {
-                    physworld::physics_system::AcquireError::Read(error)
-                    | physworld::physics_system::AcquireError::Parse(error) => error,
-                })?
-                .ok_or_else(|| format!("{id}: missing {map}"))?;
+            let ragdoll = acquire_ragdoll(catalog, &map).map_err(|error| match error {
+                AcquireError::Missing => format!("{id}: missing {map}"),
+                AcquireError::Read(error) | AcquireError::Parse(error) => error,
+            })?;
             if ragdoll.len() != system.bodies.len() {
                 return Err(format!("{id}: ragdoll map does not cover every body"));
+            }
+            if trace {
+                let mut fingerprint = blake3::Hasher::new();
+                fingerprint.update(format!("{system:?}").as_bytes());
+                fingerprint.update(format!("{ragdoll:?}").as_bytes());
+                eprintln!("PHYSICS_SYSTEM_RECIPE entity={id} system={path} ragdoll={map} signature={}", fingerprint.finalize());
             }
             let basis = physworld::rigid_body_basis(p.rotation.map(|v| [v[0], v[1], v[2], 0.]));
             Ok(Some(SystemRecipe {
