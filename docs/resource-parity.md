@@ -6700,3 +6700,14 @@ require no second copy when valid, with no read-count or runtime
 ownership change. Compare actual buffer adoption and installed outputs
 in the same build. This is a host acquisition change, without a
 steady-state memory or frame-time prediction.
+
+Installed declaration handoff acceptance at 71a4c2c5. In the same
+development executable, 304 acquisitions across light, area-environment,
+MD6 and pause-environment readers adopted 284,590 bytes of existing
+archive buffers in Edge of the World and Dust District. The control
+copied the same bytes. The scoped handoff recorded 958,615 versus
+384,580 aggregate thread cycles. Exact text fingerprints, scene and
+GPU preparation signatures, and initial texture and material handoff
+outputs matched. This measures the declaration handoff, not a frame
+timing or peak-memory result.
+Evidence: DH2-collision-staging/artifacts/raw-declaration-buffer-handoff-20261111-comparison.json.
