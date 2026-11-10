@@ -6239,3 +6239,10 @@ change. Mean affected CPU cycles fell from 511.1M to 454.6M and 484.9M
 to 448.6M respectively. No frame timing was measured. All seven scoped
 observations exited successfully without reported graphics validation errors.
 Evidence: `DH2-collision-staging/artifacts/resource-ownership-integration-20261110-comparison.json`.
+
+All-level follow-up (`116a0d59`). The same optimized Tools binary completed
+all 36 installed CPU preparation and release phases in a single catalog.
+The 36 ordered probe acquisition records match the earlier full route,
+including primary, secondary and rejected counts. Geometry and GPU upload
+byte parity remain measured on Edge of the World and Dust District.
+Evidence: `DH2-collision-staging/artifacts/integrated-all-level-acquisition-20261110.json`.
