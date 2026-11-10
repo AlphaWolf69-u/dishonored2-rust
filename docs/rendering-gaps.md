@@ -13,7 +13,8 @@ declaration. Particle programs connected: `particle/add_default`,
 | `arkhair` | 134 materials | none: character hair program; needed once characters render |
 | `particle/blood` | 19 materials (combat blood, camera blood, eotw fish blood) | blocked: see below |
 | `arkeyeball` | 23 materials | none: character eye program |
-| Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | none: `prepare_particle_surfaces` logs and skips them |
+| Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
+| World-material sprite renderers | Dust District leaves (`arkVegetation` sprites) | none: `ParticleMaterial` refuses non-particle programs, failing the whole FX; meshes with world materials already draw through `particle_meshes` |
 | World FX target/tag pose producer | eotw world FX | none: `world_particle_state` refuses targeted FX |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
 | `particle/fire`, `particle/filing_container` | 2 and 8 materials | none |
@@ -34,3 +35,16 @@ lighting. Next step: confirm in an original capture with blood on screen
 which passes draw a `particle/blood` renderer (expected: depth prepass with
 motion vectors, then the lit opaque target), then draw opaque particle
 renderers in the depth prepass and the opaque pass with the water fragment.
+
+## Particle surfaces casting shadows
+
+The FX world is itself a render model: FUN_1401fbad0 fills its surface list
+(+0x1c00, one 0x80-byte record per renderer) and ends with the model's
+surface-finishing virtual (+0xb8). A particle surface therefore reaches the
+shadow views like any dynamic model surface, subject to its render entity's
+flags and the material's `noshadow`. The 2026-10-28 eotw capture has no
+particle draws in its shadow passes, but no stink bug or scorie emitter was
+near that view. Next step: an original capture with a stink bug (eotw) in a
+shadow-casting light, then the census of shadow-pass draws using
+`ro_directinstancebuffer`; if present, add the proxy surfaces to the
+rewrite's dynamic caster list with their instance records.
