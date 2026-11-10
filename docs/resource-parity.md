@@ -6038,6 +6038,28 @@ removal systems with cameras inactive. It did not measure active decal draw
 appearance or the duration of rendered tails. Evidence:
 `DH2-fx-resources/artifacts/decal-replacement-retirement-20261110-comparison.json`.
 
+Placed static model staging prediction. The BML1 loader retires its input at
+14026a5a0 and releases dispensable triangle arrays through 140278df0. The host
+needs decoded level triangles while resolving placements in authored order.
+The last placement that uses each source is known before setup. Record it in
+the same source table and drop level triangles after that placement, leaving
+session sources with the catalog. The archived Edge of the World load kept
+30,145,962 bytes of combined static and skeletal geometry until the end of
+setup. Expect lower peak live static geometry within this scope, one source
+acquisition per path, identical mesh bytes and placement order, and no change
+to gameplay CPU. Compare the placement loop including the new table pass.
+
+Placed static model staging acceptance (`c285c906`). Two optimized
+retain/early-release pairs matched all prepared vertex and index bytes
+and their ordered mesh references. Each map decoded the same source count
+and byte total. Peak static CPU staging fell from 20,588,490 to 4,298,220
+bytes in Edge of the World and from 20,741,684 to 6,323,080 in Dust
+District. Both released paths had zero static staging left at loop exit.
+The affected placement span averaged 3.292B cycles with retention and
+3.286B with early release across both maps. Individual Dust runs varied
+in both directions. No frame timing was measured. Evidence:
+`DH2-collision-staging/artifacts/static-model-last-use-20261110-comparison.json`.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and
@@ -6104,3 +6126,24 @@ the separate mutable tails remain on the model lighting owner. Both maps
 returned to zero GPU buffers after release. Active motion and arm patches
 were traced in source and were outside the windowless observations.
 Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.
+
+Named UI image release prediction. The installed named wrapper keeps its
+SRV through 1402df8c0 and binds it through 1410150f0. In the host, the
+extracted frame already holds that snapshot's scene asset handle. Flash
+also cloned the GPU texture and view into its bitmap cache, where a frame
+with no draw batches or no camera could leave a retired named view pinned.
+Bind named images from the existing GPU asset, so only the wrapper, frame
+and submitted GPU work own that snapshot. Keep the bitmap, glyph and ramp
+cache for textures Flash creates. Expect unchanged view/sampler selection,
+no extra upload and no named-view cache entry or per-batch name allocation.
+
+Named UI image acceptance (`a6db27a8`). The game-feature Tools build
+completed, and the real UI image owner used the committed view for both
+installed resources observed. A second wrapper request reused the first
+snapshot after replacement. The old wrapper had zero owners after release,
+and a later request received the new view. The fixed authored mip view and
+its payload CRC also matched the previous acquisitions on both resources.
+The renderer binds from the extracted handle and retains no named cache
+entry. These observations cover wrapper identity and CPU view selection.
+Active movie drawing was outside the windowless observation. Evidence:
+`DH2-screen-shadow-retirement/artifacts/ui-registered-image-leases-20261110-comparison.json`.
