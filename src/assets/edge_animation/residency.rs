@@ -353,6 +353,12 @@ fn load(catalog: &Catalog, path: &str, record: &Arc<Record>, duplicate: bool, re
         let signature = if tracing() { let mut crc = flate2::Crc::new(); crc.update(&bytes); crc.sum() } else { 0 };
         let animation = if duplicate { EdgeAnimation::parse(&bytes) } else { EdgeAnimation::parse_owned(bytes) }
             .map_err(|error| format!("{path}: {error}"))?;
+        if tracing() {
+            let weights = animation.joint_weights().unwrap_or_default();
+            let mut crc = flate2::Crc::new();
+            crc.update(weights);
+            eprintln!("ANIMATION_WEIGHTS path={path} bytes={} signature={:08x}", weights.len(), crc.sum());
+        }
         Ok::<_, String>((animation, signature, source_bytes))
     })();
     // Check before replacing an editable snapshot or storing a failure.

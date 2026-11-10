@@ -6713,3 +6713,18 @@ matched media, streams, residency and retirement. The observer's cache
 miss counts differed, so its acquisition cycle totals do not establish
 a speedup.
 Evidence: DH2-fx-level-lifetime/artifacts/vorbis-packet-setup-20261111-comparison.json.
+
+### Edge clip joint weight backing
+
+Prediction before implementation. The original loader 14024adf0 owns
+one compressed blob in TAG_ANIMATION. Sampler 1412e2c30 takes the
+weight pointer from blob+0x30 and copies the authored weights into
+its output pose. The host already holds the full blob but also
+allocates a second Vec for the same immutable bytes. Store the
+checked range and borrow the bytes when the existing pose code
+needs them. Expect one fewer allocation and exactly the authored
+joint-weight count in fewer copied bytes per weighted clip decode.
+Absent weights and short masks keep their existing pose behavior.
+There is no change to archive bytes, clip identity, sampling math,
+pose allocation, or release policy. Compare the authored mask bytes
+and production acquisition and retirement before integrating.
