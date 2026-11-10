@@ -136,18 +136,18 @@ use visibility_instances::TomeRenderInstanceMap;
 mod view_geometry;
 use view_geometry::{
     apply_placed_model_queries, authored_area_light_transform, authored_light_cosines,
-    authored_mesh, authored_world_bounds, environment_sun_ray, expanded_model_placements,
+    authored_world_bounds, environment_sun_ray, expanded_model_placements,
     f8_camera_pose, f8_reference_fov, game_affine_to_view, game_to_view,
     initial_placed_model_query, light_backend_intensity, mean_game_position,
     view_distance_scale, needs_exact_world_mesh, light_distance,
     light_preset, light_volume_intersects_camera,
     local_light_clip_to_world, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, reference_fov_from_projection, render_bounds,
-    retain_vegetation_channels, retain_world_shadow_channels, source_mesh,
+    retain_vegetation_channels, retain_world_shadow_channels,
     transformed, transformed_direction, view_of, view_to_game, Bounds,
 };
 #[cfg(test)]
-use view_geometry::static_model_collision;
+use view_geometry::{authored_mesh, source_mesh, static_model_collision};
 mod material_loading;
 mod runtime_materials;
 use material_loading::{material_option_overrides, MaterialResolver};

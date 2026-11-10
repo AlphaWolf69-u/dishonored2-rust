@@ -82,7 +82,7 @@ pub struct SurfaceInfo {
     pub index_count: u32,
     pub attachment_count: u32,
     pub positions: Vec<[f32; 3]>,
-    pub uvs: Vec<[f32; 2]>,
+    pub uvs: Vec<[half::f16; 2]>,
     /// UV1 half2, normal/tangent SNORM8x4; declarations 9/10 have no COLOR0.
     pub packed_channels: Vec<[u8; 12]>,
     pub skin_influences: u8,
@@ -463,8 +463,8 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
             // Live declarations 9/10: streams 0=position,1=UV0/UV1,
             // 2=normal,3=tangent,4=weights/indices (4 or 8 influences).
             let uv = &texcoord_stream[vertex_index * 8..vertex_index * 8 + 8];
-            let u = half::f16::from_bits(u16::from_le_bytes(uv[0..2].try_into().unwrap())).to_f32();
-            let v = half::f16::from_bits(u16::from_le_bytes(uv[2..4].try_into().unwrap())).to_f32();
+            let u = half::f16::from_le_bytes([uv[0], uv[1]]);
+            let v = half::f16::from_le_bytes([uv[2], uv[3]]);
             if !u.is_finite() || !v.is_finite() {
                 return Err(format!("surface {number} has non-finite UV0"));
             }
@@ -614,7 +614,7 @@ mod acquisition {
             + model.surfaces.len() * std::mem::size_of::<super::SurfaceInfo>()
             + model.surfaces.iter().map(|surface| surface.name.len() + surface.material_path.len()
                 + surface.positions.len() * std::mem::size_of::<[f32; 3]>()
-                + surface.uvs.len() * std::mem::size_of::<[f32; 2]>()
+                + surface.uvs.len() * std::mem::size_of::<[half::f16; 2]>()
                 + surface.packed_channels.len() * std::mem::size_of::<[u8; 12]>()
                 + surface.skin_weights.len() * std::mem::size_of::<[u8; 8]>()
                 + surface.skin_indices.len() * std::mem::size_of::<[u8; 8]>()
@@ -656,7 +656,9 @@ mod acquisition {
                     surface.index_count, surface.attachment_count] { crc.update(&value.to_le_bytes()); }
                 crc.update(&surface.matrix_offset.to_le_bytes());
                 crc.update(&[surface.skin_influences]);
-                for value in surface.positions.iter().flatten().chain(surface.uvs.iter().flatten()) { crc.update(&value.to_bits().to_le_bytes()); }
+                for value in surface.positions.iter().flatten() { crc.update(&value.to_le_bytes()); }
+                // Keep the existing comparison signature in decoded float form.
+                for value in surface.uvs.iter().flatten() { crc.update(&value.to_f32().to_le_bytes()); }
                 for value in &surface.packed_channels { crc.update(value); }
                 for value in &surface.skin_weights { crc.update(value); }
                 for value in &surface.skin_indices { crc.update(value); }
@@ -846,7 +848,7 @@ mod tests {
             let model = inspect(&bytes).unwrap();
             assert!(model.has_decoded_geometry);
             assert_eq!(model.surfaces[0].positions[1], [2.0, 0.0, 0.0]);
-            assert_eq!(model.surfaces[0].uvs[2], [0.0, 1.0]);
+            assert_eq!(model.surfaces[0].uvs[2].map(half::f16::to_f32), [0.0, 1.0]);
             assert_eq!(model.surfaces[0].indices, [0, 1, 2]);
             assert_eq!(model.surfaces[0].matrix_offset, 17);
         }

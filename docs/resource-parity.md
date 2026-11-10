@@ -5928,6 +5928,43 @@ acquisition. A direct comparison with the removed snapshot, active observer
 detach, frame timing and rendered particle output were outside the observation.
 Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
 
+Ocean height readback prediction. The selected-slot consumer 140304c40
+waits, maps, copies straight into the persistent CPU ring, then unmaps.
+The host's asynchronous callback currently allocates a temporary vector and
+the consumer copies it into the persistent ring. Keep the existing queued
+mapping and exact slot selection, but let the callback publish readiness
+only. Read the mapped prefix into the existing CPU allocation and unmap it
+on consumption, ring reuse or owner teardown. Expect zero transient sample
+allocations and one CPU copy per consumed sample, with no new GPU work or
+wait. A dropped owner must cancel pending maps without publishing results.
+
+Level cleanup after an FX shutdown error. The host's 1408a4830 transition
+returned immediately if a particle chain reported an invalid handle. That
+skipped entity and asset release, the publication reset and 1400410f0's
+resource purge. Preserve the first FX error and the existing abort of the
+destination load, but run both player and world shutdown and always release
+the outgoing owners. Expect the same order and no additional work on a
+successful transition. This covers fallible teardown, without trying to
+restore gameplay after a corrupted chain.
+
+Packed skeletal UV prediction. The installed BMD6 loader 14025aa00 calls
+140259960 for the authored vertex streams. Declarations 9 and 10 use two
+half-float UV sets. Host decode kept UV1 packed but widened UV0, which the
+normal mesh builder immediately packed again. Keep UV0 packed in ModelInfo
+and pass it through the existing packed mesh builder for placed and arm
+models. Predict four fewer bytes per decoded vertex and no UV0 widen/pack
+round trip for ordinary meshes. The sheared and diagnostic float layouts
+still widen at their consumers. Preserve the established decoded signatures
+and compare the installed GPU attribute bits and acquisition costs.
+
+Packed skeletal UV acceptance (`97dc2212`). Windowless scene preparation
+matched the previous complete vertex/index fingerprints for 908 placed
+meshes in Edge of the World and 961 in Dust District, including their packed
+UV bytes. The parser now retains four fewer bytes per decoded vertex.
+Normal arm preparation calls the same packed mesh builder. Arm draw output,
+scoped UV decode timing and peak RAM were outside this observation.
+Evidence: `DH2-collision-staging/artifacts/view-and-model-resources-20261110-model-comparison.json`.
+
 Screen-shadow publication prediction. The host level teardown corresponds
 to 1408a4830 and the 1400410f0 resource purge. The standard Bevy extractor
 copies the optional ScreenShadowFrame when present but leaves the render
@@ -5971,3 +6008,25 @@ respectively. PNW input CPU samples overlapped or differed by one scheduler
 tick. Both maps returned to 15 GPU images, four meshes and zero buffers after
 retirement. No frame timings were measured. Evidence:
 `DH2-scene-shutdown/artifacts/probe-index-upload-backing-20261110-comparison.json`.
+
+Screen-shadow binding replacement prediction. The original visibility and
+bilateral tasks bind the active view resources and reuse compiled programs
+(`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
+The host visibility bind groups also hold the parallel-sampling buffer and
+AO scratch view. Include both identities in invalidation so replacements
+release the previous bindings and cannot keep sampling an old buffer. Keep
+one compiled pair per device owner for the last producer state and depth
+format. A resize, level change or input swap with identical formats and
+state should recreate only the dependent bindings. The AO and depth-unhack
+owners also compile when replaced. Their independent reuse needs separate
+format and program ownership evidence.
+
+Renderer owner acceptance (`b1309447`). The windowless DX12 readback used
+the gameplay staging owner. Five selected-slot results matched the direct
+map result, the four staging buffers totalled 65,536 bytes, and the queued
+callback held no lease after cancellation. Installed Edge of the World,
+Dust District and Edge of the World retained both visibility pipeline IDs
+across the owner release call. All three scenes completed ordinary FX
+shutdown and released the extracted screen-shadow image again. Active
+particle shutdown errors, live resize and replacement binding draws were
+outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.

@@ -1,6 +1,6 @@
 //! Setup.
 use super::{
-    apply_rest_pose, authored_area_light_transform, authored_light_cosines, authored_mesh,
+    apply_rest_pose, authored_area_light_transform, authored_light_cosines,
     authored_world_bounds, auto_exposure, bmd6, bmodel, camera_projection, coarse_depth, entities,
     env, environment_sun_ray, f8_camera_pose, f8_reference_fov, fs,
     game_affine_to_view, game_to_view, initial_placed_model_query, light_backend_intensity,
@@ -9,7 +9,7 @@ use super::{
     needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, render_bounds, render_light, render_model,
     rest_skinning, retain_model_shadow_position, retain_skin_inputs, shadow_pipeline,
-    shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
+    shadow_sampling, shadow_updates, surface_sampler_image, texture, tome,
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
     CascadeShadowConfigBuilder, DecalMaterial, DepthPrepass, DiffuseMipState,
     FocusTarget, FocusTargets, HashMap, HashSet, LocalLightCull,
@@ -21,6 +21,7 @@ use super::{
     TextureReadWorker, TomeRenderInstanceMap, VegetationMeshInputs, ViewSettings,
     WorldShadowMeshSources, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES, DEFAULT_NEAR,
 };
+use super::view_geometry::{authored_mesh_from_uvs, source_mesh_from_uvs, MeshUvs};
 use bevy::prelude::*;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 
@@ -980,11 +981,12 @@ pub(super) fn prepare(
                         if !repeated { initialize_mesh(&mut mesh); }
                         meshes.add(mesh)
                     };
+                    let uvs = MeshUvs::Packed(&surface.uvs);
                     let (mesh, transform) = if world_baked {
                         (
-                            prepare_mesh(authored_mesh(
+                            prepare_mesh(authored_mesh_from_uvs(
                                 points,
-                                &surface.uvs,
+                                uvs,
                                 &surface.indices,
                                 &surface.packed_channels,
                                 |v| placed_direction(placement, v),
@@ -993,9 +995,9 @@ pub(super) fn prepare(
                         )
                     } else if deforms {
                         (
-                            prepare_mesh(source_mesh(
+                            prepare_mesh(source_mesh_from_uvs(
                                 &surface.positions,
-                                &surface.uvs,
+                                uvs,
                                 &surface.indices,
                                 &surface.packed_channels,
                                 flipped,
@@ -1012,9 +1014,9 @@ pub(super) fn prepare(
                                     skin_influences,
                                 ))
                                 .or_insert_with(|| {
-                                    prepare_mesh(source_mesh(
+                                    prepare_mesh(source_mesh_from_uvs(
                                         &surface.positions,
-                                        &surface.uvs,
+                                        uvs,
                                         &surface.indices,
                                         &surface.packed_channels,
                                         flipped,
