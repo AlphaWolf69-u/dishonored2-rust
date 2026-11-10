@@ -6049,6 +6049,16 @@ durations. Expect one declaration read and decode per load, the same
 phase-specific duration and samples, and no retained curve during play.
 This changes loading ownership, with no gameplay timing gain predicted.
 
+Map source history prediction. The map owns its BWM, entity, Tome and
+physics companions from acquisition until teardown (`1408a4830` /
+`1400410f0`). The host releases their payloads but the generic archive read
+history still retains the old paths. Retire the exact map identities, using
+their indexed kinds, after the prepared or published level is dropped.
+Keep the dedicated probe declaration lease and all shared histories with
+their current owners. Predict one retired read entry per acquired companion,
+no additional file I/O and unchanged acquisition on return to a map.
+This corrects loading coverage and has no measurable gameplay memory target.
+
 Placed static model staging prediction. The BML1 loader retires its input at
 14026a5a0 and releases dispensable triangle arrays through 140278df0. The host
 needs decoded level triangles while resolving placements in authored order.
