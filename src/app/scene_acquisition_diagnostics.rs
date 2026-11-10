@@ -59,6 +59,31 @@ fn render_epoch(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn acquire_water_images(world: &World, step: usize) -> Result<(), String> {
+    use crate::rendering::bevy_backend::water_scene::WaterImageSources;
+    let Some(sources) = world.get_resource::<WaterImageSources>() else { return Ok(()); };
+    let device = world.resource::<RenderDevice>();
+    let queue = world.resource::<RenderQueue>();
+    for (kind, aliases) in [("cube", &sources.skies), ("array", &sources.caustics)] {
+        let mut images = std::collections::HashMap::new();
+        let mut reuses = 0;
+        for source in aliases.values() {
+            let image = source.acquire(device, queue)?;
+            let key = std::sync::Arc::as_ptr(source);
+            match images.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    reuses += usize::from(std::sync::Arc::ptr_eq(entry.get(), &image));
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => { entry.insert(image); }
+            }
+        }
+        eprintln!("RESOURCE_SCENE_LAYERED step={step} kind={kind} aliases={} sources={} reuses={reuses}", aliases.len(), images.len());
+    }
+    let noise = sources.noise.acquire(device, queue);
+    eprintln!("RESOURCE_SCENE_NOISE step={step} texture_bytes={}", noise.texture_bytes());
+    Ok(())
+}
+
 fn upload_assets(app: &mut App, inputs: &super::scene_preparation::SceneGpuInputs)
     -> Result<(), Box<dyn std::error::Error>>
 {
@@ -161,7 +186,9 @@ fn inspect_scene_resources(
                             backends: cfg!(target_os = "windows")
                                 .then_some(bevy::render::settings::Backends::DX12),
                             features: bevy::render::settings::WgpuSettings::default().features
-                                | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8,
+                                | bevy::render::settings::WgpuFeatures::DEPTH32FLOAT_STENCIL8
+                                | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC
+                                | bevy::render::settings::WgpuFeatures::TEXTURE_COMPRESSION_BC_SLICED_3D,
                             ..default()
                         },
                     )),
@@ -217,6 +244,7 @@ fn inspect_scene_resources(
                     camera.is_active = false;
                 }
                 let inputs = gpu_inputs(app.world());
+                acquire_water_images(app.world(), step)?;
                 upload_assets(&mut app, &inputs)?;
                 gpu_snapshot(&app, step, "uploaded");
             }
