@@ -6684,3 +6684,17 @@ before purge, and the three-map CPU acquisition fingerprints matched
 the compact usable-skin build. The forced read interruptions and the
 normal worker retirement gate are separate observations.
 Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
+
+### Iggy string buffer ownership
+
+Prediction before implementation. Iggy 141093380 loads serialized
+sections, and the import path at 141023b00 consumes the installed names.
+The rewrite already owns each source section but copies UTF-16 units
+to a temporary vector before decoding the result. Find the terminator
+within the borrowed section and decode directly into the resulting
+string, preserving invalid-unit replacement and the exact out-of-range
+offset when a terminator is missing. The byte-string reader can borrow
+its range as well. Expect the same decoded strings and installed movie
+inputs, with no separate UTF-16 buffer per wide-string read. Compare
+actual loading, pause and Journal acquisition output in the same build.
+This is a host representation change with no frame-time prediction.
