@@ -28,6 +28,66 @@ enum SceneSkeletalModel {
     Prepared(Arc<bmd6::ModelInfo>),
     Shared(Arc<bmd6::ModelInfo>),
 }
+
+#[derive(Default)]
+struct ModelMeshObservation {
+    enabled: bool,
+    repeated: bool,
+    initializations: usize,
+    skinned_vertices: usize,
+    cycles: u64,
+}
+
+impl ModelMeshObservation {
+    fn prepare(&mut self, skinned_vertices: usize, initialize: impl FnOnce()) {
+        let start = self.enabled.then(crate::loading::thread_cycles).flatten();
+        initialize();
+        if self.enabled {
+            self.initializations += 1;
+            self.skinned_vertices += skinned_vertices;
+            if let Some(start) = start {
+                self.cycles += crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            }
+        }
+    }
+
+    fn report(&self, meshes: &dyn AssetWrite<Mesh>, instances: &[RenderInstance]) {
+        if !self.enabled { return; }
+        let mut known = HashMap::new();
+        let mut digest = blake3::Hasher::new();
+        for instance in instances {
+            let ordinal = known.len();
+            let index = known.entry(instance.mesh.id()).or_insert_with(|| {
+                let mesh = meshes.get(&instance.mesh).expect("prepared model mesh");
+                digest.update(&mesh.count_vertices().to_le_bytes());
+                for (attribute, values) in mesh.attributes() {
+                    digest.update(format!("{:?}", attribute).as_bytes());
+                    let bytes = values.get_bytes();
+                    digest.update(&bytes.len().to_le_bytes());
+                    digest.update(bytes);
+                }
+                match mesh.indices() {
+                    Some(bevy::mesh::Indices::U16(indices)) => {
+                        digest.update(&[2]);
+                        digest.update(&indices.len().to_le_bytes());
+                        for index in indices { digest.update(&index.to_le_bytes()); }
+                    }
+                    Some(bevy::mesh::Indices::U32(indices)) => {
+                        digest.update(&[4]);
+                        digest.update(&indices.len().to_le_bytes());
+                        for index in indices { digest.update(&index.to_le_bytes()); }
+                    }
+                    None => { digest.update(&[0]); }
+                }
+                ordinal
+            });
+            digest.update(&index.to_le_bytes());
+        }
+        eprintln!("MODEL_MESH_PREPARATION repeated={} instances={} meshes={} initializations={} skinned_vertices={} cycles={} signature={}",
+            self.repeated, instances.len(), known.len(), self.initializations, self.skinned_vertices,
+            self.cycles, digest.finalize());
+    }
+}
 impl std::ops::Deref for SceneSkeletalModel {
     type Target = bmd6::ModelInfo;
     fn deref(&self) -> &Self::Target {
@@ -704,6 +764,12 @@ pub(super) fn prepare(
     let mut model_sources = catalog.map(bmd6::ModelSources::new);
     let mut md6_rest_pose_instances = 0usize;
     let mut model_mesh_handles = HashMap::<(String, usize, bool, u8), Handle<Mesh>>::new();
+    let placed_mesh_start = render_instances.len();
+    let mut mesh_observation = ModelMeshObservation {
+        enabled: env::var_os("DH2_DEBUG_MODEL_MESH_PREPARATION").is_some_and(|value| value == "1"),
+        repeated: env::var_os("DH2_DEBUG_REPEAT_MODEL_MESH_PREPARATION").is_some_and(|value| value == "1"),
+        ..Default::default()
+    };
     let mut model_instances = 0usize;
     let mut model_surfaces = 0usize;
     let mut placed_model_queries = Vec::new();
@@ -828,20 +894,29 @@ pub(super) fn prepare(
                         && needs_exact_world_mesh(&instance, &surface.positions, &points);
                     let skin_influences = resolver.shadow_materials.skin_influences(&mat.handle);
                     let flipped = instance.to_matrix().determinant() < 0.0;
-                    let mut prepare_mesh = |mut mesh: Mesh| {
-                        retain_model_shadow_position(&mut mesh, &surface.positions);
-                        // Physics-system skinning re-poses these every frame.
-                        if deforms {
-                            mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
-                        }
-                        retain_skin_inputs(&mut mesh, surface);
-                        if skin_influences != 0 {
-                            if let Err(error) = skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
-                                apply_rest_pose(&mut mesh, surface, &skin.matrices, skin_influences, placement, world_baked)
-                            }) {
-                                eprintln!("Model rest pose pending {}: {error}", placement.resource_path);
+                    let repeated = mesh_observation.repeated;
+                    let pose_vertices = if skin_influences != 0 && skinning.is_ok() {
+                        surface.positions.len()
+                    } else { 0 };
+                    let mut initialize_mesh = |mesh: &mut Mesh| {
+                        mesh_observation.prepare(pose_vertices, || {
+                            retain_model_shadow_position(mesh, &surface.positions);
+                            // Physics-system skinning re-poses these every frame.
+                            if deforms {
+                                mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
                             }
-                        }
+                            retain_skin_inputs(mesh, surface);
+                            if skin_influences != 0 {
+                                if let Err(error) = skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
+                                    apply_rest_pose(mesh, surface, &skin.matrices, skin_influences, placement, world_baked)
+                                }) {
+                                    eprintln!("Model rest pose pending {}: {error}", placement.resource_path);
+                                }
+                            }
+                        });
+                    };
+                    let mut prepare_mesh = |mut mesh: Mesh| {
+                        if !repeated { initialize_mesh(&mut mesh); }
                         meshes.add(mesh)
                     };
                     let (mesh, transform) = if world_baked {
@@ -888,6 +963,9 @@ pub(super) fn prepare(
                             instance,
                         )
                     };
+                    if repeated {
+                        initialize_mesh(meshes.get_mut(&mesh).expect("prepared skeletal mesh"));
+                    }
                     vegetation_meshes.prepare(
                         resolver.needs_vegetation_channels(&mat.handle),
                         &mesh,
@@ -1053,10 +1131,17 @@ pub(super) fn prepare(
             let bounds = render_bounds(&points);
             let instance = placed_transform(placement);
             let world_baked = needs_exact_world_mesh(&instance, &surface.positions, &points);
+            let repeated = mesh_observation.repeated;
+            let mut initialize_mesh = |mesh: &mut Mesh| mesh_observation.prepare(0, || {
+                retain_model_shadow_position(mesh, &surface.positions);
+            });
             let mut prepare_mesh = |mut mesh: Mesh| {
-                retain_model_shadow_position(&mut mesh, &surface.positions);
+                if !repeated { initialize_mesh(&mut mesh); }
                 meshes.add(mesh)
             };
+            if repeated {
+                initialize_mesh(meshes.get_mut(&mesh).expect("prepared static mesh"));
+            }
             let (mesh, transform) = if world_baked {
                 baked_shear_instances += 1;
                 (
@@ -1211,6 +1296,7 @@ pub(super) fn prepare(
     // Host decoding scratch ends here, before later water/FX acquisition.
     // Runtime meshes/query/skinning owners already hold their required data;
     // as with input retirement at 14025aa00's exit, staging is not residency.
+    mesh_observation.report(meshes, &render_instances[placed_mesh_start..]);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         let mut packed_uv_pairs = 0;
         let mut packed_uv_mismatches = 0;
