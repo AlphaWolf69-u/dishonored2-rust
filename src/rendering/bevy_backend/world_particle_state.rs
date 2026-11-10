@@ -73,7 +73,7 @@ pub(super) struct GroupContext<'a> {
     >,
     pub(super) sounds: &'a super::world_sounds::WorldSounds,
     pub(super) effects: &'a HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
-    pub(super) world: &'a crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+    pub(super) world: &'a crate::gameplay::world_point_query::level::LevelPointQueries,
     pub(super) query: &'a mut crate::gameplay::world_point_query::WorldPointQuery,
     pub(super) position: [f32; 3],
 }
@@ -822,7 +822,7 @@ impl WorldParticleState {
         frame: u32,
         camera: ReferenceFrame,
         underwater: bool,
-        world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+        world: &crate::gameplay::world_point_query::level::LevelPointQueries,
     ) -> Result<(), String> {
         if self.frame == Some(frame) {
             return Ok(());

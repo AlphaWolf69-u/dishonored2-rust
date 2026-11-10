@@ -132,9 +132,9 @@ impl WindSnapshot {
 
     /// 677ec0 queries ordinary trigger layer16. 678070 replaces only a strictly
     /// lower priority; completed absence falls back to the registered world wind.
-    pub fn velocity(
+    pub(crate) fn velocity(
         &self,
-        geometry: &super::world_point_query::snapshot::PointQuerySnapshot,
+        geometry: &super::world_point_query::level::LevelPointQueries,
         query: &mut super::world_point_query::WorldPointQuery,
         point: [f32; 3],
     ) -> Result<[f32; 3], String> {

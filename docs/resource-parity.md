@@ -402,6 +402,8 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Shared particle physics queries (`140677ec0`, `140678070`, `1401fc710`, `140c85490`). The original queries the published physics world. The host cloned every reachable trigger body, broadphase tree and water height for every published camera frame, even after particle simulation moved to the main world. Keep one map-owned collision geometry owner, resolve wind identities after component startup, and let the frame stamp lease the same geometry. Current trigger and water bodies are published only during startup; moving machinery and player physics use separate owners. Predict one validation pass per map, zero per-frame copies or allocations for publishing query inputs, and the same tree order, filters, positions and water heights. The final lease detaches shape observers before freeing geometry.
+
 - Physics shape-observer teardown (`140cdfcb0`, `140ce03d0`, `1408a4830`). Trigger and acoustic worlds own Havok shape-observer registrations. Their Rust drop paths currently free both objects without running the existing detach routine. Drain active and pooled registrations in the original order while each shape's signals are still owned, including failed preparation and the final acoustic-world lease. Expect zero remaining subscriptions after a successful drain, with no gameplay work or change to published shapes and queries. Detached records are retired once even when a caller explicitly releases its world before Rust drop.
 
   Windowless Edge of the World, Dust District and Clockwork Mansion boat publication and clear (`8ad64e43`) reached both teardown hooks in all three maps with no errors. All six registries had zero mutable observers. This verifies the owner ordering for those installed maps. A nonempty observer drain was outside the observation. Evidence: `DH2-fx-level-lifetime/artifacts/shape-observer-retirement-20261110-comparison.json`.
@@ -5896,3 +5898,16 @@ allocation per qualifying cold acquisition. Keep small and editable sources
 on the buffered route and keep packed channels, geometry, bounds, bindings
 and reuse policy unchanged. Compare decoded fields and acquisition costs on
 installed models before integrating the change.
+
+Shared point-query owner acceptance (91584611). A windowless production
+scene observation prepared Edge of the World, Dust District and Edge of the
+World again. Gameplay and the particle query publication acquired the same
+level owner in all three preparations. The geometry held 332/259/332 bodies,
+256 tree nodes and 640 leaf blocks per map, with 332/259/332 shape records.
+Frame publication now passes a lease instead of copying these inputs. Body
+centre wind/water/ray queries produced identical signatures on both visits
+to Edge of the World. All three scenes retired through the trigger and
+acoustic shape teardown paths. This observes the shared path and repeat
+acquisition. A direct comparison with the removed snapshot, active observer
+detach, frame timing and rendered particle output were outside the observation.
+Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
