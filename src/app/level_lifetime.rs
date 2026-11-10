@@ -40,12 +40,12 @@ impl LevelLifetime {
     }
 
     pub fn clear(&mut self, world: &mut World) -> Result<(), String> {
-        // bevy_backend: retire the currently hosted FX chains while their
+        // bevy_backend: retire player and world FX chains while their
         // support owners are still present. The caller has acknowledged the
         // outgoing render publication. This does not replace the GameLocal
         // component/entity/graph shutdown phases still being integrated.
         if let Some(mut effects) = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() {
-            effects.shutdown_world_effects()?;
+            effects.shutdown()?;
         }
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
@@ -96,6 +96,11 @@ impl LevelLifetime {
                 }
             }
         }
+        // A quality change can create an owner that was absent when
+        // published() recorded the startup resources.
+        world.remove_resource::<super::ParallelShadowOwner>();
+        world.remove_resource::<super::local_shadow_updates::LocalShadowOwner>();
+        world.remove_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
         if let (Some(images), Some(shared)) = (
@@ -112,6 +117,17 @@ impl LevelLifetime {
         }
         Ok(())
     }
+}
+
+/// Called while the loading screen is active, before purging map identities.
+/// These workers can write to the shared Catalog, even after their outputs are
+/// no longer wanted. Keep their task handles until each decoder has returned.
+pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
+    let sources = world.get_resource_mut::<super::usable_effects::UsableEffects>()
+        .is_none_or(|mut effects| effects.retire_acquisitions());
+    let materials = world.get_resource_mut::<super::runtime_materials::RuntimeMaterialCoordinator>()
+        .is_none_or(|mut materials| materials.retire_acquisition());
+    sources && materials
 }
 
 /// Plugin registration creates these empty owners before the first map.
@@ -178,7 +194,6 @@ fn reset_scene_publications(world: &mut World) {
         backend::particle_pass::ParticleMaterialSampler,
         backend::particle_images::SceneParticleImages,
         backend::particle_systems::ParticleQueryFrame,
-        backend::camera_scene::FxSimulation,
         backend::camera_scene::FxPublication,
         backend::physics_queries::PhysicsQueryFrame,
         backend::shadow_pass::ShadowSceneFrame,

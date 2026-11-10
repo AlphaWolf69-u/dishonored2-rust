@@ -411,8 +411,14 @@ trailing `*` covers a family of kinds.
 
   Installed declaration observation (`e2922b78`) resolved nine references to four declarations across five FX. Sharing reduced simultaneous parsed identities from nine to four, with identical resolved variant signatures and zero retained references after release in both runs. This covers decoded identity and final release. Timing and authored decal animation were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/installed-decal-leases-20261110-comparison.json`.
 - Cancelled FX acquisition (`140022fd0`, `140060180`, `140199df0`). The host drops an unused task handle and schedules cache pruning immediately. A synchronous decoder already running can acquire resources after that prune. Signal a per-path cancellation, keep the cancelled task until it acknowledges completion, then schedule another prune after its result is dropped. Stop at declaration/group boundaries and before acquiring the shared resource locks. A separate live requester still shares a pending load, and a revived path can start a fresh load. Expect no cancelled definition publication or cache prune race, with unchanged successful output. An in-progress group or archive read may finish. Installed cancellation and retirement observations remain pending.
+- Outgoing map FX worker retirement (`1408a4830`, `140199df0`, `140060180`). The shared catalog registry locks exclude purge while one declaration is being decoded. They cannot exclude another acquisition by the same outgoing job after that lock is released. At map transition stop issuing requests, signal cancellation, and retain both source and material task handles until they finish. Discard unpublished outputs before the ordinary render acknowledgement and level purge authorize the next map. The loading thread checks once per update and does not join or wait for an archive read. Expect zero outgoing worker publications after purge, with no additional gameplay frame work. Existing active effects retire through the normal FX shutdown. A transition with an installed FX acquisition in progress remains unobserved.
+
+  The installed windowless route (`02d177f2`) recorded one admitted outgoing FX source request in each of Dunwall Tower and Edge of the World. It ran the production retirement gate and cleared both maps with zero loading, retiring, ready, or cached FX sources. The simulation owner was absent before preparation, present after publication, and absent after clear. Both runs also repeated ordinary acquisition and overlapping reuse successfully. This observes source worker and level-owner boundaries. Active emitter teardown, in-flight material decoding, shadow-owner late admission, and pipelined texture mailbox overlap were outside the run. Evidence: `DH2-fx-level-lifetime/artifacts/fx-map-retirement-20261110-comparison.json`.
 - Late FX catalog ownership (`1400607f0`, `140060180`). Setup keeps the scene's reference to the same Catalog that the texture worker uses. Previously both EotW and Dust reached runtime material preparation and failed because setup had moved the scene reference away. The windowless rerun (`f136cef7`) published four installed decal materials per map and released every FX-only image and decal asset after the requests ended. EotW published seven new GPU images and Dust six, with one reused scene image. Existing world-mesh proxies were reused in both. The observation covers successful publication and asset retirement, without camera specialization or active effect tails. Evidence: `DH2-fx-resources/artifacts/runtime-fx-publication-v2-20261110-comparison.json`.
 - Close admission before host teardown. Winit receives `AppExit` after the final update and clears its main world before `App::run` returns. Waiting until the external `AudioSession` drops leaves its cancellation flag unset while the world's acquisition owners begin to retire. Signal the existing session after the final loading and window-exit systems observe a real exit. This is host scheduling for the shutdown boundary (`1408a4830`, `1400bc8f0`); final cache retirement still waits for admitted work. Expect one close signal per exit, earlier cancellation at existing worker checkpoints, and zero new steady-state allocations or locks. A file read already in progress still has to return. The saved windowless cancellation samples prove the checkpoints only.
+- World and player FX ownership (`1408a4830`, `140199df0`, `140821350`, `14021f820`). The map owns simulation state and its particle pools. The player-water/view update supplies frame inputs and does not own those pools. End player particle chains at map teardown before the world manager clears its chains. Prediction: no pool recreation on first camera publication or a temporary missing frame, one fewer initialization of both 1,024-slot pools per normal map entry, and no live player particle slots at the world shutdown boundary. Missing view inputs still withdraw the draw publication. This concerns host ownership and level acquisition, with no lower frame-time claim. Live camera-gap and active player-particle teardown observations remain pending.
+
+  Allocate the simulation with the map's screen FX sources in common scene setup. Previously the host also allocated empty pools before the first map and recreated them immediately after clearing each map. Expect no simulation storage in the empty host or between map teardown and the next scene preparation. Failed preparation discards the unpublished simulation with its setup commands. The windowless scene lifecycle observer records owner presence before preparation, after publication, and after release. It does not run emitters or create a gameplay view.
 - Edge skeleton registry (`1400607f0`, `14024f2a0`, `140060180`). The Catalog owns the weak coalescing table, and live skeletons hold weak retirement links. Normalized-path hits borrow the path and reuse the existing key. In the EotW and Dust publication comparison (`e33ec311`), all 131 acquisitions and 79 installed source signatures matched. Both runs decoded 122 skeletons, reused nine and released all live payloads. The catalog-owned table retired with zero entries and seven reserved slots. This observes acquisition, reuse and retirement, without a timing inference. Evidence: `DH2-interactions/artifacts/catalog-skeleton-registry-20261110-comparison.json`.
 - Wwise stream location ownership (`1400bc8f0`, `1410bf740`, `1410f1910` / `141122400`). The event resolver already looks up a Sound's package using its owning bank and language. Retain that bank identity in the streamed reference until graph decoding and keep the locator table local to that acquisition. Expect zero level-retained lookup entries, no cross-event lock or overwrite during parallel preload, and unchanged media extents for unambiguous IDs. Only the graph's actual stream sources retain their locators. The existing resident package-entry reader can also fill fallback resident media directly, avoiding one temporary buffer and payload copy per full package read. Header-only and prefetched stream acquisition retain their current reads. The lifetime prediction concerns acquisition and its scratch storage, with no steady-state voice cost or lower frame-time prediction. Installed publication and scoped timing observations remain pending.
 
@@ -1638,6 +1644,15 @@ revision reuse, but this route did not replace an atlas within one map. No
 measured GPU memory saving or live quality/resolution coverage is claimed;
 that broader coverage remains open. Existing map-boundary cleanup is unchanged.
 
+Texture mailbox retirement (`140060180`, `14030d1e0`). The pipelined host can
+dispatch another render schedule after the outgoing acknowledgement and before
+the main world's next update resets the mailbox. An upload batch already taken
+by that render schedule could append old waiting jobs or completion records to
+the new generation. Recheck the generation at the existing publication lock.
+Expect zero old records or deferred payloads republished after a reset, and one
+comparison per upload batch with no additional lock or GPU operation. This is a
+host handoff correction. Exact overlap timing remains unobserved.
+
 The `14030cce0` request order operates on registered images. On the host an
 FX slot can outlive its old image as an empty reusable index. `r_addAllMips`
 previously admitted those empty indices and could queue a read that completed
@@ -1651,6 +1666,23 @@ observed FX assets released while their level stayed alive. This exercises
 request ordering on real retired slots. A subsequent slot reassignment,
 live rendering, and map-generation overlap were outside this observation.
 Evidence: `DH2-fx-level-lifetime/artifacts/runtime-fx-retired-slots-20261110-comparison.json`.
+
+A later seven-snapshot EotW quality route (`6b15daea`) observed four real
+parallel/local target replacements at settings generations 3, 4, 6, and 7.
+Each replacement retired one old parallel target and kept the current one.
+All four local atlas/cache identity pairs changed, and the two settings-only
+snapshots retained their existing pairs. This covers ordinary replacement
+while both owners are present. It does not cover an owner first created after
+startup. Evidence: `artifacts/resource-quality-blocks-20261109/stderr.log`.
+
+Late shadow owner retirement (`1400410f0`). A quality change can create a
+parallel or local shadow owner after startup, including a level that started
+without that owner. The startup snapshot cannot record this later insertion.
+Release both owners explicitly after the outgoing render acknowledgement and
+the ordinary level resource removals. Expect any late-created image leases to
+retire at this boundary, with two resource checks per level unload and no
+frame work. This edge still needs an actual late-admission observation.
+
 
 Named UI image lifetime evidence/prediction (before implementation):
 1410150f0 replaces a bitmap's texture wrapper; 14101d290/14100d6f0 share

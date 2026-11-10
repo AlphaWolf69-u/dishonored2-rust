@@ -27,6 +27,14 @@ impl Default for ScreenEffectState {
     }
 }
 impl ScreenEffectState {
+    pub(crate) fn shutdown(&mut self, systems: &mut ParticleSystems) -> Result<(), String> {
+        for head in &mut self.particle_heads {
+            systems.clear(head)?;
+        }
+        *self = Self::default();
+        Ok(())
+    }
+
     fn start(
         &mut self,
         definition: &sources::EffectDefinition,

@@ -38,7 +38,6 @@ pub(crate) struct FxSimulation {
     screen_state: super::screen_effects::ScreenEffectState,
     particle_systems: super::particle_systems::ParticleSystems,
     pub(super) world_particles: super::world_particle_state::WorldParticleState,
-    screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 impl Default for FxSimulation {
     fn default() -> Self {
@@ -46,18 +45,17 @@ impl Default for FxSimulation {
         Self {
             generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             screen_state: Default::default(), particle_systems: Default::default(),
-            world_particles: Default::default(), screen_sources: None,
+            world_particles: Default::default(),
         }
     }
 }
 
 impl FxSimulation {
-    /// World FX manager shutdown (199df0), after actual entity/component and
-    /// graph retirement. Repeating a completed shutdown is harmless.
-    pub(crate) fn shutdown_world_effects(&mut self) -> Result<(), String> {
+    /// End the player chains, then retire the world FX manager (199df0).
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        self.screen_state.shutdown(&mut self.particle_systems)?;
         self.world_particles.shutdown(&mut self.particle_systems)
     }
-
 }
 
 #[derive(Resource, Default)]
@@ -245,7 +243,7 @@ impl CameraGpu {
     }
 }
 pub(super) fn register(app: &mut App) {
-    app.init_resource::<FxSimulation>().init_resource::<FxPublication>();
+    app.init_resource::<FxPublication>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<FxPublication>::default());
     app.init_resource::<super::particle_pass::ParticleMaterialSampler>();
     app.init_resource::<super::particle_images::SceneParticleImages>()
@@ -717,27 +715,19 @@ pub(crate) fn simulate_effects(
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
     particle_view: Res<super::particle_systems::ParticleQueryFrame>,
     fog_frame: Res<FogSceneFrame>,
-    mut simulation: ResMut<FxSimulation>,
+    simulation: Option<ResMut<FxSimulation>>,
     mut published: ResMut<FxPublication>,
     mut last_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
     mut decal_error: Local<Option<String>>,
 ) {
-    let Some(water) = water.0.as_ref() else {
-        if simulation.screen_sources.is_some() { *simulation = FxSimulation::default(); }
+    let (Some(water), Some(sources), Some(mut simulation)) = (water.0.as_ref(), sources.0.as_ref(), simulation) else {
+        // A missing view withdraws the draw data. LevelLifetime owns the
+        // simulation and retires it after the outgoing GPU publication.
         published.0 = None;
         return;
     };
-    let Some(sources) = sources.0.as_ref() else {
-        if simulation.screen_sources.is_some() { *simulation = FxSimulation::default(); }
-        published.0 = None;
-        return;
-    };
-    if simulation.screen_sources.as_ref().is_none_or(|previous| !std::sync::Arc::ptr_eq(previous, sources)) {
-        *simulation = FxSimulation::default();
-        simulation.screen_sources = Some(sources.clone());
-    }
     let trace = super::world_effects::trace_lifecycle();
     let started = trace.then(std::time::Instant::now);
     let cycles = if trace { crate::loading::thread_cycles() } else { None };

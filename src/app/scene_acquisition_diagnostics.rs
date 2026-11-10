@@ -384,6 +384,8 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
 }
 
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
+    eprintln!("RESOURCE_SCENE_FX step={step} phase={phase} simulation={}",
+        world.contains_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>());
     eprintln!(
         "RESOURCE_SCENE_ASSETS step={step} phase={phase} meshes={} images={} probes={} decals={} skies={} buffers={}",
         world.resource::<Assets<Mesh>>().len(),
