@@ -561,6 +561,7 @@ fn inspect_scene_resources(
             catalog.clone(),
             level,
             true,
+            step == 0,
             |_| false,
         )?;
         super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
