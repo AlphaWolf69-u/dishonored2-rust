@@ -357,7 +357,7 @@ pub(super) fn prepare(
             "Startup trace: beginning world setup ({} BWM objects, {} world meshes, {} placed models)",
             scene.world.objects.len(),
             scene.world.meshes.len(),
-            scene.placed_models.len()
+            scene.expanded_placement_roots.unwrap_or(scene.placed_models.len())
         );
     }
     // Preserve ordered primary probe IDs in binding100; per-object records
@@ -800,7 +800,8 @@ pub(super) fn prepare(
             resolver.diffuse_image_paths.len()
         );
     }
-    let root_placement_count = scene.placed_models.len();
+    let prepared_root_count = scene.expanded_placement_roots.take();
+    let root_placement_count = prepared_root_count.unwrap_or(scene.placed_models.len());
     let mut expanded_placements =
         if env::var_os("DH2_DEBUG_RETAIN_PLACEMENT_STAGING").is_some_and(|value| value == "1") {
             scene.placed_models.clone()
@@ -808,7 +809,7 @@ pub(super) fn prepare(
             // RenderSourcePlacements is the only live owner after setup.
             std::mem::take(&mut scene.placed_models)
         };
-    if let Some(catalog) = catalog {
+    if let Some(catalog) = catalog.filter(|_| prepared_root_count.is_none()) {
         super::view_geometry::expand_model_placements(&mut expanded_placements, catalog);
     }
     if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {

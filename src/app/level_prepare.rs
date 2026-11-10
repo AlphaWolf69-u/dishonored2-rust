@@ -957,14 +957,26 @@ pub(super) fn prepare_level(
         // must not depend on which window has focus.
         app.insert_resource(bevy::winit::WinitSettings::continuous());
     }
+    let mut placed_models = placed_models;
+    let catalog_for_machinery = catalog.as_ref().unwrap();
+    let separate_placements = catalog_for_machinery.has_overlays()
+        || env::var_os("DH2_DEBUG_SEPARATE_BLUEPRINT_PLACEMENTS").is_some_and(|v| v == "1")
+        || env::var_os("DH2_DEBUG_RETAIN_PLACEMENT_STAGING").is_some_and(|v| v == "1");
+    let expanded_placement_roots = (!separate_placements).then_some(placed_models.len());
+    if !separate_placements {
+        super::view_geometry::expand_model_placements(&mut placed_models, catalog_for_machinery);
+    }
+    let machinery_placements = (separate_placements && entity_document.is_some())
+        .then(|| expanded_model_placements(&placed_models, catalog_for_machinery));
     let machinery = super::machinery::AmbientMachinery::load_with_texts(
-        catalog.as_ref().unwrap(),
+        catalog_for_machinery,
         entity_document.as_ref(),
-        &placed_models,
+        machinery_placements.as_deref().unwrap_or(&placed_models),
         &mut physics_texts,
         &mut shape_sources,
     )
     .map_err(std::io::Error::other)?;
+    drop(machinery_placements);
     app.insert_resource(machinery);
     app.insert_resource(super::model_motion::BoundModels::new(
         entity_document
@@ -1068,6 +1080,7 @@ pub(super) fn prepare_level(
             world,
             player_start,
             placed_models,
+            expanded_placement_roots,
             placed_lights,
             environment_lighting,
             environment_render_parameters,
