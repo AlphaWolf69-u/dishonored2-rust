@@ -7,7 +7,7 @@ use crate::{
     flash::{Player, avm2::value::Value, render},
     gameplay::options::decl::{atom, boolean, int, list_items, scope},
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 pub(super) struct Frame {
     pub frame: FlashFrame,
@@ -17,7 +17,7 @@ pub(super) struct Frame {
 
 pub(super) struct Movie {
     player: Player,
-    images: Arc<HashMap<crate::flash::player::CharRef, Arc<crate::flash::bitmap_resources::Image>>>,
+    images: Arc<crate::flash::bitmap_resources::MovieBitmaps>,
     cache: render::Cache,
     generation: u64,
     serial: u64,
@@ -120,6 +120,7 @@ impl Movie {
         configure.map_err(|e| player.describe(&e))?;
         let images = Arc::new(super::pause_menu::library_images(
             &catalog, &player, &resources,
+            crate::flash::bitmap_resources::PackLifetime::Movie,
         )?);
         let mut cache = render::Cache::default();
         let stage = player.state.borrow().stage_size;

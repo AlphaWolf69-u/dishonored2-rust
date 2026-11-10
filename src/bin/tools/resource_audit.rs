@@ -213,6 +213,12 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 )?;
             }
         }
+        "inspect-ui-bitmap-ownership" => {
+            #[cfg(feature = "game")]
+            dishonored2_rust::app::inspect_ui_bitmap_ownership(base, args)?;
+            #[cfg(not(feature = "game"))]
+            return Err("inspect-ui-bitmap-ownership requires the game feature".into());
+        }
         "inspect-ui-fonts" => {
             use dishonored2_rust::flash::{raster::Images, render, Player};
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;

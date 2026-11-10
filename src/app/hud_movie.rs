@@ -4,14 +4,14 @@
 //! elements before the root state supplies the input bindings.  The movie is
 //! kept alive for the in-game state, unlike the per-open journal movie.
 use crate::assets::archive::Catalog;
-use crate::flash::{Player, player::CharRef, render};
+use crate::flash::{Player, bitmap_resources::MovieBitmaps, render};
 use crate::gameplay::pause_state;
-use crate::rendering::bevy_backend::flash_ui::{FlashFrame, Image};
-use std::{collections::HashMap, sync::Arc};
+use crate::rendering::bevy_backend::flash_ui::FlashFrame;
+use std::sync::Arc;
 
 pub(super) struct HudMovie {
     player: Player,
-    images: Arc<HashMap<CharRef, Arc<Image>>>,
+    images: Arc<MovieBitmaps>,
     cache: render::Cache,
     generation: u64,
     serial: u64,
@@ -205,7 +205,7 @@ impl HudMovie {
         let settings_generation = crate::platform::console::shared().generation();
         // The first gauge values come from the live player/component owner.
         // The movie retains its authored initial state until that data exists.
-        let image_map = super::pause_menu::library_images(catalog, &player, &resources)?;
+        let image_map = super::pause_menu::library_images(catalog, &player, &resources, crate::flash::bitmap_resources::PackLifetime::Session)?;
         let residency =
             super::pause_menu::MovieResidency::new("hud", catalog, &resources, &image_map);
         let images = Arc::new(image_map);

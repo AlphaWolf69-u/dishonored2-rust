@@ -1,7 +1,7 @@
 //! Library bitmap residency. GDraw `1402e2c00` uploads raw iggytex blocks
 //! directly (format 13 -> DXGI_FORMAT_BC7_UNORM), without an RGBA copy.
-use crate::assets::{archive::Catalog, iggy::IggyFile, texture::ImageFormat};
-use std::{ops::{Deref, Range}, sync::Arc};
+use crate::assets::{archive::Catalog, iggy::{shape::TextureEntry, IggyFile}, texture::ImageFormat};
+use std::{collections::HashMap, ops::{Deref, Range}, sync::{Arc, Mutex, Weak}};
 
 /// Installed contiguous blocks can share their source member; decoded or
 /// partial records own their existing per-image output.
@@ -29,11 +29,16 @@ pub struct Image {
 }
 
 pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u16, Image)>, String> {
-    let entries = file.textures().map_err(|e| e.to_string())?;
+    load_entries(catalog, resource, file.textures().map_err(|e| e.to_string())?)
+}
+
+fn load_entries(catalog: &Catalog, resource: &str, entries: Vec<TextureEntry>) -> Result<Vec<(u16, Image)>, String> {
     if entries.is_empty() {
         return Ok(Vec::new());
     }
     let started = std::time::Instant::now();
+    let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+    let cycles_started = trace.then(crate::loading::thread_cycles).flatten();
     let path = resource.replace(".iggy", ".raw.iggytex");
     let mut data = catalog.read(&path).map_err(|e| e.to_string())?.ok_or_else(|| format!("{path} not indexed"))?;
     let source_bytes = data.len();
@@ -128,7 +133,10 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
         }
         images.push((entry.character, Image { width, height, mip_count, format, bytes }));
     }
-    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+    if trace {
+        let cycles = cycles_started.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        eprintln!("UI_BITMAP_PACK_ACQUISITION path={resource} decoded_bytes={source_bytes} cycles={cycles}");
         eprintln!("MEMORY UI bitmap backing: resource={resource} shared={} source_bytes={source_bytes} copied_bytes={copied_bytes} copied_images={copied_images} retained_source_bytes={} retained_source_capacity={}", shared.is_some(), if shared.is_some() { source_bytes } else { 0 }, if shared.is_some() { source_capacity } else { 0 });
         println!("MEMORY UI bitmaps: resource={resource} bytes={} rgba_bytes={rgba_bytes} images={} mip_levels={} load_ms={:.3}",
             images.iter().map(|(_, image)| image.bytes.len()).sum::<usize>(), images.len(), images.iter().map(|(_, image)| image.mip_count).sum::<u32>(), started.elapsed().as_secs_f64() * 1000.0);
@@ -136,12 +144,118 @@ pub fn load(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<Vec<(u
     Ok(images)
 }
 
-/// Process resident library images. The resource registry returns the existing
-/// payload on reacquisition (1400607f0 -> 14005feb0); live movie state remains
-/// separate. Share immutable compressed images across loading and pause players.
-/// bevy_backend: Arc owns the payload independently of either movie thread.
-type LibraryImages = std::sync::Arc<Vec<(u16, std::sync::Arc<Image>)>>;
-static RESIDENT: std::sync::Mutex<Option<std::collections::HashMap<(u64, String), LibraryImages>>> = std::sync::Mutex::new(None);
+type BitmapEntries = Vec<(u16, Arc<Image>)>;
+pub(crate) type LibraryImages = Arc<BitmapEntries>;
+
+/// A movie map and its submitted frames lease the exact immutable packs
+/// whose bitmap entries they publish.
+#[derive(Clone, Default)]
+pub struct MovieBitmaps {
+    characters: HashMap<super::player::CharRef, Arc<Image>>,
+    packs: Vec<LibraryImages>,
+}
+
+impl MovieBitmaps {
+    pub(crate) fn insert_pack(&mut self, library: usize, pack: LibraryImages) {
+        self.characters.extend(pack.iter().map(|(id, image)| {
+            (super::player::CharRef { library, id: *id }, image.clone())
+        }));
+        self.packs.push(pack);
+    }
+
+    pub(crate) fn append_layer(&mut self, layer: Self, library_offset: usize) {
+        self.characters.extend(layer.characters.into_iter().map(|(mut character, image)| {
+            character.library += library_offset;
+            (character, image)
+        }));
+        self.packs.extend(layer.packs);
+    }
+}
+
+impl Deref for MovieBitmaps {
+    type Target = HashMap<super::player::CharRef, Arc<Image>>;
+
+    fn deref(&self) -> &Self::Target { &self.characters }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackLifetime {
+    Movie,
+    Session,
+}
+
+enum CachedLibrary {
+    Live(Weak<BitmapEntries>),
+    Session(LibraryImages),
+}
+
+type CacheSlot = Arc<Mutex<Option<CachedLibrary>>>;
+
+static RESIDENT: Mutex<Option<HashMap<(u64, String), CacheSlot>>> = Mutex::new(None);
+
+impl CachedLibrary {
+    fn acquire(&mut self, lifetime: PackLifetime) -> Option<LibraryImages> {
+        match self {
+            Self::Live(images) => {
+                let images = images.upgrade()?;
+                if lifetime == PackLifetime::Session {
+                    *self = Self::Session(images.clone());
+                }
+                Some(images)
+            }
+            Self::Session(images) => Some(images.clone()),
+        }
+    }
+}
+
+fn cache_slot(catalog: u64, resource: &str) -> Option<CacheSlot> {
+    let key = (catalog, resource.replace('\\', "/").to_ascii_lowercase());
+    RESIDENT.lock().unwrap_or_else(|error| error.into_inner())
+        .as_ref().and_then(|slots| slots.get(&key)).cloned()
+}
+
+/// Cold packs are independent archive acquisitions. Only the matching pack
+/// slot is locked during its read, so concurrent movies reuse a result.
+pub(crate) struct PackWork<'a> {
+    resource: &'a str,
+    entries: Vec<TextureEntry>,
+    slot: Option<CacheSlot>,
+    lifetime: PackLifetime,
+}
+
+impl PackWork<'_> {
+    pub(crate) fn acquire(self, catalog: &Catalog) -> Result<LibraryImages, String> {
+        let mut slot = self.slot.as_ref().map(|slot| slot.lock().unwrap_or_else(|error| error.into_inner()));
+        if let Some(images) = slot.as_deref_mut().and_then(Option::as_mut)
+            .and_then(|entry| entry.acquire(self.lifetime)) {
+            return Ok(images);
+        }
+        let images: LibraryImages = Arc::new(load_entries(catalog, self.resource, self.entries)?.into_iter()
+            .map(|(id, image)| (id, Arc::new(image))).collect());
+        if let Some(slot) = slot.as_deref_mut() {
+            *slot = Some(if self.lifetime == PackLifetime::Session {
+                CachedLibrary::Session(images.clone())
+            } else {
+                CachedLibrary::Live(Arc::downgrade(&images))
+            });
+        }
+        Ok(images)
+    }
+}
+
+pub(crate) enum PackRequest<'a> {
+    Ready(LibraryImages),
+    Cold(PackWork<'a>),
+}
+
+fn effective_lifetime(lifetime: PackLifetime) -> PackLifetime {
+    static OVERRIDE: std::sync::OnceLock<Option<PackLifetime>> = std::sync::OnceLock::new();
+    OVERRIDE.get_or_init(|| match std::env::var("DH2_DEBUG_RETAIN_UI_BITMAPS").as_deref() {
+        Ok("0") => Some(PackLifetime::Movie),
+        Ok("1") => Some(PackLifetime::Session),
+        _ => None,
+    }).unwrap_or(lifetime)
+}
 
 /// Retire cache references only; submitted movies keep their own image Arcs.
 pub(crate) fn retire_catalog(catalog: u64) -> usize {
@@ -154,28 +268,41 @@ pub(crate) fn retire_catalog(catalog: u64) -> usize {
     removed
 }
 
-/// Diagnostic lookup only; does not acquire or extend the image lifetime.
+/// Diagnostic lookup for strong session ownership.
 pub(crate) fn debug_resident(catalog: u64, resource: &str) -> bool {
-    let key = (catalog, resource.replace('\\', "/").to_ascii_lowercase());
-    RESIDENT.lock().unwrap_or_else(|error| error.into_inner())
-        .as_ref().is_some_and(|resident| resident.contains_key(&key))
+    cache_slot(catalog, resource).is_some_and(|slot| {
+        matches!(&*slot.lock().unwrap_or_else(|error| error.into_inner()), Some(CachedLibrary::Session(_)))
+    })
+}
+
+pub(crate) fn request<'a>(catalog: &Catalog, resource: &'a str, file: &IggyFile,
+    lifetime: PackLifetime) -> Result<PackRequest<'a>, String> {
+    let lifetime = effective_lifetime(lifetime);
+    // Both the texture table and its companion member may come from an
+    // editable layer. Acquire that generation independently.
+    let mutable = catalog.has_overlays() && (catalog.has_overlay_file(resource)
+        || catalog.has_overlay_file(&resource.replace(".iggy", ".raw.iggytex")));
+    let slot = if mutable {
+        None
+    } else {
+        let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
+        let mut resident = RESIDENT.lock().unwrap_or_else(|error| error.into_inner());
+        Some(resident.get_or_insert_with(Default::default).entry(key).or_default().clone())
+    };
+    if let Some(slot) = &slot {
+        if let Some(images) = slot.lock().unwrap_or_else(|error| error.into_inner())
+            .as_mut().and_then(|entry| entry.acquire(lifetime)) {
+            return Ok(PackRequest::Ready(images));
+        }
+    }
+    let work = PackWork { resource, entries: file.textures().map_err(|e| e.to_string())?, slot, lifetime };
+    if work.entries.is_empty() { return Ok(PackRequest::Ready(work.acquire(catalog)?)); }
+    Ok(PackRequest::Cold(work))
 }
 
 pub fn acquire(catalog: &Catalog, resource: &str, file: &IggyFile) -> Result<LibraryImages, String> {
-    let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
-    let mut resident = RESIDENT.lock().unwrap();
-    let resident = resident.get_or_insert_with(Default::default);
-    // Movie/image leases keep their data if another catalog becomes active.
-    resident.retain(|(identity, _), _| *identity == catalog.identity());
-    // Both the library's texture table and its companion image member can
-    // come from an editable layer while this catalog identity remains stable.
-    let mutable = catalog.has_overlays() && (catalog.has_overlay_file(resource)
-        || catalog.has_overlay_file(&resource.replace(".iggy", ".raw.iggytex")));
-    if !mutable {
-        if let Some(images) = resident.get(&key) { return Ok(images.clone()); }
+    match request(catalog, resource, file, PackLifetime::Session)? {
+        PackRequest::Ready(images) => Ok(images),
+        PackRequest::Cold(work) => work.acquire(catalog),
     }
-    let images: LibraryImages = std::sync::Arc::new(load(catalog, resource, file)?.into_iter()
-        .map(|(id, image)| (id, std::sync::Arc::new(image))).collect());
-    if !mutable { resident.insert(key, images.clone()); }
-    Ok(images)
 }

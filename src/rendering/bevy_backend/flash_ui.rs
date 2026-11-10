@@ -6,7 +6,6 @@
 //! writes its set bits with REPLACE and no colour, a clear batch writes 0
 //! (`FUN_1402e81b0`, `FUN_1402e7050`); every render starts cleared
 //! (`FUN_1402e5b80`).
-use crate::flash::player::CharRef;
 use crate::flash::filter_passes::{blur_axis, blur_pixels, FilterRecord, TapPass};
 use crate::flash::render::{Batch, DrawList, Layer, Texture as FillTexture, Vertex};
 use bevy::{
@@ -33,13 +32,14 @@ pub const TRANSFER_SHADER_SOURCE: &str = include_str!("../../../assets/shaders/d
 const UI_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
 pub use crate::flash::bitmap_resources::Image;
+use crate::flash::bitmap_resources::MovieBitmaps;
 
 /// One frame of UI to draw. `generation` identifies the player whose
 /// library bitmaps `images` holds.
 #[derive(Clone)]
 pub struct FlashFrame {
     pub list: Arc<DrawList>,
-    pub images: Arc<HashMap<CharRef, Arc<Image>>>,
+    pub images: Arc<MovieBitmaps>,
     pub game_images: Arc<HashMap<String, Handle<bevy::prelude::Image>>>,
     pub generation: u64,
     /// Distinct for every built list (the vertices are uploaded once).
