@@ -6540,3 +6540,24 @@ purge. The forced partial-read route and the normal worker gate are
 separate observations. No interruption of a blocking operating-system
 read or gameplay frame-time gain is claimed. Evidence:
 DH2-scene-shutdown/artifacts/texture-read-cancellation-retry-20261110-comparison.json.
+
+### Runtime skin publication ownership
+
+Prediction before implementation. Original 14025e4d0 publishes the
+selected skin streams and per-surface matrix offset, and 14076d640
+applies physics joint modifications. The rewrite's shared skin publisher
+copies every changed palette into its last-pose state while handing the
+same matrices to the shadow owner. It also allocates transformed vertex
+arrays and an aggregate array solely to reduce placement bounds. Share
+one immutable palette publication and reduce bounds directly in vertex
+order. Expect one palette allocation per published pose instead of two,
+no temporary bounds arrays, and identical position, palette and bounds
+values. The unchanged-pose comparison keeps its own last publication,
+including when a placement alternates between physics and usable animation.
+Observe installed physics poses through the real windowless publisher,
+compare bounds with the previous reduction, and count the affected
+temporary bytes. The first publication also builds its GPU palette
+twice. Reuse the allocation passed to Assets::add for that first pose,
+avoiding one converted 48-byte matrix per joint and a redundant asset
+modification. Existing buffer updates keep their current publication.
+No whole-frame speed or RAM claim is predicted.
