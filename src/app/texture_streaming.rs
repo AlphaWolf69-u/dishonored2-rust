@@ -434,9 +434,9 @@ pub(super) fn prepare_base_images(catalog: &Arc<archive::Catalog>, queue: &Scene
             requests.push(BaseImageRequest { slot, path: path.clone(), preferred });
             continue;
         }
-        let result = read_resident_image(catalog, path, preferred, Some(&|| check_cancelled().is_err()));
+        let acquired = read_resident_image(catalog, path, preferred, Some(&|| check_cancelled().is_err()));
         check_cancelled()?;
-        let mut streamed = result?.ok_or_else(|| format!("resident image is absent: {path}"))?;
+        let mut streamed = acquired?.ok_or_else(|| format!("resident image is absent: {path}"))?;
         streamed.pack_uploads();
         result.payloads.insert(slot, streamed);
     }
