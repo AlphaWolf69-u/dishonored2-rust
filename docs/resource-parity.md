@@ -402,6 +402,7 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Edge skeleton registry (`1400607f0`, `14024f2a0`, `140060180`). The Catalog owns the weak coalescing table, and live skeletons hold weak retirement links. Normalized-path hits borrow the path and reuse the existing key. In the EotW and Dust publication comparison (`e33ec311`), all 131 acquisitions and 79 installed source signatures matched. Both runs decoded 122 skeletons, reused nine and released all live payloads. The catalog-owned table retired with zero entries and seven reserved slots. This observes acquisition, reuse and retirement, without a timing inference. Evidence: `DH2-interactions/artifacts/catalog-skeleton-registry-20261110-comparison.json`.
 - Wwise stream location ownership (`1400bc8f0`, `1410bf740`, `1410f1910` / `141122400`). The event resolver already looks up a Sound's package using its owning bank and language. Retain that bank identity in the streamed reference until graph decoding and keep the locator table local to that acquisition. Expect zero level-retained lookup entries, no cross-event lock or overwrite during parallel preload, and unchanged media extents for unambiguous IDs. Only the graph's actual stream sources retain their locators. The existing resident package-entry reader can also fill fallback resident media directly, avoiding one temporary buffer and payload copy per full package read. Header-only and prefetched stream acquisition retain their current reads. The lifetime prediction concerns acquisition and its scratch storage, with no steady-state voice cost or lower frame-time prediction. Installed publication and scoped timing observations remain pending.
 
   Installed publication (`ff26580f`) matched the previously accepted EotW / Dust / EotW run across 27,177 prepared-media records and 5,837 stream-format records. Encoded residency and stream acquisition counts and read byte totals matched at all three map checkpoints. An independent installed package comparison found 76 cross-package IDs in the EotW selection and 81 in Dust, with byte-identical duplicates in both. The observer used actual installed source acquisition and publication. Voice playback, the full-media fallback and scoped performance were outside that observation. Evidence: `DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-comparison.json` and `wwise-stream-bank-identities-20261110.json`.
@@ -1611,6 +1612,14 @@ The same catalogue served all three maps. IO/decompression does not hold the
 pool mutex, loose overlays keep their direct-read behavior, and no decoded
 payload cache was introduced. These counts establish eliminated filesystem
 operations, not measured CPU milliseconds or resident MB savings.
+
+Final owner observations recorded 15 cached readers after 55,629 acquisitions
+in the EotW / Dust / EotW route and 16 after 29,113 acquisitions in the EotW
+quality route. Both counts were emitted by the catalog reader pool's destructor.
+Keeping the readers for that session preserves map-to-map reuse while the
+catalog drop closes the physical files. Evidence:
+`DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-publication/stderr.log`
+and `artifacts/resource-quality-blocks-20261109/stderr.log`.
 
 Shadow retirement acceptance: the same production client exited 0 without
 shadow-target retirement events. Source-absent entries are now pruned before
