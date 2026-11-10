@@ -101,6 +101,10 @@ struct Reader<'a> {
 /// Resolve the LOD0 mesh named by a Void `.md6` declaration. The entity's
 /// declaration name and compiled mesh name are not always the same.
 pub fn compiled_mesh_path(declaration: &str) -> Option<String> {
+    compiled_mesh_resource(compiled_mesh_name(declaration)?)
+}
+
+pub(crate) fn compiled_mesh_name(declaration: &str) -> Option<&str> {
     let lod = declaration
         .split_once("lod 0")?
         .1
@@ -109,9 +113,17 @@ pub fn compiled_mesh_path(declaration: &str) -> Option<String> {
         .split_once('}')?
         .0;
     let after = lod.split_once("mesh \"")?.1;
-    let path = after.split_once('"')?.0;
-    let stem = path.strip_suffix(".md6mesh")?;
+    Some(after.split_once('"')?.0)
+}
+
+pub(crate) fn compiled_mesh_resource(name: &str) -> Option<String> {
+    let stem = name.strip_suffix(".md6mesh")?;
     Some(format!("generated/basemodel/{stem}.bmd6model"))
+}
+
+pub(crate) fn compiled_mesh_parent(declaration: &str) -> Option<&str> {
+    declaration.split_once("inherit \"")
+        .and_then(|(_, rest)| rest.split_once('"').map(|(path, _)| path))
 }
 
 pub fn resolve_compiled_mesh(
@@ -133,10 +145,7 @@ pub fn resolve_compiled_mesh(
         if let Some(mesh) = compiled_mesh_path(&text) {
             return Ok(mesh);
         }
-        let Some(inherited) = text
-            .split_once("inherit \"")
-            .and_then(|(_, rest)| rest.split_once('"').map(|(path, _)| path))
-        else {
+        let Some(inherited) = compiled_mesh_parent(&text) else {
             return Ok(compiled_guess.into());
         };
         let stem = inherited
@@ -689,6 +698,23 @@ impl ModelSources {
     pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, resource: &str)
         -> Result<std::sync::Arc<ModelInfo>, String>
     {
+        self.acquire_resolved(catalog, resource, || None)
+    }
+
+    pub(crate) fn acquire_for_rig(&mut self, catalog: &crate::archive::Catalog, resource: &str,
+        rig: &crate::assets::animation_rig::Rig,
+    ) -> Result<std::sync::Arc<ModelInfo>, String> {
+        static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let separate = *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_RIG_MESH_DECLARATION")
+            .is_some_and(|value| value == "1"));
+        self.acquire_resolved(catalog, resource, || {
+            if separate { None } else { rig.model_reference().compiled_mesh() }
+        })
+    }
+
+    fn acquire_resolved(&mut self, catalog: &crate::archive::Catalog, resource: &str,
+        admitted_mesh: impl FnOnce() -> Option<String>,
+    ) -> Result<std::sync::Arc<ModelInfo>, String> {
         let started = acquisition::tracing().then(std::time::Instant::now);
         let cycles = acquisition::tracing().then(crate::loading::thread_cycles).flatten();
         if self.catalog != catalog.identity() {
@@ -703,10 +729,28 @@ impl ModelSources {
                 return Ok(model.clone());
             }
         }
-        let read = |decl: &str| {
-            catalog.read(decl).ok().flatten().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        let selection_start = started.and_then(|_| crate::loading::thread_cycles());
+        let mut declaration_reads = 0;
+        let mut declaration_bytes = 0;
+        let admitted = if self.share { admitted_mesh() } else { None };
+        let reused_declaration = admitted.is_some();
+        let path = match admitted {
+            Some(path) => path,
+            None => resolve_compiled_mesh(resource, |decl| {
+                catalog.read(decl).ok().flatten().map(|bytes| {
+                    if started.is_some() {
+                        declaration_reads += 1;
+                        declaration_bytes += bytes.len();
+                    }
+                    String::from_utf8_lossy(&bytes).into_owned()
+                })
+            })?,
         };
-        let path = resolve_compiled_mesh(resource, read)?;
+        if started.is_some() {
+            let cycles = selection_start.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("MODEL_LOD_SOURCE resource={resource} path={path} reused={reused_declaration} reads={declaration_reads} bytes={declaration_bytes} cycles={cycles}");
+        }
         // A validated alias resolves to the same catalog identity despite
         // differences in ASCII case or slash direction (140140da0/140140de0).
         let key = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {

@@ -8,12 +8,20 @@ use std::{borrow::Cow, cell::RefCell, collections::HashMap, sync::{Arc, Mutex, W
 pub(crate) struct Declaration {
     pub path: Arc<str>,
     pub tokens: Arc<[String]>,
+    lod_zero_mesh: LodZeroMesh,
     pub parent: Option<usize>,
     parent_record: Option<Lease>,
     pub parent_declaration: Option<Arc<Declaration>>,
     pub animsets: Vec<Arc<animset::AnimSet>>,
     pub source_bytes: usize,
     pub source_crc: Option<flate2::Crc>,
+}
+
+#[derive(Clone, Copy)]
+enum LodZeroMesh {
+    Local(u32),
+    Inherited,
+    Unresolved,
 }
 
 fn tracing() -> bool {
@@ -92,6 +100,20 @@ pub(crate) struct ModelReference {
 impl ModelReference {
     pub(crate) fn identity(&self) -> usize { self.record.identity() }
     pub(crate) fn declaration(&self) -> &Arc<Declaration> { &self.declaration }
+
+    /// Use the LOD0 mesh already selected from the installed declaration.
+    /// A child without its own mesh keeps walking the admitted parent layers.
+    pub(crate) fn compiled_mesh(&self) -> Option<String> {
+        let mut current = Some(self.declaration.as_ref());
+        while let Some(layer) = current {
+            match layer.lod_zero_mesh {
+                LodZeroMesh::Local(index) => return crate::bmd6::compiled_mesh_resource(&layer.tokens[index as usize]),
+                LodZeroMesh::Inherited => current = layer.parent_declaration.as_deref(),
+                LodZeroMesh::Unresolved => return None,
+            }
+        }
+        None
+    }
 
     /// 1c8cc0 accepts this exact MD6 or an actual descendant declaration.
     pub(crate) fn is_ancestor_of(&self, candidate: &Self) -> bool {
@@ -233,8 +255,13 @@ impl Lease {
 }
 
 fn parse(catalog: &Catalog, path: Arc<str>, source: &str, scope: LoadContext) -> Result<Declaration, String> {
-    let tokens: Arc<[String]> = crate::entities::declaration_lexemes(source)?
-        .into_iter().map(str::to_owned).collect();
+    let lexemes = crate::entities::declaration_lexemes(source)?;
+    // Both readers use the same authored LOD0 selector. Keep only its token
+    // index, so no second source buffer or mesh-name string stays resident.
+    let mesh = crate::bmd6::compiled_mesh_name(source).filter(|name| name.ends_with(".md6mesh"));
+    let lod_zero_token = mesh.and_then(|name| lexemes.iter().position(|&token| std::ptr::eq(token, name)))
+        .and_then(|index| u32::try_from(index).ok());
+    let tokens: Arc<[String]> = lexemes.into_iter().map(str::to_owned).collect();
     let mut depth = 0usize;
     let mut parent = None;
     let mut parent_record = None;
@@ -278,12 +305,21 @@ fn parse(catalog: &Catalog, path: Arc<str>, source: &str, scope: LoadContext) ->
         index += 1;
     }
     if depth != 0 { return Err("unbalanced MD6 declaration".into()); }
+    let lod_zero_mesh = if let Some(index) = lod_zero_token {
+        LodZeroMesh::Local(index)
+    } else if mesh.is_none() && parent.is_some_and(|index| {
+        crate::bmd6::compiled_mesh_parent(source) == Some(tokens[index].as_str())
+    }) {
+        LodZeroMesh::Inherited
+    } else {
+        LodZeroMesh::Unresolved
+    };
     let source_crc = (tracing() || std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1")).then(|| {
         let mut crc = flate2::Crc::new();
         crc.update(source.as_bytes());
         crc
     });
-    Ok(Declaration { path, tokens, parent, parent_record, parent_declaration, animsets, source_bytes: source.len(), source_crc })
+    Ok(Declaration { path, tokens, lod_zero_mesh, parent, parent_record, parent_declaration, animsets, source_bytes: source.len(), source_crc })
 }
 
 fn normalized(path: &str) -> Cow<'_, str> {

@@ -6506,3 +6506,19 @@ dictionary likewise released after catalog and consumer retirement.
 Loading and pause bitmap payloads matched the preceding Iggy build.
 This covers installed immutable dictionaries and the source lifetime.
 Evidence: DH2-collision-staging/artifacts/catalog-language-dictionary-20261110-comparison.json.
+
+### Usable rig and LOD0 acquisition
+
+Prediction before implementation. Installed 1401c9630 admits the MD6
+declaration metadata and 14025aa00 reads the selected compiled model.
+The usable worker already owns the complete immutable MD6 inheritance
+chain through its rig, but ModelSources rereads that chain to find LOD0.
+Retain only the token index for the existing mesh-name selection in
+each admitted declaration and use those generations when the same rig
+requests its compiled mesh. The worker should issue zero redundant
+declaration reads for usable models with an already admitted LOD0 mesh.
+Editable catalogs and missing usable LOD0 metadata retain the existing
+resolver. The model payload, cache scope, rig, playback, GPU inputs
+and runtime release remain unchanged. Compare the actual installed
+usable owners with and without the declaration handoff and count the
+avoided reads and bytes separately from the model decode.
