@@ -6017,3 +6017,13 @@ same asset ID, GPU bytes and patch order. Expect to release the static
 prefix after upload, with the same per-record compare and writes as the
 previous path. The existing EotW and Dust full CPU copies are 14,902,560
 and 21,835,296 bytes. Measure the actual retained tail and output CRC.
+
+Instance probe record residency acceptance (`acca51c7`). Installed Edge of
+the World and Dust District produced the same full upload CRCs `089f05a5`
+and `d496779e`, with unchanged GPU buffer lengths. CPU backing went from
+14,902,560 to 902,592 bytes and from 21,835,296 to 766,368 bytes. The
+main-world asset retained no serialized upload payload after extraction;
+the separate mutable tails remain on the model lighting owner. Both maps
+returned to zero GPU buffers after release. Active motion and arm patches
+were traced in source and were outside the windowless observations.
+Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.
