@@ -169,19 +169,9 @@ fn spawn_authored(
         .trim_matches('"');
     let stem = material::compiled_image_stem(catalog, name)
         .ok_or_else(|| format!("sun image {name} absent"))?;
-    let mut streamed = texture_streaming::read_streamed_diffuse_at_target(
-        catalog,
-        &stem,
-        texture_streaming::TextureReadTarget::Initial(Some(0)),
-    )?
-    .ok_or("sun image payload absent")?;
-    streamed.image.data = Some(
-        streamed
-            .uploads
-            .into_iter()
-            .flat_map(|m| m.payload)
-            .collect(),
-    );
+    let mut streamed = texture_streaming::read_resident_diffuse_image(catalog, &stem, Some(0))?
+        .ok_or("sun image payload absent")?;
+    streamed.pack_uploads();
     streamed.image.sampler =
         bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
             address_mode_u: bevy::image::ImageAddressMode::ClampToEdge,

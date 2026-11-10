@@ -2954,6 +2954,15 @@ ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
 
+Initial texture worker prediction. Original 1402e9ff0 hands validated
+authored inline records to 1402f5500. The host worker currently allocates one
+new byte buffer per inline mip even when the upload already owns the decoded
+archive member. For initial inline-only worker jobs, keep that member once
+and hand checked mip ranges to the upload queue. Expect no second payload
+allocation or copy, with only record headers and the archive capacity slack
+retained until upload. Keep separately streamed mip jobs on their existing
+direct acquisition path. Compare matching mip order, dimensions, payload
+signatures and GPU publication before claiming a gameplay memory or CPU gain.
 
 ### Fog curve resource ownership
 
