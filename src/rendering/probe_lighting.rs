@@ -879,7 +879,7 @@ mod tests {
             let mesh = &world.meshes[object.mesh_index];
             for instance in object.matrix_start..object.matrix_end {
                 let offset = set.vertex_references.instance_offsets[instance] as usize;
-                let end = offset.checked_add(mesh.positions.len()).unwrap();
+                let end = offset.checked_add(mesh.positions().len()).unwrap();
                 let references = set
                     .vertex_references
                     .tetrahedron_indices

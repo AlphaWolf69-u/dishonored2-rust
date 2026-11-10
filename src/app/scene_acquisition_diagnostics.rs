@@ -284,7 +284,7 @@ fn inspect_scene_resources(
             true,
             || false,
         )?;
-        super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared)?;
+        super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
         let inputs = prepared
             .get_resource::<super::scene_preparation::SceneGpuInputs>()
             .ok_or("scene worker did not produce its real asset inputs")?;

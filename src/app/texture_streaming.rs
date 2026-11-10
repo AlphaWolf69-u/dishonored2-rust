@@ -290,12 +290,17 @@ pub(super) struct PreparedBaseImages {
 }
 
 pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages,
-    resident: &super::resident_images::ResidentImages, inline_slots: &std::collections::HashSet<usize>) -> Result<PreparedBaseImages, String> {
+    resident: &super::resident_images::ResidentImages,
+    inline_slots: &std::collections::HashSet<usize>,
+    check_cancelled: &impl Fn() -> Result<(), String>,
+) -> Result<PreparedBaseImages, String> {
+    check_cancelled()?;
     let mut result = PreparedBaseImages { payloads: Default::default(),
         views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip, inline_slots) };
     let mut reused_bytes = 0usize;
     let mut reused = 0;
     for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
+        check_cancelled()?;
         if shared.can_reuse(path, queue.preferred_mip) { continue; }
         if let Some(view) = result.views.get(&slot) {
             reused += 1;

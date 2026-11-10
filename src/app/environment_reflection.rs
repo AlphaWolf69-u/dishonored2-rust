@@ -76,6 +76,7 @@ pub(super) fn load(
     probes: Option<&probe_lighting::ProbeLightingSet>,
     images: &mut dyn AssetWrite<Image>,
     buffers: &mut dyn AssetWrite<ShaderBuffer>,
+    check_cancelled: &impl Fn() -> Result<(), String>,
 ) -> Result<LoadedReflections, String> {
     let count = probes.map_or(0, |p| p.reflection_probes.len());
     let mut words = vec![count as u32, 0, 0, 0];
@@ -91,6 +92,7 @@ pub(super) fn load(
     let mut cube_indices = Vec::<u32>::with_capacity(count);
     if let Some(probes) = probes {
         for probe in &probes.reflection_probes {
+            check_cancelled()?;
             let catalog = catalog.ok_or("reflection catalog missing")?;
             let path = material::compiled_image_stem(catalog, &probe.cubemap_name)
                 .ok_or_else(|| format!("reflection image unavailable: {}", probe.cubemap_name))?;

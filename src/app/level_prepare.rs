@@ -6,7 +6,7 @@ use super::{
     StreamingDiagnostics, TomeWorld, ViewSettings, archive,
     entities, env, expanded_model_placements, game_affine_to_view, game_settings, game_to_view,
     navigation, physworld, placed_transform, placed_vertex, probe_lighting, render_light,
-    shader_cache, shadow_target_dimensions, tome, transformed, view_to_game, world_mesh,
+    shader_cache, shadow_target_dimensions, tome, transformed, view_to_game,
 };
 use bevy::prelude::*;
 
@@ -88,18 +88,13 @@ pub(super) fn prepare_level(
     let mut physics_texts = crate::assets::declaration_texts::PhysicsSeed::new(
         catalog.as_ref().unwrap(), language,
     );
-    let bytes = level.read_world(catalog.as_ref().unwrap())?;
-    let world =
-        world_mesh::parse(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    // `run` lasts the whole session; the installed file is parsed.
-    drop(bytes);
+    let world_started = profile.then(Instant::now);
+    let world = level.load_world(catalog.as_ref().unwrap(), &cancelled)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     super::load_timing::mark("world mesh");
     check_cancelled()?;
-    if profile {
-        println!(
-            "PERF world mesh parse: {:.3}s",
-            startup.elapsed().as_secs_f64()
-        );
+    if let Some(started) = world_started {
+        println!("PERF world mesh read and parse: {:.3}s", started.elapsed().as_secs_f64());
     }
     let (player_start, placed_models, entity_document) =
         match level.read_entities(catalog.as_ref().unwrap())? {

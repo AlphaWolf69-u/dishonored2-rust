@@ -83,7 +83,16 @@ impl ScenePreparation {
     pub fn prepare(
         mut self,
         prepared: &mut super::loading_screen::PreparedLevel,
+        cancelled: impl Fn() -> bool,
     ) -> Result<(), String> {
+        let check_cancelled = || {
+            if cancelled() {
+                Err("scene preparation cancelled".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
         let mut scene = prepared
             .take_resource::<SceneData>()
             .expect("prepared scene");
@@ -107,6 +116,7 @@ impl ScenePreparation {
         let physics_texts = prepared.take_resource::<super::level_prepare::PreparedPhysicsTexts>()
             .map_or_else(Default::default, |texts| texts.0);
         self.audio.prepare(&mut commands, physics_texts);
+        check_cancelled()?;
         if let Some(programs) = &mut programs {
             let (frame, source) = super::shadow_updates::prepare_screen_shadow_source(
                 &scene,
@@ -138,7 +148,9 @@ impl ScenePreparation {
             effects.as_ref(),
             Some(&self.shared_images),
             &self.resident_images,
-        );
+            &check_cancelled,
+        )?;
+        check_cancelled()?;
         match super::ParallelShadowOwner::from_scene(&scene, &mut self.images) {
             Ok(owner) => commands.insert_resource(owner),
             Err(error) => eprintln!("Parallel shadow owner unavailable: {error}"),
@@ -155,6 +167,7 @@ impl ScenePreparation {
                 Err(error) => eprintln!("Local shadow owner unavailable: {error}"),
             }
         }
+        check_cancelled()?;
         prepared.insert_resource(SceneGpuInputs {
             images: Arc::new(
                 self.images

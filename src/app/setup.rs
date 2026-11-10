@@ -124,7 +124,8 @@ pub(super) fn setup(
         &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
         &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
-        effect_graphs.as_deref(), None, &resident_images);
+        effect_graphs.as_deref(), None, &resident_images, &|| Ok(()))
+        .unwrap_or_else(|error| panic!("Scene preparation failed: {error}"));
 }
 
 pub(super) fn prepare(
@@ -147,7 +148,9 @@ pub(super) fn prepare(
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
     shared_images: Option<&super::texture_streaming::SharedImages>,
     resident_images: &super::resident_images::ResidentImages,
-) {
+    check_cancelled: &impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    check_cancelled()?;
     // Take the catalog to avoid borrowing the scene while setup mutates its
     // parsed world, then transfer ownership to the texture worker below.
     let catalog_storage = scene.catalog.take();
@@ -391,8 +394,8 @@ pub(super) fn prepare(
             scene.environment_probes.as_deref(),
             images,
             probe_sh_buffers,
-        )
-        .expect("installed environment reflections");
+            check_cancelled,
+        )?;
     let water_probes = loaded_reflections.water_probes(
         scene.environment_probes.as_deref(),
         vertex_probe_buffer.clone(),
@@ -475,6 +478,9 @@ pub(super) fn prepare(
     }
     let mut bwm_visibility_render_instances = vec![Vec::new(); scene.world.visibility.len()];
     for (object_number, object) in scene.world.objects.iter().enumerate() {
+        if object_number % 32 == 0 {
+            check_cancelled()?;
+        }
         if object_number == scene.world.objects.len() / 2 {
             super::load_timing::mark("setup: half of the world objects");
         }
@@ -510,7 +516,7 @@ pub(super) fn prepare(
         world_shadow_mesh_sources.objects[object_number].gather_flags48 = Some(admission);
         let first_material = if let Some(matrix) = scene.world.matrices.get(object.matrix_start) {
             let points: Vec<Vec3> = source
-                .positions
+                .positions()
                 .iter()
                 .map(|&position| transformed(matrix, position))
                 .collect();
@@ -556,7 +562,7 @@ pub(super) fn prepare(
             let matrix = &scene.world.matrices[matrix_index];
             let visibility_record = &scene.world.visibility[matrix_index];
             let points: Vec<Vec3> = source
-                .positions
+                .positions()
                 .iter()
                 .map(|&position| transformed(matrix, position))
                 .collect();
@@ -599,14 +605,14 @@ pub(super) fn prepare(
             }
             let instance = game_affine_to_view(matrix);
             let bounds = authored_world_bounds(visibility_record);
-            let render_instance = if needs_exact_world_mesh(&instance, &source.positions, &points) {
+            let render_instance = if needs_exact_world_mesh(&instance, source.positions(), &points) {
                 // Bevy's Transform cannot express shear. Preserve the exact
                 // authored affine transform in this instance's vertex data.
                 let baked = meshes.add(super::view_geometry::authored_mesh_from_uvs(
                     &points,
-                    super::view_geometry::MeshUvs::Packed(&source.uvs),
-                    &source.indices,
-                    &source.packed_channels,
+                    super::view_geometry::MeshUvs::Packed(source.uvs()),
+                    source.indices(),
+                    source.packed_channels(),
                     |v| transformed_direction(matrix, v),
                 ));
                 let render_instance = RenderInstance {
@@ -661,8 +667,8 @@ pub(super) fn prepare(
                 resolver.needs_vegetation_channels(&render_instance.material),
                 &render_instance.mesh,
                 meshes,
-                &source.positions,
-                &source.packed_channels,
+                source.positions(),
+                source.packed_channels(),
             );
             let render_index = render_instances.len();
             bwm_visibility_render_instances[matrix_index].push(render_index);
@@ -725,6 +731,9 @@ pub(super) fn prepare(
         }).collect()
     } else { HashMap::new() };
     for (number, placement) in expanded_placements.iter().enumerate() {
+        if number % 32 == 0 {
+            check_cancelled()?;
+        }
         if trace_startup {
             eprintln!(
                 "Startup trace: placed model {}/{} id={} resource={}",
@@ -1186,6 +1195,7 @@ pub(super) fn prepare(
     commands.insert_resource(super::model_motion::ModelProbeLighting(
         resolver.probe_sh_buffer.clone(),
     ));
+    check_cancelled()?;
     super::load_timing::mark("setup: placed models");
     resolver.upload_probe_records();
     println!(
@@ -1924,6 +1934,10 @@ pub(super) fn prepare(
     ));
     world_shadow_mesh_sources.release_cpu_copies(meshes);
     commands.insert_resource(world_shadow_mesh_sources);
+    // Water was the last CPU consumer of the installed geometry sections.
+    // The prepared meshes own their vertex and index data independently.
+    scene.world.meshes = Vec::new();
+    super::load_timing::mark("world geometry source released");
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
             .iter()
@@ -1981,8 +1995,9 @@ pub(super) fn prepare(
         super::load_timing::keep_load_list(catalog);
     }
     if let (Some(catalog), Some(shared)) = (catalog, shared_images) {
-        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images, &ocean_inline_slots)
-            .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
+        commands.insert_resource(super::texture_streaming::prepare_base_images(
+            catalog, &render_queue, shared, resident_images, &ocean_inline_slots, check_cancelled,
+        )?);
     }
     resolver.cache.retire_staged_source();
     resolver.cache.report_source_handoff();
@@ -2012,15 +2027,8 @@ pub(super) fn prepare(
             }
         }
     });
-    // Every world mesh is uploaded and its shadow/water/probe inputs are
-    // built; the original keeps no CPU copy of uploaded world geometry.
-    for mesh in &mut scene.world.meshes {
-        mesh.positions = Vec::new();
-        mesh.uvs = Vec::new();
-        mesh.packed_channels = Vec::new();
-        mesh.indices = Vec::new();
-    }
     super::load_timing::mark("setup: end");
+    Ok(())
 }
 
 /// 1401fbad0 makes a particle mesh renderer an ordinary model surface of its

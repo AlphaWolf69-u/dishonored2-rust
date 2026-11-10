@@ -21,12 +21,53 @@ const BWM_ELEMENTS: [[u8; 8]; 6] = [
 ];
 
 #[derive(Debug)]
+struct Geometry {
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[half::f16; 2]>,
+    // Declaration 8 stream 1 after UV0: UV1 half2, N/T SNORM8x4, colour UNORM8x4.
+    channels: Vec<[u8; 16]>,
+    indices: Vec<u16>,
+}
+
+#[derive(Debug)]
 pub struct Mesh {
-    pub positions: Vec<[f32; 3]>,
-    pub uvs: Vec<[half::f16; 2]>,
-    /// Declaration 8 stream 1: UV1 half2, normal/tangent SNORM8x4, color UNORM8x4.
-    pub packed_channels: Vec<[u8; 16]>,
-    pub indices: Vec<u16>,
+    geometry: std::sync::Arc<Geometry>,
+    positions: std::ops::Range<usize>,
+    attributes: std::ops::Range<usize>,
+    indices: std::ops::Range<usize>,
+}
+
+impl Mesh {
+    pub fn positions(&self) -> &[[f32; 3]] {
+        &self.geometry.positions[self.positions.clone()]
+    }
+
+    pub fn uvs(&self) -> &[[half::f16; 2]] {
+        &self.geometry.uvs[self.attributes.clone()]
+    }
+
+    pub fn packed_channels(&self) -> &[[u8; 16]] {
+        &self.geometry.channels[self.attributes.clone()]
+    }
+
+    pub fn indices(&self) -> &[u16] {
+        &self.geometry.indices[self.indices.clone()]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        positions: Vec<[f32; 3]>,
+        uvs: Vec<[half::f16; 2]>,
+        channels: Vec<[u8; 16]>,
+        indices: Vec<u16>,
+    ) -> Self {
+        Self {
+            positions: 0..positions.len(),
+            attributes: 0..uvs.len(),
+            indices: 0..indices.len(),
+            geometry: std::sync::Arc::new(Geometry { positions, uvs, channels, indices }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -496,50 +537,153 @@ fn counted_indices(bytes: &[u8], at: &mut usize, limit: usize) -> Result<Vec<usi
     Ok(indices)
 }
 
-fn next_block<'a>(bytes: &'a [u8], at: &mut usize) -> Result<&'a [u8], String> {
-    let length = usize_at(bytes, *at)?;
-    let begin = at.checked_add(4).ok_or("offset overflow")?;
-    let block = region(bytes, begin, length)?;
-    *at = begin + length;
-    Ok(block)
+fn section_size(input: &mut dyn std::io::Read, remaining: &mut usize) -> Result<usize, String> {
+    let mut size = [0; 4];
+    input.read_exact(&mut size).map_err(|error| error.to_string())?;
+    let size = u32::from_le_bytes(size) as usize;
+    *remaining = remaining.checked_sub(4).and_then(|left| left.checked_sub(size))
+        .ok_or("BWM section exceeds its member")?;
+    Ok(size)
+}
+
+fn read_records<const STRIDE: usize>(
+    input: &mut dyn std::io::Read,
+    mut size: usize,
+    cancelled: &impl Fn() -> bool,
+    mut decode: impl FnMut(&[u8]),
+) -> Result<(), String> {
+    if size % STRIDE != 0 {
+        return Err("misaligned world geometry section".into());
+    }
+    // A bounded buffer shared by every record in this section. All current
+    // BWM record strides divide this extent.
+    let mut scratch = [0u8; 61_440];
+    while size > 0 {
+        if cancelled() {
+            return Err("world geometry acquisition cancelled".into());
+        }
+        let count = size.min(scratch.len());
+        let chunk = &mut scratch[..count];
+        input.read_exact(chunk).map_err(|error| error.to_string())?;
+        for record in chunk.chunks_exact(STRIDE) {
+            decode(record);
+        }
+        size -= count;
+    }
+    Ok(())
+}
+
+fn mesh_range(offset: usize, count: usize, stride: usize, len: usize) -> Result<std::ops::Range<usize>, String> {
+    if offset % stride != 0 {
+        return Err("misaligned BWM mesh offset".into());
+    }
+    let start = offset / stride;
+    let end = start.checked_add(count).filter(|&end| end <= len)
+        .ok_or("BWM mesh range exceeds its section")?;
+    Ok(start..end)
 }
 
 pub fn parse(bytes: &[u8]) -> Result<WorldMesh, String> {
-    if region(bytes, 0, 4)? != b"BWM1" {
+    parse_stream(&mut std::io::Cursor::new(bytes), bytes.len(), &|| false)
+}
+
+/// Decode the installed member directly into shared geometry and map records.
+pub fn load(
+    catalog: &crate::archive::Catalog,
+    path: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<WorldMesh, String> {
+    let world = if std::env::var_os("DH2_DEBUG_BUFFER_WORLD_MEMBER").is_some_and(|v| v == "1") {
+        let bytes = {
+            let _tag = crate::platform::allocation_tags::tag("BWM whole decoded member");
+            catalog.read(path).map_err(|error| error.to_string())?
+        };
+        bytes.as_deref().map(|bytes| {
+            parse_stream(&mut std::io::Cursor::new(bytes), bytes.len(), &cancelled)
+        }).transpose()?
+    } else {
+        catalog.with_stream(path, |input, size| parse_stream(input, size, &cancelled))?
+    };
+    world.ok_or_else(|| format!("missing indexed world {path}"))
+}
+
+fn parse_stream(
+    input: &mut dyn std::io::Read,
+    size: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<WorldMesh, String> {
+    let mut header = [0; 12];
+    input.read_exact(&mut header).map_err(|error| error.to_string())?;
+    if &header[..4] != b"BWM1" {
         return Err("not a BWM1 file".into());
     }
-    if u16_at(bytes, 4)? != 21 || u16_at(bytes, 6)? != 1 || u32_at(bytes, 8)? != 2 {
+    if u16_at(&header, 4)? != 21 || u16_at(&header, 6)? != 1 || u32_at(&header, 8)? != 2 {
         return Err("unsupported BWM version".into());
     }
-    let mut at = 12;
-    let positions = next_block(bytes, &mut at)?;
-    let attributes = next_block(bytes, &mut at)?;
-    let indices = next_block(bytes, &mut at)?;
-    let matrices = next_block(bytes, &mut at)?;
-    let _unknown = next_block(bytes, &mut at)?;
-    if positions.len() % 12 != 0
-        || attributes.len() % 20 != 0
-        || indices.len() % 2 != 0
-        || matrices.len() % 48 != 0
-    {
-        return Err("misaligned world geometry section".into());
-    }
-    let mut decoded_matrices = Vec::with_capacity(matrices.len() / 48);
-    for record in matrices.chunks_exact(48) {
-        let mut transform = [0.0; 12];
-        for (index, value) in transform.iter_mut().enumerate() {
-            *value = f32::from_le_bytes(record[index * 4..index * 4 + 4].try_into().unwrap());
-            if !value.is_finite() {
-                return Err("non-finite world transform".into());
-            }
+    let mut remaining = size.checked_sub(header.len()).ok_or("BWM header exceeds its member")?;
+
+    let position_bytes = section_size(input, &mut remaining)?;
+    let mut positions = Vec::with_capacity(position_bytes / 12);
+    read_records::<12>(input, position_bytes, cancelled, |record| {
+        positions.push(std::array::from_fn(|axis| {
+            f32::from_le_bytes(record[axis * 4..axis * 4 + 4].try_into().unwrap())
+        }));
+    })?;
+
+    let attribute_bytes = section_size(input, &mut remaining)?;
+    let mut uvs = Vec::with_capacity(attribute_bytes / 20);
+    let mut channels = Vec::with_capacity(attribute_bytes / 20);
+    let channel_offsets = [(4, 1), (1, 0), (2, 0), (5, 0)].map(|(semantic, index)| {
+        BWM_ELEMENTS[find_vertex_element(&BWM_ELEMENTS, semantic, index) as usize][6] as usize
+    });
+    read_records::<20>(input, attribute_bytes, cancelled, |record| {
+        uvs.push([
+            half::f16::from_le_bytes(record[0..2].try_into().unwrap()),
+            half::f16::from_le_bytes(record[2..4].try_into().unwrap()),
+        ]);
+        let mut packed = [0; 16];
+        for (slot, offset) in channel_offsets.into_iter().enumerate() {
+            packed[slot * 4..slot * 4 + 4].copy_from_slice(&record[offset..offset + 4]);
         }
-        decoded_matrices.push(transform);
+        channels.push(packed);
+    })?;
+
+    let index_bytes = section_size(input, &mut remaining)?;
+    let mut indices = Vec::with_capacity(index_bytes / 2);
+    read_records::<2>(input, index_bytes, cancelled, |record| {
+        indices.push(u16::from_le_bytes(record.try_into().unwrap()));
+    })?;
+
+    let matrix_bytes = section_size(input, &mut remaining)?;
+    let mut decoded_matrices = Vec::with_capacity(matrix_bytes / 48);
+    read_records::<48>(input, matrix_bytes, cancelled, |record| {
+        decoded_matrices.push(std::array::from_fn(|axis| {
+            f32::from_le_bytes(record[axis * 4..axis * 4 + 4].try_into().unwrap())
+        }));
+    })?;
+    if decoded_matrices.iter().flatten().any(|value| !value.is_finite()) {
+        return Err("non-finite world transform".into());
     }
-    let count = usize_at(bytes, at)?;
+
+    let other = section_size(input, &mut remaining)? as u64;
+    let skipped = std::io::copy(&mut std::io::Read::take(&mut *input, other), &mut std::io::sink())
+        .map_err(|error| error.to_string())?;
+    if skipped != other {
+        return Err("truncated BWM auxiliary section".into());
+    }
+    if cancelled() {
+        return Err("world geometry acquisition cancelled".into());
+    }
+    let mut tail = vec![0; remaining];
+    input.read_exact(&mut tail).map_err(|error| error.to_string())?;
+    let bytes = &tail;
+
+    let geometry = std::sync::Arc::new(Geometry { positions, uvs, channels, indices });
+    let count = usize_at(bytes, 0)?;
     if count > 100_000 {
         return Err("unreasonable mesh count".into());
     }
-    at += 4;
+    let mut at = 4;
     let mut meshes = Vec::with_capacity(count);
     for mesh_number in 0..count {
         let record = region(bytes, at, 41)?;
@@ -554,80 +698,33 @@ pub fn parse(bytes: &[u8]) -> Result<WorldMesh, String> {
         {
             return Err(format!("mesh {mesh_number} has an unsupported layout"));
         }
-        let vertex_offset = u32_field(4)?;
-        let attr_offset = u32_field(12)?;
-        let index_offset = u32_field(24)?;
-        let index_count = u32_field(28)?;
         let vertex_count = u32_field(32)?;
+        let index_count = u32_field(28)?;
         if index_count % 3 != 0 {
             return Err(format!("mesh {mesh_number} has incomplete triangles"));
         }
-        let coords = region(
-            positions,
-            vertex_offset,
-            vertex_count
-                .checked_mul(12)
-                .ok_or("vertex count overflow")?,
-        )?;
-        let vertex_attributes = region(
-            attributes,
-            attr_offset,
-            vertex_count
-                .checked_mul(20)
-                .ok_or("attribute count overflow")?,
-        )?;
-        let faces = region(
-            indices,
-            index_offset,
-            index_count.checked_mul(2).ok_or("index count overflow")?,
-        )?;
-        let mut mesh_positions = Vec::with_capacity(vertex_count);
-        let mut mesh_uvs = Vec::with_capacity(vertex_count);
-        let mut packed_channels = Vec::with_capacity(vertex_count);
-        for vertex in coords.chunks_exact(12) {
-            let mut position = [0.0; 3];
-            for (axis, value) in position.iter_mut().enumerate() {
-                *value = f32::from_le_bytes(vertex[axis * 4..axis * 4 + 4].try_into().unwrap());
-                if !value.is_finite() {
-                    return Err(format!(
-                        "mesh {mesh_number} contains non-finite coordinates"
-                    ));
-                }
-            }
-            mesh_positions.push(position);
+        let mesh = Mesh {
+            positions: mesh_range(u32_field(4)?, vertex_count, 12, geometry.positions.len())?,
+            attributes: mesh_range(u32_field(12)?, vertex_count, 20, geometry.uvs.len())?,
+            indices: mesh_range(u32_field(24)?, index_count, 2, geometry.indices.len())?,
+            geometry: geometry.clone(),
+        };
+        if mesh.positions().iter().flatten().any(|value| !value.is_finite()) {
+            return Err(format!("mesh {mesh_number} contains non-finite coordinates"));
         }
-        let channel_offsets = [(4, 1), (1, 0), (2, 0), (5, 0)].map(|(semantic, index)| {
-            BWM_ELEMENTS[find_vertex_element(&BWM_ELEMENTS, semantic, index) as usize][6] as usize
-        });
-        for vertex in vertex_attributes.chunks_exact(20) {
-            let u = half::f16::from_le_bytes(vertex[0..2].try_into().unwrap());
-            let v = half::f16::from_le_bytes(vertex[2..4].try_into().unwrap());
-            if !u.is_finite() || !v.is_finite() {
-                return Err(format!("mesh {mesh_number} has non-finite UVs"));
-            }
-            mesh_uvs.push([u, v]);
-            let mut packed = [0; 16];
-            for (slot, offset) in channel_offsets.into_iter().enumerate() {
-                packed[slot * 4..slot * 4 + 4].copy_from_slice(&vertex[offset..offset + 4]);
-            }
-            packed_channels.push(packed);
+        if mesh.uvs().iter().flatten().any(|value| !value.is_finite()) {
+            return Err(format!("mesh {mesh_number} has non-finite UVs"));
         }
-        let mut mesh_indices = Vec::with_capacity(index_count);
-        for pair in faces.chunks_exact(2) {
-            let index = u16::from_le_bytes(pair.try_into().unwrap());
-            if index as usize >= vertex_count {
-                return Err(format!(
-                    "mesh {mesh_number} references vertex {index} of {vertex_count}"
-                ));
-            }
-            mesh_indices.push(index);
+        if let Some(&index) = mesh.indices().iter().find(|&&index| index as usize >= vertex_count) {
+            return Err(format!("mesh {mesh_number} references vertex {index} of {vertex_count}"));
         }
-        meshes.push(Mesh {
-            positions: mesh_positions,
-            uvs: mesh_uvs,
-            packed_channels,
-            indices: mesh_indices,
-        });
+        meshes.push(mesh);
+    }
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+        eprintln!(
+            "MEMORY BWM sections: source_bytes={size} geometry_bytes={} record_tail_bytes={remaining} mesh_ranges={count}",
+            position_bytes + attribute_bytes + index_bytes,
+        );
     }
     let object_count = usize_at(bytes, at)?;
     if object_count > 100_000 {
@@ -640,7 +737,7 @@ pub fn parse(bytes: &[u8]) -> Result<WorldMesh, String> {
         let matrix_end = usize_at(bytes, at + 4)?;
         let mesh_index = usize_at(bytes, at + 8)?;
         if matrix_start > matrix_end
-            || matrix_end > matrices.len() / 48
+            || matrix_end > decoded_matrices.len()
             || mesh_index >= meshes.len()
         {
             return Err(format!(

@@ -599,7 +599,9 @@ fn acquire(world: &mut World) {
                         .map_err(|e| e.to_string())
                         .and_then(|mut prepared| {
                             if _audio_work.is_closing() { return Err("audio session is closing".into()); }
-                            if !prepared.diagnostic_exit { preparation.prepare(&mut prepared)?; }
+                            if !prepared.diagnostic_exit {
+                                preparation.prepare(&mut prepared, || _audio_work.is_closing())?;
+                            }
                             Ok(prepared)
                         });
                     let _ = send.send(result);

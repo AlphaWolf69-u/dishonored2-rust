@@ -33,6 +33,39 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             #[cfg(not(feature = "game"))]
             return Err("inspect-cpu-preparation requires the game feature".into());
         }
+        "inspect-world-geometry" => {
+            let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+            let worlds = if args.is_empty() {
+                catalog.paths_with_suffix(".bwm")
+            } else {
+                args.to_vec()
+            };
+            for path in worlds {
+                let started = std::time::Instant::now();
+                let world = dishonored2_rust::world_mesh::load(&catalog, &path, || false)?;
+                let elapsed = started.elapsed();
+                let mut crc = flate2::Crc::new();
+                let mut vertices = 0;
+                let mut indices = 0;
+                for mesh in &world.meshes {
+                    vertices += mesh.positions().len();
+                    indices += mesh.indices().len();
+                    for value in mesh.positions().iter().flatten() {
+                        crc.update(&value.to_le_bytes());
+                    }
+                    for (uv, channels) in mesh.uvs().iter().zip(mesh.packed_channels()) {
+                        crc.update(&uv[0].to_le_bytes());
+                        crc.update(&uv[1].to_le_bytes());
+                        crc.update(channels);
+                    }
+                    for index in mesh.indices() { crc.update(&index.to_le_bytes()); }
+                }
+                println!(
+                    "BWM_GEOMETRY path={path} meshes={} objects={} vertices={vertices} indices={indices} crc={:08x} elapsed_ms={:.3}",
+                    world.meshes.len(), world.objects.len(), crc.sum(), elapsed.as_secs_f64() * 1000.0,
+                );
+            }
+        }
         "inspect-world-queries" => {
             let path = args.first().ok_or("inspect-world-queries requires a WORLD resource")?;
             let unshared = args.get(1).is_some_and(|value| value == "unshared");
