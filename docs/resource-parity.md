@@ -339,7 +339,7 @@ trailing `*` covers a family of kinds.
 | `ContactSystemDB` | `assets::entities::contacts`, `app::audio::contacts` | host: the common parsed database is shared by catalog identity; level-specific contact chains and sound state stay independent. Four-map clients reduced reads/parses 4 -> 1 with matching 7,407-entry fingerprints; a three-load release acquisition comparison measured 26,196,065 -> 9,042,530 thread cycles. Editable overlays retain separate reads. Original common acquisition is 1400661e0 / 1400607f0; whole-class forced purge remains outside this owner |
 | `curvefloat` | `app::fog_scene`, `app::resident_images` | host: registered fog curves use installed compiled R16F images, shared through the image owner and purged by image scope; `1402edb60`/`1402ade20`/`1402add00`/`1402adf20` generate and upload the original lookup. All 16 indexed curve declarations have matching 4096x1 R16F compiled image names. An original EotW GPU capture matches its installed image in all 4,096 samples; other curves have descriptor/index coverage, not original-output comparisons. Scripted curve producers remain separate |
 | `damage` | `app::player`, `gameplay::player::decls` | host: the supported drowning path resolves inherited source only during player preparation, consumes the water damage/health filters into typed player settings and drops the generic fields; no runtime source reads or retained generic damage tree. Original dispatch/filter consumers are 1404c0cf0 / 140717800 / 140717dc0; other damage consumers are not claimed implemented |
-| `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Renderer residency/unload lifecycle remains partial. |
+| `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Catalog-scoped decal references now use selected lazy headers, bootstrap promotion and map/persistent purge, with immutable failure reuse and editable bypass; all25 installed declarations and controlled owner scopes passed, and actual header selections match all36 primary/reuse maps. Renderer residency/unload evidence is recorded below. |
 | `DevGui_Menu` | none | none: no owner yet |
 | `difficultyManager` | `assets::difficulty`, `gameplay::options::gameplay` | host: scoped immutable definition identities coalesce player/options acquisition; runtime managers retain a generation lease, shared direct preset/slot arrays and independent custom/current values. Selected headers/bootstrap promotion/map purge/Catalog release follow the common registry; no heap-1 promotion is invented for this class. Native141387290/1406472a0/140648590. Four-map CPU acquisition comparison verified (015e50e8); see acceptance below |
 | `difficultyPreset` | `assets::difficulty` | host: scoped typed presets with immutable failure reuse and overlay bypass; manager definitions retain source-generation leases while contiguous copied preset tables preserve direct runtime lookups. Native1413872f0/140647550 and common registry phases. No shader/GPU/streaming objects. Four-map CPU acquisition comparison verified (015e50e8); see acceptance below |
@@ -349,7 +349,7 @@ trailing `*` covers a family of kinds.
 | `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
-| `fade` | `assets::fx::fade`, `app::loading_fade` | host: select the initial or later authored declaration at `1408aac09` / `1408aac1f`, acquire only that curve for the direct-map load, sample with `140166f60` / `140166e40` / `140167170`, and retire it at fade completion. Priority/listener/script arbitration remains outside the direct-map loader. The selected-source change still requires installed load verification |
+| `fade` | `assets::fx::fade`, `app::loading_fade` | host: select the initial or later authored declaration at `1408aac09` / `1408aac1f`, acquire only that curve for the direct-map load, sample with `140166f60` / `140166e40` / `140167170`, and release the loading controller's curve lease at fade completion; the Catalog retains any bootstrap or map-scoped identity until its purge. Priority/listener/script arbitration remains outside the direct-map loader. Catalog-scoped immutable fade identities now own selected header registration, bootstrap promotion, cached failures and conditional map/persistent purge; loading controllers lease curves while keeping independent clocks. Installed seven-definition content and controlled bootstrap/map/persistent/final-lease observations passed; all36 actual manifest selections match independent primary/reuse data |
 | `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the decoded traversal/object tables intentionally retain flat runtime query data. Historical source a34a947 measured the associated query package at 826 -> 682 CPU ms/s and 3.05 -> 2.30 ms median query span; this is a host performance representation, not abandoned parse staging. The source blob and typed query data share map ownership and release together |
 | `Font` | `assets::iggy::font`, `flash::text`, `flash::glyph_cache` | host: metadata reads do not decode glyphs; live movie consumers share metrics, kerning and lazy outlines over retained Iggy source bytes through a weak provider index (original14102bd60/14102ba20). Source/provider/movie ownership has no strong cycle. Existing R8 glyph pages, dirty updates, installed atlas caps and inactive GPU eviction remain unchanged. Working-main same-binary production acquisition created35->7 providers, peak record bytes400964->200634, and released every created identity in both modes. This validates provider lifetime/reuse, not CPU speed or total IGGY parity |
 | `footStepPhysMat` | none | none: no owner yet |
@@ -6980,6 +6980,70 @@ global installation/map state. This is source-context correctness, with no
 CPU-speed, gameplay playback or GPU upload claim. No tests or visible game
 launches were used. Evidence:
 DH2-fx-level-lifetime/artifacts/audio-acquisition-context-v3-20261111-comparison.json.
+
+
+Fade resource lifetime prediction (2026-11-11). Original declaration
+registration 141351cd0 uses the shared registry 1400607f0; fade is in the
+36-kind conditional heap-1 table at 142280ee0. The host loading controller
+currently reads/parses its selected declaration directly and drops its curve
+when complete, leaving the catalog read credit without a resource owner.
+Route that same typed parser through the existing scoped Registry. Register
+selected lazy headers, promote bootstrap identities, retain immutable failures,
+bypass sharing for editable sources, and retire map/persistent read credits
+only after the last curve lease. Keep each loading controller's duration and
+elapsed time independent. Expect identical selected curve samples and no frame
+lookup/locking; repeated requests within a live scope should parse once.
+Header/shared payload retention can increase between fades, so this is a
+lifecycle/reuse correction, not a predicted RAM or frame-time reduction.
+Observe every installed fade and the actual bootstrap/map/final lease boundaries.
+
+
+Decal declaration lifetime prediction (2026-11-11). Registration141351b80
+uses the common registry1400607f0; decal is in heap-1 promotion table142280ee0.
+The existing per-particle-table Weak cache shares overlapping consumers only
+inside one table and does not own selected headers, immutable failures or
+purged read credits. Move that identity ownership to Catalog's existing scoped
+Registry, retaining the public acquisition facade and exactly the same four
+resolved material references. Descriptor animation, mutable pool slots,
+material/image acquisition, draw submission and GPU retirement stay in their
+existing owners. Expect identical installed references, shared identity across
+independent acquisition tables, immutable miss/error reuse, and retirement at
+bootstrap/map/final-consumer boundaries. No frame work or CPU/RAM saving is
+predicted: retained headers and scoped immutable data have a storage cost.
+
+
+Fade/decal acceptance at8b5b244d. The clean dev build passed actual
+windowless EotW/Dust/EotW preparation/publication: all27,177 prepared-media
+records,5,837 stream records, three encoded-residency snapshots, nine scene
+preparation records and three selected load-fade records match the saved
+reference. All seven installed fade definitions retain their complete curve
+bits. All25 decal declarations retain their100 ordered material references.
+Independent acquisition tables in one Catalog share one decal generation;
+independent Catalogs remain separate. Both owners preserve a live map lease
+through purge, retire it after the final lease, preserve promoted bootstrap
+identity, honor explicit heap-1 overrides and destroy final session ownership.
+The controlled scope observations use real installed payloads and explicit
+registry phases; they do not stand in for gameplay or active decal draws.
+
+Actual preload selection now includes both types in the manifest discovery
+filter. All36 map snapshots match independently parsed primary AND reuse
+manifests, resource IDs, global layer masks and index stream flags. The first
+comparison used only primary manifests and reported extra headers; the reuse
+census accounts for every extra without changing production selection. The
+census found three common fade headers and19 common decal headers, plus map
+selections. All selected payloads remain lazy. At the three-map Catalog's
+retirement, fades report837 record-storage bytes and252 live payload bytes;
+decals report3,832 record-storage bytes and zero live payload bytes. These
+requested sizes exclude hash controls and allocation rounding, and are not
+RAM savings. GPU material/image ownership and per-frame paths are unchanged.
+
+Evidence: DH2-fx-level-lifetime/artifacts/fade-decal-resource-lifetime-v3-20261111-comparison.json,
+its referenced v2 acquisition/owner report, the primary manifest census in
+DH2-collision-staging/artifacts/fade-decal-installed-header-census-20261111.json,
+and the independent installed-reuse census. The v3 report explicitly records
+the saved reference log's source/binary provenance; the v2 reference binary
+field names the immediately preceding build, not that earlier saved log.
+No tests, visible launches, gameplay appearance or frame-time claims.
 
 
 Particle model stream prediction (2026-11-11). Original140232220 opens

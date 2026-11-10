@@ -75,7 +75,6 @@ impl ParticleResources {
     /// residency. Runtime declarations/materials own their required backing.
     pub fn retire_unused(&mut self) {
         let before = (self.declarations.len(), self.materials.len(), self.models.len(), self.field_images.len());
-        self.decal_resources.retire_unused();
         // 0607f0 reuses registered identities, including failed loads. Do not
         // turn retirement into a retry loop for immutable source failures.
         self.declarations.retain(|_, value| match value {

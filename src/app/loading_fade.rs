@@ -9,7 +9,7 @@ use crate::{
 };
 use bevy::prelude::*;
 struct Definition {
-    fade: crate::assets::fx::fade::Fade,
+    fade: std::sync::Arc<crate::assets::fx::fade::Fade>,
     duration: f32,
 }
 #[derive(Resource, Default)]
@@ -48,10 +48,7 @@ impl LoadingFade {
             .ok_or_else(|| format!("fade {path} has no resolved duration"))?
             .parse::<f32>()
             .map_err(|error| error.to_string())?;
-        let source = catalog.read(&format!("generated/decls/fade/{path}.decl"))
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("missing fade {path}"))?;
-        let fade = crate::assets::fx::fade::Fade::parse(&crate::entities::owned_declaration_text(source))?;
+        let fade = crate::assets::fx::fade::acquire(catalog, &format!("generated/decls/fade/{path}.decl"))?;
         if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
             eprintln!("LOAD fade definition: {path} duration={duration} opacity_keys={} opacity_values={} initial={initial}",
                 fade.opacity.times.len(), fade.opacity.values.len());
