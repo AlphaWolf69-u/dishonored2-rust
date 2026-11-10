@@ -18,6 +18,44 @@ declaration. Particle programs connected: `particle/add_default`,
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
 | `particle/fire`, `particle/filing_container` | 2 and 8 materials | none |
 
+## Particle declaration census (2026-11-10)
+
+All 8,909 installed FX declarations loaded through `WorldFxSources`
+(local census `examples/fx_failure_census.rs`; `examples/` is not tracked): effects=8909 failed_effects=10 particles=2171 failed_particles=1233.
+Each particle declaration fails at its first unsupported field, so counts
+below a top reason can hide further gaps.
+
+| Count | First failure |
+|---|---|
+| 578 | particle: unresolved particle declaration producer m_havokStages |
+| 77 | particle: unresolved particle spawn producer m_physicsShapesSpawn |
+| 75 | particle: unresolved particle declaration producer m_beams |
+| 73 | particle: unresolved particle clipping field m_planes |
+| 55 | particle: unresolved particle stage producer m_attractors |
+| 55 | particle: unresolved particle stage producer m_sorting |
+| 52 | particle: unresolved particle stage producer m_trails |
+| 47 | particle: unresolved particle parent-stage field m_stageName |
+| 46 | particle: unresolved particle declaration producer m_occlusionKill |
+| 35 | particle: unresolved particle declaration producer m_trails |
+| 27 | particle: inline mip chain size mismatch |
+| 26 | particle: unknown particle mesh rotation order YXZ |
+| 24 | particle: unresolved particle declaration producer m_ribbons |
+| 15 | particle: opaque particle pixel-lighting inputs are not connected |
+| 12 | particle: unresolved particle declaration producer m_occlusionQuery |
+| 11 | particle: unresolved particle spawn producer m_velocityCycleOrientation |
+| 9 | effect: unknown sub-FX field m_name |
+| 5 | particle: unknown particle mesh rotation order ZYX |
+| 4 | particle: unknown field rotation order YXZ |
+| 4 | particle: unresolved particle parent-stage field m_initialVelocity |
+| 3 | particle: unknown particle mesh rotation order ZXY |
+| 2 | particle: FX array index N exceeds declared count |
+| 2 | particle: particle program particle/fire is not connected |
+| 2 | particle: unknown particle mesh rotation order YZX |
+| 1 | effect: sound declaration has no engine ID |
+| 1 | particle: unknown particle mesh rotation order XZY |
+| 1 | particle: unresolved particle declaration producer m_fxEvents |
+| 1 | particle: unresolved particle parent-stage field m_lifeRestriction |
+
 ## particle/blood (opaque pixel-lit particles)
 
 `particle/blood` shares `particle/water`'s fragment (connected) but defaults
