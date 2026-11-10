@@ -1638,6 +1638,14 @@ Expect zero old records or deferred payloads republished after a reset, and one
 comparison per upload batch with no additional lock or GPU operation. This is a
 host handoff correction. Exact overlap timing remains unobserved.
 
+The `14030cce0` request order operates on registered images. On the host an
+FX slot can outlive its old image as an empty reusable index. `r_addAllMips`
+previously admitted those empty indices and could queue a read that completed
+after another image reused the same index. Skip unassigned slots when building
+the request order. Expect zero reads for retired slots and unchanged ordering
+for live images, including in all-mips mode. This case still needs a live
+request-and-reuse observation.
+
 A later seven-snapshot EotW quality route (`6b15daea`) observed four real
 parallel/local target replacements at settings generations 3, 4, 6, and 7.
 Each replacement retired one old parallel target and kept the current one.
