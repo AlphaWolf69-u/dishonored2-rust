@@ -18,7 +18,7 @@ impl Asset {
             .ok_or("usable MD6 declaration path is invalid")?;
         let rig = BasicRig::load(catalog, rig_name)?;
         if cancelled() { return Err("usable animation acquisition cancelled".into()); }
-        let model = crate::bmd6::ModelSources::new(catalog).acquire(catalog, path)?;
+        let model = crate::bmd6::ModelSources::new(catalog).acquire_for_rig(catalog, path, &rig)?;
         Ok(Arc::new(Self { rig, model }))
     }
     fn instantiate(&self) -> AnimBasicNode { self.rig.template.clone() }
