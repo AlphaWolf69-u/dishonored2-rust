@@ -8,6 +8,7 @@
 use super::archive::Catalog;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// `arkLangSystem` language descriptions (`FUN_141357160`), indexed by
 /// `eLanguagesID_t` (`FUN_141a01920`: `eLID_English` 0 .. `eLID_Japanese` 10).
@@ -151,10 +152,18 @@ pub fn read_audio_language(base: &Path) -> Result<&'static str, String> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct StringTable {
-    entries: HashMap<String, std::sync::Arc<str>>,
+pub struct StringTable(Arc<Dictionary>);
+
+#[derive(Debug, Default)]
+struct Dictionary {
+    entries: HashMap<String, Arc<str>>,
     /// Text by string id (the key hash), for `FUN_1401653e0`.
-    ids: HashMap<u32, std::sync::Arc<str>>,
+    ids: HashMap<u32, Arc<str>>,
+}
+
+pub(crate) struct LoadedTable {
+    language: String,
+    table: StringTable,
 }
 
 /// `FUN_140145e50`: one UTF-8 sequence, lead-byte length table at
@@ -296,28 +305,40 @@ impl StringTable {
                         }
                     }
                     // Both original lookup forms resolve the same 0x58-byte entry.
-                    let value: std::sync::Arc<str> = value.into();
+                    let value: Arc<str> = value.into();
                     ids.insert(id, value.clone());
                     entries.insert(lower, value);
                 }
                 _ => {}
             }
         }
-        Ok(StringTable { entries, ids })
+        Ok(StringTable(Arc::new(Dictionary { entries, ids })))
     }
 
     pub fn load(catalog: &Catalog, language: &str) -> Result<Self, String> {
+        // 1400a3ed0 replaces the installed dictionary on language change;
+        // movie instances may retain their previous immutable table until close.
+        let mut active = catalog.language_table.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(loaded) = active.as_ref().filter(|loaded| loaded.language == language) {
+            return Ok(loaded.table.clone());
+        }
         let path = format!("strings/{language}_m.lang");
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
+        let bytes = catalog.read(&path).map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Unable to load language file {path}!"))?;
-        Self::parse(&bytes)
+        let table = Self::parse(&bytes)?;
+        let next = (!catalog.has_overlay_file(&path)).then(|| LoadedTable {
+            language: language.to_owned(),
+            table: table.clone(),
+        });
+        let previous = std::mem::replace(&mut *active, next);
+        drop(active);
+        drop(previous);
+        Ok(table)
     }
 
     /// `FUN_1401653e0`: the text of a string id.
     pub fn by_id(&self, id: u32) -> Option<&str> {
-        self.ids.get(&id).map(|value| value.as_ref())
+        self.0.ids.get(&id).map(|value| value.as_ref())
     }
 
     /// `FUN_1401653e0` as the UI setters use it: the text of a string id,
@@ -327,7 +348,7 @@ impl StringTable {
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.entries.get(&key.to_ascii_lowercase()).map(|value| value.as_ref())
+        self.0.entries.get(&key.to_ascii_lowercase()).map(|value| value.as_ref())
     }
 
     /// `FUN_140165420`: the entry for `key`, or `key` itself.
@@ -336,12 +357,51 @@ impl StringTable {
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.0.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.0.entries.is_empty()
     }
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn observe_catalog_scopes(base: &Path, language: &str, next: &str)
+    -> std::result::Result<(), Box<dyn std::error::Error>>
+{
+    let a = Catalog::open(base)?;
+    let b = Catalog::open(base)?;
+    let first = StringTable::load(&a, language)?;
+    let other = StringTable::load(&b, language)?;
+    let returned = StringTable::load(&a, language)?;
+    let reused = Arc::ptr_eq(&first.0, &returned.0);
+    let isolated = !Arc::ptr_eq(&first.0, &other.0);
+    let mut keys: Vec<_> = first.0.entries.keys().collect();
+    keys.sort_unstable();
+    let mut fingerprint = blake3::Hasher::new();
+    let lookups_match = keys.len() == other.len() && keys.iter().all(|key| {
+        let id = key_id(key);
+        let text = first.lookup(key);
+        fingerprint.update(&(key.len() as u64).to_le_bytes()).update(key.as_bytes())
+            .update(&id.to_le_bytes()).update(&(text.len() as u64).to_le_bytes()).update(text.as_bytes());
+        other.lookup(key) == text && first.by_id(id) == Some(text) && other.by_id(id) == Some(text)
+    });
+    let old = Arc::downgrade(&first.0);
+    let entries = keys.len();
+    drop(keys);
+    drop(first);
+    let selected = StringTable::load(&a, next)?;
+    let previous_kept_by_movie = old.upgrade().is_some();
+    drop(returned);
+    let previous_retired = old.upgrade().is_none();
+    let other_reused = Arc::ptr_eq(&other.0, &StringTable::load(&b, language)?.0);
+    let current = Arc::downgrade(&selected.0);
+    drop(a);
+    let current_kept_by_movie = current.upgrade().is_some();
+    drop(selected);
+    let current_retired = current.upgrade().is_none();
+    println!("UI_STRING_SCOPES language={language} next={next} entries={entries} signature={} reused={reused} isolated={isolated} lookups_match={lookups_match} previous_kept_by_movie={previous_kept_by_movie} previous_retired={previous_retired} other_reused={other_reused} current_kept_by_movie={current_kept_by_movie} current_retired={current_retired}", fingerprint.finalize());
+    Ok(())
 }
 
 /// The language of the localized UI libraries for a text language

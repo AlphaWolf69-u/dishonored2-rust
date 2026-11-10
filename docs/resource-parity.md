@@ -3738,8 +3738,9 @@ and `artifacts/shape-parent-comparison.json`.
 
 `1401653e0` and `140165420` resolve numeric IDs and text keys to the same
 original language-dictionary entry. `assets::lang::StringTable` retains one
-immutable value shared by both lookup indexes; the session UI worker owns the
-table and catalog changes release its cache lease. The parser moves each
+immutable value shared by both lookup indexes. The catalog owns the currently
+selected installed table, with existing movies retaining their own leases.
+The parser moves each
 original key into its temporary collision map and reuses the computed ID,
 while retaining the previous collision message. This is a host ownership
 optimization; language contents, key case rules and fallbacks remain unchanged.
@@ -6418,3 +6419,21 @@ catalog observation matched declaration bytes, shared the low/high alias,
 reused the first catalog's entry on return and retired each catalog
 independently. Evidence:
 DH2-scene-shutdown/artifacts/map-info-catalog-cache-20261110-comparison.json.
+
+### Installed localization dictionary lifetime
+
+Prediction before implementation. Original 1400a3ed0 clears the shared
+dictionary before loading a new language. 1400a43c0 and 140164a30 load
+its installed .lang member and release the member after parsing. Lookups
+1401653e0 and 140165420 use that single dictionary. The rewrite currently
+holds every opened language in a thread-local table, discards unrelated
+catalog entries on acquisition, and ignores subsequent edits to an
+overlay. Keep one current installed dictionary in each catalog. Shared
+movie leases let an already opened player finish using its dictionary
+during a language switch, while older dictionaries retire once those
+leases close. The editable .lang route reads fresh and takes no catalog
+lease. Predict one parse per active installed language, unchanged keys,
+text, fallbacks and Iggy imports, and release of inactive dictionaries
+after the last movie closes. Compare both lookup forms and installed
+content before claiming parity. The host wrapper costs one Arc per
+dictionary and preserves the existing thread-local player API.

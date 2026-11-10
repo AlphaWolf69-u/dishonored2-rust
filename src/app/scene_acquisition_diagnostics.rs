@@ -163,6 +163,9 @@ pub fn inspect_scene_publication(
         }
     }
     if let [flag, level, effect] = levels {
+        if flag == "--string-table-scopes" {
+            return crate::assets::lang::observe_catalog_scopes(base, level, effect);
+        }
         if flag == "--fx-requests" {
             return inspect_scene_resources(base, std::slice::from_ref(level), Mode::FxRequests(effect), false);
         }
