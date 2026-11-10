@@ -6619,3 +6619,14 @@ Expect a later request in the same catalog and worker cache to recover
 the same asset, with the same ordinary load output. Observe cancellation
 after reading an installed declaration, successful same-owner retry, and
 normal FX publication and retirement. This is host worker cancellation.
+
+Installed particle cancellation acceptance at 72b08270. The installed
+empty particle declaration reached its archive read, stopped without
+publishing a cached value or failure, and decoded on the next request
+from the same owner. The subsequent lookup reused that generation and
+map withdrawal released it. Ordinary Edge of the World and Dust
+District preparation matched their declaration/model/field counts and
+effect event fingerprints. The real Dunwall Tower FX request drained
+at level withdrawal along with its other workers. This verifies a
+forced declaration withdrawal and the normal worker gate separately.
+Evidence: DH2-collision-staging/artifacts/particle-acquisition-cancellation-20261111-comparison.json.
