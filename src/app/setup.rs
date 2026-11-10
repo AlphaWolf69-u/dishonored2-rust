@@ -1789,6 +1789,16 @@ pub(super) fn prepare(
     }
     commands.insert_resource(resolver.alpha_depth_materials());
     tome_render_instances.bind_texture_demands(&render_instances, &material_images);
+    if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+        let bytes: usize = expanded_placements.iter().map(|placement| {
+            placement.custom_materials.capacity() * std::mem::size_of::<Option<String>>()
+                + placement.custom_materials.iter().flatten().map(String::capacity).sum::<usize>()
+        }).sum();
+        eprintln!("MEMORY placement material overrides retired: bytes={bytes}");
+    }
+    for placement in &mut expanded_placements {
+        placement.custom_materials = Vec::new();
+    }
     commands.insert_resource(RenderSourcePlacements(expanded_placements));
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
     commands.insert_resource(ShadowModelBoundsSources(shadow_model_bounds));
