@@ -496,11 +496,16 @@ pub struct Entry {
 pub struct Package {
     pub languages: Vec<Language>,
     pub banks: Vec<Entry>,
-    pub media: Vec<Entry>,
-    pub external_media: Vec<Entry>,
+    media: Vec<Entry>,
+    external_media: Vec<Entry>,
+    ordered_media: bool,
     pub data_offset: u64,
     file_size: u64,
 }
+
+static PACKAGE_LOOKUP_MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+static PACKAGE_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PACKAGE_LOOKUP_CYCLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Package {
     pub fn file_size(&self) -> u64 {
@@ -568,7 +573,9 @@ impl Package {
             parse_entries(&external_bytes, EntryTable::External)?
         };
 
-        let package = Self { languages, banks, media, external_media, data_offset, file_size };
+        let ordered = |entries: &[Entry]| entries.is_sorted_by_key(|entry| (entry.id, entry.language_id));
+        let ordered_media = ordered(&media) && ordered(&external_media);
+        let package = Self { languages, banks, media, external_media, ordered_media, data_offset, file_size };
         for entry in package.banks.iter().chain(&package.media).chain(&package.external_media) {
             let end = entry.offset.checked_add(entry.size).ok_or_else(|| invalid("Wwise entry range overflow"))?;
             if entry.offset < data_offset || end > file_size {
@@ -588,9 +595,44 @@ impl Package {
         self.languages.iter().find(|language| language.name.eq_ignore_ascii_case(name)).map(|language| language.id)
     }
 
+    pub fn media(&self) -> &[Entry] { &self.media }
+    pub fn external_media(&self) -> &[Entry] { &self.external_media }
+
     pub fn media_file(&self, id: u64, language_id: u32) -> Option<Entry> {
-        self.media.iter().chain(&self.external_media).copied()
-            .find(|entry| entry.id == id && entry.language_id == language_id)
+        use std::sync::atomic::Ordering::Relaxed;
+        let &(scan, trace) = PACKAGE_LOOKUP_MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SCAN_WWISE_PACKAGE_MEDIA").is_some_and(|v| v == "1"),
+            std::env::var_os("DH2_DEBUG_WWISE_MEDIA_SECTIONS").is_some_and(|v| v == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        // 1400caec0 / 1400caf40 search the authored (id, language) order.
+        let key = (id, language_id);
+        let key_of = |entry: &Entry| (entry.id, entry.language_id);
+        let found = if self.ordered_media && !scan {
+            let lookup = |entries: &[Entry]| entries.get(entries.partition_point(|entry| key_of(entry) < key))
+                .filter(|entry| key_of(entry) == key).copied();
+            lookup(&self.media).or_else(|| lookup(&self.external_media))
+        } else {
+            self.media.iter().chain(&self.external_media).copied().find(|entry| key_of(entry) == key)
+        };
+        if trace {
+            PACKAGE_LOOKUPS.fetch_add(1, Relaxed);
+            if let Some(cycles) = started.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start)) {
+                PACKAGE_LOOKUP_CYCLES.fetch_add(cycles, Relaxed);
+            }
+        }
+        found
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn report_media_lookup() {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(&(scan, true)) = PACKAGE_LOOKUP_MODE.get() {
+            let lookups = PACKAGE_LOOKUPS.swap(0, Relaxed);
+            let cycles = PACKAGE_LOOKUP_CYCLES.swap(0, Relaxed);
+            println!("WWISE_PACKAGE_LOOKUP linear_control={scan} lookups={lookups} cycles={cycles}");
+        }
     }
 
     fn seek_entry<R: Seek>(&self, reader: &mut R, entry: Entry) -> io::Result<usize> {
@@ -998,7 +1040,8 @@ pub(crate) fn retire_stream_diagnostics() {
 
 fn media_from_sound(
     sound: &[u8],
-    chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
+    media_index: Option<&[u8]>,
+    media_data: Option<&[u8]>,
     package_media: &mut impl FnMut(u32, u8) -> io::Result<Option<MediaBytes>>,
     hold_bank: impl Fn(&[u8]) -> MediaBytes,
 ) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
@@ -1017,7 +1060,7 @@ fn media_from_sound(
                 STREAM_DIAGNOSTIC_SIGNATURE.fetch_add(signature, Relaxed);
             }
             if track {
-                let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
+                let prefix = media_index.and_then(|didx| didx.chunks_exact(12)
                     .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
                     .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
                 STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
@@ -1025,9 +1068,9 @@ fn media_from_sound(
             }
             let prefetched = sound[8] == 1 && media.is_stream_header();
             if prefetched {
-                let entry = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
+                let entry = media_index.and_then(|didx| didx.chunks_exact(12)
                     .find(|record| read_u32_slice(record, 0).ok() == Some(media_id)));
-                let bank_prefix = entry.zip(chunks.get(b"DATA")).map(|(entry, data)| {
+                let bank_prefix = entry.zip(media_data).map(|(entry, data)| {
                     let start = read_u32_slice(entry, 4)? as usize;
                     let end = start.checked_add(read_u32_slice(entry, 8)? as usize).ok_or_else(|| invalid("prefetch range overflow"))?;
                     let bytes = data.get(start..end).ok_or_else(|| invalid("prefetch outside bank DATA"))?;
@@ -1041,7 +1084,7 @@ fn media_from_sound(
             return Ok(Some((media, (sound[8] == 2 || prefetched).then_some(media_id))));
         }
     }
-    if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
+    if let (Some(didx), Some(data)) = (media_index, media_data) {
         if didx.len() % 12 != 0 { return Err(invalid("invalid Wwise DIDX size")); }
         for record in didx.chunks_exact(12) {
             if read_u32_slice(record, 0)? != media_id { continue; }
