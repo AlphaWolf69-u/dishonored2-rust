@@ -1045,9 +1045,10 @@ pub(super) fn observe_bank_inventory(base: &std::path::Path) -> Result<(), Strin
         let Some(name) = path.strip_prefix("generated/buildgame/")
             .and_then(|path| path.strip_suffix(".mapresources")) else { continue };
         if matches!(name, "init" | "common") { continue; }
-        let level = crate::assets::level::LevelResources::resolve(&catalog, name).map_err(|error| error.to_string())?;
-        let map = level.entities.trim_start_matches("maps/").trim_end_matches(".entities");
-        let selection = level_banks(base, language, &level.entities).map_err(|error| error.to_string())?;
+        let entities = format!("maps/{name}.entities");
+        if !catalog.contains(&entities) { return Err(format!("manifest has no entities companion: {entities}")); }
+        let map = name;
+        let selection = level_banks(base, language, &entities).map_err(|error| error.to_string())?;
         let mut banks = selection.banks.into_iter().collect::<Vec<_>>();
         let mut shared_banks = selection.shared_banks.into_iter().collect::<Vec<_>>();
         let mut shared_packages = selection.shared_packages.into_iter().collect::<Vec<_>>();
