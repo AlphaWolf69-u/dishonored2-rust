@@ -90,9 +90,15 @@ impl<T> Registry<T> {
             Err(error) => { entry.failure = Some(error.clone()); Err(error) }
         }
     }
-    /// Editable particle generations share the path's marker and read credit.
+    pub(crate) fn acquire_with_sharing(&mut self, path: &str, marker: u8, shared: bool,
+        load: impl FnOnce(u8) -> Result<Arc<T>, String>) -> Result<Arc<T>, String> {
+        if shared { self.acquire(path, marker, load) }
+        else { self.acquire_separate(path, marker, load) }
+    }
+
+    /// Editable generations share the path's marker and read credit.
     /// They are always reparsed and only their actual consumers retain them.
-    pub(crate) fn acquire_separate(&mut self, path: &str, inherited_marker: u8,
+    fn acquire_separate(&mut self, path: &str, inherited_marker: u8,
         load: impl FnOnce(u8) -> Result<Arc<T>, String>) -> Result<Arc<T>, String> {
         let entry = self.admit(path, inherited_marker);
         let value = load(if entry.bootstrap_phase { 2 } else { entry.marker })?;
@@ -107,7 +113,7 @@ impl<T> Registry<T> {
     pub(crate) fn report(&self, catalog: u64, kind: &str, phase: &str,
         nested_bytes: impl Fn(&T) -> usize) {
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
-        let record_storage_bytes = self.entries.capacity() * std::mem::size_of::<(String, Entry<T>)>()
+        let mut record_storage_bytes = self.entries.capacity() * std::mem::size_of::<(String, Entry<T>)>()
             + self.entries.iter().map(|(path, entry)| path.capacity()
                 + entry.failure.as_ref().map_or(0, String::capacity)).sum::<usize>();
         // Current host ArcInner layout: two usize atomics followed by T,
@@ -121,6 +127,17 @@ impl<T> Registry<T> {
             if let Some(value) = entry.current.upgrade() {
                 payloads += 1;
                 payload_bytes += arc_bytes + nested_bytes(&value);
+            }
+        }
+        if let Some(separate) = &self.separate {
+            record_storage_bytes += std::mem::size_of_val(separate.as_ref())
+                + separate.capacity() * std::mem::size_of::<(String, Vec<Weak<T>>)>();
+            for (path, generations) in separate.iter() {
+                record_storage_bytes += path.capacity() + generations.capacity() * std::mem::size_of::<Weak<T>>();
+                for generation in generations.iter().filter_map(Weak::upgrade) {
+                    payloads += 1;
+                    payload_bytes += arc_bytes + nested_bytes(&generation);
+                }
             }
         }
         eprintln!("RESOURCE_STORAGE catalog={catalog} kind={kind} phase={phase} records={} record_storage_bytes={record_storage_bytes} payloads={payloads} payload_bytes={payload_bytes}", self.entries.len());

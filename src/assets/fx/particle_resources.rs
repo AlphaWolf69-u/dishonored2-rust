@@ -62,15 +62,13 @@ pub(crate) fn declaration(catalog: &Catalog, path: &str, shared: bool,
     // carry archive paths. Both must address the exact same header/history key.
     let resource = format!("generated/decls/particledt/{}.decl", key(path));
     let mut declarations = owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?;
-    if share(catalog, shared) { declarations.acquire(&resource, 0, load) }
-    else { declarations.acquire_separate(&resource, 0, load) }
+    declarations.acquire_with_sharing(&resource, 0, share(catalog, shared), load)
 }
 pub(crate) fn model(catalog: &Catalog, path: &str, marker: u8, shared: bool,
     load: impl FnOnce() -> Result<Arc<ParticleModel>, String>) -> Result<Arc<ParticleModel>, String> {
     let resource = key(path);
     let mut models = owner(catalog).models.lock().map_err(|_| "particle model registry is poisoned")?;
-    if share(catalog, shared) { models.acquire(&resource, marker, |_| load()) }
-    else { models.acquire_separate(&resource, marker, |_| load()) }
+    models.acquire_with_sharing(&resource, marker, share(catalog, shared), |_| load())
 }
 pub(crate) fn field(catalog: &Catalog, path: &str, shared: bool,
     load: impl FnOnce() -> Result<Arc<super::particle_field::FieldPixels>, String>)

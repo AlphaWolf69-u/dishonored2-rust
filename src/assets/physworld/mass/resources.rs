@@ -22,10 +22,8 @@ pub(super) fn acquire(catalog: &Catalog, path: &str) -> Result<Arc<Option<Princi
             .map(|bytes| super::parse_principal(&bytes)).transpose()?;
         Ok(Arc::new(value))
     };
-    let value = if shared {
-        catalog.mass_resources.get_or_init(Default::default).lock()
-            .map_err(|_| "mass resource registry is poisoned")?.acquire(&key, 0, load)
-    } else { load(0) };
+    let value = catalog.mass_resources.get_or_init(Default::default).lock()
+        .map_err(|_| "mass resource registry is poisoned")?.acquire_with_sharing(&key, 0, shared, load);
     if trace {
         let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start));
         let mut crc = flate2::Crc::new();
