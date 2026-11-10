@@ -165,6 +165,24 @@ impl CollisionWorld {
         owners: Vec<String>,
         materials: Vec<PhysicsMaterial>,
     ) -> Self {
+        Self::with_materials_until(source, owners, materials, || false)
+            .expect("uncancelled collision construction")
+    }
+
+    pub(crate) fn with_materials_until(
+        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32, u32)>,
+        owners: Vec<String>,
+        materials: Vec<PhysicsMaterial>,
+        cancelled: impl Fn() -> bool,
+    ) -> std::io::Result<Self> {
+        let check_cancelled = || {
+            if cancelled() {
+                Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "collision index construction cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
         let mut owner_ids = HashMap::<Arc<str>, Vec<u32>>::new();
         let mut owner_names = Vec::with_capacity(owners.len());
         for (index, id) in owners.into_iter().enumerate() {
@@ -188,7 +206,8 @@ impl CollisionWorld {
             owner_active: vec![true; owner_count],
             materials,
         };
-        for ([a, b, c], owner, material, filter) in source {
+        for (source_index, ([a, b, c], owner, material, filter)) in source.into_iter().enumerate() {
+            if source_index % 4096 == 0 { check_cancelled()?; }
             if owner != u32::MAX && owner as usize >= world.owner_active.len() {
                 continue;
             }
@@ -230,6 +249,7 @@ impl CollisionWorld {
                 }
             }
         }
+        check_cancelled()?;
         let expanded_bytes = world.triangles.capacity() * std::mem::size_of::<Triangle>()
             + build_index.large.capacity() * std::mem::size_of::<usize>()
             + build_index.cells.values().map(|v| v.capacity() * std::mem::size_of::<usize>()).sum::<usize>()
@@ -240,7 +260,8 @@ impl CollisionWorld {
             let count: usize = build_index.cells.values().map(Vec::len).sum();
             let mut indices = Vec::with_capacity(count);
             let mut cells = hashbrown::HashMap::with_capacity(build_index.cells.len());
-            for (cell, list) in build_index.cells {
+            for (cell_index, (cell, list)) in build_index.cells.into_iter().enumerate() {
+                if cell_index % 4096 == 0 { check_cancelled()?; }
                 let start = indices.len();
                 indices.extend(list.into_iter().map(|id| u32::try_from(id).expect("collision shape key exceeds u32")));
                 cells.insert(cell, start..indices.len());
@@ -262,7 +283,7 @@ impl CollisionWorld {
                 TriangleIndex::Packed { cells, .. } => cells.len(), TriangleIndex::Expanded(index) => index.cells.len(),
             });
         }
-        world
+        Ok(world)
     }
 
     pub fn set_owner_active(&mut self, id: &str, active: bool) -> bool {

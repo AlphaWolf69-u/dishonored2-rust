@@ -3027,6 +3027,24 @@ were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
 Live gameplay demand and cancellation were outside this windowless
 observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
 
+Worker initial-chain acquisition prediction. When an explicit initial mip
+selects separate files, the worker reads each full member and copies its
+payload even though the upload can own the buffer returned by
+`read_separate_mip`. Use the same direct reader already measured for finer
+upgrades (14030e840 and 14030f030) and transfer its payload unchanged to the
+initial chain. Keep the existing resident-image packing path and dimension
+checks. Expect one fewer overlapping whole-member allocation for each
+selected separate worker mip, with unchanged upload bytes and suffix order.
+
+Installed acceptance (`1f85fde2`). The same game-feature executable read 30
+installed mixed chains in each mode. All 35 separate-member reads selected the
+same members, totaling 13,042,364 decoded member bytes. The upload payload CRCs,
+formats, dimensions, and mip selection matched. Both runs published all 30
+images through the render mailbox and retired all observed image and archive
+backing leases. This verifies acquisition and upload ownership. Live demand and
+release CPU timing were outside the observation. Evidence:
+`DH2-interactions/artifacts/initial-separate-worker-mips-20261110-comparison.json`.
+
 ### Fog curve resource ownership
 
 The original `1402edb60` constructs a temporary curve-image builder on the
@@ -5647,3 +5665,37 @@ Prediction before change. A dynamic material proxy retires after its final effec
 ### Abandoned runtime texture reads
 
 Prediction before change. The original image owner limits residency by live resource demand and releases it through 140060180; its mip budgeting path is 14030f3d0. The host tracks FX-only slot leases separately from the shared scene. Before this change an orphan slot waited for its read, but the completed read still created an image and enqueued GPU upload. Cancel queued reads for FX-only slots once their final effect or tail lease ends. For a blocking read that already started, keep the slot assigned until its completion is acknowledged, discard the payload outside the upload budget and release the outstanding read reservation. A revived consumer of the same slot before completion may still use the result. Ordinary scene slots and already submitted GPU work keep their current ownership. Expect no new upload for a read abandoned before submission, with unchanged live texture output and no read cancellation based only on camera motion. Live FX tracing is still required for this ownership edge.
+
+Collision cancellation prediction. The closing audio session waits for the
+map worker's lease, and the former checks bracket the whole collision phase.
+An interrupted map should stop visiting authored shapes and placed bodies,
+or building the host cell index, at their next work boundary. No partial
+world may publish. Ordinary loads must preserve the recorded triangles and
+materials, with no checks on gameplay queries. An archive read already in
+progress can finish. This bounds host worker retirement at the map lifetime
+boundary (1408a4830). Measure the cancellation span separately from ordinary
+load costs.
+
+The optimized installed-data observer at c40dcdbe requested cancellation
+during shape extraction, placed-body acquisition and index construction in
+high-chaos Palace. Each used the same preparation cancellation callback at
+its 64th checkpoint. Time from the stop signal to a returned cancellation
+was 93.894, 110.464 and 118.288 ms respectively, including disposal of the
+unpublished partial data. All three observed the subsequent catalog purge,
+with no prepared world returned. Ordinary EotW/Dust preparations retained
+the recorded triangle signatures. The observer did not close a live window
+or measure a blocked archive read. Evidence: DH2-scene-shutdown/artifacts/collision-close-and-motion-20261110-comparison.json.
+
+Autonomous motion event ownership. The host now borrows the selected event
+node, its parameters and its ports from the loaded graph while mutating
+only the playback, motor and variable owners. This removes one temporary
+definition copy per dispatched event. The original keyframe action
+140533460 reads its authored declaration identity and stores a separate
+playback handle at +0x30. The existing node lookup order and dispatch rules
+are preserved. The same-executable comparison observed 36 dispatch steps
+in eight graphs across EotW and Dust in every mode. Definition and initial
+pose signatures, per-graph event and error counts, and collision signatures
+matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
+547,680–555,905 with borrowed nodes. This measures those startup dispatches,
+without a gameplay frame-time claim. The source was c40dcdbe and the same
+comparison artifact records both batches.

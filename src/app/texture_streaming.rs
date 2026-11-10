@@ -13,6 +13,7 @@ use super::{
     mpsc, render_state, surface_gpu, texture,
 };
 use bevy::prelude::*;
+use std::borrow::Cow;
 
 /// Immutable post-process images use the same installed-image reader and mip
 /// layout as streamed materials, with the complete initial chain resident.
@@ -996,37 +997,43 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     let total_levels = inline.mip_count + selected_separate
         .map_or(0, |selected| u32::from(highest_separate.unwrap() - selected) + 1);
     let mut packed_payload = Vec::new();
-    let mut emit = |mip_level: u32, width: u32, height: u32, payload: &[u8]| {
+    let mut emit = |mip_level: u32, width: u32, height: u32, payload: Cow<'_, [u8]>| {
         if packed {
             if packed_payload.capacity() == 0 {
                 let bytes = (0..total_levels).map(|level|
                     format.mip_bytes((width >> level).max(1), (height >> level).max(1))).sum();
                 packed_payload.reserve_exact(bytes);
             }
-            packed_payload.extend_from_slice(payload);
+            packed_payload.extend_from_slice(&payload);
         } else {
-            uploads.push(CompressedMipUpload {mip_level, width, height, payload: MipPayload::Owned(payload.to_vec())});
+            uploads.push(CompressedMipUpload {mip_level, width, height, payload: MipPayload::Owned(payload.into_owned())});
         }
     };
     if let Some(selected) = selected_separate {
         let last = highest_separate.ok_or("selected image mip has no lower levels")?;
         for mip in selected..=last {
             let path = format!("{stem}_mip{mip}");
-            let bytes = catalog
-                .read(&path)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("missing authored lower mip {path}"))?;
-            let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
+            let bytes;
+            let (mip_width, mip_height, payload) = if packed {
+                bytes = catalog.read(&path).map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("missing authored lower mip {path}"))?;
+                let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
+                (compressed.width, compressed.height, Cow::Borrowed(compressed.payload))
+            } else {
+                let compressed = texture::read_separate_mip(catalog, &path, u32::from(mip), format)?
+                    .ok_or_else(|| format!("missing authored lower mip {path}"))?;
+                (compressed.width, compressed.height, Cow::Owned(compressed.payload))
+            };
             if let Some((width, height)) = previous {
-                if compressed.width != (width / 2).max(1)
-                    || compressed.height != (height / 2).max(1)
+                if mip_width != (width / 2).max(1)
+                    || mip_height != (height / 2).max(1)
                 {
                     return Err("authored separate mip dimensions are not contiguous".into());
                 }
             }
-            top.get_or_insert((compressed.width, compressed.height));
-            previous = Some((compressed.width, compressed.height));
-            emit(mip_count, compressed.width, compressed.height, compressed.payload);
+            top.get_or_insert((mip_width, mip_height));
+            previous = Some((mip_width, mip_height));
+            emit(mip_count, mip_width, mip_height, payload);
             mip_count += 1;
         }
     }
@@ -1037,7 +1044,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     }
     top.get_or_insert((inline.width, inline.height));
     for (index, mip) in inline_mips.iter().flatten().enumerate() {
-        emit(mip_count + index as u32, mip.width, mip.height, mip.payload);
+        emit(mip_count + index as u32, mip.width, mip.height, Cow::Borrowed(mip.payload));
     }
     drop(emit);
     mip_count += inline.mip_count;

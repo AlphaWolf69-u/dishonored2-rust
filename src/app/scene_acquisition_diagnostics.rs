@@ -50,10 +50,19 @@ fn inspect_worker_images(
         .add_systems(Render, report_prepared_diffuse_images.after(RenderSystems::PrepareAssets));
     let mut handles = Vec::with_capacity(paths.len());
     let mut archive_members = Vec::new();
-    for path in paths {
+    for requested in paths {
+        // A compiled separate-mip path selects that suffix as the initial
+        // worker target. A base path still requests the inline chain.
+        let (path, preferred) = if let Some((stem, suffix)) = requested.rsplit_once(".bimage7_mip") {
+            let mip = suffix.parse::<u8>()?;
+            if mip > 15 { return Err(format!("invalid worker mip suffix in {requested}").into()); }
+            (&requested[..stem.len() + ".bimage7".len()], Some(mip))
+        } else {
+            (requested.as_str(), None)
+        };
         let start = crate::loading::thread_cycles();
         let streamed = super::texture_streaming::read_streamed_diffuse_at_target(
-            &catalog, path, TextureReadTarget::Initial(None),
+            &catalog, path, TextureReadTarget::Initial(preferred),
         )?.ok_or_else(|| format!("missing worker image {path}"))?;
         let cycles = start.zip(crate::loading::thread_cycles())
             .map_or(0, |(start, end)| end.saturating_sub(start));
@@ -72,9 +81,25 @@ fn inspect_worker_images(
             }
             _ => 0,
         };
-        eprintln!("RESOURCE_WORKER_IMAGE path={path} bytes={bytes} extent={}x{} mips={} format={:?} next={:?} crc32={:08x} cycles={cycles} owned_capacity={owned_capacity} member_capacity={member_capacity}",
+        eprintln!("RESOURCE_WORKER_IMAGE path={requested} bytes={bytes} extent={}x{} mips={} format={:?} next={:?} crc32={:08x} cycles={cycles} owned_capacity={owned_capacity} member_capacity={member_capacity}",
             streamed.level.width, streamed.level.height, streamed.uploads.len(), streamed.image.texture_descriptor.format,
             streamed.level.next_separate_suffix, crc.sum());
+        if preferred.is_some() {
+            let mut resident = super::texture_streaming::read_resident_diffuse_image(&catalog, path, preferred)?
+                .ok_or_else(|| format!("missing resident image {path}"))?;
+            resident.pack_uploads();
+            let data = resident.image.data.as_deref().ok_or("resident chain has no payload")?;
+            let mut resident_crc = flate2::Crc::new();
+            resident_crc.update(data);
+            let desc = &resident.image.texture_descriptor;
+            let worker = &streamed.image.texture_descriptor;
+            let matched = crc.sum() == resident_crc.sum() && bytes == data.len()
+                && streamed.level == resident.level && streamed.level.resource_mip == preferred
+                && worker.size == desc.size && worker.format == desc.format
+                && worker.mip_level_count == desc.mip_level_count;
+            eprintln!("RESOURCE_WORKER_CHAIN path={requested} matched_resident={matched} selected={preferred:?}");
+            if !matched { return Err(format!("worker initial chain differs from resident view {requested}").into()); }
+        }
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(streamed.image);
         mailbox.0.lock().unwrap().pending.push(PendingGpuImageUpload {
             id: handle.id(), previous: None, copy: GpuMipCopy::None, uploads: streamed.uploads,
@@ -360,7 +385,7 @@ fn inspect_scene_resources(
             catalog.clone(),
             level,
             true,
-            || false,
+            |_| false,
         )?;
         super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
         let inputs = prepared
