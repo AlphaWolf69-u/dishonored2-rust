@@ -264,6 +264,33 @@ impl StripFrame {
         ];
         Self { centre, tangent: t, side: s, normal, facing }
     }
+    /// 14020f710: m_isVectorOriented uses the interpolated orientation
+    /// vector as the side, normal = tangent x side, then re-derives the
+    /// tangent as side x normal.
+    fn oriented(centre: [f32; 3], tangent: [f32; 3], orientation: [f32; 3]) -> Self {
+        let length = |v: [f32; 3], order: [usize; 3]| {
+            let s = add(add(multiply(v[order[0]], v[order[0]]), multiply(v[order[1]], v[order[1]])), multiply(v[order[2]], v[order[2]]));
+            divide(1., s.max(f32::MIN_POSITIVE).sqrt())
+        };
+        let inverse = length(tangent, [0, 1, 2]);
+        let t = tangent.map(|c| multiply(c, inverse));
+        let inverse = length(orientation, [0, 1, 2]);
+        let o = orientation.map(|c| multiply(c, inverse));
+        let facing = add(add(multiply(o[1], t[1]), multiply(o[0], t[0])), multiply(o[2], t[2])).abs();
+        let n = [
+            subtract(multiply(t[1], o[2]), multiply(t[2], o[1])),
+            subtract(multiply(o[0], t[2]), multiply(t[0], o[2])),
+            subtract(multiply(t[0], o[1]), multiply(o[0], t[1])),
+        ];
+        let inverse = length(n, [1, 0, 2]);
+        let n = n.map(|c| multiply(c, inverse));
+        let tangent = [
+            subtract(multiply(n[2], o[1]), multiply(n[1], o[2])),
+            subtract(multiply(n[0], o[2]), multiply(n[2], o[0])),
+            subtract(multiply(n[1], o[0]), multiply(n[0], o[1])),
+        ];
+        Self { centre, tangent, side: o, normal: n, facing }
+    }
     fn fade(&self) -> f32 {
         let f = multiply(subtract(1., self.facing), 20.);
         if f <= 1. { f } else { 1. }
@@ -310,9 +337,6 @@ impl TrailRecord {
     ) -> Result<[[f32; 3]; 2], String> {
         if segments == 0 {
             return Ok(EMPTY_BOUNDS);
-        }
-        if trail.vector_oriented {
-            return Err("vector-oriented particle trails are not built yet".into());
         }
         let mut seed = self.seed;
         let n = self.times.len();
@@ -384,6 +408,8 @@ impl TrailRecord {
                 index += 1;
             }
             let (mut centre, mut tangent) = self.centre_and_tangent(time, index as i64 - 1);
+            // 1402100f0 -> 14020f360: the orientations share the weights.
+            let mut orientation = trail.vector_oriented.then(|| self.orientation(time, index as i64 - 1));
             if let Some(m) = transform {
                 centre = std::array::from_fn(|r| {
                     add(add(add(m[r][3], multiply(m[r][1], centre[1])), multiply(m[r][2], centre[2])), multiply(m[r][0], centre[0]))
@@ -391,8 +417,17 @@ impl TrailRecord {
                 tangent = std::array::from_fn(|r| {
                     add(add(multiply(tangent[1], m[r][1]), multiply(tangent[0], m[r][0])), multiply(tangent[2], m[r][2]))
                 });
+                // 1402104b0
+                orientation = orientation.map(|o| [
+                    add(add(multiply(m[0][1], o[1]), multiply(m[0][0], o[0])), multiply(m[0][2], o[2])),
+                    add(add(multiply(m[1][1], o[1]), multiply(m[1][0], o[0])), multiply(m[1][2], o[2])),
+                    add(add(multiply(m[2][0], o[0]), multiply(m[2][1], o[1])), multiply(m[2][2], o[2])),
+                ]);
             }
-            let frame = StripFrame::new(centre, tangent, eye);
+            let frame = match orientation {
+                Some(orientation) => StripFrame::oriented(centre, tangent, orientation),
+                None => StripFrame::new(centre, tangent, eye),
+            };
             let width = multiply(multiply(segment_width, width), frame.fade());
             vertices.extend(vertex_pair(&mapping, &frame, width, packed));
             mapping.advance();
@@ -402,6 +437,25 @@ impl TrailRecord {
             vertices[joint] = vertices[joint + 1];
         }
         Ok(bounds)
+    }
+
+    /// 14020f360/14020f490: the per-point orientations with 140210240's
+    /// Catmull-Rom weights.
+    fn orientation(&self, time: f32, index: i64) -> [f32; 3] {
+        let [start, end] = curve_key_times(&self.times, index as i32);
+        let mut t = subtract(time, start);
+        if f32::from_bits(0x3400_0000) < subtract(end, start) {
+            t = divide(t, subtract(end, start));
+        }
+        let h = multiply(t, 0.5);
+        let w0 = multiply(subtract(multiply(subtract(2., t), t), 1.), h);
+        let w2 = multiply(add(multiply(subtract(4., multiply(t, 3.)), t), 1.), h);
+        let w1 = add(multiply(multiply(subtract(multiply(t, 3.), 5.), t), h), 1.);
+        let w3 = multiply(multiply(subtract(t, 1.), t), h);
+        let p = [index - 1, index, index + 1, index + 2].map(|k| control_point(&self.orientations, k));
+        std::array::from_fn(|c| {
+            add(add(add(multiply(p[3][c], w3), multiply(p[2][c], w2)), multiply(p[1][c], w1)), multiply(p[0][c], w0))
+        })
     }
 
     /// 140210240 -> 14020fb80 (centre) and 1401d1500 (tangent).

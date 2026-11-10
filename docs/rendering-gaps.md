@@ -26,7 +26,7 @@ Each particle declaration fails at its first unsupported field, so counts
 below a top reason can hide further gaps. Since this table: flipbook and
 radial-ramp opacity, bare rotation orders, clipping planes, stage
 sorting, stage-to-stage spawning, attractors and stage trails are
-connected; 997 particle declarations still fail.
+connected; 990 particle declarations still fail.
 
 | Count | First failure |
 |---|---|
@@ -131,9 +131,9 @@ Stage trails (arkParticleTrailDesc, 0x15b0 bytes, list at stage +0x1938;
 list at system +0x39a; 60 in 42 declarations). Stage trails are simulated
 (gameplay::particles::trail), built into strips each frame within the
 renderer budget and drawn through `particle_strip_vertex`; examples/
-trail_smoke.rs drives all 68 loadable installed stage trails for 120 frames
-without errors. Not yet seen on screen. Remaining: vector-oriented trails
-(1402100f0/14020f710/1402104b0, 7 declarations), declaration-level trails
+trail_smoke.rs drives all 82 loadable installed stage trails (vector-
+oriented ones through 1402100f0/14020f710/1402104b0) for 120 frames without
+errors. Not yet seen on screen. Remaining: declaration-level trails
 (arkTrailDesc, 37 declarations), and TEXCOORD5 (left unwritten by the
 original, zero here).
 

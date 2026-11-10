@@ -306,16 +306,6 @@ impl ParticleDefinition {
                 }
             }
         }
-        // 1efcc0 creates a trail renderer for each enabled trail with a
-        // material (1401fada0). The vector-oriented frame (1402100f0,
-        // 14020f710) is not ported yet.
-        if declarations.iter().flatten().any(|declaration| {
-            declaration.stages.iter().filter(|stage| stage.enabled).any(|stage| {
-                stage.trails.iter().any(|trail| trail.enabled && trail.material.is_some() && trail.vector_oriented)
-            })
-        }) {
-            return Err("vector-oriented particle trails are not built yet".into());
-        }
         let strip_materials = declarations.iter().flatten()
             .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
             .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
