@@ -317,9 +317,7 @@ pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRende
         let preferred = if inline_slots.contains(&slot) { None } else { queue.preferred_mip };
         let mut streamed = read_resident_diffuse_image(catalog, path, preferred)?
             .ok_or_else(|| format!("resident image is absent: {path}"))?;
-        if !streamed.uploads.is_empty() {
-            streamed.image.data = Some(std::mem::take(&mut streamed.uploads).into_iter().flat_map(|mip| mip.payload).collect());
-        }
+        streamed.pack_uploads();
         result.payloads.insert(slot, streamed);
     }
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
@@ -334,11 +332,40 @@ pub(super) struct StreamedDiffuse {
     pub(super) level: DiffuseMipLevel,
 }
 
+impl StreamedDiffuse {
+    pub(super) fn pack_uploads(&mut self) {
+        let uploads = std::mem::take(&mut self.uploads);
+        if !uploads.is_empty() {
+            let mut data = Vec::with_capacity(uploads.iter().map(|mip| mip.payload.len()).sum());
+            for mip in uploads {
+                data.extend_from_slice(&mip.payload);
+            }
+            self.image.data = Some(data);
+        }
+    }
+}
+
 pub(super) struct CompressedMipUpload {
     pub(super) mip_level: u32,
     pub(super) width: u32,
     pub(super) height: u32,
-    pub(super) payload: Vec<u8>,
+    pub(super) payload: MipPayload,
+}
+
+pub(super) enum MipPayload {
+    Owned(Vec<u8>),
+    Member(Arc<Vec<u8>>, std::ops::Range<usize>),
+}
+
+impl std::ops::Deref for MipPayload {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Member(bytes, range) => &bytes[range.clone()],
+        }
+    }
 }
 
 // Registered executable defaults: r_textureStreamingPerFrameBudgetKB and
@@ -811,7 +838,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         let mut image = empty_streamed_image(16, 16, 1, TextureFormat::Rgba8Unorm);
         image.texture_descriptor.label = Some("intrinsic image");
         let uploads = if packed { image.data = Some(payload); Vec::new() }
-            else {vec![CompressedMipUpload {mip_level: 0, width: 16, height: 16, payload}]};
+            else {vec![CompressedMipUpload {mip_level: 0, width: 16, height: 16, payload: MipPayload::Owned(payload)}]};
         return Ok(Some(StreamedDiffuse {
             image,
             uploads,
@@ -833,7 +860,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             mip_level: 0,
             width: compressed.width,
             height: compressed.height,
-            payload: compressed.payload,
+            payload: MipPayload::Owned(compressed.payload),
         }];
         return Ok(Some(StreamedDiffuse {
             image: empty_streamed_image(
@@ -852,11 +879,12 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             },
         }));
     }
-    static STAGING: std::sync::OnceLock<(bool, bool, bool)> = std::sync::OnceLock::new();
-    let (copy_inline, report_staging, buffer_resident) = *STAGING.get_or_init(|| (
+    static STAGING: std::sync::OnceLock<(bool, bool, bool, bool)> = std::sync::OnceLock::new();
+    let (copy_inline, report_staging, buffer_resident, copy_worker_inline) = *STAGING.get_or_init(|| (
         std::env::var("DH2_DEBUG_COPY_INLINE_MIPS").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_IMAGE_STAGING").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_BUFFER_RESIDENT_IMAGES").as_deref() == Ok("1"),
+        std::env::var_os("DH2_DEBUG_COPY_WORKER_INLINE_MIPS").is_some_and(|value| value == "1"),
     ));
     let highest_separate = (0..=15)
         .rev()
@@ -904,6 +932,32 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             },
         }));
     }
+    if !packed && !copy_inline && !copy_worker_inline && selected_separate.is_none() {
+        let mut records = [const { None }; 16];
+        let info = texture::visit_inline_ranges(&bytes, |mip, width, height, range| {
+            records[mip as usize] = Some((mip, width, height, range));
+        })?;
+        let bytes = Arc::new(bytes);
+        let mut uploads = Vec::with_capacity(info.mip_count as usize);
+        uploads.extend(records.into_iter().flatten().map(|(mip_level, width, height, range)| {
+            CompressedMipUpload { mip_level, width, height, payload: MipPayload::Member(bytes.clone(), range) }
+        }));
+        if report_staging {
+            let inline_bytes = uploads.iter().map(|mip| mip.payload.len()).sum();
+            report_image_staging(stem, target, info.packed_format, &uploads, inline_bytes, 0, member_bytes);
+        }
+        return Ok(Some(StreamedDiffuse {
+            image: empty_streamed_image(info.width, info.height, info.mip_count, gpu_image_format(info.format)),
+            uploads,
+            level: DiffuseMipLevel {
+                resource_mip: None,
+                next_separate_suffix: highest_separate,
+                width: info.width,
+                height: info.height,
+                format: info.format,
+            },
+        }));
+    }
     // The worker and separate-mip consumers still need individual authored records.
     let copied = if copy_inline { Some(texture::compressed_inline_chain(&bytes)?) } else { None };
     let mut inline_mips = [None; 16];
@@ -939,7 +993,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             }
             packed_payload.extend_from_slice(payload);
         } else {
-            uploads.push(CompressedMipUpload {mip_level, width, height, payload: payload.to_vec()});
+            uploads.push(CompressedMipUpload {mip_level, width, height, payload: MipPayload::Owned(payload.to_vec())});
         }
     };
     if let Some(selected) = selected_separate {
@@ -976,16 +1030,9 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     drop(emit);
     mip_count += inline.mip_count;
     if report_staging && !packed {
-        use std::hash::{Hash, Hasher};
-        let mut checksum = std::hash::DefaultHasher::new();
-        inline.packed_format.hash(&mut checksum);
-        for mip in &uploads {
-            (mip.mip_level, mip.width, mip.height).hash(&mut checksum);
-            mip.payload.hash(&mut checksum);
-        }
         let inline_bytes = inline_mips.iter().flatten().map(|mip| mip.payload.len()).sum::<usize>();
-        eprintln!("MEMORY image staging: path={stem} target={target:?} inline_bytes={inline_bytes} redundant_copy_bytes={} upload_bytes={} mips={} checksum={:016x}",
-            if copy_inline {inline_bytes} else {0}, uploads.iter().map(|mip|mip.payload.len()).sum::<usize>(), uploads.len(), checksum.finish());
+        report_image_staging(stem, target, inline.packed_format, &uploads, inline_bytes,
+            if copy_inline { inline_bytes } else { 0 }, 0);
     }
     let (width, height) = top.ok_or("authored image has no mip payload")?;
     let mut image = empty_streamed_image(width, height, mip_count, gpu_image_format(format));
@@ -1010,6 +1057,23 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             format,
         },
     }))
+}
+
+fn report_image_staging(stem: &str, target: TextureReadTarget, format: u32,
+    uploads: &[CompressedMipUpload], inline_bytes: usize, redundant_bytes: usize, archive_bytes: usize,
+) {
+    use std::hash::{Hash, Hasher};
+    let mut checksum = std::hash::DefaultHasher::new();
+    format.hash(&mut checksum);
+    for mip in uploads {
+        (mip.mip_level, mip.width, mip.height).hash(&mut checksum);
+        (*mip.payload).hash(&mut checksum);
+    }
+    eprintln!("MEMORY image staging: path={stem} target={target:?} inline_bytes={inline_bytes} redundant_copy_bytes={redundant_bytes} upload_bytes={} mips={} checksum={:016x}",
+        uploads.iter().map(|mip| mip.payload.len()).sum::<usize>(), uploads.len(), checksum.finish());
+    if archive_bytes != 0 {
+        eprintln!("MEMORY image worker member: path={stem} archive_bytes={archive_bytes} borrowed_inline_bytes={inline_bytes}");
+    }
 }
 
 pub(super) use crate::rendering::bevy_backend::image_formats::gpu_image_format;
@@ -1220,9 +1284,7 @@ fn commit_resident_image(
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
 ) -> Result<usize, String> {
-    if !streamed.uploads.is_empty() {
-        streamed.image.data = Some(streamed.uploads.into_iter().flat_map(|mip| mip.payload).collect());
-    }
+    streamed.pack_uploads();
     let bytes = streamed.image.data.as_ref().map_or(0, Vec::len);
     let mip_count = streamed.image.texture_descriptor.mip_level_count;
     if let Some(handle) = &queue.diffuse_image_handles[slot] {

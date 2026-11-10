@@ -385,7 +385,15 @@ trailing `*` covers a family of kinds.
 | `vault` | none | none: arkJumpDef_Vault resources for NPC navigation (2 installed navmesh/npc_movement declarations), with no production reader. Player vaulting uses its separate player-state/sensor declarations; it does not acquire this resource class |
 | `vaultClimb` | none | none: no owner yet |
 | `vaultDrop` | none | none: no owner yet |
-| `cpnt*` | `assets::entities` (components of placed entities) | partial: a few component types read (e.g. `cpntHealthEvolved`); most none |
+| `cpntAudio` | `assets::entities::audio`, `app::audio`, `app::player` | host: inherited fields resolve during scene/player preparation. World emitters retain typed settings, event leases and a reference frame. Player arms retain typed sound settings. The generic component text and resolved field caches retire after their preparation consumers. Sound banks and playback retain their separate audio scopes. |
+| `cpntAudioListener` | `assets::entities::player`, `app::player`, `app::audio` | host: the selected character's inherited listener fields convert to typed listener settings before the declaration bundle is returned. The active listener is a world/audio runtime object. |
+| `cpntInventory` | `assets::inventory_item`, `app::interaction_focus` | host: the inherited component contributes initial item references. Runtime inventory owns item leases and quantities, with no component text cache retained by those entries. |
+| `cpntPickable_Simple` | `assets::entities::usable`, `assets::inventory_item::sources` | partial: the READ_NOTE route resolves inherited pickable fields into typed item/interaction bindings and drops the per-batch parse cache. The scoped item registry owns acquired readable identities separately. General pickup component behavior remains outside this coverage. |
+| `cpntPlayerSensorInteraction` | `assets::entities::usable`, `app::interactions` | host: the selected character's inherited definition supplies the interaction distance and five cast radii (1403b7a40, 1403b8d60). Only the typed sensor settings survive acquisition. |
+| `cpntPlayer*` | `assets::entities::player`, `app::player`, `gameplay::player` | partial: observed physics, camera, controller, body, state machine, auto-crouch, lean, mantle, breath and FX-manager fields feed supported runtime owners. Shared player/arm preparation retains field leases until their final setup and screen-effect consumers. This row covers the observed inputs, with unimplemented component behavior excluded. |
+| `cpntTrigger` | `assets::entities::triggers`, `gameplay::trigger_volume` | partial: the map loader resolves typed trigger settings and shape leases. Generic inherited fields retire after preparation. The map owns supported overlap and event state; shape lifetimes are tracked separately under `physhape`. |
+| `cpntWind` | `assets::entities::wind`, `gameplay::machinery_world` | host: typed wind settings feed supported world and trigger wind consumers. The inheritance cache is local to component preparation and drops with its reader. |
+| `cpnt*` | `assets::entities` (components of placed entities) | partial: the named rows cover independently traced consumers. The observed health, mana, adrenaline and attribute inputs use the player declaration bundle and typed runtime settings. Other indexed component types may have no consumer. |
 | `UI_HUDElement*` | `app::hud_movie` | host: in-game HUD configuration resolves installed state/HUD declarations on its existing movie worker; typed thresholds, bindings and gauge state live with HudMovie, temporary declaration fields drop after loading, and movie/image/font leases use the shared Flash owners. Supported interaction, breath, health and mana consumers are present; this does not claim all HUD families. Source consumer 14078b550 / 14038f7d0 / 140674be0 |
 | `playerState*` | `assets::entities::player::DeclarationSource`, `gameplay::player::decls`, `gameplay::player::states` | host: ordered inherited mode/state declarations are resolved during player preparation; only supported state trees survive to typed StateDecl/Midnight construction. Setup subtrees release after their last player/arm consumer; mutable state, clocks and clip leases live with the level player. Unimplemented state mechanics are excluded. Generic native registry header/preload phases remain 1400607f0 / 1400661e0; this host does not pin unused state syntax to a session registry |
 | `gameLogicState*` | `gameplay::game_logic`, `app::pause_menu`, `app::loading_movie`, `app::hud_movie` | ported: world-selected transition matrix and stack (140787770 / 1407886c0 / 1407885b0 / 140787510); host: registered in-game, pause, read-note, Journal and map-transition backends retain their actual movie/declaration leases and retire through the existing UI-worker acknowledgement before level support resources drop. This does not register unimplemented states or claim their lifecycles |
@@ -2115,9 +2123,17 @@ The host image owner will reuse an already acquired scene-base view only when
 its initial complete-chain view selects the scene loader's requested source mip.
 Already replaced/trimmed views are not treated as complete base chains. This
 preserves the scene minimum/residency policy rather than pinning full chains.
-Later UI acquisitions use the committed scene/common view; existing wrappers
-retain their previous view. Registered current views change only on successful
-streaming commits, including inactive common-image reductions.
+The first live named wrapper uses the committed scene/common view.
+`14101d290` first searches the global Iggy wrapper table by name and adds the
+new context reference through `14100d6f0`. It calls the texture resolver only
+when no wrapper is live. `1402df8c0` likewise acquires the SRV on its first
+reference and reuses the saved handle for further references. A streamed
+replacement leaves that named snapshot available to all holders of its live
+wrapper. After the last wrapper reference releases, the next wrapper uses
+the current committed view. The host's weak named-binding lookup represents
+this sharing without extending the wrapper lifetime. Registered current
+views change only on successful streaming commits, including inactive
+common-image reductions. This scope is established by executable code.
 
 Prediction: each eligible base slot removes exactly one independent payload
 preparation and upload, equal to that registered view's payload bytes. Mip and
@@ -2985,6 +3001,31 @@ identity, including reused FX slots. Existing priority-key construction is
 unchanged. Live slot reuse, affected CPU cost and mip publication still need
 runtime observations. Evidence: DH2-scene-shutdown/artifacts/resource-shutdown-batch-20261110-check-provenance.json.
 
+
+Initial texture worker prediction. Original 1402e9ff0 hands validated
+authored inline records to 1402f5500. The host worker currently allocates one
+new byte buffer per inline mip even when the upload already owns the decoded
+archive member. For initial inline-only worker jobs, keep that member once
+and hand checked mip ranges to the upload queue. Expect no second payload
+allocation or copy, with only record headers and the archive capacity slack
+retained until upload. Keep separately streamed mip jobs on their existing
+direct acquisition path. Compare matching mip order, dimensions, payload
+signatures and GPU publication before claiming a gameplay memory or CPU gain.
+
+Installed worker upload acceptance (0b3f82fa). Four same-executable
+observations loaded 32 archived images across five formats and one to seven
+inline levels. All inputs matched the previously observed installed CRC,
+dimensions, format, mip count and next finer suffix. The real GPU upload
+mailbox accepted every job. After upload all decoded archive owners were
+released, and after the diagnostic released its image handles all 32 GPU
+identities retired. Per run the old path copied 25,838,832 payload bytes
+into new mip buffers. The new path reused one decoded member per image
+(25,843,168 bytes of total member capacity, including 4,336 bytes of
+headers and slack). These figures describe overlapping copies avoided
+during acquisition, not steady-state memory saved. Scoped reader cycles
+were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
+Live gameplay demand and cancellation were outside this windowless
+observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
 
 ### Fog curve resource ownership
 
@@ -5597,7 +5638,15 @@ progress can finish. This bounds host worker retirement at the map lifetime
 boundary (1408a4830). Measure the cancellation span separately from ordinary
 load costs.
 
-The clean game-feature compilation at db1cb92a covers the new checks. Live shutdown latency and cancellation at the individual checkpoints remain unobserved.
+The optimized installed-data observer at c40dcdbe requested cancellation
+during shape extraction, placed-body acquisition and index construction in
+high-chaos Palace. Each used the same preparation cancellation callback at
+its 64th checkpoint. Time from the stop signal to a returned cancellation
+was 93.894, 110.464 and 118.288 ms respectively, including disposal of the
+unpublished partial data. All three observed the subsequent catalog purge,
+with no prepared world returned. Ordinary EotW/Dust preparations retained
+the recorded triangle signatures. The observer did not close a live window
+or measure a blocked archive read. Evidence: DH2-scene-shutdown/artifacts/collision-close-and-motion-20261110-comparison.json.
 
 Autonomous motion event ownership. The host now borrows the selected event
 node, its parameters and its ports from the loaded graph while mutating
@@ -5605,4 +5654,10 @@ only the playback, motor and variable owners. This removes one temporary
 definition copy per dispatched event. The original keyframe action
 140533460 reads its authored declaration identity and stores a separate
 playback handle at +0x30. The existing node lookup order and dispatch rules
-are preserved. The installed motion-output comparison is pending.
+are preserved. The same-executable comparison observed 36 dispatch steps
+in eight graphs across EotW and Dust in every mode. Definition and initial
+pose signatures, per-graph event and error counts, and collision signatures
+matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
+547,680–555,905 with borrowed nodes. This measures those startup dispatches,
+without a gameplay frame-time claim. The source was c40dcdbe and the same
+comparison artifact records both batches.

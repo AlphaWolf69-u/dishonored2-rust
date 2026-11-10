@@ -632,7 +632,7 @@ pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, Compres
     })
 }
 
-fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, u32, std::ops::Range<usize>))
+pub(crate) fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, u32, std::ops::Range<usize>))
     -> Result<BimageInfo, String> {
     let info = BimageInfo::parse(bytes)?;
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
