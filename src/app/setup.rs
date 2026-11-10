@@ -1924,6 +1924,10 @@ pub(super) fn prepare(
     ));
     world_shadow_mesh_sources.release_cpu_copies(meshes);
     commands.insert_resource(world_shadow_mesh_sources);
+    // Water was the last CPU consumer of the installed geometry sections.
+    // The prepared meshes own their vertex and index data independently.
+    scene.world.meshes = Vec::new();
+    super::load_timing::mark("world geometry source released");
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
             .iter()
@@ -2013,9 +2017,6 @@ pub(super) fn prepare(
             }
         }
     });
-    // Every world mesh is uploaded and its shadow/water/probe inputs are
-    // built; the original keeps no CPU copy of uploaded world geometry.
-    scene.world.meshes = Vec::new();
     super::load_timing::mark("setup: end");
     Ok(())
 }
