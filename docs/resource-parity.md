@@ -6827,3 +6827,13 @@ retained. Reuse the existing setup-local name map so this change adds no
 per-frame name lookup. Verify the complete named class/type ranges,
 factory descriptors, dependency inputs and installed map outputs.
 The final Catalog and scene lease release must destroy the metadata.
+
+The first metadata comparison exposed allocation-dependent numeric IDs
+in one of the three independently rebuilt registries. 1990d0 sorts
+registered names by their NameId addresses, and the host allocator can
+place a later name block at a different address. Source inspection
+confirmed that component admission and dependency expansion use each
+registry's own class ranges. The comparison now records the raw
+numeric ranges separately and checks the complete named acceptance
+matrix, source metadata, factory/definition tables and resolved ranks.
+No class registration or runtime range algorithm was changed.
