@@ -5967,3 +5967,15 @@ image identities. No GPU validation errors were reported. This observes
 the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
+
+Camera depth owner acceptance (`e40c02cf`). Two windowless DX12 observations
+released the 1920×1080 opacity image, reduction pyramid, coarse output,
+constants and four staging slots with a readback map outstanding. The callback
+had zero leases after cancellation. The fence left one 65,536-byte coarse
+output and one 65,536-byte staging allocation in submitted device work.
+The next empty submission and drain retired both. Live allocations then
+returned to the same 655,360 bytes of labeled wgpu device resources on both
+samples, with no validation errors. The allocator reserved 268,435,456 bytes
+after warmup. This observes ownership and queue retirement, without measuring
+active rendering cost. Evidence:
+`DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
