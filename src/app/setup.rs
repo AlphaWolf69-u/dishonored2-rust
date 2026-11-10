@@ -11,8 +11,8 @@ use super::{
     rest_skinning, retain_model_shadow_position, retain_skin_inputs, shadow_pipeline,
     shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
-    CascadeShadowConfigBuilder, CoordinateOverlay, DecalMaterial, DepthPrepass, DiffuseMipState,
-    FocusTarget, FocusTargets, FrameRateOverlay, HashMap, HashSet, LocalLightCull,
+    CascadeShadowConfigBuilder, DecalMaterial, DepthPrepass, DiffuseMipState,
+    FocusTarget, FocusTargets, HashMap, HashSet, LocalLightCull,
     MaterialResolver, NavigationWorld, PathBuf,
     PlacedModelQueries, PlacedModelQueryGroup, ProbeMaterial, ProgramCacheSource, Projection,
     RectLight, RenderDevice, RenderInstance, RenderInstanceSource, RenderModelSurface,
@@ -216,41 +216,9 @@ pub(super) fn prepare(
         commands.insert_resource(fog);
         commands.insert_resource(display);
     }
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: px(12),
-                left: px(12),
-                padding: UiRect::all(px(8)),
-                flex_direction: FlexDirection::Column,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-            ZIndex(100),
-            super::state::GameplayOverlay,
-            Visibility::Hidden,
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Text::new("FPS: measuring\nRAM: measuring"),
-                TextFont {
-                    font_size: FontSize::Px(18.0),
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-                FrameRateOverlay,
-            ));
-            parent.spawn((
-                Text::new("Game XYZ: loading"),
-                TextFont {
-                    font_size: FontSize::Px(18.0),
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-                CoordinateOverlay,
-            ));
-        });
+    if super::performance::map_scoped_overlay() {
+        super::performance::spawn_overlay(commands);
+    }
     let preferred_mip = env::var("DH2_TEXTURE_MIP")
         .ok()
         .and_then(|value| value.parse::<u8>().ok())

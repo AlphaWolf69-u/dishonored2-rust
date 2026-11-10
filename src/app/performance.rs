@@ -7,6 +7,55 @@ use super::{
 };
 use bevy::prelude::*;
 
+pub(super) fn map_scoped_overlay() -> bool {
+    std::env::var_os("DH2_DEBUG_MAP_SCOPED_OVERLAY").is_some_and(|value| value == "1")
+}
+
+pub(super) fn bootstrap_overlay(commands: Commands) {
+    if !map_scoped_overlay() {
+        spawn_overlay(&mut super::setup_commands::SetupCommands::Direct(commands));
+    }
+}
+
+/// The host's performance overlay shares the session lifetime of its font.
+pub(super) fn spawn_overlay(commands: &mut super::setup_commands::SetupCommands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(12),
+                left: px(12),
+                padding: UiRect::all(px(8)),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+            ZIndex(100),
+            super::state::GameplayOverlay,
+            Visibility::Hidden,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("FPS: measuring\nRAM: measuring"),
+                TextFont {
+                    font_size: FontSize::Px(18.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                FrameRateOverlay,
+            ));
+            parent.spawn((
+                Text::new("Game XYZ: loading"),
+                TextFont {
+                    font_size: FontSize::Px(18.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                super::CoordinateOverlay,
+            ));
+        });
+}
+
 // Run after Bevy's visibility pass to distinguish Tome decisions from Bevy
 // culling and texture upload state. ViewVisibility includes any camera/light
 // view; this count is not a GPU draw count.
