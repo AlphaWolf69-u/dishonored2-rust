@@ -318,3 +318,23 @@ x delta, then position += (velocity + base velocity x beam colour?
 ...velocityOverLife products) x delta for the start point, control points
 (with the wind term) and end point. Flipbook rate 1401cfde0 = m_flipBook
 rate (+0x208) sample x delta unless static (1401d0fe0: +0x1f8 type 0).
+
+Beam strip (1401d8d50 -> 1401d32e0): the trail budget helpers again
+(base 2 per join, 2n+2 per beam, factor from the renderer budget), bounds
+merged per built beam, vertex count stored. Per beam: strip mapping
+(140208ef0) with the record's length and flip bits; colour = beam-life
+colour/alpha at the record age x the record colour x tint, width =
+beam-life width x record width, and 1401d5390 fills the per-point colour
+(+0x140) and width (+0x150) lists. segments + 1 samples at t += 1/segments:
+Catmull-Rom centre (weights as 140210240) and tangent (1401d1500) over the
+point curve, owner transform when local (1401d5ce0), frame 1401d4580 from
+the view, colour by 1401d1390 and width by 1401d1c30 at the interval with
+the same weights; when m_noise.m_scale > 1.19e-7, Perlin noise 14010e2e0
+(octaves, persistence, perlin frequency, at noise frequency x record +0x14
+and a running parameter advanced by 1/segments, x length in LENGHT mode)
+offsets the centre along the frame's side by scale x noise x width; the
+bounds grow by the widest point width x (1 + noise scale). Vertex pairs as
+trails; TEXCOORD4.zw = (half(frame), half(random from +0x12c)). Strips
+are joined by duplicated vertices before and after (param_9/param_10).
+Still to read: 1401d5390, 1401d1390, 1401d1c30, 1401d4580, 1401d5ce0,
+14010e2e0, 1401d6f70 (length).
