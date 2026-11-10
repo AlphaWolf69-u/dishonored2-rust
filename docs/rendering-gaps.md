@@ -338,3 +338,20 @@ trails; TEXCOORD4.zw = (half(frame), half(random from +0x12c)). Strips
 are joined by duplicated vertices before and after (param_9/param_10).
 Still to read: 1401d5390, 1401d1390, 1401d1c30, 1401d4580, 1401d5ce0,
 14010e2e0, 1401d6f70 (length).
+
+Per-point colour and width (1401d5390, at the record age): start point =
+m_startPointLifeCurves colour x beam colour, alpha x beam alpha, width x
+beam width; each control point likewise from its own m_lifeCurves (alpha
+and width as range x curve with two draws each); end point from
+m_endPointLifeCurves. Strip interpolation: colour 1401d1390 (vec4
+Catmull-Rom over the colour list, control fetch 1401d1e80), width
+1401d1c30 (scalar control fetch with the usual end extrapolation). Beam
+frame 1401d4580: unit tangent, side = normalize(tangent x (eye - centre))
+written as (t.z(e.y-c.y) - t.y(e.z-c.z), ...), normal = side x tangent
+normalized; no edge-on fade (unlike trails). Local beams: 1401d5ce0
+transforms centre (with translation) and tangent by the owner matrix.
+Perlin 14010e2e0: octave sum of 14010dff0 noise at (seed, frequency x t)
+with amplitude persistence^k, each octave added as (1 - |sum|) x noise x
+amplitude. Position placement 1401d0d60: location and velocity through
+1401f6ca0, plus the spawn mesh sample (1401f9490) when it has a mesh.
+Still to read: 14010dff0 (noise), 1401d1e80, 1401d6f70 (length).
