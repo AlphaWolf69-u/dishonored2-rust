@@ -5661,6 +5661,18 @@ and owners intact, and successful preparation should stop cloning their
 rollback snapshots. This is host transaction ownership. The installed
 dynamic FX route is needed to measure the affected publication work.
 
+Installed usable-family acquisition (`ff26580f`): all 12 declarations under
+`models/effects/usable/` resolved. Only the toilet flush acquired a particle
+model. Its authored programs are `particle/add_default` and
+`particle/dist_blur`, which keep it on the particle renderer, and none of the
+12 declarations has a decal group. Edge of the World and Dust District both
+reference the flush and sink definitions. These are candidates for observing
+particle image, model and sound release. A world-material or decal batch needs
+an installed definition with the corresponding dependency. No live usable
+activation, proxy publication or image retirement is established by this
+acquisition. Evidence:
+`DH2-interactions/artifacts/runtime-fx-installed-usable-sources-20261110.json`.
+
 ### Runtime FX image binding retirement
 
 Prediction before change. A dynamic material proxy retires after its final effect or tail lease, under the map material identity/release boundaries 1400607f0 and 140060180. RuntimeMaterialCoordinator publishes only the surviving surfaces to DynamicWorldMaterials. The host image synchronization previously removed absent bindings only inside its replacement-image readiness gate. While an unrelated image read is pending or fails, the stale world_materials entry can hold the old image's Arc and prevent its streaming slot and GPU lease from retiring. Drop absent dynamic bindings on the new surface revision, independently of incoming-image readiness. Existing tail and render-frame leases still defer the actual slot release, and startup keys are excluded from the dynamic entry set. Incoming binding publication retains its readiness gate. Expect the expired binding to release before a new pending/failed read completes, with the same ready materials and no new work on unchanged revisions. Live cancellation and tail evidence remain required; the runtime trace reports the binding release and the existing image-slot retirement.
