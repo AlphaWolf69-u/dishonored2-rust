@@ -355,3 +355,15 @@ with amplitude persistence^k, each octave added as (1 - |sum|) x noise x
 amplitude. Position placement 1401d0d60: location and velocity through
 1401f6ca0, plus the spawn mesh sample (1401f9490) when it has a mesh.
 Still to read: 14010dff0 (noise), 1401d1e80, 1401d6f70 (length).
+
+Beam length (1401d6f70): bounds start from the first and last points; no
+points gives 0; two points the straight distance (sqrt); otherwise 2n-3
+Catmull-Rom samples (weights and P1 w1 + P0 w0 + P2 w2 + P3 w3 as
+14020dff0) at t = k/(2n-1), k = 1..2n-3, accumulating (1/sqrt(max(d2,
+FLT_MIN))) x d2 from the first point and finally to the last point,
+growing the bounds with each sample. Segment count 1401d52d0: below 1e-4
+both length and segments are zeroed; length scaled: max(1, floor(length x
+segments + 0.5)) capped by maxSegments; otherwise floor(segments + 0.5).
+All beam pieces are now mapped; next is the runtime port, checking the
+scalar samples whose arguments the decompile dropped (1401d21b0 radius,
+radial and inherited velocity) against the disassembly.
