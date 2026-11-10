@@ -206,17 +206,21 @@ pub(super) struct MaterialWork {
 }
 
 impl MaterialWork {
-    fn cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire) || self.superseded.load(Ordering::Acquire)
-    }
-
     pub fn prepare(mut self) -> Result<PreparedBatch, String> {
-        if self.cancelled() { return Err("material request cancelled".into()); }
+        let (cancelled, superseded) = (&self.cancelled, &self.superseded);
+        let check_active = || -> Result<(), String> {
+            if cancelled.load(Ordering::Acquire) || superseded.load(Ordering::Acquire) {
+                return Err("material request cancelled".into());
+            }
+            Ok(())
+        };
+        check_active()?;
         // Match the existing FX worker's lock order; no gameplay system waits
         // for either owner while archive reads and material parsing run.
         let mut programs = self.programs.lock().unwrap_or_else(|error| error.into_inner());
+        check_active()?;
         let mut particles = self.particles.lock().unwrap_or_else(|error| error.into_inner());
-        if self.cancelled() { return Err("material request cancelled".into()); }
+        check_active()?;
         self.snapshot.cache.enable_dependency_trace();
         let bindings = &self.bindings;
         let mut resolver = MaterialResolver {
@@ -268,6 +272,7 @@ impl MaterialWork {
         let mut dynamic_materials = HashSet::new();
         let mut dependencies: HashMap<MaterialKey, HashSet<MaterialConsumer>> = HashMap::new();
         for (source, material, model) in world_meshes {
+            check_active()?;
             let consumer = MaterialConsumer::Mesh((source.clone(), material.clone()));
             resolver.cache.take_dependencies();
             let failures = super::setup::prepare_particle_surfaces(vec![(source, material, model)], &mut resolver,
@@ -294,14 +299,13 @@ impl MaterialWork {
         }
         let mut decals = Vec::with_capacity(self.decal_requests.len());
         for (name, world) in &self.decal_requests {
+            check_active()?;
             resolver.cache.take_dependencies();
             decals.push(prepare_decal(&mut resolver, &mut particles, name, *world)?);
             let consumer = MaterialConsumer::Decal((name.clone(), *world));
             for key in resolver.cache.take_dependencies() { dependencies.entry(key).or_default().insert(consumer.clone()); }
         }
-        if self.cancelled.load(Ordering::Acquire) || self.superseded.load(Ordering::Acquire) {
-            return Err("material request cancelled".into());
-        }
+        check_active()?;
         resolver.cache.retire_staged_source();
         resolver.cache.disable_dependency_trace();
         let cache = std::mem::take(&mut resolver.cache);
@@ -309,11 +313,13 @@ impl MaterialWork {
         drop(resolver);
         let mut all_images = Vec::with_capacity(image_paths.len());
         for (slot, path) in image_paths.iter().enumerate() {
+            check_active()?;
             let image = particles.scene_image(&self.catalog, path)?
                 .ok_or("runtime material image requires the shared scene owner")?;
             image.sampling_priority.fetch_max(cache.image_priority(slot), Ordering::Relaxed);
             all_images.push(image);
         }
+        check_active()?;
         drop(particles);
         drop(programs);
         Ok(PreparedBatch { assets: self.assets, surfaces, surface_images, decals, cache, image_paths, all_images, dependencies })
