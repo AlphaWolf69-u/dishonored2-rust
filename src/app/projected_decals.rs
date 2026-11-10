@@ -222,8 +222,10 @@ pub(super) fn publish_runtime(
 ) {
     let (Some(request), Some(mut state), Some(scene_data), Some(queue), Some(materials)) =
         (request, state, scene_data, queue, materials) else { return };
-    if request.prepared_generation != request.generation || state.revision == Some(request.prepared_revision) { return; }
-    if !request.prepared.is_empty() && scene.tree.is_none() {
+    if state.revision == Some(request.prepared_revision) { return; }
+    let ready = request.prepared_generation == Some(request.generation);
+    if !ready && state.owned.is_empty() { return; }
+    if ready && !request.prepared.is_empty() && scene.tree.is_none() {
             scene.tree = Some(scene_data.world.spatial_query());
             state.owns_scene_geometry = true;
             let mut ends = [0; 2];
@@ -243,6 +245,9 @@ pub(super) fn publish_runtime(
             .is_some_and(|item| item.handle.id() != current._prepared.handle.id()
                 || !Arc::ptr_eq(&item.program, &current._prepared.program))
     }).map(|(key, _)| key.clone()).collect();
+    if !obsolete.is_empty() && crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+        eprintln!("FX_LIFECYCLE decal_proxy_retire count={} replacement_ready={ready}", obsolete.len());
+    }
     for key in obsolete {
         if let Some(old) = state.owned.remove(&key) {
             for entity in old.entities { commands.entity(entity).try_despawn(); }
@@ -258,7 +263,7 @@ pub(super) fn publish_runtime(
         state.owns_scene_geometry = false;
     }
     let mut expected = Vec::new();
-    for item in request.prepared.iter() {
+    for item in request.prepared.iter().filter(|_| ready) {
         let key = (item.name.clone(), item.world);
         if let Some(current) = state.owned.get(&key) {
             expected.extend(current.entities.iter().copied());
@@ -308,9 +313,11 @@ pub(super) fn publish_runtime(
             }
         }
     }
-    readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
-        generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(), failed: request.failed.clone(),
-    };
+    if ready {
+        readiness.decals = crate::rendering::bevy_backend::projected_decals::ProxyReadinessBatch {
+            generation: request.generation, proxies: Arc::new(expected), completed: request.gpu_completed.clone(), failed: request.failed.clone(),
+        };
+    }
     state.revision = Some(request.prepared_revision);
 }
 

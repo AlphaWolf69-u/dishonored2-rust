@@ -678,7 +678,19 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
                 world.despawn(surface.entity);
             }
         }
+        let previous_decals = state.decals.len();
         state.decals.retain(|key, _| decal_leases.contains_key(key));
+        {
+            let mut publication = world.resource_mut::<super::usable_effects::DynamicDecalMaterials>();
+            publication.prepared_generation = None;
+            if state.decals.len() != previous_decals {
+                // Withdraw dead leases independently of replacement readiness.
+                // This snapshot can only lose entries until publication below.
+                Arc::make_mut(&mut publication.prepared)
+                    .retain(|item| state.decals.contains_key(&(item.name.clone(), item.world)));
+                publication.prepared_revision = publication.prepared_revision.wrapping_add(1);
+            }
+        }
         for cached in state.cache.values_mut() {
             cached.leases.retain(|lease| lease.strong_count() != 0);
             for consumer in &cached.consumers {
@@ -784,7 +796,7 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         drop(ready);
         let mut decal = world.resource_mut::<super::usable_effects::DynamicDecalMaterials>();
         decal.prepared = Arc::new(state.decals.values().cloned().collect());
-        decal.prepared_generation = generation;
+        decal.prepared_generation = Some(generation);
         decal.prepared_revision = decal.prepared_revision.wrapping_add(1);
         state.published_generation = Some(generation);
     }
