@@ -1705,12 +1705,12 @@ pub(super) fn stream_visible_textures(
                 collect_completions, completion_batches, completion_items, completion_temp_bytes);
         }
     }
-    let abandoned_reads = runtime_fx_images.as_deref().filter(|owner| !owner.discard_reads.is_empty());
-    if let Some(owner) = abandoned_reads {
+    let dynamic_images = runtime_fx_images.as_deref().filter(|owner| owner.has_owned_slots());
+    if let Some(owner) = dynamic_images {
         let (ready, inflight, inflight_count) =
             (&mut worker.ready, &mut worker.inflight, &mut worker.inflight_count);
         ready.retain(|(slot, target, _)| {
-            if !owner.discard_reads.contains(slot) {
+            if !owner.read_abandoned(*slot, &queue.diffuse_image_paths[*slot]) {
                 return true;
             }
             inflight[*slot] = false;
@@ -1928,12 +1928,12 @@ pub(super) fn stream_visible_textures(
         eprintln!("MEMORY texture request scratch: frames={frame} allocate_each_frame={allocate_each_frame} flag_growth_frames={flag_growth_frames} order_growth_frames={order_growth_frames} flags_capacity={} order_capacity={}",
             requested.capacity(), request_order.capacity());
     }
-    if let Some(owner) = abandoned_reads {
-        request_order.retain(|slot| !owner.discard_reads.contains(slot));
-    }
     let request_count = request_order.len();
     for &slot in request_order.iter() {
         if charged > residency::budget_bytes(settings) { break; }
+        if dynamic_images.is_some_and(|owner| owner.read_abandoned(slot, &queue.diffuse_image_paths[slot])) {
+            continue;
+        }
         if !worker.inflight[slot] && queue.diffuse_image_pending[slot].is_none()
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,

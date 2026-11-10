@@ -53,12 +53,11 @@ impl Slot {
 pub(super) struct RuntimeFxImages {
     slots: HashMap<Arc<str>, Slot>,
     free: Vec<usize>,
+    first_owned_slot: Option<usize>,
     seen_revision: Option<u64>,
     seen_world_revision: Option<u64>,
     world_entries: std::collections::HashSet<String>,
     pub(super) requested: Vec<usize>,
-    /// Owned slots whose read completed after their last FX consumer retired.
-    pub(super) discard_reads: Vec<usize>,
     pub(super) failure: Option<(u64, String)>,
 }
 
@@ -67,6 +66,16 @@ impl RuntimeFxImages {
     /// registered with the shared consumer owner.
     pub(super) fn slot(&self, path: &str) -> Option<usize> {
         self.slots.get(path).filter(|slot| slot.registered).map(|slot| slot.index)
+    }
+
+    pub(super) fn has_owned_slots(&self) -> bool {
+        self.first_owned_slot.is_some() && !self.slots.is_empty()
+    }
+
+    /// Material coordination can withdraw a lease after the last slot sync.
+    pub(super) fn read_abandoned(&self, index: usize, path: &str) -> bool {
+        self.first_owned_slot.is_some_and(|first| index >= first)
+            && self.slots.get(path).is_some_and(|slot| slot.owned && !slot.has_external_owner())
     }
 }
 
@@ -86,7 +95,6 @@ pub(super) fn synchronize(
 ) {
     let (Some(owner), Some(mut world), Some(mut state), Some(mut queue), Some(mut worker), Some(mut consumers)) =
         (owner, world, state, queue, worker, consumers) else { return };
-    state.discard_reads.clear();
     if state.failure.as_ref().is_some_and(|(generation, _)| *generation != world.generation) {
         state.failure = None;
     }
@@ -136,6 +144,7 @@ pub(super) fn synchronize(
                 index
             } else {
                 let index = queue.diffuse_image_paths.len();
+                state.first_owned_slot.get_or_insert(index);
                 queue.diffuse_image_paths.push(path.to_string());
                 queue.diffuse_image_demands.push(Default::default());
                 queue.diffuse_image_materials.push(Vec::new());
@@ -166,8 +175,7 @@ pub(super) fn synchronize(
     let mut remove = Vec::new();
     let mut failed = None;
     let state = &mut *state;
-    let (slots, requested, discard_reads) =
-        (&mut state.slots, &mut state.requested, &mut state.discard_reads);
+    let (slots, requested) = (&mut state.slots, &mut state.requested);
     for (path, slot) in slots {
         if !slot.wanted && !slot.added_consumer && !slot.owned {
             remove.push(path.clone());
@@ -181,7 +189,6 @@ pub(super) fn synchronize(
                     // The old slot stays reserved until the submitted read
                     // acknowledges it. Avoid locking its queue again.
                     slot.discard_read = true;
-                    discard_reads.push(slot.index);
                 } else {
                     queue.diffuse_mip_states[slot.index].reserved_bytes = 0;
                     if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {

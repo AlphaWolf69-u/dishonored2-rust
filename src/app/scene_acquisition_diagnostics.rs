@@ -473,16 +473,69 @@ fn observe_runtime_fx_image_aliases(
         resources.use_scene_images();
         resources.scene_image(catalog, path)?.ok_or_else(|| format!("missing scene image {path}"))
     };
-    let first = acquire()?;
-    let second = acquire()?;
-    if Arc::ptr_eq(&first, &second) || first.path != second.path {
-        return Err("FX alias observation did not acquire distinct descriptors of one path".into());
-    }
     let publish = |app: &mut App, images: Vec<Arc<ParticleImage>>| {
         let mut world = app.world_mut().resource_mut::<DynamicWorldMaterials>();
         world.extra_images = images;
         world.image_revision = world.image_revision.wrapping_add(1);
     };
+    let stage = |app: &mut App| -> Result<usize, Box<dyn std::error::Error>> {
+        publish(app, vec![acquire()?]);
+        app.world_mut().run_system_once(super::runtime_fx_images::synchronize)
+            .map_err(|error| format!("FX image bindings: {error:?}"))?;
+        app.world().resource::<SceneRenderQueue>().diffuse_image_paths.iter().position(|name| name == path)
+            .ok_or_else(|| "FX image did not reserve a streaming slot".into())
+    };
+    let stream = |app: &mut App| -> Result<(), Box<dyn std::error::Error>> {
+        app.world_mut().run_system_once(super::texture_streaming::stream_visible_textures)
+            .map_err(|error| format!("FX texture worker: {error:?}"))?;
+        Ok(())
+    };
+
+    use super::texture_streaming::TextureReadWorker;
+    let slot = stage(app)?;
+    // Leave the slot's previous demand in place as runtime material
+    // coordination can do after PostUpdate synchronization.
+    publish(app, Vec::new());
+    stream(app)?;
+    if app.world().resource::<TextureReadWorker>().inflight[slot] {
+        return Err("FX texture read admitted after its final owner released".into());
+    }
+    epoch(app)?;
+
+    let slot = stage(app)?;
+    stream(app)?;
+    let bytes = {
+        let mut worker = app.world_mut().resource_mut::<TextureReadWorker>();
+        if !worker.inflight[slot] { return Err("FX texture worker did not admit the live request".into()); }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let completion = worker.completed.get_mut().unwrap().recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;
+            let bytes = if completion.0 == slot {
+                let image = completion.2.as_ref().map_err(Clone::clone)?.as_ref().ok_or("FX image read returned no payload")?;
+                Some(image.uploads.iter().map(|mip| mip.payload.len()).sum::<usize>()
+                    + image.image.data.as_ref().map_or(0, Vec::len))
+            } else { None };
+            worker.ready.push_back(completion);
+            if let Some(bytes) = bytes { break bytes; }
+        }
+    };
+    publish(app, Vec::new());
+    stream(app)?;
+    let world = app.world();
+    let worker = world.resource::<TextureReadWorker>();
+    let queue = world.resource::<SceneRenderQueue>();
+    let discarded = bytes != 0 && !worker.inflight[slot]
+        && queue.diffuse_mip_states[slot].reserved_bytes == 0
+        && queue.diffuse_image_pending[slot].is_none() && queue.diffuse_image_handles[slot].is_none();
+    eprintln!("RESOURCE_RUNTIME_FX_IMAGE_CANCELLATION slot={slot} read_admission_suppressed=true payload_bytes={bytes} discarded_before_upload={discarded}");
+    if !discarded { return Err("FX texture completion reached the upload owner after release".into()); }
+    epoch(app)?;
+
+    let first = acquire()?;
+    let second = acquire()?;
+    if Arc::ptr_eq(&first, &second) || first.path != second.path {
+        return Err("FX alias observation did not acquire distinct descriptors of one path".into());
+    }
     let binding = |app: &App| {
         let world = app.world();
         let slot = world.resource::<RuntimeFxImages>().slot(path)?;
