@@ -184,6 +184,57 @@ pub struct CollisionExtraction {
     pub triangles: Vec<MeshTriangle>,
     pub compressed_decode_failures: Vec<String>,
     pub unknown_shapes: BTreeMap<String, usize>,
+    details: ShapeDetails,
+}
+
+#[derive(Default, Debug)]
+enum ShapeDetails {
+    #[default]
+    Records,
+    Counts { convex: usize, compressed: usize },
+}
+
+impl CollisionExtraction {
+    pub(crate) fn convex_count(&self) -> usize {
+        match self.details {
+            ShapeDetails::Records => self.convex.len(),
+            ShapeDetails::Counts { convex, .. } => convex,
+        }
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn compressed_count(&self) -> usize {
+        match self.details {
+            ShapeDetails::Records => self.compressed.len(),
+            ShapeDetails::Counts { compressed, .. } => compressed,
+        }
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn detail_capacity_bytes(&self) -> usize {
+        self.convex.capacity() * std::mem::size_of::<ConvexCollider>()
+            + self.convex.iter().map(|shape| {
+                shape.vertices.capacity() * std::mem::size_of::<[f32; 3]>()
+            }).sum::<usize>()
+            + self.compressed.capacity() * std::mem::size_of::<CompressedCollider>()
+            + self.shape_bodies.values().map(|bodies| {
+                bodies.capacity() * std::mem::size_of::<usize>()
+            }).sum::<usize>()
+    }
+
+    fn record_convex(&mut self, vertices: Vec<[f32; 3]>, source_shape_item: usize) {
+        match &mut self.details {
+            ShapeDetails::Records => self.convex.push(ConvexCollider { vertices, source_shape_item }),
+            ShapeDetails::Counts { convex, .. } => *convex += 1,
+        }
+    }
+
+    fn truncate_convex(&mut self, count: usize) {
+        match &mut self.details {
+            ShapeDetails::Records => self.convex.truncate(count),
+            ShapeDetails::Counts { convex, .. } => *convex = count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -990,6 +1041,15 @@ impl PhysWorld {
     }
 
     pub fn collision_shapes(&self, bytes: &[u8]) -> Result<CollisionExtraction, String> {
+        self.extract_collision(bytes, ShapeDetails::Records)
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn collision_triangles(&self, bytes: &[u8]) -> Result<CollisionExtraction, String> {
+        self.extract_collision(bytes, ShapeDetails::Counts { convex: 0, compressed: 0 })
+    }
+
+    fn extract_collision(&self, bytes: &[u8], details: ShapeDetails) -> Result<CollisionExtraction, String> {
         let root = self.item_at(bytes, 1, 0)?;
         let bodies = le32(root, 0x38)? as usize;
         let body_item = self.items.get(bodies).ok_or("missing body item")?;
@@ -1002,7 +1062,7 @@ impl PhysWorld {
                 .items
                 .get(system_materials)
                 .is_none_or(|item| item.count == 0);
-        let mut output = CollisionExtraction::default();
+        let mut output = CollisionExtraction { details, ..Default::default() };
         for body in 0..body_item.count {
             let info = self.item_at(bytes, bodies, body)?;
             let shape = le32(info, 0)? as usize;
@@ -1045,13 +1105,15 @@ impl PhysWorld {
                         shape_tag_material(body_material, &triangle.shape_tags, &self.material_map);
                 }
             }
-            for triangle in &output.triangles[first..] {
-                let bodies = output
-                    .shape_bodies
-                    .entry(triangle.source_shape_item)
-                    .or_default();
-                if bodies.last() != Some(&body) {
-                    bodies.push(body);
+            if matches!(output.details, ShapeDetails::Records) {
+                for triangle in &output.triangles[first..] {
+                    let bodies = output
+                        .shape_bodies
+                        .entry(triangle.source_shape_item)
+                        .or_default();
+                    if bodies.last() != Some(&body) {
+                        bodies.push(body);
+                    }
                 }
             }
         }
@@ -1119,10 +1181,7 @@ impl PhysWorld {
                             body_material: None,
                         });
                     }
-                    output.convex.push(ConvexCollider {
-                        vertices,
-                        source_shape_item: index,
-                    });
+                    output.record_convex(vertices, index);
                 } else {
                     *output
                         .unknown_shapes
@@ -1225,44 +1284,40 @@ impl PhysWorld {
                         });
                     }
                 }
-                output.convex.push(ConvexCollider {
-                    vertices,
-                    source_shape_item: index,
-                });
+                output.record_convex(vertices, index);
             }
             "hknpCompressedMeshShape" => {
                 // Standalone HKX and level BPHYSWORLD use different serialized
                 // pointer/array layouts; the authored type metadata owns offsets.
                 let (tree, tree_type) = self.compressed_tree(bytes, index)?;
                 let (min, max) = self.compressed_domain(tree, tree_type)?;
-                let mut bounds_min = [f32::INFINITY; 3];
-                let mut bounds_max = [f32::NEG_INFINITY; 3];
-                for corner in 0..8 {
-                    let local = std::array::from_fn(|axis| {
-                        if corner & (1 << axis) == 0 {
-                            min[axis]
-                        } else {
-                            max[axis]
+                match &mut output.details {
+                    ShapeDetails::Records => {
+                        let mut bounds_min = [f32::INFINITY; 3];
+                        let mut bounds_max = [f32::NEG_INFINITY; 3];
+                        for corner in 0..8 {
+                            let local = std::array::from_fn(|axis| {
+                                if corner & (1 << axis) == 0 { min[axis] } else { max[axis] }
+                            });
+                            let world = transform.apply(local);
+                            for axis in 0..3 {
+                                bounds_min[axis] = bounds_min[axis].min(world[axis]);
+                                bounds_max[axis] = bounds_max[axis].max(world[axis]);
+                            }
                         }
-                    });
-                    let world = transform.apply(local);
-                    for axis in 0..3 {
-                        bounds_min[axis] = bounds_min[axis].min(world[axis]);
-                        bounds_max[axis] = bounds_max[axis].max(world[axis]);
+                        output.compressed.push(CompressedCollider {
+                            bounds_min, bounds_max, source_shape_item: index,
+                        });
                     }
+                    ShapeDetails::Counts { compressed, .. } => *compressed += 1,
                 }
-                output.compressed.push(CompressedCollider {
-                    bounds_min,
-                    bounds_max,
-                    source_shape_item: index,
-                });
                 let previous_triangles = output.triangles.len();
-                let previous_convex = output.convex.len();
+                let previous_convex = output.convex_count();
                 if let Err(error) = self.decode_compressed_mesh(
                     bytes, tree, tree_type, index, transform, depth, shape_tags, output,
                 ) {
                     output.triangles.truncate(previous_triangles);
-                    output.convex.truncate(previous_convex);
+                    output.truncate_convex(previous_convex);
                     output.compressed_decode_failures.push(error);
                 }
             }
@@ -1512,10 +1567,7 @@ impl PhysWorld {
                         primitive_tags(number - first_primitive)?,
                         &mut output.triangles,
                     )?;
-                    output.convex.push(ConvexCollider {
-                        vertices: hull,
-                        source_shape_item: shape_index,
-                    });
+                    output.record_convex(hull, shape_index);
                 }
             }
             // Decode ordinary corners only when referenced. Shared-index
