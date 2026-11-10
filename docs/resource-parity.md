@@ -6646,3 +6646,13 @@ still waits for worker retirement before map purge. Ordinary callers
 keep their existing loaders, data and ownership. Observe an installed
 clip interrupted before decode and retried in the same catalog, plus
 the actual usable worker retirement path and unchanged prepared data.
+
+Installed usable-read cancellation acceptance at 54dc48d9. The
+fountain handle Edge clip and compiled fountain mesh each stopped
+after the archive read and subsequently acquired in the same catalog.
+The retry matched clip metadata and the full CPU skin inputs. The
+normal Edge of the World worker withdrawal drained the rig request
+before purge, and the three-map CPU acquisition fingerprints matched
+the compact usable-skin build. The forced read interruptions and the
+normal worker retirement gate are separate observations.
+Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
