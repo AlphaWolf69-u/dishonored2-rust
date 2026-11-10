@@ -6810,3 +6810,20 @@ On EotW / Dust / EotW, expect six constants reads to become one, avoiding
 buffer still retires immediately after parsing. Measure constants
 acquisition and compare exact constants, prepared world inputs and
 acoustic publication and release in one executable.
+
+### Component class metadata session ownership
+
+Prediction before implementation. The installed class registration and
+hierarchy initialization (1401990d0 / 140199530 / 1401995f0) and generated
+factory registration (140946640) provide shared initialized metadata.
+The host PhysicsScene currently rereads the executable, scans constructors
+and reconstructs the same immutable ComponentTypes on every map.
+Keep the prepared class/factory/dependency metadata in its Catalog and
+let each PhysicsScene lease it. Mutable pools, entities, declarations,
+world storage and capacity settings remain constructed for each map.
+On EotW / Dust / EotW, expect three metadata acquisitions to perform one
+41,134,632-byte read/scan and two reuse hits. No executable buffer is
+retained. Reuse the existing setup-local name map so this change adds no
+per-frame name lookup. Verify the complete named class/type ranges,
+factory descriptors, dependency inputs and installed map outputs.
+The final Catalog and scene lease release must destroy the metadata.

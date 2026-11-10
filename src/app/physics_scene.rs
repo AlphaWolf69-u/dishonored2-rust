@@ -48,7 +48,7 @@ struct PhysicsEntity {
 #[derive(Resource)]
 pub(super) struct PhysicsScene {
     world: Arc<LevelPointQueries>,
-    types: ComponentTypes,
+    types: Arc<ComponentTypes>,
     factories: [u32; 5],
     classes: [i32; 5],
     entities: Vec<PhysicsEntity>,
@@ -153,13 +153,13 @@ impl PhysicsScene {
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
     ) -> Result<Self, String> {
-        let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let installed = crate::assets::class_metadata::ClassDeclarations::load(&base)?;
+        let types = ComponentTypes::acquire(catalog)?;
         let factory = |name: &[u8]| {
-            installed
-                .component_pools
+            types
+                .factories()
                 .iter()
-                .find(|p| installed.classes[p.class].name == name)
+                .find(|p| types.classes().metadata(p.class)
+                    .and_then(|class| types.classes().name_text(class.name)) == Some(name))
                 .map(|p| p.pool_index)
                 .ok_or_else(|| {
                     format!(
@@ -177,13 +177,11 @@ impl PhysicsScene {
             32,
             factory(b"arkCpntAudio")?,
         ];
-        let names = installed
-            .classes
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.name.clone(), i))
-            .collect::<HashMap<_, _>>();
-        let types = ComponentTypes::new(installed)?;
+        let names = types.classes().hierarchy().registration_order().iter().map(|&index| {
+            let class = types.classes().metadata(index).ok_or("physics class metadata absent")?;
+            let name = types.classes().name_text(class.name).ok_or("physics class name absent")?;
+            Ok((name.to_vec(), index))
+        }).collect::<Result<HashMap<_, _>, String>>()?;
         let hierarchy = types.classes().hierarchy();
         let entity_range = |name: &[u8]| {
             hierarchy.type_range(*names.get(name).ok_or("physics entity class absent")?)
