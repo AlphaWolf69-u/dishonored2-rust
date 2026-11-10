@@ -6093,3 +6093,14 @@ Bind named images from the existing GPU asset, so only the wrapper, frame
 and submitted GPU work own that snapshot. Keep the bitmap, glyph and ramp
 cache for textures Flash creates. Expect unchanged view/sampler selection,
 no extra upload and no named-view cache entry or per-batch name allocation.
+
+Named UI image acceptance (`a6db27a8`). The game-feature Tools build
+completed, and the real UI image owner used the committed view for both
+installed resources observed. A second wrapper request reused the first
+snapshot after replacement. The old wrapper had zero owners after release,
+and a later request received the new view. The fixed authored mip view and
+its payload CRC also matched the previous acquisitions on both resources.
+The renderer binds from the extracted handle and retains no named cache
+entry. These observations cover wrapper identity and CPU view selection.
+Active movie drawing was outside the windowless observation. Evidence:
+`DH2-screen-shadow-retirement/artifacts/ui-registered-image-leases-20261110-comparison.json`.
