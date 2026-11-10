@@ -5985,6 +5985,30 @@ the real setup and removal owners using the prepared 1×1 output. An active
 full-size draw and live handoff timing were outside this observation.
 Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
 
+Probe index upload backing prediction. The installed PNW loader 1402b15e0
+passes packed shader reference words to the GPU buffer constructor. The
+host now streams the archive, but it still builds a typed index array and
+copies it into a separate WGSL byte buffer. Installed acquisition reports
+54,300,976 index words in Edge of the World and 73,538,998 in Dust District.
+Read their little-endian bytes into the eventual upload allocation. Reserve
+the prefix from the already loaded world instance count and the suffix
+from the PNW tables. Use the actual parsed offset count for the header and
+relocate in place if it differs. Expect removal of 217,203,904 and
+294,155,992 overlapping index bytes, with matching full upload CRCs and
+unchanged runtime query data. Compare the affected read/pack cost and
+asset removal. This changes host staging, not the WGSL layout.
+
+Probe index upload backing acceptance (`eb285fd3`). Two windowless DX12
+copy/direct pairs matched PNW fingerprints and full upload CRCs `bbc9941d`
+and `4fa1e3b9`. Direct transfer reused the full backing on both maps, avoiding
+217,203,904 B of overlapping index storage in Edge of the World and
+294,155,992 B in Dust District. The measured upload packing step fell from
+142.5–152.7M to 6.6–7.1M cycles and from 182.4–187.8M to 6.1–6.4M cycles,
+respectively. PNW input CPU samples overlapped or differed by one scheduler
+tick. Both maps returned to 15 GPU images, four meshes and zero buffers after
+retirement. No frame timings were measured. Evidence:
+`DH2-scene-shutdown/artifacts/probe-index-upload-backing-20261110-comparison.json`.
+
 Screen-shadow binding replacement prediction. The original visibility and
 bilateral tasks bind the active view resources and reuse compiled programs
 (`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
