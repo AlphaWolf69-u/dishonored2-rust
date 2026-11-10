@@ -257,3 +257,26 @@ constructor 1401d7be0 (material check 1401d0ff0), frame update 1401fde70
 (1401d8b20, 1401d9180, 1401d97b0/1401d9630 -> 1401d5e00 beam update,
 1401d5870, 1401d5390, 1401d6f70), strip 1401d8d50 -> 1401d32e0, bounds
 1401d9080 merged into the system bounds after the build.
+
+Beam emitter (1401d7be0, 0x1e8-byte object): same shape as the
+declaration-trail emitter: seeds +0x10/+0x14 from the system seed, rate
+accumulator +0x18 (FLT_MAX), delay, records of 0x198 bytes (at most 64,
+free list descending), budget min(1402134d0, r_prt_beamrenderer_budget x
+4096). Frame (1401fde70): 1401ceeb0 refreshes the target parameters
+(+0xb0); delay 1401d8c70; clock-only 1401d9900; otherwise wind 1401d99f0
+and inheritance 1401d9970, then 1/60 s / 4 % / cycle-end slices without a
+pose interpolator: update live beams 1401d97b0, 1401ced10, then rate
+1401d9180 or burst 1401d8b20 (spawn 1401d9630 = 1401d5870 then 1401d5e00);
+after the slices the strip 1401d8d50 and bounds 1401d9080 into the system.
+Beam record (1401d5870/1401d5e00): +0 point curve (start, control points,
+end), +0x58 base velocities, +0x68 velocities, +0x78/+0x88 control-point
+randomize timers, +0x98 normalized age (1401d5180's 1/life at +0x130),
++0x9c flipbook frame, +0xa0 time, +0xa4 and +0xb0 the owner pose of the
+last update (14010ee70), +0xd4/+0xe0 the target pose, +0x104/+0x110 the
+spawn-time end points (m_reprojectControlPoints, 1401d47b0), +0x11c colour,
+width and flips (1401d5180), +0x160 length and +0x164 segments
+(1401d52d0 after 1401d6f70), +0x180 bounds. Update order: age (retire past
+1 unless infinite), flipbook (1401cfde0), start/end tracking of the owner
+or target pose, wind on the points, reprojection, control-point
+re-randomization (1401d21b0), point accelerations from beam/start/control/
+end life curves (1401d30f0), velocities from velocityOverLife, length.
