@@ -6017,6 +6017,16 @@ after warmup. This observes ownership and queue retirement, without measuring
 active rendering cost. Evidence:
 `DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
 
+Projected decal replacement prediction. The effect chain releases its final
+tail through 140199df0 and the resource purge follows 140060180. The host
+coordinator already removes expired decals, but the prior publication and
+proxy set still hold the same materials and images while a replacement is
+waiting for its reads. Withdraw expired entries from that publication on
+the retirement revision and let the proxy owner prune without admitting
+new decals. Keep all surviving effects and tails. Expect the retired image
+and geometry leases to end even if an unrelated replacement has not reached
+readiness. No change to decal program, sampling, geometry or draw ordering.
+
 Probe index upload backing prediction. The installed PNW loader 1402b15e0
 passes packed shader reference words to the GPU buffer constructor. The
 host now streams the archive, but it still builds a typed index array and

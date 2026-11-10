@@ -309,12 +309,15 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
     app.sub_app_mut(RenderApp).insert_resource(mailbox)
         .add_systems(Render, report_prepared_diffuse_images.after(RenderSystems::PrepareAssets));
     let world = app.world_mut();
-    let sources = {
+    let load_sources = |effects: Vec<String>| -> Result<Arc<WorldFxSources>, String> {
         let mut programs = world.resource::<ProgramCacheSource>().0.lock().unwrap_or_else(|error| error.into_inner());
         let mut particles = world.resource::<ParticleResourceOwner>().0.lock().unwrap_or_else(|error| error.into_inner());
-        Arc::new(WorldFxSources::load_named_shared(effects.to_vec(), catalog,
-            programs.as_mut().map_err(|error| error.clone())?, &mut particles))
+        Ok(Arc::new(WorldFxSources::load_named_shared(effects, catalog,
+            programs.as_mut().map_err(|error| error.clone())?, &mut particles)))
     };
+    let sources = load_sources(effects.to_vec())?;
+    let replacement = std::env::var("DH2_DEBUG_RUNTIME_FX_REPLACEMENT").ok()
+        .map(|effect| load_sources(vec![effect])).transpose()?;
     let meshes = sources.world_meshes().len();
     let decals = sources.decal_materials().len();
     if meshes == 0 && decals == 0 { return Err("installed FX has no admitted world meshes or decals".into()); }
@@ -340,6 +343,8 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         world.run_system_once(runtime_fx_images::synchronize)
             .map_err(|error| format!("FX image bindings: {error:?}"))?;
         runtime_materials::coordinate(world);
+        world.run_system_once(super::projected_decals::publish_runtime)
+            .map_err(|error| format!("FX decal proxies: {error:?}"))?;
         render_epoch(app)
     };
     let leases = Arc::new(vec![Arc::downgrade(&sources)]);
@@ -360,7 +365,7 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         if materials.failed.load(Ordering::Acquire) == generation || prepared.failed.load(Ordering::Acquire) == generation {
             return Err("runtime FX publication failed; see material and texture diagnostics".into());
         }
-        if prepared.prepared_generation == generation && materials.images_ready == materials.image_revision {
+        if prepared.prepared_generation == Some(generation) && materials.images_ready == materials.image_revision {
             break;
         }
         if started.elapsed() > std::time::Duration::from_secs(120) {
@@ -386,7 +391,23 @@ fn inspect_runtime_fx(app: &mut App, catalog: &archive::Catalog, effects: &[Stri
         return Err("runtime FX reused startup assets; select a level without those resources".into());
     }
 
-    request(app.world_mut(), generation + 1, Arc::default(), Arc::default());
+    let next_generation = generation + 1;
+    let retirement_generation = if let Some(replacement) = replacement {
+        let world = app.world_mut();
+        let previous = world.resource::<DynamicProxyReadiness>().decals.proxies.clone();
+        let leases = Arc::new(vec![Arc::downgrade(&replacement)]);
+        request(world, next_generation, replacement, leases);
+        runtime_materials::coordinate(world);
+        world.run_system_once(super::projected_decals::publish_runtime)
+            .map_err(|error| format!("FX decal replacement: {error:?}"))?;
+        let published = world.resource::<DynamicDecalMaterials>();
+        let pending = published.prepared_generation != Some(next_generation);
+        let retained = previous.iter().filter(|&&entity| world.get_entity(entity).is_ok()).count();
+        eprintln!("RESOURCE_RUNTIME_FX_DECAL_REPLACEMENT pending={pending} previous_proxies={} retained_proxies={retained} retained_materials={}",
+            previous.len(), published.prepared.len());
+        next_generation + 1
+    } else { next_generation };
+    request(app.world_mut(), retirement_generation, Arc::default(), Arc::default());
     let started = std::time::Instant::now();
     loop {
         epoch(app)?;
