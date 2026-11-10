@@ -242,7 +242,8 @@ impl DeclarationTrail {
         tint: [f32; 4],
         transform: Option<&TrailTransform>,
         vertices: &mut Vec<TrailVertex>,
-    ) -> Result<(), String> {
+    ) -> Result<[[f32; 3]; 2], String> {
+        let mut bounds = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
         let live: Vec<&TrailRecord> = (0..self.records.len())
             .filter(|&slot| self.live[slot])
             .filter_map(|slot| self.records[slot].as_ref())
@@ -252,10 +253,11 @@ impl DeclarationTrail {
         for record in live {
             let segments = budget.segments(record.segments);
             if segments != 0 {
-                record.build(&asset.trail, segments, eye, tint, transform, vertices)?;
+                let strip = record.build(&asset.trail, segments, eye, tint, transform, vertices)?;
+                crate::rendering::particles::bounds::include(&mut bounds, strip);
             }
         }
-        Ok(())
+        Ok(bounds)
     }
 
     pub fn capacity(&self) -> usize {

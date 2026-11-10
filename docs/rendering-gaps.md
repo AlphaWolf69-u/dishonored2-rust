@@ -138,9 +138,13 @@ all 44 installed ones, including trail-only systems, over 180 frames
 without errors. Not yet seen on screen. Known differences: TEXCOORD5 (left
 unwritten by the original, zero here), declaration-trail velocity
 inheritance (1401db7b0 is sampled into +0x94 but no trail code reads it, so
-it is not ported), trail bounds are not yet merged into the system bounds
-used for fog-volume selection and culling, and the system's restart path
-does not reset declaration trails.
+it is not ported), and the system's restart path does not reset
+declaration trails. Trail strip bounds enter the system bounds (culling and
+fog selection) from the last publication: the original merges stage trail
+renderer bounds into the stage box (1401f1c40) and declaration trail bounds
+right after their build in the same update (140200bf0), so declaration
+trails lag one frame here; stage-local trail boxes are moved to world space
+on their own rather than inside the stage box (approximate).
 
 Descriptor (reflection, defaults 1401facf0): m_name +0, m_enabled +8 (1),
 m_worldspace +9 (1), m_trailLife +0x10 (0.5), m_material +0xd8 (required:

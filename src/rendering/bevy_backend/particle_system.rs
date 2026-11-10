@@ -52,6 +52,8 @@ pub(crate) struct ParticleSystem {
     /// The system's declaration, shared by its stages and trails.
     pub declaration: Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>,
     pub stages: Vec<StageSimulation>,
+    /// World-space union of the trail strips built at the last publication.
+    pub trail_bounds: Option<[[f32; 3]; 2]>,
     /// System +0x39a: (declaration trail index, arkTrail).
     pub trails: Vec<(usize, crate::gameplay::particles::trail_system::DeclarationTrail)>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
@@ -149,7 +151,9 @@ impl ParticleSystem {
             &declaration.visibility,
             publication.pose,
             owner_scale,
+            self.trail_bounds,
         )?;
+        let mut trail_bounds = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
         let volumes = context
             .areas
             .iter()
@@ -366,7 +370,12 @@ impl ParticleSystem {
                 for record in &live {
                     let segments = budget.segments(record.segments);
                     if segments != 0 {
-                        record.build(trail, segments, context.camera.position, publication.colour, owner.as_ref(), &mut strip)?;
+                        let mut bounds = record.build(trail, segments, context.camera.position, publication.colour,
+                            owner.as_ref(), &mut strip)?;
+                        if owner.is_some() && bounds[0][0] <= bounds[1][0] {
+                            bounds = crate::rendering::particles::bounds::transform(bounds, publication.pose);
+                        }
+                        crate::rendering::particles::bounds::include(&mut trail_bounds, bounds);
                     }
                 }
                 if strip.is_empty() {
@@ -407,7 +416,8 @@ impl ParticleSystem {
             let Some(name) = asset.trail.material.as_ref() else { continue };
             let material = self.materials.get(name).ok_or_else(|| format!("particle trail material absent: {name}"))?;
             let mut strip = Vec::new();
-            trail.build(asset, context.camera.position, publication.colour, None, &mut strip)?;
+            let bounds = trail.build(asset, context.camera.position, publication.colour, None, &mut strip)?;
+            crate::rendering::particles::bounds::include(&mut trail_bounds, bounds);
             if strip.is_empty() {
                 continue;
             }
@@ -439,6 +449,7 @@ impl ParticleSystem {
                 fog,
             });
         }
+        self.trail_bounds = (trail_bounds[0][0] <= trail_bounds[1][0]).then_some(trail_bounds);
         Ok(())
     }
 
@@ -520,6 +531,7 @@ impl ParticleSystem {
             declaration: declaration.clone(),
             stages,
             trails,
+            trail_bounds: None,
             materials: definition.materials.clone(),
             world_mesh_materials: Arc::new(definition.world_mesh_materials.clone()),
             system_seed,
@@ -623,6 +635,7 @@ impl ParticleSystem {
             &declaration.visibility,
             publication.pose,
             size,
+            self.trail_bounds,
         )?;
         let frustum_visible = || {
             !crate::render_model::transformed_aabb_clip_cull(

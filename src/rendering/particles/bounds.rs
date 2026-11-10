@@ -99,11 +99,15 @@ pub fn authored_bounds(visibility: &ParticleVisibility, position: [f32; 3]) -> [
 
 /// 1c3890's authored root plus 1ffff0/201480's generated bounds. Fixed
 /// declarations retain their authored root independently of live particles.
+/// `trails` is the world-space union of the trail renderers' last strip
+/// bounds (140210e90's +0xc0 through 1401f1c40, and the declaration trails'
+/// +0x150 after 140212410).
 pub fn system_bounds(
     stages: &[StageSimulation],
     visibility: &ParticleVisibility,
     pose: ReferenceFrame,
     scale: f32,
+    trails: Option<[[f32; 3]; 2]>,
 ) -> Result<[[f32; 3]; 2], String> {
     let mut result = authored_bounds(visibility, pose.position);
     if visibility.fixed_box {
@@ -161,5 +165,23 @@ pub fn system_bounds(
             }
         }
     }
+    if let Some(trails) = trails {
+        include(&mut result, trails);
+    }
     Ok(result)
+}
+
+/// Grow `bounds` by `other` when `other` is non-empty (140210e90's test).
+pub fn include(bounds: &mut [[f32; 3]; 2], other: [[f32; 3]; 2]) {
+    if !(other[0][0] <= other[1][0]) {
+        return;
+    }
+    for i in 0..3 {
+        if other[0][i] <= bounds[0][i] {
+            bounds[0][i] = other[0][i];
+        }
+        if bounds[1][i] <= other[1][i] {
+            bounds[1][i] = other[1][i];
+        }
+    }
 }
