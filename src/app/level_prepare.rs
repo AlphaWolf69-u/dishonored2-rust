@@ -604,20 +604,24 @@ pub(super) fn prepare_level(
     if let Some(physics_bytes) = level.read_physics(catalog.as_ref().unwrap())? {
         let physics_start = std::time::Instant::now();
         let physics = physworld::parse(&physics_bytes)?;
-        let geometry = physics.collision_shapes(&physics_bytes)?;
-        if profile {
+        let world_triangles = {
+            let geometry = physics.collision_shapes(&physics_bytes)?;
+            drop(physics_bytes);
+            if profile {
+                println!(
+                    "PERF authored physics parse and decode: {:.3}s",
+                    physics_start.elapsed().as_secs_f64()
+                );
+            }
             println!(
-                "PERF authored physics parse and decode: {:.3}s",
-                physics_start.elapsed().as_secs_f64()
+                "Authored collision: {} convex shapes, {} compressed meshes, {} triangles; {} compressed meshes remain undecoded",
+                geometry.convex.len(),
+                geometry.compressed.len(),
+                geometry.triangles.len(),
+                geometry.compressed_decode_failures.len()
             );
-        }
-        println!(
-            "Authored collision: {} convex shapes, {} compressed meshes, {} triangles; {} compressed meshes remain undecoded",
-            geometry.convex.len(),
-            geometry.compressed.len(),
-            geometry.triangles.len(),
-            geometry.compressed_decode_failures.len()
-        );
+            geometry.triangles
+        };
         let model_start = std::time::Instant::now();
         let model_collision = if let Some(catalog) = catalog.as_ref() {
             let bodies = entity_document
@@ -704,9 +708,8 @@ pub(super) fn prepare_level(
                 )
         };
         let mut undecoded_filters = 0usize;
-        let level_triangles: Vec<_> = geometry
-            .triangles
-            .iter()
+        let level_triangles = world_triangles
+            .into_iter()
             .map(|triangle| {
                 let material = triangle
                     .material
@@ -732,18 +735,11 @@ pub(super) fn prepare_level(
                     material,
                     filter,
                 )
-            })
-            .collect();
-        if undecoded_filters > 0 {
-            println!(
-                "Collision filters: {undecoded_filters} triangles keep a partly decoded shape-tag path"
-            );
-        }
+            });
         let model_material_base = resolved.len() as u32;
         resolved.extend(model_collision.materials);
         let mut world = navigation::CollisionWorld::with_materials(
             level_triangles
-                .into_iter()
                 .chain(model_collision.triangles.into_iter().map(
                     |(triangle, owner, material, filter)| {
                         let material = if material == navigation::NO_MATERIAL {
@@ -757,6 +753,13 @@ pub(super) fn prepare_level(
             model_collision.owners,
             resolved,
         );
+        drop(physics);
+        drop(materials);
+        if undecoded_filters > 0 {
+            println!(
+                "Collision filters: {undecoded_filters} triangles keep a partly decoded shape-tag path"
+            );
+        }
         if let Some(interactions) = interactions.as_mut() {
             interactions.start_boxes(&mut world);
         }
