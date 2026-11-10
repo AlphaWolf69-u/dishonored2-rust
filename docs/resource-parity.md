@@ -6453,3 +6453,17 @@ metadata or PCM. Observe avoided key allocations and bytes in the real
 resident/streamed acquisition route and compare source fingerprints and
 retirement. Original memory-tag evidence is the installed EotW budget and
 the existing per-source acquisition comparison.
+
+Installed Vorbis key comparison at 5a218eb1. Copy-key control and borrowed
+lookups matched all media and stream fingerprints, encoded residency,
+package read counts and final header/setup retirement. Across the
+Edge of the World, Dust District, Edge of the World route the control
+copied 1,235,787 packet-key bytes during lookup and the borrowed path
+copied zero. The median for Wwise header hits was 3,150 versus 2,730
+thread cycles in this dev observation. The parallel runs did not produce
+identical lookup counters. There were four more Wwise hits in the borrowed
+run and two of the 29 decoder lookups were misses instead of hits.
+Published source fingerprints and retirement counts were identical.
+This measures the affected lookup only and does not measure walking or
+audio mixing. Cold setup reconstruction still uses the existing converter.
+Evidence: DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-audio-comparison.json.
