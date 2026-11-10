@@ -6698,3 +6698,13 @@ its range as well. Expect the same decoded strings and installed movie
 inputs, with no separate UTF-16 buffer per wide-string read. Compare
 actual loading, pause and Journal acquisition output in the same build.
 This is a host representation change with no frame-time prediction.
+
+Installed Iggy string acceptance at 6a190f9c. Both paths decoded the
+same 22,505 strings and 622,190 UTF-16 code units from loading, pause
+and Journal resources. Temporary UTF-16 buffer capacity fell from
+1,691,464 cumulative bytes to zero. Scoped string decoding recorded
+71,412,129 versus 34,067,916 thread cycles in this dev comparison.
+All string fingerprints, movie bitmap records and numeric Journal
+font raster outputs matched. The observation covers resource
+decoding and software raster output.
+Evidence: DH2-screen-shadow-retirement/artifacts/iggy-string-buffer-borrow-20261111-comparison.json.
