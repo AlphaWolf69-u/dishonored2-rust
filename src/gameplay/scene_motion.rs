@@ -175,6 +175,12 @@ impl RunningGraph {
         }
     }
     fn execute(&mut self, mut q: VecDeque<(u32, u32)>, placements: &[PlacedModel]) -> Vec<String> {
+        static OBSERVATION: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (copy, trace) = *OBSERVATION.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_CLONE_MOTION_NODES").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_MOTION_DISPATCH").is_some_and(|value| value == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
         let mut diagnostics = Vec::new();
         let mut steps = 0;
         while let Some((id, port)) = q.pop_front() {
@@ -184,7 +190,10 @@ impl RunningGraph {
                 break;
             }
             let result = (|| -> Result<(), String> {
-                let n = self.node(id)?.clone();
+                let n = self.graph.nodes.iter().find(|node| node.id == id)
+                    .ok_or_else(|| format!("missing node {id}"))?;
+                let owned = copy.then(|| n.clone());
+                let n = owned.as_ref().unwrap_or(n);
                 let p = n
                     .ports
                     .iter()
@@ -193,15 +202,15 @@ impl RunningGraph {
                 match n.class.as_str() {
                     "arkKisculeNodeActionTestBool" => {
                         //7967f0 reads the connected bool and dispatches one branch.
-                        let value = if let Some((id, port)) = self.input(&n, "m_value") {
+                        let value = if let Some((id, port)) = self.input(n, "m_value") {
                             self.number(id, port, 0)? != 0.
                         } else {
                             atom(&n.params, "m_value") == Some("true")
                         };
-                        self.emit(&n, if value { "True" } else { "False" }, &mut q);
+                        self.emit(n, if value { "True" } else { "False" }, &mut q);
                     }
                     "arkKisculeNodeActionAngularPhysicsMotorControl" => {
-                        let entities = if let Some((id, port)) = self.input(&n, "m_entity") {
+                        let entities = if let Some((id, port)) = self.input(n, "m_entity") {
                             self.entities(id, port)?
                         } else {
                             atom(&n.params, "m_entity")
@@ -214,18 +223,18 @@ impl RunningGraph {
                         let selected = |key| enabled && atom(&n.params, key) == Some("true");
                         let radians = f32::from_bits(0x3c8efa35);
                         let position = if selected("m_setAngularTargetPosition") {
-                            Some(self.number_input(&n, "m_angularTargetPosition", 0., 0)? * radians)
+                            Some(self.number_input(n, "m_angularTargetPosition", 0., 0)? * radians)
                         } else {
                             None
                         };
                         let velocity = if selected("m_setAngularTargetVelocity") {
-                            Some(self.number_input(&n, "m_angularTargetVelocity", 0., 0)? * radians)
+                            Some(self.number_input(n, "m_angularTargetVelocity", 0., 0)? * radians)
                         } else {
                             None
                         };
                         let acceleration = if selected("m_setAngularTargetAcceleration") {
                             Some(
-                                self.number_input(&n, "m_angularTargetAcceleration", 0., 0)?
+                                self.number_input(n, "m_angularTargetAcceleration", 0., 0)?
                                     .max(0.)
                                     * radians,
                             )
@@ -234,7 +243,7 @@ impl RunningGraph {
                         };
                         let remaining =
                             if position.is_some() || velocity.is_some() || acceleration.is_some() {
-                                self.number_input(&n, "m_updateDuration", 0., 0)? / 1000.
+                                self.number_input(n, "m_updateDuration", 0., 0)? / 1000.
                             } else {
                                 0.
                             };
@@ -252,14 +261,14 @@ impl RunningGraph {
                             });
                         }
                     }
-                    "arkKisculeNodeRelay" => self.emit(&n, "Out", &mut q),
+                    "arkKisculeNodeRelay" => self.emit(n, "Out", &mut q),
                     "arkKisculeNodeNamedVariableFloat" if p.name == "Set" => {
-                        let value = self.number_input(&n, "m_value", 0., 0)?;
-                        let name = atom(&n.params, "m_variableName").unwrap_or("").to_owned();
-                        self.variables.insert(name.clone(), value);
+                        let value = self.number_input(n, "m_value", 0., 0)?;
+                        let name = atom(&n.params, "m_variableName").unwrap_or("");
+                        self.variables.insert(name.to_owned(), value);
                         for listener in &self.graph.nodes {
                             if listener.class == n.class
-                                && atom(&listener.params, "m_variableName") == Some(name.as_str())
+                                && atom(&listener.params, "m_variableName") == Some(name)
                             {
                                 self.emit(listener, "Updated", &mut q);
                             }
@@ -276,7 +285,7 @@ impl RunningGraph {
                         match p.name.as_str() {
                             "Stop" => {
                                 self.playing.retain(|p| p.node != id);
-                                self.emit(&n, "Stop", &mut q);
+                                self.emit(n, "Stop", &mut q);
                             }
                             "Play" => {
                                 if atom(&n.params, "m_playbackType")
@@ -285,15 +294,15 @@ impl RunningGraph {
                                     return Err("nondefault scene playback".into());
                                 }
                                 let clip = retain_clip(&self.graph.clips[atom(&n.params, "m_declMdnt").unwrap()]);
-                                let rate = self.number_input(&n, "m_playRate", 1., 0)?.max(0.001);
-                                let time = self.number_input(&n, "m_startPosition", 0., 0)?;
+                                let rate = self.number_input(n, "m_playRate", 1., 0)?.max(0.001);
+                                let time = self.number_input(n, "m_startPosition", 0., 0)?;
                                 if time != 0. {
                                     return Err(
                                         "scene seek/reference-frame capture is not integrated"
                                             .into(),
                                     );
                                 }
-                                let bindings = self.bindings(&n, &clip)?;
+                                let bindings = self.bindings(n, &clip)?;
                                 if !self.playing.iter().any(|p| p.node == id) {
                                     for (group, entity) in bindings {
                                         let (placement, model) = placements
@@ -317,7 +326,7 @@ impl RunningGraph {
                                         });
                                     }
                                 }
-                                self.emit(&n, "Play", &mut q);
+                                self.emit(n, "Play", &mut q);
                             }
                             other => return Err(format!("unsupported scene event {other}")),
                         }
@@ -329,6 +338,10 @@ impl RunningGraph {
             if let Err(e) = result {
                 diagnostics.push(format!("{} node {id}: {e}", self.graph.owner));
             }
+        }
+        if let Some(started) = started {
+            let cycles = crate::loading::thread_cycles().unwrap_or(started).saturating_sub(started);
+            eprintln!("MOTION_DISPATCH owner={} copied={copy} steps={steps} errors={} cycles={cycles}", self.graph.owner, diagnostics.len());
         }
         diagnostics
     }

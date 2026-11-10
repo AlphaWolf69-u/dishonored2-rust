@@ -934,6 +934,7 @@ impl PhysWorld {
             0,
             NO_SHAPE_TAGS,
             &mut output,
+            &|| false,
         )?;
         Ok(output)
     }
@@ -1041,15 +1042,20 @@ impl PhysWorld {
     }
 
     pub fn collision_shapes(&self, bytes: &[u8]) -> Result<CollisionExtraction, String> {
-        self.extract_collision(bytes, ShapeDetails::Records)
+        self.extract_collision(bytes, ShapeDetails::Records, &|| false)
     }
 
     #[cfg(feature = "game")]
-    pub(crate) fn collision_triangles(&self, bytes: &[u8]) -> Result<CollisionExtraction, String> {
-        self.extract_collision(bytes, ShapeDetails::Counts { convex: 0, compressed: 0 })
+    pub(crate) fn collision_for_navigation(
+        &self, bytes: &[u8], keep_details: bool, cancelled: &impl Fn() -> bool,
+    ) -> Result<CollisionExtraction, String> {
+        let details = if keep_details { ShapeDetails::Records } else { ShapeDetails::Counts { convex: 0, compressed: 0 } };
+        self.extract_collision(bytes, details, cancelled)
     }
 
-    fn extract_collision(&self, bytes: &[u8], details: ShapeDetails) -> Result<CollisionExtraction, String> {
+    fn extract_collision(
+        &self, bytes: &[u8], details: ShapeDetails, cancelled: &impl Fn() -> bool,
+    ) -> Result<CollisionExtraction, String> {
         let root = self.item_at(bytes, 1, 0)?;
         let bodies = le32(root, 0x38)? as usize;
         let body_item = self.items.get(bodies).ok_or("missing body item")?;
@@ -1064,6 +1070,7 @@ impl PhysWorld {
                 .is_none_or(|item| item.count == 0);
         let mut output = CollisionExtraction { details, ..Default::default() };
         for body in 0..body_item.count {
+            if cancelled() { return Err("collision acquisition cancelled".into()); }
             let info = self.item_at(bytes, bodies, body)?;
             let shape = le32(info, 0)? as usize;
             if shape == 0 {
@@ -1094,6 +1101,7 @@ impl PhysWorld {
                 0,
                 NO_SHAPE_TAGS,
                 &mut output,
+                cancelled,
             )?;
             for triangle in &mut output.triangles[first..] {
                 triangle.body_filter = body_filter;
@@ -1131,6 +1139,7 @@ impl PhysWorld {
         depth: usize,
         shape_tags: ShapeTagPath,
         output: &mut CollisionExtraction,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), String> {
         if depth >= SHAPE_TAG_LEVELS {
             return Err(format!(
@@ -1222,6 +1231,7 @@ impl PhysWorld {
                         depth + 1,
                         child_tags,
                         output,
+                        cancelled,
                     )?;
                 }
             }
@@ -1314,8 +1324,9 @@ impl PhysWorld {
                 let previous_triangles = output.triangles.len();
                 let previous_convex = output.convex_count();
                 if let Err(error) = self.decode_compressed_mesh(
-                    bytes, tree, tree_type, index, transform, depth, shape_tags, output,
+                    bytes, tree, tree_type, index, transform, depth, shape_tags, output, cancelled,
                 ) {
+                    if cancelled() { return Err(error); }
                     output.triangles.truncate(previous_triangles);
                     output.truncate_convex(previous_convex);
                     output.compressed_decode_failures.push(error);
@@ -1337,6 +1348,7 @@ impl PhysWorld {
         depth: usize,
         shape_tags: ShapeTagPath,
         output: &mut CollisionExtraction,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), String> {
         let references: Vec<usize> = [
             "sections",
@@ -1386,6 +1398,7 @@ impl PhysWorld {
             .count;
         let (domain_min, domain_max) = self.compressed_domain(tree, tree_type)?;
         for section_number in 0..section_count {
+            if cancelled() { return Err("collision acquisition cancelled".into()); }
             let section = self.item_at(bytes, sections_ref, section_number)?;
             let base = [
                 float(section, 0x30)?,
@@ -1566,6 +1579,7 @@ impl PhysWorld {
                         shape_index,
                         primitive_tags(number - first_primitive)?,
                         &mut output.triangles,
+                        cancelled,
                     )?;
                     output.record_convex(hull, shape_index);
                 }
@@ -1741,6 +1755,7 @@ fn triangulate_convex_vertices(
     source_shape_item: usize,
     shape_tags: ShapeTagPath,
     triangles: &mut Vec<MeshTriangle>,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<(), String> {
     let sub = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] { std::array::from_fn(|i| a[i] - b[i]) };
     let dot = |a: [f32; 3], b: [f32; 3]| -> f32 { (0..3).map(|i| a[i] * b[i]).sum() };
@@ -1843,6 +1858,7 @@ fn triangulate_convex_vertices(
         orient([second, fourth, third]),
     ];
     for point in 0..vertices.len() {
+        if cancelled() { return Err("collision acquisition cancelled".into()); }
         if seed.contains(&point) {
             continue;
         }

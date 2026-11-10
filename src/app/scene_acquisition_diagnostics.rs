@@ -360,7 +360,7 @@ fn inspect_scene_resources(
             catalog.clone(),
             level,
             true,
-            || false,
+            |_| false,
         )?;
         super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, || false)?;
         let inputs = prepared

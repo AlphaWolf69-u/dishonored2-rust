@@ -385,7 +385,15 @@ trailing `*` covers a family of kinds.
 | `vault` | none | none: arkJumpDef_Vault resources for NPC navigation (2 installed navmesh/npc_movement declarations), with no production reader. Player vaulting uses its separate player-state/sensor declarations; it does not acquire this resource class |
 | `vaultClimb` | none | none: no owner yet |
 | `vaultDrop` | none | none: no owner yet |
-| `cpnt*` | `assets::entities` (components of placed entities) | partial: a few component types read (e.g. `cpntHealthEvolved`); most none |
+| `cpntAudio` | `assets::entities::audio`, `app::audio`, `app::player` | host: inherited fields resolve during scene/player preparation. World emitters retain typed settings, event leases and a reference frame. Player arms retain typed sound settings. The generic component text and resolved field caches retire after their preparation consumers. Sound banks and playback retain their separate audio scopes. |
+| `cpntAudioListener` | `assets::entities::player`, `app::player`, `app::audio` | host: the selected character's inherited listener fields convert to typed listener settings before the declaration bundle is returned. The active listener is a world/audio runtime object. |
+| `cpntInventory` | `assets::inventory_item`, `app::interaction_focus` | host: the inherited component contributes initial item references. Runtime inventory owns item leases and quantities, with no component text cache retained by those entries. |
+| `cpntPickable_Simple` | `assets::entities::usable`, `assets::inventory_item::sources` | partial: the READ_NOTE route resolves inherited pickable fields into typed item/interaction bindings and drops the per-batch parse cache. The scoped item registry owns acquired readable identities separately. General pickup component behavior remains outside this coverage. |
+| `cpntPlayerSensorInteraction` | `assets::entities::usable`, `app::interactions` | host: the selected character's inherited definition supplies the interaction distance and five cast radii (1403b7a40, 1403b8d60). Only the typed sensor settings survive acquisition. |
+| `cpntPlayer*` | `assets::entities::player`, `app::player`, `gameplay::player` | partial: observed physics, camera, controller, body, state machine, auto-crouch, lean, mantle, breath and FX-manager fields feed supported runtime owners. Shared player/arm preparation retains field leases until their final setup and screen-effect consumers. This row covers the observed inputs, with unimplemented component behavior excluded. |
+| `cpntTrigger` | `assets::entities::triggers`, `gameplay::trigger_volume` | partial: the map loader resolves typed trigger settings and shape leases. Generic inherited fields retire after preparation. The map owns supported overlap and event state; shape lifetimes are tracked separately under `physhape`. |
+| `cpntWind` | `assets::entities::wind`, `gameplay::machinery_world` | host: typed wind settings feed supported world and trigger wind consumers. The inheritance cache is local to component preparation and drops with its reader. |
+| `cpnt*` | `assets::entities` (components of placed entities) | partial: the named rows cover independently traced consumers. The observed health, mana, adrenaline and attribute inputs use the player declaration bundle and typed runtime settings. Other indexed component types may have no consumer. |
 | `UI_HUDElement*` | `app::hud_movie` | host: in-game HUD configuration resolves installed state/HUD declarations on its existing movie worker; typed thresholds, bindings and gauge state live with HudMovie, temporary declaration fields drop after loading, and movie/image/font leases use the shared Flash owners. Supported interaction, breath, health and mana consumers are present; this does not claim all HUD families. Source consumer 14078b550 / 14038f7d0 / 140674be0 |
 | `playerState*` | `assets::entities::player::DeclarationSource`, `gameplay::player::decls`, `gameplay::player::states` | host: ordered inherited mode/state declarations are resolved during player preparation; only supported state trees survive to typed StateDecl/Midnight construction. Setup subtrees release after their last player/arm consumer; mutable state, clocks and clip leases live with the level player. Unimplemented state mechanics are excluded. Generic native registry header/preload phases remain 1400607f0 / 1400661e0; this host does not pin unused state syntax to a session registry |
 | `gameLogicState*` | `gameplay::game_logic`, `app::pause_menu`, `app::loading_movie`, `app::hud_movie` | ported: world-selected transition matrix and stack (140787770 / 1407886c0 / 1407885b0 / 140787510); host: registered in-game, pause, read-note, Journal and map-transition backends retain their actual movie/declaration leases and retire through the existing UI-worker acknowledgement before level support resources drop. This does not register unimplemented states or claim their lifecycles |
@@ -5632,3 +5640,37 @@ Prediction before change. In the recorded Edge of the World / Dust District / Ed
 Optimized acceptance rejected the read-direct variant (0ae65b15). Four same-executable observations matched 8,129 whole-image acquisitions and all mip descriptors, payload CRCs, material handoffs and GPU asset counts. The streamed reader avoided full-member temporaries but consumed 2,482–2,764 million versus 2,000–2,057 million affected cycles in Edge of the World, and 2,099–2,137 million versus 1,804–1,824 million in Dust District. Retain the faster archive acquisition call. Prediction for the replacement: validate the same indexed mip payload ranges, then compact the owned member in place using the same range compaction as layered images. This removes a second full-sized allocation, preserves one payload move, and avoids the per-image buffered decoder and output initialization of the rejected variant. Header slack is bounded by 62 + 20 times the mip count (plus archive read capacity). Keep the same large inline-only scope and baseline for a matched repeat. Evidence: DH2-fx-resources/artifacts/resident-inline-image-streaming-20261110-comparison.json.
 
 Installed compaction acceptance (99ea2165). Four same-executable optimized acquisitions matched all 8,129 prepared image payloads, format/extent/mip selection and CRC, material handoffs, and GPU upload/retirement counts. The 5,039 eligible inline reads per two-map route reuse the decoded member allocation as the upload allocation, removing a second overlapping buffer. The largest eligible member was 16,777,298 bytes; the old separate payload was 16,777,216 bytes. Affected Edge of the World cycles were 1,894–1,899 million buffered and 1,818–1,839 million compacted. Dust District measured 1,707–1,720 million buffered and 1,670–1,739 million compacted. The two-map acquisition total fell 1.7% and 2.5% in the two paired observations. Individual Dust samples vary around parity. These are scoped acquisition cycles and temporary allocation capacities, with no frame-time or peak RAM claim. Evidence: DH2-fx-resources/artifacts/resident-inline-image-compaction-20261110-comparison.json.
+
+Collision cancellation prediction. The closing audio session waits for the
+map worker's lease, and the former checks bracket the whole collision phase.
+An interrupted map should stop visiting authored shapes and placed bodies,
+or building the host cell index, at their next work boundary. No partial
+world may publish. Ordinary loads must preserve the recorded triangles and
+materials, with no checks on gameplay queries. An archive read already in
+progress can finish. This bounds host worker retirement at the map lifetime
+boundary (1408a4830). Measure the cancellation span separately from ordinary
+load costs.
+
+The optimized installed-data observer at c40dcdbe requested cancellation
+during shape extraction, placed-body acquisition and index construction in
+high-chaos Palace. Each used the same preparation cancellation callback at
+its 64th checkpoint. Time from the stop signal to a returned cancellation
+was 93.894, 110.464 and 118.288 ms respectively, including disposal of the
+unpublished partial data. All three observed the subsequent catalog purge,
+with no prepared world returned. Ordinary EotW/Dust preparations retained
+the recorded triangle signatures. The observer did not close a live window
+or measure a blocked archive read. Evidence: DH2-scene-shutdown/artifacts/collision-close-and-motion-20261110-comparison.json.
+
+Autonomous motion event ownership. The host now borrows the selected event
+node, its parameters and its ports from the loaded graph while mutating
+only the playback, motor and variable owners. This removes one temporary
+definition copy per dispatched event. The original keyframe action
+140533460 reads its authored declaration identity and stores a separate
+playback handle at +0x30. The existing node lookup order and dispatch rules
+are preserved. The same-executable comparison observed 36 dispatch steps
+in eight graphs across EotW and Dust in every mode. Definition and initial
+pose signatures, per-graph event and error counts, and collision signatures
+matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
+547,680–555,905 with borrowed nodes. This measures those startup dispatches,
+without a gameplay frame-time claim. The source was c40dcdbe and the same
+comparison artifact records both batches.
