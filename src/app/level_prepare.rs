@@ -53,6 +53,7 @@ pub(super) fn prepare_level(
     catalog: std::sync::Arc<archive::Catalog>,
     level: crate::assets::level::LevelResources,
     needs_initial_inventory: bool,
+    initial_load: bool,
     cancelled: impl Fn(CancellationPoint) -> bool,
 ) -> Result<super::loading_screen::PreparedLevel, Box<dyn std::error::Error>> {
     // Host worker shutdown: stop between acquisition phases instead of
@@ -1073,7 +1074,7 @@ pub(super) fn prepare_level(
                     .map_err(std::io::Error::other)? as u64,
             },
         )
-        .insert_resource(super::loading_fade::LoadingFade::load(catalog.as_ref().unwrap(), entity_document.as_ref())
+        .insert_resource(super::loading_fade::LoadingFade::load(catalog.as_ref().unwrap(), entity_document.as_ref(), initial_load)
             .map_err(std::io::Error::other)?)
         .insert_resource(SceneData {
             source_path: path.clone(),
