@@ -6083,3 +6083,17 @@ the separate mutable tails remain on the model lighting owner. Both maps
 returned to zero GPU buffers after release. Active motion and arm patches
 were traced in source and were outside the windowless observations.
 Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.
+
+Probe sample staging prediction. PRB result reader 1402b8b30 reads 128
+samples per record. The installed Voronoi query 140382d90/140383d80 uses
+samples attached to its primary cell. The host builds equivalent query
+quads, then discards the samples. Resolve cells by their installed probe
+names before loading and build each cell while its primary PRB is in scope.
+Preserve cell order and first occurrence matching for duplicate probe names.
+Skip sample decode for secondary and alternate results where no query reads
+those arrays, and skip materializing strings in already ignored record lists.
+The prior route held 20,348,928 and 17,356,800 primary sample bytes in Edge
+of the World and Dust District. Expect at most one primary sample vector
+live in this part of setup, identical query geometry bits and lighting
+uploads, and lower scoped CPU cost from removing the per-cell linear scan.
+The standalone complete PRB/PNW readers still expose their full records.
