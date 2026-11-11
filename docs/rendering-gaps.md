@@ -770,6 +770,17 @@ loses w. Remaining, in order:
   (1401e5980) over the post-step live list. The inherited-velocity
   argument (+0x63c) the simulator passes is unused by the trail code
   (14020dd80, 140209de0). Census 670 -> 530.
+- Collision hulls (227 declarations), next: 1401df6a0 builds the hull of
+  m_mesh's particle-model vertices with hkgpConvexHull (build 140b88330 ->
+  140baba50 on a quantized domain 140b9c1e0; when the hull has more than 16
+  vertices, decimate 140b896a0(hull, 0x5f7ffff0, 16), 140b9ab30, decimate
+  again; then mass properties 140b900b0/140b90100 and the centroid
+  140b91880, which is subtracted from the vertices (+0x1d00) and stored at
+  +0x1d10; failure aborts with "UpdateCollisionShape() failed"). Of the 165
+  distinct collision meshes most have more than 16 distinct vertices, so
+  the decimation is on the path for nearly all. Then the convex collide
+  (the flag-4 hull path of 140fc1370, face planes of the hit polytope) and
+  SolveConvexContacts (140fbda60 setup, slot 19 140fbb350).
 - Mode 1 (cached static CD, 140fc1370:3681-5224), decoded for the port.
   Tuning (140fbea10 at +0x7c, never changed by the simulator): +0x7c min
   0, +0x80 max FLT_MAX, +0x84 FLT_MAX, +0x88 0, +0x8c 0.01, +0x90 8 cache
