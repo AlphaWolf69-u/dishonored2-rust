@@ -1,7 +1,7 @@
 //! bevy_backend: device-local residency for immutable common BML1 meshes.
 //! Resource lookup/promotion1400607f0/140060b60 and surface release14026a240
 //! retain the common identity. Host allocation domains keep map buffers separate.
-use bevy::{asset::AssetId, prelude::*, render::{extract_resource::ExtractResource, mesh::allocator::{MeshAllocator, allocate_and_free_meshes}, Render, RenderApp, RenderSystems}};
+use bevy::{asset::AssetId, prelude::*, render::{extract_resource::ExtractResource, mesh::allocator::{MeshAllocator, allocate_added_common_meshes}, Render, RenderApp, RenderSystems}};
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 
@@ -47,9 +47,10 @@ pub(super) fn install(app: &mut App) {
         fn classify(ids: Res<MeshIds>, mut allocator: ResMut<MeshAllocator>) {
             allocator.set_long_lived_meshes(&ids.0);
         }
-        render.add_systems(Render, classify.in_set(RenderSystems::PrepareAssets)
-            .before(allocate_and_free_meshes)
-            .run_if(bevy::ecs::schedule::common_conditions::resource_changed::<MeshIds>));
+        render.add_systems(Render, (
+            classify.run_if(bevy::ecs::schedule::common_conditions::resource_changed::<MeshIds>),
+            allocate_added_common_meshes,
+        ).chain().after(RenderSystems::ExtractCommands).before(RenderSystems::PrepareAssets));
     }
 }
 

@@ -62,6 +62,7 @@ pub struct MeshAllocator {
     free_generation: u64,
     /// Host residency domain: persistent geometry cannot pin map-sized slabs.
     long_lived_meshes: HashSet<AssetId<Mesh>>,
+    early_common_prepared: bool,
 
 }
 
@@ -249,8 +250,35 @@ impl FromWorld for MeshAllocator {
             freed: Vec::new(),
             free_generation: 0,
             long_lived_meshes: HashSet::default(),
+            early_common_prepared: false,
         }
     }
+}
+
+/// bevy_backend: allocate immutable common additions after extraction and
+/// before ANY map asset uploads. An ordinary mesh-stage split is too late:
+/// image/storage uploads can have filled the bootstrap driver heap already.
+pub fn allocate_added_common_meshes(
+    mut allocator: ResMut<MeshAllocator>,
+    settings: Res<MeshAllocatorSettings>,
+    extracted: Res<ExtractedAssets<RenderMesh>>,
+    mut layouts: ResMut<MeshVertexBufferLayouts>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+) {
+    if !extracted.added.iter().any(|id| allocator.long_lived_meshes.contains(id)
+        && !extracted.modified.contains(id)) { return; }
+    let observe = std::env::var_os("DH2_DEBUG_COMMON_MESH_HEAPS").is_some_and(|value| value == "1");
+    let report = |phase| {
+        if observe && let Some(report) = device.wgpu_device().generate_allocator_report() {
+            eprintln!("COMMON_MODEL_HEAP phase={phase} allocated_bytes={} reserved_bytes={} blocks={}",
+                report.total_allocated_bytes, report.total_reserved_bytes, report.blocks.len());
+        }
+    };
+    report("before");
+    allocator.allocate_mesh_domain(&settings, &extracted, &mut layouts, &device, &queue, Some(true));
+    allocator.early_common_prepared = true;
+    report("after");
 }
 
 /// A system that processes newly-extracted or newly-removed meshes and writes
@@ -411,16 +439,10 @@ impl MeshAllocator {
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
     ) {
-        // bevy_backend: immutable common meshes must occupy the existing
-        // bootstrap heap before map-sized slabs are created. Distinct layout
-        // domains alone avoid slab pinning but can still pin an entire later
-        // driver heap. Split only when newly added common assets are present;
-        // ordinary modified-mesh frames keep the existing single transaction.
-        let split = extracted_meshes.added.iter().any(|id| self.long_lived_meshes.contains(id));
-        for domain in if split { &[Some(true), Some(false)][..] } else { &[None][..] } {
-            self.allocate_mesh_domain(mesh_allocator_settings, extracted_meshes,
-                mesh_vertex_buffer_layouts, render_device, render_queue, *domain);
-        }
+        let domain = self.early_common_prepared.then_some(false);
+        self.early_common_prepared = false;
+        self.allocate_mesh_domain(mesh_allocator_settings, extracted_meshes,
+            mesh_vertex_buffer_layouts, render_device, render_queue, domain);
     }
 
     fn allocate_mesh_domain(
@@ -444,7 +466,9 @@ impl MeshAllocator {
             // Allocate vertex data. Note that we can only pack mesh vertex data
             // together if the platform supports it.
             let long_lived = self.long_lived_meshes.contains(mesh_id);
-            if domain.is_some_and(|domain| domain != long_lived) { continue; }
+            if domain.is_some_and(|domain| domain != (long_lived
+                && extracted_meshes.added.contains(mesh_id)
+                && !extracted_meshes.modified.contains(mesh_id))) { continue; }
             let mut vertex_element_layout = ElementLayout::vertex(mesh_vertex_buffer_layouts, mesh);
             vertex_element_layout.long_lived = long_lived;
             if self.general_vertex_slabs_supported {
@@ -492,7 +516,9 @@ impl MeshAllocator {
 
         // Copy new mesh data in.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
-            if domain.is_some_and(|domain| self.long_lived_meshes.contains(mesh_id) != domain) { continue; }
+            if domain.is_some_and(|domain| domain != (self.long_lived_meshes.contains(mesh_id)
+                && extracted_meshes.added.contains(mesh_id)
+                && !extracted_meshes.modified.contains(mesh_id))) { continue; }
             self.copy_mesh_vertex_data(mesh_id, mesh, render_device, render_queue);
             self.copy_mesh_index_data(mesh_id, mesh, render_device, render_queue);
             #[cfg(feature = "morph")]
@@ -726,6 +752,7 @@ mod tests {
             freed: Vec::new(),
             free_generation: 0,
             long_lived_meshes: HashSet::default(),
+            early_common_prepared: false,
         }
     }
 

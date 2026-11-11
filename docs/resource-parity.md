@@ -7227,3 +7227,19 @@ Only additions of common meshes split the transaction; ordinary modified-mesh
 frames retain the single transaction. This ports the persistent resource
 identity through a host allocation-order change, not a GPU pass or draw change.
 Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-20261111-comparison.json.
+
+Common-mesh heap correction follow-up (2026-11-11,ff4c7aea). The narrower split
+inside the ordinary mesh allocator did not change the measured reserved heap:
+it still grew201,326,592 ->469,762,048 bytes. All bytes,20/2/0 reuse, owner release
+and disjoint buffers still matched. Therefore that prediction was wrong; the
+asset preparation stage can upload map images/storage before the mesh allocator.
+Move only immutable common additions to an explicit extraction-to-preparation
+boundary before ALL map assets. Leave ordinary additions/changes in the normal
+allocator; exclude modified common IDs from the early path so their existing
+free/rebuild semantics remain intact. Record the heap immediately before/after
+early allocation, and require no reserved-heap regression after map retirement.
+The failed v2 report establishes no cancellation or residual-caller acceptance,
+since its heap guard stopped before those steps. Layered image acquisition did
+pass all3,000 installed members/1,743,628,016 payload bytes, including all three
+single-cube descriptors; that result is independent of the heap failure.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json.
