@@ -86,6 +86,9 @@ pub struct HavokStageSimulation {
     life: Vec<f32>,
     pub sprites: Vec<Vec<Option<SpriteInitialState>>>,
     pub meshes: Vec<Vec<Option<MeshInitialState>>>,
+    /// +0x3b0: one trail renderer (1402107b0) per enabled trail with a
+    /// material (1401fada0), else an empty list; no world transform.
+    pub trails: Vec<Vec<Option<super::trail::TrailRecord>>>,
     /// +0x360 live and +0x3d0 dead lists of the last post-step.
     pub live: Vec<i32>,
     dead: Vec<i32>,
@@ -144,6 +147,17 @@ impl HavokStageSimulation {
         let emitter = ParticleEmitter::havok(Arc::new(stage.emitter.clone()), spawn_seed, pose)?;
         let sprites = stage.sprites.iter().map(|_| (0..capacity).map(|_| None).collect()).collect();
         let meshes = stage.meshes.iter().map(|_| (0..capacity).map(|_| None).collect()).collect();
+        let trails = stage
+            .trails
+            .iter()
+            .map(|trail| {
+                if trail.enabled && trail.material.is_some() {
+                    (0..capacity).map(|_| None).collect()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
         let mut result = Self {
             declaration: declaration.clone(),
             index,
@@ -155,6 +169,7 @@ impl HavokStageSimulation {
             life: vec![0.; capacity],
             sprites,
             meshes,
+            trails,
             live: Vec::new(),
             dead: Vec::new(),
             inherited_velocity: Default::default(),
@@ -325,6 +340,20 @@ impl HavokStageSimulation {
                 if let Some(state) = slots[body as usize].as_mut() {
                     let mut seed = 0;
                     state.advance(&descriptor.appearance, &descriptor.flipbook, age, delta, &mut seed)?;
+                }
+            }
+        }
+        // 140211bc0 at the render position and age, identity basis, the
+        // system fraction (+0x6b4).
+        let fraction = self.emitter.cycle.fraction;
+        for (descriptor, slots) in definition.trails.iter().zip(self.trails.iter_mut()) {
+            if slots.is_empty() {
+                continue;
+            }
+            for &body in &self.live {
+                let Some(particle) = self.particles.get(body as usize) else { continue };
+                if let Some(record) = slots[body as usize].as_mut() {
+                    record.advance(descriptor, particle.state.age, fraction, delta, particle.state.position, IDENTITY)?;
                 }
             }
         }
@@ -605,6 +634,26 @@ impl HavokStageSimulation {
                     record.colour,
                     descriptor.flipbook.flips,
                     (descriptor.use_flipbook && descriptor.flipbook.cycle_rate).then_some(&descriptor.flipbook.initial),
+                    &mut seed,
+                )?);
+            }
+            // 1402117d0 at the record position with the identity basis.
+            for (descriptor, slots) in definition.trails.iter().zip(self.trails.iter_mut()) {
+                if slots.is_empty() {
+                    continue;
+                }
+                if definition.constant_seed {
+                    seed = record.seed;
+                }
+                let previous_age = slots[slot].as_ref().map_or(0., |record| record.age);
+                slots[slot] = Some(super::trail::TrailRecord::start(
+                    previous_age,
+                    descriptor,
+                    None,
+                    true,
+                    record.fraction,
+                    record.position,
+                    IDENTITY,
                     &mut seed,
                 )?);
             }

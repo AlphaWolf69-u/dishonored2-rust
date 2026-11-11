@@ -253,8 +253,9 @@ impl ParticleSystem {
         // 1401e4930 after the system's ordinary stages).
         let havok_bodies: Vec<_> = self.havok_stages.iter()
             .map(|stage| move |slot: usize| stage.orientation(slot)).collect();
-        let mut draw_stages: Vec<(crate::rendering::particles::publication::DrawStage, Option<&StageSimulation>)> =
-            self.stages.iter().map(|stage| (crate::rendering::particles::publication::DrawStage::ordinary(stage), Some(stage))).collect();
+        type HavokStage = crate::gameplay::particles::havok_stage::HavokStageSimulation;
+        let mut draw_stages: Vec<(crate::rendering::particles::publication::DrawStage, Option<&StageSimulation>, Option<&HavokStage>)> =
+            self.stages.iter().map(|stage| (crate::rendering::particles::publication::DrawStage::ordinary(stage), Some(stage), None)).collect();
         for (stage, bodies) in self.havok_stages.iter().zip(&havok_bodies) {
             draw_stages.push((crate::rendering::particles::publication::DrawStage {
                 definition: &stage.definition().stage,
@@ -262,9 +263,9 @@ impl ParticleSystem {
                 sprites: &stage.sprites,
                 meshes: &stage.meshes,
                 bodies: Some((bodies as &dyn Fn(usize) -> Option<[[f32; 3]; 3]>, stage.centroid_offset())),
-            }, None));
+            }, None, Some(stage)));
         }
-        for (draw, ordinary) in &draw_stages {
+        for (draw, ordinary, havok) in &draw_stages {
             let definition = draw.definition;
             let transform = if definition.worldspace || ordinary.is_none() {
                 ReferenceFrame::default()
@@ -385,24 +386,41 @@ impl ParticleSystem {
             }
             // 1401f3060: each trail renderer builds its live particles'
             // strips, in slot order, within its vertex budget.
-            let Some(stage) = ordinary else { continue };
+            // Ordinary stages draw their live slots in slot order; a Havok
+            // stage (1401e5980) its post-step live list, in world space.
+            let (stage_trails, live_slots, capacity, local): (&[Vec<Option<crate::gameplay::particles::trail::TrailRecord>>], Vec<usize>, usize, bool) =
+                match (ordinary, havok) {
+                    (Some(stage), _) => (
+                        &stage.trails,
+                        stage.particles.iter().map(|(slot, _)| slot).collect(),
+                        stage.particles.capacity(),
+                        !definition.worldspace,
+                    ),
+                    (None, Some(stage)) => (
+                        &stage.trails,
+                        stage.live.iter().map(|&body| body as usize).collect(),
+                        stage.particles.capacity(),
+                        false,
+                    ),
+                    (None, None) => continue,
+                };
             for (trail_index, trail) in definition.trails.iter().enumerate() {
-                let records = &stage.trails[trail_index];
+                let records = &stage_trails[trail_index];
                 if records.is_empty() {
                     continue;
                 }
                 let Some(name) = trail.material.as_ref() else { continue };
                 let material = self.materials.get(name).ok_or_else(|| format!("particle trail material absent: {name}"))?;
-                let live: Vec<&crate::gameplay::particles::trail::TrailRecord> = stage.particles.iter()
-                    .filter_map(|(slot, _)| records.get(slot).and_then(Option::as_ref))
+                let live: Vec<&crate::gameplay::particles::trail::TrailRecord> = live_slots.iter()
+                    .filter_map(|&slot| records.get(slot).and_then(Option::as_ref))
                     .collect();
                 let budget = crate::gameplay::particles::trail::TrailBudget::new(
                     live.iter().map(|record| record.segments),
-                    crate::gameplay::particles::trail::TrailBudget::limit(trail, stage.particles.capacity()),
+                    crate::gameplay::particles::trail::TrailBudget::limit(trail, capacity),
                 );
                 // 140211a90: a local stage's local trail is built in stage
                 // space and moved by the owner matrix (140210350).
-                let owner = (!definition.worldspace && !trail.worldspace)
+                let owner = (local && !trail.worldspace)
                     .then(|| crate::gameplay::particles::trail::owner_transform(publication.pose));
                 let mut strip = Vec::new();
                 for record in &live {

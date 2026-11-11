@@ -396,7 +396,9 @@ impl ParticleDefinition {
         let beam_materials: Vec<String> = beams.iter().filter_map(|beam| beam.material.clone())
             .chain(ribbons.iter().filter_map(|ribbon| ribbon.material.clone())).collect();
         let strip_materials = declarations.iter().flatten()
-            .flat_map(|declaration| declaration.stages.iter().filter(|stage| stage.enabled))
+            .flat_map(|declaration| declaration.stages.iter()
+                .chain(declaration.havok_stages.iter().map(|stage| &stage.stage))
+                .filter(|stage| stage.enabled))
             .flat_map(|stage| stage.trails.iter().filter(|trail| trail.enabled))
             .filter_map(|trail| trail.material.clone())
             .chain(declarations.iter().flatten().flat_map(|declaration| declaration.trails.iter())
@@ -444,9 +446,6 @@ fn havok_stage_admission(
     }
     if asset.enable_wind && declaration.wind.enabled {
         return Err("Havok particle wind (arkWindHavokEffect) is not ported".into());
-    }
-    if asset.trails.iter().any(|trail| trail.enabled) {
-        return Err("Havok particle trails are not connected".into());
     }
     let events = &stage.events;
     if [&events.birth, &events.collision, &events.ocean_collision, &events.stop, &events.death]

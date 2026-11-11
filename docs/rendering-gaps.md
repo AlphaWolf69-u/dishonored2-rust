@@ -762,6 +762,14 @@ loses w. Remaining, in order:
   ports the partition's list order (sphere bounds 140fd86b0, transfers,
   hkcdSimdTree mode-0 build order 140c1fb80) for when moving bodies exist.
   Census 752 -> 670.
+- Havok trails (connected): one renderer per enabled trail with a
+  material (1401fada0, 1402107b0, no world transform); births 1402117d0 at
+  the spawn record position with the identity basis after the mesh
+  births on the same seed chain; updates 140211bc0 per live body at its
+  render position and normalized age with the system fraction; drawn
+  (1401e5980) over the post-step live list. The inherited-velocity
+  argument (+0x63c) the simulator passes is unused by the trail code
+  (14020dd80, 140209de0). Census 670 -> 530.
 - Mode 1 (cached static CD, 140fc1370:3681-5224), decoded for the port.
   Tuning (140fbea10 at +0x7c, never changed by the simulator): +0x7c min
   0, +0x80 max FLT_MAX, +0x84 FLT_MAX, +0x88 0, +0x8c 0.01, +0x90 8 cache
