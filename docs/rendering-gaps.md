@@ -497,3 +497,18 @@ reads its slot during its own update rather than in 14031d7e0's loop, and
 counts arrive one or more frames later than the original's next-frame
 read. r_showOcclusionQuery's debug colour draw is not connected. FX
 census 844 -> 833. Not verified on screen.
+
+## Particle FX events (`m_fxEvents`), mapped
+
+96 installed declarations carry m_fxEvents (3 fail on it first; the rest
+stop earlier). Declaration +0x608: arkFXEventDesc entries (0x58 bytes:
+m_event +0 atom, m_enabled +8, m_interval +0xc, m_fx, axis mapping with
+m_axisMode +0x18, m_velocityAxis, m_reverseVelocityAxis, m_viewAxis,
+m_reverseViewAxis, offset/rotation). 140201760 creates an
+arkFXEventInstance (1401da2c0) per enabled entry with an FX (1401da0d0)
+only when the system has an FX owner (+0x1c78); 1401daf50 advances each
+instance's interval timer; 1401fc020 hands the stage events collected at
+system +0x1cf0 to 1401da820, which matches names, orients the spawn from
+the event velocity/view axes (1401da330) and asks the owner to spawn the
+FX. The rewrite needs a runtime FX spawn request from particle systems
+to its world FX owner before this can be ported.
