@@ -1,9 +1,9 @@
 use crate::{
     archive::Catalog,
-    assets::fx::screen_quad::{screen_quad, ScreenQuadStage},
+    assets::fx::screen_quad::ScreenQuadStage,
     gameplay::{
         effects::{environment::EnvironmentEffectDefinition, timing::EffectTimingRanges},
-        options::decl::{atom, list_items, scope},
+        options::decl::{atom, scope},
     },
     rendering::screen_distortion::ScreenDistortionMaterial,
     shader_cache::ProgramLibrary,
@@ -24,6 +24,7 @@ pub struct GroupDefinition {
 }
 pub use crate::rendering::particles::definition::ParticleDefinition;
 pub struct EffectDefinition {
+    pub(crate) _source: Arc<crate::assets::fx::definition::Definition>,
     pub groups: Vec<GroupDefinition>,
 }
 pub struct ScreenEffectSources {
@@ -73,16 +74,12 @@ impl ScreenEffectSources {
         let mut materials = Vec::new();
         let mut indices = HashMap::<String, usize>::new();
         let mut load = |effect: &str| -> Result<EffectDefinition, String> {
-            let fields = crate::assets::fx::declaration::read(catalog, effect)?;
+            let source = crate::assets::fx::declaration::acquire(catalog, effect,
+                crate::assets::fx::definition::Consumer::Screen, None)?;
             let mut groups = Vec::new();
-            for group in scope(&fields, "m_groups").into_iter().flat_map(list_items) {
-                let crate::entities::Value::Scope(fields) = group else {
-                    continue;
-                };
-                let common = crate::assets::fx::environment_group(fields)?;
-                if !common.enabled {
-                    continue;
-                }
+            for group in &source.groups {
+                let common = &group.asset;
+                if !common.enabled { continue; }
                 if common.location != crate::assets::fx::EffectGroupLocation::Everywhere {
                     return Err(format!(
                         "screen effect group location is not connected: {:?}",
@@ -90,18 +87,13 @@ impl ScreenEffectSources {
                     ));
                 }
                 let mut quads = Vec::new();
-                for quad in scope(fields, "m_fullScreenQuads")
-                    .into_iter()
-                    .flat_map(list_items)
-                {
-                    let crate::entities::Value::Scope(fields) = quad else {
-                        continue;
-                    };
-                    let quad = screen_quad(fields)?;
+                for quad in group.quads.get().expect("screen FX families acquired")
+                    .as_ref().map_err(Clone::clone)? {
+                    let quad = quad.as_ref().map_err(Clone::clone)?;
                     if !quad.enabled || quad.stage == ScreenQuadStage::Never {
                         continue;
                     }
-                    let Some(name) = quad.material else { continue };
+                    let Some(name) = &quad.material else { continue };
                     if !matches!(
                         quad.stage,
                         ScreenQuadStage::MotionVectorBegin | ScreenQuadStage::MotionVectorEnd
@@ -111,45 +103,33 @@ impl ScreenEffectSources {
                             quad.stage
                         ));
                     }
-                    let material = if let Some(&index) = indices.get(&name) {
+                    let material = if let Some(&index) = indices.get(name) {
                         index
                     } else {
                         let index = materials.len();
-                        materials.push(ScreenDistortionMaterial::load(catalog, library, &name)?);
-                        indices.insert(name, index);
+                        materials.push(ScreenDistortionMaterial::load(catalog, library, name)?);
+                        indices.insert(name.clone(), index);
                         index
                     };
                     quads.push(QuadDefinition {
                         material,
                         stage: quad.stage,
-                        blend: Arc::new(quad.blend),
+                        blend: quad.blend.clone(),
                     });
                 }
                 groups.push(GroupDefinition {
                     timing: common.timings,
                     quads,
-                    particles: scope(fields, "m_particleSystems")
-                        .into_iter()
-                        .flat_map(list_items)
-                        .filter(|value| match value {
-                            crate::entities::Value::Scope(fields) => {
-                                atom(fields, "m_enabled") != Some("false")
-                            }
-                            _ => true,
-                        })
-                        .map(|value| match value {
-                            crate::entities::Value::Scope(fields) => ParticleDefinition::load(
-                                fields,
-                                catalog,
-                                library,
-                                resources,
-                            ),
-                            _ => Err("particle FX descriptor requires a scope".into()),
-                        })
-                        .collect(),
+                    particles: match group.particles.get().expect("screen FX families acquired") {
+                        Ok(particles) => particles.iter().map(|asset|
+                            asset.as_ref().map_err(Clone::clone).and_then(|asset|
+                                ParticleDefinition::from_asset_cancellable(asset.clone(), catalog, library, resources, None)))
+                            .collect(),
+                        Err(error) => vec![Err(error.clone())],
+                    },
                 });
             }
-            Ok(EffectDefinition { groups })
+            Ok(EffectDefinition { _source: source, groups })
         };
         let underwater = load(underwater)?;
         let leave_water = load(leave_water)?;

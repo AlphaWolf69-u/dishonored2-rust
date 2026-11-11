@@ -37,6 +37,14 @@ impl<T: ?Sized, E: Clone> Registry<T, E> {
         paths
     }
 
+    /// Class owners use this at scope boundaries to release dependency read
+    /// history without retaining an additional strong payload table.
+    pub(crate) fn live_values(&self) -> impl Iterator<Item = Arc<T>> + '_ {
+        self.entries.values().filter_map(|entry| entry.current.as_ref().and_then(Weak::upgrade))
+            .chain(self.separate.iter().flat_map(|values| values.values())
+                .flat_map(|values| values.iter().filter_map(Weak::upgrade)))
+    }
+
     pub(crate) fn owns_read_history(&self, path: &str) -> bool {
         self.entries.get(path).is_some_and(|entry|
             entry.current.as_ref().is_some_and(|value| value.strong_count() != 0) || entry.failure.is_some())

@@ -1,5 +1,5 @@
 //! 216cf0/216e30 timing preparation and 216f80's stop request.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct EffectTimingRanges {
     /// Pairs retain the source declaration's storage order.
     pub delay: [f32; 2],

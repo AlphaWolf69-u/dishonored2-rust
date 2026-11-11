@@ -66,10 +66,24 @@ pub(crate) fn acquire_with(catalog: &Catalog, name: &str, consumer: super::defin
     let resource = key(name);
     let mut owner = catalog.fx_resources.get_or_init(Default::default).lock()
         .map_err(|_| "FX declaration registry is poisoned")?;
+    let trace = std::env::var_os("DH2_DEBUG_FX_DECLARATIONS").is_some_and(|value| value == "1");
+    let started = trace.then(crate::loading::thread_cycles).flatten();
+    let mut decoded = false;
+    let mut extended = false;
     let load = |_| {
-        let fields = read_with(name, &mut read)?;
+        decoded = true;
+        let mut sources = Vec::new();
+        let fields = read_with(name, |path| {
+            let value = read(path)?;
+            if value.is_some() { sources.push(path.to_owned()); }
+            Ok(value)
+        })?;
         if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
-        super::definition::Definition::from_fields(&fields, consumer, cancelled).map(std::sync::Arc::new)
+        let mut definition = super::definition::Definition::from_fields(&fields, consumer, cancelled)?;
+        // The host flattens inherited edit syntax into typed descriptors. Keep
+        // source read credits with this generation, never a second syntax tree.
+        definition.source_paths = sources;
+        Ok(std::sync::Arc::new(definition))
     };
     let shared = !catalog.has_overlays()
         && std::env::var_os("DH2_DEBUG_SEPARATE_FX_DECLARATIONS").is_none_or(|value| value != "1");
@@ -79,10 +93,24 @@ pub(crate) fn acquire_with(catalog: &Catalog, name: &str, consumer: super::defin
         owner.acquire_with_sharing(&resource, 0, false, load)
     }?;
     if definition.needs(consumer) {
+        extended = true;
         let fields = read_with(name, &mut read)?;
         definition.prepare(&fields, consumer, cancelled)?;
     }
+    if trace {
+        let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(a, b)| b.saturating_sub(a));
+        eprintln!("FX_DECLARATION_ACQUIRE path={resource} decoded={decoded} extended={extended} shared={shared} groups={} sources={} cycles={cycles}",
+            definition.groups.len(), definition.source_paths.len());
+    }
     Ok(definition)
+}
+/// Called with the class owner already locked, following acquisition's owner
+/// -> read-history lock order. Inherited source credit belongs to live typed
+/// generations, even when the parent itself was never directly requested.
+pub(crate) fn source_history(owner: &crate::assets::resource_registry::Registry<super::definition::Definition>) -> HashSet<String> {
+    let mut paths = HashSet::new();
+    for definition in owner.live_values() { paths.extend(definition.source_paths.iter().cloned()); }
+    paths
 }
 pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8, persistent: bool) -> Result<(), String> {
     let _tag = crate::platform::allocation_tags::tag("FX declaration resources");
@@ -98,6 +126,12 @@ pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
 }
 pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
     if let Some(owner) = catalog.fx_resources.get() {
-        owner.lock().unwrap_or_else(|error| error.into_inner()).release(catalog.identity(), "fx", marker);
+        let mut owner = owner.lock().unwrap_or_else(|error| error.into_inner());
+        owner.release(catalog.identity(), "fx", marker);
+        // Generic retirement removes direct identities; flattening inheritance
+        // also requires dropping orphaned parent-source credits.
+        let dependencies = source_history(&owner);
+        crate::loading::retain_catalog_kind(catalog.identity(), "fx", |path|
+            owner.owns_read_history(path) || dependencies.contains(path));
     }
 }

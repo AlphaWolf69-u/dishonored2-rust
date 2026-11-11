@@ -7476,3 +7476,25 @@ Reserved driver heap remains201,326,592 bytes; final host releases the cache.
 This removes the predicted redundant pair of persistent allocations without
 changing ordinary map sealing. No gameplay CPU/GPU timing claim is made.
 Evidence: artifacts/persistent-mesh-pools-20261111-comparison.json.
+
+FX consumer integration (2026-11-11, pending compilation/acquisition evidence).
+World particles/decals, player screen effects, pause and contact sound effects
+now acquire pure typed FX identities from the Catalog owner; each retains a
+root generation lease until its derived state is dropped. Particle/quad/decal
+descriptors share Arc backing, while material/image bindings and playback
+clocks stay with their former consumers. Scalar timing ranges are Copy values.
+Screen-quad envelope parsing now borrows filtered fields instead of deep
+cloning their generic syntax, and environment/quad blend definitions share Arc
+backing rather than requiring copied curves. No decoded material/image or
+GPU handles enter the Catalog FX owner. Deferred unsupported-family admission
+retains its original small results and diagnostic sizes, never source trees.
+Inherited source paths remain with each flattened typed generation; purge and
+contact history release retain credits only for a live direct identity or
+source dependency. This explicitly marks the host's flattened inheritance
+representation instead of claiming an extra original typed parent instance.
+Selected headers, bootstrap promotion, map and conditional persistent purge
+use the shared1400607f0/1400661e0/140060b60 registry phases. Prediction: repeated
+same-role acquisitions perform zero FX parses; adding a new consumer role
+parses only missing child families, while final scope release retires all map
+typed payloads and orphaned inherited source credits. Normal gameplay clocks,
+render passes and emitter simulation are unchanged. Verification outstanding.

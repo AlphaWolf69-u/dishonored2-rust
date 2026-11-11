@@ -257,7 +257,14 @@ impl ParticleDefinition {
         resources: &mut ParticleResources, cancelled: Option<&dyn Fn() -> bool>,
     ) -> Result<Self, String> {
         check_active(cancelled)?;
-        let owner = particle_system::particle_system(fields)?;
+        Self::from_asset_cancellable(Arc::new(particle_system::particle_system(fields)?), catalog, library, resources, cancelled)
+    }
+
+    pub(crate) fn from_asset_cancellable(
+        owner: Arc<particle_system::ParticleSystemAsset>, catalog: &Catalog, library: &mut ProgramLibrary,
+        resources: &mut ParticleResources, cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, String> {
+        check_active(cancelled)?;
         let parameter_block = owner.parameter_block.as_deref().map(|name| {
             resources.parameter_blocks
                 .get_or_insert_with(|| Box::new(crate::assets::parm_block::ParmBlockSources::new(catalog)))
@@ -338,7 +345,7 @@ impl ParticleDefinition {
         }
         check_active(cancelled)?;
         Ok(Self {
-            owner: Arc::new(owner),
+            owner,
             parameter_block,
             declarations,
             materials,

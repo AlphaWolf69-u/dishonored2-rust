@@ -265,8 +265,13 @@ impl DeclarationTexts {
                 .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
             let materials = (kind == "physicsMaterial").then(|| catalog.physics_material_resources.get()).flatten()
                 .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
+            let effects = (kind == "fx").then(|| catalog.fx_resources.get()).flatten()
+                .map(|registry| registry.lock().unwrap_or_else(|error| error.into_inner()));
+            let fx_history = effects.as_ref().map(|registry| crate::assets::fx::declaration::source_history(registry));
             let (count, capacity, _, _) = crate::loading::retain_catalog_kind(catalog.identity(), kind, |path| {
                 self.common.as_deref().is_some_and(|values| values.contains_key(path))
+                    || effects.as_ref().is_some_and(|registry| registry.owns_read_history(path))
+                    || fx_history.as_ref().is_some_and(|paths| paths.contains(path))
                     || events.as_ref().is_some_and(|registry| registry.owns_read_history(path))
                     || materials.as_ref().is_some_and(|registry| registry.owns_read_history(path))
             });

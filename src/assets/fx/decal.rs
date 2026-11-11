@@ -181,7 +181,7 @@ pub fn decal(fields: &Fields) -> Result<DecalAsset, String> {
 }
 
 pub struct DecalDefinition {
-    pub asset: crate::assets::fx::decal::DecalAsset,
+    pub asset: Arc<crate::assets::fx::decal::DecalAsset>,
     pub declarations: Vec<Option<Arc<crate::assets::decal::DecalMaterials<String>>>>,
 }
 impl DecalDefinition {
@@ -190,7 +190,10 @@ impl DecalDefinition {
         catalog: &crate::archive::Catalog,
         resources: &mut crate::assets::decal::DecalResources,
     ) -> Result<Self, String> {
-        let asset = crate::assets::fx::decal::decal(fields)?;
+        Self::from_asset(Arc::new(crate::assets::fx::decal::decal(fields)?), catalog, resources)
+    }
+    pub(crate) fn from_asset(asset: Arc<DecalAsset>, catalog: &crate::archive::Catalog,
+        resources: &mut crate::assets::decal::DecalResources) -> Result<Self, String> {
         let declarations = asset
             .declarations
             .iter()

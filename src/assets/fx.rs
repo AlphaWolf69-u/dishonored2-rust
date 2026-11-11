@@ -21,7 +21,7 @@ pub struct EnvironmentEffectAsset {
     pub name: String,
     pub enabled: bool,
     pub environment: Option<String>,
-    pub blend: EnvironmentEffectDefinition,
+    pub blend: std::sync::Arc<EnvironmentEffectDefinition>,
 }
 
 /// The location enum's literal table is initialized by 1419fbd70. Eligibility
@@ -342,12 +342,16 @@ fn curves(pair: &mut EffectFloatCurvePair, fields: &Fields) -> Result<(), String
 /// Load one `m_envOverrides/item[N]`. The parent group retains ownership of its
 /// own timing, activation and visibility mask; this loader does not start it.
 pub fn environment_effect(fields: &Fields) -> Result<EnvironmentEffectAsset, String> {
+    environment_effect_fields(fields)
+}
+fn environment_effect_fields<'a>(fields: impl IntoIterator<Item = &'a (String, Value)>) -> Result<EnvironmentEffectAsset, String> {
     let mut effect = EnvironmentEffectAsset {
         name: String::new(),
         enabled: true,
         environment: None,
-        blend: EnvironmentEffectDefinition::default(),
+        blend: std::sync::Arc::new(EnvironmentEffectDefinition::default()),
     };
+    let blend = std::sync::Arc::get_mut(&mut effect.blend).expect("unpublished FX blend");
     for (name, value) in fields {
         match name.as_str() {
             "m_name" => effect.name = atom(value)?.to_owned(),
@@ -359,11 +363,11 @@ pub fn environment_effect(fields: &Fields) -> Result<EnvironmentEffectAsset, Str
             }
             "m_timings" => {
                 for (name, value) in scope(value)? {
-                    let timing = &mut effect.blend.timing;
+                    let timing = &mut blend.timing;
                     match name.as_str() {
-                        "m_looping" => effect.blend.looping = boolean(value)?,
+                        "m_looping" => blend.looping = boolean(value)?,
                         "m_finishLoopOnStop" => {
-                            effect.blend.keep_duration_on_stop = boolean(value)?
+                            blend.keep_duration_on_stop = boolean(value)?
                         }
                         "m_delay" => bounds(&mut timing.delay, scope(value)?)?,
                         "m_fadein" => bounds(&mut timing.fade_in, scope(value)?)?,
@@ -376,11 +380,11 @@ pub fn environment_effect(fields: &Fields) -> Result<EnvironmentEffectAsset, Str
             "m_blend" => {
                 for (name, value) in scope(value)? {
                     match name.as_str() {
-                        "m_max" => effect.blend.scale[0] = number(value)?,
-                        "m_min" => effect.blend.scale[1] = number(value)?,
-                        "m_durationCurve" => curves(&mut effect.blend.duration, scope(value)?)?,
-                        "m_fadeinCurve" => curves(&mut effect.blend.fade_in, scope(value)?)?,
-                        "m_fadeoutCurve" => curves(&mut effect.blend.fade_out, scope(value)?)?,
+                        "m_max" => blend.scale[0] = number(value)?,
+                        "m_min" => blend.scale[1] = number(value)?,
+                        "m_durationCurve" => curves(&mut blend.duration, scope(value)?)?,
+                        "m_fadeinCurve" => curves(&mut blend.fade_in, scope(value)?)?,
+                        "m_fadeoutCurve" => curves(&mut blend.fade_out, scope(value)?)?,
                         _ => return Err(format!("unknown FX blend field {name}")),
                     }
                 }

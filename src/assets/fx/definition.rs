@@ -19,6 +19,7 @@ impl Consumer {
 }
 pub(crate) struct Definition {
     pub groups_present: bool,
+    pub source_paths: Vec<String>,
     pub groups: Vec<Group>,
 }
 pub(crate) struct Group {
@@ -28,7 +29,7 @@ pub(crate) struct Group {
     pub quads: OnceLock<Family<ScreenQuadAsset>>,
     /// Preserve the world consumer's independent family-admission boundary.
     /// This contains no generic syntax, image data, GPU handle or playback state.
-    pub world_other_families: OnceLock<Vec<(String, Result<bool, String>)>>,
+    pub world_other_families: OnceLock<WorldAdmission>,
 }
 
 fn descriptors(fields: &Fields) -> Result<Vec<Cow<'_, Fields>>, String> {
@@ -38,26 +39,44 @@ fn descriptors(fields: &Fields) -> Result<Vec<Cow<'_, Fields>>, String> {
 }
 fn family<T>(fields: &Fields, name: &str, parse: fn(&Fields) -> Result<T, String>) -> Family<T> {
     Ok(descriptors(scope(fields, name).unwrap_or(&[]))?.iter()
-        .filter(|fields| atom(fields, "m_enabled") != Some("false"))
+        .filter(|fields| name == "m_fullScreenQuads" || atom(fields, "m_enabled") != Some("false"))
         .map(|fields| parse(fields).map(Arc::new)).collect())
 }
-fn other_families(fields: &Fields) -> Vec<(String, Result<bool, String>)> {
-    fields.iter().filter(|(name, value)| {
+pub(crate) struct WorldAdmission {
+    pub families: Vec<(String, Result<bool, String>)>,
+    pub syntax_bytes: usize,
+    pub payload_bytes: usize,
+}
+fn syntax_bytes(value: &Value) -> usize {
+    match value {
+        Value::Atom(value) => value.len(),
+        Value::Scope(fields) => fields.len() * std::mem::size_of::<(String, Value)>()
+            + fields.iter().map(|(key, value)| key.len() + syntax_bytes(value)).sum::<usize>(),
+    }
+}
+fn other_families(fields: &Fields) -> WorldAdmission {
+    let mut result = WorldAdmission { families: Vec::new(), syntax_bytes: 0, payload_bytes: 0 };
+    for (name, value) in fields.iter().filter(|(name, value)| {
         !matches!(name.as_str(), "m_particleSystems" | "m_sounds" | "m_decals" | "m_subFXs")
             && matches!(value, Value::Scope(_))
             && scope(fields, name).is_some_and(|entries| !list_items(entries).is_empty()
                 || atom(entries, "num").is_some_and(|count| count != "0"))
-    }).map(|(name, value)| {
+    }) {
         let Value::Scope(entries) = value else { unreachable!() };
-        (name.clone(), descriptors(entries).map(|items|
-            items.iter().any(|fields| atom(fields, "m_enabled") != Some("false"))))
-    }).collect()
+        let admission = descriptors(entries).map(|items|
+            items.iter().any(|fields| atom(fields, "m_enabled") != Some("false")));
+        result.syntax_bytes += std::mem::size_of::<(String, Value)>() + name.len() + syntax_bytes(value);
+        result.payload_bytes += std::mem::size_of::<(String, Result<bool, String>)>() + name.len()
+            + admission.as_ref().err().map_or(0, |error| error.capacity());
+        result.families.push((name.clone(), admission));
+    }
+    result
 }
 struct PendingGroup {
     particles: Option<Family<ParticleSystemAsset>>,
     decals: Option<Family<DecalAsset>>,
     quads: Option<Family<ScreenQuadAsset>>,
-    other: Option<Vec<(String, Result<bool, String>)>>,
+    other: Option<WorldAdmission>,
 }
 impl Definition {
     pub fn from_fields(fields: &Fields, consumer: Consumer,
@@ -68,7 +87,7 @@ impl Definition {
                 particles: OnceLock::new(), decals: OnceLock::new(),
                 quads: OnceLock::new(), world_other_families: OnceLock::new(),
             })).collect::<Result<Vec<_>, String>>()?;
-        let result = Self { groups_present: scope(fields, "m_groups").is_some(), groups };
+        let result = Self { groups_present: scope(fields, "m_groups").is_some(), source_paths: Vec::new(), groups };
         result.prepare(fields, consumer, cancelled)?;
         Ok(result)
     }

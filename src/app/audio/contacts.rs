@@ -1,7 +1,7 @@
 //! Host scheduling for the sound portion of material-contact FX. Definitions,
 //! ancestry and event IDs are read from the installation and cached by name.
 use super::{AudioTarget, SoundEvent};
-use crate::{archive::Catalog, assets::{entities::{contacts::ContactDatabase, Value}, fx},
+use crate::{archive::Catalog, assets::{entities::{contacts::ContactDatabase}, fx},
     gameplay::{effects::{groups::sample_offsets, sound::{sample_position, SoundEffect, SoundEvent as TimedEvent}, timing::EffectTimingRanges},
         game_clock_runtime::{ClockRuntime, GamePaused}, sound::{Contact, Emitter, Request}}};
 use bevy::prelude::*;
@@ -26,6 +26,7 @@ struct Definitions {
     database: Arc<ContactDatabase>,
     chains: HashMap<String, Arc<crate::assets::entities::physics_material::resources::Definition>>,
     effects: HashMap<String, Arc<Vec<Group>>>,
+    source_leases: Vec<Arc<fx::definition::Definition>>,
 }
 
 impl Definitions {
@@ -39,7 +40,7 @@ impl Definitions {
             warn!("Contact declarations not read with the level: {error}");
             Default::default()
         });
-        Ok(Self { catalog, texts, database, chains: HashMap::new(), effects: HashMap::new() })
+        Ok(Self { catalog, texts, database, chains: HashMap::new(), effects: HashMap::new(), source_leases: Vec::new() })
     }
 
     fn event(&self, asset: &fx::SoundEventAsset) -> Result<TimedEvent, String> {
@@ -58,7 +59,6 @@ impl Definitions {
     }
 
     fn resolve(&mut self, contact: &Contact) -> Result<Arc<Vec<Group>>, String> {
-        use crate::{entities::scene_motion::child, gameplay::options::decl::list_items};
         for name in [&contact.source, &contact.target] { self.prepare_material_chain(name)?; }
         let Some(effect) = self.database.effect(self.chains[&contact.source].contact_chain(),
             self.chains[&contact.target].contact_chain()) else {
@@ -66,14 +66,15 @@ impl Definitions {
         };
         if let Some(groups) = self.effects.get(effect) { return Ok(groups.clone()); }
         let effect = effect.to_owned();
-        let fields = fx::declaration::read_with(&effect, |path| declaration_texts::read(&self.catalog, &self.texts, path))?;
+        let source = fx::declaration::acquire_with(&self.catalog, &effect,
+            fx::definition::Consumer::Common, None,
+            |path| declaration_texts::read(&self.catalog, &self.texts, path))?;
         let mut groups = Vec::new();
-        for item in list_items(child(&fields, "m_groups")) {
-            let Value::Scope(fields) = item else { return Err(format!("{effect}: invalid FX group")) };
-            let group = fx::effect_group(fields)?;
+        for group in &source.groups {
+            let group = &group.asset;
             if !group.enabled { continue; }
             let mut sounds = Vec::new();
-            for sound in group.sounds {
+            for sound in &group.sounds {
                 if !sound.enabled || (sound.start.event.is_none() && sound.stop.event.is_none()) { continue; }
                 if sound.stop.event.is_some() {
                     return Err(format!("{effect}: contact FX requires an owner for its authored stop event"));
@@ -83,6 +84,7 @@ impl Definitions {
             groups.push(Group { location: group.location, timing: group.timings, sounds });
         }
         let groups = Arc::new(groups);
+        self.source_leases.push(source);
         self.effects.insert(effect, groups.clone());
         Ok(groups)
     }
