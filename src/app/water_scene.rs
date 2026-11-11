@@ -271,7 +271,7 @@ pub(super) fn publish_water_frame(
     screen_effects:Res<crate::rendering::bevy_backend::screen_effects::ScreenEffectMaterials>,
     mut queries: ResMut<crate::rendering::bevy_backend::physics_queries::PhysicsQueryFrame>,
     mut query_error: Local<Option<String>>,
-    (queue, tome): (Res<super::SceneRenderQueue>, Option<Res<super::state::TomeWorld>>),
+    (queue, tome, navigation): (Res<super::SceneRenderQueue>, Option<Res<super::state::TomeWorld>>, Option<Res<super::NavigationWorld>>),
 ) {
     let Some(water) = water.as_mut() else {
         output.0 = None;
@@ -386,6 +386,7 @@ pub(super) fn publish_water_frame(
                             camera: frame.camera,
                             frame: frame.matrices.frame,
                             world,
+                            collision: navigation.as_ref().map(|navigation| navigation.0.map()),
                         }));
                         *query_error = None;
                     }

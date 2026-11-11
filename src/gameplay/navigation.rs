@@ -25,9 +25,17 @@ struct Triangle {
     filter: u32,
 }
 
-pub struct CollisionWorld {
+/// The immutable level map: triangles, their broad phase and materials.
+/// Shared (`CollisionWorld::map`) with readers on other threads, such as the
+/// renderer's Havok particle collisions.
+pub struct CollisionMap {
     triangles: Vec<Triangle>,
     index: TriangleIndex,
+    materials: Vec<PhysicsMaterial>,
+}
+
+pub struct CollisionWorld {
+    map: Arc<CollisionMap>,
     /// Component-owned collision, updated independently of the immutable map.
     component_triangles: Vec<Option<Triangle>>,
     component_generations: Vec<u32>,
@@ -37,7 +45,6 @@ pub struct CollisionWorld {
     owner_ids: HashMap<Arc<str>, Vec<u32>>,
     owner_names: Vec<Option<Arc<str>>>,
     owner_active: Vec<bool>,
-    materials: Vec<PhysicsMaterial>,
 }
 
 /// Host broad phase replacing Havok's compressed-mesh tree. Once built, its
@@ -65,8 +72,8 @@ struct ExpandedIndex {
 
 impl CollisionWorld {
     fn triangle(&self, index: usize) -> Option<Triangle> {
-        if index < self.triangles.len() { self.triangles.get(index).copied() }
-        else { self.component_triangles.get(index - self.triangles.len()).copied().flatten() }
+        if index < self.map.triangles.len() { self.map.triangles.get(index).copied() }
+        else { self.component_triangles.get(index - self.map.triangles.len()).copied().flatten() }
     }
 
     /// 14077af40 creates the fake interaction box; 14077be20 publishes its
@@ -103,7 +110,7 @@ impl CollisionWorld {
         ];
         for (face, points) in FACES.into_iter().enumerate() {
             let local = handle.first + face;
-            let index = self.triangles.len() + local;
+            let index = self.map.triangles.len() + local;
             if let Some(old) = self.component_triangles[local] {
                 unindex_component(&mut self.component_index, index, old.min, old.max);
             }
@@ -123,7 +130,7 @@ impl CollisionWorld {
             || self.component_owners.get(handle.first / 12).copied().flatten() != Some(handle.owner) { return; }
         for local in handle.first..handle.first + 12 {
             if let Some(old) = self.component_triangles[local].take() {
-                unindex_component(&mut self.component_index, self.triangles.len() + local, old.min, old.max);
+                unindex_component(&mut self.component_index, self.map.triangles.len() + local, old.min, old.max);
             }
         }
         self.owner_active[handle.owner as usize] = false;
@@ -175,21 +182,13 @@ impl CollisionWorld {
         }
         let owner_count = owner_names.len();
         let mut build_index = ExpandedIndex::default();
-        let mut world = Self {
+        let mut world = CollisionMap {
             triangles: Vec::new(),
             index: TriangleIndex::Expanded(ExpandedIndex::default()),
-            component_triangles: Vec::new(),
-            component_generations: Vec::new(),
-            component_owners: Vec::new(),
-            component_index: ExpandedIndex::default(),
-            free_component_boxes: Vec::new(),
-            owner_ids,
-            owner_names,
-            owner_active: vec![true; owner_count],
             materials,
         };
         for ([a, b, c], owner, material, filter) in source {
-            if owner != u32::MAX && owner as usize >= world.owner_active.len() {
+            if owner != u32::MAX && owner as usize >= owner_count {
                 continue;
             }
             if (b - a).cross(c - a).length_squared() < 1e-10 {
@@ -262,7 +261,22 @@ impl CollisionWorld {
                 TriangleIndex::Packed { cells, .. } => cells.len(), TriangleIndex::Expanded(index) => index.cells.len(),
             });
         }
-        world
+        Self {
+            map: Arc::new(world),
+            component_triangles: Vec::new(),
+            component_generations: Vec::new(),
+            component_owners: Vec::new(),
+            component_index: ExpandedIndex::default(),
+            free_component_boxes: Vec::new(),
+            owner_ids,
+            owner_names,
+            owner_active: vec![true; owner_count],
+        }
+    }
+
+    /// The shared level map and the owners currently active.
+    pub fn map(&self) -> (Arc<CollisionMap>, Arc<[bool]>) {
+        (self.map.clone(), Arc::from(self.owner_active.as_slice()))
     }
 
     pub fn set_owner_active(&mut self, id: &str, active: bool) -> bool {
@@ -276,11 +290,11 @@ impl CollisionWorld {
     }
 
     pub fn triangle_count(&self) -> usize {
-        self.triangles.len()
+        self.map.triangles.len()
     }
 
     pub fn large_triangle_count(&self) -> usize {
-        match &self.index {
+        match &self.map.index {
             TriangleIndex::Packed { large, .. } => large.len(),
             TriangleIndex::Expanded(index) => index.large.len(),
         }
@@ -308,7 +322,7 @@ impl CollisionWorld {
     /// (placed-model colliders, unresolved codec paths).
     pub fn physics_material(&self, triangle: u32) -> Option<&PhysicsMaterial> {
         let material = self.triangle(triangle as usize)?.material;
-        self.materials.get(material as usize)
+        self.map.materials.get(material as usize)
     }
 
     /// Nearest hit used by first_hit: (distance, triangle index, owner,
@@ -377,32 +391,7 @@ impl CollisionWorld {
         let low = cell(min);
         let high = cell(max);
         found.clear();
-        match &self.index {
-            TriangleIndex::Packed { cells, indices, large } => {
-                found.extend(large.iter().map(|&id| id as usize));
-                for x in low.0..=high.0 {
-                    for y in low.1..=high.1 {
-                        for z in low.2..=high.2 {
-                            if let Some(range) = cells.get(&(x, y, z)) {
-                                found.extend(indices[range.clone()].iter().map(|&id| id as usize));
-                            }
-                        }
-                    }
-                }
-            }
-            TriangleIndex::Expanded(index) => {
-                found.extend(index.large.iter().copied());
-                for x in low.0..=high.0 {
-                    for y in low.1..=high.1 {
-                        for z in low.2..=high.2 {
-                            if let Some(indices) = index.cells.get(&(x, y, z)) {
-                                found.extend(indices.iter().copied());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.map.cells_into(low, high, found);
         // Fake interactable bodies have their own mutable broad phase. Most
         // player/world queries reject this layer and avoid touching it.
         if filter.accepts(crate::gameplay::collision_filter::filter_info(crate::gameplay::collision_filter::layer::INTERACTABLE) & !0x800) {
@@ -682,5 +671,64 @@ mod tests {
             world.nearby_triangle_count(Vec3::new(0.5, 1.0, 0.0), 2.0),
             0
         );
+    }
+}
+
+impl CollisionMap {
+    /// The indexed triangles of the cells from `low` to `high`, unfiltered.
+    fn cells_into(&self, low: (i32, i32, i32), high: (i32, i32, i32), found: &mut Vec<usize>) {
+        match &self.index {
+            TriangleIndex::Packed { cells, indices, large } => {
+                found.extend(large.iter().map(|&id| id as usize));
+                for x in low.0..=high.0 {
+                    for y in low.1..=high.1 {
+                        for z in low.2..=high.2 {
+                            if let Some(range) = cells.get(&(x, y, z)) {
+                                found.extend(indices[range.clone()].iter().map(|&id| id as usize));
+                            }
+                        }
+                    }
+                }
+            }
+            TriangleIndex::Expanded(index) => {
+                found.extend(index.large.iter().copied());
+                for x in low.0..=high.0 {
+                    for y in low.1..=high.1 {
+                        for z in low.2..=high.2 {
+                            if let Some(indices) = index.cells.get(&(x, y, z)) {
+                                found.extend(indices.iter().copied());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The map triangles overlapping [min, max] whose owner is active and
+    /// whose filter word `filter` accepts, as (key, vertices, material).
+    pub fn triangles_in<'a>(
+        &'a self,
+        min: Vec3,
+        max: Vec3,
+        filter: QueryFilter,
+        owner_active: &[bool],
+        found: &mut Vec<usize>,
+        output: &mut Vec<(u32, [Vec3; 3], Option<&'a PhysicsMaterial>)>,
+    ) {
+        found.clear();
+        output.clear();
+        self.cells_into(cell(min), cell(max), found);
+        found.sort_unstable();
+        found.dedup();
+        for &index in found.iter() {
+            let t = self.triangles[index];
+            if (t.owner == u32::MAX || owner_active.get(t.owner as usize).copied().unwrap_or(false))
+                && filter.accepts(t.filter)
+                && (0..3).all(|axis| t.min[axis] <= max[axis] && t.max[axis] >= min[axis])
+            {
+                output.push((index as u32, [t.a, t.b, t.c], self.materials.get(t.material as usize)));
+            }
+        }
     }
 }

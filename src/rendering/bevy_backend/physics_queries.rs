@@ -7,6 +7,10 @@ pub struct PhysicsQueryPublication {
     pub camera: Entity,
     pub frame: u32,
     pub world: Arc<crate::gameplay::world_point_query::snapshot::PointQuerySnapshot>,
+    /// The level collision map and its active owners, for the Havok
+    /// particle collisions (bevy_backend: the original queries the hknp
+    /// world's compressed meshes).
+    pub collision: Option<(Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
 }
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct PhysicsQueryFrame(pub Option<Arc<PhysicsQueryPublication>>);
