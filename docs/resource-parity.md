@@ -7638,3 +7638,15 @@ process opcode tables, not class/factory/name-pool generations. This is
 correct attribution, not a claimed RAM saving or instruction-decoder lifetime
 change. There are no acquisition errors. Evidence:
 DH2-fx-level-lifetime/artifacts/decoder-metadata-ownership-20261111-comparison.json.
+
+Disabled-diagnostic guard review (2026-11-11). allocation_tags documents
+that without debug_allocations tag() is free and report() is empty, but Guard
+Drop still accesses CURRENT TLS after tag() returns its disabled Guard(0),
+and report() still locks the empty label table. Gate those existing bodies
+with cfg(debug_allocations), preserving the enabled implementation exactly.
+Predict zero TLS restoration and zero report-table locks in normal builds by
+compile-time exclusion, unchanged feature-enabled owner accounting, no asset
+or output change, and no new state. This closes a possible normal-build cost
+from the new decoder attribution and all existing tag call sites. Validate
+both the ordinary game compile and feature-enabled acquisition; no per-frame
+timing improvement or RAM reduction is claimed from this source correction.

@@ -20,6 +20,7 @@ thread_local! {
 pub struct Guard(u8);
 impl Drop for Guard {
     fn drop(&mut self) {
+        #[cfg(feature = "debug_allocations")]
         let _ = CURRENT.try_with(|c| c.set(self.0));
     }
 }
@@ -81,13 +82,19 @@ pub fn phase_label_storage() -> Option<(usize, usize)> {
 
 /// Live bytes per tag, largest first.
 pub fn report() -> Vec<(&'static str, isize)> {
-    // Reporting owns its temporary snapshot. In small-block tracing mode,
-    // allocation under NAMES would otherwise recurse into tag registration.
-    let _diagnostic_tag = tag("untagged");
-    let names = NAMES.lock().unwrap();
-    let mut out: Vec<_> = names.iter().enumerate().map(|(i, n)| (*n, LIVE[i].load(Ordering::Relaxed))).collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
-    out
+    #[cfg(not(feature = "debug_allocations"))]
+    { Vec::new() }
+    #[cfg(feature = "debug_allocations")]
+    {
+        // Reporting owns its temporary snapshot. In small-block tracing mode,
+        // allocation under NAMES would otherwise recurse into tag registration.
+        let _diagnostic_tag = tag("untagged");
+        let names = NAMES.lock().unwrap();
+        let mut out: Vec<_> = names.iter().enumerate()
+            .map(|(i, n)| (*n, LIVE[i].load(Ordering::Relaxed))).collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out
+    }
 }
 
 /// Read one diagnostic allocation tag without allocating a report snapshot.
