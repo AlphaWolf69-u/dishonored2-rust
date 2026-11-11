@@ -683,6 +683,14 @@ loses w. Remaining, in order:
   (hkfxShapeTagCodec 140fd1e30). The rewrite's player answers the same
   world+0x478 queries geometrically against `navigation::CollisionWorld`
   (`app::player::GameCollision`).
+  Each contact's two floats are its friction and restitution: the
+  particle's solver material combined with the hit shape's hknp material
+  (world material library +0x988, 0x70-byte entries: half-precision
+  dynamic/static friction +0x32/+0x34 (static when the contact counter is
+  below 3), restitution +0x36, combine policies +0x38/+0x39 = geometric
+  mean, min, max, average; a missing or negative-weight material keeps the
+  particle's own values). Static plane = hit normal and -(n . point);
+  140fc1370:3588-3640, dynamic at 3103.
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
