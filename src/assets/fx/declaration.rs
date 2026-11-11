@@ -6,10 +6,6 @@ use crate::{archive::Catalog, assets::entities::{self, Value}};
 use std::collections::HashSet;
 
 type Fields = Vec<(String, Value)>;
-pub(crate) fn read(catalog: &Catalog, name: &str) -> Result<Fields, String> {
-    read_with(name, |path| crate::assets::declaration_texts::read_common_or_catalog(catalog, path))
-}
-
 pub(crate) fn read_with(name: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Fields, String> {
     let _tag = crate::platform::allocation_tags::tag("FX declaration sources");
@@ -133,5 +129,9 @@ pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
         let dependencies = source_history(&owner);
         crate::loading::retain_catalog_kind(catalog.identity(), "fx", |path|
             owner.owns_read_history(path) || dependencies.contains(path));
+        if std::env::var_os("DH2_DEBUG_FX_DECLARATIONS").is_some_and(|value| value == "1") {
+            eprintln!("FX_DECLARATION_PURGE catalog={} marker={marker} records={} live={} sources={}",
+                catalog.identity(), owner.len(), owner.live_values().count(), dependencies.len());
+        }
     }
 }

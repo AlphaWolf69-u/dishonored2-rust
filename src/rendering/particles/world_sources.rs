@@ -4,10 +4,9 @@ use super::definition::ParticleDefinition;
 use crate::{
     archive::Catalog,
     assets::{
-        entities::{effects::FxGraph, Value},
+        entities::effects::FxGraph,
         fx::EffectGroupAsset,
     },
-    gameplay::options::decl::{atom, list_items, scope},
     shader_cache::ProgramLibrary,
 };
 use hashbrown::HashMap;
@@ -69,32 +68,6 @@ pub struct WorldEffectDefinition {
     pub groups: Vec<WorldEffectGroup>,
 }
 
-/// FX arrays retain constructor defaults for slots omitted by partial edits.
-/// Reuse the shared descriptor-array decoder rather than enumerate only the
-/// serialized item records and lose default groups or enabled descriptors.
-pub(crate) fn descriptor_fields(
-    fields: &[(String, Value)],
-) -> Result<Vec<std::borrow::Cow<'_, [(String, Value)]>>, String> {
-    let mut items = Vec::new();
-    crate::assets::fx::descriptor_list(&mut items, fields, |fields| Ok(std::borrow::Cow::Borrowed(fields)))?;
-    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
-    let (copy, trace) = *MODE.get_or_init(|| (
-        std::env::var("DH2_DEBUG_COPY_FX_DESCRIPTORS").as_deref() == Ok("1"),
-        std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
-    ));
-    let bytes = trace.then(|| items.iter().map(|fields|
-        fields.len() * std::mem::size_of::<(String, Value)>()
-            + fields.iter().map(|(key, value)| key.len() + cloned_value_bytes(value)).sum::<usize>()).sum::<usize>());
-    if copy {
-        for fields in &mut items { *fields = std::borrow::Cow::Owned(fields.to_vec()); }
-    }
-    if let Some(bytes) = bytes {
-        eprintln!("MEMORY FX descriptor fields: entries={} selected_tree_bytes={bytes} copied_tree_bytes={} metadata_bytes={}",
-            items.len(), if copy {bytes} else {0}, items.capacity() * std::mem::size_of::<std::borrow::Cow<'_, [(String, Value)]>>());
-    }
-    Ok(items)
-}
-
 #[derive(Default)]
 pub struct WorldFxSources {
     pub effects: HashMap<String, Result<Arc<WorldEffectDefinition>, String>>,
@@ -103,14 +76,6 @@ pub struct WorldFxSources {
     /// compact replacement. Excludes allocator bookkeeping in both figures.
     pub deferred_syntax_bytes: usize,
     pub deferred_admission_bytes: usize,
-}
-
-fn cloned_value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Atom(value) => value.len(),
-        Value::Scope(fields) => fields.len() * std::mem::size_of::<(String, Value)>()
-            + fields.iter().map(|(key, value)| key.len() + cloned_value_bytes(value)).sum::<usize>(),
-    }
 }
 
 impl WorldFxSources {

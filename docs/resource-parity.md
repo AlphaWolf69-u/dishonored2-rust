@@ -7498,3 +7498,10 @@ same-role acquisitions perform zero FX parses; adding a new consumer role
 parses only missing child families, while final scope release retires all map
 typed payloads and orphaned inherited source credits. Normal gameplay clocks,
 render passes and emitter simulation are unchanged. Verification outstanding.
+
+FX source sweep: removed the obsolete world-only descriptor-syntax helper and
+copy-mode branch once all production requests moved to the asset owner. Scope
+observations report direct headers, live typed generations and inherited source
+credits. Those scans run only at resource release; normal emitter ticks acquire
+no new locks or reference counts for this change. The contact history sweep
+builds one dependency set rather than traversing every live FX per source path.
