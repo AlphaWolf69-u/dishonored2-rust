@@ -7505,3 +7505,19 @@ observations report direct headers, live typed generations and inherited source
 credits. Those scans run only at resource release; normal emitter ticks acquire
 no new locks or reference counts for this change. The contact history sweep
 builds one dependency set rather than traversing every live FX per source path.
+
+Component metadata residual attribution (2026-11-11). The historical small-
+caller report groups260,304 bytes/2,457 blocks below ClassDeclarations::parse,
+but its leading recorded_bounds frame cannot be a literal class-parser call
+(the bounds reader is a Tome consumer). Source review also disproves the
+previous unconfirmed process-global NameId explanation: ClassRegistry owns its
+NamePool blocks, and Catalog owns ComponentTypes; the only static name bytes
+are the single-byte empty name. Do not classify those sampled blocks as a
+verified class leak or intentional global retention on that stack alone.
+Before changing ownership, attribute the existing ComponentTypes cold load
+and construction with a distinct diagnostic tag. Prediction: the real class/
+factory/name-pool owner bytes reach zero after Catalog and its last physics
+consumer drop; diagnostic symbol/cache balances can remain under other tags.
+Original class registration1990d0 and name pool131bb0/131f90 remain unchanged.
+The attribution compiles out without debug_allocations, adds no resource
+storage or normal frame work, and claims no memory/performance improvement.

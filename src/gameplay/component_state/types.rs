@@ -30,6 +30,7 @@ impl ComponentTypes {
         let started = trace.then(crate::loading::thread_cycles).flatten();
         let mut loaded = false;
         let mut load = || {
+            let _tag = crate::platform::allocation_tags::tag("Component metadata resources");
             let value = Self::new(ClassDeclarations::load(catalog.base())?)?;
             loaded = true;
             Ok::<_, String>(Arc::new(value))
