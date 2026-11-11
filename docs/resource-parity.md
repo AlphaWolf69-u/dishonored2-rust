@@ -7650,3 +7650,47 @@ or output change, and no new state. This closes a possible normal-build cost
 from the new decoder attribution and all existing tag call sites. Validate
 both the ordinary game compile and feature-enabled acquisition; no per-frame
 timing improvement or RAM reduction is claimed from this source correction.
+
+Shared registry retirement acceptance (2026-11-11). Source54f94344 compiled
+and ran the existing windowless production acquisition commands successfully.
+All seven fades and25 decals/100 material references preserve their installed
+content and independent catalog/bootstrap/persistent/final-consumer scopes.
+The catalog-history observation retires five map-only kinds independently,
+protects the common model, and preserves/then releases live MD6 generations.
+The installed empty particle declaration observes cancellation after source
+read, no publication, a fresh retry, subsequent identity reuse and final
+retirement. Edge/Dust/Edge reports the same world FX results as51c3f58b; FX
+resource/source and component metadata balances are zero after the session,
+while only the separately attributed332,724-byte decoder table balance remains.
+Catalog remaining consumers are zero. The precise retired-weak-generation
+cancellation branch is established by source review: resident assignment now
+requires a missing pin and a successful publication predicate; a false
+predicate cannot restore it. The existing production routes do not specifically
+force that rare interleaving, and no timing/byte saving for it is claimed.
+Evidence: DH2-fx-level-lifetime/artifacts/resource-retirement-final-20261111-comparison.json.
+
+Disabled allocation diagnostics compilation acceptance (2026-11-11). Source
+c2687c91 passes the ordinary game check (game feature, client binary), the
+default library check (no game/debug allocation feature), and the dev
+game/debug_allocations tools build. Feature-enabled tools SHA256
+9d0b999ddac1e33b81f1c932eb832714be788093f0e2c8f46504c89c50867fcb.
+The enabled Guard restoration/report implementation is unchanged; compile-time
+cfg removes both TLS restoration and the report mutex when tracking is off.
+No rendered-output, format, allocation-owner or frame scheduling code changes.
+An initial command asking for the game-only binary without its required game
+feature was a diagnostic invocation mistake, corrected to the default library
+check; it was not a source compilation failure. Evidence:
+DH2-fx-level-lifetime/artifacts/allocation-diagnostics-modes-20261111-comparison.json
+and default-library-mode-20261111-comparison.json.
+
+Remaining owner-policy review after this integration: the ledger's110-kind/
+family table has63 entries with implemented owners and47 unimplemented entries.
+The all36-level acquisition/upload/removal work and the fixes above do not
+close the explicit native registry-scope differences of motion scenes, static
+blueprint expansion and physhape preparation. Their current transient/level
+ownership already releases backing, but their init/common/same-map reuse and
+purge policies still require an original-backed decision: implement missing
+identity/scope handling where useful, or demonstrate that the transient host
+representation saves memory without extra acquisition work for supported
+consumers. Do not add a raw-source pin merely to turn a ledger label green.
+The overall resource-lifecycle goal remains active.
