@@ -21,7 +21,13 @@ use crate::{
     assets::fx::{particle_declaration::ParticleDeclaration, particle_havok_stage::ParticleHavokStageAsset},
     float::{add, divide, multiply, subtract},
     gameplay::{
-        havok_fx::{integrate::Integrate, Pipeline},
+        havok_fx::{
+            integrate::Integrate,
+            physics_collide::{self, CollideScratch, CollideTuning, CollideWorld, StaticCache},
+            solve_contacts::SolveContacts,
+            world_collide::WorldCollide,
+            Pipeline,
+        },
         reference_frame::ReferenceFrame,
     },
 };
@@ -41,6 +47,28 @@ struct PendingSpawn {
     fraction: f32,
     /// +0x40 orientation and +0x50 angular velocity, with AngularMotion.
     angular: Option<([f32; 4], [f32; 3])>,
+}
+
+/// The collision effects 1401dfc20 adds with m_enableCollisions:
+/// PhysicsCollide (over WorldCollide) and SolveSphereContacts.
+pub struct Collisions {
+    pub world: WorldCollide,
+    pub solver: SolveContacts,
+    pub tuning: CollideTuning,
+    cache: Vec<StaticCache>,
+    scratch: CollideScratch,
+    /// 14081a5d0 of m_layer, masked 0xf7dfffff.
+    pub filter: u32,
+}
+
+impl Collisions {
+    fn allocate(&mut self, bodies: &[i32]) {
+        self.world.allocate(bodies);
+        self.solver.allocate(bodies);
+        for &body in bodies {
+            self.cache[body as usize] = StaticCache::default();
+        }
+    }
 }
 
 pub struct HavokStageSimulation {
@@ -74,6 +102,10 @@ pub struct HavokStageSimulation {
     kill_all: bool,
     /// The contact solver's material (+0x28..+0x38).
     pub contact_material: [f32; 5],
+    pub collisions: Option<Collisions>,
+    /// +0x350: each body's remaining collisions before it reacts; sized
+    /// only when both m_collisionCounter bounds are non-zero.
+    counters: Vec<i8>,
 }
 
 impl HavokStageSimulation {
@@ -107,6 +139,8 @@ impl HavokStageSimulation {
         let angular = definition.enable_collisions && definition.collisions.mesh.is_some()
             || definition.collisions.enable_angular_motion;
         let pipeline = Pipeline::new(capacity, definition.collisions.radius, angular);
+        let counter = definition.collisions.counter;
+        let counters = if counter[0] != 0 && counter[1] != 0 { vec![0; capacity] } else { Vec::new() };
         let emitter = ParticleEmitter::havok(Arc::new(stage.emitter.clone()), spawn_seed, pose)?;
         let sprites = stage.sprites.iter().map(|_| (0..capacity).map(|_| None).collect()).collect();
         let meshes = stage.meshes.iter().map(|_| (0..capacity).map(|_| None).collect()).collect();
@@ -132,6 +166,15 @@ impl HavokStageSimulation {
             mesh_cursor: 0,
             kill_all: false,
             contact_material: [0.; 5],
+            counters,
+            collisions: definition.enable_collisions.then(|| Collisions {
+                world: WorldCollide::new(capacity),
+                solver: SolveContacts::new(capacity),
+                tuning: CollideTuning::default(),
+                cache: vec![StaticCache::default(); capacity],
+                scratch: CollideScratch::default(),
+                filter: crate::gameplay::collision_filter::filter_info(definition.collisions.layer) & 0xf7df_ffff,
+            }),
         };
         result.set_integrate(world_gravity)?;
         Ok(result)
@@ -173,6 +216,14 @@ impl HavokStageSimulation {
             let friction_threshold = positive(material.friction_threshold.sample(fraction, &mut seed)?);
             let restitution_threshold = positive(material.restitution_threshold.sample(fraction, &mut seed)?);
             self.contact_material = [friction, restitution, stickiness, restitution_threshold, friction_threshold];
+            if let Some(collisions) = self.collisions.as_mut() {
+                let solver = &mut collisions.solver;
+                solver.friction = friction;
+                solver.restitution = restitution;
+                solver.stickiness = stickiness;
+                solver.restitution_threshold = restitution_threshold;
+                solver.friction_threshold = friction_threshold;
+            }
         }
         Ok(())
     }
@@ -282,16 +333,46 @@ impl HavokStageSimulation {
 
     /// The physics world's step of this pipeline (140ff4380) for the effects
     /// this port admits, then the post-step callback (1401e63f0).
-    pub fn step(&mut self, dt: f32, world_gravity: [f32; 4]) -> Result<(), String> {
+    pub fn step(&mut self, dt: f32, world_gravity: [f32; 4], level: Option<CollideWorld<'_>>) -> Result<(), String> {
         let integrate = &mut self.integrate;
+        let mut collisions = self.collisions.as_mut();
         self.pipeline.flush_trash(&mut |bodies, allocated| {
             if allocated {
                 integrate.allocate(bodies);
+                if let Some(collisions) = collisions.as_deref_mut() {
+                    collisions.allocate(bodies);
+                }
             }
         });
         self.pipeline.allocator.update_allocated();
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
         let dt = if 0. <= dt { dt } else { 0. };
+        // Stage 0 per body: PhysicsCollide's CD pass, then the contact
+        // solve, then Integrate.
+        if let Some(collisions) = self.collisions.as_mut() {
+            let level = level.as_ref().ok_or("Havok particle collisions need the level collision map")?;
+            let accuracy = self.declaration.havok_stages[self.index].collisions.accuracy;
+            // 1401df5a0: only GROUND_TRUTH (collide mode 4) is ported.
+            if accuracy != 3 {
+                return Err("Havok particle collisions with cached static CD (accuracy LOW/MEDIUM/HIGH) are not ported".into());
+            }
+            let states = collisions.solver.bodies.clone();
+            physics_collide::static_ground_truth(
+                dt,
+                collisions.tuning,
+                self.pipeline.radius,
+                [collisions.solver.friction, collisions.solver.restitution],
+                self.pipeline.plane,
+                level,
+                &bodies,
+                &self.pipeline.linear,
+                &|body| 3 <= states[body as usize].state,
+                &mut collisions.world,
+                &mut collisions.cache,
+                &mut collisions.scratch,
+            )?;
+            collisions.solver.solve_spheres(dt, self.pipeline.radius, &bodies, &collisions.world, &mut self.pipeline.linear)?;
+        }
         let trash = self.integrate.integrate(
             dt,
             self.pipeline.domain,
@@ -301,6 +382,17 @@ impl HavokStageSimulation {
             self.pipeline.angular.as_deref_mut(),
         );
         self.pipeline.trash(&trash);
+        // Stage 1: PhysicsCollide's CCD pass.
+        if let Some(collisions) = self.collisions.as_mut() {
+            let states = &collisions.solver.bodies;
+            physics_collide::static_ccd(
+                self.pipeline.radius,
+                &bodies,
+                &|body| states[body as usize].state,
+                &mut collisions.cache,
+                &mut self.pipeline.linear,
+            );
+        }
         self.pipeline.steps += 1;
         self.pipeline.time = add(dt, self.pipeline.time);
         self.post_step(world_gravity)
@@ -314,11 +406,58 @@ impl HavokStageSimulation {
         self.pipeline.allocator.update_allocated();
         self.dead.clear();
         self.live.clear();
-        let infinite = self.declaration.havok_stages[self.index].stage.infinite_life;
+        let definition = &self.declaration.havok_stages[self.index];
+        let infinite = definition.stage.infinite_life;
+        let reaction = &definition.collisions;
+        let reacts = reaction.kill_on_collision
+            || reaction.stop_on_collision
+            || reaction.sleep_on_collision
+            || !definition.events.collision.name.is_empty()
+            || !self.counters.is_empty();
+        let (kill, stop, sleep) = (reaction.kill_on_collision, reaction.stop_on_collision, reaction.sleep_on_collision);
+        if reacts && !definition.events.collision.name.is_empty() {
+            return Err("Havok particle collision events are not connected".into());
+        }
+        let first_contacts = if kill { 3 } else { 2 };
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
         for body in bodies {
-            let [p, v] = self.pipeline.linear[body as usize];
+            let index = body as usize;
             let mut killed = self.kill_all;
+            // The collision reactions, from the contact solver's state.
+            if let Some(collisions) = self.collisions.as_mut().filter(|_| reacts) {
+                let state = collisions.solver.bodies[index].state;
+                'react: {
+                    if state <= 0 {
+                        break 'react;
+                    }
+                    if state <= first_contacts && !self.counters.is_empty() {
+                        let counter = &mut self.counters[index];
+                        if *counter == 0 {
+                            break 'react;
+                        }
+                        *counter = counter.wrapping_sub(1);
+                        if *counter != 0 {
+                            break 'react;
+                        }
+                    }
+                    if kill {
+                        killed = true;
+                    } else if stop {
+                        if state < 3 && !definition.events.stop.name.is_empty() {
+                            return Err("Havok particle stop events are not connected".into());
+                        }
+                        let linear = &mut self.pipeline.linear[index];
+                        linear[1] = [0., 0., 0., linear[1][3]];
+                        if let Some(angular) = self.pipeline.angular.as_mut() {
+                            angular[index][1] = [0.; 4];
+                        }
+                        if sleep {
+                            collisions.solver.bodies[index].state = 0x7f;
+                        }
+                    }
+                }
+            }
+            let [p, v] = self.pipeline.linear[index];
             let mut age = divide(p[3], self.life[body as usize]);
             if 1. < age {
                 if !infinite {
@@ -379,14 +518,27 @@ impl HavokStageSimulation {
         }
         let pending = std::mem::take(&mut self.pending);
         let integrate = &mut self.integrate;
+        let mut collisions = self.collisions.as_mut();
         let bodies = self.pipeline.allocate(pending.len(), true, |bodies, allocated| {
             if allocated {
                 integrate.allocate(bodies);
+                if let Some(collisions) = collisions.as_deref_mut() {
+                    collisions.allocate(bodies);
+                }
             }
         });
         let definition = &self.declaration.havok_stages[self.index].stage;
+        let counter = self.declaration.havok_stages[self.index].collisions.counter.map(|bound| bound as i32);
         for (record, &body) in pending.iter().zip(&bodies) {
             let slot = body as usize;
+            if !self.counters.is_empty() {
+                let (high, mut low) = (counter[0].max(counter[1]), counter[0].min(counter[1]));
+                if low < high {
+                    let draw = (crate::random::lcg_step(&mut self.emitter.seed) >> 10 & 0x7fff) as i64;
+                    low += (draw % (high - low + 1) as i64) as i32;
+                }
+                self.counters[slot] = low as i8;
+            }
             let linear = &mut self.pipeline.linear[slot];
             linear[0] = [record.position[0], record.position[1], record.position[2], linear[0][3]];
             linear[1] = [record.velocity[0], record.velocity[1], record.velocity[2], linear[1][3]];

@@ -756,6 +756,7 @@ impl ParticleSystem {
         now: f32,
         frame: &ParticleEffectFrame,
         view_underwater: bool,
+        collision: Option<(&crate::gameplay::navigation::CollisionMap, &[bool])>,
         seed: &mut u32,
     ) -> Result<(), String> {
         self.publication = self.effect.update(now, frame, self.finished(), seed)?;
@@ -763,7 +764,12 @@ impl ParticleSystem {
         // whether or not the system is simulated or drawn (1400908c0).
         let gravity = crate::gameplay::physics_world::WorldInfo::game_settings([[0.; 4]; 2]).gravity;
         for stage in &mut self.havok_stages {
-            stage.step(frame.delta, gravity)?;
+            let level = collision.map(|(map, owners)| crate::gameplay::havok_fx::physics_collide::CollideWorld {
+                map,
+                owners,
+                filter: stage.collisions.as_ref().map_or(0, |collisions| collisions.filter),
+            });
+            stage.step(frame.delta, gravity, level)?;
         }
         // 140227b90: the FX record's target parameters.
         self.beam_target = frame.target;

@@ -38,6 +38,9 @@ pub(crate) struct ParticleSystems {
         crate::gameplay::world_point_query::WorldPointQuery,
         crate::gameplay::world_ray_query::WorldRayQuery,
     )>,
+    /// The level collision map and its active owners for this frame's
+    /// Havok particle collisions; None outside a level.
+    pub collision: Option<(std::sync::Arc<crate::gameplay::navigation::CollisionMap>, std::sync::Arc<[bool]>)>,
 }
 impl Default for ParticleSystems {
     fn default() -> Self {
@@ -47,6 +50,7 @@ impl Default for ParticleSystems {
             slots: (0..links.next.len()).map(|_| None).collect(),
             links,
             workers: Vec::new(),
+            collision: None,
         }
     }
 }
@@ -115,13 +119,14 @@ impl ParticleSystems {
     ) -> Result<u32, String> {
         let slots = &mut self.slots;
         let seed = &mut self.seed;
+        let collision = self.collision.as_ref().map(|(map, owners)| (&**map, &**owners));
         self.links.update_chain(head, |index| {
             let slot = &mut slots[usize::from(index)];
             let system = slot.as_mut().ok_or("particle pool slot absent")?;
             if system.effect.active {
                 system.source_motion = motion.copied();
                 system.source_velocity = motion.map_or([0.; 3], |motion| motion.linear);
-                system.update(now, frame, underwater, seed)?;
+                system.update(now, frame, underwater, collision, seed)?;
                 Ok(true)
             } else {
                 *slot = None;

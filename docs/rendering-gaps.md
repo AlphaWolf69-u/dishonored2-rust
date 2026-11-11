@@ -727,6 +727,27 @@ loses w. Remaining, in order:
   and the +0x3c weight. Mode 4 then projects the cached plane off the
   pipeline's plane lock (+0x90) into the static contact; static contacts
   keep zero velocities and centre of mass.
+- Connected collisions (`havok_fx::physics_collide`, `solve_contacts`,
+  `particles::havok_stage::Collisions`): per step, mode 4 static CD for
+  every body, SolveSphereContacts, Integrate, then the CCD pass's static
+  clamp (9537-9778: a body integrated beyond the sphere of its last query,
+  R' = max(R - r/2, 0) without a hit or when R < the cached plane distance
+  of the query centre, else max(0.7 x that distance, max(1.19e-7, R)), is
+  put back on that sphere; skipped for solver state 0x80). The query runs
+  on the level map in view axes (game (x, y, z) -> (x, z, -y)). Post-step
+  reactions (1401e7d40): with kill/stop/sleep, a collision event or a
+  collision counter, a body with solver state > 0 reacts; at states up to
+  3 (kill) or 2 it first fires the collision event and decrements its
+  counter (+0x350, drawn at birth in [min, max] from the spawn seed, sized
+  only when both bounds are non-zero), reacting only when it reaches 0;
+  kill kills, stop zeroes linear and angular velocity (stop event below
+  state 3) and sleep sets state 0x7f. Census 765 -> 752.
+  Not ported: collide modes 1/2 (accuracy LOW/MEDIUM/HIGH, 467
+  declarations: cached static CD 3681-5224 with hkfxCacheSharing and
+  static cache limiting), the dynamic CD and the CCD's dynamic part
+  (moving world bodies: the map holds only static triangles, so moving
+  doors and props give no contacts), hulls and SolveConvexContacts,
+  SolveSelfContacts, collision/stop events.
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
