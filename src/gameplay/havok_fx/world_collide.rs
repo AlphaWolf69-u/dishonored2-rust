@@ -86,3 +86,67 @@ impl Combine {
         }
     }
 }
+
+/// The hknp material of a world surface as the game builds it from an
+/// arkPhysicsMaterial (140092f80: constructor 140c9c210 then 14008b6e0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceMaterial {
+    /// Truncated to their top 16 bits (+0x32, +0x34, +0x36).
+    pub dynamic_friction: f32,
+    pub static_friction: f32,
+    pub restitution: f32,
+    /// +0x38 / +0x39.
+    pub friction_policy: u8,
+    pub restitution_policy: u8,
+    /// +0x3c: the maximum contact impulse; a negative one ignores the
+    /// material.
+    pub maximum_impulse: f32,
+}
+
+fn truncate16(value: f32) -> f32 {
+    f32::from_bits(value.to_bits() & 0xffff_0000)
+}
+
+impl SurfaceMaterial {
+    pub fn from_physics(material: &crate::assets::entities::physics_material::PhysicsMaterial) -> Self {
+        // 140c9c210's defaults: 0.5 frictions, restitution 0, policies 1/2.
+        let mut result = Self {
+            dynamic_friction: f32::from_bits(0x3f00_0000),
+            static_friction: f32::from_bits(0x3f00_0000),
+            restitution: 0.,
+            friction_policy: 1,
+            restitution_policy: 2,
+            maximum_impulse: f32::from_bits(0x7f7f_ffee),
+        };
+        // 14008b6e0: flag 0x20 materials keep the defaults.
+        if material.flags & 0x20 == 0 {
+            result.dynamic_friction = truncate16(material.dynamic_friction);
+            result.static_friction = truncate16(material.static_friction);
+            result.restitution = truncate16(material.restitution);
+            result.friction_policy = 2;
+        }
+        result
+    }
+}
+
+/// 140fc1370:3588-3660: the contact's (friction, restitution) from the
+/// particle solver's own values and the hit surface's material. A resting
+/// body (solver state >= 3) uses the static friction when it is larger.
+pub fn contact_material(surface: Option<SurfaceMaterial>, own: [f32; 2], resting: bool) -> Result<[f32; 2], String> {
+    let Some(surface) = surface.filter(|surface| !(surface.maximum_impulse <= 0. && surface.maximum_impulse != 0.)) else {
+        return Ok(own);
+    };
+    let friction = if !resting || surface.static_friction <= surface.dynamic_friction {
+        surface.dynamic_friction
+    } else {
+        surface.static_friction
+    };
+    let friction = crate::float::multiply(friction, f32::from_bits(0x4019_999a));
+    let restitution = Combine::from_policy(surface.restitution_policy)
+        .ok_or("unknown hknp restitution combine policy")?
+        .apply(surface.restitution, own[1]);
+    let friction = Combine::from_policy(surface.friction_policy)
+        .ok_or("unknown hknp friction combine policy")?
+        .apply(friction, own[0]);
+    Ok([friction, restitution])
+}
