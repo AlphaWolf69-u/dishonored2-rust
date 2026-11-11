@@ -353,7 +353,7 @@ trailing `*` covers a family of kinds.
 | `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the decoded traversal/object tables intentionally retain flat runtime query data. Historical source a34a947 measured the associated query package at 826 -> 682 CPU ms/s and 3.05 -> 2.30 ms median query span; this is a host performance representation, not abandoned parse staging. The source blob and typed query data share map ownership and release together |
 | `Font` | `assets::iggy::font`, `flash::text`, `flash::glyph_cache` | host: metadata reads do not decode glyphs; live movie consumers share metrics, kerning and lazy outlines over retained Iggy source bytes through a weak provider index (original14102bd60/14102ba20). Source/provider/movie ownership has no strong cycle. Existing R8 glyph pages, dirty updates, installed atlas caps and inactive GPU eviction remain unchanged. Working-main same-binary production acquisition created35->7 providers, peak record bytes400964->200634, and released every created identity in both modes. This validates provider lifetime/reuse, not CPU speed or total IGGY parity |
 | `footStepPhysMat` | none | none: no owner yet |
-| `fx` | `assets::fx::declaration`, `rendering::particles::world_sources`, `app::audio::contacts` | host: one inherited source-acquisition path for world, screen, pause and contact FX (140022fd0 / 1400607f0); scratch syntax retires after conversion to existing typed level/instance owners. Immutable common source texts use the existing session owner; overlays bypass it. Typed catalog resource-list residency remains partial; no generic syntax cache is retained. Source/build acquisition and normal-client observations passed; see scope below |
+| `fx` | `assets::fx::declaration`, `assets::fx::definition` | host: Catalog-owned selected headers, demand-decoded immutable typed groups/families, cached immutable failures, bootstrap/map/persistent markers and scoped purge (1413630d0 / 140022fd0 / 1400607f0 / 1401c5990). World, screen, pause and contact consumers share descriptors while retaining independent material/image bindings and playback state. Source syntax retires immediately; live root leases preserve inherited read credit through purge. Mutable overlays bypass sharing. All36 CPU acquisitions and final three-map/runtime GPU publication/removal passed; warm addition of another family role remains outside observed coverage. See FX acceptance below |
 | `fxactor` | none | none: FaceFX arkFaceActor resources (registration1413529f0), not idEntityFx actors. The92 indexed .arkfaceactor files have no production reader; supported visual-effects actors acquire entityDef/fx resources through their own owners. Facial animation remains unimplemented |
 | `fxanimset` | none | none: no owner yet |
 | `gameflowManager` | none | none: no owner yet |
@@ -7551,3 +7551,38 @@ opportunity wording could be read as one heap allocation per source and is
 corrected in optimization-opportunities.md. No implementation or performance
 claim depends on that mistaken count, and no speculative scratch cache was
 added. This does not alter the already accepted shader-buffer backing reuse.
+
+FX owner integration acceptance (2026-11-11). Final source51c3f58b compiled
+cleanly with dev game/debug_allocations tools; executable SHA256
+d53bedbd9eddba3984e447e57b3a81a21005ec9cc9c557dae0f3074e2311f236.
+The final separate/shared Edge/Dust/Edge observations preserve all324 reported
+FX acquisition/group/source shapes and world results. Shared preparation
+performs318 cold decodes versus324 separate, with six hits; both FX resource
+and source tag balances reach zero after each session. This confirms the
+source-review follow-ups that borrow compact admission and reuse the cold
+group traversal. The earlier239e5aba route covers all36 installed levels,
+2,193 requests and112 cache hits; source-review changes preserve parser and
+material binding inputs. Debug acquisition cycles are not gameplay timings.
+
+The final windowless runtime resource route in Edge of the World requests
+installed dirt flies and blood splatter, publishes one proxy/seven added
+images/four decal materials, then releases all FX-only images, meshes and
+decal materials while the map remains loaded. Final typed/source tag balances
+are zero and there are no contact/audio acquisition failures. This observes
+resource publication and retirement, not visible draw correctness or active
+emitter tails. No tests, visible launches or visual inspection were used.
+The canonical owner's warm additional-family role is implemented but was not
+requested on these observed production routes; do not report it as measured.
+Evidence: DH2-fx-level-lifetime/artifacts/fx-declaration-final-20261111-comparison.json.
+
+Component attribution result: all three final processes retain exactly332,724
+bytes under the new cold-acquisition context after session destruction. This
+contradicts the zero-context-byte prediction; it does not by itself establish
+a ComponentTypes leak. Installed iced-x861.21.0 decoder/handlers/tables.rs
+initializes a lazy_static TABLES during Decoder::with_ip, and decoder/table_de/
+mod.rs allocates permanent handlers using Box::into_raw. Both component reader
+constructor paths use that decoder. This proves there is process-lifetime host
+decoder storage inside the broad context; the next attribution must isolate
+its bytes from actual class/factory/name-pool owners before changing lifetime.
+No performance improvement or complete explanation of all332,724 bytes is
+claimed from source correlation alone.

@@ -22,10 +22,13 @@ releases map shader buffers and sky materials, then releases shader-library
 handles and the Catalog at host/session shutdown. Detailed provenance and
 scope limits remain in resource-parity.md.
 
-FX descriptor identity/release is the current unfinished owner change on
-codex/fx-declaration-lifetime. The source integration now covers world, player
-screen, pause and contact consumers; its compile/acquisition observation is
-pending. This is separate from the already accepted shared Kiscule FX graphs.
+FX descriptor identity/release is now integrated through the Catalog owner:
+world, player screen, pause and contact consumers share immutable typed data;
+resolved rendering/audio state remains independently scoped. All36 installed
+level preparations pass; the final three-map and runtime asset-publication
+observations release FX owner/source allocations at session destruction. This
+is separate from already accepted shared Kiscule graphs. Warm addition of a
+different family role and active emitter-tail appearance were not exercised.
 No claim of full lifecycle completion or gameplay performance follows from
 these asset-only observations. Older sections below are historical evidence,
 not assertions that later accepted fixes are still missing.
