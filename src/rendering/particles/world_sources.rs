@@ -17,9 +17,9 @@ pub struct WorldEffectGroup {
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
     pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
-    /// Deferred admission of other families, in authored order. Keep parsing
-    /// errors until activation, without retaining their generic syntax trees.
-    pub other_families: Vec<(String, Result<bool, String>)>,
+    /// Index in the shared source generation, including disabled source groups.
+    /// Deferred admission borrows that generation rather than copying names.
+    source_group: usize,
 }
 
 pub struct WorldSoundDefinition {
@@ -64,8 +64,15 @@ impl WorldSoundEvent {
 }
 
 pub struct WorldEffectDefinition {
-    pub(crate) _source: Arc<crate::assets::fx::definition::Definition>,
+    pub(crate) source: Arc<crate::assets::fx::definition::Definition>,
     pub groups: Vec<WorldEffectGroup>,
+}
+
+impl WorldEffectDefinition {
+    pub(crate) fn other_families(&self, group: &WorldEffectGroup) -> &[(String, Result<bool, String>)] {
+        &self.source.groups[group.source_group].world_other_families.get()
+            .expect("world FX families acquired").families
+    }
 }
 
 #[derive(Default)]
@@ -299,7 +306,7 @@ impl WorldFxSources {
                 let source = crate::assets::fx::declaration::acquire(catalog, name,
                     crate::assets::fx::definition::Consumer::World, cancellation)?;
                 let mut groups = Vec::new();
-                for group in &source.groups {
+                for (source_group, group) in source.groups.iter().enumerate() {
                     if cancelled() { return Err("effect acquisition cancelled".into()); }
                     let asset = group.asset.clone();
                     if !asset.enabled { continue; }
@@ -353,7 +360,6 @@ impl WorldFxSources {
                     let admission = group.world_other_families.get().expect("world FX families acquired");
                     result.deferred_syntax_bytes += admission.syntax_bytes;
                     result.deferred_admission_bytes += admission.payload_bytes;
-                    let other_families = admission.families.clone();
                     children.extend(
                         asset
                             .sub_effects
@@ -365,10 +371,10 @@ impl WorldFxSources {
                         particles,
                         sounds,
                         decals,
-                        other_families,
+                        source_group,
                     });
                 }
-                Ok(Arc::new(WorldEffectDefinition { _source: source, groups }))
+                Ok(Arc::new(WorldEffectDefinition { source, groups }))
             };
             let loaded = load().map_err(|error| format!("{name}: {error}"));
             if cancelled() { return false; }

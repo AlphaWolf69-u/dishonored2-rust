@@ -7521,3 +7521,12 @@ consumer drop; diagnostic symbol/cache balances can remain under other tags.
 Original class registration1990d0 and name pool131bb0/131f90 remain unchanged.
 The attribution compiles out without debug_allocations, adds no resource
 storage or normal frame work, and claims no memory/performance improvement.
+
+FX owner source-review follow-up: cold acquisition now reuses the same
+borrowed group descriptors for common and requested family parsing, avoiding a
+second outer-array temporary introduced by the first owner draft. World family
+admission now borrows the immutable root generation by its authored group
+index; it no longer clones the compact family names/errors into each derived
+consumer. Disabled source groups retain their indices. These remove draft-only
+duplication, not previously measured baseline memory, and remain part of the
+unverified coherent FX branch. No active-frame allocation or lock is added.

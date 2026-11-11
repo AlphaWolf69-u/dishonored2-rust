@@ -81,14 +81,14 @@ struct PendingGroup {
 impl Definition {
     pub fn from_fields(fields: &Fields, consumer: Consumer,
         cancelled: Option<&dyn Fn() -> bool>) -> Result<Self, String> {
-        let groups = descriptors(scope(fields, "m_groups").unwrap_or(&[]))?.iter()
-            .map(|fields| Ok(Group {
+        let sources = descriptors(scope(fields, "m_groups").unwrap_or(&[]))?;
+        let groups = sources.iter().map(|fields| Ok(Group {
                 asset: Arc::new(super::effect_group(fields)?),
                 particles: OnceLock::new(), decals: OnceLock::new(),
                 quads: OnceLock::new(), world_other_families: OnceLock::new(),
             })).collect::<Result<Vec<_>, String>>()?;
         let result = Self { groups_present: scope(fields, "m_groups").is_some(), source_paths: Vec::new(), groups };
-        result.prepare(fields, consumer, cancelled)?;
+        result.prepare_sources(&sources, consumer, cancelled)?;
         Ok(result)
     }
     pub fn needs(&self, consumer: Consumer) -> bool {
@@ -104,9 +104,14 @@ impl Definition {
         cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
         if !self.needs(consumer) { return Ok(()); }
         let sources = descriptors(scope(fields, "m_groups").unwrap_or(&[]))?;
+        self.prepare_sources(&sources, consumer, cancelled)
+    }
+    fn prepare_sources(&self, sources: &[Cow<'_, Fields>], consumer: Consumer,
+        cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+        if !self.needs(consumer) { return Ok(()); }
         if sources.len() != self.groups.len() { return Err("FX generation changed during acquisition".into()); }
         let mut pending = Vec::with_capacity(self.groups.len());
-        for (group, fields) in self.groups.iter().zip(&sources) {
+        for (group, fields) in self.groups.iter().zip(sources) {
             if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
             let active = group.asset.enabled;
             pending.push(PendingGroup {

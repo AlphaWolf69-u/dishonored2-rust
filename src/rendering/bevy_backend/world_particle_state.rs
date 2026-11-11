@@ -103,7 +103,7 @@ fn admit(
         return Ok(());
     }
     for group in &definition.groups {
-        for (family, admission) in &group.other_families {
+        for (family, admission) in definition.other_families(group) {
             if *admission.as_ref().map_err(Clone::clone)? {
                 return Err(format!("{name}: world FX family {family} is not connected"));
             }
