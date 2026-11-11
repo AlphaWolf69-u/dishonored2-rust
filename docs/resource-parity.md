@@ -7421,3 +7421,19 @@ drop, whereas application ownership released all67 after EACH drop. The normal
 GPU route also released all67. The patch preserves sources/imports/settings and
 has no normal frame system; no gameplay FPS or large RAM saving is claimed.
 Evidence: DH2-fx-level-lifetime/artifacts/resource-ownership-v5-20261111-comparison.json.
+
+All-level GPU acquisition/release acceptance (2026-11-11). The windowless
+production owner observed all36 installed level selections in one reused
+App/device, including initial image streaming, actual GPU uploads and complete
+map removal. Source2d666eb6, tools SHA256
+58070307aa072e0b8f1ec5e1b075e782b0650e60963be62cf3870b5b93c69e6b.
+Every removal retained only four bootstrap meshes plus the intentional common
+model cache; map shader buffers and sky materials reached zero. Actual common
+vertex/index ranges remained complete, with no map/common slab mixing. The
+common cache grew from12 to41 meshes over the full selection; persistent image
+owners remained intentional (159 to454 images), not classified as map leaks.
+All67 shader-library handles remained live during the host and zero after
+shutdown. Catalog identity matched and remaining consumers reached zero.
+This verifies acquisition, initial streaming, upload and removal only: it is
+not evidence for gameplay frame timing, active FX tails or menu transitions.
+Evidence: DH2-fx-level-lifetime/artifacts/all-level-gpu-lifetimes-20261111-comparison.json.
