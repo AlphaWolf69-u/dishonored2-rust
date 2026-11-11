@@ -656,5 +656,12 @@ loses w. Remaining, in order:
   (position, normalized age) and seeds +0x340. Mesh orientation SIMULATED
   (1146 installed meshes) is the emitter basis for ordinary stages; for
   Havok bodies 1401e6f50 hands the renderers (1401ebc00) the system's
-  +0x8c..+0xa0 and +0xc0, to be traced for the AngularMotion orientation.
+  +0x8c..+0xa0 and +0xc0 (LOD indices only, 1401ebc00). The Havok draw
+  publication is its own: 1401e4930 (radix-sorted by 1401dd220/1401dcbf0
+  when m_sorting is set and two or more bodies live) calls, per renderer,
+  sprites 1401e5760/1401e5870 -> 1401e5440 and meshes 1401e5290/1401e5360
+  -> 1401e4f50: each live body is drawn with the AngularMotion quaternion
+  as its basis (140aa0390) when present, and meshes at the body position
+  minus R x the hull centroid offset (1401df200); trails 1401e5980/
+  1401e5ac0.
 
