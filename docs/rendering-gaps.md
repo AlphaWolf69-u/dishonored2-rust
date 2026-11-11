@@ -648,4 +648,13 @@ loses w. Remaining, in order:
   140c85490; end 140fc01d0), SolveSphereContacts (slot 19 140fb9c20),
   SolveConvexContacts (140fbb350, hull from 1401df6a0), SolveSelfContacts
   (compute slot 17 140fd33d0).
+- Draw integration: the Havok stage reuses the ordinary emitter
+  (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
+  1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
+  updates (1401ee5f0/1401eeea0, 1401eb4c0/1401ebc50, trails 1402117d0/
+  140211bc0) over the live list +0x360 with the render state +0x310
+  (position, normalized age) and seeds +0x340. Mesh orientation SIMULATED
+  (1146 installed meshes) is the emitter basis for ordinary stages; for
+  Havok bodies 1401e6f50 hands the renderers (1401ebc00) the system's
+  +0x8c..+0xa0 and +0xc0, to be traced for the AngularMotion orientation.
 
