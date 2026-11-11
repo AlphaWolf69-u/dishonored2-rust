@@ -7111,6 +7111,52 @@ levels, then correctly failed on Curator's compressed-image extent rejection;
 no final-session/all-map acceptance is claimed from that failed route.
 Evidence: DH2-fx-level-lifetime/artifacts/all-level-resource-lifetimes-20261111-comparison.json.
 
+
+Inline compressed extent correction prediction (2026-11-11). The broader
+actual scene-publication route stopped in Curator with an inline BIM dimension
+rejection. Independent header reads of all14,885 selected BIM resources found
+16 two-dimensional base images whose stored record dimensions are rounded to
+BC block boundaries, including the512x2 Ashworth-device lookup stored512x4.
+Original1402f4060 rounds compressed width/height to four pixels before filling
+the D3D texture descriptor;1402e9ff0 applies the same bounds before record
+upload, and1402f50c0 copies complete blocks. Port that storage-extent rule.
+Preserve logical header parsing, compressed formats, payload bytes, mip order
+and scope owners. Validate record block coverage against each storage mip and
+use the actual storage dimensions for allocation/upload. No RGBA expansion,
+resampling, extra pass or GPU-load increase is expected. The legacy BC3/BC7
+inline accessors require the same rule. Preserve exact extents for uncompressed
+formats and attach source paths to resident-image acquisition errors.
+Verify installed records and actual Curator publication/GPU upload before
+continuing the all-level lifecycle pass.
+
+Inline block-storage acceptance (2026-11-11,0d8a6320). The clean dev game/tools
+build completed; Tools SHA256 c5c22302a94b17ce27828bb8e41156959d91b82ba414da01178da1f784f68910.
+All11,885 installed2D BIM resources matched their serialized mip payloads
+(1,242,141,788 bytes);16 required original block-rounded storage extents.
+No format expansion, cropping, resampling or additional payload allocation was
+introduced. The actual Curator GPU route acquired4,365 images/13,240 meshes/
+76 buffers/one sky material, then returned to15 bootstrap images/four meshes/
+zero buffers/zero skies. The complete36-map production CPU preparation,
+publication and retirement route passed, with Catalog remaining_consumers=0.
+All named typed resource owners returned to zero. The diagnostic phase tags
+still retain602,650 bytes after publication and332,900 after physics, plus
+smaller phase balances and4,372,297 untagged bytes; those are not certified as
+resource leaks or harmless process metadata. GPU evidence covers Curator
+asset upload/removal, not all36 maps or gameplay draws. The wider audit remains
+open for remaining attribution and supported owner obligations.
+Evidence: DH2-fx-level-lifetime/artifacts/inline-block-storage-20261111-comparison.json.
+
+Cube face-count correction prediction (2026-11-11). The original BIM reader
+1402d2740 and GPU allocator1402f4060 interpret a cube's stored layer-count1
+as six face records. The host accepts only literal6 and rejects three real
+installed resources: the BC6 black/invalid cubes and the template cube. All
+three contain six ordered faces per mip (42/42/30 records respectively).
+Normalize that descriptor in the single layered-image reader; preserve all
+packed bytes, formats, mip ordering and ownership. Expected gain is supported
+acquisition of these three resources, with no added decode, upload or runtime
+work for previously accepted cubes. Verify the full installed cube/array/volume
+inventory through the production readers before integration.
+
 Common static-model GPU lifetime prediction (2026-11-11). Model lookup
 1400607f0 and bootstrap promotion140060b60 retain common resource identities;
 static surface upload140259d50 and release14026a240 belong to that identity.
