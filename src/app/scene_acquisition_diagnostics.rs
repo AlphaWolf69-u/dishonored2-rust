@@ -806,6 +806,16 @@ fn observe_runtime_fx_image_aliases(
 }
 
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
+    if phase == "published" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_UPDATES").is_some_and(|value| value == "1") {
+        observe_shader_buffer_updates(world, step);
+    }
+    if phase == "after-gpu-removal" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_COUNTERS").is_some_and(|value| value == "1") {
+        let uploads = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock().unwrap_or_else(|error| error.into_inner());
+        eprintln!("SHADER_BUFFER_COUNTERS step={step} entries={} uploads={} bytes={}",
+            uploads.as_ref().map_or(0, |rows| rows.len()),
+            uploads.as_ref().map_or(0, |rows| rows.values().map(|row| row.0).sum::<u64>()),
+            uploads.as_ref().map_or(0, |rows| rows.values().map(|row| row.1).sum::<u64>()));
+    }
     if phase == "published" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_PREPARATION").is_some_and(|value| value == "1") {
         for (_, buffer) in world.resource::<Assets<ShaderBuffer>>().iter() {
             if let Some(bytes) = &buffer.data {
@@ -1197,4 +1207,28 @@ fn inspect_decal_preload_inventory(base: &std::path::Path) -> Result<(), Box<dyn
     }
     eprintln!("DECAL_PRELOAD_COMPLETE maps={maps}");
     Ok(())
+}
+
+/// Observe the serializer with the actual level's published wind words.
+/// No simulation, GPU upload or visible frame is produced by these calls.
+fn observe_shader_buffer_updates(world: &World, step: usize) {
+    let materials = world.resource::<super::vegetation_wind::VegetationMaterials>();
+    let buffer = world.resource::<Assets<ShaderBuffer>>().get(&materials.instances).expect("published wind buffer");
+    let bytes = buffer.data.as_ref().expect("published wind words before upload");
+    let words = bytes.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect::<Vec<_>>();
+    let expected = blake3::hash(bytes);
+    let mut scratch = ShaderBuffer::default();
+    scratch.set_data(words.as_slice());
+    let mut reused = 0;
+    let mut matched = words.len() * 4 == bytes.len();
+    let mut capacity_equal = true;
+    for _ in 0..256 {
+        let previous = scratch.data.as_ref().unwrap().as_ptr();
+        scratch.set_data(words.as_slice());
+        let current = scratch.data.as_ref().unwrap();
+        reused += usize::from(previous == current.as_ptr());
+        matched &= blake3::hash(current) == expected;
+        capacity_equal &= current.capacity() == bytes.len();
+    }
+    eprintln!("SHADER_BUFFER_UPDATES step={step} bytes={} samples=256 reused={reused} matched={matched} capacity_equal={capacity_equal} signature={expected}", bytes.len());
 }

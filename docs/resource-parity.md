@@ -7160,3 +7160,23 @@ with unchanged byte content, retained capacity, GPU descriptors and lifetimes.
 Compare actual installed scene publication in both modes in the same binary;
 record serialized/retained capacities and complete published buffer hashes.
 The expected gain is temporary allocation/copy volume, not a walking/FPS claim.
+
+Shader-buffer module sweep prediction (2026-11-11). set_data allocates a new
+byte vector even for a same-sized update of the level's wind instance words
+(14077fbc0 windInfo/140339160 samples, forward vegetation674e25d0 family).
+Reuse the prior serialization backing only when its capacity equals the exact
+new ShaderType size; changed sizes preserve the old allocation policy. Clear
+its length before writing so padding is initialized identically. Expect one
+fewer allocation per unchanged-size update, identical serialized words/capacity,
+and no extra retained memory or changed GPU uploads. Observe256 calls per
+installed level using its actual published wind words; do not claim frame
+or release CPU timings from that acquisition diagnostic.
+
+The same module unconditionally grows SHADER_BUFFER_UPLOADS and takes its
+mutex on each upload. Its only readers are benchmark_frames, which clears
+at measured-frame start and prints at exit. Gate collection by the existing
+benchmark launch option or an explicit diagnostic override. Expect no table
+entries/locking in normal gameplay, preserved benchmark counters and identical
+GPU resources. Existing source serialization, GPU extraction copies required
+by concurrent frame ownership, staging-belt submission and descriptor/resize
+semantics remain unchanged. No new shader pass or draw is introduced.
