@@ -7380,3 +7380,18 @@ drop, whereas application ownership released all67 after EACH drop. The normal
 GPU route also released all67. The patch preserves sources/imports/settings and
 has no normal frame system; no gameplay FPS or large RAM saving is claimed.
 Evidence: DH2-fx-level-lifetime/artifacts/resource-ownership-v5-20261111-comparison.json.
+
+Persistent mesh-pool lookup prediction (2026-11-11). The corrected normal
+EotW/Dust/EotW route retains2,097,184 common buffer bytes after the first map
+but4,194,368 after Dust adds only two meshes. The map seal clears every slab
+lookup list, including the explicit long-lived domain, so those two surfaces
+cannot use the first common buffers' free ranges. Keep persistent-domain pool
+lookups across a map seal while sealing all ordinary/bootstrap layouts as
+before. Expect two persistent buffers/2,097,184 bytes after both maps, eliminating
+the second pair's2,162,688 allocator bytes and two buffer creations. No original
+mesh payload, GPU address already in use, draw policy or frame system changes.
+Normal removals still free empty slabs; a changed Catalog drops its old handles.
+MeshAllocator previously forwarded sealing through Deref; its explicit method
+now selects the actual lifetime domains in the existing generic slab table.
+Verify cached vertex/index ranges and content, actual live allocations,
+cancellation and the normal path without debug mesh copies before acceptance.
