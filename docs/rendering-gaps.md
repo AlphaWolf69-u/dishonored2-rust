@@ -547,6 +547,13 @@ base 140ff1be0) registered with the physics world (+0x148338), whose
 collision shape 1401df6a0 (UpdateCollisionShape) is a convex hull of the
 particle mesh (140b88xxx hull builder) recentred on its centroid.
 arkHavokParticleSimulatorEffect (1401db280) feeds per-particle effects.
-Porting needs that FX pipeline (the Havok side at 140ff1be0..140ffxxxx and
-140fbxxxx/140fdxxxx) on top of the rewrite's hknp-based physics port; the
-pipeline's step and its collision callbacks (events) are next to read.
+The pipeline is Havok FX (hkfx, the Arkane 2016_1_0 drop: hkfxPipeline,
+hkfxBodyAllocator, hkfxPipelines::Debris/Particles, hkfxEffects::
+LinearMotion, AngularMotion, WorldCollide, PhysicsCollide, SolveContacts,
+SolveConvexContacts, ...). The simulator's secondary interfaces are its
+callbacks: 1401e6240 (+0x118 vtable) records each world contact (0x24
+bytes) for the collision events, 1401e63f0 (+0x110) runs after each step
+(1401e7d40: bounds, contact and stop/death events, freeing bodies through
+the hkfx allocator). Porting the stages means porting the hkfx Debris
+pipeline and its effects against the rewrite's hknp world: a middleware
+port of its own, not a rendering path.
