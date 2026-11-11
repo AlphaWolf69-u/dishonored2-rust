@@ -72,6 +72,8 @@ pub struct HavokStageSimulation {
     mesh_cursor: usize,
     /// +0x3e0.
     kill_all: bool,
+    /// The contact solver's material (+0x28..+0x38).
+    pub contact_material: [f32; 5],
 }
 
 impl HavokStageSimulation {
@@ -129,6 +131,7 @@ impl HavokStageSimulation {
             lod: 0,
             mesh_cursor: 0,
             kill_all: false,
+            contact_material: [0.; 5],
         };
         result.set_integrate(world_gravity)?;
         Ok(result)
@@ -156,6 +159,21 @@ impl HavokStageSimulation {
         self.integrate.angular_damping = unit(simulation.angular_damping.sample(fraction, &mut seed)?);
         self.integrate.angular_clamping =
             clamp(multiply(simulation.angular_clamping.sample(fraction, &mut seed)?, f32::from_bits(0x3c8e_fa35)));
+        // 1401e1d10 for the contact solver (convex +0x198, else sphere
+        // +0x190), on the same seed: solver +0x28 friction, +0x2c
+        // restitution, +0x30 stickiness, +0x38 friction threshold and +0x34
+        // restitution threshold, the thresholds clamped at zero.
+        let definition = &self.declaration.havok_stages[self.index];
+        if definition.enable_collisions {
+            let material = &definition.collisions.material;
+            let positive = |value: f32| if value <= 0. { 0. } else { value };
+            let friction = material.friction.sample(fraction, &mut seed)?;
+            let restitution = material.restitution.sample(fraction, &mut seed)?;
+            let stickiness = material.stickiness.sample(fraction, &mut seed)?;
+            let friction_threshold = positive(material.friction_threshold.sample(fraction, &mut seed)?);
+            let restitution_threshold = positive(material.restitution_threshold.sample(fraction, &mut seed)?);
+            self.contact_material = [friction, restitution, stickiness, restitution_threshold, friction_threshold];
+        }
         Ok(())
     }
 
