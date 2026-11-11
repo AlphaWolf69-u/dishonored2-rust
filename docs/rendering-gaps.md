@@ -691,6 +691,19 @@ loses w. Remaining, in order:
   mean, min, max, average; a missing or negative-weight material keeps the
   particle's own values). Static plane = hit normal and -(n . point);
   140fc1370:3588-3640, dynamic at 3103.
+  Section map of 140fc1370 (variant A): Dynamic CD ~1353-3320, Static CD
+  3329-5224 split by the collide accuracy (+0x28, 1401df5a0: LOW 2,
+  MEDIUM/HIGH 1, GROUND_TRUTH 4; installed stages use 1 and 166 use 4):
+  mode 4 (3383-3680) re-queries every step, mode 1 (3681-5224) goes through
+  the neighbour cache and static cache limiting; CCD pass ~9514-11227.
+  Mode 4 per body: displacement d = |dt v|, query distance
+  clamp(d x +0x9c + r x +0x98 + r, +0x7c, +0x80) with r the body scale x
+  pipeline radius (+0x34; per-body partition sizes when the partition
+  keeps them); the cache entry is reset and its AABB centre/size written;
+  140fe3be0 queries closest points of the particle shape (+0xf8) at the
+  body position with filter (+0x128 +0xc0..+0xd8); the closest hit becomes
+  the static plane (normal, -(n . p)), the hit body/shape key is cached
+  and the material combination fills the friction/restitution pair.
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
