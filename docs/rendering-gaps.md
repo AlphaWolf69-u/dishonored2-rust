@@ -562,3 +562,60 @@ bytes) for the collision events, 1401e63f0 (+0x110) runs after each step
 the hkfx allocator). Porting the stages means porting the hkfx Debris
 pipeline and its effects against the rewrite's hknp world: a middleware
 port of its own, not a rendering path.
+
+### Havok FX pipeline, mapped for the port
+
+Descriptor defaults: 1401dd300 (idList element constructor, called by
+1409b????'s resize at chunk_000483:5008) then 1401de940: m_enabled 1,
+m_enableCollisions 1 (so 1073 of the 1075 installed stages collide),
+m_boundsMargins 0.1, curves at +0x50/+0x118/+0x1e0 = 0, +0x2a8/+0x370 = 12,
+simulation_t gravity 1, linearDamping 0, linearClamping 0x5f7ffff0,
+angularDamping 0, angularClamping 0x5f7ffff0. Reflection (chunk_001017
+3060-3900): main_t {m_name +0, m_boundsMargins +8}; collisions_t
+{m_collisionCounter +0, m_killOnCollision +8, m_stopOnCollision +9,
+m_sleepOnCollision +0xa, m_killOnOceanCollision +0xb, m_selfCollisions
++0xc, m_mesh +0x10, m_boundingBox +0x18, m_radius +0x1c,
+m_enableAngularMotion +0x20, m_material +0x28 {m_friction, m_restitution,
+m_stickiness, m_restitutionThreshold, m_frictionThreshold, 0xc8 each},
+m_accuracy +0x410, m_layer +0x414}; spawn_t also holds
+m_physicsShapesSpawn +0x598, m_initialAngularOrientation +0xd90,
+m_initialAngularVelocity +0xea8.
+
+Simulator (1401dfc20, arkHavokParticleStageSimulator : arkPhysicsFXPipeline
+: hkfxPipeline). Effects added in order (140ff2750): LinearMotion (inline,
+always), AngularMotion (mesh with angular motion, or +0x48), arkVectorFields
+(vector/acceleration fields), arkAttractors, arkAccelerations (acceleration
+over life not constant), arkWind (system wind and m_enableWind); with
+collisions: SpatialPartition (inline), PhysicsCollide, SolveSphereContacts
+(no convex mesh) or SolveConvexContacts (140fbda60 with the hull), and
+SolveSelfContacts when m_selfCollisions; Integrate (inline) last.
+Registration: 1400957a0 (world +0x148348, stepped by 1400908c0 through
+140ff71c0 with the pipeline's own timestep), 140095840 (post-step listener).
+
+Step (CpuBackend slot 3, 140ff4380): bookkeeping 140ff2c10/140ff2620/
+140ff2730/140ff2f40; every enabled effect's slot 15 (begin, dt); stage
+lists of effects with type 1 (unary) or 2 (compute) and stage count >
+s; consecutive unary effects run together per body chunk (prepare slot 18,
+per chunk each effect's slot 19 in order, finish slot 20); a compute
+effect runs its slot 17; every enabled effect's slot 16 (end); step count
++0x38, time +0x3c, post-step signal +0xb8+8. Types: LinearMotion and
+AngularMotion 0 (channel data only), the rest 1 with one stage,
+SolveSelfContacts 2. Per body the order is therefore fields, attractors,
+accelerations, wind, spatial partition, collide, contact solve; then self
+contacts; then Integrate.
+
+LinearMotion: 0x20 bytes per body, channels "LinearMotion/PositionAndAge"
+and "VelocityAndScale"; allocation 140ff8720 writes (0,0,0,0),(0,0,0,1).
+Integrate (140ff89d0; fields gravity +0x30, linearDamping +0x40,
+linearClamping +0x44, angularDamping +0x48, angularClamping +0x4c, maxAge
++0x50, rmaFrequency +0x54, outOfDomainHandling +0x58 (CLIP 0, TRASH 1),
+secondOrderAccuracy +0x5c, aging rate +0x60; per-body 8 bytes +0x78 of two
+packed vectors): slot 19 140ff8cd0 -> 6-DoF 140ff95a0 with AngularMotion,
+else 3-DoF 140ff9fd0: bodies older than maxAge are trashed (140ff2550);
+outside the pipeline domain (+0x70/+0x80, +-4096 around the origin) they
+are clipped (velocity zeroed, ageing continues) or trashed; inside, the
+velocity's running average is packed, the position advances by v dt
+(second-order variant with the previous packed velocity), age += rate dt,
+velocity = v pow-damped + projected gravity dt, clamped to the linear
+clamp, and the optional plane lock (+0x90) is applied.
+
