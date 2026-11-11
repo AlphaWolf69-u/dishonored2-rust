@@ -4,22 +4,31 @@
 use super::{EffectGroupAsset, decal::{decal, DecalAsset}, particle_system::{particle_system, ParticleSystemAsset}, screen_quad::{screen_quad, ScreenQuadAsset}};
 use crate::assets::entities::Value;
 use crate::gameplay::options::decl::{atom, list_items, scope};
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, sync::{Arc, OnceLock}};
 
 type Fields = [(String, Value)];
 pub(crate) type Family<T> = Result<Vec<Result<Arc<T>, String>>, String>;
 
+/// Consumers decode only families they can actually use. Typed child data is
+/// shared; source syntax and all material/image bindings remain temporary or
+/// consumer-owned. This host deferral replaces eager idDeclFX typed payloads.
+#[derive(Clone, Copy)]
+pub(crate) enum Consumer { Common, World, Screen }
+impl Consumer {
+    fn particles(self) -> bool { matches!(self, Self::World | Self::Screen) }
+}
 pub(crate) struct Definition {
+    pub groups_present: bool,
     pub groups: Vec<Group>,
 }
 pub(crate) struct Group {
     pub asset: Arc<EffectGroupAsset>,
-    pub particles: Family<ParticleSystemAsset>,
-    pub decals: Family<DecalAsset>,
-    pub quads: Family<ScreenQuadAsset>,
+    pub particles: OnceLock<Family<ParticleSystemAsset>>,
+    pub decals: OnceLock<Family<DecalAsset>>,
+    pub quads: OnceLock<Family<ScreenQuadAsset>>,
     /// Preserve the world consumer's independent family-admission boundary.
     /// This contains no generic syntax, image data, GPU handle or playback state.
-    pub world_other_families: Vec<(String, Result<bool, String>)>,
+    pub world_other_families: OnceLock<Vec<(String, Result<bool, String>)>>,
 }
 
 fn descriptors(fields: &Fields) -> Result<Vec<Cow<'_, Fields>>, String> {
@@ -32,31 +41,73 @@ fn family<T>(fields: &Fields, name: &str, parse: fn(&Fields) -> Result<T, String
         .filter(|fields| atom(fields, "m_enabled") != Some("false"))
         .map(|fields| parse(fields).map(Arc::new)).collect())
 }
+fn other_families(fields: &Fields) -> Vec<(String, Result<bool, String>)> {
+    fields.iter().filter(|(name, value)| {
+        !matches!(name.as_str(), "m_particleSystems" | "m_sounds" | "m_decals" | "m_subFXs")
+            && matches!(value, Value::Scope(_))
+            && scope(fields, name).is_some_and(|entries| !list_items(entries).is_empty()
+                || atom(entries, "num").is_some_and(|count| count != "0"))
+    }).map(|(name, value)| {
+        let Value::Scope(entries) = value else { unreachable!() };
+        (name.clone(), descriptors(entries).map(|items|
+            items.iter().any(|fields| atom(fields, "m_enabled") != Some("false"))))
+    }).collect()
+}
+struct PendingGroup {
+    particles: Option<Family<ParticleSystemAsset>>,
+    decals: Option<Family<DecalAsset>>,
+    quads: Option<Family<ScreenQuadAsset>>,
+    other: Option<Vec<(String, Result<bool, String>)>>,
+}
 impl Definition {
-    /// Constructor/default/array interpretation stays in the existing asset
-    /// parsers. Resolved inheritance syntax is borrowed only during this call.
-    pub fn from_fields(fields: &Fields) -> Result<Self, String> {
-        let mut groups = Vec::new();
-        for fields in descriptors(scope(fields, "m_groups").unwrap_or(&[]))? {
-            let asset = Arc::new(super::effect_group(&fields)?);
-            let world_other_families = fields.iter().filter(|(name, value)| {
-                !matches!(name.as_str(), "m_particleSystems" | "m_sounds" | "m_decals" | "m_subFXs")
-                    && matches!(value, Value::Scope(_))
-                    && scope(&fields, name).is_some_and(|entries| !list_items(entries).is_empty()
-                        || atom(entries, "num").is_some_and(|count| count != "0"))
-            }).map(|(name, value)| {
-                let Value::Scope(entries) = value else { unreachable!() };
-                (name.clone(), descriptors(entries).map(|items|
-                    items.iter().any(|fields| atom(fields, "m_enabled") != Some("false"))))
-            }).collect();
-            groups.push(Group {
-                particles: family(&fields, "m_particleSystems", particle_system),
-                decals: family(&fields, "m_decals", decal),
-                quads: family(&fields, "m_fullScreenQuads", screen_quad),
-                asset,
-                world_other_families,
+    pub fn from_fields(fields: &Fields, consumer: Consumer,
+        cancelled: Option<&dyn Fn() -> bool>) -> Result<Self, String> {
+        let groups = descriptors(scope(fields, "m_groups").unwrap_or(&[]))?.iter()
+            .map(|fields| Ok(Group {
+                asset: Arc::new(super::effect_group(fields)?),
+                particles: OnceLock::new(), decals: OnceLock::new(),
+                quads: OnceLock::new(), world_other_families: OnceLock::new(),
+            })).collect::<Result<Vec<_>, String>>()?;
+        let result = Self { groups_present: scope(fields, "m_groups").is_some(), groups };
+        result.prepare(fields, consumer, cancelled)?;
+        Ok(result)
+    }
+    pub fn needs(&self, consumer: Consumer) -> bool {
+        self.groups.iter().filter(|group| group.asset.enabled).any(|group|
+            (consumer.particles() && group.particles.get().is_none())
+                || (matches!(consumer, Consumer::World)
+                    && (group.decals.get().is_none() || group.world_other_families.get().is_none()))
+                || (matches!(consumer, Consumer::Screen) && group.quads.get().is_none()))
+    }
+    /// Stage every newly requested family before publication. A cancelled
+    /// acquisition must not change the existing immutable resource generation.
+    pub fn prepare(&self, fields: &Fields, consumer: Consumer,
+        cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+        if !self.needs(consumer) { return Ok(()); }
+        let sources = descriptors(scope(fields, "m_groups").unwrap_or(&[]))?;
+        if sources.len() != self.groups.len() { return Err("FX generation changed during acquisition".into()); }
+        let mut pending = Vec::with_capacity(self.groups.len());
+        for (group, fields) in self.groups.iter().zip(&sources) {
+            if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
+            let active = group.asset.enabled;
+            pending.push(PendingGroup {
+                particles: (active && consumer.particles() && group.particles.get().is_none())
+                    .then(|| family(fields, "m_particleSystems", particle_system)),
+                decals: (active && matches!(consumer, Consumer::World) && group.decals.get().is_none())
+                    .then(|| family(fields, "m_decals", decal)),
+                quads: (active && matches!(consumer, Consumer::Screen) && group.quads.get().is_none())
+                    .then(|| family(fields, "m_fullScreenQuads", screen_quad)),
+                other: (active && matches!(consumer, Consumer::World) && group.world_other_families.get().is_none())
+                    .then(|| other_families(fields)),
             });
         }
-        Ok(Self { groups })
+        if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
+        for (group, pending) in self.groups.iter().zip(pending) {
+            if let Some(value) = pending.particles { let _ = group.particles.set(value); }
+            if let Some(value) = pending.decals { let _ = group.decals.set(value); }
+            if let Some(value) = pending.quads { let _ = group.quads.set(value); }
+            if let Some(value) = pending.other { let _ = group.world_other_families.set(value); }
+        }
+        Ok(())
     }
 }

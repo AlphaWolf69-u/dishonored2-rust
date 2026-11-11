@@ -53,13 +53,13 @@ fn layer(name: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, Strin
 
 /// The original declaration identity owns typed descriptor data only. Render
 /// materials/images and mutable effect clocks remain with their consumers.
-pub(crate) fn acquire(catalog: &Catalog, name: &str, cancelled: Option<&dyn Fn() -> bool>)
+pub(crate) fn acquire(catalog: &Catalog, name: &str, consumer: super::definition::Consumer, cancelled: Option<&dyn Fn() -> bool>)
     -> Result<std::sync::Arc<super::definition::Definition>, String> {
-    acquire_with(catalog, name, cancelled, |path|
+    acquire_with(catalog, name, consumer, cancelled, |path|
         crate::assets::declaration_texts::read_common_or_catalog(catalog, path))
 }
-pub(crate) fn acquire_with(catalog: &Catalog, name: &str, cancelled: Option<&dyn Fn() -> bool>,
-    read: impl FnMut(&str) -> Result<Option<String>, String>)
+pub(crate) fn acquire_with(catalog: &Catalog, name: &str, consumer: super::definition::Consumer, cancelled: Option<&dyn Fn() -> bool>,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>)
     -> Result<std::sync::Arc<super::definition::Definition>, String> {
     let _tag = crate::platform::allocation_tags::tag("FX declaration resources");
     if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
@@ -67,17 +67,22 @@ pub(crate) fn acquire_with(catalog: &Catalog, name: &str, cancelled: Option<&dyn
     let mut owner = catalog.fx_resources.get_or_init(Default::default).lock()
         .map_err(|_| "FX declaration registry is poisoned")?;
     let load = |_| {
-        let fields = read_with(name, read)?;
+        let fields = read_with(name, &mut read)?;
         if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
-        super::definition::Definition::from_fields(&fields).map(std::sync::Arc::new)
+        super::definition::Definition::from_fields(&fields, consumer, cancelled).map(std::sync::Arc::new)
     };
     let shared = !catalog.has_overlays()
         && std::env::var_os("DH2_DEBUG_SEPARATE_FX_DECLARATIONS").is_none_or(|value| value != "1");
-    if shared {
+    let definition = if shared {
         owner.acquire_when(&resource, 0, load, || !cancelled.is_some_and(|stop| stop()))
     } else {
         owner.acquire_with_sharing(&resource, 0, false, load)
+    }?;
+    if definition.needs(consumer) {
+        let fields = read_with(name, &mut read)?;
+        definition.prepare(&fields, consumer, cancelled)?;
     }
+    Ok(definition)
 }
 pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8, persistent: bool) -> Result<(), String> {
     let _tag = crate::platform::allocation_tags::tag("FX declaration resources");

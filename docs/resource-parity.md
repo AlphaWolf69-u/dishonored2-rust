@@ -7437,3 +7437,15 @@ shutdown. Catalog identity matched and remaining consumers reached zero.
 This verifies acquisition, initial streaming, upload and removal only: it is
 not evidence for gameplay frame timing, active FX tails or menu transitions.
 Evidence: DH2-fx-level-lifetime/artifacts/all-level-gpu-lifetimes-20261111-comparison.json.
+
+FX demand-decoding refinement (2026-11-11, unverified branch only). Pure
+typed child families now stage lazily by consumer: contacts/pause request
+common groups, world requests particles/decals/admission, screen requests
+particles/quads. A new family on an existing identity rereads temporary inherited
+syntax once, then discards it; already-decoded families remain shared. This
+avoids eagerly decoding unused visual descriptors when resolving a sound.
+Cancellation stages every new family before publishing any, and never retains
+generic Value trees. Prediction: repeated same-role requests parse no FX syntax;
+first request of another role parses only its previously absent typed families.
+Production consumer wiring and unchanged-output/lifetime observation remain
+unfinished; no performance saving or accepted implementation is claimed yet.
