@@ -7530,3 +7530,17 @@ index; it no longer clones the compact family names/errors into each derived
 consumer. Disabled source groups retain their indices. These remove draft-only
 duplication, not previously measured baseline memory, and remain part of the
 unverified coherent FX branch. No active-frame allocation or lock is added.
+
+FX first integrated observation (2026-11-11, source239e5aba; feature not yet
+merged). Clean dev game/tools compilation and same-binary separate/shared
+Edge/Dust/Edge preparation completed. All324 reported acquisition/group/source
+shapes and world effect results matched; shared acquisition decoded318 bodies
+and reused six, versus324 separate parses. The full36-level shared preparation
+completed2,193 acquisitions,2,081 cold decodes and112 cache hits. Both FX
+resource/source allocation contexts reached zero after each full session; no
+new contact/audio acquisition errors were recorded. Scoped debug cycles are
+diagnostic only, not a release CPU or walking-frame performance claim. This
+route did not exercise warm addition of a different family role. Source-review
+follow-ups that borrow admission metadata and reuse the cold traversal require
+their final coherent build before acceptance. Evidence:
+DH2-fx-level-lifetime/artifacts/fx-declaration-lifetimes-20261111-comparison.json.
