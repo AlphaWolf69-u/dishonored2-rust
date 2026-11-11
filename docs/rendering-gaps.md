@@ -513,3 +513,29 @@ system +0x1cf0 to 1401da820, which matches names, orients the spawn from
 the event velocity/view axes (1401da330) and asks the owner to spawn the
 FX. The rewrite needs a runtime FX spawn request from particle systems
 to its world FX owner before this can be ported.
+
+## Havok particle stages (`m_havokStages`), mapping
+
+682 declarations' first failure (debris, chunks, rolling stones,
+breakables, leaves). arkHavokParticleStageDesc (0x1d20 bytes, declaration
+list +0x5c8, system list +0x396; constructor 1401dfc20, frame update
+1401fef80). Reflection: m_enabled +0, m_enableWind +1,
+m_enableVelocityInheritance +2, m_main +8 (m_name, m_boundsMargins +8,
+m_enableAngularMotion +0x20 of main_t... see registration),
+m_enableCollisions +0x20, m_collisions +0x28 (arkCollisionMaterial
++0x28 within, m_accuracy +0x410, m_layer +0x414), m_cycleSimulation +0x440
+(simulation_t: m_gravity, m_linearDamping, m_linearClamping,
+m_angularDamping, m_angularClamping, 0xc8 each), m_spawn +0x828 (spawn_t,
+0x1088: the standard cycle fields, m_delay +0x1c0, m_duration +0x1c8,
+m_useEventLocation +0x1d0, m_eventVelocity +0x1d8, ...),
+m_spawnCollisions +0x18b0, m_wind +0x18c8 (m_dragOverCycle,
+m_dragOverLife), m_vectorFields +0x1a58, m_accelerationVectorFields
++0x1a68, m_attractors +0x1a78, m_accelerationOverLife +0x1a88,
+m_linearAccelerationOverLife +0x1ba0, m_events +0x1c68 (m_birth,
+m_collision, m_oceanCollision, m_stop, m_death, m_life),
+m_sorting +0x1cc8, m_constantSeed +0x1ccc, m_sprites +0x1cd0, m_meshes
++0x1ce0, m_trails +0x1cf0, m_collisionConvexMeshOffset +0x1d10,
+m_maxBoundingRadius +0x1d1c. The sprite, mesh and trail renderers are the
+ordinary stage ones. Next: read 1401fef80's per-particle step (collision
+queries against the physics world, events) and decide how it maps onto the
+rewrite's physics port.
