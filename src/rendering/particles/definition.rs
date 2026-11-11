@@ -332,11 +332,6 @@ impl ParticleDefinition {
             .filter(|beam| beam.enabled && beam.material.is_some())
             .collect();
         for beam in &beams {
-            // The FX owner's target packet (140227b90) has no rewrite
-            // producer; the default target would aim these at the origin.
-            if beam.end.use_target_parameters {
-                return Err("particle beam target parameters have no producer yet".into());
-            }
             // No installed beam position names a spawn mesh (1401d0d60).
             if beam.start.spawn_mesh.source.is_some() || beam.end.spawn_mesh.source.is_some() {
                 return Err("particle beam spawn meshes are not loaded".into());

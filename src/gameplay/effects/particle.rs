@@ -24,6 +24,10 @@ pub struct ParticleEffectFrame {
     /// publication, independently of this FX instance's first visible update.
     pub bounds_dirty: bool,
     pub delta: f32,
+    /// The FX record's target pose (+0x80 position, +0x8c axis), which
+    /// 140227b90 copies into the system's target parameters (+0x1d10) on
+    /// every update. 14021dc10 initializes it to the origin and identity.
+    pub target: crate::gameplay::particles::beam::BeamTarget,
 }
 
 pub struct ParticlePublication {

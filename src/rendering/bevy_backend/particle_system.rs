@@ -59,7 +59,8 @@ pub(crate) struct ParticleSystem {
     pub ribbons: Vec<(usize, crate::gameplay::particles::ribbon::Ribbon)>,
     /// System +0x398: (declaration beam index, arkBeam).
     pub beams: Vec<(usize, crate::gameplay::particles::beam_system::BeamEmitter)>,
-    /// System +0x1d10 (1401fa780's defaults until an FX owner publishes).
+    /// System +0x1d10: 1401fa780's defaults, then the FX record's target
+    /// (140227b90) on every update.
     pub beam_target: crate::gameplay::particles::beam::BeamTarget,
     beam_noise: Option<Arc<crate::gameplay::particles::beam_noise::SimplexTable>>,
     pub materials: HashMap<String, Arc<ParticleMaterial>>,
@@ -724,6 +725,8 @@ impl ParticleSystem {
         seed: &mut u32,
     ) -> Result<(), String> {
         self.publication = self.effect.update(now, frame, self.finished(), seed)?;
+        // 140227b90: the FX record's target parameters.
+        self.beam_target = frame.target;
         crate::render_model::update_particle_water_flags(
             &mut self.water_flags,
             self.declaration.underwater,

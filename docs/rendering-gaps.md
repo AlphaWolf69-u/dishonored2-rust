@@ -379,13 +379,18 @@ definition with a noisy beam and held by those definitions' systems.
 `examples/beam_smoke.rs` drives all 86 loadable installed beams for three
 seconds without failures or non-finite vertices. Not verified on screen.
 
-Remaining: the FX target parameters (system +0x1d10) come from the FX
-owner's packet (140227b90); no rewrite producer publishes one, so the 39
-beams whose end uses them (15 declarations' first failure) are refused
-rather than aimed at 1401fa780's default origin. The packet's target
-point list (+0x70), which 1401ce790 turns into control-point anchors and
-per-frame deltas, is likewise unpublished. No installed beam position has
-a spawn mesh; one would be refused.
+FX target parameters (system +0x1d10): 140227b90 copies the FX record's
+target (+0x80 position, +0x8c axis; 14021dc10 initializes the origin and
+identity) into the system on every update. arkCpntFX writes the record
+target: 1404b1d80 at creation and 1404b2200 -> 1404b20b0 every tick while
+the target entity exists (1406dc560), using 1404b1880 (the target's world
+pose, or its target tag/joint through 1404b19b0). The rewrite's world FX
+host resolves the same pose through `WorldEffectFrames::resolve`; named
+entity tags and joints still wait for animated model poses there. A beam
+without a target aims at the origin, as the original's default record does.
+The packet's target point list (+0x70), which 1401ce790 turns into
+control-point anchors, has no writer in arkCpntFX and stays empty. No
+installed beam position has a spawn mesh; one would be refused.
 
 ## Particle ribbons (`m_ribbons`), connected
 
