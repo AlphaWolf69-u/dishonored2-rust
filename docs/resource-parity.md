@@ -7196,6 +7196,18 @@ records; no member conversion or extraction was performed. This establishes
 the installed format census, not acceptance of the changed rewrite reader.
 Evidence: DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
 
+Layered format acceptance (2026-11-11,ff4c7aea). Clean dev game/tools build
+SHA256007aa7d4562b1e2953117912b366e51307f4a183b6939e7399d8e76fd1497816
+acquired every selected installed layered image through the production owned
+readers:2,897 cubes,102 volumes,one32-layer array,1,743,628,016 payload bytes.
+Full serialized-record ordering, format/dimensions, depth/layers and payload
+hashes matched. All three layer-count1 cubes retained six faces per mip.
+Together with the accepted2D inventory, this covers all14,885 selected BIM
+members. The GPU heap regression in the same report belongs to the separate
+unmerged common-mesh feature and does not invalidate this format acquisition.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json
+and DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
+
 Common static-model GPU lifetime prediction (2026-11-11). Model lookup
 1400607f0 and bootstrap promotion140060b60 retain common resource identities;
 static surface upload140259d50 and release14026a240 belong to that identity.
