@@ -67,6 +67,8 @@ pub(super) struct CameraGpu {
     alpha_completed: Option<(Entity, u32)>,
     screen_effects: super::screen_effects::ScreenEffects,
     particles: Option<ParticleGpu>,
+    /// 14031d7e0's occlusion query pass for this view.
+    occlusion_queries: Option<super::occlusion_query_pass::OcclusionQueryPass>,
     particle_images: super::particle_images::ParticleImagesGpu,
     particle_programs: std::collections::HashMap<(bevy::render::render_resource::TextureFormat, bevy::render::render_resource::TextureFormat), std::sync::Arc<super::particle_pass::ParticlePrograms>>,
 }
@@ -172,7 +174,6 @@ fn publish_particles(
                         axes,
                     ),
                     view_z: std::array::from_fn(|i| -matrices.view[2][i]),
-                    query_visibility: 1.,
                     alpha_scale: 1.,
                     cvars: &console.cvars,
                     transparency: &transparency,
@@ -556,6 +557,19 @@ fn render_particles(
                     }
                 }
             }
+        }
+        // 14031d7e0: the occlusion queries test the scene depth whether or
+        // not any particle draws this frame.
+        {
+            let CameraGpu { occlusion_queries, .. } = &mut *gpu;
+            if occlusion_queries.as_ref().is_none_or(|pass| pass.depth_format() != depth_format) {
+                *occlusion_queries = Some(super::occlusion_query_pass::OcclusionQueryPass::new(&device, depth_format));
+            }
+            let mut manager = crate::rendering::occlusion_query::shared().lock()
+                .map_err(|_| "occlusion query manager poisoned")?;
+            occlusion_queries.as_mut().unwrap().record(&device, &queue, context.command_encoder(),
+                &depth.alpha.full_attachment, matrices,
+                [target.main_texture().width(), target.main_texture().height()], &mut manager);
         }
         // Prepare the shared particle pipeline once the live pool exists,
         // independently of whether this frame sees any of its sprites.

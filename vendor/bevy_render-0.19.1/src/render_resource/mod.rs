@@ -53,6 +53,8 @@ pub use wgpu::{
     ImageSubresourceRange, IndexFormat, Limits as WgpuLimits, LoadOp, MapMode, MipmapFilterMode,
     MultisampleState, Operations, Origin3d, PipelineCompilationOptions, PipelineLayout,
     PipelineLayoutDescriptor, PollType, PolygonMode, PrimitiveState, PrimitiveTopology,
+    // DH2: the occlusion query pass creates counting query sets.
+    QuerySet, QuerySetDescriptor, QueryType,
     RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipelineDescriptor as RawRenderPipelineDescriptor, Sampler as WgpuSampler,
     SamplerBindingType, SamplerDescriptor, ShaderModule, ShaderModuleDescriptor, ShaderSource,

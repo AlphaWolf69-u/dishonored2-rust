@@ -61,11 +61,38 @@ pub struct QueryViewport {
 #[derive(Clone)]
 pub struct OcclusionQueries {
     slots: Box<[Slot; SLOTS]>,
+    /// +0x24000: each slot's last arrived passed-sample count.
+    counts: Box<[u64; SLOTS]>,
 }
 impl Default for OcclusionQueries {
     fn default() -> Self {
-        Self { slots: Box::new([Slot::default(); SLOTS]) }
+        Self { slots: Box::new([Slot::default(); SLOTS]), counts: Box::new([0; SLOTS]) }
     }
+}
+
+/// A system's manager slot; dropping it frees the slot (140292f80 with
+/// false, as 14031d7e0 does for a system that no longer queries).
+pub struct QuerySlot(usize);
+impl QuerySlot {
+    pub fn allocate(manager: &mut OcclusionQueries) -> Option<Self> {
+        manager.allocate().map(Self)
+    }
+    pub fn index(&self) -> usize {
+        self.0
+    }
+}
+impl Drop for QuerySlot {
+    fn drop(&mut self) {
+        if let Ok(mut manager) = shared().lock() {
+            manager.enable(self.0, false);
+        }
+    }
+}
+
+/// The renderer owns one manager; FX systems and the query pass share it.
+pub fn shared() -> &'static std::sync::Mutex<OcclusionQueries> {
+    static SHARED: std::sync::OnceLock<std::sync::Mutex<OcclusionQueries>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(Default::default)
 }
 
 impl OcclusionQueries {
@@ -113,15 +140,21 @@ impl OcclusionQueries {
         Some(divide(sum, 6.))
     }
 
-    /// 1402926d0's per-slot work for one frame. `samples(slot)` returns the
-    /// count of the slot's previous query; the returned draws are issued
-    /// this frame and their slots become issued.
+    /// A GPU count for `slot` arrived.
+    pub fn record_count(&mut self, slot: usize, count: u64) {
+        if let Some(entry) = self.counts.get_mut(slot) {
+            *entry = count;
+        }
+    }
+
+    /// 1402926d0's per-slot work for one frame, using each issued slot's
+    /// last count; the returned draws are issued this frame and their slots
+    /// become issued.
     pub fn prepare(
         &mut self,
         view: &ShadowMatrix,
         projection: &ShadowMatrix,
         viewport: QueryViewport,
-        mut samples: impl FnMut(usize) -> u64,
     ) -> Vec<QueryDraw> {
         let width = viewport.width as f32;
         let height = viewport.height as f32;
@@ -151,7 +184,7 @@ impl OcclusionQueries {
                 multiply(divide(1., w), x)
             };
             if slot.state == SlotState::Issued {
-                let count = samples(index) as f32;
+                let count = self.counts[index] as f32;
                 let area = multiply(
                     multiply(
                         multiply(multiply(multiply(multiply(multiply(aspect, height), radius), radius), width), f32::from_bits(0x3f78_51ec)),

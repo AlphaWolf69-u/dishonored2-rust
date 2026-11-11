@@ -443,7 +443,7 @@ loadable installed ribbons: 17 draw, one needs the owner's published
 motion for velocity inheritance. No installed ribbon has a spawn or
 velocity mesh; one would be refused. Not verified on screen.
 
-## Particle occlusion queries (`m_occlusionQuery`), next
+## Particle occlusion queries (`m_occlusionQuery`), connected
 
 12 declarations' first failure (light glows: search lights, watchtower,
 Wall of Light). occlusionQuery_t (declaration +0xe8, 0xd0 bytes):
@@ -484,3 +484,16 @@ The vendored DX12 backend now creates counting occlusion queries (wgpu-hal
 PATCHES.md). Remaining: the declaration reader, the per-system query
 state, the query manager and a depth-tested query pass with resolve and
 delayed readback.
+
+Runtime: `rendering::occlusion_query` (the 256-slot manager, shared by
+systems and the pass; a system's slot is freed when it stops querying or
+is dropped) and `bevy_backend::occlusion_query_pass` (depth-only unit
+quads in counting queries against the scene depth, `assets/shaders/
+dh2_occlusion_query.wgsl` ported from renderprog/occlusionquery, resolved
+and read back asynchronously). Systems apply the result as 1401ffbc0 does:
+the sprite/mesh query visibility and the distance size/alpha factors for
+culling and drawing. bevy_backend deviations: each system requests and
+reads its slot during its own update rather than in 14031d7e0's loop, and
+counts arrive one or more frames later than the original's next-frame
+read. r_showOcclusionQuery's debug colour draw is not connected. FX
+census 844 -> 833. Not verified on screen.

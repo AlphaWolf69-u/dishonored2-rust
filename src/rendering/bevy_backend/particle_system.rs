@@ -33,7 +33,6 @@ pub(crate) struct ParticleDrawContext<'a> {
     pub camera: crate::rendering::particles::view::ParticleCamera,
     pub view_z: [f32; 4],
     pub probes: Option<&'a crate::probe_lighting::ProbeLightingSet>,
-    pub query_visibility: f32,
     pub alpha_scale: f32,
     pub cvars: &'a crate::platform::cvars::CVars,
     pub transparency: &'a crate::rendering::particles::transparency::ParticleTransparency,
@@ -87,6 +86,14 @@ pub(crate) struct ParticleSystem {
     force_visible: bool,
     /// 1401ff460's occlusion kill (1401fcc10) released the system.
     killed: bool,
+    /// +0x1d98: the query visibility the sprites and meshes read, 1 unless
+    /// the declaration's occlusion query is enabled.
+    query_visibility: f32,
+    /// The query curves' size and alpha factors at the last result.
+    query_scale: [f32; 2],
+    /// +0x1bd4/+0x1bcc: the query manager slot and its last result.
+    query_slot: Option<crate::rendering::occlusion_query::QuerySlot>,
+    query_result: f32,
     texture_area: f32,
     texture_images: Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>,
     world_texture_images: Option<Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
@@ -141,19 +148,21 @@ impl ParticleSystem {
         for image in self.world_texture_images.as_ref().unwrap() {
             image.demand.submit_dynamic(self.texture_area);
         }
+        // System +0x1de0/+0x1de4: the distance size and alpha, scaled by
+        // the occlusion query curves (1401ffbc0).
         let owner_scale = crate::float::multiply(
             context.view.owner_scale,
-            declaration
-                .distance
-                .size
-                .sample_visibility(context.camera.emitter_distance)?,
+            crate::float::multiply(
+                self.query_scale[0],
+                declaration.distance.size.sample_visibility(context.camera.emitter_distance)?,
+            ),
         );
         let alpha_scale = crate::float::multiply(
             context.alpha_scale,
-            declaration
-                .distance
-                .alpha
-                .sample_visibility(context.camera.emitter_distance)?,
+            crate::float::multiply(
+                self.query_scale[1],
+                declaration.distance.alpha.sample_visibility(context.camera.emitter_distance)?,
+            ),
         );
         let receiver_bounds = crate::rendering::particles::bounds::system_bounds(
             &self.stages,
@@ -263,7 +272,7 @@ impl ParticleSystem {
                     index,
                     transform,
                     &view,
-                    context.query_visibility,
+                    self.query_visibility,
                     alpha_scale,
                     context.camera.admission_plane,
                     sprite.minimal_distance,
@@ -330,7 +339,7 @@ impl ParticleSystem {
                 if self.world_mesh_materials.contains(name) {
                     let mut instances=Vec::with_capacity(stage.particles.len());
                     crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
-                        &view,context.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
+                        &view,self.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                     if !instances.is_empty() {
                         world_meshes.push(WorldMeshDraw{source:source.clone(),material:name.clone(),
                             lighting:lighting.ok_or("world particle mesh lighting was not selected")?,instances});
@@ -340,7 +349,7 @@ impl ParticleSystem {
                 let material=self.materials.get(name).ok_or_else(||format!("particle mesh material absent: {name}"))?;
                 let mut instances=Vec::with_capacity(stage.particles.len());
                 crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
-                    &view,context.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
+                    &view,self.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                 if instances.is_empty(){continue;}
                 let mut transparency=context.transparency.get(material.state)?;
                 if material.distortion{transparency.mode=0;}
@@ -669,6 +678,10 @@ impl ParticleSystem {
             force_simulate,
             force_visible,
             killed: false,
+            query_visibility: 1.,
+            query_scale: [1.; 2],
+            query_slot: None,
+            query_result: 0.,
             texture_area: 0.,
             texture_images,
             world_texture_images: None,
@@ -762,6 +775,32 @@ impl ParticleSystem {
             .distance
             .alpha
             .sample_visibility(camera.emitter_distance)?;
+        // 1401ffbc0 with 14031d7e0's per-system request: a drawn system with
+        // an enabled query keeps a manager slot at its position and reads
+        // the slot's six-frame average; otherwise the slot is released.
+        self.query_visibility = 1.;
+        self.query_scale = [1.; 2];
+        let query = &declaration.occlusion_query;
+        if query.enabled {
+            let mut manager = crate::rendering::occlusion_query::shared().lock().map_err(|_| "occlusion query manager poisoned")?;
+            if self.query_slot.is_none() {
+                self.query_slot = crate::rendering::occlusion_query::QuerySlot::allocate(&mut manager);
+            }
+            if let Some(slot) = &self.query_slot {
+                manager.enable(slot.index(), true);
+                manager.request(slot.index(), publication.pose.position, query.radius, query.offset, false, false);
+                if let Some(result) = manager.result(slot.index(), true) {
+                    self.query_result = result;
+                }
+            }
+            self.query_visibility = self.query_result;
+            self.query_scale = [
+                query.size.sample_visibility(self.query_result)?,
+                query.alpha.sample_visibility(self.query_result)?,
+            ];
+        } else {
+            self.query_slot = None;
+        }
         let bounds = crate::rendering::particles::bounds::system_bounds(
             &self.stages,
             &declaration.visibility,
@@ -808,8 +847,8 @@ impl ParticleSystem {
                 emitter_distance: camera.emitter_distance,
                 minimum_angular_size,
                 root_visible,
-                distance_alpha: alpha,
-                distance_size: size,
+                distance_alpha: crate::float::multiply(self.query_scale[1], alpha),
+                distance_size: crate::float::multiply(self.query_scale[0], size),
             },
             delta,
             self.first_simulation,
