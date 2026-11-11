@@ -1015,7 +1015,8 @@ fn read_resident_image(catalog: &archive::Catalog, stem: &str, preferred: Option
         std::env::var("DH2_DEBUG_SPLIT_RESIDENT_MIPS").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_IMAGE_PACKING").as_deref() == Ok("1"),
     ));
-    let result = read_diffuse_image(catalog, stem, TextureReadTarget::Initial(preferred), !split, cancelled)?;
+    let result = read_diffuse_image(catalog, stem, TextureReadTarget::Initial(preferred), !split, cancelled)
+        .map_err(|error| format!("{stem}: {error}"))?;
     if trace {
         if let Some(image) = &result {
             let mut crc = flate2::Crc::new();

@@ -262,7 +262,18 @@ pub struct BimageInfo {
     pub packed_format: u32,
     pub format: ImageFormat,
 }
+fn block_aligned_extent(width: u32, height: u32, block: u32) -> Result<(u32, u32), String> {
+    let align = |value: u32| value.checked_add(block - 1).map(|value| value / block * block)
+        .ok_or_else(|| "BIM storage extent overflow".to_string());
+    Ok((align(width)?, align(height)?))
+}
+
 impl BimageInfo {
+    ///1402f4060 keeps logical metadata but creates block-aligned GPU storage.
+    pub fn storage_info(mut self) -> Result<Self, String> {
+        (self.width, self.height) = block_aligned_extent(self.width, self.height, self.format.block_width())?;
+        Ok(self)
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.get(..3) != Some(b"BIM") {
             return Err("not a BIM image".into());
@@ -664,7 +675,7 @@ pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, Compres
 
 pub(crate) fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, u32, std::ops::Range<usize>))
     -> Result<BimageInfo, String> {
-    let info = BimageInfo::parse(bytes)?;
+    let info = BimageInfo::parse(bytes)?.storage_info()?;
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
         return Err("invalid BIM dimensions/mip count".into());
     }
@@ -678,8 +689,10 @@ pub(crate) fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, 
         let end = start.checked_add(size).ok_or("inline mip size overflow")?;
         let record = bytes.get(at..end).ok_or("truncated inline mip payload")?;
         let mip = compressed_mip(record, level, info.format)?;
-        if (mip.width, mip.height) != (width, height) {
-            return Err("inline mip dimensions disagree with BIM header".into());
+        let block = info.format.block_width();
+        if mip.width.div_ceil(block) != width.div_ceil(block)
+            || mip.height.div_ceil(block) != height.div_ceil(block) {
+            return Err("inline mip block coverage disagrees with BIM storage".into());
         }
         visit(level, width, height, start..end);
         at = end;
@@ -1433,8 +1446,7 @@ fn inline_layout(bytes: &[u8], selected_mip: usize) -> Result<(u32, u32, usize, 
     if bytes.get(0..3) != Some(b"BIM") {
         return Err("not a BIM image".into());
     }
-    let width = word(bytes, 0x18)?;
-    let height = word(bytes, 0x1c)?;
+    let (width, height) = block_aligned_extent(word(bytes, 0x18)?, word(bytes, 0x1c)?, 4)?;
     let mip_count = word(bytes, 0x2c)? as usize;
     if mip_count == 0 || mip_count > 16 {
         return Err("unsupported inline mip count".into());
@@ -1452,8 +1464,8 @@ fn inline_layout(bytes: &[u8], selected_mip: usize) -> Result<(u32, u32, usize, 
             .checked_mul(mip_height.div_ceil(4))
             .and_then(|blocks| blocks.checked_mul(16))
             .ok_or("inline mip size overflow")?;
-        if word(bytes, at + 8)? as usize != mip_width
-            || word(bytes, at + 12)? as usize != mip_height
+        if (word(bytes, at + 8)? as usize).div_ceil(4) != mip_width.div_ceil(4)
+            || (word(bytes, at + 12)? as usize).div_ceil(4) != mip_height.div_ceil(4)
             || word(bytes, at + 16)? as usize != size
         {
             return Err(format!("inline mip {mip} header disagrees with dimensions"));
@@ -2036,4 +2048,58 @@ mod tests {
         bytes.pop();
         assert!(inline_layout(&bytes, 1).is_err());
     }
+}
+
+
+/// Compare supported installed 2D inline storage with the serialized records.
+/// Expected extents follow1402f4060's block rounding; expected bytes are the
+/// actual member payloads, not a regenerated image or expanded colour data.
+#[cfg(feature = "game")]
+pub(crate) fn observe_inline_storage(base: &std::path::Path) -> Result<(), String> {
+    let catalog = crate::archive::Catalog::open(base).map_err(|error| error.to_string())?;
+    let mut count = 0;
+    let mut padded = 0;
+    let mut total_bytes = 0;
+    for path in catalog.paths_with_suffix(".bimage7") {
+        let prefix = catalog.read_prefix(&path, 62).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing BIM header {path}"))?;
+        if word(&prefix, 8)? != 0 || word(&prefix, 52)? != 1 { continue; }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?.ok_or("installed image missing")?;
+        let header = BimageInfo::parse(&bytes)?;
+        let block = header.format.block_width();
+        let expected_width = header.width.div_ceil(block) * block;
+        let expected_height = header.height.div_ceil(block) * block;
+        let mut at = 62;
+        let mut expected = blake3::Hasher::new();
+        let mut payload_bytes = 0;
+        for level in 0..header.mip_count {
+            let size = word(&bytes, at + 16)? as usize;
+            let end = at.checked_add(20).and_then(|start| start.checked_add(size)).ok_or("inline source extent overflow")?;
+            let payload = bytes.get(at + 20..end).ok_or("truncated installed mip payload")?;
+            if word(&bytes, at)? != level { return Err(format!("installed mip ordering differs: {path}")); }
+            expected.update(payload);
+            payload_bytes += size;
+            at = end;
+        }
+        if at != bytes.len() { return Err(format!("installed 2D mip records leave a tail: {path}")); }
+        let mut actual = blake3::Hasher::new();
+        let storage = visit_inline_mips(&bytes, |_, mip| { actual.update(mip.payload); })
+            .map_err(|error| format!("{path}: {error}"))?;
+        if storage.width != expected_width || storage.height != expected_height
+            || storage.format != header.format || storage.mip_count != header.mip_count
+            || actual.finalize() != expected.finalize() {
+            return Err(format!("inline storage differs from installed records: {path}"));
+        }
+        if (storage.width, storage.height) != (header.width, header.height) {
+            padded += 1;
+            eprintln!("INLINE_STORAGE_PADDED path={path} logical={}x{} storage={}x{} format={:?} mips={} bytes={payload_bytes} signature={}",
+                header.width, header.height, storage.width, storage.height, storage.format,
+                storage.mip_count, actual.finalize());
+        }
+        total_bytes += payload_bytes;
+        count += 1;
+    }
+    eprintln!("INLINE_STORAGE_INVENTORY images={count} padded={padded} payload_bytes={total_bytes}");
+    if count == 0 { return Err("no installed 2D inline images were observed".into()); }
+    Ok(())
 }

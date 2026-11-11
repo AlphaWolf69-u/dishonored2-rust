@@ -7082,3 +7082,21 @@ matched exactly. Resource identity, cancellation, map/session ownership and
 GPU paths are unchanged. No tests or visible launches were used. Evidence:
 DH2-fx-level-lifetime/artifacts/particle-model-streams-20261111-comparison.json
 and DH2/artifacts/particle-model-buffer-census-20261111.json.
+
+
+Inline compressed extent correction prediction (2026-11-11). The broader
+actual scene-publication route stopped in Curator with an inline BIM dimension
+rejection. Independent header reads of all14,885 selected BIM resources found
+16 two-dimensional base images whose stored record dimensions are rounded to
+BC block boundaries, including the512x2 Ashworth-device lookup stored512x4.
+Original1402f4060 rounds compressed width/height to four pixels before filling
+the D3D texture descriptor;1402e9ff0 applies the same bounds before record
+upload, and1402f50c0 copies complete blocks. Port that storage-extent rule.
+Preserve logical header parsing, compressed formats, payload bytes, mip order
+and scope owners. Validate record block coverage against each storage mip and
+use the actual storage dimensions for allocation/upload. No RGBA expansion,
+resampling, extra pass or GPU-load increase is expected. The legacy BC3/BC7
+inline accessors require the same rule. Preserve exact extents for uncompressed
+formats and attach source paths to resident-image acquisition errors.
+Verify installed records and actual Curator publication/GPU upload before
+continuing the all-level lifecycle pass.

@@ -149,6 +149,9 @@ pub fn inspect_scene_publication(
         if flag == "--decal-resource-scopes" {
             return crate::assets::decal::observe_resources(base).map_err(Into::into);
         }
+        if flag == "--inline-image-storage" {
+            return crate::texture::observe_inline_storage(base).map_err(Into::into);
+        }
         if flag == "--audio-bank-inventory" {
             return super::audio::observe_bank_inventory(base).map_err(Into::into);
         }
