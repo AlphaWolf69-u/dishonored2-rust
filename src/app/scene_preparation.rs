@@ -16,6 +16,7 @@ pub(super) struct SceneGpuInputs {
 
 impl SceneGpuInputs {
     pub(super) fn install(app: &mut App) {
+        super::common_model_meshes::install(app);
         use bevy::{
             ecs::schedule::common_conditions::run_once,
             render::{
@@ -51,6 +52,7 @@ impl SceneGpuInputs {
 
 pub(super) struct ScenePreparation {
     meshes: AssetBatch<Mesh>,
+    common_meshes: super::common_model_meshes::Prepared,
     images: super::resident_images::PreparedImages,
     probes: AssetBatch<ProbeMaterial>,
     decals: AssetBatch<DecalMaterial>,
@@ -66,6 +68,7 @@ impl ScenePreparation {
         let shared_images = world.resource::<super::texture_streaming::SharedImages>().clone();
         Self {
             meshes: AssetBatch::new(world.resource::<Assets<Mesh>>()),
+            common_meshes: super::common_model_meshes::Prepared::new(world.resource::<super::common_model_meshes::Shared>().clone()),
             images: super::resident_images::PreparedImages::new(
                 world.resource::<Assets<Image>>(), resident_images, shared_images),
             probes: AssetBatch::new(world.resource::<Assets<ProbeMaterial>>()),
@@ -96,6 +99,7 @@ impl ScenePreparation {
             .take_resource::<SceneData>()
             .expect("prepared scene");
         self.images.begin_acquisition(scene.catalog.as_deref());
+        self.common_meshes.begin(scene.catalog.as_deref());
         let mut programs = prepared.take_resource::<ProgramCacheSource>();
         let navigation = prepared.take_resource::<NavigationWorld>();
         let tome = prepared.take_resource::<TomeWorld>();
@@ -137,6 +141,7 @@ impl ScenePreparation {
             programs.as_mut(),
             navigation.as_ref(),
             &mut self.meshes,
+            Some(&mut self.common_meshes),
             images,
             &mut self.probes,
             &mut self.skies,
@@ -178,12 +183,11 @@ impl ScenePreparation {
         if let Some(cube) = resident_images.default_colour_cube() {
             image_ids.push(cube.id());
         }
+        let mut mesh_ids = self.meshes.ids(|mesh| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
+        mesh_ids.extend(self.common_meshes.ids().filter(|id| !self.meshes.contains(*id)));
         prepared.insert_resource(SceneGpuInputs {
             images: Arc::new(image_ids),
-            meshes: Arc::new(
-                self.meshes
-                    .ids(|mesh| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),
-            ),
+            meshes: Arc::new(mesh_ids),
             buffers: Arc::new(
                 self.buffers
                     .ids(|buffer| buffer.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),
@@ -219,6 +223,7 @@ impl ScenePreparation {
             let assets = super::load_timing::Span::new("asset publication");
             self.meshes
                 .publish(&mut world.resource_mut::<Assets<Mesh>>());
+            self.common_meshes.publish(world);
             self.images
                 .publish(&mut world.resource_mut::<Assets<Image>>());
             self.buffers

@@ -1,6 +1,7 @@
 //! Manages mesh vertex and index buffers.
 
 use alloc::borrow::Cow;
+use bevy_platform::collections::HashSet;
 use bevy_mesh::Indices;
 
 use bevy_app::{App, Plugin};
@@ -59,6 +60,10 @@ pub struct MeshAllocator {
     /// it has run, so caches of allocation slices invalidate only those.
     freed: Vec<AssetId<Mesh>>,
     free_generation: u64,
+    /// Host residency domain: persistent geometry cannot pin map-sized slabs.
+    long_lived_meshes: HashSet<AssetId<Mesh>>,
+    early_common_prepared: bool,
+
 }
 
 /// Tunable parameters that customize the behavior of the allocator.
@@ -93,6 +98,7 @@ static MORPH_ATTRIBUTE_ELEMENT_LAYOUT: ElementLayout = ElementLayout {
     class: ElementClass::MorphTarget,
     size: size_of::<MorphAttributes>() as u64,
     elements_per_slot: 1,
+    long_lived: false,
 };
 
 /// The ID of a single slab.
@@ -191,6 +197,8 @@ pub struct ElementLayout {
     /// isn't divisible by 4. See the comment in [`ElementLayout`] for more
     /// details.
     elements_per_slot: u32,
+    /// Allocator pooling only; the vertex/index buffer ABI is unchanged.
+    long_lived: bool,
 }
 
 impl Plugin for MeshAllocatorPlugin {
@@ -241,8 +249,36 @@ impl FromWorld for MeshAllocator {
             general_vertex_slabs_supported,
             freed: Vec::new(),
             free_generation: 0,
+            long_lived_meshes: HashSet::default(),
+            early_common_prepared: false,
         }
     }
+}
+
+/// bevy_backend: allocate immutable common additions after extraction and
+/// before ANY map asset uploads. An ordinary mesh-stage split is too late:
+/// image/storage uploads can have filled the bootstrap driver heap already.
+pub fn allocate_added_common_meshes(
+    mut allocator: ResMut<MeshAllocator>,
+    settings: Res<MeshAllocatorSettings>,
+    extracted: Res<ExtractedAssets<RenderMesh>>,
+    mut layouts: ResMut<MeshVertexBufferLayouts>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+) {
+    if !extracted.added.iter().any(|id| allocator.long_lived_meshes.contains(id)
+        && !extracted.modified.contains(id)) { return; }
+    let observe = std::env::var_os("DH2_DEBUG_COMMON_MESH_HEAPS").is_some_and(|value| value == "1");
+    let report = |phase| {
+        if observe && let Some(report) = device.wgpu_device().generate_allocator_report() {
+            eprintln!("COMMON_MODEL_HEAP phase={phase} allocated_bytes={} reserved_bytes={} blocks={}",
+                report.total_allocated_bytes, report.total_reserved_bytes, report.blocks.len());
+        }
+    };
+    report("before");
+    allocator.allocate_mesh_domain(&settings, &extracted, &mut layouts, &device, &queue, Some(true));
+    allocator.early_common_prepared = true;
+    report("after");
 }
 
 /// A system that processes newly-extracted or newly-removed meshes and writes
@@ -280,6 +316,12 @@ pub fn allocate_and_free_meshes(
 }
 
 impl MeshAllocator {
+    /// Host resource owners publish this set only at acquisition boundaries.
+    pub fn set_long_lived_meshes(&mut self, meshes: &[AssetId<Mesh>]) {
+        self.long_lived_meshes.clear();
+        self.long_lived_meshes.extend(meshes.iter().copied());
+    }
+
     /// DH2: (generation, meshes) of the latest `free_meshes` call. Between two
     /// consecutive generations, only these meshes' slices can have changed,
     /// unless `slab_buffer_replacements` changed too.
@@ -397,6 +439,21 @@ impl MeshAllocator {
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
     ) {
+        let domain = self.early_common_prepared.then_some(false);
+        self.early_common_prepared = false;
+        self.allocate_mesh_domain(mesh_allocator_settings, extracted_meshes,
+            mesh_vertex_buffer_layouts, render_device, render_queue, domain);
+    }
+
+    fn allocate_mesh_domain(
+        &mut self,
+        mesh_allocator_settings: &MeshAllocatorSettings,
+        extracted_meshes: &ExtractedAssets<RenderMesh>,
+        mesh_vertex_buffer_layouts: &mut MeshVertexBufferLayouts,
+        render_device: &RenderDevice,
+        render_queue: &RenderQueue,
+        domain: Option<bool>,
+    ) {
         let mut allocation_stage = self.slab_allocator.stage_allocation();
 
         // Loop over each mesh that was extracted this frame.
@@ -408,7 +465,12 @@ impl MeshAllocator {
 
             // Allocate vertex data. Note that we can only pack mesh vertex data
             // together if the platform supports it.
-            let vertex_element_layout = ElementLayout::vertex(mesh_vertex_buffer_layouts, mesh);
+            let long_lived = self.long_lived_meshes.contains(mesh_id);
+            if domain.is_some_and(|domain| domain != (long_lived
+                && extracted_meshes.added.contains(mesh_id)
+                && !extracted_meshes.modified.contains(mesh_id))) { continue; }
+            let mut vertex_element_layout = ElementLayout::vertex(mesh_vertex_buffer_layouts, mesh);
+            vertex_element_layout.long_lived = long_lived;
             if self.general_vertex_slabs_supported {
                 allocation_stage.allocate(
                     &MeshAllocationKey::new(*mesh_id, ElementClass::Vertex),
@@ -427,6 +489,8 @@ impl MeshAllocator {
             if let (Some(index_buffer_data), Some(index_element_layout)) =
                 (mesh.get_index_buffer_bytes(), ElementLayout::index(mesh))
             {
+                let mut index_element_layout = index_element_layout;
+                index_element_layout.long_lived = long_lived;
                 allocation_stage.allocate(
                     &MeshAllocationKey::new(*mesh_id, ElementClass::Index),
                     index_buffer_data.len() as u64,
@@ -452,6 +516,9 @@ impl MeshAllocator {
 
         // Copy new mesh data in.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
+            if domain.is_some_and(|domain| domain != (self.long_lived_meshes.contains(mesh_id)
+                && extracted_meshes.added.contains(mesh_id)
+                && !extracted_meshes.modified.contains(mesh_id))) { continue; }
             self.copy_mesh_vertex_data(mesh_id, mesh, render_device, render_queue);
             self.copy_mesh_index_data(mesh_id, mesh, render_device, render_queue);
             #[cfg(feature = "morph")]
@@ -582,6 +649,7 @@ impl ElementLayout {
             // Make sure that slot boundaries begin and end on
             // `COPY_BUFFER_ALIGNMENT`-byte (4-byte) boundaries.
             elements_per_slot,
+            long_lived: false,
         }
     }
 
@@ -683,6 +751,8 @@ mod tests {
             general_vertex_slabs_supported,
             freed: Vec::new(),
             free_generation: 0,
+            long_lived_meshes: HashSet::default(),
+            early_common_prepared: false,
         }
     }
 

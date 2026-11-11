@@ -66,6 +66,7 @@ pub use preparation_diagnostics::{inspect_cpu_preparation, inspect_ui_bitmap_own
 mod level_lifetime;
 mod setup_commands;
 mod scene_preparation;
+mod common_model_meshes;
 mod loading_fade;
 pub use loading_screen::request_level;
 mod physics_skinning;

@@ -376,7 +376,7 @@ trailing `*` covers a family of kinds.
 | `material` | `app::material_loading` (material class), `app::runtime_materials` (host preparation) | partial: startup cache ownership is transferred to the level for runtime reuse. Workers use the same resolver and asset providers, validate image readiness, and discard failed or superseded batches. Windowless Dunwall Escape observed installed decal admission, cancellation of a replacement batch, and zero outgoing decal materials and images after release. Windowless runtime mesh and slot observations are recorded below. Active draws, live tails, and an installed image-read failure remain outside that coverage |
 | `md6Def` | `assets::animation_rig::declaration`, `assets::bmd6` | host: Catalog-owned ordered resource headers, shared immutable declaration generations and retained parent/model references. Creating lookup and existing-only lookup remain distinct; failed/absent loads stay attached to their actual header. Preload registers lazy identities from the actual primary/reuse manifests; bootstrap promotion and map-marker retirement follow060b60/0661e0/0410f0, with dead read history removed after all generations release. Unused declaration payloads remain demand-loaded. The working-host owner compiled in release4e7683a2 and completed the recorded EotW/Dust/EotW CPU-preparation acquisition and purge route; all 51 common MD6 headers remained unloaded while the three requested Corvo declarations loaded per batch. The earlier ad376ca0 three-map GPU acceptance covers AnimSet ownership and must not be used as MD6 acceptance. Full MD6 render-transition and nonloading-query coverage remains separate from this CPU-worker scope evidence. Joint-helper/pose consumers still have explicit admission limits; no unimplemented consumer is reported as active |
 | `midnightScene` | `assets::entities::scene_motion`, `gameplay::scene_motion`, `app::player` | host: supported autonomous machinery clips share immutable map-owned definitions across graphs/playback, with separate clocks and bindings (1405329c0 / 140533460 / 1407d6040); temporary source syntax and lookup cache retire after preparation, final leases retire with machinery. Full cinematic runtime and registry preload scopes remain partial. Four-load source identity/initial pose and retirement observations passed; see scope below |
-| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); packed meshes retain both authored half-float UV sets; rigid and skinned model shadow programs keep the game-space position they consume, and vegetation uses additional wind inputs; sheared baked instances keep float vertices. Map acquisition and release use temporary model preparation data and Bevy mesh handles. Windowless EotW and Dust uploads followed by map clear return to the four preexisting host mesh IDs. Pre-level host slabs are sealed before map allocation so map buffers retire after their last level lease. Demand-decoded immutable init/common BML1 sources now share Catalog ownership across levels; GPU mesh identity reuse remains open. Original static-model loader and retirement are `14026a5a0`, `140259d50`, `140278df0` and `14026a240`, with lookup/purge `1400607f0`/`140060180` |
+| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); packed meshes retain both authored half-float UV sets; rigid and skinned model shadow programs keep the game-space position they consume, and vegetation uses additional wind inputs; sheared baked instances keep float vertices. Map acquisition and release use temporary model preparation data and Bevy mesh handles. Windowless EotW and Dust uploads followed by map clear return to the four preexisting host mesh IDs. Pre-level host slabs are sealed before map allocation so map buffers retire after their last level lease. Demand-decoded immutable init/common BML1 sources now share Catalog ownership across levels; Device-scoped immutable common meshes now have transactional publication and separate vertex/index allocation domains; installed reuse and cancellation acceptance is pending. Original static-model loader and retirement are `14026a5a0`, `140259d50`, `140278df0` and `14026a240`, with lookup/purge `1400607f0`/`140060180` |
 | `musicManager` | `gameplay::music` | ported: compact inherited definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger update (1406647d0, 1406649b0, 1406634c0), startup/shutdown including request reset (1406637e0, 1406641e0, 14054ced0); blocked: connect this owner to the single entity dispatcher being implemented in the HUD branch and the actual worldspawn audio component, and resolve the alloc-game feature 0x20 gate before activation. No banks, media or GPU resources are duplicated by this owner; sound acquisition/playback stays with the sound class. Source compiled in f25c019; runtime activation remains blocked. Wwise music actors (HIRC 10/12) also require their actual scheduler, so wiring the manager alone will not produce music. |
 | `navigation` | none | none: no owner yet |
 | `Navmesh` | none | none: no owner yet |
@@ -7160,6 +7160,142 @@ with unchanged byte content, retained capacity, GPU descriptors and lifetimes.
 Compare actual installed scene publication in both modes in the same binary;
 record serialized/retained capacities and complete published buffer hashes.
 The expected gain is temporary allocation/copy volume, not a walking/FPS claim.
+
+Small allocation attribution prediction (2026-11-11). The complete36-map run
+ends with zero named resource owners and no Catalog consumers, but retains
+602,650 publication-phase bytes and332,900 physics-phase bytes. The existing
+one-MiB backtrace threshold cannot identify those blocks. Add opt-in64-byte
+sampling only for the six nonzero named phase contexts, configured outside
+the allocator before acquisition. Keep bookkeeping untagged and report the
+live callers only after actual host/audio/Catalog retirement. This is diagnostic
+attribution, with no expected memory or CPU saving and no normal-build code.
+Use the callers to identify real owners before changing residency policies.
+
+Heap report snapshots are also charged to the diagnostic context before taking
+the name-table lock. With small-block tracing enabled, retaining a resource
+phase here would both misattribute the snapshot and recursively acquire the
+same lock while recording its allocation.
+
+Cube face-count correction prediction (2026-11-11). The original BIM reader
+1402d2740 and GPU allocator1402f4060 interpret a cube's stored layer-count1
+as six face records. The host accepts only literal6 and rejects three real
+installed resources: the BC6 black/invalid cubes and the template cube. All
+three contain six ordered faces per mip (42/42/30 records respectively).
+Normalize that descriptor in the single layered-image reader; preserve all
+packed bytes, formats, mip ordering and ownership. Expected gain is supported
+acquisition of these three resources, with no added decode, upload or runtime
+work for previously accepted cubes. Verify the full installed cube/array/volume
+inventory through the production readers before integration.
+
+Independent layered-record inventory (2026-11-11). Reading the installed members
+without the rewrite parser verified125,639 ordered records/1,743,628,016 payload
+bytes across2,897 cubes,102 volumes and one32-layer array. All dimensions,
+record lengths, mip/slice order and source extents follow1402d2740 and the
+1402c2e30 block-size rules. The three stored-layer1 cubes contain42/42/30 face
+records; no member conversion or extraction was performed. This establishes
+the installed format census, not acceptance of the changed rewrite reader.
+Evidence: DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
+
+Layered format acceptance (2026-11-11,ff4c7aea). Clean dev game/tools build
+SHA256007aa7d4562b1e2953117912b366e51307f4a183b6939e7399d8e76fd1497816
+acquired every selected installed layered image through the production owned
+readers:2,897 cubes,102 volumes,one32-layer array,1,743,628,016 payload bytes.
+Full serialized-record ordering, format/dimensions, depth/layers and payload
+hashes matched. All three layer-count1 cubes retained six faces per mip.
+Together with the accepted2D inventory, this covers all14,885 selected BIM
+members. The GPU heap regression in the same report belongs to the separate
+unmerged common-mesh feature and does not invalidate this format acquisition.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json
+and DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
+
+Common static-model GPU lifetime prediction (2026-11-11). Model lookup
+1400607f0 and bootstrap promotion140060b60 retain common resource identities;
+static surface upload140259d50 and release14026a240 belong to that identity.
+The host already reuses requested init/common CPU model sources, but builds
+and uploads new immutable meshes after each map change. Add a device/asset-
+store-scoped common mesh owner for non-sheared BML1 surfaces only. Key by
+Catalog identity, source path/surface, winding and required vegetation layout;
+leave skeletal, mutable, baked and editable meshes with their current owner.
+Publish cache residency only with the batch that owns each prepared asset,
+so cancelled preparation cannot preserve an uncreated GPU identity.
+
+A persistent handle alone would pin map-sized buffers. Use a separate allocator
+layout domain for persistent mesh vertices/indices so their slabs cannot share
+with map allocations. No buffer ABI or vertex/index data changes. Keep actual
+scene readiness references, map-scoped materials/transforms and query inputs.
+Expect repeated common surfaces to keep their GPU identities and skip mesh
+construction/upload, and outgoing map allocations to retire independently.
+Session GPU residency increases by the actual shared geometry/slab footprint;
+measure that tradeoff and compare complete consumed mesh data before acceptance.
+No per-frame cache lookup or new rendering pass is planned.
+
+Common-model publication also defers Catalog namespace replacement until the
+successful publication callback. Preparing a different Catalog cannot evict
+committed handles or borrow their meshes before that replacement is accepted;
+cancelled preparation leaves the existing session cache intact.
+
+Common-model first observation (2026-11-11,260489e2). Same-device EotW/Dust/
+EotW comparisons preserve all three placed-mesh content signatures and actual
+GPU residency. Fresh common meshes fall20/16/20 to20/2/0;22 final common meshes
+share two disjoint buffers and the owner releases at host shutdown. However,
+2,162,688 additional live GPU allocation bytes pin a268,435,456-byte later
+heap (reserved201,326,592 ->469,762,048). Do not accept this memory regression.
+The comparison script also mistakenly required six mesh observation records;
+only the enabled placed-mesh observer emitted three, all of which matched.
+No mesh data mismatch occurred; cancellation had not run when that guard stopped.
+
+Heap-placement correction prediction. Existing bootstrap heap0 has ample free
+space, but transaction commit iterates all map/common slab creations together.
+Commit newly added common meshes before ordinary map meshes, preserving the
+separate layout domains and all packed bytes. Expect the two small persistent
+buffers in the bootstrap heap, no extra256-MiB reserved heap after map release,
+and unchanged20/2/0 preparation, content, cancellation and final owner release.
+Only additions of common meshes split the transaction; ordinary modified-mesh
+frames retain the single transaction. This ports the persistent resource
+identity through a host allocation-order change, not a GPU pass or draw change.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-20261111-comparison.json.
+
+Common-mesh heap correction follow-up (2026-11-11,ff4c7aea). The narrower split
+inside the ordinary mesh allocator did not change the measured reserved heap:
+it still grew201,326,592 ->469,762,048 bytes. All bytes,20/2/0 reuse, owner release
+and disjoint buffers still matched. Therefore that prediction was wrong; the
+asset preparation stage can upload map images/storage before the mesh allocator.
+Move only immutable common additions to an explicit extraction-to-preparation
+boundary before ALL map assets. Leave ordinary additions/changes in the normal
+allocator; exclude modified common IDs from the early path so their existing
+free/rebuild semantics remain intact. Record the heap immediately before/after
+early allocation, and require no reserved-heap regression after map retirement.
+The failed v2 report establishes no cancellation or residual-caller acceptance,
+since its heap guard stopped before those steps. Layered image acquisition did
+pass all3,000 installed members/1,743,628,016 payload bytes, including all three
+single-cube descriptors; that result is independent of the heap failure.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json.
+
+Common-mesh and shader-staging acceptance (2026-11-11,ed664b55). Clean dev
+Tools SHA256257af879a6c8ec4716b958a2680e37130d4f17175e7bf7404d63308fedf5d273
+passed same-device EotW/Dust/EotW separate/shared comparisons. All three placed
+mesh signatures match; common construction/uploads fall20/16/20 ->20/2/0.
+The22 resident common meshes occupy two disjoint buffers (2,097,184 logical
+buffer bytes;2,162,688 actual allocator bytes), release at host destruction,
+and do not retain map buffers. Early upload now keeps reserved driver heaps
+at201,326,592 bytes in both modes after every map, fixing the rejected256-MiB
+heap pin. A cancelled preparation built one mesh, promoted none, and the retry
+built20 fresh valid meshes. This verifies asset content/upload ownership and
+resource reuse, not gameplay draw timing or a whole-frame speed claim.
+
+ShaderBuffer::from same-build publication preserved207 complete buffer hashes
+and all serialized/retained capacities across198 calls, removing449,280 total
+transient copied bytes (largest102,464). No rendered data or GPU descriptors
+change; no RSS or CPU-time gain is asserted from these dev observations.
+
+The64-byte caller trace also completed all36 CPU publication/retirement routes.
+It attributes260,304 physics-phase bytes to class/name metadata and many
+publication-phase balances to AssetHandleProvider/embedded shader loads in
+successive fresh Bevy hosts (notably35-fold counts). Small persistent task,
+weak-index and singleton balances are also recorded. These are identified
+callers, not a certification that every retained block is harmless. Investigate
+the shader-load host shutdown before closing that remaining lifetime obligation.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v3-20261111-comparison.json.
 
 Shader-buffer module sweep prediction (2026-11-11). set_data allocates a new
 byte vector even for a same-sized update of the level's wind instance words

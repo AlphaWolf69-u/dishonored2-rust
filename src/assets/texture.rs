@@ -436,7 +436,9 @@ pub struct InlineArrayChain {
 // in place instead of keeping another complete payload during preparation.
 fn layered_records(bytes: &[u8], cube: bool) -> Result<(BimageInfo, u32, Vec<std::ops::Range<usize>>), String> {
     let info = BimageInfo::parse(bytes)?;
-    let layers = word(bytes, 52)?;
+    let stored_layers = word(bytes, 52)?;
+    // 1402d2740 and1402f4060: a single cube descriptor owns six faces.
+    let layers = if cube && stored_layers == 1 { 6 } else { stored_layers };
     if cube {
         if word(bytes, 8)? != 2 || layers != 6 || info.width == 0 || info.width != info.height
             || info.mip_count == 0 || info.mip_count > 16 {
@@ -2101,5 +2103,68 @@ pub(crate) fn observe_inline_storage(base: &std::path::Path) -> Result<(), Strin
     }
     eprintln!("INLINE_STORAGE_INVENTORY images={count} padded={padded} payload_bytes={total_bytes}");
     if count == 0 { return Err("no installed 2D inline images were observed".into()); }
+    Ok(())
+}
+
+/// Observe the actual installed layered payloads through their production
+/// readers. Expected bytes/order come from serialized records and1402d2740.
+#[cfg(feature = "game")]
+pub(crate) fn observe_layered_storage(base: &std::path::Path) -> Result<(), String> {
+    let catalog = crate::archive::Catalog::open(base).map_err(|error| error.to_string())?;
+    let mut counts = [0usize; 3];
+    let mut single_cubes = 0;
+    let mut total_bytes = 0usize;
+    for path in catalog.paths_with_suffix(".bimage7") {
+        let prefix = catalog.read_prefix(&path, 62).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing BIM header {path}"))?;
+        let kind = word(&prefix, 8)?;
+        let layers = word(&prefix, 52)?;
+        if kind == 0 && layers == 1 { continue; }
+        if kind > 2 { return Err(format!("unrecognized installed BIM kind {kind}: {path}")); }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?.ok_or("installed image missing")?;
+        let header = BimageInfo::parse(&bytes)?;
+        let depth = word(&bytes, 40)?;
+        let faces = if kind == 2 && layers == 1 { 6 } else { layers };
+        let mut at = 62usize;
+        let mut expected = blake3::Hasher::new();
+        let mut payload_bytes = 0;
+        for level in 0..header.mip_count {
+            let slices = if kind == 1 { (depth >> level).max(1) } else { faces };
+            for slice in 0..slices {
+                let size = word(&bytes, at + 16)? as usize;
+                let end = at.checked_add(20).and_then(|start| start.checked_add(size)).ok_or("layered source extent overflow")?;
+                let payload = bytes.get(at + 20..end).ok_or("truncated installed layered payload")?;
+                if word(&bytes, at)? != level || word(&bytes, at + 4)? != slice {
+                    return Err(format!("installed layered record ordering differs: {path}"));
+                }
+                expected.update(payload);
+                payload_bytes += size;
+                at = end;
+            }
+        }
+        if at != bytes.len() { return Err(format!("installed layered records leave a tail: {path}")); }
+        let expected = expected.finalize();
+        let (info, payload) = match kind {
+            0 => { let chain = compressed_inline_array_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+                if chain.layers != layers { return Err(format!("array layer count changed: {path}")); }
+                (chain.info, chain.payload) }
+            1 => { let chain = compressed_inline_volume_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+                if chain.depth != depth { return Err(format!("volume depth changed: {path}")); }
+                (chain.info, chain.payload) }
+            _ => { let chain = compressed_inline_cube_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+                (chain.info, chain.payload) }
+        };
+        if info != header || payload.len() != payload_bytes || blake3::hash(&payload) != expected {
+            return Err(format!("layered storage differs from installed records: {path}"));
+        }
+        if kind == 2 && layers == 1 {
+            single_cubes += 1;
+            eprintln!("LAYERED_STORAGE_SINGLE_CUBE path={path} mips={} bytes={payload_bytes} signature={expected}", header.mip_count);
+        }
+        counts[kind as usize] += 1;
+        total_bytes += payload_bytes;
+    }
+    eprintln!("LAYERED_STORAGE_INVENTORY arrays={} volumes={} cubes={} single_cubes={single_cubes} payload_bytes={total_bytes}", counts[0], counts[1], counts[2]);
+    if counts.iter().any(|count| *count == 0) { return Err("installed layered image inventory incomplete".into()); }
     Ok(())
 }

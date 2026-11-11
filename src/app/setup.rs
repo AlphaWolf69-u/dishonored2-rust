@@ -120,14 +120,17 @@ impl ModelMeshObservation {
         }
     }
 
-    fn report(&self, marker: &str, meshes: &dyn AssetWrite<Mesh>, instances: &[RenderInstance]) {
+    fn report(&self, marker: &str, meshes: &dyn AssetWrite<Mesh>, instances: &[RenderInstance],
+        common: Option<&super::common_model_meshes::Prepared>) {
         if !self.enabled { return; }
         let mut known = HashMap::new();
         let mut digest = blake3::Hasher::new();
         for instance in instances {
             let ordinal = known.len();
             let index = known.entry(instance.mesh.id()).or_insert_with(|| {
-                let mesh = meshes.get(&instance.mesh).expect("prepared model mesh");
+                let mesh = meshes.get(&instance.mesh)
+                    .or_else(|| common.and_then(|common| common.debug_mesh(instance.mesh.id())))
+                    .expect("prepared model mesh or enabled common-mesh observation");
                 digest.update(&mesh.count_vertices().to_le_bytes());
                 for (attribute, values) in mesh.attributes() {
                     digest.update(format!("{:?}", attribute).as_bytes());
@@ -250,7 +253,7 @@ pub(super) fn setup(
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
     let _ = prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
-        &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
+        &mut meshes, None, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
         &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
         effect_graphs.as_deref(), None, &resident_images, &|| Ok(()))
@@ -263,6 +266,7 @@ pub(super) fn prepare(
     mut programs: Option<&mut ProgramCacheSource>,
     navigation: Option<&NavigationWorld>,
     meshes: &mut dyn AssetWrite<Mesh>,
+    mut common_meshes: Option<&mut super::common_model_meshes::Prepared>,
     images: &mut dyn AssetWrite<Image>,
     probe_materials: &mut dyn AssetWrite<ProbeMaterial>,
     sky_materials: &mut dyn AssetWrite<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
@@ -816,7 +820,7 @@ pub(super) fn prepare(
     world_points.report("world");
     if observe_points {
         ModelMeshObservation { enabled: true, ..Default::default() }
-            .report("WORLD_MESH_PREPARATION", meshes, &render_instances[world_mesh_start..]);
+            .report("WORLD_MESH_PREPARATION", meshes, &render_instances[world_mesh_start..], common_meshes.as_deref());
     }
     super::load_timing::mark("setup: world geometry and materials");
     // Only the later placed-model and arm writers can update their records.
@@ -1245,11 +1249,19 @@ pub(super) fn prepare(
             let mut initialize_mesh = |mesh: &mut Mesh| mesh_observation.prepare(0, || {
                 retain_model_shadow_position(mesh, &surface.positions);
             });
+            let needs_vegetation = resolver.needs_vegetation_channels(&mat.handle);
+            let cached_common = if !world_baked && matches!(&*model, bmodel::ModelSource::Common(_)) {
+                common_meshes.as_deref_mut().filter(|common| common.enabled()).map(|common|
+                    common.acquire(path, surface_number, instance.to_matrix().determinant() < 0.0,
+                        needs_vegetation, surface, meshes, |mesh| initialize_mesh(mesh)))
+            } else { None };
             let mut prepare_mesh = |mut mesh: Mesh| {
                 if !repeated { initialize_mesh(&mut mesh); }
                 meshes.add(mesh)
             };
-            let (mesh, transform) = if world_baked {
+            let (mesh, transform) = if let Some(common) = &cached_common {
+                (common.handle.clone(), instance)
+            } else if world_baked {
                 baked_shear_instances += 1;
                 (
                     prepare_mesh(super::view_geometry::authored_mesh_from_uvs(
@@ -1296,13 +1308,14 @@ pub(super) fn prepare(
             if repeated {
                 initialize_mesh(meshes.get_mut(&mesh).expect("prepared static mesh"));
             }
-            vegetation_meshes.prepare(
-                resolver.needs_vegetation_channels(&mat.handle),
-                &mesh,
-                meshes,
-                &surface.positions,
-                &surface.packed_channels,
-            );
+            if let Some(common) = &cached_common {
+                if let Some(result) = &common.vegetation {
+                    vegetation_meshes.0.insert(mesh.id(), result.clone());
+                }
+            } else {
+                vegetation_meshes.prepare(needs_vegetation, &mesh, meshes,
+                    &surface.positions, &surface.packed_channels);
+            }
             render_instances.push(RenderInstance {
                 source: Some(RenderInstanceSource {
                     surface: RenderModelSurface::Bmodel {
@@ -1427,7 +1440,7 @@ pub(super) fn prepare(
     // Host decoding scratch ends here, before later water/FX acquisition.
     // Runtime meshes/query/skinning owners already hold their required data;
     // as with input retirement at 14025aa00's exit, staging is not residency.
-    mesh_observation.report("MODEL_MESH_PREPARATION", meshes, &render_instances[placed_mesh_start..]);
+    mesh_observation.report("MODEL_MESH_PREPARATION", meshes, &render_instances[placed_mesh_start..], common_meshes.as_deref());
     if trace_model_staging {
         eprintln!("MEMORY BML1 packed UV preparation: pairs={packed_uv_pairs} mismatches={packed_uv_mismatches}");
         let skeletal_bytes: usize = md6_cache.values().flatten()
