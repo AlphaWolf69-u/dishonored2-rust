@@ -704,6 +704,14 @@ loses w. Remaining, in order:
   body position with filter (+0x128 +0xc0..+0xd8); the closest hit becomes
   the static plane (normal, -(n . p)), the hit body/shape key is cached
   and the material combination fills the friction/restitution pair.
+  Port route: sphere particles query the published physics snapshot
+  (`world_point_query::PointQuerySnapshot`) with the ported point query
+  (`WorldPointQuery::hits_with_distance`, signed narrowphase distances),
+  which needs the query distance passed to its broadphase visit (it uses 0
+  today). Convex-hull particles (678 installed stages) need a hull versus
+  world closest-point query that the rewrite does not have yet. The
+  pipeline step runs in `ParticleSystem::update`, which does not receive
+  the snapshot; it has to be handed in there.
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
