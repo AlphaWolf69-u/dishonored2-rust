@@ -536,6 +536,17 @@ m_collision, m_oceanCollision, m_stop, m_death, m_life),
 m_sorting +0x1cc8, m_constantSeed +0x1ccc, m_sprites +0x1cd0, m_meshes
 +0x1ce0, m_trails +0x1cf0, m_collisionConvexMeshOffset +0x1d10,
 m_maxBoundingRadius +0x1d1c. The sprite, mesh and trail renderers are the
-ordinary stage ones. Next: read 1401fef80's per-particle step (collision
-queries against the physics world, events) and decide how it maps onto the
-rewrite's physics port.
+ordinary stage ones.
+
+Runtime: 1401fef80 is the stage frame (emission 1401e6570 with the
+standard spawn helpers, particle update 1401e83f0 with the sprite and
+trail advances, bounds widened by the collision radius x distance size).
+The particles themselves are simulated by arkHavokParticleStageSimulator
+(constructor at chunk_000086 2886), an arkPhysicsFXPipeline (14008b560,
+base 140ff1be0) registered with the physics world (+0x148338), whose
+collision shape 1401df6a0 (UpdateCollisionShape) is a convex hull of the
+particle mesh (140b88xxx hull builder) recentred on its centroid.
+arkHavokParticleSimulatorEffect (1401db280) feeds per-particle effects.
+Porting needs that FX pipeline (the Havok side at 140ff1be0..140ffxxxx and
+140fbxxxx/140fdxxxx) on top of the rewrite's hknp-based physics port; the
+pipeline's step and its collision callbacks (events) are next to read.
