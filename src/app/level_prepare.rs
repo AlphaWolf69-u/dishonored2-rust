@@ -23,6 +23,10 @@ pub(super) struct ModelHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::bm
 #[derive(Resource)]
 pub(super) struct MaterialHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::material::MaterialHistoryLease>);
 
+/// Blueprint construction credits outlive transient expansion descriptors.
+#[derive(Resource)]
+pub(super) struct BlueprintHistoryScope(#[allow(dead_code)] std::sync::Arc<entities::blueprint::HistoryLease>);
+
 /// Keep skeletal acquisitions through preparation and render-world retirement.
 #[derive(Resource)]
 pub(super) struct SkeletalHistoryScope {
@@ -109,6 +113,7 @@ pub(super) fn prepare_level(
     app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
     app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(&catalog)));
     app.insert_resource(SkeletalHistoryScope::new(&catalog));
+    app.insert_resource(BlueprintHistoryScope(entities::blueprint::HistoryLease::acquire(catalog.identity())));
     let catalog = Some(catalog);
     let map = level
         .entities

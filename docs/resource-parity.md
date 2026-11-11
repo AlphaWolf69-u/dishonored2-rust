@@ -7694,3 +7694,27 @@ identity/scope handling where useful, or demonstrate that the transient host
 representation saves memory without extra acquisition work for supported
 consumers. Do not add a raw-source pin merely to turn a ledger label green.
 The overall resource-lifecycle goal remains active.
+
+Blueprint lifetime decision/prediction (2026-11-11). The independent installed
+primary/reuse census finds49 blueprints/161,070 serialized bytes, with no init
+or common blueprint references. Blueprint is absent from the36-kind conditional
+marker-1 promotion table142280ee0; its native assembly definitions are map-scoped
+(1413517a0,1401c10d0/1401c1270,1401bc1f0). Production requests occur in static
+placement expansion and on-demand diagnostic geometry reconstruction. Typed
+child paths/transforms already coalesce inside each expansion batch and retire
+after expansion. Retaining those definitions for the whole map would not save
+normal supported requests, so preserve the cheaper transient representation.
+
+The missing phase is read-history retirement: no blueprint owner currently
+releases successful acquisition credits when its map ends. Add the existing
+CatalogHistoryScopes lease pattern to the blueprint owner, expansion Sources
+and the published level, keeping the lease last in Sources so cached values
+drop first. Hold the level lease through the normal render acknowledgement and
+consumer teardown. Predict the same placements, reads and transient descriptor
+retirement, no per-frame work or extra source retention, and exact namespace-
+local blueprint history release after the last batch/level scope. A standalone
+expansion retires its own history after its descriptor data is no longer used.
+Extend only the existing production catalog-scope observation to include this
+real installed kind. The absence of common blueprints is installed-data scope,
+not an object-name exception or a claim about future dynamic entity spawning.
+Census: artifacts/motion-blueprint-shape-installed-20261111.json.
