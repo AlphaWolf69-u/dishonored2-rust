@@ -7146,6 +7146,21 @@ asset upload/removal, not all36 maps or gameplay draws. The wider audit remains
 open for remaining attribution and supported owner obligations.
 Evidence: DH2-fx-level-lifetime/artifacts/inline-block-storage-20261111-comparison.json.
 
+Small allocation attribution prediction (2026-11-11). The complete36-map run
+ends with zero named resource owners and no Catalog consumers, but retains
+602,650 publication-phase bytes and332,900 physics-phase bytes. The existing
+one-MiB backtrace threshold cannot identify those blocks. Add opt-in64-byte
+sampling only for the six nonzero named phase contexts, configured outside
+the allocator before acquisition. Keep bookkeeping untagged and report the
+live callers only after actual host/audio/Catalog retirement. This is diagnostic
+attribution, with no expected memory or CPU saving and no normal-build code.
+Use the callers to identify real owners before changing residency policies.
+
+Heap report snapshots are also charged to the diagnostic context before taking
+the name-table lock. With small-block tracing enabled, retaining a resource
+phase here would both misattribute the snapshot and recursively acquire the
+same lock while recording its allocation.
+
 Cube face-count correction prediction (2026-11-11). The original BIM reader
 1402d2740 and GPU allocator1402f4060 interpret a cube's stored layer-count1
 as six face records. The host accepts only literal6 and rejects three real
