@@ -16,7 +16,7 @@ declaration. Particle programs connected: `particle/add_default`,
 | Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
 | World FX target/tag pose producer | eotw world FX | none: `world_particle_state` refuses targeted FX |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
-| `particle/fire`, `particle/filing_container` | 2 and 8 materials | none |
+| `particle/filing_container` | 8 materials | none (`particle/fire` connected) |
 
 ## Particle declaration census (2026-11-10)
 

@@ -8,6 +8,7 @@ override particle_masking:u32=0u;
 override particle_liquid:u32=0u;
 override particle_dissolve:u32=0u;
 override particle_add_liquid:u32=0u;
+override particle_fire:u32=0u;
 override particle_water:u32=0u;
 // particle/add_default sprite colour. Shared material fog is appended by
 // the backend after replacing its material-group binding placeholder.
@@ -77,6 +78,8 @@ struct ParticleMaterialParameters {
     liquid_options:vec4<u32>,
     dissolve:vec4<f32>,
     dissolve_options:vec4<u32>,
+    fire:array<vec4<f32>,2>,
+    fire_options:vec4<u32>,
     add_liquid:vec4<f32>,
     add_liquid_options:vec4<u32>,
     water:vec4<f32>,
@@ -358,6 +361,57 @@ fn particle_dissolve_colour(input:ParticleFragment,front_face:bool)->ParticleCol
     let rgb=material_fog_composite(colour*exposure*particle_view.exposure_extent.x,input.fog);
     return ParticleColour(vec4(rgb,alpha),colour);
 }
+// particle/fire fragment: the normal map distorts the fire ball and light
+// masks; legacy colour x drives the fire ball through lookup_fire, y the
+// light (lookup_light or a lookup_fire sample at fire_light_color), z the
+// smoke. Unlit, fog from the vertex applied fully. Slots: fire_ball in
+// opacity, fire_light and fire_smoke in the distortion layers,
+// lookup_light in diffuse, lookup_fire in lookup, normals in the bump slot.
+fn particle_fire_colour(input:ParticleFragment)->ParticleColour {
+    let material=particle_material;
+    let coordinates=input.texture_coordinates;
+    let legacy=input.colour;
+    let normals=textureSample(particle_bump,particle_trilinear,coordinates.xy).xy*vec2(material.fire[0].x)*vec2(legacy.x);
+    let uv=clamp(coordinates.xy+normals,vec2(0.0),vec2(1.0));
+    let ball=pow(textureSample(particle_opacity,particle_trilinear,uv).x,1.0/2.2);
+    let light=textureSample(particle_distortion_one,particle_trilinear,uv).x;
+    let smoke=textureSample(particle_distortion_two,particle_trilinear,coordinates.xy).x;
+    let power=clamp(ball-1.0+legacy.x,0.0,1.0);
+    let ramp=power*power*power*power;
+    let fireball=pow(textureSample(particle_lookup,particle_trilinear,vec2(ramp,0.5)).rgb,vec3(material.fire[0].y))
+        *vec3(ramp)*vec3(material.fire[0].z);
+    let fireball_alpha=clamp(ramp,0.0,1.0);
+    var light_colour:vec3<f32>;
+    if material.fire_options.x!=0u {
+        let level=clamp(light*legacy.y,0.0,1.0);
+        light_colour=textureSample(particle_diffuse,particle_trilinear,vec2(level,0.5)).rgb*vec3(legacy.y)*vec3(level)
+            *vec3(material.fire[0].w);
+    } else {
+        light_colour=textureSample(particle_lookup,particle_trilinear,vec2(material.fire[1].w,0.5)).rgb*vec3(legacy.y)
+            *vec3(light)*vec3(material.fire[0].w);
+    }
+    let smoke_colour=material.fire[1].xyz*vec3(smoke)*vec3(legacy.z);
+    let smoke_alpha=smoke*legacy.z;
+    var colour=mix(fireball,smoke_colour,vec3(light))+light_colour;
+    var alpha=clamp((fireball_alpha+smoke_alpha)*legacy.w,0.0,1.0);
+    // AdjustColor(legacy_color.xxxx) on the colour only.
+    colour*=legacy.x*material.colour_adjust.rgb*material.colour_adjust.a;
+    let distance=1.0/input.position.w;
+    alpha*=particle_soft_contact(input,distance);
+    if material.fade_options.y!=0u {
+        alpha*=smoothstep(material.depth_fade_lookup.y,material.depth_fade_lookup.z,distance);
+    }
+    let plane=dot(input.clip_plane,vec4(input.world_position,1.0));
+    if plane<0.0 {discard;}
+    if input.fade_radius.x>0.0 {alpha*=smoothstep(0.0,input.fade_radius.x,plane);}
+    if particle_masking!=0u {
+        if alpha<max(material.alpha_test,0.0001) {discard;}
+        return ParticleColour(vec4(alpha*input.fade_radius.z),vec3(0.0));
+    }
+    let exposure=mix(1.0,1.0/particle_adaptation[0].x,material.radial_exposure_fog.y);
+    let rgb=material_fog_composite(colour*exposure*particle_view.exposure_extent.x,input.fog);
+    return ParticleColour(vec4(rgb,alpha),colour);
+}
 // particle/add_liquid fragment: two panned distortion layers, a
 // threshold on their sum for opacity, and per-pixel fog. texcoords.w is
 // the vertex Fog(eyeDist), which the panning uses as its time seed.
@@ -492,6 +546,7 @@ fn particle_colour(input:ParticleFragment,front_face:bool)->ParticleColour {
     if particle_liquid!=0u {return particle_liquid_colour(input);}
     if particle_dissolve!=0u {return particle_dissolve_colour(input,front_face);}
     if particle_add_liquid!=0u {return particle_add_liquid_colour(input);}
+    if particle_fire!=0u {return particle_fire_colour(input);}
     let material=particle_material;
     let coordinates=input.texture_coordinates;
     let face=select(1.0,-1.0,!front_face && material.normal_options.z!=0u &&

@@ -91,6 +91,11 @@ struct MaterialParameters {
     dissolve: Vec4,
     /// particle/dissolve tile_alpha, use_mesh.
     dissolve_options: UVec4,
+    /// particle/fire (fire_distortion, lookup_adjust, fire_intensity,
+    /// fire_light_intensity), (fire_smoke_color.xyz, fire_light_color).
+    fire: [Vec4; 2],
+    /// particle/fire use_lookup_light.
+    fire_options: UVec4,
     /// particle/add_liquid (distoStrength.xy, liquid_Threshold).
     add_liquid: Vec4,
     /// particle/add_liquid fade_threshold, no_opacity_map.
@@ -177,6 +182,15 @@ impl MaterialParameters {
         } else {
             (Vec4::ZERO, UVec4::ZERO)
         };
+        let (fire, fire_options) = if source.fire {
+            let smoke = source.uniform("fire_smoke_color")?;
+            ([Vec4::new(scalar("fire_distortion")?, scalar("lookup_adjust")?, scalar("fire_intensity")?,
+                    scalar("fire_light_intensity")?),
+                Vec4::new(smoke[0], smoke[1], smoke[2], scalar("fire_light_color")?)],
+                UVec4::new(option("fx/opt/use_lookup_light")?, 0, 0, 0))
+        } else {
+            ([Vec4::ZERO; 2], UVec4::ZERO)
+        };
         let (add_liquid, add_liquid_options) = if source.add_liquid {
             let strength = source.uniform("distoStrength")?;
             (Vec4::new(strength[0], strength[1], scalar("liquid_Threshold")?, 0.),
@@ -200,6 +214,8 @@ impl MaterialParameters {
             liquid_options,
             dissolve,
             dissolve_options,
+            fire,
+            fire_options,
             add_liquid,
             add_liquid_options,
             distortion_fog: if source.distortion || source.add_liquid {Vec4::new(scalar("fogStart")?,scalar("fogEnd")?,scalar("fogScale")?,0.)}
@@ -1073,32 +1089,37 @@ impl ParticlePass {
                     binding: 0,
                     resource: parameters.binding().ok_or("particle uniforms absent")?,
                 },
+                // particle/fire reuses the slots: fire_ball (1), fire_light
+                // (2), fire_smoke (3), lookup_light (4), lookup_fire (5).
                 BindGroupEntry {
                     binding: 1,
-                    resource: BindingResource::TextureView(opacity),
+                    resource: BindingResource::TextureView(
+                        if source.fire { views.get("fx/fire_ball").unwrap_or(opacity) } else { opacity },
+                    ),
                 },
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::TextureView(
-                        views.get(if source.liquid { "fx/flowmap" } else { "fx/disto1" }).unwrap_or(opacity),
+                        views.get(if source.fire { "fx/fire_light" } else if source.liquid { "fx/flowmap" } else { "fx/disto1" })
+                            .unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
                     binding: 3,
                     resource: BindingResource::TextureView(
-                        views.get("fx/disto2").unwrap_or(opacity),
+                        views.get(if source.fire { "fx/fire_smoke" } else { "fx/disto2" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
                     binding: 4,
                     resource: BindingResource::TextureView(
-                        views.get("fx/diffuse").unwrap_or(opacity),
+                        views.get(if source.fire { "fx/lookup_light" } else { "fx/diffuse" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
                     binding: 5,
                     resource: BindingResource::TextureView(
-                        views.get(if source.dissolve { "fx/lookup_fire" } else { "fx/lookup" }).unwrap_or(opacity),
+                        views.get(if source.dissolve || source.fire { "fx/lookup_fire" } else { "fx/lookup" }).unwrap_or(opacity),
                     ),
                 },
                 BindGroupEntry {
@@ -1138,7 +1159,7 @@ impl ParticlePass {
                 BindGroupEntry {
                     binding: 19,
                     resource: BindingResource::TextureView(
-                        views.get(if source.scrolling_water || source.liquid || source.water { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
+                        views.get(if source.scrolling_water || source.liquid || source.water || source.fire { "fx/normals" } else { "bumpmap" }).unwrap_or(opacity)),
                 },
                 BindGroupEntry {
                     binding: 20,
@@ -1255,7 +1276,7 @@ impl ParticlePass {
             u8::from(source.option("fx/opt/water_alpha_mask_spec")? != 0)
                 | (u8::from(source.option("fx/opt/use_mesh")? != 0) << 1)
         } else { 0 };
-        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3) | (u8::from(source.water) << 4), masking, strip);
+        let pipeline_key = (state, accumulation, source.distortion, source.scrolling_water, source.liquid, lighting_mode, water_options | (u8::from(source.dissolve) << 2) | (u8::from(source.add_liquid) << 3) | (u8::from(source.water) << 4) | (u8::from(source.fire) << 5), masking, strip);
         self.pipeline_requests += 1;
         let pipeline = if let Some(pipeline) = self.programs.pipelines.get(&pipeline_key) {
             pipeline.clone()
@@ -1297,6 +1318,7 @@ impl ParticlePass {
                 ("particle_liquid", f64::from(u32::from(source.liquid))),
                 ("particle_dissolve", f64::from(u32::from(source.dissolve))),
                 ("particle_add_liquid", f64::from(u32::from(source.add_liquid))),
+                ("particle_fire", f64::from(u32::from(source.fire))),
                 ("particle_water", f64::from(u32::from(source.water))),
                 ("particle_water_alpha_mask_spec", f64::from(u32::from(water_options & 1 != 0))),
                 ("particle_water_mesh", f64::from(u32::from(water_options & 2 != 0))),
