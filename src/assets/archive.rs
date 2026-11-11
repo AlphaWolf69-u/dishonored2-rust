@@ -94,6 +94,7 @@ pub struct Catalog {
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
     pub(crate) component_types: std::sync::Mutex<Option<std::sync::Arc<crate::gameplay::component_state::types::ComponentTypes>>>,
     pub(crate) material_constants: std::sync::Mutex<Option<std::sync::Arc<crate::assets::physics_material::MaterialConstants>>>,
+    pub(crate) fx_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::definition::Definition>>>,
     pub(crate) fade_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::fade::Fade>>>,
     pub(crate) decal_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::decal::DecalMaterials<String>, crate::assets::decal::ResourceError>>>,
     pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::resources::Definition>>>,
@@ -152,6 +153,7 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        self.fx_resources.take();
         crate::assets::fx::fade::report_retirement(self);
         self.fade_resources.take();
         crate::assets::decal::report_retirement(self);
@@ -250,6 +252,7 @@ impl Catalog {
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::difficulty::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
+        crate::assets::fx::declaration::release_marker(self, 0);
         crate::assets::fx::fade::release_marker(self, 0);
         crate::assets::decal::release_marker(self, 0);
         crate::assets::entities::physics_material::resources::release_marker(self, 0);
@@ -264,6 +267,7 @@ impl Catalog {
         crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
         crate::assets::wwise::rtpc_resources::release_marker(self, 1);
         crate::assets::physworld::mass::resources::release_marker(self, 1);
+        crate::assets::fx::declaration::release_marker(self, 1);
         crate::assets::fx::fade::release_marker(self, 1);
         crate::assets::decal::release_marker(self, 1);
         crate::assets::entities::physics_material::resources::release_marker(self, 1);
@@ -511,6 +515,7 @@ impl Catalog {
             component_types: Default::default(),
             material_constants: Default::default(),
             physics_material_resources: Default::default(),
+            fx_resources: Default::default(),
             fade_resources: Default::default(),
             decal_resources: Default::default(),
             physics_system_resources: Default::default(),

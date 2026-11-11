@@ -7328,3 +7328,13 @@ immutable declaration, shared across world/screen/pause/contact consumers;
 bootstrap/map/persistent purge follows the existing registry. No byte or CPU
 saving is claimed until actual consumer acquisition is measured. Preserve
 all enabled/disabled descriptor admission and deferred error boundaries.
+
+FX owner implementation in progress (2026-11-11). The candidate now has a
+Catalog-owned typed registry, selected lazy headers, bootstrap promotion and
+map/persistent purge. Inherited syntax is still temporary, immutable failures
+share a generation, cancellation does not promote a new value/error, and
+editable generations bypass sharing. World/screen/pause/contact consumers and
+parent read-history ownership still need integration and actual acquisition
+comparison; this branch is not accepted or merged. All header/typed-body
+allocations use the explicit FX declaration resources context. No incomplete
+nested-storage estimator is reported as a full payload-byte measurement.

@@ -54,7 +54,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus") || kind.eq_ignore_ascii_case("soundrtpc")
         || kind.eq_ignore_ascii_case("massprops") || kind.eq_ignore_ascii_case("physSystem")
         || kind.eq_ignore_ascii_case("ragdoll") || kind.eq_ignore_ascii_case("physicsMaterial")
-        || kind.eq_ignore_ascii_case("decal") || kind.eq_ignore_ascii_case("fade")
+        || kind.eq_ignore_ascii_case("decal") || kind.eq_ignore_ascii_case("fade") || kind.eq_ignore_ascii_case("fx")
         || kind.eq_ignore_ascii_case("difficultyManager") || kind.eq_ignore_ascii_case("difficultyPreset")
 }
 
@@ -357,6 +357,7 @@ impl LevelList {
             crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
             crate::assets::difficulty::promote_bootstrap(catalog)?;
             crate::assets::physworld::mass::resources::promote_bootstrap(catalog)?;
+            crate::assets::fx::declaration::promote_bootstrap(catalog)?;
             crate::assets::fx::fade::promote_bootstrap(catalog)?;
             crate::assets::decal::promote_bootstrap(catalog)?;
             crate::assets::entities::physics_material::resources::promote_bootstrap(catalog)?;
@@ -431,6 +432,9 @@ impl LevelList {
                 crate::assets::difficulty::register_preload(catalog, &resource.kind, &resource.path, context as u8)?;
             } else if resource.kind.eq_ignore_ascii_case("massprops") {
                 crate::assets::physworld::mass::resources::register_preload(catalog,
+                    &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("fx") {
+                crate::assets::fx::declaration::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("fade") {
                 crate::assets::fx::fade::register_preload(catalog,
