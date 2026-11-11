@@ -965,6 +965,12 @@ where
         self.slab_layouts.clear();
     }
 
+    /// Seal selected lifetime domains while keeping other allocation pools
+    /// available. Their physical buffers and resident ranges are unchanged.
+    pub fn seal_existing_slabs_matching(&mut self, seal: impl Fn(&I::Layout) -> bool) {
+        self.slab_layouts.retain(|layout, _| !seal(layout));
+    }
+
     /// Get the number of allocated slabs
     pub fn slab_count(&self) -> usize {
         self.slabs.len()
