@@ -128,6 +128,12 @@ fn record_big(ptr: usize, size: usize, live: bool) {
     if RECORDING.try_with(|r| r.replace(true)).unwrap_or(true) {
         return;
     }
+    // The sampled block keeps its caller's tag. Stack/table bookkeeping
+    // belongs to this process diagnostic, not that resource's lifetime.
+    static RETAIN_TAGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let retain_tags = *RETAIN_TAGS.get_or_init(||
+        std::env::var_os("DH2_DEBUG_RETAIN_BIG_BLOCK_TAGS").is_some_and(|value| value == "1"));
+    let _diagnostic_tag = (!retain_tags).then(|| tag("untagged"));
     {
         let mut big = BIG.lock().unwrap_or_else(|e| e.into_inner());
         let big = big.get_or_insert_with(Default::default);
