@@ -666,6 +666,23 @@ loses w. Remaining, in order:
   +0x128 structure. Static geometry is handled per body (140fc1370: "Static
   CD" with hkfxCacheSharing and "Static cache limiting", "Dynamic CD", "CD
   pass", "CCD pass").
+- WorldCollide (PhysicsCollide's base, constructor 140ffb110, class id
+  0x68 the solvers look up): per body a static and a dynamic contact,
+  channels "WorldCollide/StaticContact/Plane", "/LinearVelocity",
+  "/AngularVelocity", "/COM" (0x40-byte records at +0x30, dynamic at
+  +0x50) and two floats each (+0x40 / +0x60, -1 = none); allocation
+  140ffb2e0 zeroes the records and sets the floats to -1. The solvers
+  (SolveSphereContacts 140fb9c20) blend whichever of the two exist.
+- PhysicsCollide per body (140fc1370): the game's configuration takes the
+  first CD variant (+0x70 short 0; lines ~1199-5300 of the decompile) then
+  the CCD pass (~9514-end). Static contacts come from hkfxClosestPoints
+  queries against the world (140fe3be0 -> world+0x478 query interface slot
+  +0xb0) with a per-body cache (hkfxCacheSharing, static cache limiting
+  140fd1880/140ffbed0); dynamic contacts from the neighbour entries and
+  140cada50 closest points; the CCD pass casts rays through slot +0x90
+  (hkfxShapeTagCodec 140fd1e30). The rewrite's player answers the same
+  world+0x478 queries geometrically against `navigation::CollisionWorld`
+  (`app::player::GameCollision`).
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
