@@ -22,7 +22,12 @@ struct State {
 }
 #[derive(Resource, Clone, Default)]
 pub(super) struct Shared(Arc<Mutex<State>>);
+pub(super) struct Retirement(std::sync::Weak<Mutex<State>>);
+impl Retirement {
+    pub fn released(&self) -> bool { self.0.strong_count() == 0 }
+}
 impl Shared {
+    pub fn retirement(&self) -> Retirement { Retirement(Arc::downgrade(&self.0)) }
     pub fn counts(&self) -> (usize, usize) {
         let shared = self.0.lock().unwrap_or_else(|error| error.into_inner());
         (shared.meshes.len(), shared.builds)

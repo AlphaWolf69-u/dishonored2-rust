@@ -921,6 +921,7 @@ fn inspect_scene_resources(
         return Err("initial texture phase observation requires GPU asset epochs".into());
     }
     let mut host = None;
+    let mut common_sessions = Vec::new();
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
         if let Some(map) = level.entities.strip_suffix(".entities") {
@@ -931,6 +932,9 @@ fn inspect_scene_resources(
         // asset storage and render device across actual map retirement.
         let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
+        if new_host {
+            common_sessions.push(app.world().resource::<super::common_model_meshes::Shared>().retirement());
+        }
         if new_host && observe_initial_images {
             app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
         }
@@ -1145,6 +1149,10 @@ fn inspect_scene_resources(
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
     drop(host);
+    if common_sessions.iter().any(|session| !session.released()) {
+        return Err("common mesh owner outlived its render host".into());
+    }
+    eprintln!("COMMON_MODEL_HOST_RELEASE sessions={} retained=0", common_sessions.len());
     drop(session);
     drop(catalog);
     drop(catalog_session);
