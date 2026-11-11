@@ -7270,3 +7270,29 @@ since its heap guard stopped before those steps. Layered image acquisition did
 pass all3,000 installed members/1,743,628,016 payload bytes, including all three
 single-cube descriptors; that result is independent of the heap failure.
 Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json.
+
+Common-mesh and shader-staging acceptance (2026-11-11,ed664b55). Clean dev
+Tools SHA256257af879a6c8ec4716b958a2680e37130d4f17175e7bf7404d63308fedf5d273
+passed same-device EotW/Dust/EotW separate/shared comparisons. All three placed
+mesh signatures match; common construction/uploads fall20/16/20 ->20/2/0.
+The22 resident common meshes occupy two disjoint buffers (2,097,184 logical
+buffer bytes;2,162,688 actual allocator bytes), release at host destruction,
+and do not retain map buffers. Early upload now keeps reserved driver heaps
+at201,326,592 bytes in both modes after every map, fixing the rejected256-MiB
+heap pin. A cancelled preparation built one mesh, promoted none, and the retry
+built20 fresh valid meshes. This verifies asset content/upload ownership and
+resource reuse, not gameplay draw timing or a whole-frame speed claim.
+
+ShaderBuffer::from same-build publication preserved207 complete buffer hashes
+and all serialized/retained capacities across198 calls, removing449,280 total
+transient copied bytes (largest102,464). No rendered data or GPU descriptors
+change; no RSS or CPU-time gain is asserted from these dev observations.
+
+The64-byte caller trace also completed all36 CPU publication/retirement routes.
+It attributes260,304 physics-phase bytes to class/name metadata and many
+publication-phase balances to AssetHandleProvider/embedded shader loads in
+successive fresh Bevy hosts (notably35-fold counts). Small persistent task,
+weak-index and singleton balances are also recorded. These are identified
+callers, not a certification that every retained block is harmless. Investigate
+the shader-load host shutdown before closing that remaining lifetime obligation.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v3-20261111-comparison.json.
