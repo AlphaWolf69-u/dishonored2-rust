@@ -2257,10 +2257,15 @@ preparation records matched, and final owner destruction was observed.
 See component-metadata-relations-20261111-comparison.json and its acceptance
 entry in the resource parity ledger. No walking CPU timing is inferred.
 
-Wind update source scratch (2026-11-11). update_vegetation_wind still assembles
-a temporary Vec of28 words per source before encoding its upload. Reusing a
-map-owned word scratch could remove one source allocation per active frame,
-at a resident cost of112 bytes per source between frames. The serializer's
-same-sized byte backing is handled separately. This source-scratch tradeoff
-waits for scoped CPU/residency measurement; no count, deformation or upload
-change is justified by the lifetime audit alone.
+Wind update source scratch (2026-11-11; allocation model corrected).
+update_vegetation_wind allocates ONE Vec for the whole update, with capacity
+28 * max(source_count,1) words, then appends stack-returned [u32;28] records.
+It does not allocate one Vec per source. A retained scratch could remove one
+allocation per active update, at112 * max(source_count,1) resident bytes.
+Alternatively, writing those already-encoded words directly into the existing
+ShaderBuffer byte backing could remove both the temporary allocation and its
+second copy without retaining a separate scratch, but needs an explicit
+runtime-array ABI/write contract and affected-function evidence. The current
+serializer backing already reuses exact-sized storage. Do not claim a saving
+for this unimplemented opportunity or multiply allocation counts by source
+count. Playback values, upload scheduling and GPU work must stay unchanged.

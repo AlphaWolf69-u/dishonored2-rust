@@ -7544,3 +7544,10 @@ route did not exercise warm addition of a different family role. Source-review
 follow-ups that borrow admission metadata and reuse the cold traversal require
 their final coherent build before acceptance. Evidence:
 DH2-fx-level-lifetime/artifacts/fx-declaration-lifetimes-20261111-comparison.json.
+
+Wind scratch audit correction: current instance_words returns a stack array;
+only its caller allocates one combined Vec per actual update. The earlier
+opportunity wording could be read as one heap allocation per source and is
+corrected in optimization-opportunities.md. No implementation or performance
+claim depends on that mistaken count, and no speculative scratch cache was
+added. This does not alter the already accepted shader-buffer backing reuse.
