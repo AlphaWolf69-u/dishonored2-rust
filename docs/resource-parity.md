@@ -7296,3 +7296,20 @@ weak-index and singleton balances are also recorded. These are identified
 callers, not a certification that every retained block is harmless. Investigate
 the shader-load host shutdown before closing that remaining lifetime obligation.
 Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v3-20261111-comparison.json.
+
+Shader-library lifetime root cause/prediction (2026-11-11). The live caller
+trace's35-fold AssetHandleProvider balances come from bevy_shader0.19.1's
+load_shader_library macro: it explicitly mem::forgets each loaded strong
+handle to work around missing dependency tracking. This is not merely an
+unfinished resource observation; those handles cannot drop with their App.
+Keep the same workaround's live retention in an application-owned World service
+instead. A non-send service is sufficient because embedded_asset already
+requires mutable App access on the main thread; no new ECS dependency or
+runtime system is needed. The owner is a bevy_backend shader-library lifetime,
+not a port of original compiled-renderProg bank contents. Preserve every path,
+source, load setting, import, handle and GPU behavior while the App lives.
+Expect all library weak leases to remain live during host work and retire after
+host destruction; the former forgotten mode should retain them. Observe actual
+fresh hosts and compare unchanged acquisition output before integration. No
+normal gameplay CPU, FPS or large resident-memory saving is predicted: the
+main client has one App, while repeated diagnostic hosts exposed the leak.
