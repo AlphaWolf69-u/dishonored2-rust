@@ -953,6 +953,7 @@ fn inspect_scene_resources(
     }
     let mut host = None;
     let mut common_sessions = Vec::new();
+    let mut shader_sessions = Vec::new();
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
         if let Some(map) = level.entities.strip_suffix(".entities") {
@@ -965,6 +966,13 @@ fn inspect_scene_resources(
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
         if new_host {
             common_sessions.push(app.world().resource::<super::common_model_meshes::Shared>().retirement());
+            if std::env::var_os("DH2_DEBUG_SHADER_LIBRARY_LIFETIME").is_some_and(|value| value == "1") {
+                let libraries = app.world().get_non_send_resource::<bevy::shader::ShaderLibraries>()
+                    .ok_or("shader library owner is absent")?.retirement();
+                let (count, live) = libraries.counts();
+                eprintln!("SHADER_LIBRARY_LIFETIME step={step} phase=host-live libraries={count} live={live}");
+                shader_sessions.push(libraries);
+            }
         }
         if new_host && observe_initial_images {
             app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
@@ -1170,6 +1178,10 @@ fn inspect_scene_resources(
             host = Some(app);
         } else {
             drop(app);
+            if let Some(libraries) = shader_sessions.last() {
+                let (count, live) = libraries.counts();
+                eprintln!("SHADER_LIBRARY_LIFETIME step={step} phase=host-released libraries={count} live={live}");
+            }
             for (tag, bytes) in crate::platform::allocation_tags::report() {
                 eprintln!(
                     "RESOURCE_SCENE_HEAP step={step} phase=host-released tag={tag:?} bytes={bytes}"
@@ -1180,6 +1192,13 @@ fn inspect_scene_resources(
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
     drop(host);
+    if reuse_host {
+        if let Some(libraries) = shader_sessions.last() {
+            let (count, live) = libraries.counts();
+            eprintln!("SHADER_LIBRARY_LIFETIME phase=host-released libraries={count} live={live}");
+        }
+    }
+    drop(shader_sessions);
     if common_sessions.iter().any(|session| !session.released()) {
         return Err("common mesh owner outlived its render host".into());
     }
