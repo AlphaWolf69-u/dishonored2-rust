@@ -7177,3 +7177,35 @@ members. The GPU heap regression in the same report belongs to the separate
 unmerged common-mesh feature and does not invalidate this format acquisition.
 Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json
 and DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
+
+FX declaration remaining-scope review (2026-11-11). Registration1413630d0
+constructs idDeclFX, inherited acquisition140022fd0 uses1400607f0, and destruction
+1401c5990 releases its typed payload. fx is present in the actual36-kind
+conditional promotion table142280ee0. Current assets::fx::declaration::read
+shares source text but returns a fresh generic syntax tree for every caller;
+there is no FX typed header/purge owner. The three direct Catalog consumers
+are world_sources, screen_effects::sources and pause_fx; audio::contacts uses
+the same inherited reader with its prepared text provider. This is a real
+remaining class-lifecycle gap, not a request to cache the already prepared
+world effect wholesale.
+
+WorldEffectDefinition contains resolved ParticleMaterial images, fields and
+decal references. Those are derived consumers with separate image/particle/
+material lifetimes; retaining the whole prepared effect in Catalog would pin
+them across levels. The intended owner must retain only immutable typed FX
+descriptors, then leave world/screen material/image preparation with existing
+map/runtime owners. Live instances keep independent clocks, queues and random
+state. Existing constructor/default/descriptor parsers are the source of typed
+data; no new generic Value-tree cache or eager decode of the entire library.
+Mutable overlays and cancelled acquisition require the existing separate-
+generation and nonpublication rules. Native parent resource scopes must be
+accounted for without retaining duplicate resolved syntax after preparation.
+
+Installed census:8,909 FX declarations/3,824,720 source bytes,7,095 inheritance
+references to1,347 distinct parents. The full raw inventory and inheritance
+shape are in DH2-collision-staging/artifacts/fx-declaration-installed-census-20261111.json.
+Predicted outcome is one lazy selected header/typed identity per requested
+immutable declaration, shared across world/screen/pause/contact consumers;
+bootstrap/map/persistent purge follows the existing registry. No byte or CPU
+saving is claimed until actual consumer acquisition is measured. Preserve
+all enabled/disabled descriptor admission and deferred error boundaries.
