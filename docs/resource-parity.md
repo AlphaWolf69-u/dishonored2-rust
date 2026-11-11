@@ -7156,3 +7156,12 @@ packed bytes, formats, mip ordering and ownership. Expected gain is supported
 acquisition of these three resources, with no added decode, upload or runtime
 work for previously accepted cubes. Verify the full installed cube/array/volume
 inventory through the production readers before integration.
+
+Independent layered-record inventory (2026-11-11). Reading the installed members
+without the rewrite parser verified125,639 ordered records/1,743,628,016 payload
+bytes across2,897 cubes,102 volumes and one32-layer array. All dimensions,
+record lengths, mip/slice order and source extents follow1402d2740 and the
+1402c2e30 block-size rules. The three stored-layer1 cubes contain42/42/30 face
+records; no member conversion or extraction was performed. This establishes
+the installed format census, not acceptance of the changed rewrite reader.
+Evidence: DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
