@@ -7296,3 +7296,19 @@ weak-index and singleton balances are also recorded. These are identified
 callers, not a certification that every retained block is harmless. Investigate
 the shader-load host shutdown before closing that remaining lifetime obligation.
 Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v3-20261111-comparison.json.
+
+Common-mesh acceptance correction (2026-11-11). The v3 report's reserved-heap
+and handle checks passed, but its records show buffers=0 for resident common
+meshes. That invalidates the GPU-buffer portion of the preceding acceptance;
+CPU content/reuse and host-owner release alone did not prove valid GPU backing.
+Root cause: the existing free_meshes deliberately retires removed, modified
+AND added IDs to handle re-extraction. Early common upload was followed by this
+normal free stage, which destroyed its new buffers; the later domain correctly
+skipped uploading them again. Free the complete outgoing generation before
+early upload, then skip that second free stage. Other additions/changes still
+allocate in the ordinary stage. Require vertex ranges for every nonempty common
+mesh and index ranges for every indexed common mesh, in addition to RenderMesh
+presence, disjoint buffers, content and retirement. Re-run actual GPU ownership
+before accepting the repaired scheduling or claiming heap placement success.
+The shader buffer publication/serialization result in v3 is independent of this
+missing common mesh backing; its hashes do not verify mesh drawing.
