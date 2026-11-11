@@ -51,6 +51,8 @@ pub(crate) struct ParticleSystem {
     /// The system's declaration, shared by its stages and trails.
     pub declaration: Arc<crate::assets::fx::particle_declaration::ParticleDeclaration>,
     pub stages: Vec<StageSimulation>,
+    /// System +0x396: arkHavokParticleStageSimulators.
+    pub havok_stages: Vec<crate::gameplay::particles::havok_stage::HavokStageSimulation>,
     /// World-space union of the trail strips built at the last publication.
     pub trail_bounds: Option<[[f32; 3]; 2]>,
     /// System +0x39a: (declaration trail index, arkTrail).
@@ -171,6 +173,7 @@ impl ParticleSystem {
             publication.pose,
             owner_scale,
             self.trail_bounds,
+            &self.havok_stages,
         )?;
         let mut trail_bounds = [[f32::from_bits(0x7149_f2ca); 3], [f32::from_bits(0xf149_f2ca); 3]];
         let volumes = context
@@ -246,15 +249,30 @@ impl ParticleSystem {
             owner_scale,
             ..*context.view
         };
-        for stage in &self.stages {
-            let definition = &stage.declaration.stages[stage.index];
-            let transform = if definition.worldspace {
+        // Ordinary stages, then the Havok stages (1401fef80's publication
+        // 1401e4930 after the system's ordinary stages).
+        let havok_bodies: Vec<_> = self.havok_stages.iter()
+            .map(|stage| move |slot: usize| stage.orientation(slot)).collect();
+        let mut draw_stages: Vec<(crate::rendering::particles::publication::DrawStage, Option<&StageSimulation>)> =
+            self.stages.iter().map(|stage| (crate::rendering::particles::publication::DrawStage::ordinary(stage), Some(stage))).collect();
+        for (stage, bodies) in self.havok_stages.iter().zip(&havok_bodies) {
+            draw_stages.push((crate::rendering::particles::publication::DrawStage {
+                definition: &stage.definition().stage,
+                particles: &stage.particles,
+                sprites: &stage.sprites,
+                meshes: &stage.meshes,
+                bodies: Some((bodies as &dyn Fn(usize) -> Option<[[f32; 3]; 3]>, stage.centroid_offset())),
+            }, None));
+        }
+        for (draw, ordinary) in &draw_stages {
+            let definition = draw.definition;
+            let transform = if definition.worldspace || ordinary.is_none() {
                 ReferenceFrame::default()
             } else {
                 publication.pose
             };
             // 1f2420: one publication order per stage, shared by its renderers.
-            let order = stage.particles.publication_order(definition.sorting,
+            let order = draw.particles.publication_order(definition.sorting,
                 context.camera.position, context.camera.axes[0]);
             for (index, sprite) in definition.sprites.iter().enumerate() {
                 if !sprite.enabled {
@@ -267,9 +285,9 @@ impl ParticleSystem {
                     .materials
                     .get(name)
                     .ok_or_else(|| format!("particle draw material absent: {name}"))?;
-                let mut instances = Vec::with_capacity(stage.particles.len());
+                let mut instances = Vec::with_capacity(draw.particles.len());
                 let bounds = crate::rendering::particles::publication::stage_instances(
-                    stage,
+                    draw,
                     index,
                     transform,
                     &view,
@@ -338,8 +356,8 @@ impl ParticleSystem {
                 let (Some(name),Some(source),Some(model))=(&mesh.material,&mesh.source,&mesh.model) else {continue};
                 if model.vertices.is_empty(){continue;}
                 if self.world_mesh_materials.contains(name) {
-                    let mut instances=Vec::with_capacity(stage.particles.len());
-                    crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
+                    let mut instances=Vec::with_capacity(draw.particles.len());
+                    crate::rendering::particles::mesh_publication::stage_instances(draw,index,transform,
                         &view,self.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                     if !instances.is_empty() {
                         world_meshes.push(WorldMeshDraw{source:source.clone(),material:name.clone(),
@@ -348,8 +366,8 @@ impl ParticleSystem {
                     continue;
                 }
                 let material=self.materials.get(name).ok_or_else(||format!("particle mesh material absent: {name}"))?;
-                let mut instances=Vec::with_capacity(stage.particles.len());
-                crate::rendering::particles::mesh_publication::stage_instances(stage,index,transform,
+                let mut instances=Vec::with_capacity(draw.particles.len());
+                crate::rendering::particles::mesh_publication::stage_instances(draw,index,transform,
                     &view,self.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                 if instances.is_empty(){continue;}
                 let mut transparency=context.transparency.get(material.state)?;
@@ -367,6 +385,7 @@ impl ParticleSystem {
             }
             // 1401f3060: each trail renderer builds its live particles'
             // strips, in slot order, within its vertex budget.
+            let Some(stage) = ordinary else { continue };
             for (trail_index, trail) in definition.trails.iter().enumerate() {
                 let records = &stage.trails[trail_index];
                 if records.is_empty() {
@@ -591,7 +610,7 @@ impl ParticleSystem {
         let texture_images = texture_materials.iter().flat_map(|material| material.images.values())
             .filter(|image| image.scene_owned && seen.insert(image.path.clone()))
             .cloned().collect();
-        let (effect, (stages, beams, trails, ribbons, system_seed)) = ParticleEffect::new(
+        let (effect, (stages, havok_stages, beams, trails, ribbons, system_seed)) = ParticleEffect::new(
             definition.owner.clone(),
             offsets,
             seed,
@@ -617,6 +636,16 @@ impl ParticleSystem {
                     let wanted = &declaration.stages[stage.index].spawn_stage.stage_name;
                     if !wanted.is_empty() {
                         stage.parent = names.iter().position(|name| name == wanted);
+                    }
+                }
+                // 140201760 then creates a simulator for each enabled Havok
+                // stage (1401dfc20), before the beams.
+                let world_gravity = crate::gameplay::physics_world::WorldInfo::game_settings([[0.; 4]; 2]).gravity;
+                let mut havok_stages = Vec::new();
+                for (index, stage) in declaration.havok_stages.iter().enumerate() {
+                    if stage.stage.enabled {
+                        havok_stages.push(crate::gameplay::particles::havok_stage::HavokStageSimulation::new(
+                            declaration.clone(), index, ReferenceFrame::default(), &mut system_seed, world_gravity)?);
                     }
                 }
                 // 140201760 then creates an arkBeam for each enabled beam
@@ -645,7 +674,7 @@ impl ParticleSystem {
                         ribbons.push((index, crate::gameplay::particles::ribbon::Ribbon::new(ribbon, &mut system_seed)?));
                     }
                 }
-                Ok((stages, beams, trails, ribbons, system_seed))
+                Ok((stages, havok_stages, beams, trails, ribbons, system_seed))
             },
         )?;
         Ok(Self {
@@ -656,6 +685,7 @@ impl ParticleSystem {
                 .transpose()?.flatten().map_or(0.0, |words| f32::from_bits(words[0])),
             declaration: declaration.clone(),
             stages,
+            havok_stages,
             trails,
             beams,
             ribbons,
@@ -702,6 +732,10 @@ impl ParticleSystem {
         self.stages.iter().all(|stage| {
             stage.particles.is_empty()
                 && !emitting(stage.emitter.cycle.can_emit(stage.emitter.definition.cycles))
+        }) && self.havok_stages.iter().all(|stage| {
+            // 1401e5ca0 / 1401e3cd0
+            stage.live_count() == 0
+                && !emitting(stage.emitter.cycle.can_emit(stage.emitter.definition.cycles))
         }) && self.trails.iter().all(|(index, trail)| {
             // 1402122f0 / 140212720
             trail.live_count() == 0
@@ -725,6 +759,12 @@ impl ParticleSystem {
         seed: &mut u32,
     ) -> Result<(), String> {
         self.publication = self.effect.update(now, frame, self.finished(), seed)?;
+        // The physics world steps every Havok particle pipeline each frame,
+        // whether or not the system is simulated or drawn (1400908c0).
+        let gravity = crate::gameplay::physics_world::WorldInfo::game_settings([[0.; 4]; 2]).gravity;
+        for stage in &mut self.havok_stages {
+            stage.step(frame.delta, gravity)?;
+        }
         // 140227b90: the FX record's target parameters.
         self.beam_target = frame.target;
         crate::render_model::update_particle_water_flags(
@@ -810,6 +850,7 @@ impl ParticleSystem {
             publication.pose,
             size,
             self.trail_bounds,
+            &self.havok_stages,
         )?;
         let frustum_visible = || {
             !crate::render_model::transformed_aabb_clip_cull(
@@ -867,6 +908,9 @@ impl ParticleSystem {
             for stage in &mut self.stages {
                 stage.flush();
             }
+            for stage in &mut self.havok_stages {
+                stage.flush();
+            }
         }
         if !schedule.update_cycles {
             self.visible_frame = None;
@@ -877,6 +921,9 @@ impl ParticleSystem {
         if !schedule.simulate {
             for stage in &mut self.stages {
                 stage.advance_cycles(schedule.delta, publication.pose)?;
+            }
+            for stage in &mut self.havok_stages {
+                stage.advance_cycles(schedule.delta)?;
             }
             self.visible_frame = None;
             self.simulated_frame = Some(frame);
@@ -999,6 +1046,29 @@ impl ParticleSystem {
                 }
             }
             self.stages[stage_slot].events.pending = deliveries;
+        }
+        // 1401fef80 for each Havok stage, after the ordinary stages. Havok
+        // bodies are world space: the descriptor box moves with the origin.
+        {
+            let bounds = self.declaration.clipping.bounding_box;
+            let bounds = [bounds[1], bounds[0]].map(|bound| {
+                std::array::from_fn(|i| crate::float::add(bound[i], publication.pose.position[i]))
+            });
+            let planes = self.clipping.as_ref().map_or(&[][..], |p| &p.world[..]);
+            for stage in &mut self.havok_stages {
+                stage.advance_frame(
+                    delta,
+                    &StageFrame {
+                        pose: publication.pose,
+                        bounds,
+                        planes,
+                        source_velocity,
+                        rate: publication.rate,
+                        lod: self.detail_level,
+                    },
+                    self.source_motion.as_ref(),
+                )?;
+            }
         }
         let declaration = self.declaration.clone();
         // 1401fde70 for each beam, before the trails. Its first frame

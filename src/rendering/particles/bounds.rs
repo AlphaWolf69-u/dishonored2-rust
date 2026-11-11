@@ -108,6 +108,7 @@ pub fn system_bounds(
     pose: ReferenceFrame,
     scale: f32,
     trails: Option<[[f32; 3]; 2]>,
+    havok: &[crate::gameplay::particles::havok_stage::HavokStageSimulation],
 ) -> Result<[[f32; 3]; 2], String> {
     let mut result = authored_bounds(visibility, pose.position);
     if visibility.fixed_box {
@@ -164,6 +165,29 @@ pub fn system_bounds(
                 result[1][i] = maximum;
             }
         }
+    }
+    // 1401fef80: each Havok stage's body bounds (+0x6cc) widened by its
+    // largest sprite/mesh radius (+0x1d1c, 1401dfb40) x the distance size.
+    for stage in havok {
+        let bounds = stage.bounds;
+        if !(bounds[0][0] <= bounds[1][0]) {
+            continue;
+        }
+        let definition = &stage.definition().stage;
+        let mut radius = 0.;
+        for candidate in definition.sprites.iter().map(|sprite| sprite.bounding_radius())
+            .chain(definition.meshes.iter().map(|mesh| mesh.bounding_radius()))
+        {
+            let candidate = candidate?;
+            if radius <= candidate {
+                radius = candidate;
+            }
+        }
+        let margin = multiply(radius, scale);
+        include(
+            &mut result,
+            [bounds[0].map(|value| subtract(value, margin)), bounds[1].map(|value| add(value, margin))],
+        );
     }
     if let Some(trails) = trails {
         include(&mut result, trails);

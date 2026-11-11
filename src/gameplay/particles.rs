@@ -19,6 +19,7 @@ pub mod space;
 pub mod spawn;
 pub mod sprite;
 pub mod stage;
+pub mod havok_stage;
 pub mod timing;
 pub mod trail;
 pub mod trail_system;

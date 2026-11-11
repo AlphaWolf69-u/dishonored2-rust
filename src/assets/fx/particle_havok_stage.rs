@@ -58,7 +58,9 @@ pub struct HavokAngularVelocity {
 }
 
 /// arkParticleSystemDescStructures::arkSpawnCollisions (+0x18b0, 1401f8c90):
-/// +0 m_positionSphereQuery off, +1 on, +4 0, +8 -50, +0xc off, +0x10 0.1.
+/// 1401db580 reads +0 the velocity ray cast (off) with its distance +8
+/// (-50), +0xc the position sphere query (off) with its radius +0x10
+/// (0.1), and an unnamed flag +1 (on) with an offset +4 (0).
 pub struct HavokSpawnCollisions {
     pub position_sphere_query: bool,
     pub velocity_ray_cast: bool,
@@ -141,7 +143,7 @@ impl Default for ParticleHavokStageAsset {
             },
             spawn_collisions: HavokSpawnCollisions {
                 position_sphere_query: false,
-                velocity_ray_cast: true,
+                velocity_ray_cast: false,
                 velocity_ray_cast_distance: -50.,
             },
             wind_drag_over_cycle: ScalarParameter::constant(1.),

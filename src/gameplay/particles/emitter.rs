@@ -326,6 +326,105 @@ impl ParticleEmitter {
     }
 }
 
+impl ParticleEmitter {
+    /// arkHavokParticleStage: the constructor (1401dfc20) keeps the spawn
+    /// seed after its field setup; the system reset (1401fd7b0) then samples
+    /// the delay (1401e6860) and the cycle with its seed (1401e6800). Unlike
+    /// 1f3c30/1f3bf0 it resets no fields.
+    pub fn havok(definition: Arc<EmitterDefinition>, seed: u32, pose: ReferenceFrame) -> Result<Self, String> {
+        let [simulation_step, emission_step] = definition.steps()?;
+        let mut seed = seed;
+        let delay = StartDelay::new(definition.delay, &mut seed);
+        let cycle = CycleClock::new(definition.duration, &mut seed);
+        let cycle_seed = crate::random::lcg_step(&mut seed);
+        Ok(Self {
+            definition,
+            pose: EmitterPose::new(pose),
+            elapsed: 0.,
+            cycle,
+            delay,
+            simulation_step,
+            seed,
+            cycle_seed,
+            emission_step,
+            unemitted_time: f32::MAX,
+        })
+    }
+
+    /// 1401e6570: unlike 1f39b0 the clock keeps advancing when no body is
+    /// free, and each admitted emission takes a body from the room whether
+    /// or not the spawn is accepted.
+    pub fn havok_continuous(
+        &mut self,
+        mut delta: f32,
+        mut room: i32,
+        lod: usize,
+        multiplier: f32,
+        bindings: &mut impl EmitterBindings,
+    ) -> Result<(), String> {
+        while delta > 0. && self.cycle.can_emit(self.definition.cycles) {
+            if room > 0 {
+                let rate = self.definition.rate.sample(lod, self.cycle.fraction, self.cycle_seed, multiplier)?;
+                if f32::from_bits(0x3dcc_cccd) <= rate && subtract(self.unemitted_time, divide(1., rate)) >= 0. {
+                    self.unemitted_time = 0.;
+                    let context = EmissionContext {
+                        pose: self.pose.sample(),
+                        remaining_delta: delta,
+                        cycle_fraction: self.cycle.fraction,
+                        cycle_seed: self.cycle_seed,
+                        elapsed: self.elapsed,
+                        event: None,
+                    };
+                    bindings.spawn(context, &mut self.seed)?;
+                    room -= 1;
+                }
+            }
+            let step = if self.emission_step <= delta { self.emission_step } else { delta };
+            self.unemitted_time = add(step, self.unemitted_time);
+            self.advance_clock(step, bindings)?;
+            self.pose.advance(step);
+            delta = subtract(delta, step);
+        }
+        Ok(())
+    }
+
+    /// 1401e3180: at a cycle start, round(range x multiplier) spawns capped
+    /// by the room, all at the pose sampled once; the pose advances even
+    /// after the cycles end.
+    pub fn havok_burst(
+        &mut self,
+        delta: f32,
+        room: i32,
+        lod: usize,
+        multiplier: f32,
+        bindings: &mut impl EmitterBindings,
+    ) -> Result<(), String> {
+        if self.cycle.can_emit(self.definition.cycles) {
+            if room > 0 && self.cycle.restarted {
+                let count = add(multiply(self.definition.rate.range.sample(lod, &mut self.seed), multiplier), 0.5).floor();
+                let count = crate::float::truncate_i32(count).min(room);
+                if count > 0 {
+                    let pose = self.pose.sample();
+                    for _ in 0..count {
+                        let context = EmissionContext {
+                            pose,
+                            remaining_delta: delta,
+                            cycle_fraction: self.cycle.fraction,
+                            cycle_seed: self.cycle_seed,
+                            elapsed: self.elapsed,
+                            event: None,
+                        };
+                        bindings.spawn(context, &mut self.seed)?;
+                    }
+                }
+            }
+            self.advance_clock(delta, bindings)?;
+        }
+        self.pose.advance(delta);
+        Ok(())
+    }
+}
+
 /// 1ffff0 samples warmup with FX-parameter endpoint order, independently from
 /// the emitter's delay/duration generator and its mutable spawn seed.
 pub fn warmup_delta(delta: f32, range: [f32; 2], system_seed: &mut u32) -> f32 {

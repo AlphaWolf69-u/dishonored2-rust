@@ -148,7 +148,8 @@ impl ParticleResources {
             declaration.history = Some(history);
             // Emission meshes are dedicated PMODEL archive resources,
             // independent of the ordinary rendered-prop mesh loader.
-            for stage in &mut declaration.stages {
+            let havok_stages = declaration.havok_stages.iter_mut().map(|stage| &mut stage.stage);
+            for stage in declaration.stages.iter_mut().chain(havok_stages) {
                 for field in stage
                     .spawn_fields
                     .iter_mut()
@@ -251,7 +252,8 @@ impl ParticleDefinition {
         let mut materials = HashMap::new();
         let mut world_mesh_materials = HashSet::new();
         for declaration in declarations.iter().flatten() {
-            for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+            let havok_stages = declaration.havok_stages.iter().map(|stage| &stage.stage);
+            for stage in declaration.stages.iter().chain(havok_stages).filter(|stage| stage.enabled) {
                 for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
                     if let Some(name) = &mesh.material {
                         let key = name.replace('\\', "/").to_ascii_lowercase();
@@ -353,10 +355,10 @@ impl ParticleDefinition {
         }
         // 140201760 creates an arkHavokParticleStage (simulator 1401dfc20) for
         // each enabled Havok stage; its Havok FX pipeline is not ported yet.
-        if declarations.iter().flatten().flat_map(|declaration| declaration.havok_stages.iter())
-            .any(|stage| stage.stage.enabled)
-        {
-            return Err("Havok particle stages await the Havok FX pipeline".into());
+        for declaration in declarations.iter().flatten() {
+            for stage in declaration.havok_stages.iter().filter(|stage| stage.stage.enabled) {
+                havok_stage_admission(declaration, stage)?;
+            }
         }
         // 140201760 creates an arkRibbon for each enabled ribbon with a
         // material (1402042b0).
@@ -411,4 +413,52 @@ impl ParticleDefinition {
             beam_noise,
         })
     }
+}
+
+/// The parts of an arkHavokParticleStageSimulator (1401dfc20) this port runs
+/// so far: emission, Integrate and the sprite/mesh renderers. The effects and
+/// producers below are refused until ported.
+fn havok_stage_admission(
+    declaration: &particle_declaration::ParticleDeclaration,
+    stage: &crate::assets::fx::particle_havok_stage::ParticleHavokStageAsset,
+) -> Result<(), String> {
+    let asset = &stage.stage;
+    if stage.enable_collisions {
+        return Err("Havok particle collisions await PhysicsCollide and the contact solvers".into());
+    }
+    if stage.collisions.mesh.is_some() {
+        return Err("Havok particle collision hulls (1401df6a0) are not built".into());
+    }
+    if !asset.vector_fields.is_empty() || !asset.acceleration_fields.is_empty() || !asset.spawn_fields.is_empty() {
+        return Err("Havok particle vector fields (arkVectorFieldsHavokEffect) are not ported".into());
+    }
+    if !asset.attractors.is_empty() {
+        return Err("Havok particle attractors (arkAttractorsHavokEffect) are not ported".into());
+    }
+    if stage.acceleration_over_life.range.iter().flatten().any(|&value| value != 0.)
+        || stage.linear_acceleration_over_life.range.iter().any(|&value| value != 0.)
+    {
+        return Err("Havok particle accelerations (arkAccelerationsHavokEffect) are not ported".into());
+    }
+    if asset.enable_wind && declaration.wind.enabled {
+        return Err("Havok particle wind (arkWindHavokEffect) is not ported".into());
+    }
+    if asset.trails.iter().any(|trail| trail.enabled) {
+        return Err("Havok particle trails are not connected".into());
+    }
+    let events = &stage.events;
+    if [&events.birth, &events.collision, &events.ocean_collision, &events.stop, &events.death]
+        .into_iter()
+        .chain(events.life.iter())
+        .any(|event| !event.name.is_empty())
+    {
+        return Err("Havok particle events are not connected".into());
+    }
+    if stage.spawn_collisions.position_sphere_query || stage.spawn_collisions.velocity_ray_cast {
+        return Err("Havok particle spawn collision queries are not connected".into());
+    }
+    if stage.collisions.kill_on_ocean_collision {
+        return Err("Havok particle ocean collisions are not connected".into());
+    }
+    Ok(())
 }

@@ -5,11 +5,52 @@ use crate::{
     gameplay::{particles::simulation::StageSimulation, reference_frame::ReferenceFrame},
 };
 
+/// What the sprite and mesh publishers read from a stage. Havok stages
+/// (1401e5440 / 1401e4f50) draw each body with its own basis: the
+/// AngularMotion orientation, with the position moved back by the collision
+/// hull centroid offset in that basis.
+pub struct DrawStage<'a> {
+    pub definition: &'a crate::assets::fx::particle_stage::ParticleStageAsset,
+    pub particles: &'a crate::gameplay::particles::stage::ParticleStage,
+    pub sprites: &'a [Vec<Option<crate::gameplay::particles::sprite::SpriteInitialState>>],
+    pub meshes: &'a [Vec<Option<crate::gameplay::particles::mesh_appearance::MeshInitialState>>],
+    pub bodies: Option<(&'a dyn Fn(usize) -> Option<[[f32; 3]; 3]>, [f32; 3])>,
+}
+impl<'a> DrawStage<'a> {
+    pub fn ordinary(stage: &'a StageSimulation) -> Self {
+        Self {
+            definition: &stage.declaration.stages[stage.index],
+            particles: &stage.particles,
+            sprites: &stage.sprites,
+            meshes: &stage.meshes,
+            bodies: None,
+        }
+    }
+
+    /// The body basis and centroid-shifted position (identity basis without
+    /// AngularMotion).
+    pub fn body(&self, slot: usize, position: [f32; 3]) -> Option<([[f32; 3]; 3], [f32; 3])> {
+        let (basis, offset) = self.bodies?;
+        let Some(r) = basis(slot) else {
+            return Some(([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], position));
+        };
+        let o = offset;
+        Some((
+            r,
+            [
+                subtract(position[0], add(add(multiply(o[1], r[1][0]), multiply(o[0], r[0][0])), multiply(o[2], r[2][0]))),
+                subtract(position[1], add(add(multiply(o[0], r[0][1]), multiply(o[1], r[1][1])), multiply(o[2], r[2][1]))),
+                subtract(position[2], add(add(multiply(o[0], r[0][2]), multiply(o[1], r[1][2])), multiply(o[2], r[2][2]))),
+            ],
+        ))
+    }
+}
+
 /// The view owner prepares the admission plane (1ee5a0), including the
 /// descriptor's minimum distance. The stage transform is identity for a
 /// world-space stage and the system pose for a local-space stage.
 pub fn stage_instances(
-    stage: &StageSimulation,
+    stage: &DrawStage,
     sprite_index: usize,
     stage_to_world: ReferenceFrame,
     view: &SpriteView,
@@ -20,7 +61,7 @@ pub fn stage_instances(
     order: Option<&[usize]>,
     output: &mut Vec<ParticleInstance>,
 ) -> Result<Option<[[f32; 3]; 2]>, String> {
-    let definition = &stage.declaration.stages[stage.index];
+    let definition = stage.definition;
     let descriptor = definition
         .sprites
         .get(sprite_index)
@@ -81,7 +122,12 @@ pub fn stage_instances(
         let initial = states[slot]
             .as_ref()
             .ok_or("live particle has no initialized sprite slot")?;
-        let instance = ParticleInstance::new(descriptor, initial, &state, particle.seed, &view)?;
+        let mut body_view = view;
+        if let Some((basis, position)) = stage.body(slot, state.position) {
+            body_view.emitter_basis = basis;
+            state.position = position;
+        }
+        let instance = ParticleInstance::new(descriptor, initial, &state, particle.seed, &body_view)?;
         for i in 0..3 {
             let position = instance.position[i];
             if !(bounds[0][i] < position) {

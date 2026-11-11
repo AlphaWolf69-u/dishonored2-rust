@@ -99,7 +99,7 @@ fn instance(
 }
 
 pub fn stage_instances(
-    stage: &StageSimulation,
+    stage: &super::publication::DrawStage,
     index: usize,
     transform: ReferenceFrame,
     view: &SpriteView,
@@ -108,7 +108,7 @@ pub fn stage_instances(
     order: Option<&[usize]>,
     output: &mut Vec<ParticleInstance>,
 ) -> Result<(), String> {
-    let descriptor = &stage.declaration.stages[stage.index].meshes[index];
+    let descriptor = &stage.definition.meshes[index];
     let mut view = *view;
     view.emitter_basis = transform.basis;
     view.owner_colour[3] = multiply(
@@ -142,7 +142,12 @@ pub fn stage_instances(
         let initial = stage.meshes[index][slot]
             .as_ref()
             .ok_or("live particle has no mesh slot")?;
-        output.push(instance(descriptor, initial, &state, particle.seed, &view)?);
+        let mut body_view = view;
+        if let Some((basis, position)) = stage.body(slot, state.position) {
+            body_view.emitter_basis = basis;
+            state.position = position;
+        }
+        output.push(instance(descriptor, initial, &state, particle.seed, &body_view)?);
     }
     Ok(())
 }

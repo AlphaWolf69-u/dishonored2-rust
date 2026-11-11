@@ -84,3 +84,11 @@ would change, so it can be made opt-in without guessing.
 a stack copy and never stores it; the emitter bounds (+0x140) it resets
 stay empty, so 1402007b0 never merges a ribbon into the system bounds. The
 rewrite keeps this (Ribbon::build returns no bounds).
+
+## Havok particle renderer seeds are never written
+
+arkHavokParticleStageSimulator sizes a per-body seed array at +0x340
+(1401dfc20, 140384fe0) but nothing writes it. The sprite and mesh updates
+(1401e83f0) and draw publications (1401e5440, 1401e4f50) read their seed
+from it, so they see whatever the allocation held. The rewrite uses zero
+(`gameplay::particles::havok_stage`, marked approximate).

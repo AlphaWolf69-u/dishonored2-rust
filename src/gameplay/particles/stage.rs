@@ -52,6 +52,18 @@ impl ParticleStage {
         }
     }
 
+    /// Havok stages mirror their pipeline bodies into the slot of the same
+    /// index, so their sprite and mesh states share the ordinary draw path.
+    pub fn set(&mut self, slot: usize, particle: Option<Particle>) {
+        let was = self.slots[slot].is_some();
+        match (&particle, was) {
+            (Some(_), false) => self.free.retain(|&index| index != slot),
+            (None, true) => self.free.push(slot),
+            _ => {}
+        }
+        self.slots[slot] = particle;
+    }
+
     /// Slot allocation happens only after the emitter has accepted its sampled
     /// lifetime, spawn geometry and clipping inputs (1f4e00).
     pub fn insert(&mut self, particle: Particle) -> Option<usize> {
