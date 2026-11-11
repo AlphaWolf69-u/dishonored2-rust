@@ -6,7 +6,8 @@ when it is implemented.
 
 Program census (2026-11-10): `mainProgram` of every installed material
 declaration. Particle programs connected: `particle/add_default`,
-`dist_blur`, `scrolling_water`, `liquid`, `dissolve`, `add_liquid`, `water`.
+`dist_blur`, `scrolling_water`, `liquid`, `dissolve`, `add_liquid`, `water`,
+`fire`. The two left (`blood`, `filing_container`) are opaque.
 
 | Gap | Installed content | Status |
 |---|---|---|
@@ -16,7 +17,7 @@ declaration. Particle programs connected: `particle/add_default`,
 | Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
 | World FX target/tag pose producer | eotw world FX | none: `world_particle_state` refuses targeted FX |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
-| `particle/filing_container` | 8 materials | none (`particle/fire` connected) |
+| `particle/filing_container` | 8 materials | blocked with `particle/blood`: opaque (`blend ONE ZERO`, sortCoverage, zPrePass motion vectors) |
 
 ## Particle declaration census (2026-11-10)
 
