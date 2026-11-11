@@ -736,6 +736,7 @@ pub(super) fn prepare_level(
                     u32::MAX,
                     material,
                     filter,
+                    triangle.quad_second,
                 )
             })
             .collect();
@@ -746,7 +747,7 @@ pub(super) fn prepare_level(
         }
         let model_material_base = resolved.len() as u32;
         resolved.extend(model_collision.materials);
-        let mut world = navigation::CollisionWorld::with_materials(
+        let mut world = navigation::CollisionWorld::with_quads(
             level_triangles
                 .into_iter()
                 .chain(model_collision.triangles.into_iter().map(
@@ -756,7 +757,7 @@ pub(super) fn prepare_level(
                         } else {
                             model_material_base + material
                         };
-                        (triangle, owner, material, filter)
+                        (triangle, owner, material, filter, false)
                     },
                 )),
             model_collision.owners,

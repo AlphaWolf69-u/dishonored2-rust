@@ -424,10 +424,6 @@ fn havok_stage_admission(
 ) -> Result<(), String> {
     let asset = &stage.stage;
     if stage.enable_collisions {
-        // 1401df5a0: GROUND_TRUTH is collide mode 4, the only ported one.
-        if stage.collisions.accuracy != 3 {
-            return Err("Havok particle collisions with cached static CD (accuracy LOW/MEDIUM/HIGH) are not ported".into());
-        }
         if stage.collisions.mesh.is_some() {
             return Err("Havok particle collision hulls (1401df6a0) and SolveConvexContacts are not ported".into());
         }

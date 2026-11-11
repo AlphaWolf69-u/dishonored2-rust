@@ -87,6 +87,9 @@ pub struct MeshTriangle {
     /// The body's materialId the codec starts from; `None` for standalone
     /// shapes and for systems whose material ids are remapped at insertion.
     pub body_material: Option<u16>,
+    /// The (a, c, d) half of a compressed-mesh quad whose (a, b, c) half is
+    /// the previous triangle: hknp treats the pair as one leaf shape.
+    pub quad_second: bool,
 }
 
 /// The hknpMaterialId FUN_1400922d0 threads through the shape-tag codec:
@@ -1117,6 +1120,7 @@ impl PhysWorld {
                             material: None,
                             body_filter: 0,
                             body_material: None,
+                            quad_second: false,
                         });
                     }
                     output.convex.push(ConvexCollider {
@@ -1222,6 +1226,7 @@ impl PhysWorld {
                             material: None,
                             body_filter: 0,
                             body_material: None,
+                            quad_second: false,
                         });
                     }
                 }
@@ -1574,6 +1579,7 @@ impl PhysWorld {
                         material: None,
                         body_filter: 0,
                         body_material: None,
+                        quad_second: false,
                     });
                 }
                 if distinct3(primitive[0], primitive[2], primitive[3]) {
@@ -1585,6 +1591,7 @@ impl PhysWorld {
                         material: None,
                         body_filter: 0,
                         body_material: None,
+                        quad_second: distinct3(primitive[0], primitive[1], primitive[2]),
                     });
                 }
             }
@@ -1768,6 +1775,7 @@ fn triangulate_convex_vertices(
                 material: None,
                 body_filter: 0,
                 body_material: None,
+                quad_second: false,
             });
         }
         return Ok(());
@@ -1831,6 +1839,7 @@ fn triangulate_convex_vertices(
             material: None,
             body_filter: 0,
             body_material: None,
+            quad_second: false,
         });
     }
     Ok(())

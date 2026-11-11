@@ -23,6 +23,9 @@ struct Triangle {
     material: u32,
     /// The arkCollisionFilterInfo word of the triangle's body and shape key.
     filter: u32,
+    /// The other half of the compressed-mesh quad this triangle belongs
+    /// to, or u32::MAX.
+    partner: u32,
 }
 
 /// The immutable level map: triangles, their broad phase and materials.
@@ -119,6 +122,7 @@ impl CollisionWorld {
                 a, b, c, min: a.min(b).min(c), max: a.max(b).max(c), owner: handle.owner,
                 material: NO_MATERIAL,
                 filter: crate::gameplay::collision_filter::filter_info(crate::gameplay::collision_filter::layer::INTERACTABLE) & !0x800,
+                partner: u32::MAX,
             };
             self.component_triangles[local] = Some(triangle);
             index_component(&mut self.component_index, index, triangle.min, triangle.max);
@@ -172,6 +176,20 @@ impl CollisionWorld {
         owners: Vec<String>,
         materials: Vec<PhysicsMaterial>,
     ) -> Self {
+        Self::with_quads(
+            source.into_iter().map(|(triangle, owner, material, filter)| (triangle, owner, material, filter, false)),
+            owners,
+            materials,
+        )
+    }
+
+    /// As `with_materials`; the last flag marks the (a, c, d) half of a
+    /// quad whose (a, b, c) half is the previous item.
+    pub fn with_quads(
+        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32, u32, bool)>,
+        owners: Vec<String>,
+        materials: Vec<PhysicsMaterial>,
+    ) -> Self {
         let mut owner_ids = HashMap::<Arc<str>, Vec<u32>>::new();
         let mut owner_names = Vec::with_capacity(owners.len());
         for (index, id) in owners.into_iter().enumerate() {
@@ -187,13 +205,23 @@ impl CollisionWorld {
             index: TriangleIndex::Expanded(ExpandedIndex::default()),
             materials,
         };
-        for ([a, b, c], owner, material, filter) in source {
+        let mut previous = None;
+        for ([a, b, c], owner, material, filter, quad_second) in source {
+            let first: Option<u32> = previous.take();
             if owner != u32::MAX && owner as usize >= owner_count {
                 continue;
             }
             if (b - a).cross(c - a).length_squared() < 1e-10 {
                 continue;
             }
+            let partner = match first {
+                Some(first) if quad_second => {
+                    world.triangles[first as usize].partner = world.triangles.len() as u32;
+                    first
+                }
+                _ => u32::MAX,
+            };
+            previous = Some(world.triangles.len() as u32);
             let min = a.min(b).min(c);
             let max = a.max(b).max(c);
             let index = world.triangles.len();
@@ -210,6 +238,7 @@ impl CollisionWorld {
                     NO_MATERIAL
                 },
                 filter,
+                partner,
             });
             let low = cell(min);
             let high = cell(max);
@@ -702,6 +731,32 @@ impl CollisionMap {
                     }
                 }
             }
+        }
+    }
+
+    /// The physics material at `index`, if any.
+    pub fn material(&self, index: u32) -> Option<&PhysicsMaterial> {
+        self.materials.get(index as usize)
+    }
+
+    /// Map triangle `key`'s material index (NO_MATERIAL without one).
+    pub fn material_index(&self, key: u32) -> u32 {
+        self.triangles[key as usize].material
+    }
+
+    /// The hknp leaf primitive of map triangle `key`: the key of its first
+    /// triangle and its corners in hknp order (a, b, c, d for a quad split
+    /// into (a, b, c) and (a, c, d)); the flag says whether it is a quad.
+    pub fn primitive(&self, key: u32) -> (u32, [Vec3; 4], bool) {
+        let t = &self.triangles[key as usize];
+        if t.partner == u32::MAX {
+            return (key, [t.a, t.b, t.c, t.c], false);
+        }
+        let other = &self.triangles[t.partner as usize];
+        if t.partner > key {
+            (key, [t.a, t.b, t.c, other.c], true)
+        } else {
+            (t.partner, [other.a, other.b, other.c, t.c], true)
         }
     }
 

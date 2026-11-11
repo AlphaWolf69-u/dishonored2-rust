@@ -748,6 +748,20 @@ loses w. Remaining, in order:
   (moving world bodies: the map holds only static triangles, so moving
   doors and props give no contacts), hulls and SolveConvexContacts,
   SolveSelfContacts, collision/stop events.
+- Ported (`physics_collide::static_cached`): modes 1 and 2 for sphere
+  bodies, with the collector (140fe31e0) keeping the nearest and
+  second-nearest leaf distance (a compressed-mesh quad is one leaf: the map
+  links its two triangles, `CollisionMap::primitive`); the safe radius is
+  the second-nearest distance, limited for a face contact (|f|^2 - (n.f)^2
+  <= 1e-4 |f|^2) to the nearest edge line (RCPPS, no refinement), else the
+  plane gap; speeds in the reuse test use raw RSQRTPS. Cache sharing has no
+  effect on a static-only world (a static hit sets flag 0x20, which the
+  sharing filter rejects, and an empty cache matches only bodies with a
+  dynamic neighbour), nor do the moved set and static cache limiting (the
+  +0xd8 list of moving body AABBs, 140fd1880). `havok_fx::spatial_partition`
+  ports the partition's list order (sphere bounds 140fd86b0, transfers,
+  hkcdSimdTree mode-0 build order 140c1fb80) for when moving bodies exist.
+  Census 752 -> 670.
 - Mode 1 (cached static CD, 140fc1370:3681-5224), decoded for the port.
   Tuning (140fbea10 at +0x7c, never changed by the simulator): +0x7c min
   0, +0x80 max FLT_MAX, +0x84 FLT_MAX, +0x88 0, +0x8c 0.01, +0x90 8 cache

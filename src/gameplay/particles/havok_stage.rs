@@ -351,26 +351,49 @@ impl HavokStageSimulation {
         // solve, then Integrate.
         if let Some(collisions) = self.collisions.as_mut() {
             let level = level.as_ref().ok_or("Havok particle collisions need the level collision map")?;
-            let accuracy = self.declaration.havok_stages[self.index].collisions.accuracy;
-            // 1401df5a0: only GROUND_TRUTH (collide mode 4) is ported.
-            if accuracy != 3 {
-                return Err("Havok particle collisions with cached static CD (accuracy LOW/MEDIUM/HIGH) are not ported".into());
+            // 1401df5a0: LOW -> collide mode 2, MEDIUM/HIGH -> 1, GROUND_TRUTH -> 4.
+            let mode = match self.declaration.havok_stages[self.index].collisions.accuracy {
+                0 => 2,
+                1 | 2 => 1,
+                3 => 4,
+                accuracy => return Err(format!("unknown Havok particle collision accuracy {accuracy}")),
+            };
+            if mode == 4 {
+                let states = collisions.solver.bodies.clone();
+                physics_collide::static_ground_truth(
+                    dt,
+                    collisions.tuning,
+                    self.pipeline.radius,
+                    [collisions.solver.friction, collisions.solver.restitution],
+                    self.pipeline.plane,
+                    level,
+                    &bodies,
+                    &self.pipeline.linear,
+                    &|body| 3 <= states[body as usize].state,
+                    &mut collisions.world,
+                    &mut collisions.cache,
+                    &mut collisions.scratch,
+                )?;
+            } else {
+                let step = physics_collide::CachedStep {
+                    dt,
+                    tuning: collisions.tuning,
+                    radii: [self.pipeline.radius; 2],
+                    own: [collisions.solver.friction, collisions.solver.restitution],
+                    plane: self.pipeline.plane,
+                    mode,
+                    world: level,
+                };
+                physics_collide::static_cached(
+                    &step,
+                    &bodies,
+                    &self.pipeline.linear,
+                    &collisions.solver.bodies,
+                    &mut collisions.world,
+                    &mut collisions.cache,
+                    &mut collisions.scratch,
+                )?;
             }
-            let states = collisions.solver.bodies.clone();
-            physics_collide::static_ground_truth(
-                dt,
-                collisions.tuning,
-                self.pipeline.radius,
-                [collisions.solver.friction, collisions.solver.restitution],
-                self.pipeline.plane,
-                level,
-                &bodies,
-                &self.pipeline.linear,
-                &|body| 3 <= states[body as usize].state,
-                &mut collisions.world,
-                &mut collisions.cache,
-                &mut collisions.scratch,
-            )?;
             collisions.solver.solve_spheres(dt, self.pipeline.radius, &bodies, &collisions.world, &mut self.pipeline.linear)?;
         }
         let trash = self.integrate.integrate(
