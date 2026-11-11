@@ -748,6 +748,30 @@ loses w. Remaining, in order:
   (moving world bodies: the map holds only static triangles, so moving
   doors and props give no contacts), hulls and SolveConvexContacts,
   SolveSelfContacts, collision/stop events.
+- Mode 1 (cached static CD, 140fc1370:3681-5224), decoded for the port.
+  Tuning (140fbea10 at +0x7c, never changed by the simulator): +0x7c min
+  0, +0x80 max FLT_MAX, +0x84 FLT_MAX, +0x88 0, +0x8c 0.01, +0x90 8 cache
+  sharing neighbours, +0x94 8 recent bodies, +0x98 10, +0x9c 10, +0xa0 4,
+  +0xa4 1 (query budget; only < 1 limits queries), +0xa8 20, +0xac FLT_MAX,
+  +0xb0 0. Per body: a cached hit (entry +0x128[0]: hknp body id, material
+  key, flags) whose body is gone or in the moved set (+0xd8) wakes the
+  body (state 2); asleep bodies (0x80) with a valid cache skip the pass.
+  The cache sphere (+0x128[2]: centre, R) is reused while the body and its
+  predicted position stay inside max(1.19e-7, R - r); otherwise neighbour
+  caches are tried (cache sharing over the SpatialPartition's sorted list,
+  +-1, +-2, ... up to +0x90 entries, or the last +0x94 bodies of the chunk
+  when the body is not in the list) and only then the world is queried.
+  A query hit stores the plane (n, -(n . p)), the hit id and key, and R:
+  the query distance limited, for a triangle or quad face contact, to the
+  distance from the body to the face's edge lines, and for convex leaves
+  to their face planes. The contact plane comes from the cache every step;
+  the material is recombined only when the hit changes. Static cache
+  limiting (140fd1880, when +0xd8 changed) shrinks R away from moving
+  world bodies. Needs, in order: SpatialPartition (begin 140fd72f0 pair
+  pruning; end 140fd75f0 -> 140fd8d00 Initialize/Transfer/Prepare/Rebuild
+  and Collide/Update closest neighbor over an hkcdDynamicTree, then group
+  ids), quads kept whole in the collision map (the map splits them; the
+  edge limit uses the quad's four edges), and the hit's hknp body id.
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
