@@ -813,6 +813,13 @@ fn observe_runtime_fx_image_aliases(
 }
 
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
+    if phase == "published" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_PREPARATION").is_some_and(|value| value == "1") {
+        for (_, buffer) in world.resource::<Assets<ShaderBuffer>>().iter() {
+            if let Some(bytes) = &buffer.data {
+                eprintln!("SHADER_BUFFER_CONTENT step={step} bytes={} capacity={} signature={}", bytes.len(), bytes.capacity(), blake3::hash(bytes));
+            }
+        }
+    }
     eprintln!("RESOURCE_SCENE_FX step={step} phase={phase} simulation={}",
         world.contains_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>());
     eprintln!(

@@ -7146,6 +7146,21 @@ asset upload/removal, not all36 maps or gameplay draws. The wider audit remains
 open for remaining attribution and supported owner obligations.
 Evidence: DH2-fx-level-lifetime/artifacts/inline-block-storage-20261111-comparison.json.
 
+Shader-buffer serialized staging prediction (2026-11-11). The host patched
+ShaderBuffer::from encodes its existing ShaderType into an owned byte vector,
+then Self::new copies that entire vector into a second allocation. set_data
+already transfers wrapper.into_inner directly. Use that same ownership transfer
+for construction. This is a bevy_backend lifetime optimization of already
+serialized host upload data; it does not change any installed resource format,
+parsed values, shader layout or native mechanic. The original static upload/
+staging retirement boundaries remain140259d50/14026a240; host shader-buffer
+creation and data encase encoding are not claimed to be native serializers.
+Expect one fewer allocation and one removed full-payload copy per From call,
+with unchanged byte content, retained capacity, GPU descriptors and lifetimes.
+Compare actual installed scene publication in both modes in the same binary;
+record serialized/retained capacities and complete published buffer hashes.
+The expected gain is temporary allocation/copy volume, not a walking/FPS claim.
+
 Small allocation attribution prediction (2026-11-11). The complete36-map run
 ends with zero named resource owners and no Catalog consumers, but retains
 602,650 publication-phase bytes and332,900 physics-phase bytes. The existing
