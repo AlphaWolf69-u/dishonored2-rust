@@ -3,6 +3,13 @@
 //! a foreign-code runtime. Allocation/list operations become owned Rust data.
 use super::{ComponentTypeDeclaration, Image};
 use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+
+/// Host disassembly metadata is process-lived inside iced-x86, independent
+/// of the installed class declarations that this reader returns.
+fn decoder(bytes: &[u8], address: u64) -> Decoder<'_> {
+    let _tag = crate::platform::allocation_tags::tag("Host executable decoder metadata");
+    Decoder::with_ip(64, bytes, address, DecoderOptions::NONE)
+}
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -353,12 +360,7 @@ impl Reader<'_, '_> {
             .raw(self.image.bytes)?
             .get((rva - section.rva) as usize..)
             .ok_or("declaration has no code")?;
-        let mut decoder = Decoder::with_ip(
-            64,
-            tail,
-            self.image.base + u64::from(rva),
-            DecoderOptions::NONE,
-        );
+        let mut decoder = decoder(tail, self.image.base + u64::from(rva));
         let initial_rsp = self.register(Register::RSP)?;
         loop {
             self.instructions += 1;
@@ -497,11 +499,9 @@ pub(super) fn read(
             else {
                 continue;
             };
-            let mut decoder = Decoder::with_ip(
-                64,
+            let mut decoder = decoder(
                 image.read(range.start, (range.end - range.start) as usize)?,
                 image.base + u64::from(range.start),
-                DecoderOptions::NONE,
             );
             let mut calls = Vec::new();
             while decoder.can_decode() {

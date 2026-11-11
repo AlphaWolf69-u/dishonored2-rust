@@ -7586,3 +7586,20 @@ decoder storage inside the broad context; the next attribution must isolate
 its bytes from actual class/factory/name-pool owners before changing lifetime.
 No performance improvement or complete explanation of all332,724 bytes is
 claimed from source correlation alone.
+
+Executable-decoder attribution prediction (2026-11-11). Component cold load
+currently owns a332,724-byte final acquisition-context balance in all three
+51c3f58b processes. iced-x861.21.0 initializes decoder::handlers::tables::TABLES
+inside Decoder::with_ip; table_de::box_opcode_handler uses Box::into_raw and
+its handler references are static. The two constructor sites in the installed
+component-definition reader therefore charge library-lifetime state to the
+broad class acquisition context. Wrap those existing constructor calls only
+with the diagnostic Host executable decoder metadata tag. Do not add another
+decoder call, weaken instruction support, preconvert game data, change decoder
+settings, retain the executable, or alter any metadata owner. Predict the same
+332,724 bytes move to that host context while Component metadata resources
+reach zero after the last Catalog/physics owner drops. If any class-context
+bytes remain, their ownership still needs investigation. Same three-map
+production acquisition and existing metadata signatures will distinguish a
+retained library table from a class-resource leak. Normal builds compile out
+these tags; no normal-frame or CPU/RAM optimization is claimed.
