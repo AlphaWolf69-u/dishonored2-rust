@@ -619,3 +619,33 @@ velocity's running average is packed, the position advances by v dt
 velocity = v pow-damped + projected gravity dt, clamped to the linear
 clamp, and the optional plane lock (+0x90) is applied.
 
+Port status (`gameplay::havok_fx`): reader `assets::fx::particle_havok_stage`
+(all but the m_physicsShapesSpawn stages load); allocator, pipeline
+allocate/trash/flush, LinearMotion/AngularMotion channels, packed velocity
+history and Integrate 3-DoF/6-DoF are ported. 6-DoF (140ff95a0) per body:
+plane projection; angular step w kept along the plane normal, q' =
+normalize(q + (dt/2 w) q), w x pow(1 - angularDamping, dt), clamped to
+angularClamping or pi/dt; then the 3-DoF linear step; a clipped body also
+loses w. Remaining, in order:
+- Simulator glue (1401dfc20): spawn 1401e7040 -> pending records +0x3e8
+  (0x60 bytes: position, life, velocity, seed, colour, cycle, quaternion
+  +0x40, angular velocity +0x50); post-step 1401e7d40: 1401e41e0 allocates
+  them (140ff2200 with stealing; 1/x at +0x330; renderer births 1401ee5f0/
+  1401eb4c0/1402117d0), 1401e78b0 samples simulation_t into Integrate
+  (world gravity +0x970 x gravity curve; damping clamped to [0,1], clamps
+  to [0, 0x5f7ffff0], angular clamp x 14228a75c) and the contact material
+  (1401e1d10), then per allocated body: collision reactions (kill/stop/
+  sleep, counter, events; solver +0x50 per-body contact count), normalized
+  age (infinite life wraps), render state +0x310, velocity +0x320, ocean
+  check, live list +0x360 or dead list +0x3d0; death events; 1401e3ff0
+  frees the dead.
+- ark effects (unary slot 19): arkWind 140216900, arkAccelerations
+  1401ccb30, arkAttractors 1401ce600, arkVectorFields 1402165f0.
+- Collisions: SpatialPartition (begin 140fd72f0, end 140fd75f0; empty per
+  body), PhysicsCollide (begin 140fbf850 "Get new dynamic hits" queries the
+  broadphase with the partition root bounds; per body 140fc1370, 11k
+  decompiled lines, calls 140cada50 closest-point preparation and
+  140c85490; end 140fc01d0), SolveSphereContacts (slot 19 140fb9c20),
+  SolveConvexContacts (140fbb350, hull from 1401df6a0), SolveSelfContacts
+  (compute slot 17 140fd33d0).
+
