@@ -712,6 +712,21 @@ loses w. Remaining, in order:
   world closest-point query that the rewrite does not have yet. The
   pipeline step runs in `ParticleSystem::update`, which does not receive
   the snapshot; it has to be handed in there.
+  Revised route: the retained query geometry covers compounds and convex
+  polytopes but not hknpCompressedMeshShape (level geometry), so static
+  sphere queries run the ported GSK point kernel
+  (`convex_support::distance::query_point`, 140d10960: closest point,
+  normal, distance with query radius and threshold) on each nearby
+  triangle of the level `navigation::CollisionWorld` (view coordinates;
+  the player's `GameCollision` converts). The closest hit wins as in
+  hkfxClosestHitCollector. Contact material: friction is the hit hknp
+  material's dynamic friction (half +0x32), or its static friction (+0x34)
+  when the solver state is at least 3 and static exceeds dynamic, x 2.4
+  (141af7790); restitution +0x36; still to trace: the arkPhysicsMaterial
+  -> hknpMaterial conversion that sets the combine policies (+0x38/+0x39)
+  and the +0x3c weight. Mode 4 then projects the cached plane off the
+  pipeline's plane lock (+0x90) into the static contact; static contacts
+  keep zero velocities and centre of mass.
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
