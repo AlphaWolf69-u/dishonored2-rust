@@ -7395,3 +7395,16 @@ MeshAllocator previously forwarded sealing through Deref; its explicit method
 now selects the actual lifetime domains in the existing generic slab table.
 Verify cached vertex/index ranges and content, actual live allocations,
 cancellation and the normal path without debug mesh copies before acceptance.
+
+Persistent mesh pool acceptance (2026-11-11). Source02200717, tools SHA256
+dffc2ecf2deafd102830ca2e5fc2f5d13bec940b11984b091eae25897d085857.
+Same-binary installed Edge/Dust/Edge acquisition/upload/removal preserved all
+three mesh-content signatures and complete actual vertex/index ranges. Free
+persistent slab lookup lists now survive ordinary map sealing: common mesh
+buffers remain two /2,097,184 logical bytes /2,162,688 allocator bytes instead
+of four /4,194,368 logical bytes after Dust. The normal path with CPU mesh
+observations disabled independently retained the same two valid buffers.
+Reserved driver heap remains201,326,592 bytes; final host releases the cache.
+This removes the predicted redundant pair of persistent allocations without
+changing ordinary map sealing. No gameplay CPU/GPU timing claim is made.
+Evidence: artifacts/persistent-mesh-pools-20261111-comparison.json.
