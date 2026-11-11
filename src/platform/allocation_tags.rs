@@ -112,7 +112,7 @@ pub fn live_reserved_bytes(name: &str) -> Option<isize> {
 
 /// Live blocks of at least `BIG_BYTES`, with the stack that allocated them.
 #[cfg(feature = "debug_allocations")]
-static BIG: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>> =
+static BIG: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, u8, std::backtrace::Backtrace)>>> =
     std::sync::Mutex::new(None);
 #[cfg(feature = "debug_allocations")]
 const BIG_BYTES: usize = 1 << 20;
@@ -124,7 +124,7 @@ thread_local! {
 }
 
 #[cfg(feature = "debug_allocations")]
-fn record_big(ptr: usize, size: usize, live: bool) {
+fn record_big(ptr: usize, size: usize, allocation_tag: u8, live: bool) {
     if RECORDING.try_with(|r| r.replace(true)).unwrap_or(true) {
         return;
     }
@@ -138,7 +138,7 @@ fn record_big(ptr: usize, size: usize, live: bool) {
         let mut big = BIG.lock().unwrap_or_else(|e| e.into_inner());
         let big = big.get_or_insert_with(Default::default);
         if live {
-            big.insert(ptr, (size, std::backtrace::Backtrace::force_capture()));
+            big.insert(ptr, (size, allocation_tag, std::backtrace::Backtrace::force_capture()));
         } else {
             big.remove(&ptr);
         }
@@ -151,10 +151,12 @@ fn record_big(ptr: usize, size: usize, live: bool) {
 pub fn big_blocks() -> Vec<(String, usize, usize)> {
     #[cfg(feature = "debug_allocations")]
     {
+        let _diagnostic_tag = tag("untagged");
         let _ = RECORDING.try_with(|r| r.set(true));
         let mut groups = std::collections::HashMap::<String, (usize, usize)>::new();
         if let Some(big) = BIG.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            for (size, trace) in big.values() {
+            for (size, _, trace) in big.values() {
+                if *size < BIG_BYTES { continue; }
                 let text = trace.to_string();
                 let frames: Vec<&str> = text.lines().map(str::trim)
                     .filter(|line| line.contains(": ") && !line.starts_with("at "))
@@ -196,22 +198,84 @@ unsafe impl std::alloc::GlobalAlloc for TaggedAllocator {
         LIVE[tag as usize].fetch_add(layout.size() as isize, Ordering::Relaxed);
         RESERVED[tag as usize].fetch_add(full.size() as isize, Ordering::Relaxed);
         let ptr = unsafe { base.add(prefix) };
-        if layout.size() >= BIG_BYTES {
-            record_big(ptr as usize, layout.size(), true);
+        if sampled(layout.size(), tag) {
+            record_big(ptr as usize, layout.size(), tag, true);
         }
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        if layout.size() >= BIG_BYTES {
-            record_big(ptr as usize, layout.size(), false);
-        }
         let prefix = layout.align().max(16);
         let base = unsafe { ptr.sub(prefix) };
         let tag = unsafe { base.read() };
+        if sampled(layout.size(), tag) {
+            record_big(ptr as usize, layout.size(), tag, false);
+        }
         LIVE[tag as usize].fetch_sub(layout.size() as isize, Ordering::Relaxed);
         let full = unsafe { std::alloc::Layout::from_size_align_unchecked(layout.size() + prefix, layout.align().max(16)) };
         RESERVED[tag as usize].fetch_sub(full.size() as isize, Ordering::Relaxed);
         unsafe { std::alloc::System.dealloc(base, full) };
     }
+}
+
+// Opt-in caller attribution for the small live balances found by the actual
+// all-level retirement route. No sampling code exists in normal game builds.
+#[cfg(feature = "debug_allocations")]
+static SMALL_TAGS: [std::sync::atomic::AtomicBool; TAGS] =
+    [const { std::sync::atomic::AtomicBool::new(false) }; TAGS];
+#[cfg(feature = "debug_allocations")]
+static SMALL_MIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(BIG_BYTES);
+#[cfg(feature = "debug_allocations")]
+fn sampled(size: usize, allocation_tag: u8) -> bool {
+    size >= BIG_BYTES || (size >= SMALL_MIN.load(Ordering::Relaxed)
+        && SMALL_TAGS[allocation_tag as usize].load(Ordering::Relaxed))
+}
+
+/// Configure before the observed acquisition begins, outside the allocator.
+/// Only explicitly named tags lower the normal one-MiB backtrace threshold.
+pub fn trace_retained_callers(names: &[&'static str], minimum: usize) {
+    #[cfg(feature = "debug_allocations")]
+    {
+        let _diagnostic_tag = tag("untagged");
+        for name in names {
+            let _guard = tag(name);
+            let index = CURRENT.with(|current| current.get());
+            SMALL_TAGS[index as usize].store(true, Ordering::Relaxed);
+        }
+        SMALL_MIN.store(minimum.max(1), Ordering::Relaxed);
+    }
+    #[cfg(not(feature = "debug_allocations"))]
+    let _ = (names, minimum);
+}
+
+/// Remaining sampled small allocations, grouped by actual tag and caller.
+pub fn retained_callers() -> Vec<(&'static str, String, usize, usize)> {
+    #[cfg(feature = "debug_allocations")]
+    {
+        let _diagnostic_tag = tag("untagged");
+        let _ = RECORDING.try_with(|recording| recording.set(true));
+        let names = NAMES.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let mut groups = std::collections::HashMap::<(u8, String), (usize, usize)>::new();
+        if let Some(blocks) = BIG.lock().unwrap_or_else(|error| error.into_inner()).as_ref() {
+            for (size, allocation_tag, trace) in blocks.values() {
+                if *size >= BIG_BYTES { continue; }
+                let text = trace.to_string();
+                let frames = text.lines().map(str::trim)
+                    .filter_map(|line| line.split_once(": ").map(|(_, name)| name))
+                    .filter(|name| (name.contains("dishonored2_rust") || name.contains("bevy") || name.contains("wgpu"))
+                        && !name.contains("allocation_tags") && !name.contains("alloc::"))
+                    .take(8).collect::<Vec<_>>().join(" <- ");
+                let group = groups.entry((*allocation_tag, frames)).or_default();
+                group.0 += size;
+                group.1 += 1;
+            }
+        }
+        let mut result = groups.into_iter().map(|((index, frames), (bytes, blocks))|
+            (names[index as usize], frames, bytes, blocks)).collect::<Vec<_>>();
+        result.sort_by(|a, b| b.2.cmp(&a.2));
+        let _ = RECORDING.try_with(|recording| recording.set(false));
+        return result;
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
 }

@@ -7145,3 +7145,13 @@ resource leaks or harmless process metadata. GPU evidence covers Curator
 asset upload/removal, not all36 maps or gameplay draws. The wider audit remains
 open for remaining attribution and supported owner obligations.
 Evidence: DH2-fx-level-lifetime/artifacts/inline-block-storage-20261111-comparison.json.
+
+Small allocation attribution prediction (2026-11-11). The complete36-map run
+ends with zero named resource owners and no Catalog consumers, but retains
+602,650 publication-phase bytes and332,900 physics-phase bytes. The existing
+one-MiB backtrace threshold cannot identify those blocks. Add opt-in64-byte
+sampling only for the six nonzero named phase contexts, configured outside
+the allocator before acquisition. Keep bookkeeping untagged and report the
+live callers only after actual host/audio/Catalog retirement. This is diagnostic
+attribution, with no expected memory or CPU saving and no normal-build code.
+Use the callers to identify real owners before changing residency policies.

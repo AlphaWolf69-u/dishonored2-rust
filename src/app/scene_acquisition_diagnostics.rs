@@ -910,6 +910,14 @@ fn inspect_scene_resources(
     if levels.is_empty() {
         return Err("inspect-scene-preparation requires level names".into());
     }
+    let trace_callers = std::env::var_os("DH2_DEBUG_RETAINED_ALLOCATION_CALLERS").is_some_and(|value| value == "1");
+    if trace_callers {
+        crate::platform::allocation_tags::trace_retained_callers(&[
+            "after prepared scene published", "after physics and collision",
+            "after world mesh", "after machinery and wind", "after setup: world geometry and materials",
+            "after setup: placed models",
+        ], 64);
+    }
     let catalog = archive::Catalog::shared(base)?;
     let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
@@ -1147,6 +1155,11 @@ fn inspect_scene_resources(
     drop(session);
     drop(catalog);
     drop(catalog_session);
+    if trace_callers {
+        for (tag, frames, bytes, blocks) in crate::platform::allocation_tags::retained_callers() {
+            eprintln!("RESOURCE_SCENE_LIVE_CALLER tag={tag:?} bytes={bytes} blocks={blocks} frames={frames:?}");
+        }
+    }
     for (tag, bytes) in crate::platform::allocation_tags::report() {
         eprintln!("RESOURCE_SCENE_HEAP phase=session-released tag={tag:?} bytes={bytes}");
     }
