@@ -47,7 +47,7 @@ impl Default for ParticleEvent {
     }
 }
 impl ParticleEvent {
-    fn edit(&mut self, fields: &Fields, life_event: bool) -> Result<(), String> {
+    pub(super) fn edit(&mut self, fields: &Fields, life_event: bool) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
                 "m_name" => self.name = atom(value)?.to_owned(),
@@ -265,7 +265,7 @@ pub fn standard_cycles_capacity(
     Ok(if burst_event.is_empty() { count } else { count.wrapping_mul(maximum_burst_events) } as u64)
 }
 
-fn unsigned(value: &Value) -> Result<u32, String> {
+pub(super) fn unsigned(value: &Value) -> Result<u32, String> {
     atom(value)?
         .parse()
         .map_err(|e| format!("invalid particle unsigned integer: {e}"))
@@ -279,7 +279,7 @@ impl ParticleStageAsset {
             &self.burst_event, self.maximum_burst_events)
     }
 
-    fn spawn(&mut self, fields: &Fields) -> Result<(), String> {
+    pub(super) fn spawn(&mut self, fields: &Fields) -> Result<(), String> {
         for (name, value) in fields {
             match name.as_str() {
                 "m_cycles" => self.emitter.cycles = unsigned(value)?,
@@ -317,27 +317,7 @@ impl ParticleStageAsset {
                 "m_velocityMesh" => particle_emission_mesh::velocity_edit(&mut self.velocity_mesh, scope(value)?)?,
                 // arkInitialAngularOrientation (spawn_t +0xf38): m_value +0,
                 // m_worldspace +0x110, m_rotationOrder +0x114.
-                "m_velocityCycleOrientation" => {
-                    let orientation = &mut self.velocity_orientation;
-                    for (name, value) in scope(value)? {
-                        match name.as_str() {
-                            "m_value" => particles::vector_parameter(&mut orientation.angles, scope(value)?)?,
-                            "m_worldspace" => orientation.worldspace = boolean(value)?,
-                            "m_rotationOrder" => {
-                                orientation.order = match atom(value)?.trim_start_matches("idAngles::") {
-                                    "XYZ" => 0,
-                                    "YZX" => 1,
-                                    "ZXY" => 2,
-                                    "XZY" => 3,
-                                    "YXZ" => 4,
-                                    "ZYX" => 5,
-                                    mode => return Err(format!("unknown velocity orientation rotation order {mode}")),
-                                }
-                            }
-                            _ => return Err(format!("unknown velocity cycle orientation field {name}")),
-                        }
-                    }
-                }
+                "m_velocityCycleOrientation" => spawn_orientation(&mut self.velocity_orientation, scope(value)?)?,
                 "m_velocityPeriodicOrientation" => {
                     for (name, value) in scope(value)? {
                         let parameter = match name.as_str() {
@@ -388,6 +368,33 @@ impl ParticleStageAsset {
         }
         Ok(())
     }
+}
+
+/// arkInitialAngularOrientation: m_value +0, m_worldspace +0x110,
+/// m_rotationOrder +0x114 (defaults 1f8940).
+pub(super) fn spawn_orientation(
+    orientation: &mut crate::gameplay::particles::spawn::SpawnOrientation,
+    fields: &Fields,
+) -> Result<(), String> {
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_value" => particles::vector_parameter(&mut orientation.angles, scope(value)?)?,
+            "m_worldspace" => orientation.worldspace = boolean(value)?,
+            "m_rotationOrder" => {
+                orientation.order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
+                    mode => return Err(format!("unknown angular orientation rotation order {mode}")),
+                }
+            }
+            _ => return Err(format!("unknown angular orientation field {name}")),
+        }
+    }
+    Ok(())
 }
 
 /// Read an ordinary stage. Meshes, trails, attractors and fields need their

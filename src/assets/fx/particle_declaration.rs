@@ -336,6 +336,8 @@ pub struct ParticleDeclaration {
     /// System +0x398's arkBeam producers.
     pub beams: Vec<super::particle_beam::ParticleBeamAsset>,
     pub ribbons: Vec<super::particle_ribbon::ParticleRibbonAsset>,
+    /// Declaration +0x5c8's arkHavokParticleStageDesc list.
+    pub havok_stages: Vec<super::particle_havok_stage::ParticleHavokStageAsset>,
 }
 
 impl ParticleDeclaration {
@@ -434,6 +436,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_beams" => descriptor_list(&mut result.beams, scope(value)?, super::particle_beam::beam)?,
             "m_trails" => descriptor_list(&mut result.trails, scope(value)?, super::particle_trail::declaration_trail)?,
             "m_ribbons" => descriptor_list(&mut result.ribbons, scope(value)?, super::particle_ribbon::ribbon)?,
+            "m_havokStages" => descriptor_list(&mut result.havok_stages, scope(value)?, super::particle_havok_stage::havok_stage)?,
             _ => return Err(format!("unresolved particle declaration producer {name}")),
         }
     }

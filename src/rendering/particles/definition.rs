@@ -351,6 +351,13 @@ impl ParticleDefinition {
             };
             materials.insert(name.clone(), material);
         }
+        // 140201760 creates an arkHavokParticleStage (simulator 1401dfc20) for
+        // each enabled Havok stage; its Havok FX pipeline is not ported yet.
+        if declarations.iter().flatten().flat_map(|declaration| declaration.havok_stages.iter())
+            .any(|stage| stage.stage.enabled)
+        {
+            return Err("Havok particle stages await the Havok FX pipeline".into());
+        }
         // 140201760 creates an arkRibbon for each enabled ribbon with a
         // material (1402042b0).
         let ribbons: Vec<&crate::assets::fx::particle_ribbon::ParticleRibbonAsset> = declarations.iter().flatten()
