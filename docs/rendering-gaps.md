@@ -648,6 +648,24 @@ loses w. Remaining, in order:
   140c85490; end 140fc01d0), SolveSphereContacts (slot 19 140fb9c20),
   SolveConvexContacts (140fbb350, hull from 1401df6a0), SolveSelfContacts
   (compute slot 17 140fd33d0).
+- Connected (`gameplay::particles::havok_stage`): emission, spawn records,
+  pipeline step with Integrate every frame (the physics world steps it
+  whether or not the system is simulated), post-step, sprite/mesh births
+  and updates, draws through `rendering::particles::publication::DrawStage`
+  with the AngularMotion basis, system bounds. Refused by name until
+  ported: collisions (482 declarations), collision hulls, fields,
+  attractors, accelerations, wind, trails, events, spawn queries, ocean
+  kills. Havok sprites with world materials (program arkdefault, 73) are a
+  separate draw gap.
+- PhysicsCollide begin (140fbf850, "Get new dynamic hits"): broadphase
+  query (140c894b0) with the partition root bounds for dynamic world
+  bodies (flags 2 and 8); each body's world AABB (140c85490) queries the
+  particle partition (140fd8390) and, when the body's speed (140c85980) is
+  below +0xac, its overlapping particles (inside the swept particle AABB
+  grown by the pipeline radius x 2) become dynamic neighbour entries in the
+  +0x128 structure. Static geometry is handled per body (140fc1370: "Static
+  CD" with hkfxCacheSharing and "Static cache limiting", "Dynamic CD", "CD
+  pass", "CCD pass").
 - Draw integration: the Havok stage reuses the ordinary emitter
   (1401e6570 matches `ParticleEmitter::continuous`: 0.1 minimum rate,
   1/60 or 1/(2 x max rate) slices) and the sprite/mesh renderer births and
