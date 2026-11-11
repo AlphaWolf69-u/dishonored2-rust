@@ -181,6 +181,9 @@ pub fn inspect_scene_publication(
             "--contact-owner-catalogs" => {
                 return super::audio::contacts::observe_catalogs(base, name).map_err(Into::into);
             }
+            "--common-mesh-cancellation" => {
+                return inspect_common_mesh_cancellation(base, name);
+            }
             "--physics-material-scopes" => {
                 return crate::assets::entities::physics_material::resources::observe_resource_scopes(base, name).map_err(Into::into);
             }
@@ -496,7 +499,7 @@ fn upload_assets(app: &mut App, inputs: &super::scene_preparation::SceneGpuInput
     }
 }
 
-fn gpu_snapshot(app: &App, step: usize, phase: &str) {
+fn gpu_snapshot(app: &App, step: usize, phase: &str) -> Result<(), String> {
     let world = app.sub_app(RenderApp).world();
     eprintln!("RESOURCE_SCENE_GPU step={step} phase={phase} images={} meshes={} buffers={} skies={}",
         world.resource::<RenderAssets<GpuImage>>().iter().count(),
@@ -529,6 +532,7 @@ fn gpu_snapshot(app: &App, step: usize, phase: &str) {
         }
     }
     super::resource_diagnostics::allocator_snapshot(app.world().resource::<RenderDevice>(), phase, step);
+    super::common_model_meshes::observe_gpu(app, step, phase)
 }
 
 fn track_assets<A: bevy::asset::Asset>(world: &mut World) -> Result<(), std::io::Error> {
@@ -809,6 +813,13 @@ fn observe_runtime_fx_image_aliases(
 }
 
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
+    if phase == "published" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_PREPARATION").is_some_and(|value| value == "1") {
+        for (_, buffer) in world.resource::<Assets<ShaderBuffer>>().iter() {
+            if let Some(bytes) = &buffer.data {
+                eprintln!("SHADER_BUFFER_CONTENT step={step} bytes={} capacity={} signature={}", bytes.len(), bytes.capacity(), blake3::hash(bytes));
+            }
+        }
+    }
     eprintln!("RESOURCE_SCENE_FX step={step} phase={phase} simulation={}",
         world.contains_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>());
     eprintln!(
@@ -913,6 +924,14 @@ fn inspect_scene_resources(
     if levels.is_empty() {
         return Err("inspect-scene-preparation requires level names".into());
     }
+    let trace_callers = std::env::var_os("DH2_DEBUG_RETAINED_ALLOCATION_CALLERS").is_some_and(|value| value == "1");
+    if trace_callers {
+        crate::platform::allocation_tags::trace_retained_callers(&[
+            "after prepared scene published", "after physics and collision",
+            "after world mesh", "after machinery and wind", "after setup: world geometry and materials",
+            "after setup: placed models",
+        ], 64);
+    }
     let catalog = archive::Catalog::shared(base)?;
     let catalog_session = super::launch::CatalogSession(catalog.identity());
     let session = super::audio::AudioSession::begin()?;
@@ -923,6 +942,7 @@ fn inspect_scene_resources(
         return Err("initial texture phase observation requires GPU asset epochs".into());
     }
     let mut host = None;
+    let mut common_sessions = Vec::new();
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
         if let Some(map) = level.entities.strip_suffix(".entities") {
@@ -933,6 +953,9 @@ fn inspect_scene_resources(
         // asset storage and render device across actual map retirement.
         let new_host = host.is_none();
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
+        if new_host {
+            common_sessions.push(app.world().resource::<super::common_model_meshes::Shared>().retirement());
+        }
         if new_host && observe_initial_images {
             app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
         }
@@ -947,7 +970,7 @@ fn inspect_scene_resources(
             }
             let inputs = gpu_inputs(app.world());
             upload_assets(&mut app, &inputs)?;
-            gpu_snapshot(&app, step, "before-preparation");
+            gpu_snapshot(&app, step, "before-preparation")?;
         }
         resource_snapshot(app.world(), step, "before-preparation");
         let mut prepared = super::level_prepare::prepare_level(
@@ -1031,7 +1054,7 @@ fn inspect_scene_resources(
                 let inputs = gpu_inputs(app.world());
                 acquire_water_images(app.world(), step)?;
                 upload_assets(&mut app, &inputs)?;
-                gpu_snapshot(&app, step, "uploaded");
+                gpu_snapshot(&app, step, "uploaded")?;
                 if let Some(lighting) = app.world().get_resource::<super::model_motion::ModelProbeLighting>() {
                     let id = lighting.asset_id();
                     let cpu = app.world().resource::<Assets<ShaderBuffer>>().get(id)
@@ -1126,7 +1149,7 @@ fn inspect_scene_resources(
                     let cpu_image = app.world().resource::<Assets<Image>>().get(output).is_some();
                     eprintln!("SCREEN_SHADOW_OWNER step={step} phase=released extracted={frame} cpu_image={cpu_image} gpu_image={gpu_image}");
                 }
-                gpu_snapshot(&app, step, "after-gpu-removal");
+                gpu_snapshot(&app, step, "after-gpu-removal")?;
                 resource_snapshot(app.world(), step, "after-gpu-removal");
             }
         } else {
@@ -1147,9 +1170,18 @@ fn inspect_scene_resources(
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
     drop(host);
+    if common_sessions.iter().any(|session| !session.released()) {
+        return Err("common mesh owner outlived its render host".into());
+    }
+    eprintln!("COMMON_MODEL_HOST_RELEASE sessions={} retained=0", common_sessions.len());
     drop(session);
     drop(catalog);
     drop(catalog_session);
+    if trace_callers {
+        for (tag, frames, bytes, blocks) in crate::platform::allocation_tags::retained_callers() {
+            eprintln!("RESOURCE_SCENE_LIVE_CALLER tag={tag:?} bytes={bytes} blocks={blocks} frames={frames:?}");
+        }
+    }
     for (tag, bytes) in crate::platform::allocation_tags::report() {
         eprintln!("RESOURCE_SCENE_HEAP phase=session-released tag={tag:?} bytes={bytes}");
     }
@@ -1192,5 +1224,46 @@ fn inspect_decal_preload_inventory(base: &std::path::Path) -> Result<(), Box<dyn
         maps += 1;
     }
     eprintln!("DECAL_PRELOAD_COMPLETE maps={maps}");
+    Ok(())
+}
+
+
+fn inspect_common_mesh_cancellation(base: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = Arc::new(archive::Catalog::open(base)?);
+    let session = super::audio::AudioSession::begin()?;
+    let mut app = scene_host(true);
+    let shared = app.world().resource::<super::common_model_meshes::Shared>().clone();
+    let (resident, builds) = shared.counts();
+    if resident != 0 { return Err("new device already has common meshes".into()); }
+    let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
+    crate::gameplay::map_info::set_current_map(&format!("{}.map", level.entities.trim_end_matches(".entities")));
+    let mut prepared = super::level_prepare::prepare_level(base.to_owned(), catalog.clone(), level, true, true, |_| false)?;
+    let result = super::scene_preparation::ScenePreparation::new(app.world_mut())
+        .prepare(&mut prepared, None, || shared.counts().1 > builds);
+    if !matches!(result, Err(ref error) if error == "scene preparation cancelled") {
+        return Err("common mesh cancellation did not reach actual mesh construction".into());
+    }
+    drop(prepared);
+    let after = shared.counts();
+    if after.0 != 0 || after.1 <= builds || app.world().contains_resource::<super::scene_preparation::SetupPrepared>() {
+        return Err("cancelled scene promoted common meshes or setup state".into());
+    }
+    // The ordinary successful path must retry in this same device/catalog.
+    let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
+    crate::gameplay::map_info::set_current_map(&format!("{}.map", level.entities.trim_end_matches(".entities")));
+    let mut prepared = super::level_prepare::prepare_level(base.to_owned(), catalog.clone(), level, true, true, |_| false)?;
+    super::scene_preparation::ScenePreparation::new(app.world_mut()).prepare(&mut prepared, None, || false)?;
+    let (mut lifetime, before) = super::level_lifetime::LevelLifetime::begin(app.world_mut(), catalog.clone());
+    prepared.publish(app.world_mut());
+    lifetime.published(app.world(), &before);
+    lifetime.clear(app.world_mut())?;
+    let (resident, retry_builds) = shared.counts();
+    if resident == 0 || retry_builds <= after.1 { return Err("retry reused unpublished common mesh identities".into()); }
+    eprintln!("COMMON_MODEL_CANCELLATION built={} cancelled_resident={} retry_built={} retry_resident={resident}",
+        after.1 - builds, after.0, retry_builds - after.1);
+    drop(shared);
+    drop(app);
+    drop(session);
+    drop(catalog);
     Ok(())
 }
