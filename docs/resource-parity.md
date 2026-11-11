@@ -7155,3 +7155,8 @@ the allocator before acquisition. Keep bookkeeping untagged and report the
 live callers only after actual host/audio/Catalog retirement. This is diagnostic
 attribution, with no expected memory or CPU saving and no normal-build code.
 Use the callers to identify real owners before changing residency policies.
+
+Heap report snapshots are also charged to the diagnostic context before taking
+the name-table lock. With small-block tracing enabled, retaining a resource
+phase here would both misattribute the snapshot and recursively acquire the
+same lock while recording its allocation.

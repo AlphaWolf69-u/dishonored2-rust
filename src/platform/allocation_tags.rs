@@ -81,6 +81,9 @@ pub fn phase_label_storage() -> Option<(usize, usize)> {
 
 /// Live bytes per tag, largest first.
 pub fn report() -> Vec<(&'static str, isize)> {
+    // Reporting owns its temporary snapshot. In small-block tracing mode,
+    // allocation under NAMES would otherwise recurse into tag registration.
+    let _diagnostic_tag = tag("untagged");
     let names = NAMES.lock().unwrap();
     let mut out: Vec<_> = names.iter().enumerate().map(|(i, n)| (*n, LIVE[i].load(Ordering::Relaxed))).collect();
     out.sort_by(|a, b| b.1.cmp(&a.1));
