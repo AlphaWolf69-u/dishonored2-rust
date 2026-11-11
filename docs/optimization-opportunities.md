@@ -2256,3 +2256,11 @@ all named class relations, factory/definition descriptors and 645 selected
 preparation records matched, and final owner destruction was observed.
 See component-metadata-relations-20261111-comparison.json and its acceptance
 entry in the resource parity ledger. No walking CPU timing is inferred.
+
+Wind update source scratch (2026-11-11). update_vegetation_wind still assembles
+a temporary Vec of28 words per source before encoding its upload. Reusing a
+map-owned word scratch could remove one source allocation per active frame,
+at a resident cost of112 bytes per source between frames. The serializer's
+same-sized byte backing is handled separately. This source-scratch tradeoff
+waits for scoped CPU/residency measurement; no count, deformation or upload
+change is justified by the lifetime audit alone.

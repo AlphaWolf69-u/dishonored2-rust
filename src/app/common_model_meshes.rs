@@ -145,14 +145,28 @@ impl Prepared {
 
 /// The real upload observer must see disjoint physical buffers, not just keys.
 pub(super) fn observe_gpu(app: &App, step: usize, phase: &str) -> Result<(), String> {
-    use bevy::render::{mesh::RenderMesh, render_asset::RenderAssets};
+    use bevy::render::{mesh::{RenderMesh, RenderMeshBufferInfo}, render_asset::RenderAssets};
     let ids = app.world().resource::<Shared>().ids().into_iter().collect::<std::collections::HashSet<_>>();
     let world = app.sub_app(RenderApp).world();
     let allocator = world.resource::<MeshAllocator>();
     let meshes = world.resource::<RenderAssets<RenderMesh>>();
     let mut persistent = std::collections::HashMap::new();
     let mut transient = std::collections::HashSet::new();
-    for (id, _) in meshes.iter() {
+    let mut missing_vertices = 0;
+    let mut missing_indices = 0;
+    for (id, mesh) in meshes.iter() {
+        if ids.contains(&id) {
+            if mesh.vertex_count != 0 && allocator.mesh_vertex_slice(&id)
+                .is_none_or(|slice| slice.range.end - slice.range.start != mesh.vertex_count) {
+                missing_vertices += 1;
+            }
+            if let RenderMeshBufferInfo::Indexed { count, .. } = mesh.buffer_info {
+                if count != 0 && allocator.mesh_index_slice(&id)
+                    .is_none_or(|slice| slice.range.end - slice.range.start != count) {
+                    missing_indices += 1;
+                }
+            }
+        }
         for slice in [allocator.mesh_vertex_slice(&id), allocator.mesh_index_slice(&id)].into_iter().flatten() {
             if ids.contains(&id) { persistent.insert(slice.buffer.id(), slice.buffer.size()); }
             else { transient.insert(slice.buffer.id()); }
@@ -160,8 +174,8 @@ pub(super) fn observe_gpu(app: &App, step: usize, phase: &str) -> Result<(), Str
     }
     let missing = ids.iter().filter(|id| meshes.get(**id).is_none()).count();
     let mixed = persistent.keys().filter(|id| transient.contains(*id)).count();
-    eprintln!("COMMON_MODEL_GPU step={step} phase={phase} resident={} missing={missing} buffers={} buffer_bytes={} mixed={mixed}",
+    eprintln!("COMMON_MODEL_GPU step={step} phase={phase} resident={} missing={missing} missing_vertices={missing_vertices} missing_indices={missing_indices} buffers={} buffer_bytes={} mixed={mixed}",
         ids.len(), persistent.len(), persistent.values().sum::<u64>());
-    if missing != 0 || mixed != 0 { return Err("common mesh residency or lifetime domain is invalid".into()); }
+    if missing != 0 || missing_vertices != 0 || missing_indices != 0 || mixed != 0 { return Err("common mesh residency or lifetime domain is invalid".into()); }
     Ok(())
 }

@@ -276,6 +276,9 @@ pub fn allocate_added_common_meshes(
         }
     };
     report("before");
+    // free_meshes also includes `added`: it handles re-extraction/reinsertion.
+    // Retire that complete previous generation BEFORE creating early buffers.
+    allocator.free_meshes(&extracted);
     allocator.allocate_mesh_domain(&settings, &extracted, &mut layouts, &device, &queue, Some(true));
     allocator.early_common_prepared = true;
     report("after");
@@ -302,8 +305,11 @@ pub fn allocate_and_free_meshes(
     {
         return;
     }
-    // Process removed or modified meshes.
-    mesh_allocator.free_meshes(&extracted_meshes);
+    // The early owner has already retired the complete old generation.
+    // Freeing `added` again here would destroy its freshly uploaded buffers.
+    if !mesh_allocator.early_common_prepared {
+        mesh_allocator.free_meshes(&extracted_meshes);
+    }
 
     // Process newly-added or modified meshes.
     mesh_allocator.allocate_meshes(

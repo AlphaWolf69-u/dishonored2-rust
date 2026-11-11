@@ -813,6 +813,16 @@ fn observe_runtime_fx_image_aliases(
 }
 
 fn resource_snapshot(world: &World, step: usize, phase: &str) {
+    if phase == "published" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_UPDATES").is_some_and(|value| value == "1") {
+        observe_shader_buffer_updates(world, step);
+    }
+    if phase == "after-gpu-removal" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_COUNTERS").is_some_and(|value| value == "1") {
+        let uploads = bevy::render::storage::SHADER_BUFFER_UPLOADS.lock().unwrap_or_else(|error| error.into_inner());
+        eprintln!("SHADER_BUFFER_COUNTERS step={step} entries={} uploads={} bytes={}",
+            uploads.as_ref().map_or(0, |rows| rows.len()),
+            uploads.as_ref().map_or(0, |rows| rows.values().map(|row| row.0).sum::<u64>()),
+            uploads.as_ref().map_or(0, |rows| rows.values().map(|row| row.1).sum::<u64>()));
+    }
     if phase == "published" && std::env::var_os("DH2_DEBUG_SHADER_BUFFER_PREPARATION").is_some_and(|value| value == "1") {
         for (_, buffer) in world.resource::<Assets<ShaderBuffer>>().iter() {
             if let Some(bytes) = &buffer.data {
@@ -943,6 +953,7 @@ fn inspect_scene_resources(
     }
     let mut host = None;
     let mut common_sessions = Vec::new();
+    let mut shader_sessions = Vec::new();
     for (step, name) in levels.iter().enumerate() {
         let level = crate::assets::level::LevelResources::resolve(&catalog, name)?;
         if let Some(map) = level.entities.strip_suffix(".entities") {
@@ -955,6 +966,13 @@ fn inspect_scene_resources(
         let mut app = host.take().unwrap_or_else(|| scene_host(step == 0));
         if new_host {
             common_sessions.push(app.world().resource::<super::common_model_meshes::Shared>().retirement());
+            if std::env::var_os("DH2_DEBUG_SHADER_LIBRARY_LIFETIME").is_some_and(|value| value == "1") {
+                let libraries = app.world().get_non_send_resource::<bevy::shader::ShaderLibraries>()
+                    .ok_or("shader library owner is absent")?.retirement();
+                let (count, live) = libraries.counts();
+                eprintln!("SHADER_LIBRARY_LIFETIME step={step} phase=host-live libraries={count} live={live}");
+                shader_sessions.push(libraries);
+            }
         }
         if new_host && observe_initial_images {
             app.insert_resource(super::texture_streaming::SharedImages::new(&catalog)?);
@@ -1160,6 +1178,10 @@ fn inspect_scene_resources(
             host = Some(app);
         } else {
             drop(app);
+            if let Some(libraries) = shader_sessions.last() {
+                let (count, live) = libraries.counts();
+                eprintln!("SHADER_LIBRARY_LIFETIME step={step} phase=host-released libraries={count} live={live}");
+            }
             for (tag, bytes) in crate::platform::allocation_tags::report() {
                 eprintln!(
                     "RESOURCE_SCENE_HEAP step={step} phase=host-released tag={tag:?} bytes={bytes}"
@@ -1170,6 +1192,13 @@ fn inspect_scene_resources(
         eprintln!("RESOURCE_SCENE_PREPARATION step={step} level={name} phase=released");
     }
     drop(host);
+    if reuse_host {
+        if let Some(libraries) = shader_sessions.last() {
+            let (count, live) = libraries.counts();
+            eprintln!("SHADER_LIBRARY_LIFETIME phase=host-released libraries={count} live={live}");
+        }
+    }
+    drop(shader_sessions);
     if common_sessions.iter().any(|session| !session.released()) {
         return Err("common mesh owner outlived its render host".into());
     }
@@ -1227,6 +1256,29 @@ fn inspect_decal_preload_inventory(base: &std::path::Path) -> Result<(), Box<dyn
     Ok(())
 }
 
+/// Observe the serializer with the actual level's published wind words.
+/// No simulation, GPU upload or visible frame is produced by these calls.
+fn observe_shader_buffer_updates(world: &World, step: usize) {
+    let materials = world.resource::<super::vegetation_wind::VegetationMaterials>();
+    let buffer = world.resource::<Assets<ShaderBuffer>>().get(&materials.instances).expect("published wind buffer");
+    let bytes = buffer.data.as_ref().expect("published wind words before upload");
+    let words = bytes.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect::<Vec<_>>();
+    let expected = blake3::hash(bytes);
+    let mut scratch = ShaderBuffer::default();
+    scratch.set_data(words.as_slice());
+    let mut reused = 0;
+    let mut matched = words.len() * 4 == bytes.len();
+    let mut capacity_equal = true;
+    for _ in 0..256 {
+        let previous = scratch.data.as_ref().unwrap().as_ptr();
+        scratch.set_data(words.as_slice());
+        let current = scratch.data.as_ref().unwrap();
+        reused += usize::from(previous == current.as_ptr());
+        matched &= blake3::hash(current) == expected;
+        capacity_equal &= current.capacity() == bytes.len();
+    }
+    eprintln!("SHADER_BUFFER_UPDATES step={step} bytes={} samples=256 reused={reused} matched={matched} capacity_equal={capacity_equal} signature={expected}", bytes.len());
+}
 
 fn inspect_common_mesh_cancellation(base: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let catalog = Arc::new(archive::Catalog::open(base)?);

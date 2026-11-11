@@ -7338,3 +7338,86 @@ parent read-history ownership still need integration and actual acquisition
 comparison; this branch is not accepted or merged. All header/typed-body
 allocations use the explicit FX declaration resources context. No incomplete
 nested-storage estimator is reported as a full payload-byte measurement.
+Shader-library lifetime root cause/prediction (2026-11-11). The live caller
+trace's35-fold AssetHandleProvider balances come from bevy_shader0.19.1's
+load_shader_library macro: it explicitly mem::forgets each loaded strong
+handle to work around missing dependency tracking. This is not merely an
+unfinished resource observation; those handles cannot drop with their App.
+Keep the same workaround's live retention in an application-owned World service
+instead. A non-send service is sufficient because embedded_asset already
+requires mutable App access on the main thread; no new ECS dependency or
+runtime system is needed. The owner is a bevy_backend shader-library lifetime,
+not a port of original compiled-renderProg bank contents. Preserve every path,
+source, load setting, import, handle and GPU behavior while the App lives.
+Expect all library weak leases to remain live during host work and retire after
+host destruction; the former forgotten mode should retain them. Observe actual
+fresh hosts and compare unchanged acquisition output before integration. No
+normal gameplay CPU, FPS or large resident-memory saving is predicted: the
+main client has one App, while repeated diagnostic hosts exposed the leak.
+
+Shader-buffer module sweep prediction (2026-11-11). set_data allocates a new
+byte vector even for a same-sized update of the level's wind instance words
+(14077fbc0 windInfo/140339160 samples, forward vegetation674e25d0 family).
+Reuse the prior serialization backing only when its capacity equals the exact
+new ShaderType size; changed sizes preserve the old allocation policy. Clear
+its length before writing so padding is initialized identically. Expect one
+fewer allocation per unchanged-size update, identical serialized words/capacity,
+and no extra retained memory or changed GPU uploads. Observe256 calls per
+installed level using its actual published wind words; do not claim frame
+or release CPU timings from that acquisition diagnostic.
+
+The same module unconditionally grows SHADER_BUFFER_UPLOADS and takes its
+mutex on each upload. Its only readers are benchmark_frames, which clears
+at measured-frame start and prints at exit. Gate collection by the existing
+benchmark launch option or an explicit diagnostic override. Expect no table
+entries/locking in normal gameplay, preserved benchmark counters and identical
+GPU resources. Existing source serialization, GPU extraction copies required
+by concurrent frame ownership, staging-belt submission and descriptor/resize
+semantics remain unchanged. No new shader pass or draw is introduced.
+
+Common-mesh acceptance correction (2026-11-11). The v3 report's reserved-heap
+and handle checks passed, but its records show buffers=0 for resident common
+meshes. That invalidates the GPU-buffer portion of the preceding acceptance;
+CPU content/reuse and host-owner release alone did not prove valid GPU backing.
+Root cause: the existing free_meshes deliberately retires removed, modified
+AND added IDs to handle re-extraction. Early common upload was followed by this
+normal free stage, which destroyed its new buffers; the later domain correctly
+skipped uploading them again. Free the complete outgoing generation before
+early upload, then skip that second free stage. Other additions/changes still
+allocate in the ordinary stage. Require vertex ranges for every nonempty common
+mesh and index ranges for every indexed common mesh, in addition to RenderMesh
+presence, disjoint buffers, content and retirement. Re-run actual GPU ownership
+before accepting the repaired scheduling or claiming heap placement success.
+The shader buffer publication/serialization result in v3 is independent of this
+missing common mesh backing; its hashes do not verify mesh drawing.
+
+Corrected GPU backing/ownership acceptance (2026-11-11,2d666eb6). Clean dev
+Tools SHA25658070307aa072e0b8f1ec5e1b075e782b0650e60963be62cf3870b5b93c69e6b
+passed strict vertex/index range checks for every nonempty/indexed common mesh
+in separate/shared EotW/Dust/EotW routes AND the normal path without CPU debug
+mesh copies. All three mesh fingerprints and207 complete shader-buffer hashes
+match, with unchanged serialized capacities. Common preparation remains20/2/0;
+cold common backing is two buffers/2,097,184 bytes and becomes four buffers/
+4,194,368 bytes after Dust's two additional surfaces. All are disjoint from
+map buffers and survive only their intended host scope. The extra pair is
+explained by the existing per-map seal discarding persistent slab lookup lists;
+reuse those lists next rather than treating the slack as unexplained.
+Reserved heaps remain201,326,592 bytes in both modes after all three maps.
+Cancellation built one unpublished mesh, retained none, and retry built20.
+This supersedes the invalid v3 GPU-backing claim; metadata presence alone was
+insufficient. Actual gameplay draw timings are not claimed by these routes.
+
+Same-sized ShaderBuffer updates using actual published112-byte wind words
+kept the same allocation for all768 observed calls, versus zero reuse before,
+with identical bytes and capacities. These initial words are not a moving-wind
+CPU timing result. Normal upload statistics retain zero entries versus31
+benchmark entries after207 uploads; actual GPU acquisition/retirement is
+unchanged. ShaderBuffer::from still removes449,280 transient copied bytes in
+198 constructors with207 matched published hashes.
+
+Each fresh graphics host owns67 shader-library handles. Both modes kept all67
+live during host work; the former forgotten mode retained67 after EACH host
+drop, whereas application ownership released all67 after EACH drop. The normal
+GPU route also released all67. The patch preserves sources/imports/settings and
+has no normal frame system; no gameplay FPS or large RAM saving is claimed.
+Evidence: DH2-fx-level-lifetime/artifacts/resource-ownership-v5-20261111-comparison.json.
