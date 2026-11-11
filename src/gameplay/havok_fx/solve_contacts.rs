@@ -124,7 +124,13 @@ impl SolveContacts {
                         &mut linear[index],
                     );
                 }
-                _ => return Err("Havok sphere contacts with both a static and a dynamic contact are not ported".into()),
+                _ => self.two_contacts(
+                    index,
+                    [contacts[0], contacts[1]],
+                    body_radius,
+                    [dt, inverse_dt, stickiness, restitution_threshold, friction_threshold, steps],
+                    &mut linear[index],
+                ),
             }
         }
         Ok(())
@@ -257,6 +263,191 @@ impl SolveContacts {
         if plane_distance(n, body[0]) >= 0. && dot3(body[1], n) < 0. {
             let next: [f32; 4] = std::array::from_fn(|i| add(multiply(body[1][i], dt), body[0][i]));
             if plane_distance(n, next) < 0. {
+                body[1] = [surface[0], surface[1], surface[2], body[1][3]];
+            }
+        }
+        if !stay_awake && state.state == 3 && 3 <= old_state {
+            state.state = old_state + 1;
+        }
+    }
+
+    /// 140fba56f..140fbacd5: a dynamic and a static contact, resolved in
+    /// turn on the updated velocity; sleep and penetration use the closest.
+    fn two_contacts(
+        &mut self,
+        index: usize,
+        contacts: [(Contact, f32, f32); 2],
+        radius: f32,
+        [dt, inverse_dt, stickiness, restitution_threshold, friction_threshold, steps]: [f32; 6],
+        body: &mut [[f32; 4]; 2],
+    ) {
+        let old_state = self.bodies[index].state;
+        let p = body[0];
+        let v = body[1];
+        let mut surfaces = [ZERO; 2];
+        let mut relatives = [ZERO; 2];
+        let mut gaps = [0.; 2];
+        let mut normal_speeds = [0.; 2];
+        let mut closest = 0;
+        let mut closest_gap = f32::from_bits(0x7f7f_ffee);
+        let mut agree = true;
+        for k in 0..2 {
+            let contact = contacts[k].0;
+            let n = contact.plane;
+            surfaces[k] = if n.iter().all(|&lane| lane == 0.) {
+                ZERO
+            } else {
+                let d: [f32; 4] = std::array::from_fn(|i| subtract(p[i], contact.centre_of_mass[i]));
+                let w = contact.angular_velocity;
+                let b = [multiply(d[1], w[0]), multiply(d[2], w[1]), multiply(d[0], w[2]), multiply(d[3], w[3])];
+                let a = [multiply(w[1], d[0]), multiply(w[2], d[1]), multiply(w[0], d[2]), multiply(w[3], d[3])];
+                let c = [subtract(b[0], a[0]), subtract(b[1], a[1]), subtract(b[2], a[2]), subtract(b[3], a[3])];
+                let cross = [c[1], c[2], c[0], c[3]];
+                std::array::from_fn(|i| add(cross[i], contact.linear_velocity[i]))
+            };
+            relatives[k] = std::array::from_fn(|i| subtract(v[i], surfaces[k][i]));
+            gaps[k] = subtract(plane_distance(n, p), radius);
+            normal_speeds[k] = dot3(n, relatives[k]);
+            // UCOMISS/JAE: an unordered gap also becomes the closest.
+            if !(gaps[k] >= closest_gap) {
+                closest = k;
+                closest_gap = gaps[k];
+            }
+            if k == 1 {
+                let d: [f32; 4] = std::array::from_fn(|i| subtract(surfaces[0][i], surfaces[1][i]));
+                let squares = d.map(|lane| multiply(lane, lane));
+                agree = agree && !(add(add(squares[1], squares[0]), squares[2]) >= friction_threshold);
+            }
+        }
+        let mut stay_awake = false;
+        if 0x7f <= old_state {
+            let (mut still, mut still_wake, mut moving_wake) = (false, true, false);
+            for k in 0..2 {
+                let n = contacts[k].0.plane;
+                let tangent: [f32; 4] = std::array::from_fn(|i| subtract(relatives[k][i], multiply(normal_speeds[k], n[i])));
+                let is_still = surfaces[k][..3].iter().all(|&lane| lane == 0.);
+                still |= is_still;
+                let squares = tangent.map(|lane| multiply(lane, lane));
+                let wake = normal_speeds[k] >= 0. || add(add(squares[1], squares[0]), squares[2]) > friction_threshold;
+                if is_still {
+                    still_wake = still_wake && wake;
+                } else {
+                    moving_wake |= wake;
+                }
+            }
+            stay_awake = (still && still_wake) || moving_wake;
+        }
+        let state = &mut self.bodies[index];
+        if 0x7f <= state.state && !stay_awake {
+            let surface = surfaces[closest];
+            body[1] = [surface[0], surface[1], surface[2], body[1][3]];
+            state.timer = 0.;
+            state.state = 0x7f + i32::from(surface[..3].iter().all(|&lane| lane == 0.));
+            return;
+        }
+        state.state = 0;
+        for k in 0..2 {
+            let (contact, friction, restitution) = contacts[k];
+            let n = contact.plane;
+            let velocity = body[1];
+            let relative: [f32; 4] = std::array::from_fn(|i| subtract(velocity[i], surfaces[k][i]));
+            let normal_speed = dot3(n, relative);
+            if normal_speed >= stickiness || add(multiply(normal_speed, dt), gaps[k]) > multiply(stickiness, dt) {
+                continue;
+            }
+            let bounce = add(multiply(restitution, normal_speed), restitution_threshold);
+            let bounce = if 0. < bounce { 0. } else { bounce };
+            if !(bounce >= 0.) {
+                let push = subtract(0., add(normal_speed, bounce));
+                body[1] = [
+                    add(multiply(push, n[0]), velocity[0]),
+                    add(multiply(push, n[1]), velocity[1]),
+                    add(multiply(push, n[2]), velocity[2]),
+                    add(multiply(push, 0.), velocity[3]),
+                ];
+                state.state = 1;
+                continue;
+            }
+            let separation = multiply(gaps[k], inverse_dt);
+            let separation = if 0. > separation { 0. } else { separation };
+            let budget = multiply(subtract(stickiness, normal_speed), friction);
+            let correction = subtract(subtract(0., normal_speed), separation);
+            let mut tangent: [f32; 4] = std::array::from_fn(|i| subtract(relative[i], multiply(normal_speed, n[i])));
+            let squares = tangent.map(|lane| multiply(lane, lane));
+            let sliding = add(add(squares[1], squares[0]), squares[2]);
+            let slides = sliding > multiply(budget, budget);
+            if slides {
+                let inverse = inverse_length(sliding);
+                tangent = tangent.map(|lane| multiply(multiply(lane, inverse), budget));
+            }
+            let delta = [
+                subtract(multiply(correction, n[0]), tangent[0]),
+                subtract(multiply(correction, n[1]), tangent[1]),
+                subtract(multiply(correction, n[2]), tangent[2]),
+                0.,
+            ];
+            body[1] = std::array::from_fn(|i| add(delta[i], velocity[i]));
+            if delta[..3].iter().any(|&lane| lane != 0.) {
+                state.state = if slides { 2 } else { 3 };
+            }
+        }
+        // 140fba9e6: the closest contact drives the sleep timer.
+        let n = contacts[closest].0.plane;
+        let surface = surfaces[closest];
+        let penetration = if 0. < gaps[closest] { 0. } else { gaps[closest] };
+        let relative: [f32; 4] = std::array::from_fn(|i| subtract(body[1][i], surface[i]));
+        let mut asleep = false;
+        if !agree {
+            state.timer = 0.;
+        } else if self.sleep {
+            let product: [f32; 4] = std::array::from_fn(|i| multiply(n[i], relative[i]));
+            let normal_speed = add(add(product[0], product[1]), product[2]);
+            let squares = relative.map(|lane| multiply(lane, lane));
+            let speed = add(add(squares[1], squares[0]), squares[2]);
+            let pushed = multiply(penetration, inverse_dt);
+            if multiply(pushed, pushed) > speed {
+                state.timer = add(divide(1., steps), state.timer);
+            } else if normal_speed > add(friction_threshold, stickiness) {
+                let timer = subtract(state.timer, divide(f32::from_bits(0x3d7a_e148), steps));
+                state.timer = if 0. > timer { 0. } else { timer };
+            }
+            // COMISS 1, timer then JA: an unordered timer counts as asleep.
+            asleep = !(1. > state.timer);
+        }
+        let static_plane = contacts[1].0.plane;
+        if penetration < 0. {
+            if asleep {
+                body[1] = [surface[0], surface[1], surface[2], body[1][3]];
+                state.state = 0x7f;
+            } else {
+                let depth = add(multiply(0., radius), penetration);
+                let depth = if 0. < depth { 0. } else { depth };
+                let q = body[0];
+                body[0] = [
+                    subtract(q[0], multiply(depth, n[0])),
+                    subtract(q[1], multiply(depth, n[1])),
+                    subtract(q[2], multiply(depth, n[2])),
+                    q[3],
+                ];
+                if closest != 1 {
+                    let below = subtract(plane_distance(static_plane, body[0]), radius);
+                    if below < 0. {
+                        let q = body[0];
+                        body[0] = [
+                            subtract(q[0], multiply(static_plane[0], below)),
+                            subtract(q[1], multiply(static_plane[1], below)),
+                            subtract(q[2], multiply(static_plane[2], below)),
+                            q[3],
+                        ];
+                    }
+                }
+            }
+        }
+        // 140fbac0e: the anti-tunnelling clamp against the static plane.
+        if plane_distance(static_plane, body[0]) >= 0. && dot3(static_plane, body[1]) < 0. {
+            let next: [f32; 4] = std::array::from_fn(|i| add(multiply(dt, body[1][i]), body[0][i]));
+            if plane_distance(static_plane, next) < 0. {
+                let surface = surfaces[1];
                 body[1] = [surface[0], surface[1], surface[2], body[1][3]];
             }
         }
