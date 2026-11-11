@@ -322,6 +322,12 @@ pub fn allocate_and_free_meshes(
 }
 
 impl MeshAllocator {
+    /// bevy_backend: retain persistent-domain free ranges across map seals.
+    /// Ordinary bootstrap/map layouts remain isolated exactly as before.
+    pub fn seal_existing_slabs(&mut self) {
+        self.slab_allocator.seal_existing_slabs_matching(|layout| !layout.long_lived);
+    }
+
     /// Host resource owners publish this set only at acquisition boundaries.
     pub fn set_long_lived_meshes(&mut self, meshes: &[AssetId<Mesh>]) {
         self.long_lived_meshes.clear();
