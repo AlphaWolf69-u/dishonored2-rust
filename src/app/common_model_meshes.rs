@@ -72,11 +72,6 @@ impl Prepared {
         self.catalog = catalog.map(|catalog| catalog.identity());
         self.enabled = catalog.is_some_and(|catalog| !catalog.has_overlays())
             && std::env::var_os("DH2_DEBUG_REPEAT_MODEL_MESH_PREPARATION").is_none_or(|v| v != "1");
-        let mut shared = self.shared.0.lock().unwrap_or_else(|error| error.into_inner());
-        if shared.catalog != self.catalog {
-            shared.meshes.clear();
-            shared.catalog = self.catalog;
-        }
     }
     pub fn enabled(&self) -> bool { self.enabled }
     pub fn acquire(&mut self, path: &str, surface: usize, flipped: bool, vegetation: bool,
@@ -85,8 +80,10 @@ impl Prepared {
         let key = Key { path: path.to_owned(), surface, flipped, vegetation };
         if let Some(mesh) = self.used.get(&key) { return mesh.clone(); }
         if self.reuse {
-            let existing = self.shared.0.lock().unwrap_or_else(|error| error.into_inner())
-                .meshes.get(&key).cloned();
+            let shared = self.shared.0.lock().unwrap_or_else(|error| error.into_inner());
+            let existing = (shared.catalog == self.catalog)
+                .then(|| shared.meshes.get(&key).cloned()).flatten();
+            drop(shared);
             if let Some(mesh) = existing {
                 self.reused += 1;
                 self.used.insert(key, mesh.clone());
@@ -119,7 +116,11 @@ impl Prepared {
         let mut shared = self.shared.0.lock().unwrap_or_else(|error| error.into_inner());
         // A cancelled or superseded batch never promotes its reserved handles.
         // Its ordinary asset/command batch owns them until publication or drop.
-        if self.reuse && shared.catalog == self.catalog {
+        if self.reuse {
+            if shared.catalog != self.catalog {
+                shared.meshes.clear();
+                shared.catalog = self.catalog;
+            }
             shared.meshes.extend(self.used);
         }
         let mut ids = shared.meshes.values().map(|mesh| mesh.handle.id()).collect::<Vec<_>>();

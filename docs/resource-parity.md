@@ -7131,3 +7131,8 @@ construction/upload, and outgoing map allocations to retire independently.
 Session GPU residency increases by the actual shared geometry/slab footprint;
 measure that tradeoff and compare complete consumed mesh data before acceptance.
 No per-frame cache lookup or new rendering pass is planned.
+
+Common-model publication also defers Catalog namespace replacement until the
+successful publication callback. Preparing a different Catalog cannot evict
+committed handles or borrow their meshes before that replacement is accepted;
+cancelled preparation leaves the existing session cache intact.
