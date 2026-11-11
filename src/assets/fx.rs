@@ -3,6 +3,7 @@
 use super::entities::Value;
 use crate::gameplay::effects::{curve::*, environment::EnvironmentEffectDefinition};
 pub(crate) mod declaration;
+pub(crate) mod definition;
 pub mod particle_system;
 pub mod particle_declaration;
 pub(crate) mod particle_resources;
