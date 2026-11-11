@@ -7097,3 +7097,16 @@ resource/phase categories. In particular the256-byte sound residue may move
 if it belongs to this owner; that attribution must be observed rather than
 assumed. Keep a same-binary former-attribution control. No game-performance
 or RAM-reduction claim; the diagnostic feature is disabled in ordinary builds.
+
+
+Allocation attribution observation at13602a43. Same-binary EotW/Dust
+preparation/publication completed in both diagnostic modes, with identical
+scene asset/preparation and encoded-residency records. Final placed-model
+phase attribution changed8,400 ->64 bytes; the profiler's table/stack
+allocations are now charged to untagged. Other small residual categories vary,
+including sound graph0/256 bytes, so that256-byte value is not established as
+profiler metadata or a resource leak. This is an attribution correction with
+no actual RAM-saving claim. The broader route published and retired nine
+levels, then correctly failed on Curator's compressed-image extent rejection;
+no final-session/all-map acceptance is claimed from that failed route.
+Evidence: DH2-fx-level-lifetime/artifacts/all-level-resource-lifetimes-20261111-comparison.json.
