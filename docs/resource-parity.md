@@ -7128,3 +7128,14 @@ inline accessors require the same rule. Preserve exact extents for uncompressed
 formats and attach source paths to resident-image acquisition errors.
 Verify installed records and actual Curator publication/GPU upload before
 continuing the all-level lifecycle pass.
+
+Cube face-count correction prediction (2026-11-11). The original BIM reader
+1402d2740 and GPU allocator1402f4060 interpret a cube's stored layer-count1
+as six face records. The host accepts only literal6 and rejects three real
+installed resources: the BC6 black/invalid cubes and the template cube. All
+three contain six ordered faces per mip (42/42/30 records respectively).
+Normalize that descriptor in the single layered-image reader; preserve all
+packed bytes, formats, mip ordering and ownership. Expected gain is supported
+acquisition of these three resources, with no added decode, upload or runtime
+work for previously accepted cubes. Verify the full installed cube/array/volume
+inventory through the production readers before integration.
