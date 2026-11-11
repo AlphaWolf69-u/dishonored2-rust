@@ -107,7 +107,12 @@ impl<T: ?Sized, E: Clone> Registry<T, E> {
         let entry = self.admit(path, inherited_marker);
         if let Some(error) = &entry.failure { return Err(error.clone()); }
         if let Some(value) = entry.current.as_ref().and_then(Weak::upgrade) {
-            entry.resident = Some(value.clone());
+            // A live consumer may still lease a generation whose cache pin
+            // was retired. A withdrawn worker must not restore that pin.
+            // An already resident value needs no redundant Arc replacement.
+            if entry.resident.is_none() && publish() {
+                entry.resident = Some(value.clone());
+            }
             return Ok(value);
         }
         let loaded = load(if entry.bootstrap_phase { 2 } else { entry.marker });

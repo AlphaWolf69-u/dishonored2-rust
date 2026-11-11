@@ -7603,3 +7603,21 @@ bytes remain, their ownership still needs investigation. Same three-map
 production acquisition and existing metadata signatures will distinguish a
 retained library table from a class-resource leak. Normal builds compile out
 these tags; no normal-frame or CPU/RAM optimization is claimed.
+
+Shared-registry warm cancellation prediction (2026-11-11). The original
+1400607f0 lookup and140060180 scope sweep establish the resource identity/
+retirement boundary; queued-worker cancellation is an explicit host contract.
+Registry::acquire_when currently reassigns resident=Some(value.clone()) on
+every successful weak upgrade, without consulting its publication predicate.
+After purge removed the registry pin, an old live consumer can still supply
+that weak generation; a withdrawn worker then restores a resident pin even
+though it must not publish one. Restore a missing pin only when publish()
+permits it; leave an existing pin untouched. Keep returning the same leased
+generation so the caller can perform its normal cancellation handling. No
+source reload, output, marker selection, failure cache, or ordinary resident
+lifetime changes. Predict no restored pin for a cancelled retired generation,
+and one fewer strong-reference increment/decrement pair on every ordinary
+warm hit that already has a resident pin. The cancellation predicate is only
+consulted when a missing pin would be restored, so normal warm hits add no
+cancellation read. This is a host ownership correction; no gameplay timing or
+byte saving is claimed without an actual matching route.
