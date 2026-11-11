@@ -7084,6 +7084,33 @@ DH2-fx-level-lifetime/artifacts/particle-model-streams-20261111-comparison.json
 and DH2/artifacts/particle-model-buffer-census-20261111.json.
 
 
+Allocation provenance review (2026-11-11). The completed tagged shutdown
+observation retained256 bytes under sound graph after actual audio tables
+retired. Source review of the diagnostic allocator found record_big captures
+stacks and grows its process-wide metadata while the allocating resource tag
+is still active. RECORDING prevents recursive stack capture but does not
+exclude those bookkeeping allocations from resource byte totals. Attribute
+the profiler's own allocations to untagged, preserving the original tag on
+the measured block. Prediction: actual resource allocations, output and total
+requested bytes do not change; only profiler metadata moves out of incidental
+resource/phase categories. In particular the256-byte sound residue may move
+if it belongs to this owner; that attribution must be observed rather than
+assumed. Keep a same-binary former-attribution control. No game-performance
+or RAM-reduction claim; the diagnostic feature is disabled in ordinary builds.
+
+
+Allocation attribution observation at13602a43. Same-binary EotW/Dust
+preparation/publication completed in both diagnostic modes, with identical
+scene asset/preparation and encoded-residency records. Final placed-model
+phase attribution changed8,400 ->64 bytes; the profiler's table/stack
+allocations are now charged to untagged. Other small residual categories vary,
+including sound graph0/256 bytes, so that256-byte value is not established as
+profiler metadata or a resource leak. This is an attribution correction with
+no actual RAM-saving claim. The broader route published and retired nine
+levels, then correctly failed on Curator's compressed-image extent rejection;
+no final-session/all-map acceptance is claimed from that failed route.
+Evidence: DH2-fx-level-lifetime/artifacts/all-level-resource-lifetimes-20261111-comparison.json.
+
 Common static-model GPU lifetime prediction (2026-11-11). Model lookup
 1400607f0 and bootstrap promotion140060b60 retain common resource identities;
 static surface upload140259d50 and release14026a240 belong to that identity.
