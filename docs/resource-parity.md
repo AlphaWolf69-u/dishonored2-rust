@@ -7349,3 +7349,34 @@ presence, disjoint buffers, content and retirement. Re-run actual GPU ownership
 before accepting the repaired scheduling or claiming heap placement success.
 The shader buffer publication/serialization result in v3 is independent of this
 missing common mesh backing; its hashes do not verify mesh drawing.
+
+Corrected GPU backing/ownership acceptance (2026-11-11,2d666eb6). Clean dev
+Tools SHA25658070307aa072e0b8f1ec5e1b075e782b0650e60963be62cf3870b5b93c69e6b
+passed strict vertex/index range checks for every nonempty/indexed common mesh
+in separate/shared EotW/Dust/EotW routes AND the normal path without CPU debug
+mesh copies. All three mesh fingerprints and207 complete shader-buffer hashes
+match, with unchanged serialized capacities. Common preparation remains20/2/0;
+cold common backing is two buffers/2,097,184 bytes and becomes four buffers/
+4,194,368 bytes after Dust's two additional surfaces. All are disjoint from
+map buffers and survive only their intended host scope. The extra pair is
+explained by the existing per-map seal discarding persistent slab lookup lists;
+reuse those lists next rather than treating the slack as unexplained.
+Reserved heaps remain201,326,592 bytes in both modes after all three maps.
+Cancellation built one unpublished mesh, retained none, and retry built20.
+This supersedes the invalid v3 GPU-backing claim; metadata presence alone was
+insufficient. Actual gameplay draw timings are not claimed by these routes.
+
+Same-sized ShaderBuffer updates using actual published112-byte wind words
+kept the same allocation for all768 observed calls, versus zero reuse before,
+with identical bytes and capacities. These initial words are not a moving-wind
+CPU timing result. Normal upload statistics retain zero entries versus31
+benchmark entries after207 uploads; actual GPU acquisition/retirement is
+unchanged. ShaderBuffer::from still removes449,280 transient copied bytes in
+198 constructors with207 matched published hashes.
+
+Each fresh graphics host owns67 shader-library handles. Both modes kept all67
+live during host work; the former forgotten mode retained67 after EACH host
+drop, whereas application ownership released all67 after EACH drop. The normal
+GPU route also released all67. The patch preserves sources/imports/settings and
+has no normal frame system; no gameplay FPS or large RAM saving is claimed.
+Evidence: DH2-fx-level-lifetime/artifacts/resource-ownership-v5-20261111-comparison.json.
