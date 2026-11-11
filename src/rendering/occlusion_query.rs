@@ -140,6 +140,11 @@ impl OcclusionQueries {
         Some(divide(sum, 6.))
     }
 
+    /// The slot's last arrived count.
+    pub fn count(&self, slot: usize) -> u64 {
+        self.counts.get(slot).copied().unwrap_or(0)
+    }
+
     /// A GPU count for `slot` arrived.
     pub fn record_count(&mut self, slot: usize, count: u64) {
         if let Some(entry) = self.counts.get_mut(slot) {
