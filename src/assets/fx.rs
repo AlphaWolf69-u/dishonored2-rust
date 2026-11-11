@@ -314,9 +314,9 @@ fn edit_list<T: Clone>(
             .ok_or_else(|| format!("unknown FX array field {name}"))?
             .parse::<usize>()
             .map_err(|e| format!("FX array index: {e}"))?;
-        let slot = edited
-            .get_mut(index)
-            .ok_or_else(|| format!("FX array index {index} exceeds declared count"))?;
+        // 14014d300 warns "array element %d out of range" and skips an
+        // element past the current count; it does not grow the list.
+        let Some(slot) = edited.get_mut(index) else { continue };
         edit(slot, value)?;
     }
     *values = edited;
