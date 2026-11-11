@@ -7182,3 +7182,24 @@ Common-model publication also defers Catalog namespace replacement until the
 successful publication callback. Preparing a different Catalog cannot evict
 committed handles or borrow their meshes before that replacement is accepted;
 cancelled preparation leaves the existing session cache intact.
+
+Common-model first observation (2026-11-11,260489e2). Same-device EotW/Dust/
+EotW comparisons preserve all three placed-mesh content signatures and actual
+GPU residency. Fresh common meshes fall20/16/20 to20/2/0;22 final common meshes
+share two disjoint buffers and the owner releases at host shutdown. However,
+2,162,688 additional live GPU allocation bytes pin a268,435,456-byte later
+heap (reserved201,326,592 ->469,762,048). Do not accept this memory regression.
+The comparison script also mistakenly required six mesh observation records;
+only the enabled placed-mesh observer emitted three, all of which matched.
+No mesh data mismatch occurred; cancellation had not run when that guard stopped.
+
+Heap-placement correction prediction. Existing bootstrap heap0 has ample free
+space, but transaction commit iterates all map/common slab creations together.
+Commit newly added common meshes before ordinary map meshes, preserving the
+separate layout domains and all packed bytes. Expect the two small persistent
+buffers in the bootstrap heap, no extra256-MiB reserved heap after map release,
+and unchanged20/2/0 preparation, content, cancellation and final owner release.
+Only additions of common meshes split the transaction; ordinary modified-mesh
+frames retain the single transaction. This ports the persistent resource
+identity through a host allocation-order change, not a GPU pass or draw change.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-20261111-comparison.json.

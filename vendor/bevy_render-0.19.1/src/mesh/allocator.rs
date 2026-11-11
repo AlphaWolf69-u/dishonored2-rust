@@ -411,6 +411,27 @@ impl MeshAllocator {
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
     ) {
+        // bevy_backend: immutable common meshes must occupy the existing
+        // bootstrap heap before map-sized slabs are created. Distinct layout
+        // domains alone avoid slab pinning but can still pin an entire later
+        // driver heap. Split only when newly added common assets are present;
+        // ordinary modified-mesh frames keep the existing single transaction.
+        let split = extracted_meshes.added.iter().any(|id| self.long_lived_meshes.contains(id));
+        for domain in if split { &[Some(true), Some(false)][..] } else { &[None][..] } {
+            self.allocate_mesh_domain(mesh_allocator_settings, extracted_meshes,
+                mesh_vertex_buffer_layouts, render_device, render_queue, *domain);
+        }
+    }
+
+    fn allocate_mesh_domain(
+        &mut self,
+        mesh_allocator_settings: &MeshAllocatorSettings,
+        extracted_meshes: &ExtractedAssets<RenderMesh>,
+        mesh_vertex_buffer_layouts: &mut MeshVertexBufferLayouts,
+        render_device: &RenderDevice,
+        render_queue: &RenderQueue,
+        domain: Option<bool>,
+    ) {
         let mut allocation_stage = self.slab_allocator.stage_allocation();
 
         // Loop over each mesh that was extracted this frame.
@@ -423,6 +444,7 @@ impl MeshAllocator {
             // Allocate vertex data. Note that we can only pack mesh vertex data
             // together if the platform supports it.
             let long_lived = self.long_lived_meshes.contains(mesh_id);
+            if domain.is_some_and(|domain| domain != long_lived) { continue; }
             let mut vertex_element_layout = ElementLayout::vertex(mesh_vertex_buffer_layouts, mesh);
             vertex_element_layout.long_lived = long_lived;
             if self.general_vertex_slabs_supported {
@@ -470,6 +492,7 @@ impl MeshAllocator {
 
         // Copy new mesh data in.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
+            if domain.is_some_and(|domain| self.long_lived_meshes.contains(mesh_id) != domain) { continue; }
             self.copy_mesh_vertex_data(mesh_id, mesh, render_device, render_queue);
             self.copy_mesh_index_data(mesh_id, mesh, render_device, render_queue);
             #[cfg(feature = "morph")]
