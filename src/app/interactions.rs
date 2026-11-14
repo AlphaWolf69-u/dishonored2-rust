@@ -32,7 +32,13 @@ pub(super) struct Interactions {
     pending_activation: Option<(ReadResult, Arc<crate::gameplay::player::read_note::Presentation>)>,
     item_sources: crate::assets::inventory_item::PickableSourceLease,
     pub(super) acquisitions_closed: Arc<AtomicBool>,
-    pub retire: Vec<String>,
+    retire: Vec<PendingPickup>,
+}
+
+struct PendingPickup {
+    entity: String,
+    identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent),
+    step: u8,
 }
 
 struct ReadResult {
@@ -229,6 +235,9 @@ pub(super) fn focus_and_interact(
     interactions: Option<ResMut<Interactions>>,
     world: Option<Res<super::NavigationWorld>>,
     physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    mut effects: Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
+    sources: Res<super::shadow_updates::ModelShadowSources>,
+    placements: Res<super::RenderSourcePlacements>,
     live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     camera: Query<&Transform, With<Camera3d>>,
     input: Res<super::player::PlayerInput>,
@@ -267,6 +276,35 @@ pub(super) fn focus_and_interact(
                 let Some(requests) = requests.as_deref_mut() else { warn!("Reading UI request owner is absent"); return };
                 let maximum = interactions.limits.maximum(&read.path);
                 use crate::assets::inventory_item::{PickableReadable, PickableOtherKind};
+                let portable = match &read.item.readable {
+                    Some(PickableReadable::Note(note) | PickableReadable::Other(note,_)) => note.can_be_picked_up,
+                    Some(PickableReadable::Map(map)) => map.can_be_picked_up,
+                    None => false,
+                };
+                if portable {
+                    let Some(scene) = physics.as_deref() else { return; };
+                    let Some(live) = live.as_deref() else { return; };
+                    let Some(&binding_index) = interactions.readable_by_entity.get(&read.entity) else { return; };
+                    let binding = &interactions.readable[binding_index];
+                    if interactions.parent.contains_key(&read.entity) || !binding.unsupported_pickup_components.is_empty() {
+                        warn!("document pickup requires actual bound/projectile callbacks: {} {:?}",read.entity,binding.unsupported_pickup_components);
+                        return;
+                    }
+                    if let Err(error) = scene.preflight_document_pickup(live,read.identity.1,&sources,&placements) {
+                        warn!("document pickup preflight: {error}"); return;
+                    }
+                    if let Err(error) = interactions.retire.try_reserve(1) {
+                        warn!("document pickup queue: {error}"); return;
+                    }
+                }
+                // 844bf0 notifies pickedUp before applying the inventory read
+                // result, including notes which remain in the world.
+                let (Some(effects), Some(live)) = (effects.as_deref_mut(),live.as_deref()) else { return; };
+                match effects.dispatch_picked_up(read.identity.0,true,false,live) {
+                    Ok(errors) if errors.is_empty() => {},
+                    Ok(errors) => { warn!("document pickedUp: {}",errors.join("; ")); return; },
+                    Err(error) => { warn!("document pickedUp: {error}"); return; },
+                }
                 let (accepted, portable) = match &read.item.readable {
                     Some(PickableReadable::Note(note)) => {
                         let id = if note.title.is_empty() { 0 } else { crate::assets::lang::key_id(&note.title) };
@@ -288,7 +326,7 @@ pub(super) fn focus_and_interact(
                     },
                     None => { warn!("READ_NOTE item has no presentation"); return; },
                 };
-                if accepted && portable { interactions.retire.push(read.entity); }
+                if accepted && portable { interactions.retire.push(PendingPickup { entity: read.entity, identity:read.identity, step:0 }); }
                 super::pause_menu::trace_readable_ui(|| format!("READ_NOTE activation accepted inventory={accepted} portable={portable}"));
                 requests.open.push_back(presentation);
             }
@@ -445,16 +483,34 @@ pub(super) fn sync_boxes(
 /// world stays readable even when a duplicate can no longer enter inventory.
 pub(super) fn retire_admitted_pickups(
     interactions: Option<ResMut<Interactions>>,
-    world: Option<ResMut<super::NavigationWorld>>,
+    navigation: Option<ResMut<super::NavigationWorld>>,
+    physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     placements: Res<super::RenderSourcePlacements>,
+    mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     mut retired: ResMut<super::interaction_focus::RetiredPlacements>,
+    mut sounds: MessageWriter<super::audio::SoundEvent>,
 ) {
-    let (Some(mut interactions), Some(mut world)) = (interactions, world) else { return };
-    if interactions.retire.is_empty() { return; }
-    for entity in interactions.retire.drain(..) {
-        world.0.set_owner_active(&entity, false);
-        for (index, placement) in placements.0.iter().enumerate() {
-            if placement.id == entity { retired.0.insert(index); }
+    let (Some(mut interactions),Some(mut navigation),Some(mut scene),Some(live)) =
+        (interactions,navigation,physics,live) else { return; };
+    while let Some(pending) = interactions.retire.first_mut() {
+        if live.get(pending.identity.0).is_none() { warn!("document pickup identity retired before callback"); return; }
+        match scene.begin_document_pickup(&live,pending.identity.1,&mut pending.step) {
+            Ok(Some(sound)) => {
+                // bevy_backend: the existing PlayerBody sound object is the
+                // player's Audio component host; it owns post/decode lifetime.
+                sounds.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
+                    event:sound.id,emitter:crate::gameplay::sound::Emitter::PlayerBody }));
+            },
+            Ok(None) => {},
+            Err(error) => { warn!("document pickup callback pending: {error}"); return; },
         }
+        // Project the same filter change into the existing navigation backend;
+        // keep its owner/triangles/materials rather than deleting the collider.
+        navigation.0.mask_placed_owner_filter(&pending.entity,0x0820_001f);
+        if let Err(error) = scene.finish_document_pickup(&live,pending.identity.1,&mut sources,&placements,&mut retired) {
+            warn!("document hide callback pending: {error}"); return;
+        }
+        interactions.retire.remove(0);
     }
 }

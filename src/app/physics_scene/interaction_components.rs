@@ -120,7 +120,8 @@ impl PhysicsScene {
         let entity = self.entities.get(owner.entity.ok_or("readable component is unlinked")?)
             .ok_or("readable entity slot is absent")?;
         if live.stage(entity.shared) != Some(crate::gameplay::entity_lifetime::Stage::Spawned)
-            || owner.flags & 0xf != 0xa { return Ok(None); }
+            || owner.flags & 0xf != 0xa || entity.entity_flags & 3 != 0
+            || self.pickables.get(reference.handle.slot).is_some_and(|component| component.interaction_flags & 0xa != 0) { return Ok(None); }
         Ok(Some((entity.shared, reference)))
     }
 
@@ -132,6 +133,14 @@ impl PhysicsScene {
         let item = self.pickables.get(identity.1.handle.slot).and_then(|component| component.item.as_ref())
             .ok_or("readable Pickable item lease is absent")?;
         Ok(Some((identity, item.clone())))
+    }
+}
+
+impl crate::gameplay::component_state::updates::ComponentUpdateWorld for PhysicsScene {
+    fn update_remove(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(),String> { registry.base_update_remove(handle,self) }
+    fn update_add(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(),String> { registry.base_update_add(handle,self) }
+    fn set_update_scheduled(&mut self, handle: ComponentHandle, scheduled: bool) -> Result<(),String> {
+        self.set_component_update_scheduled(handle,scheduled)
     }
 }
 

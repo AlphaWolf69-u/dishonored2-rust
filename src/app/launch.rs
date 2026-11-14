@@ -382,6 +382,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
+            super::physics_scene::rigid_actor::update_rigid_actors
+                .before(super::model_motion::publish_model_poses)
+                .run_if(super::pause_menu::game_not_paused),
+        )
+        .add_systems(
+            PostUpdate,
             super::model_motion::publish_model_poses
                 .before(bevy::transform::TransformSystems::Propagate)
                 .before(stream_visible_models)

@@ -92,6 +92,7 @@ pub struct ReadableBinding {
     pub loot: Option<Arc<crate::gameplay::loot_component::EmptyLootDefinition>>,
     pub rigid: Option<Arc<super::rigid_body::Definition>>,
     pub faction: Option<(String, crate::gameplay::component_state::declaration::DeclarationScheduling)>,
+    pub unsupported_pickup_components: Vec<String>,
 }
 
 /// 14061e1a0 lets the interaction sensor pass through a material with
@@ -172,10 +173,14 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
             let mut loot = None;
             let mut rigid = None;
             let mut faction = None;
+            let mut unsupported_pickup_components = Vec::new();
             for (slot, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
                 if !slot.starts_with("item_add[") { continue; }
                 let Some(entry) = scope(Some(value)) else { continue; };
                 let kind = components::entry_class(entry, &declarations)?;
+                if matches!(kind.as_deref(), Some("cpntprojectile" | "cpntgrenade" | "cpntmine" | "cpntstunmine")) {
+                    unsupported_pickup_components.push(kind.clone().unwrap());
+                }
                 if kind.as_deref() == Some("cpntrigidbody") {
                     if rigid.is_some() { return Err(format!("{}: multiple RigidBody components are unsupported", entity.id)); }
                     let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
@@ -253,6 +258,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                 loot,
                 rigid,
                 faction,
+                unsupported_pickup_components,
             });
         }
     }

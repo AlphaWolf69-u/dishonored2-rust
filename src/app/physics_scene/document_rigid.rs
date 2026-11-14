@@ -71,6 +71,11 @@ impl PhysicsScene {
                 world.storage.resume_disabled_component_body(&mut world.geometry, &mut events, handle, generation)?
             };
             self.rigid_bodies.get_mut(handle.slot).ok_or("placed rigid component is absent")?.creation_completed(body)?;
+            let transform = world.storage.bodies.get(body).ok_or("created rigid body absent")?.transform;
+            self.initial_rigid_frames.insert(index, crate::gameplay::reference_frame::ReferenceFrame {
+                position: [transform[3][0], transform[3][1], transform[3][2]],
+                basis: std::array::from_fn(|row| [transform[row][0], transform[row][1], transform[row][2]]),
+            });
         }
         let component = self.rigid_bodies.get_mut(handle.slot).ok_or("placed rigid component is absent")?;
         if component.base_initialize_pending() {
@@ -139,7 +144,6 @@ impl PhysicsScene {
                         Ok(component)
                     }, |_,_,_| Ok(()))?.ok_or("document rigid creation disabled")?;
             self.rigid_placements.insert(index, source_index);
-            self.initial_rigid_frames.insert(index, self.entities[index].frame.pose);
             self.declarations.insert(handle.packed(), declaration);
         }
         materials.finish_body_physics_preparation();

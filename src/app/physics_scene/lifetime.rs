@@ -89,6 +89,7 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
         while host.scene.retirement.as_ref().unwrap().retire_next < host.scene.entities.len() {
             let index = host.scene.retirement.as_ref().unwrap().retire_next;
             let entity = &host.scene.entities[index];
+            super::super::entity_graphs::retire(host.world, entity.shared)?;
             if live.retire_for_world_shutdown(entity.shared).is_none() {
                 return Err("physics managed entity remains attached during retirement".into());
             }

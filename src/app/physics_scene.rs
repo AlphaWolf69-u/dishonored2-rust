@@ -38,6 +38,8 @@ mod publication;
 mod startup;
 mod interaction_components;
 mod document_rigid;
+mod document_pickup;
+pub(super) mod rigid_actor;
 use interaction_components::UsableComponent;
 pub(super) mod lifetime;
 

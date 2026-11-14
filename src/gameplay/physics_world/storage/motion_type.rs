@@ -10,6 +10,14 @@ pub(super) struct BodyModeProgress {
 }
 
 impl WorldStorage {
+    /// c85dc0 through the same publication context as body transforms.
+    pub(crate) fn set_body_velocity<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: u32,
+        linear: [f32; 4], angular: [f32; 4], mode: i32) -> Result<bool, String> {
+        if !self.publication_idle() { return Err("body publication must finish before velocity change".into()); }
+        self.edit_bodies(geometry, events, |creation|
+            creation.world.set_velocity(id, linear, angular, mode, creation.callbacks))
+    }
     /// c90020's source singleton branch returns without splitting a motion.
     /// A real compound split must be hosted before that body can be admitted.
     pub(crate) fn preflight_keyframe_single_body(&self, id: u32) -> Result<(), String> {
