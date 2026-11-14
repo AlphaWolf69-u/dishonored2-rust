@@ -8408,3 +8408,30 @@ release, canceled interaction preparation clears pending activation, and normal
 readable close drops the movie. No builds, tests, launches or visual checks were
 performed for this narrow retirement correction; coordinated build remains with
 the integration owner.
+
+### Uncached spatial convex mass (2026-11-14)
+
+Prediction before integration: admitted spatial ConvexPolytope/Box resources
+without serialized0xf100 properties now complete the same original mass path
+instead of rejecting Initialize. Construction arenas and rounded-hull points
+retire before the principal frame returns. No persistent source/cache owner,
+per-frame work, extra archive read or GPU pass is added; this is completion
+of a missing acquisition calculation, not a measured speed or memory saving.
+
+Original cb95d0 and caf5c0 dispatch shape virtual+0xc8 when0xf100 is absent.
+Convex implementation ca38b0 calls ce1360: quantize/build a spatial hull,
+expand positive convex radius across faces/sharp edges/vertices (b8d4c0),
+rebuild, integrate signed volume and moments (b959f0/b916d0), diagonalize and
+publish the principal frame (ae04a0/aea690), then apply configured mass/density
+and inertia scale. The port recovers the existing checkpoint's native-backed
+Domain/Topology/Indices/Properties algorithms in assets::physworld::mass::convex;
+it does not import the full runtime query-hull builder or fabricate box inertia
+for a successful convex calculation. Only the original mass-failure result
+uses ca38b0's c96ab0 fallback. Invalid source/topology errors remain errors.
+
+Scope: currently admitted spatial Polytope/Box query roots. Generic ce1360's
+sphere/capsule/triangle and planar primitive dispatches belong to the separate
+query primitive owners, which this rewrite has not admitted here. Source shape
+paths are now attached to mass failures, using allocation only on error. This
+recovery has source/syntax review only; root owns the coordinated compilation
+and actual installed level publication. No tests or visible clients launched.

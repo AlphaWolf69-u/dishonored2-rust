@@ -80,9 +80,9 @@ impl crate::gameplay::physics_world::body_creation::BodyCreationGeometry for Tri
         match &shape.query_shapes.get(shape.query_shapes.root())?.geometry {
             physworld::query_geometry::QueryGeometry::Compound(_) =>
                 crate::gameplay::motion_info::calculate_compound_mass(config, shape.bounds),
-            physworld::query_geometry::QueryGeometry::Polytope(_) =>
-                Err("uncached convex shape requires its convex mass calculation owner".into()),
-        }
+            physworld::query_geometry::QueryGeometry::Polytope(polytope) =>
+                physworld::mass::convex::calculate(&polytope.vertices, polytope.radius, config, shape.bounds),
+        }.map_err(|error| format!("{}: {error}", shape.path))
     }
 }
 

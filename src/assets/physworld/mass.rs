@@ -3,6 +3,7 @@ use super::{
     float, le32, normalize_body_quaternion, parse_embedded_havok, quaternion_basis, slice,
 };
 mod bounds;
+pub(crate) mod convex;
 pub use bounds::{bounds_mass_properties, box_mass_properties, BoxMassProperties};
 #[path = "mass/tensor.rs"]
 mod tensor;
