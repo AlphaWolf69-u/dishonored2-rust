@@ -785,16 +785,26 @@ loses w. Remaining, in order:
   the installed models by examples/hull_oracle.rs). The 4x4 inverse was
   generated from 140adf2d0's instructions by a symbolic SSE evaluator;
   both hull inverses match the installed functions on 800 probe cases.
-- Convex contacts, next: SolveConvexContacts (140fbaf60) keeps one 0x120
-  shape record per stage (140fbdea0: at most 16 hull vertices re-hulled,
-  m_boundingBox replacing them by the 8 OBB corners, recentred on the new
-  centroid; +0x100 inscribed radius max(1e-5, min face distance), +0x104
-  outer radius max(inner, max |v|)); 140fbdc80 then sets the pipeline's
-  +0x30 to the inscribed and +0x34 to the outer radius (sphere stages
-  keep m_radius in both). The per-body solve 140fbb350 (2643 lines) reads
-  both WorldCollide contacts, the AngularMotion orientation, and re-queries
-  the hit bodies with the hull (140ffaaf0 / 140ffae70: convex closest
-  points and casts through the world).
+- Convex contacts ported (`havok_fx::solve_convex_contacts`):
+  SolveConvexContacts 140fbb350 matches the installed solver on 720/720
+  bodies of synthetic chunks (tests/fixtures/convex_contact_cases.txt,
+  analysis/probe_convex_contacts.py, LoadLibraryEx with TlsGetValue bound).
+  One plane or two (dynamic first): per hull vertex a contact with
+  effective mass 1/((I r x n) . (r x n) + 1), the centre point while the
+  predicted inscribed sphere is clear of the plane, friction at the
+  inscribed-sphere contact limited by the accumulated normal impulse,
+  rolling resistance 2/(5 (re/rs)^2 + 2) and spin friction about the
+  normal; the impulse iteration count (+0x68, 2) is a chunk-wide slot that
+  drops to 1 for the rest of the chunk once a body takes the single-point
+  path. Ghidra's decompile flattens SSE sums and products; every
+  association was taken from the disassembly. The shape record
+  (`ConvexShape::from_hull`, 140fbdea0 with m_boundingBox's 8 box corners
+  from 140c0d380's frame) matches on 132/132 cases
+  (tests/fixtures/convex_shape_records.txt, analysis/probe_convex_shape_records.py
+  with the imports bound and a fake Havok allocator). Stages with m_mesh
+  build the hull in the definition loader, use the convex solver, the
+  inscribed (+0x30) and outer (+0x34) radii (140fbdc80) and the hull
+  centroid as draw offset. Census 530 -> 307.
 - Collision hulls (227 declarations), decode notes: 1401df6a0 builds the hull of
   m_mesh's particle-model vertices with hkgpConvexHull (build 140b88330 ->
   140baba50 on a quantized domain 140b9c1e0; when the hull has more than 16
