@@ -357,9 +357,9 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
         let entries = child(child(&entity.fields, "edit"), "m_componentDecls");
         for (key, value) in entries.iter().filter(|(key, _)| key.starts_with("item_add[")) {
             let Some(entry) = scope(Some(value)) else { continue };
-            let cache_key = if field(entry, "inlineDecl").is_none() {
-                atom(entry, "mapComponentDecl").or_else(|| atom(entry, "inheritedDecl")).map(str::to_owned)
-            } else { None };
+            let cache_key = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                    .map(|name| format!("inherited:{name}"))).flatten());
             let (definition, scheduling) = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
                 shared.clone()
             } else {

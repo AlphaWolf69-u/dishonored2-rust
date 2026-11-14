@@ -107,4 +107,14 @@ impl PhysicsScene {
             || owner.flags & 0xf != 0xa { return Ok(None); }
         Ok(Some((entity.shared, reference)))
     }
+
+    pub(in crate::app) fn readable_item(&self, entity: &str, live: &LiveEntities)
+        -> Result<Option<((crate::gameplay::entity_lifetime::EntityId,
+            crate::gameplay::pickable_component::CheckedComponent),
+            Arc<crate::assets::inventory_item::PickableItem>)>, String> {
+        let Some(identity) = self.readable_identity(entity, live)? else { return Ok(None); };
+        let item = self.pickables.get(identity.1.handle.slot).and_then(|component| component.item.as_ref())
+            .ok_or("readable Pickable item lease is absent")?;
+        Ok(Some((identity, item.clone())))
+    }
 }

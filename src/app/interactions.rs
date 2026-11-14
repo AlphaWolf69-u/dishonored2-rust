@@ -28,7 +28,7 @@ pub(super) struct Interactions {
     parent: HashMap<String, String>,
     pub pending: Vec<PendingChange>,
     selected: Option<(bool, usize, usize)>,
-    pending_read: Option<std::sync::Mutex<bevy::tasks::Task<Result<ReadResult, String>>>>,
+    pending_read: Option<ReadResult>,
     pending_activation: Option<(ReadResult, Arc<crate::gameplay::player::read_note::Presentation>)>,
     item_sources: crate::assets::inventory_item::PickableSourceLease,
     pub(super) acquisitions_closed: Arc<AtomicBool>,
@@ -119,31 +119,21 @@ impl Interactions {
     }
 
     pub(super) fn retire_acquisition(&mut self) -> bool {
-        let Some(task) = &mut self.pending_read else { return true };
-        let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
-        if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none() {
-            return false;
-        }
         self.pending_read = None;
         true
     }
 
     pub(super) fn request_readable(&mut self, index: usize,
-        identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent)) {
-        if self.pending_read.is_some() || self.pending_activation.is_some() { return; }
+        identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent),
+        declaration: Arc<crate::assets::inventory_item::PickableItem>) {
+        if self.acquisitions_closed.load(Ordering::Acquire)
+            || self.pending_read.is_some() || self.pending_activation.is_some() { return; }
         let item = self.readable[index].item.clone();
         super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
         let entity = self.readable[index].entity.clone();
-        let catalog = self.catalog.clone();
-        let sources = self.item_sources.clone();
-        let closed = self.acquisitions_closed.clone();
-        self.pending_read = Some(std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-            if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
-            let mut sources = sources.0.lock().map_err(|_| "readable item source is poisoned")?;
-            if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
-            let declaration = sources.acquire(&catalog, &item)?;
-            Ok(ReadResult { entity, identity, path: item, item: declaration })
-        })));
+        // The admitted component already owns the exact item generation.
+        // Reacquiring here could select a different editable generation.
+        self.pending_read = Some(ReadResult { entity, identity, path: item, item: declaration });
     }
 
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> { self.limits.clone() }
@@ -304,10 +294,8 @@ pub(super) fn focus_and_interact(
             }
         }
     }
-    if let Some(task) = interactions.pending_read.as_mut() {
-        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task.get_mut().unwrap_or_else(|error| error.into_inner()))) {
-            interactions.pending_read = None;
-            match result.and_then(|read| super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation))) {
+    if let Some(read) = interactions.pending_read.take() {
+            match super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation)) {
                 Ok((read,presentation)) => {
                     if !read_is_live(&read, physics.as_deref(), live.as_deref()) { return; }
                     super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item acquired path={}", read.path));
@@ -320,7 +308,6 @@ pub(super) fn focus_and_interact(
                 },
                 Err(error) => warn!("Readable item unavailable: {error}"),
             }
-        }
     }
     let eye = camera.translation;
     let forward = camera.forward().as_vec3();
@@ -403,12 +390,12 @@ pub(super) fn focus_and_interact(
     let Some((is_readable, index, _)) = selected else { return };
     if is_readable {
         let identity = physics.as_deref().zip(live.as_deref()).and_then(|(scene, live)| {
-            match scene.readable_identity(&interactions.readable[index].entity, live) {
+            match scene.readable_item(&interactions.readable[index].entity, live) {
                 Ok(value) => value,
                 Err(error) => { warn!("Readable identity unavailable: {error}"); None }
             }
         });
-        if let Some(identity) = identity { interactions.request_readable(index, identity); }
+        if let Some((identity, item)) = identity { interactions.request_readable(index, identity, item); }
     } else {
         let changes = {
             let actor = &mut interactions.actors[index];

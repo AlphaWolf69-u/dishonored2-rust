@@ -8115,3 +8115,15 @@ NPC entity is manufactured by this resource API.
 
 Retireable trigger geometry integration: the current typed scene now checks live Option slots for trigger placements, shape IDs and query resources instead of dereferencing retired arena entries. Trigger Deinitialize destroys the real body before retiring its placement/shape lease; all existing shape indices remain stable while live. The game-only WorldStorage constructor handoff now initializes the original two GameLocal timespaces once before component initialization; acoustic worlds retain their ordinary constructor setup. This composes the separate rigid-resource and motion-owner commits. No tests/build/run or measured savings.
 Singleton transition observer handoff: PublicationSignals now owns the actual distinct world+8a0 motion_type_changed signal (c892c0), and ComponentPublicationEvents dispatches it through the same real component observer host. The prior context trait boundary rejected every request; actual empty listener lists now naturally deliver no callbacks, while registered listeners execute and retain their resumable emission cursor. This does not replace the separate transform signal or silently swallow a missing handler. Source-only integration, no tests/build/runtime or performance claim.
+
+Standalone query trees retain an optional resource-lease sidecar, including
+both children of an extra-HD compound. This keeps root/wrapper userData
+identities alive through the final query consumer even if its component has
+already retired. Source records never point back to query trees, so no cycle
+is introduced. Trigger-only trees allocate no sidecar and retain their existing
+source retirement and geometry-only diagnostic fingerprints. Uncached convex
+mass remains an explicit unsupported calculation, rather than substituting a
+compound bounding-box mass for a convex shape. Alias compounds have no copied
+0xf100 property in08c9a0 and use the existing mode-zero compound calculator.
+
+Readable item generation handoff: UI requests now borrow the admitted Pickable component's actual item Arc instead of reacquiring a declaration from another I/O task. This preserves the instantiated editable generation and removes an unnecessary task/lock/source lookup from the interaction event; item acquisition still occurs on the existing preparation worker. Closing the level clears the one pending request immediately, with no reader to join. Prediction: zero extra resource read/parse/task submission per already-admitted read request, unchanged steady-state walking path; no CPU-time claim without measurement. Map-component Usable declarations now also reuse their immutable typed record when obsolete inline siblings are normalized away, matching00c710. Source syntax/whitespace review only, no tests/build/runtime exercise.
