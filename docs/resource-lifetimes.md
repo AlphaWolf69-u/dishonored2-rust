@@ -13,29 +13,33 @@ does not regress. Backend differences must remain labelled and measured.
 
 Main `1bf3109f` includes the verified blueprint read-history lifetime fix.
 The component, scene, shape and audio-owner recovery remains isolated until
-final integration acceptance. Completed source200df5cf compiled the game/tools
-target and default library, passed scene scope/cancellation/Catalog-history
-observations, and completed paired windowless EotW/Dust/EotW acquisition and
-retirement. Shared retirement required two passes per level. These are source
-acquisition and lifetime observations, not gameplay, GPU, appearance or
-performance acceptance. The cohort exposed zero physhape headers;389ad6ff
-corrects their admission gate, and371c6435 adds hidden readable physical
-descriptors. Source371c6435 now passes compilation and paired acquisition/retirement.
-The corrected common coin path reads once instead of three times, and
-midnight projection decodes fall from65 to39 with matching recorded content.
-All36-level publication and GPU acquisition/removal remain the final acceptance
-step; no gameplay CPU or whole-process RAM gain is claimed.
+final integration acceptance. Source5302eabf compiles the game/tools target and
+default library and passes paired EotW/Dust/EotW acquisition/publication and
+retirement, independent scene scopes, read cancellation and Catalog history.
+Shared common-coin source reads change3 to1; midnight projection decoding
+changes65 to39 with matching recorded content. Retirement takes two passes
+per level rather than the recorded unbatched1697. These are resource/round
+counts, not gameplay CPU or whole-process RAM gains.
 
-The installed readable census covers876 readable instances with839 rigid
-components, including sleeping dynamic and attached bodies. Their canonical
-body/hierarchy owners now compile and pass the paired acquisition route. The
-all-level sweep has additionally exposed an unresolved managed parent name in
-Curator high-chaos after nine successful map retirements; the reference rule
-is being reconciled with the original before final acceptance. A separately recovered level-boundary modal Clear now
-releases previous Journal/reading movies; ordinary modal Close retains its
-existing semantics. These source changes and original-code provenance are
-recorded in the parity ledger. Historical observations below describe their
-original source cohorts, not the acceptance status of this pending batch.
+Both actual publication/retirement and initial GPU acquisition/removal now
+complete all36 installed variants. Every map retires its graph/hierarchy
+owners; outgoing GPU mesh/buffer/sky counts match intended common ownership.
+Final Catalog consumers, common payloads and shader-library live counts are
+zero. Strict acquisition acceptance remains open: four diagnostics expose a
+pre-existing skipped native cloth/noncloth mesh remapping step. The compiled
+products are installed; the rewrite incorrectly requests their unshipped raw
+mesh names. That source-format selection defect is being repaired from the
+original087820/087a20/088150/088c10 path before integration. Separate cloth
+simulation/rendering is not certified by a base-mesh acquisition fix.
+
+The installed raw readable census covers876 instances/839 rigid components,
+including sleeping dynamic and attached bodies. Hidden descriptor-only bodies
+keep their real physics resources without allocating color projections. The
+managed-parent resolver now follows the original null-target behavior across
+all attachment consumers, fixing four dangling readable-parent references in
+Curator/Palace. Ordinary modal Close retains its semantics; level-boundary
+Clear releases previous Journal/reading movie resources. Historical sections
+below concern their named source cohorts, not final acceptance of this batch.
 
 ## Current integrated scope (2026-11-11)
 

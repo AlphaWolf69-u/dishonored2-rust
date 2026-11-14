@@ -328,7 +328,7 @@ trailing `*` covers a family of kinds.
 | `animSet` | `assets::animation_rig::animset` | host: Catalog-owned per-declaration records coalesce cold acquisition and share immutable aliases/generated movement while consumers overlap. Rigs retain ordered leases; editable generations and in-flight loads survive purge. Dead records retire their read history after consumers release, and Catalog shutdown drops registry allocations. Working-main three-map execution created/released44 matching identities and ended with zero owner-tag bytes. Original247a40/2462b0/060180 boundaries are traced; original heap/registration-phase admission remains in the active resource-manager port, and later Midnight consumers require their authored events. No sharing saving is claimed for main's current three-rig route |
 | `animTree` | none | none: no owner yet |
 | `areaTagCollection` | none | none: no owner yet |
-| `arkCloth` | none | none: no owner yet |
+| `arkCloth` | `assets::bmd6::cloth` | host: demand-only LOD0 header projection under the Catalog Registry; registration1356d10, five-product header088740, generated identity087f50/0882e0/088460 and MD6 remapping088c10/087820/087a20/088150 are source-backed. Preload/bootstrap/map/persistent/session purge, failure sharing, overlays and cancelled publication follow the common resource owner; arkCloth is absent from the conditional heap1 promotion table142280ee0. Header bytes and checksum scratch retire after selection; ordinary generated noncloth meshes use the existing model owner. Other LOD names are validated without retention. Full Havok cloth payload, simulation and cloth-companion rendering remain unimplemented; no frozen cloth substitutes are rendered. Final coordinated compilation/acquisition verification pending. |
 | `arkTree` | none | none: no owner yet |
 | `baseModel` | `assets::bmd6::ModelSources`, `assets::entities` | host: preparation scopes own immutable decoded BMD6 identities; setup explicitly borrows live physics model sources and runtime skin/usable consumers retain their required Arcs. Final consumer drop frees model payload, with optional acquisition/release identity diagnostics. The extra process-wide weak/coalescing cache was removed: a four-map debug production comparison completed with 210 requests, 203 reads/decodes and 76 matching source/decoded path signatures in BOTH modes, with no client errors. It supplied no measured reuse. First-person render models now use the same loader instead of direct read/decode; the routed loader and removed-cache batch compiled in the release game and completed both four-map runs, with matching model content signatures. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. No CPU/RSS gain is claimed from debug duration. GPU mesh residency remains with its existing owner; complete class lifecycle parity is still partial. |
 | `blueprint` | `assets::entities::blueprint` | host: batch-owned typed child paths/transforms coalesce immutable acquisition/failure, mutable overlays bypass sharing, and definitions retire after static expansion instead of retaining unused assembly descriptors. Native1413517a0/1401c10d0/1401c1270/1401bc1f0; no installed init/common references or conditional marker-1 promotion. Verified06ec97ab: EotW/Dust/EotW placements, reads and transient descriptors unchanged; final consumer retirement clears13/10/13 successful history records. Independent Catalog scopes pass, session consumers return to0. Evidence: DH2-fx-level-lifetime/artifacts/blueprint-history-20261114-comparison.json. No gameplay CPU/GPU gain claimed |
@@ -8769,3 +8769,69 @@ and retire normally; no invented parent entity, tag rig, model or GPU upload;
 the29 real edges and three glass tags preserve their existing behavior. This
 is a missing behavior correction, with no CPU-speed or byte-saving claim.
 Compilation and final all36 production/GPU observation remain pending.
+
+
+### All36 owner retirement, source5302eabf (2026-11-14)
+
+Publication report:
+artifacts/coherent-all-level-lifetimes-20261114-20261114T201835Z-eff86fdf/result.json.
+Independent GPU report:
+artifacts/coherent-all-level-lifetimes-20261114-20261114T202921Z-4b303ca6/result.json.
+Both actual commands exit0 and complete36 begin/prepared/released phases.
+All36 graph closures and readable hierarchy retirements have zero remaining
+owners. GPU observations complete36 uploads/removals; every removal has zero
+map buffers/skies and exactly four host meshes plus intended common meshes.
+Final common host payloads and Catalog consumers are zero;67 device shader
+libraries release to zero live. These observations execute no gameplay frames,
+playback, tests or visible launch and make no gameplay CPU/RSS claim.
+
+The strict aggregate reports deliberately remain failed: four MD6 acquisition
+diagnostics expose skipped cloth-resource remapping, despite the correctly
+completed owner teardown. The required generated noncloth products do exist
+in the installed indexes. Source investigation traces the pre-existing gap
+to textual LOD selection bypassing native088c10/087820/087a20 before mesh load.
+No diagnostics have been suppressed or arbitrary file substitutions admitted;
+final acceptance waits for the source-backed format-selection fix.
+
+
+### Cloth-split MD6 selection and header ownership (2026-11-14)
+
+Source0c5a99b6 restores the prerequisite native088c10->087820/087a20 before
+1c8cf0 loads an MD6 mesh. Native088150 hashes the logical MD6 name then each
+selected-LOD compiled companion model pathname, writing1431a0 name hashes as
+little-endian32-bit words into existing10caf0/10c160 MD5. Source/setup ordering
+follows the16 native buckets1c5d60/1c89c0. Both direct acquisition and the
+admitted Rig ModelReference fast path select the actual generated noncloth
+base, using existing ModelSources and ordinary skinning. No filename scan,
+arbitrary replacement, extraction or generated disk cache is used.
+
+Native1356d10 registers arkCloth/bcloth/cloth. Its scoped metadata owner uses
+existing Catalog Registry header/bootstrap/map/persistent/session boundaries
+0607f0/05feb0/0661e0/060b60/060180. Immutable failures share their actual record;
+overlays bypass sharing; cancelled direct reads do not publish. Only a compact
+streaming prefix is read to validate five product names plus the40-byte mapping
+boundary; no Havok pack is fully decompressed or retained. The host projection
+retains only the currently consumed LOD0 product. Unused future LOD names are
+validated and discarded. The original full cloth payload/runtime is separate.
+
+Installed evidence: artifacts/md6-cloth-map-demands-20261114.json derives218
+direct map-authored MD6 names,331 inherited declarations,26 cloth-bearing local
+LOD0 layers and73 unique bcloth headers across36maps. Every derived header and
+all26 exact nocloth products exist, with zero derivation failures. The73 source
+cloth members total17682928 bytes, never retained/read whole by this projection.
+Their five-name inventory has36124 string bytes; only12311 are required for
+LOD0 selection, avoiding23813 unused string-content bytes. These are independent
+installed-name lengths, not runtime capacities, peak RAM or CPU measurements.
+Evidence: artifacts/cloth-md6-header-products-20261114.json and
+artifacts/cloth-header-projection-storage-20261114.json.
+
+Prediction before the coordinated source run: the four previous missing-raw-
+mesh diagnostics disappear, and demanded standard base geometry acquires.
+Header source loads are bounded by requested unique identities/scope; unused
+headers stay unloaded and map payloads retire. No cloth simulation state or
+extra cloth GPU objects are added. Source syntax/diff review passed; no tests
+were written/run. This fixes missing output and performs real newly-required
+acquisition; there is no startup CPU-speed claim. Separate cloth-only rendering
+explicitly reports its missing runtime rather than using an arbitrary mesh
+or applying an ordinary skeletal palette to cloth companions. Existing single
+selected LOD0/multi-mesh limitations remain explicit.

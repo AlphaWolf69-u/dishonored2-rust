@@ -7,7 +7,10 @@ use crate::{archive::Catalog, assets::resource_registry::Registry};
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct Header {
-    products: [String; 5],
+    // Host projection: current mesh consumers select LOD0 only. Validate the
+    // five native names, retaining only the requested one rather than keeping
+    // unused future-LOD strings resident with the resource registry.
+    lod_zero_product: String,
 }
 pub(crate) type Owner = Mutex<Registry<Header>>;
 fn owner(catalog: &Catalog) -> &Owner {
@@ -83,8 +86,8 @@ enum HeaderPrefix {
 //model name. That payload and the Havok pack are not retained here.
 fn header_prefix(bytes: &[u8]) -> Result<HeaderPrefix, String> {
     let mut at = 0usize;
-    let mut products: [String; 5] = Default::default();
-    for product in &mut products {
+    let mut lod_zero_product = String::new();
+    for lod in 0..5 {
         let end = at.checked_add(4).ok_or("cloth header offset overflow")?;
         let Some(length) = bytes.get(at..end) else {
             return Ok(HeaderPrefix::Need(end));
@@ -97,10 +100,12 @@ fn header_prefix(bytes: &[u8]) -> Result<HeaderPrefix, String> {
         let Some(name) = bytes.get(at..end) else {
             return Ok(HeaderPrefix::Need(end));
         };
-        *product = std::str::from_utf8(name)
+        let name = std::str::from_utf8(name)
             .map_err(|error| error.to_string())?
-            .trim_end_matches('\0')
-            .to_owned();
+            .trim_end_matches('\0');
+        if lod == 0 {
+            lod_zero_product = name.to_owned();
+        }
         at = end;
     }
     let end = at
@@ -109,7 +114,7 @@ fn header_prefix(bytes: &[u8]) -> Result<HeaderPrefix, String> {
     if end > bytes.len() {
         return Ok(HeaderPrefix::Need(end));
     }
-    Ok(HeaderPrefix::Complete(Header { products }))
+    Ok(HeaderPrefix::Complete(Header { lod_zero_product }))
 }
 
 pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8) -> Result<(), String> {
@@ -146,7 +151,7 @@ pub(crate) fn report(catalog: &Catalog, phase: &str) {
                 catalog.identity(),
                 "arkCloth",
                 phase,
-                |header| header.products.iter().map(String::capacity).sum(),
+                |header| header.lod_zero_product.capacity(),
                 String::capacity,
             );
     }
@@ -165,7 +170,7 @@ fn basename(path: &str) -> &str {
 /// None means this local mesh has no authored cloth declaration. Some is the
 /// real optional noncloth product, not a filename heuristic or LOD fallback.
 /// LOD0 is the current renderer's supported selection; other LOD companion
-/// names are held by their actual header for future consumers.
+/// names are validated and discarded until those consumers are implemented.
 pub(crate) fn select_base(
     catalog: &Catalog,
     declaration: &str,
@@ -257,9 +262,10 @@ pub(crate) fn select_base_tokens(
             setup
         );
         let header = acquire(catalog, &path, marker, cancelled)?;
-        if !header.products[0].is_empty() {
+        if !header.lod_zero_product.is_empty() {
             hash_words.extend(
-                crate::entities::declaration_name_hash(header.products[0].as_bytes()).to_le_bytes(),
+                crate::entities::declaration_name_hash(header.lod_zero_product.as_bytes())
+                    .to_le_bytes(),
             );
             companions += 1;
         }
