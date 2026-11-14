@@ -29,7 +29,7 @@ pub(in crate::app) fn discard(prepared: &mut crate::app::loading_screen::Prepare
 pub(super) fn rollback(scene: &mut PhysicsScene, live: &mut LiveEntities,
     entity_events: &mut EntityEvents) -> Result<(), String> {
     let mut registry = scene.registry.take().ok_or("preparation rollback registry absent")?;
-    let result = (|| {
+    let result: Result<(), String> = (|| {
         // Start and creation callbacks borrow the real component pool. Split
         // their cursors around that borrow, never move a component out of it.
         let mut handles: Vec<_> = scene.entities.iter().flat_map(|entity| entity.components.entries.values().iter().copied())
@@ -77,7 +77,7 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
             } else { None };
             scene_publication_events!(scene, registry, events);
             match step {
-                0 => world.storage.set_body_transform(&mut world.geometry, &mut events, body, frame, 0)?,
+                0 => { world.storage.set_body_transform(&mut world.geometry, &mut events, body, frame, 0)?; }
                 1 => world.storage.add_dynamic_body_resumable(&mut world.geometry, &mut events, body, activation)?,
                 2 => {
                     // Start can fail while its static/keyframe transition owns
