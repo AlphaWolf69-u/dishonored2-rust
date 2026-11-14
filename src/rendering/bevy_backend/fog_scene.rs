@@ -35,6 +35,11 @@ use bevy::{
 
 pub(super) fn register(app: &mut App) {
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
+        // Only the explicit offscreen diagnostic host requests scalar local
+        // pass-state projection; normal frames keep no observer payload.
+        if render.world().contains_resource::<bevy::render::renderer::ObservedSubmission>() {
+            render.init_resource::<WaterSubmissionObservation>();
+        }
         render.init_resource::<FogGpu>().add_systems(
             Core3d,
             (
@@ -173,6 +178,31 @@ struct WaterSubmission {
     underwater_active: bool,
     reported: bool,
 }
+/// Read-only projection of the actual stage-local submission state. These
+/// records describe encoding, never GPU completion; the diagnostic consumer
+/// separately waits the renderer's actual final queue submission.
+#[derive(Resource, Default)]
+struct WaterSubmissionObservation {
+    depth: Option<WaterStageObservation>,
+    colour: Option<WaterStageObservation>,
+}
+struct WaterStageObservation {
+    frame: Option<(Entity, u32)>,
+    encoded: bool,
+    failure: Option<String>,
+    colour_error: Option<String>,
+    boat_error: Option<String>,
+    underwater_error: Option<String>,
+    ocean_present: bool,
+    ocean_draws: usize,
+}
+impl WaterStageObservation {
+    fn ready(&self, expected: (Entity, u32)) -> bool {
+        self.frame == Some(expected) && self.encoded && self.failure.is_none()
+            && self.colour_error.is_none() && self.boat_error.is_none() && self.underwater_error.is_none()
+    }
+}
+
 #[derive(SystemParam)]
 struct WaterInstances<'w, 's> {
     water: Query<'w, 's, &'static super::water_scene::WaterInstance>,
@@ -317,6 +347,7 @@ struct AtmosphereParams<'w, 's> {
     context: RenderContext<'w, 's>,
     last_error: Local<'s, Option<String>>,
     water_submission: Local<'s, WaterSubmission>,
+    water_observation: Option<ResMut<'w, WaterSubmissionObservation>>,
 }
 /// The original's order (eotw capture): the unhacked depth copy, depthWater,
 /// depthAlpha with its alpha geometry, then the TLF depth gather and culls,
@@ -351,7 +382,11 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
         Stage::Prepare => "atmosphere preparation",
         Stage::Render => "atmosphere rendering",
     });
-    let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut area_bindings,mut context,mut last_error,mut water_submission}=params;
+    let AtmosphereParams {frame,resources,shared,views,skies,interiors,water_instances,clock,sampling,atlas_frame,atlas_gpu,mut capture,mut gpu,mut area_bindings,mut context,mut last_error,mut water_submission,mut water_observation}=params;
+    if let Some(observation) = water_observation.as_deref_mut() {
+        if stage == Stage::Depth { observation.depth = None; observation.colour = None; }
+        else if stage == Stage::Render { observation.colour = None; }
+    }
     let mut depth_prepared=false;
     let mut prepared_ocean = if stage == Stage::Depth {
         let live = gpu.current.as_ref().and_then(|view| view.ocean.as_ref()).is_some();
@@ -1389,6 +1424,22 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
         }
         Ok(())
     })();
+    if matches!(stage, Stage::Depth | Stage::Render) {
+        if let Some(observation) = water_observation.as_deref_mut() {
+            let ocean = gpu.current.as_ref().and_then(|view| view.ocean.as_ref());
+            let record = WaterStageObservation {
+                frame: resources.water_frame.as_ref().and_then(|frame| frame.0.as_ref())
+                    .map(|water| (water.camera, water.matrices.frame)),
+                encoded: result.is_ok(), failure: result.as_ref().err().cloned(),
+                colour_error: (stage == Stage::Render).then(|| water_submission.error.clone()).flatten(),
+                boat_error: (stage == Stage::Depth).then(|| water_submission.boat_error.clone()).flatten(),
+                underwater_error: (stage == Stage::Render).then(|| water_submission.underwater_error.clone()).flatten(),
+                ocean_present: ocean.is_some(), ocean_draws: ocean.map_or(0, |ocean| ocean.draw_count()),
+            };
+            if stage == Stage::Depth { observation.depth = Some(record); }
+            else { observation.colour = Some(record); }
+        }
+    }
     match result {
         Ok(()) => {
             if stage!=Stage::Render {
@@ -1479,8 +1530,20 @@ pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
             rows.push(format!("owner=ocean role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
         }
     }
-    let water_ready = world.get_resource::<WaterSubmission>().is_none_or(|submission| {
-        submission.error.is_none() && submission.boat_error.is_none() && submission.underwater_error.is_none()
-    });
-    (gpu.completed == Some(expected) && water_ready, rows)
+    let water_ready = match world.get_resource::<WaterSubmissionObservation>() {
+        Some(observation) => {
+            for (stage, record) in [("depth", &observation.depth), ("colour", &observation.colour)] {
+                if let Some(record) = record {
+                    rows.push(format!("owner=water stage={stage} frame={:?} encoded={} ocean_present={} ocean_draws={} culled={} failure={:?} colour_error={:?} boat_error={:?} underwater_error={:?}",
+                        record.frame, record.encoded, record.ocean_present, record.ocean_draws,
+                        record.ocean_present && record.ocean_draws == 0, record.failure, record.colour_error,
+                        record.boat_error, record.underwater_error));
+                } else { rows.push(format!("owner=water stage={stage} observation=missing")); }
+            }
+            observation.depth.as_ref().is_some_and(|record| record.ready(expected))
+                && observation.colour.as_ref().is_some_and(|record| record.ready(expected))
+        }
+        None => { rows.push("owner=water observation=missing".into()); false }
+    };
+    (gpu.completed == Some(expected) && gpu.depth_completed == Some(expected) && water_ready, rows)
 }
