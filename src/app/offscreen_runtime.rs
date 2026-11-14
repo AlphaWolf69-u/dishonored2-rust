@@ -74,12 +74,15 @@ impl Runtime {
             }
             target.enabled = enabled;
             if enabled {
-                for (entity, mut camera) in world.query::<(Entity, &mut Camera)>().iter_mut(world) {
-                    if let Some(active) = target.suspended.remove(&entity) {
-                        camera.is_active = active;
+                for (entity, (view, active)) in target.suspended.drain() {
+                    if let Ok(mut entity) = world.get_entity_mut(entity) {
+                        // Restore the exact source component, not a default view.
+                        entity.insert(view);
+                        if let Some(mut camera) = entity.get_mut::<Camera>() {
+                            camera.is_active = active;
+                        }
                     }
                 }
-                target.suspended.clear();
             }
         });
         redirect(world);
@@ -90,7 +93,7 @@ impl Runtime {
 struct Target {
     image: Handle<Image>,
     enabled: bool,
-    suspended: HashMap<Entity, bool>,
+    suspended: HashMap<Entity, (Camera3d, bool)>,
 }
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 struct ImagePresentation;
@@ -166,13 +169,26 @@ fn redirect(world: &mut World) {
         }
     }
     world.resource_scope(|world, mut target: Mut<Target>| {
-        for (entity, mut camera, mut destination) in world.query::<(Entity, &mut Camera, &mut bevy::camera::RenderTarget)>().iter_mut(world) {
+        for mut destination in world.query_filtered::<&mut bevy::camera::RenderTarget, With<Camera>>().iter_mut(world) {
             if !matches!(&*destination, bevy::camera::RenderTarget::Image(current) if current.handle.id() == image.id()) {
                 *destination = bevy::camera::RenderTarget::Image(image.clone().into());
             }
-            if !target.enabled {
-                target.suspended.entry(entity).or_insert(camera.is_active);
-                camera.is_active = false;
+        }
+        if !target.enabled {
+            // Production view publishers query Camera3d, not Camera.is_active.
+            // Removing only that exact component creates a genuine input gap;
+            // identity, transforms, projection and the remaining state survive.
+            let views = world.query_filtered::<Entity, With<Camera3d>>().iter(world).collect::<Vec<_>>();
+            for entity in views {
+                let mut entity_mut = world.entity_mut(entity);
+                let active = {
+                    let mut camera = entity_mut.get_mut::<Camera>().expect("Camera3d owns Camera");
+                    let active = camera.is_active;
+                    camera.is_active = false;
+                    active
+                };
+                let view = entity_mut.take::<Camera3d>().expect("queried Camera3d remains present");
+                target.suspended.insert(entity, (view, active));
             }
         }
     });
