@@ -4736,6 +4736,38 @@ Source/whitespace review only; no builds, tests or runtime exercise performed.
 
 ### Host archive-session teardown
 
+Ordinary rigid actor publication prediction (2026-11-14). The installed
+`140806de0` movement vtable at `141c74798` selects `140808e30` (active-body
+predicate), `140809ab0` (desired-motion route), `14080a5f0`/`14080b7c0` (body-origin
+frame/velocity publication), and `140808880` (render flags/binding predicate).
+Connect the already owned post task to the existing `140753c10` kernel for the
+admitted null-parent document bodies. Read their canonical BodyStorage and
+collision velocity payload; keep the independent entity PublishedFrame.
+Publish rigid deltas through the existing ModelPoseUpdates owner so colour,
+both shadows, model bounds/lighting and query placement share the same update.
+Expect zero new assets, mesh copies, worlds or source reads. Work is proportional
+to actual queued actors; the null-parent traversal reuses its one worker path
+instead of allocating a Vec per actor. Only changed render poses enter the
+existing upload path. Unsupported binding, desired-motion and deferred-render
+branches remain explicit admission errors, not fabricated callbacks. No measured
+performance improvement or runtime verification is claimed before integration.
+
+Recovered adapter: `physics_scene::rigid_actor` resolves each queued reference
+through the existing actor/body pool, validates the actual managed hierarchy,
+reads the canonical body transform and motion centre, and shifts the collision
+payload's requested velocities to the body origin with the existing `80b7c0`
+kernel. A detached embedded body uses its already ported BasicBody interface;
+other body classes are not substituted. The entity's previous PublishedFrame
+remains separate from the actor's current cache. Real render flags and null
+bindings select the ordinary branch, with unsupported branches rejected.
+Changed render frames produce only the existing rigid ModelPose delta; authored
+render scale/shear is preserved. The post phase advances its original two-stamp
+epoch, uses one actual host worker, and skips the physics lock for an empty
+batch. Its reusable traversal path and bounded task retire with PhysicsScene.
+The root's interaction slice owns field/admission/launch integration; this leaf
+does not claim that registration or runtime acceptance is already complete.
+Source/whitespace review only; no tests or builds were run.
+
 Rigid-body Start publication recovery prediction (2026-11-14). Original
 `140c85860` updates the existing body/motion transform and ordered observers;
 `140c8e930` publishes that same body into the broadphase and activates actual
