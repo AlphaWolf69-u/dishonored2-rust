@@ -156,16 +156,19 @@ impl OceanWaterLine {
         vertices: &Buffer,
         range: std::ops::Range<u32>,
     ) -> Result<&TextureView, String> {
+        // 2fdea0 keeps a full-view/4 viewport even when 36f8a0 reduces
+        // depthAlphaDiv2 further with r_downsampleQuality=2. Its mask is
+        // ceil(depthAlphaDiv2/2): rasterization clips to the smaller attachment.
+        // Preserve that viewport for fragment reconstruction; it is not an
+        // attachment-size constraint (wgpu-core's set_viewport agrees).
         let vp = parameters.viewport;
         if !vp.is_finite()
             || vp.x < 0.
             || vp.y < 0.
             || vp.z <= 0.
             || vp.w <= 0.
-            || vp.x + vp.z > self.texture.width() as f32
-            || vp.y + vp.w > self.texture.height() as f32
         {
-            return Err("water-line viewport exceeds its mask target".into());
+            return Err("water-line viewport is invalid".into());
         }
         self.parameters.set(parameters);
         self.parameters.write_buffer(device, queue);

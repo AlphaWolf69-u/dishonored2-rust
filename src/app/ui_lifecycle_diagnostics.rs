@@ -51,9 +51,9 @@ pub(super) struct Snapshot {
     pub live_bindings: usize,
     pub live_lists: usize,
     pub live_bitmap_maps: usize,
-    /// Weak lease observations are bounded; these are live entries in the
-    /// retained window, not a claim about every resource in the session.
+    /// Weak observations are bounded; overflow makes closure inconclusive.
     pub observation_window: usize,
+    pub weak_overflow: u64,
     pub events: Vec<String>,
 }
 
@@ -91,18 +91,19 @@ fn observe(action: impl FnOnce(&mut State)) {
         action(&mut observer.lock().unwrap_or_else(|error| error.into_inner()));
     }
 }
-fn retain<T>(entries: &mut VecDeque<Weak<T>>, value: &Arc<T>) {
+fn retain<T>(entries: &mut VecDeque<Weak<T>>, value: &Arc<T>) -> bool {
     entries.retain(|entry| entry.strong_count() != 0);
     if entries
         .iter()
         .any(|entry| entry.as_ptr() == Arc::as_ptr(value))
     {
-        return;
+        return true;
     }
     if entries.len() == HISTORY {
-        entries.pop_front();
+        return false;
     }
     entries.push_back(Arc::downgrade(value));
+    true
 }
 fn event(state: &mut State, value: String) {
     if state.events.len() == HISTORY {
@@ -251,10 +252,123 @@ pub(super) fn frame(frame: &FlashFrame) {
     observe(|state| {
         state.snapshot.published_frames += 1;
         state.snapshot.published_named_frames += u64::from(!frame.list.named_images.is_empty());
-        retain(&mut state.lists, &frame.list);
-        retain(&mut state.bitmaps, &frame.images);
+        state.snapshot.weak_overflow += u64::from(!retain(&mut state.lists, &frame.list));
+        state.snapshot.weak_overflow += u64::from(!retain(&mut state.bitmaps, &frame.images));
         for binding in frame.list.named_images.values() {
-            retain(&mut state.bindings, binding);
+            state.snapshot.weak_overflow += u64::from(!retain(&mut state.bindings, binding));
         }
     });
+}
+
+
+/// A bounded weak checkpoint of real live movie/frame ownership before a map
+/// command. These weak references survive registry history pruning without
+/// pinning the outgoing movie, image wrapper or submitted draw list.
+struct LeaseCheckpoint {
+    bindings: Vec<Weak<TextureBinding>>,
+    lists: Vec<Weak<DrawList>>,
+    bitmaps: Vec<Weak<MovieBitmaps>>,
+}
+impl LeaseCheckpoint {
+    fn live(&self) -> (usize, usize, usize) {
+        (self.bindings.iter().filter(|lease| lease.strong_count() != 0).count(),
+         self.lists.iter().filter(|lease| lease.strong_count() != 0).count(),
+         self.bitmaps.iter().filter(|lease| lease.strong_count() != 0).count())
+    }
+}
+struct Transition {
+    target: String,
+    before: Snapshot,
+    leases: LeaseCheckpoint,
+    saw_loading: bool,
+}
+/// Diagnostic orchestration only: the actual loading owner accepts every map
+/// command, and the ordinary full application owns clocks, UI, IO and rendering.
+/// No movie reply, loading acknowledgement or scene image reference is supplied.
+pub(super) struct TransitionObservation {
+    next: VecDeque<String>,
+    pending: Option<Transition>,
+    completed: usize,
+    worker_starts: Option<u64>,
+}
+impl TransitionObservation {
+    pub(super) fn new(initial: &str, middle: Option<&str>) -> Self {
+        Self {
+            next: [middle.unwrap_or("dust_p_lowchaos").to_owned(), initial.to_owned()].into(),
+            pending: None, completed: 0, worker_starts: None,
+        }
+    }
+    pub(super) fn poll(&mut self, playing: bool) -> Result<bool, String> {
+        let observer = OBSERVER.get().ok_or("UI lifecycle observation is not enabled")?;
+        // The stored counters contain no event log or strong resources. Read
+        // scalars here; clone bounded events only at the actual milestones below.
+        let now = observer.lock().unwrap_or_else(|error| error.into_inner()).snapshot.clone();
+        if let Some(expected) = self.worker_starts {
+            if now.worker_starts != expected || now.worker_exits != expected - 1 || now.worker_joins != expected - 1 {
+                return Err(format!("UI worker changed during live map transition: starts={} exits={} joins={} expected_live_starts={expected}", now.worker_starts, now.worker_exits, now.worker_joins));
+            }
+        }
+        if let Some(pending) = &mut self.pending {
+            if !playing && now.level_epochs > pending.before.level_epochs { pending.saw_loading = true; }
+            let acknowledged = now.level_epochs > pending.before.level_epochs
+                && now.modal_clears > pending.before.modal_clears
+                && now.pause_closes > pending.before.pause_closes
+                && now.loading_closes > pending.before.loading_closes;
+            if !playing || !pending.saw_loading || !acknowledged
+                || now.published_named_frames <= pending.before.published_named_frames { return Ok(false); }
+            let live = pending.leases.live();
+            if live != (0, 0, 0) { return Ok(false); }
+            self.completed += 1;
+            eprintln!("RUNTIME_UI_TRANSITION phase=replaced target={} completed={} old_live_bindings_lists_bitmaps={live:?} snapshot={:?}", pending.target, self.completed, snapshot());
+            self.pending = None;
+        }
+        if !playing { return Ok(false); }
+        let Some(target) = self.next.front() else { return Ok(self.completed == 2); };
+        let (before, leases) = {
+            let state = observer.lock().unwrap_or_else(|error| error.into_inner());
+            let leases = LeaseCheckpoint {
+                bindings: state.bindings.iter().filter(|lease| lease.strong_count() != 0).cloned().collect(),
+                lists: state.lists.iter().filter(|lease| lease.strong_count() != 0).cloned().collect(),
+                bitmaps: state.bitmaps.iter().filter(|lease| lease.strong_count() != 0).cloned().collect(),
+            };
+            (state.snapshot.clone(), leases)
+        };
+        // Observe an actual movie frame before withdrawing it; merely loading
+        // a level or constructing a movie is insufficient for this scenario.
+        if leases.live().1 == 0 || before.published_named_frames == 0 || before.pending.is_some() { return Ok(false); }
+        if before.worker_starts == 0 || before.worker_starts != before.worker_exits + 1 || before.worker_starts != before.worker_joins + 1 {
+            return Err("UI transition requires the one actual live worker".into());
+        }
+        self.worker_starts.get_or_insert(before.worker_starts);
+        eprintln!("RUNTIME_UI_TRANSITION phase=map-command target={target} old_live_bindings_lists_bitmaps={:?} snapshot={:?}", leases.live(), snapshot());
+        super::loading_screen::request_level(target.clone());
+        let target = self.next.pop_front().expect("front was present");
+        self.pending = Some(Transition { target, before, leases, saw_loading: false });
+        Ok(false)
+    }
+    pub(super) fn observe_host_drop(&self) -> Result<(), String> {
+        let final_state = snapshot().ok_or("UI lifecycle observation is absent after host drop")?;
+        eprintln!("RUNTIME_UI_TRANSITION phase=host-dropped completed={} snapshot={final_state:?}", self.completed);
+        if self.completed != 2 || self.pending.is_some() || !self.next.is_empty() {
+            return Err(format!("UI map transition sequence incomplete: completed={}", self.completed));
+        }
+        validate_host_drop()
+    }
+}
+
+/// Check actual App destruction, not merely an acknowledged AppExit request.
+/// A destructor cancellation may supply the final reply instead of the image
+/// service, so acquisition-error/reply counts are reported but not fabricated
+/// into a required successful image read during shutdown.
+pub(super) fn validate_host_drop() -> Result<(), String> {
+    let state = snapshot().ok_or("UI lifecycle observation is absent after host drop")?;
+    if state.pending.is_some() || state.requests != state.received
+        || state.worker_starts == 0
+        || state.worker_starts != state.worker_exits
+        || state.worker_starts != state.worker_joins
+        || state.worker_panics != 0 || state.movie_opens != state.movie_releases || state.weak_overflow != 0
+        || state.live_bindings != 0 || state.live_lists != 0 || state.live_bitmap_maps != 0 {
+        return Err(format!("actual UI host destruction left worker or observed movie leases: {state:?}"));
+    }
+    Ok(())
 }

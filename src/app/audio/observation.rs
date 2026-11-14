@@ -35,10 +35,11 @@ struct Consumer {
 /// App owns this resource, so its consumer joins before the Runtime's outer
 /// AudioSession/CatalogSession fences are released. Decoder/source Arcs keep
 /// their actual banks, packet readers and source owners live until that join.
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct Output {
     worker: Option<JoinHandle<()>>,
     consumer: Arc<Consumer>,
+    installed: bool,
 }
 impl Drop for Output {
     fn drop(&mut self) {
@@ -86,6 +87,9 @@ pub(in crate::app) fn enable(world: &mut World) -> Result<(), String> {
         return Err("offline audio must be enabled before output acquisition".into());
     }
     world.insert_resource(Observation::default());
+    // Session storage must precede LevelLifetime::begin. The real output is
+    // acquired later, but replacing this slot must not make it map-owned.
+    world.init_resource::<Output>();
     if world.contains_resource::<PlaybackBackend>() {
         world.insert_resource(PlaybackBackend::Observation);
     }
@@ -99,7 +103,7 @@ pub(super) fn install_output(world: &mut World, output: bevy_backend::OutputAudi
         "offline audio capability is absent"
     );
     assert!(
-        !world.contains_resource::<Output>(),
+        world.get_resource::<Output>().is_none_or(|output| !output.installed),
         "shared output already has its sole offline consumer"
     );
     attach(world);
@@ -168,7 +172,7 @@ pub(super) fn install_output(world: &mut World, output: bevy_backend::OutputAudi
             None
         }
     };
-    world.insert_resource(Output { worker, consumer });
+    world.insert_resource(Output { worker, consumer, installed: true });
 }
 
 /// Called after every actual App::update, including ExitDrain updates. The
@@ -201,7 +205,7 @@ pub(in crate::app) fn poll(world: &mut World) -> Result<(), String> {
         .get_resource::<bevy_backend::Engine>()
         .map(|engine| engine.observe_output())
         .unwrap_or_default();
-    if engine.present && !world.contains_resource::<Output>() {
+    if engine.present && world.get_resource::<Output>().is_none_or(|output| !output.installed) {
         return Err("shared audio output has no offline consumer".into());
     }
     if let Some(error) = engine.error {
@@ -573,6 +577,13 @@ pub(in crate::app) fn begin_scenario(
 }
 
 impl Scenario {
+    /// An unexpected AppExit cannot stand in for completing the active scenario.
+    pub(in crate::app) fn validate_complete(&self, world: &World) -> Result<(), String> {
+        if !matches!(self.phase, Phase::Complete) || !self.ended(world) || !self.fx_returned(world) {
+            return Err(format!("audio scenario exited before actual completion: {}", self.pending_description()));
+        }
+        Ok(())
+    }
     pub(in crate::app) fn pending_description(&self) -> String {
         format!(
             "audio {:?}: ordinary={:#x}, FX={}, accepted_ids={:?}",
@@ -798,4 +809,62 @@ pub(in crate::app) fn poll_scenario(
         _ => {}
     }
     Ok(matches!(scenario.phase, Phase::Complete))
+}
+
+
+/// Validate actual owner state after successful canonical SessionExit. This
+/// observes without pumping queues, stopping sources or retiring any identity.
+/// The retained session output and actual Menu contexts are intentionally live.
+pub(in crate::app) fn validate_shutdown(world: &mut World) -> Result<Snapshot, String> {
+    if !world.contains_resource::<Observation>() { return Err("audio shutdown observation was not enabled".into()); }
+    if let Some(output) = world.get_resource::<Output>() {
+        if let Some(error) = &output.consumer.consumed.lock().unwrap_or_else(|error| error.into_inner()).error {
+            return Err(format!("audio observation consumer failed before shutdown: {error}"));
+        }
+        if output.installed && output.worker.as_ref().is_none_or(|worker| worker.is_finished()) {
+            return Err("audio observation consumer is absent or exited before App drop".into());
+        }
+    }
+    if let Some(engine) = world.get_resource::<bevy_backend::Engine>() {
+        if engine.has_output() && world.get_resource::<Output>().is_none_or(|output| !output.installed) {
+            return Err("audio output has no actual observation consumer at shutdown".into());
+        }
+        engine.validate_level_retirement()?;
+    }
+    let menu = Emitter::Menu;
+    if let Some(pending) = world.get_resource::<PendingSounds>() {
+        if pending.0.iter().any(|queued| request_emitter(&queued.request) != menu) {
+            return Err("audio shutdown retained a non-Menu ordinary request".into());
+        }
+    }
+    if let Some(completions) = world.get_resource::<SoundCompletions>() {
+        let (_, cookies) = completions.playing.observation();
+        if cookies.iter().any(|&(object, _)| object != menu)
+            || completions.waiting.keys().chain(completions.active.keys()).any(|&(_, object)| object != menu) {
+            return Err("audio shutdown retained a non-Menu cookie or watched subscription".into());
+        }
+    }
+    if let Some(retiring) = world.get_resource::<RetiringSounds>() {
+        if retiring.0.keys().any(|&object| object != menu) {
+            return Err("audio shutdown retained a non-Menu object retirement record".into());
+        }
+    }
+    if let Some(sounds) = world.get_resource::<WorldSounds>() {
+        let sounds = sounds.lock();
+        if !sounds.queued.is_empty() || !sounds.released.is_empty() || !sounds.playing.is_empty() || !sounds.objects.is_empty() {
+            return Err("audio shutdown retained FX posts, cookies or allocated objects".into());
+        }
+    }
+    if let Some(decodes) = world.get_resource::<SoundDecodeQueue>() {
+        for (&event, job) in &decodes.0 {
+            let only_menu_waits = world.get_resource::<SoundCompletions>().is_some_and(|completions| {
+                let mut waits = completions.waiting.keys().filter(|&&(id, _)| id == event).peekable();
+                waits.peek().is_some() && waits.all(|&(_, object)| object == menu)
+            });
+            if job.clients != DecodeClient::Watched as u8 || !only_menu_waits {
+                return Err(format!("audio shutdown retained non-Menu preparation event={event:#x} clients={}", job.clients));
+            }
+        }
+    }
+    Ok(snapshot(world))
 }

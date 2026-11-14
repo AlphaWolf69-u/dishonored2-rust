@@ -141,6 +141,15 @@ fn record_window_history(
     }
 }
 impl DisplayCaptureGpu {
+    /// Diagnostic history binds the outgoing view's textures and exposure.
+    /// Release those references in the canonical render retirement before its
+    /// acknowledgement; already copied F8 staging buffers own no source view.
+    pub(super) fn release_level(world: &mut World) {
+        let Some(mut gpu) = world.get_resource_mut::<Self>() else { return; };
+        gpu.motion.release_level();
+        gpu.window_copy = None;
+    }
+
     pub(super) fn motion_enabled(&self) -> bool {
         self.motion.enabled()
     }

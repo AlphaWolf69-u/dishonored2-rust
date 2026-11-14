@@ -69,6 +69,12 @@ pub struct CameraAlphaColours {
     reference: u32,
 }
 impl CameraAlphaColours {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        visit("dof-alpha-low-colour", &self.low_colour._texture);
+        visit("dof-alpha-low-mask", &self.low_mask._texture);
+        visit("dof-alpha", &self.alpha._texture);
+    }
     pub fn new(device: &RenderDevice, config: CameraAlphaConfig) -> Result<Self, String> {
         if config.extent.contains(&0) || !(1..=2).contains(&config.reduction_shift) {
             return Err(

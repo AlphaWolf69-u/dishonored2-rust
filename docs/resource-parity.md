@@ -8980,3 +8980,43 @@ additional-role and purged-but-live FX reacquisition are currently inapplicable
 production scenarios, rather than missing runtime observations. No manual
 purge holding a diagnostic lease or invented role pairing is used to claim
 gameplay coverage. The transactional API correction remains source-proven.
+
+Runtime follow-up (2026-11-15, source batch not yet verified):
+
+- The actual pending UI reply/quit route passes at a122a2ab, tools SHA256
+  58e8a3f0fa0e22d618a890608e1e70098d701d671c83fb78c40b6efb4bf205c3.
+  Evidence: artifacts/active-resource-build-20261114T231028Z-d2085b8e/result.json.
+  One real request/reply is consumed; worker start/exit/join are each1, with
+  no pending reply or retained observed leases. No movie was published before
+  this early quit, and cancellation_wakes=0: this is reply drain and joined
+  shutdown, not proof of destructor wake or live movie replacement.
+- Actual quality switching exposed a native viewport rejection in water-line
+  rendering. Original36f8a0 allocates alpha-div2 by full-view>>quality
+  (chunk126:3243-3274);2fdea0 allocates ceil(alpha-div2/2) for its mask and
+  retains full-view/4 viewport (chunk117:2692-2693,2754-2766). Native raster
+  clipping, also permitted by wgpu-core render.rs:2713-2753, handles the smaller
+  attachment. Remove only the invented attachment-bound rejection. Prediction:
+  q2 retains240x135 mask and480x270 viewport at1920x1080; no new allocation or
+  pass, unchanged numeric sampling; actual depth/colour completion recovers.
+  The failed wave is preserved in
+  artifacts/active-resource-runtime-20261114T232049Z-d1cf8126/aborted-wave.json.
+- The offline output consumer was first inserted after LevelLifetime::begin
+  and incorrectly retired with the map. Reserve its host slot before acquisition
+  and fill that same slot later. Prediction: one actual consumer survives live
+  map replacement and joins only at App destruction; no alternate audio clock.
+  Preserve the real terminal AppExit if a diagnostic finds a post-update error.
+- Optional F8 bloom history retained texture/exposure bind groups across map
+  loading. Release that history at the existing render retirement before its
+  acknowledgement. Already copied staging owns no source view and can finish.
+  Prediction: outgoing history references disappear at this boundary; current
+  captures, passes and copied pixel contents stay unchanged.
+- Complete target visitors now include both focus histories, alpha/low scratch,
+  fog lookup/mask/visibility, water/underwater/sun and fixed world-wave history.
+  They borrow textures without pinning them or adding GPU work. Each selected
+  quality/resize sequence must complete seven existing fenced samples;120
+  CPU/shadow-ready warmup updates do not mean120 fenced GPU frames.
+- Real UI replacement, screen-water transitions and normal coarse/ocean callback
+  Drop observations are added to close the remaining production paths. All weak
+  observation tables report overflow explicitly; overflow cannot certify release.
+  No synthetic camera, readback payload, clock or acknowledgement is used. The
+  older standalone synthetic GPU examples are not run as audit evidence.

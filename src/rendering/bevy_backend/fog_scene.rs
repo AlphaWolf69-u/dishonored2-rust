@@ -1513,37 +1513,51 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
 
 /// Diagnostic projection after the real graph, never a completion producer.
 pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
-    let Some(gpu) = world.get_resource::<FogGpu>() else { return (false, vec![]); };
-    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec![]); };
+    let Some(gpu) = world.get_resource::<FogGpu>() else { return (false, vec!["readiness owner=fog input=missing".into()]); };
+    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec!["readiness owner=fog input=missing".into()]); };
     let expected = (water.camera, water.matrices.frame);
     let mut rows = vec![format!("owner=fog expected={expected:?} completed={:?}", gpu.completed)];
-    let Some(view) = &gpu.current else { return (false, rows); };
-    for (role, attachment) in [("interior", &view.fog.targets.interior), ("depth", &view.fog.targets.depth),
-        ("canvas", &view.fog.targets.canvas), ("shadow", &view.fog.targets.shadow),
-        ("world", &view.fog.targets.world), ("filtered", &view.fog.targets.filtered)] {
-        let texture = &attachment.texture;
-        rows.push(format!("owner=fog role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
-    }
+    let Some(view) = &gpu.current else { rows.push("readiness owner=fog view=missing".into()); return (false, rows); };
+    let mut visit = |role, texture: &Texture| rows.push(format!("owner=fog role={role} texture={:?} size={:?} format={:?} mips={} samples={}",
+        texture.id(), texture.size(), texture.format(), texture.mip_level_count(), texture.sample_count()));
+    view.fog.visit_owned_targets(&mut visit);
+    visit("fog-sky-cloud-mask", &view.mask.texture);
+    if let Some(owner) = &view.tiled { owner.visit_owned_targets(&mut visit); }
+    if let Some(owner) = &view.lookup { owner.visit_owned_targets(&mut visit); }
+    if let Some(owner) = &view.areas { owner.visit_owned_targets(&mut visit); }
+    if let Some(owner) = &view.water_depth { owner.visit_owned_targets(&mut visit); }
+    if let Some(owner) = &view.water_colour { owner.visit_owned_targets(&mut visit); }
+    if let Some(owner) = &view.sun_rays { owner.visit_owned_targets(&mut visit); }
+    if let Some(owner) = &view.underwater { owner.visit_owned_targets(&mut visit); }
+    // Snapshot/sky/light-scattering/boat/stencil passes have no additional
+    // target textures. Their views refer to the above or external attachments.
+
     if let Some(ocean) = &view.ocean {
         rows.push(format!("owner=ocean draws={} frame={}", ocean.draw_count(), water.matrices.frame));
-        for (role, texture) in ocean.capture_planes() {
-            rows.push(format!("owner=ocean role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
-        }
+        ocean.visit_owned_targets(&mut |role, texture| {
+            rows.push(format!("owner=ocean role={role} texture={:?} size={:?} format={:?} mips={} samples={}", texture.id(), texture.size(), texture.format(), texture.mip_level_count(), texture.sample_count()));
+        });
     }
     let water_ready = match world.get_resource::<WaterSubmissionObservation>() {
         Some(observation) => {
             for (stage, record) in [("depth", &observation.depth), ("colour", &observation.colour)] {
                 if let Some(record) = record {
+                    rows.push(format!("readiness owner=water stage={stage} matches_frame={} encoded={} ocean_present={} culled={} failure={:?} colour_error={:?} boat_error={:?} underwater_error={:?}",
+                        record.frame == Some(expected), record.encoded, record.ocean_present,
+                        record.ocean_present && record.ocean_draws == 0, record.failure,
+                        record.colour_error, record.boat_error, record.underwater_error));
                     rows.push(format!("owner=water stage={stage} frame={:?} encoded={} ocean_present={} ocean_draws={} culled={} failure={:?} colour_error={:?} boat_error={:?} underwater_error={:?}",
                         record.frame, record.encoded, record.ocean_present, record.ocean_draws,
                         record.ocean_present && record.ocean_draws == 0, record.failure, record.colour_error,
                         record.boat_error, record.underwater_error));
-                } else { rows.push(format!("owner=water stage={stage} observation=missing")); }
+                } else { rows.push(format!("readiness owner=water stage={stage} observation=missing")); }
             }
             observation.depth.as_ref().is_some_and(|record| record.ready(expected))
                 && observation.colour.as_ref().is_some_and(|record| record.ready(expected))
         }
-        None => { rows.push("owner=water observation=missing".into()); false }
+        None => { rows.push("readiness owner=water observation=missing".into()); false }
     };
+    rows.push(format!("readiness owner=fog colour_matches={} depth_matches={} water_ready={water_ready}",
+        gpu.completed == Some(expected), gpu.depth_completed == Some(expected)));
     (gpu.completed == Some(expected) && gpu.depth_completed == Some(expected) && water_ready, rows)
 }

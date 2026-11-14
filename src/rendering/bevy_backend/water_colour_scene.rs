@@ -115,6 +115,13 @@ pub struct WaterColourScene {
     comparison: Sampler,
 }
 impl WaterColourScene {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        let [(_, source), (_, colour)] = self.hdr.capture_planes();
+        visit("water-colour-source", source); visit("water-colour-hdr", colour);
+        if let Some((_, depth, _)) = &self.pyramid { visit("water-owned-depth-pyramid", depth.texture()); }
+        // shared_pyramid/opaque are borrowed views, not duplicate allocations.
+    }
     pub(super) fn draw_count(&self) -> usize {
         self.draws.len()
     }

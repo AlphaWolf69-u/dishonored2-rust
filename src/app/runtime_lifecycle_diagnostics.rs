@@ -36,6 +36,11 @@ fn quit_during_pending_ui(world: &mut World) {
 }
 
 fn record(world: &World, phase: &str) -> Result<(), String> {
+    if let Some(view) = world.get_resource::<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>()
+        .and_then(|frame| frame.0.as_ref()) {
+        eprintln!("RUNTIME_VIEW_LIFETIME phase={phase} camera={:?} frame={} position={:?} head_contact={:?}",
+            view.camera, view.matrices.frame, view.matrices.current.position, view.head_water_surface);
+    }
     if let Some(queue) = world.get_resource::<super::SceneRenderQueue>() {
         let worker = world
             .get_resource::<TextureReadWorker>()
@@ -73,6 +78,7 @@ pub fn inspect_runtime_lifecycles(
             | "fx"
             | "audio"
             | "ui-exit"
+            | "ui-transition"
             | "read-exit"
             | "exit-worker"
             | "exit-published"
@@ -82,6 +88,10 @@ pub fn inspect_runtime_lifecycles(
     }
     if mode == "exit-reading" && !cfg!(feature = "debug_allocations") {
         return Err("active texture-read observation requires debug_allocations counters".into());
+    }
+    if std::env::var("DH2_DEBUG_QUALITY_RESIDENCY").as_deref() == Ok("1")
+        && std::env::var("DH2_DEBUG_RESIZE_RESIDENCY").as_deref() == Ok("1") {
+        return Err("quality and resize observations must run separately".into());
     }
     for (selected, control) in [
         ("quality", "DH2_DEBUG_QUALITY_RESIDENCY"),
@@ -150,13 +160,21 @@ pub fn inspect_runtime_lifecycles(
     let mut fx = None;
     let mut audio = None;
     let mut readable = None;
+    let mut ui_transition = (mode == "ui-transition").then(||
+        super::ui_lifecycle_diagnostics::TransitionObservation::new(level, args.get(2).map(String::as_str)));
     let mut last_frame = 0;
+    let mut first_stream_position = None;
+    let mut stream_moved = false;
     let mut failure = None;
     loop {
         match runtime.step() {
             Ok(Some(exit)) => {
                 if exit.is_error() {
                     failure.get_or_insert_with(|| format!("runtime emitted {exit:?}"));
+                }
+                if matches!(mode.as_str(), "quality" | "resize")
+                    && !super::resource_diagnostics::sequence_completed(runtime.app.world(), mode) {
+                    failure.get_or_insert_with(|| format!("runtime exited before the selected {mode} sequence completed seven actual submissions"));
                 }
                 record(runtime.app.world(), "shutdown")?;
                 if let Some(observation) = fx.as_ref() {
@@ -165,10 +183,20 @@ pub fn inspect_runtime_lifecycles(
                         runtime.app.world(),
                     )?;
                 }
-                eprintln!(
-                    "RUNTIME_AUDIO_LIFETIME phase=shutdown snapshot={:?}",
-                    super::audio::observation::snapshot(runtime.app.world_mut())
-                );
+                if mode == "audio" {
+                    match audio.as_ref() {
+                        Some(scenario) => {
+                            if let Err(error) = scenario.validate_complete(runtime.app.world()) {
+                                failure.get_or_insert(error);
+                            }
+                        }
+                        None => { failure.get_or_insert_with(|| "audio scenario exited before it began".into()); }
+                    }
+                }
+                match super::audio::observation::validate_shutdown(runtime.app.world_mut()) {
+                    Ok(snapshot) => eprintln!("RUNTIME_AUDIO_LIFETIME phase=shutdown validated=true snapshot={snapshot:?}"),
+                    Err(error) => { failure.get_or_insert(error); }
+                }
                 break;
             }
             Ok(None) => {}
@@ -198,6 +226,9 @@ pub fn inspect_runtime_lifecycles(
             let progress = (|| -> Result<bool, String> {
                 let mut complete = false;
                 match mode.as_str() {
+                    "ui-transition" => {
+                        complete = ui_transition.as_mut().expect("UI transition mode owner").poll(playing)?;
+                    }
                     "fx" if playing => {
                         if fx.is_none() {
                             fx = Some(super::fx_lifecycle_diagnostics::Observation::begin(
@@ -258,6 +289,13 @@ pub fn inspect_runtime_lifecycles(
                         }
                     }
                     "streaming" if playing => {
+                        if let Some(view) = runtime.app.world()
+                            .get_resource::<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>()
+                            .and_then(|frame| frame.0.as_ref()) {
+                            let position = view.matrices.current.position;
+                            let first = first_stream_position.get_or_insert(position);
+                            stream_moved |= *first != position;
+                        }
                         let frame = runtime
                             .app
                             .world()
@@ -269,6 +307,9 @@ pub fn inspect_runtime_lifecycles(
                         }
                         complete = playing_since
                             .is_some_and(|time| time.elapsed().as_secs_f64() >= stream_seconds);
+                        if complete && !stream_moved {
+                            return Err("saved streaming replay never moved the actual published camera".into());
+                        }
                     }
                     "exit-worker" => {
                         complete = super::loading_screen::observe_exit_progress(runtime.app.world())
@@ -323,6 +364,18 @@ pub fn inspect_runtime_lifecycles(
         });
     }
     drop(runtime);
+    let readbacks = crate::rendering::bevy_backend::readback_lifecycle::snapshot();
+    eprintln!("RUNTIME_READBACK_LIFETIME phase=host-dropped snapshot={readbacks:?}");
+    if readbacks.enabled && (readbacks.live_owner_states != 0 || readbacks.live_retired_states != 0
+        || readbacks.overflow != 0 || readbacks.coarse.created != readbacks.coarse.dropped
+        || readbacks.ocean.created != readbacks.ocean.dropped) {
+        failure.get_or_insert_with(|| "actual readback owners or callbacks survived App destruction, or observation overflowed".into());
+    }
+    if let Some(observation) = ui_transition {
+        if let Err(error) = observation.observe_host_drop() { failure.get_or_insert(error); }
+    } else if let Err(error) = super::ui_lifecycle_diagnostics::validate_host_drop() {
+        failure.get_or_insert(error);
+    }
     eprintln!(
         "RUNTIME_UI_RETIREMENT phase=host-dropped snapshot={:?}",
         super::ui_lifecycle_diagnostics::snapshot()

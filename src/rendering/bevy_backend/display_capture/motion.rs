@@ -24,6 +24,12 @@ impl Default for MotionCapture {
     }
 }
 impl MotionCapture {
+    pub(super) fn release_level(&mut self) {
+        // History owns cached texture/exposure bind groups. A pending accepted
+        // snapshot has its own copied staging resource and can finish normally.
+        self.history = None;
+    }
+
     pub(super) fn enabled(&self) -> bool {
         self.enabled
     }

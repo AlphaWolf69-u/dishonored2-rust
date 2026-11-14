@@ -41,6 +41,8 @@ impl ReadbackSlot {
 impl Drop for ReadbackSlot {
     fn drop(&mut self) {
         let state = std::mem::take(&mut *self.mapped.lock().unwrap_or_else(|error| error.into_inner()));
+        super::super::readback_lifecycle::owner_dropped(super::super::readback_lifecycle::Kind::OceanHeight,&self.mapped,
+            matches!(state,MapState::Pending),matches!(state,MapState::Ready(_)));
         if matches!(state, MapState::Pending | MapState::Ready(Ok(()))) {
             self.buffer.unmap();
         }
@@ -64,7 +66,11 @@ impl OceanQueryReadbacks {
                 encoded: false,
                 wait: None,
                 completed: Vec::with_capacity(OCEAN_QUERY_CAPACITY),
-                mapped: Arc::default(),
+                mapped: {
+                    let mapped: Arc<Mutex<MapState>>=Arc::default();
+                    super::super::readback_lifecycle::register(super::super::readback_lifecycle::Kind::OceanHeight,&mapped);
+                    mapped
+                },
                 count: 0,
             }),
         }
@@ -190,9 +196,11 @@ impl OceanQueryReadbacks {
             *state = MapState::Pending;
             drop(state);
             let state = slot.mapped.clone();
+            super::super::readback_lifecycle::map_started(super::super::readback_lifecycle::Kind::OceanHeight,&state);
             slot.buffer
                 .slice(..)
                 .map_async(MapMode::Read, move |result| {
+                    super::super::readback_lifecycle::callback_completed(super::super::readback_lifecycle::Kind::OceanHeight,&state,result.is_ok());
                     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
                     if matches!(*state, MapState::Pending) {
                         *state = MapState::Ready(result);

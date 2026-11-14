@@ -42,6 +42,15 @@ fn words(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
 }
 
 impl OceanWaves {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        // Fixed-resolution world history intentionally survives viewport resize.
+        visit("world-history-displacement-0", self.surfaces.displacement(0));
+        visit("world-history-displacement-1", self.surfaces.displacement(1));
+        visit("world-history-gradients", self.surfaces.gradients());
+        visit("world-history-foam", self.foam.texture());
+        visit("world-history-collision-height", self.collision.texture());
+    }
     pub fn new(
         device: &RenderDevice,
         queue: &RenderQueue,

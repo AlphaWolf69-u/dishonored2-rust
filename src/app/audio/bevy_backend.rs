@@ -111,6 +111,33 @@ impl Engine {
         }
     }
 
+    /// Read-only acceptance at the canonical level-retired boundary. Menu
+    /// contexts belong to the session; exempt only work actually owned by Menu.
+    pub(super) fn validate_level_retirement(&self) -> Result<(), String> {
+        let Some(shared) = &self.shared else { return Ok(()) };
+        let shared = shared.lock().map_err(|_| "audio output owner is poisoned")?;
+        if shared.failed { return Err(format!("audio output failed: {:?}", shared.error)); }
+        let menu = crate::gameplay::sound::Emitter::Menu;
+        let menu_control = |control: &Arc<Control>| shared.voices.iter()
+            .any(|voice| Arc::ptr_eq(&voice.control, control) && voice.audio.emitter() == menu);
+        let voices = shared.voices.iter().filter(|voice| voice.audio.emitter() != menu).count();
+        let fallbacks = shared.fallbacks.iter().filter(|voice| voice.emitter != menu).count();
+        let actions = shared.pending_actions.iter().filter(|action| action.emitter != menu).count();
+        let plays = shared.pending_plays.iter().filter(|play| !menu_control(&play.control)).count();
+        let due = shared.due.iter().filter(|due| match due {
+            Due::Action(action) => action.emitter != menu,
+            Due::Retire(retire) => retire.emitter != menu,
+            Due::Play(play) => !menu_control(&play.control),
+        }).count();
+        let retiring = shared.retiring_objects.iter().filter(|&&object| object != menu).count();
+        let voice_objects = shared.object_voices.keys().filter(|&&object| object != menu).count();
+        let idle = shared.idle_retirements.iter().filter(|&&object| object != menu).count();
+        if voices + fallbacks + actions + plays + due + retiring + voice_objects + idle != 0 {
+            return Err(format!("audio level output retained non-Menu owners: voices={voices} fallbacks={fallbacks} actions={actions} plays={plays} due={due} retiring={retiring} voice_objects={voice_objects} idle={idle}"));
+        }
+        Ok(())
+    }
+
     pub fn retain_nodes(&self, actors: &std::collections::HashSet<u32>) {
         let Some(shared) = &self.shared else { return };
         let shared = shared.lock().unwrap_or_else(|e| e.into_inner());

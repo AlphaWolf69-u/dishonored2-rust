@@ -10,6 +10,9 @@ pub(super) struct TargetObservation(std::sync::Arc<std::sync::Mutex<TargetState>
 struct TargetState {
     request: Option<(&'static str, usize)>,
     ready: bool,
+    completed_sequence: Option<&'static str>,
+    pending_signature: Vec<String>,
+    pending_transitions: usize,
     rows: Vec<String>,
     submitted: Option<bevy::render::render_resource::PollType>,
 }
@@ -26,6 +29,19 @@ pub(super) fn install_offscreen(app: &mut App) {
         .add_systems(bevy::render::Render, observe_submitted_targets.in_set(bevy::render::RenderSystems::Cleanup));
 }
 
+pub(super) fn sequence_completed(world: &World, kind: &str) -> bool {
+    world.get_resource::<TargetObservation>().is_some_and(|observation| {
+        observation.0.lock().unwrap().completed_sequence == Some(kind)
+    })
+}
+fn mark_sequence_completed(observation: Option<&TargetObservation>, kind: &'static str, samples: usize) {
+    // Called only after the seventh actual sampled submission was fenced.
+    if let Some(observation) = observation {
+        assert_eq!(samples, 7, "diagnostic sequence must contain seven actual samples");
+        observation.0.lock().unwrap().completed_sequence = Some(kind);
+    }
+}
+
 fn observe_submitted_targets(world: &mut World) {
     let observation = world.resource::<TargetObservation>().clone();
     let mut state = observation.0.lock().unwrap();
@@ -36,6 +52,23 @@ fn observe_submitted_targets(world: &mut World) {
     state.rows = rows;
     state.ready = fog_ready && camera_ready;
     state.submitted = world.resource::<bevy::render::renderer::ObservedSubmission>().latest();
+    // Status rows contain booleans/errors, never changing frame or texture IDs.
+    // Keep the first eight distinct transitions, plus a full timeout snapshot.
+    let mut signature: Vec<String> = state.rows.iter()
+        .filter(|row| row.starts_with("readiness ")).cloned().collect();
+    signature.push(format!("readiness submission present={}", state.submitted.is_some()));
+    if !state.ready && signature != state.pending_signature {
+        let (kind, sample) = state.request.unwrap();
+        if state.pending_transitions < 8 {
+            for row in &signature {
+                eprintln!("MEMORY {kind} target pending: sample={sample} {row}");
+            }
+        } else if state.pending_transitions == 8 {
+            eprintln!("MEMORY {kind} target pending: sample={sample} further_transitions_suppressed=true");
+        }
+        state.pending_transitions += 1;
+        state.pending_signature = signature;
+    }
 }
 
 fn submitted_targets_ready(observation: Option<&TargetObservation>, device: &RenderDevice,
@@ -44,6 +77,8 @@ fn submitted_targets_ready(observation: Option<&TargetObservation>, device: &Ren
     let mut state = observation.0.lock().unwrap();
     if state.request != Some((kind, sample)) {
         state.request = Some((kind, sample));
+        state.pending_signature.clear();
+        state.pending_transitions = 0;
         state.ready = false;
         state.submitted = None;
         return false;
@@ -59,6 +94,19 @@ fn submitted_targets_ready(observation: Option<&TargetObservation>, device: &Ren
     eprintln!("MEMORY {kind} actual submission completed: sample={sample}");
     state.request = None;
     true
+}
+
+fn report_target_timeout(observation: Option<&TargetObservation>, kind: &str, sample: usize) {
+    let Some(observation) = observation else {
+        eprintln!("MEMORY {kind} target timeout: sample={sample} observer=missing");
+        return;
+    };
+    let state = observation.0.lock().unwrap();
+    eprintln!("MEMORY {kind} target timeout: sample={sample} request={:?} ready={} submission_present={} transitions={}",
+        state.request, state.ready, state.submitted.is_some(), state.pending_transitions);
+    for row in &state.rows {
+        eprintln!("MEMORY {kind} target timeout row: sample={sample} {row}");
+    }
 }
 
 #[derive(Default)]
@@ -88,6 +136,7 @@ pub(super) fn observe_resize(
             "MEMORY resize observation incomplete: step={} frames={}",
             sequence.step, sequence.frames
         );
+        report_target_timeout(targets.as_deref(), "resize", sequence.step);
         exit.write(AppExit::error());
         return;
     }
@@ -148,6 +197,7 @@ pub(super) fn observe_resize(
     if let Some(next) = sizes.get(sequence.step) {
         window.resolution.set_physical_resolution(next.x, next.y);
     } else {
+        mark_sequence_completed(targets.as_deref(), "resize", sequence.step);
         eprintln!("MEMORY resize sequence complete");
         exit.write(AppExit::Success);
     }
@@ -231,7 +281,10 @@ impl QualitySequence {
 }
 
 /// Fixed-size A/B/C/A/B/C/A observation through the existing live Console and
-/// owner replacement paths. Values are valid native CVar options (511a70,
+/// owner replacement paths. Each sample warms for 120 CPU/shadow-ready updates,
+/// then observes the actual current render targets and fences ONE submitted
+/// GPU frame. This is not 120 blocking waits or 120 verified ocean submissions.
+/// Values are valid native CVar options (511a70,
 /// 50ff40); this never edits a menu, gameplay state or saved configuration.
 pub(super) fn observe_quality(
     time: Res<Time<Real>>,
@@ -257,6 +310,7 @@ pub(super) fn observe_quality(
             "MEMORY quality observation incomplete: step={} frames={}",
             sequence.step, sequence.frames
         );
+        report_target_timeout(targets.as_deref(), "quality", sequence.step);
         sequence.restore();
         exit.write(AppExit::error());
         return;
@@ -383,6 +437,7 @@ pub(super) fn observe_quality(
         });
     } else {
         sequence.restore();
+        mark_sequence_completed(targets.as_deref(), "quality", sequence.step);
         eprintln!("MEMORY quality sequence complete");
         exit.write(AppExit::Success);
     }

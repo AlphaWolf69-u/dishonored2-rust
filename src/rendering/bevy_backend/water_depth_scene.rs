@@ -33,6 +33,14 @@ pub struct WaterDepthScene {
     volume_geometry: [super::water_depth_meshes::WaterDepthMeshes;2],
 }
 impl WaterDepthScene {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        visit("water-depth", &self.water.texture);
+        visit("alpha-depth-full", &self.alpha.full);
+        visit("alpha-depth-reduced", &self.alpha.reduced);
+        visit("water-motion", &self._motion);
+        // Boat and volume stencil passes borrow these attachments.
+    }
     pub fn new(
         device: &RenderDevice,
         pipelines: &TlfPipelines,

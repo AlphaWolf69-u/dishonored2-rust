@@ -18,6 +18,10 @@ pub struct RayVisibilityFilter {
     radius: Option<u32>,
 }
 impl RayVisibilityFilter {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(in crate::rendering::bevy_backend) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        visit("fog-ray-visibility-scratch", &self._scratch);
+    }
     pub fn new(device: &RenderDevice, extent: UVec2) -> Self {
         let scratch = device.create_texture(&TextureDescriptor {
             label: Some("ray visibility scratch"),

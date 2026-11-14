@@ -14,6 +14,7 @@ pub(crate) struct Runtime {
     pub(crate) app: App,
     _audio: super::audio::AudioSession,
     _catalog: super::launch::CatalogSession,
+    terminal: Option<AppExit>,
 }
 impl Runtime {
     pub(super) fn new(
@@ -25,6 +26,7 @@ impl Runtime {
             app,
             _audio: audio,
             _catalog: catalog,
+            terminal: None,
         }
     }
     pub(crate) fn open(
@@ -48,14 +50,20 @@ impl Runtime {
         Ok(runtime)
     }
     pub(crate) fn step(&mut self) -> Result<Option<AppExit>, String> {
+        if self.terminal.is_some() {
+            return Ok(self.terminal.clone());
+        }
         redirect(self.app.world_mut());
         assert_offscreen(self.app.world_mut());
         // Real Time<Real>, gameplay delta, rendering, async mappings and the
         // ordinary ExitDrain all advance exactly once through App::update.
         self.app.update();
+        // Keep the actual terminal acknowledgement even if the observation
+        // below finds an error. A subsequent update must not age its message out.
+        self.terminal = self.app.should_exit();
         super::audio::observation::poll(self.app.world_mut())?;
         assert_offscreen(self.app.world_mut());
-        Ok(self.app.should_exit())
+        Ok(self.terminal.clone())
     }
     pub(crate) fn playing(&mut self) -> Result<bool, String> {
         self.app

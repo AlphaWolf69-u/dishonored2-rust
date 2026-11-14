@@ -82,11 +82,19 @@ impl FxSimulation {
         (instances, pending, self.particle_systems.allocated_count(), sounds, decals)
     }
 
+    pub(crate) fn observe_screen_fx(&self) -> super::screen_effects::ScreenLifecycleSnapshot {
+        self.screen_state.lifecycle_snapshot()
+    }
+
     /// End the player chains, then retire the world FX manager (199df0).
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        let trace = super::world_effects::trace_lifecycle();
+        if trace { eprintln!("SCREEN_FX_LIFETIME phase=shutdown-begin snapshot={:?} shared_particle_slots={}", self.observe_screen_fx(), self.particle_systems.allocated_count()); }
         let screen = self.screen_state.shutdown(&mut self.particle_systems);
         let world = self.world_particles.shutdown(&mut self.particle_systems);
-        screen.and(world)
+        let result = screen.and(world);
+        if trace { eprintln!("SCREEN_FX_LIFETIME phase=shutdown-end ok={} snapshot={:?} shared_particle_slots={}", result.is_ok(), self.observe_screen_fx(), self.particle_systems.allocated_count()); }
+        result
     }
 }
 
@@ -762,13 +770,16 @@ pub(crate) fn simulate_effects(
     mut world_error: Local<Option<String>>,
     mut decal_error: Local<Option<String>>,
 ) {
+    let trace = super::world_effects::trace_lifecycle();
+    if trace && (water.0.is_none() || sources.0.is_none()) {
+        eprintln!("SCREEN_FX_LIFETIME phase=input-gap water_present={} sources_present={} snapshot={:?}", water.0.is_some(), sources.0.is_some(), simulation.as_ref().map(|owner| owner.observe_screen_fx()));
+    }
     let (Some(water), Some(sources), Some(mut simulation)) = (water.0.as_ref(), sources.0.as_ref(), simulation) else {
         // A missing view withdraws the draw data. LevelLifetime owns the
         // simulation and retires it after the outgoing GPU publication.
         published.0 = None;
         return;
     };
-    let trace = super::world_effects::trace_lifecycle();
     let started = trace.then(std::time::Instant::now);
     let cycles = if trace { crate::loading::thread_cycles() } else { None };
     let (surface, prepared_ocean) = fx.swimming_surface.fx_inputs();
@@ -787,8 +798,19 @@ pub(crate) fn simulate_effects(
         ],
     };
     let FxSimulation { screen_state, particle_systems, .. } = &mut *simulation;
+    // Reuse the existing opt-in lifecycle trace gate. With tracing disabled
+    // there are no new snapshots, allocations, counters or frame systems.
+    let screen_before = trace.then(|| screen_state.lifecycle_snapshot());
     let screen = screen_state.advance(sources, particle_systems, water.matrices.frame,
         water.delta_seconds, underwater, camera_frame);
+    if let Some(before) = screen_before {
+        let after = screen_state.lifecycle_snapshot();
+        if before.ownership_changed(after) || screen.is_err() {
+            let phase = if before.underwater != after.underwater { "transition" } else { "tail-change" };
+            eprintln!("SCREEN_FX_LIFETIME phase={phase} ok={} input_frame={} camera_z={} contact_plane={:?} completed_head={:?} selected_head={head:?} input_underwater={underwater} delta={} before={before:?} after={after:?}",
+                screen.is_ok(), water.matrices.frame, water.matrices.current.position[2], water.head_water_surface, surface.and_then(|surface| surface.head), water.delta_seconds);
+        }
+    }
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
         // The frame retains the authoritative shared query owner. Hold its
@@ -1132,16 +1154,17 @@ fn render_camera<const PREPARE_ALPHA: bool>(
 
 /// Scalar target provenance only, inspected after ordinary graph execution.
 pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
-    let Some(gpu) = world.get_resource::<CameraGpu>() else { return (false, vec![]); };
-    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec![]); };
+    let Some(gpu) = world.get_resource::<CameraGpu>() else { return (false, vec!["readiness owner=camera input=missing".into()]); };
+    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec!["readiness owner=camera input=missing".into()]); };
     let skipped = world.get_resource::<super::display_scene::DisplaySceneFrame>().and_then(|frame| frame.0.as_ref())
         .and_then(|frame| frame.lens.as_ref()).is_some_and(|lens| lens.settings.skip_post_process);
     let expected = (water.camera, water.matrices.frame);
     let mut rows = vec![format!("owner=camera expected={expected:?} completed={:?} skipped={skipped}", gpu.completed)];
     if let Some((camera, view)) = &gpu.current {
-        for (role, texture) in view.capture_planes() {
-            rows.push(format!("owner=camera camera={camera:?} role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
-        }
+        view.visit_owned_targets(&mut |role, texture| {
+            rows.push(format!("owner=camera camera={camera:?} role={role} texture={:?} size={:?} format={:?} mips={} samples={}", texture.id(), texture.size(), texture.format(), texture.mip_level_count(), texture.sample_count()));
+        });
     }
+    rows.push(format!("readiness owner=camera completed_matches={} skipped={skipped}", gpu.completed == Some(expected)));
     (skipped || gpu.completed == Some(expected), rows)
 }

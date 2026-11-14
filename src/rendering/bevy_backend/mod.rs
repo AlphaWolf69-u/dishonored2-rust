@@ -42,6 +42,7 @@ pub(crate) fn release_level(world: &mut bevy::prelude::World) {
     camera_scene::release_level(world);
     fog_scene::FogGpu::release_level(world);
     display_scene::release_level(world);
+    display_capture::DisplayCaptureGpu::release_level(world);
     auto_exposure::release_level(world);
     alpha_depth_scene::AlphaGpu::release_level(world);
     coarse_depth::CoarseDepthGpu::release_level(world);
@@ -56,6 +57,8 @@ pub(crate) fn release_level(world: &mut bevy::prelude::World) {
         draws.bind_groups.clear();
     }
 }
+#[cfg(feature = "game")]
+pub(crate) mod readback_lifecycle;
 #[cfg(feature = "game")]
 pub mod camera_alpha_colours;
 #[cfg(feature = "game")]

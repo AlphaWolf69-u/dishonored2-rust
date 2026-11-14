@@ -137,6 +137,14 @@ pub struct UnderwaterScatteringPass {
     comparison: Sampler,
 }
 impl UnderwaterScatteringPass {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        let [(_, source), (_, colour)] = self.hdr.capture_planes();
+        visit("underwater-source", source); visit("underwater-hdr", colour);
+        if let Some(visibility) = &self.visibility { visit("underwater-ray-visibility", &visibility.texture); }
+        if let Some((_, depth, _)) = &self.depth { visit("underwater-depth-pyramid", depth.texture()); }
+        // opaque/stencil are borrowed view leases; caustics are source images.
+    }
     pub fn new(
         device: &RenderDevice,
         queue: &RenderQueue,

@@ -381,11 +381,12 @@ pub struct CoarseDepthReadback {
 impl Drop for CoarseDepthReadback {
     fn drop(&mut self) {
         for slot in &self.slots {
-            let mapping = {
+            let (mapping, ready) = {
                 let mut cpu = slot.cpu.lock().unwrap_or_else(|error| error.into_inner());
                 cpu.generation = cpu.generation.wrapping_add(1);
-                std::mem::replace(&mut cpu.mapping, false)
+                (std::mem::replace(&mut cpu.mapping, false),cpu.ready)
             };
+            super::readback_lifecycle::owner_dropped(super::readback_lifecycle::Kind::CoarseDepth,&slot.cpu,mapping,ready);
             if mapping {
                 slot.buffer.unmap();
             }
@@ -415,13 +416,16 @@ impl CoarseDepthReadback {
                     usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
-                cpu: Arc::new(Mutex::new(CpuSlot {
+                cpu: { let cpu=Arc::new(Mutex::new(CpuSlot {
                     generation: 0,
                     mapping: false,
                     ready: false,
                     pixels: Box::new([[0.0; 2]; 4096]),
                     error: None,
-                })),
+                }));
+                    super::readback_lifecycle::register(super::readback_lifecycle::Kind::CoarseDepth,&cpu);
+                    cpu
+                },
                 metadata: None,
                 recorded: false,
             }),
@@ -580,9 +584,11 @@ impl CoarseDepthReadback {
                 state.generation
             };
             let buffer = slot.buffer.clone();
+            super::readback_lifecycle::map_started(super::readback_lifecycle::Kind::CoarseDepth,&cpu);
             slot.buffer
                 .slice(..)
                 .map_async(MapMode::Read, move |result| {
+                    super::readback_lifecycle::callback_completed(super::readback_lifecycle::Kind::CoarseDepth,&cpu,result.is_ok());
                     let Ok(mut cpu) = cpu.lock() else {
                         return;
                     };
