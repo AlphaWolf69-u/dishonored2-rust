@@ -8563,3 +8563,22 @@ motion_mass::recompute_motion_mass (c90a90). No CPU/memory saving is claimed.
 Compilation and installed publication/retirement belong to the coherent batch.
 
 Convex mass source completion: the first coherent compiler report51119ad4 found two references to the missing shared midpoint-pivot helper. Restore the already source-backed checkpoint sorting primitive (bace30/b97e70), preserving equal-key swaps used by hull topology and face-area order; the existing idLib sorter remains unchanged. This repairs a missing dependency of the recovered mass calculator, with no new frame work, allocation or algorithm substitution.
+
+### Playback backend capability at acquisition (2026-11-14)
+
+Source4fe3d1dd compiled both targets and passed scene scope/cancellation/history
+observations. Actual Edge of the World publication reached retirement, where
+the outputless observer correctly rejected an accidentally created mixer.
+The source preparation path had built OutputAudio/DSP state even though its
+App deliberately had no Bevy AudioPlugin and therefore no decoder consumer.
+
+The existing audio owner now records that host capability at App initialization
+and carries it with AudioPreparation. Installed bank/event/mix acquisition
+still uses the same route; OutputAudio and its mixer are acquired only when
+a playback backend exists. Game Apps keep their existing enabled path. This
+is a host backend boundary, not an original sound-format change or a diagnostic
+retirement bypass: the actual FIFO retires objects through the existing
+no-output branch, without fake acknowledgements or advancing an audio clock.
+Prediction: no normal game output/frame work changes; source-only acquisition
+avoids unused DSP/output objects and can complete its real teardown. No CPU,
+RAM or GPU saving for gameplay is claimed. Coherent validation follows.

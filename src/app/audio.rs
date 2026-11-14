@@ -339,6 +339,11 @@ struct AudioTarget {
 pub struct SoundPlugin;
 
 pub(super) struct AudioAssetsPlugin;
+
+/// Host capability: source acquisition also runs without AudioPlugin. Such
+/// Apps must not create an output mixer with no playback consumer.
+#[derive(Resource)]
+struct PlaybackBackend(bool);
 impl Plugin for AudioAssetsPlugin {
     fn build(&self, app: &mut App) {
         app.add_audio_source::<graph::ScheduledAudio>()
@@ -521,6 +526,7 @@ pub(super) fn begin_level(world: &mut World) {
 /// Acquisition owners without gameplay schedules or an audio output device.
 /// The client and windowless resource observations use the same initialization.
 pub(super) fn initialize_resources(app: &mut App) {
+    app.insert_resource(PlaybackBackend(app.is_plugin_added::<bevy::audio::AudioPlugin>()));
     if !app.world().contains_resource::<Assets<graph::ScheduledAudio>>() {
         app.init_asset::<graph::ScheduledAudio>();
     }
@@ -612,18 +618,18 @@ fn level_banks(base: &std::path::Path, language: &str, map: &str) -> Result<Leve
 
 fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, commands: Commands,
-    source: Option<Res<super::level_prepare::LevelSourceReads>>) {
+    source: Option<Res<super::level_prepare::LevelSourceReads>>, backend: Res<PlaybackBackend>) {
     if registry.preloaded { return; }
     let Some(source) = source else { return };
     let (catalog, map) = source.acquisition_source();
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
-    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands, catalog, map);
+    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands, catalog, map, backend.0);
 }
 
 fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
     engine: &mut bevy_backend::Engine,
     outputs: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<bevy_backend::OutputAudio>,
-    commands: &mut super::setup_commands::SetupCommands, catalog: &crate::archive::Catalog, map: &str) {
+    commands: &mut super::setup_commands::SetupCommands, catalog: &crate::archive::Catalog, map: &str, playback: bool) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = catalog.base();
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
@@ -722,7 +728,7 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
-            if let Some(mixer) = &mix.mixer {
+            if let Some(mixer) = mix.mixer.as_ref().filter(|_| playback) {
                 match bevy_backend::Engine::new(mixer, registry.states.clone(), catalog.base()) {
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
@@ -1180,6 +1186,7 @@ fn update_playing_volume(
 pub(super) struct AudioPreparation {
     registry: WwiseRegistry, mix: AudioMix, engine: bevy_backend::Engine,
     outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch<bevy_backend::OutputAudio>,
+    playback: bool,
 }
 impl AudioPreparation {
     pub fn take(world: &mut World) -> Self {
@@ -1188,12 +1195,13 @@ impl AudioPreparation {
             mix: std::mem::take(&mut *world.resource_mut::<AudioMix>()),
             engine: std::mem::take(&mut *world.resource_mut::<bevy_backend::Engine>()),
             outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch::new(world.resource::<Assets<bevy_backend::OutputAudio>>()),
+            playback: world.resource::<PlaybackBackend>().0,
         }
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands,
         catalog: Arc<crate::archive::Catalog>, map: &str, seed: declaration_texts::PhysicsSeed) {
         let contacts = contacts::ContactSounds::acquire_with_seed(catalog.clone(), map, seed);
-        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands, &catalog, map);
+        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands, &catalog, map, self.playback);
         // Host: cold media reads/decodes must not occupy the frame executor.
         // Keep its existing parallelism rather than the smaller async pool,
         // and release these workers before scene preparation continues.
