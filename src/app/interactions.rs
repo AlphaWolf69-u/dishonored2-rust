@@ -485,17 +485,17 @@ pub(super) fn retire_admitted_pickups(
     interactions: Option<ResMut<Interactions>>,
     navigation: Option<ResMut<super::NavigationWorld>>,
     physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
-    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
+    live: Option<ResMut<crate::gameplay::entity_lifetime::LiveEntities>>,
     placements: Res<super::RenderSourcePlacements>,
     mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     mut retired: ResMut<super::interaction_focus::RetiredPlacements>,
     mut sounds: MessageWriter<super::audio::SoundEvent>,
 ) {
-    let (Some(mut interactions),Some(mut navigation),Some(mut scene),Some(live)) =
+    let (Some(mut interactions),Some(mut navigation),Some(mut scene),Some(mut live)) =
         (interactions,navigation,physics,live) else { return; };
     while let Some(pending) = interactions.retire.first_mut() {
         if live.get(pending.identity.0).is_none() { warn!("document pickup identity retired before callback"); return; }
-        match scene.begin_document_pickup(&live,pending.identity.1,&mut pending.step) {
+        match scene.begin_document_pickup(&mut live,pending.identity.1,&mut pending.step) {
             Ok(Some(sound)) => {
                 // bevy_backend: the existing PlayerBody sound object is the
                 // player's Audio component host; it owns post/decode lifetime.

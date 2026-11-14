@@ -38,6 +38,7 @@ mod publication;
 mod startup;
 mod interaction_components;
 mod document_rigid;
+pub(super) mod document_hierarchy;
 pub(super) mod preparation;
 mod document_pickup;
 pub(super) mod rigid_actor;
@@ -89,6 +90,7 @@ pub(super) struct PhysicsScene {
     free_rigid_movement: Vec<usize>,
     rigid_placements: HashMap<usize, usize>,
     initial_rigid_frames: HashMap<usize, crate::gameplay::reference_frame::ReferenceFrame>,
+    document_hierarchy: document_hierarchy::DocumentHierarchy,
     factions: ComponentPool<super::faction_component::FactionComponent>,
     faction_session: crate::gameplay::faction_registry::SessionFactionRegistry,
     faction_manager: Option<crate::gameplay::faction_registry::ActiveFactionManager>,
@@ -217,6 +219,7 @@ impl PhysicsScene {
         interactions: Option<&super::interactions::Interactions>,
         entity_events: &mut crate::gameplay::entity_events::EntityEvents,
         models: &[entities::PlacedModel],
+        joint_frames: &super::joint_frames::JointFrames,
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
         let constructor_tag = types.intern_name(Some(b"MAIN"))?;
@@ -342,6 +345,7 @@ impl PhysicsScene {
             rigid_post_path: Vec::new(),
             rigid_placements: HashMap::new(),
             initial_rigid_frames: HashMap::new(),
+            document_hierarchy: Default::default(),
             factions: types.create_pool(factories[9], &cvars.cvars)?,
             faction_session,
             faction_manager,
@@ -543,6 +547,7 @@ impl PhysicsScene {
             drop(query_world);
             if let Some(interactions) = interactions {
                 scene.admit_interaction_components(document, interactions, live, &mut registry, constructor_tag)?;
+                scene.prepare_document_hierarchy(document, interactions, models, live, &mut registry, constructor_tag, joint_frames)?;
                 scene.prepare_document_rigids(catalog, interactions, models, texts, shape_sources, &mut registry)?;
             }
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the

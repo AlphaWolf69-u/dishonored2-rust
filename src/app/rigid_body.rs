@@ -182,6 +182,7 @@ pub(super) struct RigidBodyComponent {
     creation_mass_resolved: bool,
     initialization: Initialization,
     start: Option<StartProgress>,
+    pub(super) start_behavior: Option<u8>,
     stop: Option<StopPhase>,
     deinit: Option<DeinitPhase>,
 }
@@ -190,7 +191,7 @@ impl Default for RigidBodyComponent {
     fn default() -> Self {
         Self { owner: ComponentOwner::default(), movement_body: None, velocities: Default::default(), definition: None, prepared: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None,
             requested_motion: [0.0; 6], requested_motion_flags: 0, requested_motion_additive: false, requested_motion_pending: false, freeze_state: 0, update_paused_by_body: false,
-            materials: Vec::new(), pending_info: None, creation_mass_resolved: false, initialization: Initialization::Empty, start: None, stop: None, deinit: None }
+            materials: Vec::new(), pending_info: None, creation_mass_resolved: false, initialization: Initialization::Empty, start: None, start_behavior: None, stop: None, deinit: None }
     }
 }
 
@@ -790,7 +791,7 @@ impl RigidBodyComponent {
                 StopPhase::Unpublish
             },
             StopPhase::Unpublish => StopPhase::AfterUnpublish,
-            StopPhase::AfterUnpublish => { self.start = None; StopPhase::Complete },
+            StopPhase::AfterUnpublish => { self.start = None; self.start_behavior = None; StopPhase::Complete },
             StopPhase::Complete => return Ok(()),
         });
         Ok(())

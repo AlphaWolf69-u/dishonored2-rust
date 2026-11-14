@@ -414,6 +414,18 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters)
             .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::physics_scene::document_hierarchy::update_bound_renders
+            .after(super::machinery::pose_physics_systems)
+            .after(super::usable_animation::advance)
+            .after(super::machinery::pose_scene_systems)
+            .after(super::model_motion::publish_model_poses)
+            .before(super::model_motion::publish_bound_model_poses)
+            .run_if(super::pause_menu::game_not_paused)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::model_motion::publish_bound_model_poses
+            .before(bevy::transform::TransformSystems::Propagate)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters))
         .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
             super::runtime_fx_images::synchronize,
             super::runtime_materials::coordinate.run_if(super::runtime_materials::needs_update),

@@ -15,6 +15,10 @@ pub(super) struct Retirement {
     complete: bool,
     retire_next: usize,
     stopped: std::collections::HashSet<(u64, u32)>,
+    /// Host: source pool addresses survive the component drain. Retain the
+    /// same typed slots until entity destructors remove reciprocal bindings.
+    pub(super) retained_actors: Vec<(ComponentHandle, u32)>,
+    reclaimed_actors: usize,
 }
 
 pub(in crate::app) fn retirement_progress(world: &bevy::prelude::World) -> Option<(usize, usize, usize, bool)> {
@@ -90,10 +94,23 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
             let index = host.scene.retirement.as_ref().unwrap().retire_next;
             let entity = &host.scene.entities[index];
             if let Some(world) = host.world.as_deref_mut() { super::super::entity_graphs::retire(world, entity.shared)?; }
+            host.scene.destroy_document_attachments(live, index)?;
+            let entity = &host.scene.entities[index];
             if live.retire_for_world_shutdown(entity.shared).is_none() {
                 return Err("physics managed entity remains attached during retirement".into());
             }
             host.scene.retirement.as_mut().unwrap().retire_next += 1;
+        }
+        loop {
+            let state = host.scene.retirement.as_ref().ok_or("actor retirement cursor absent")?;
+            let Some(&(handle, generation)) = state.retained_actors.get(state.reclaimed_actors) else { break; };
+            registry.ensure_no_update_references(handle)?;
+            let actor = host.scene.actors.actors.get(handle.slot).ok_or("retained actor slot absent")?;
+            if actor.owner.generation != generation || actor.owner.entity.is_some()
+                || actor.parent.is_some() || actor.binding.entity.is_some() || !actor.children.is_empty()
+                || actor.current_body != actor.default_body { return Err("retained actor still owns attachment dependencies".into()); }
+            host.scene.actors.actors.release(handle.slot)?;
+            host.scene.retirement.as_mut().unwrap().reclaimed_actors += 1;
         }
         host.events.clear_for_world_shutdown();
         if host.scene.faction_manager.as_ref().is_some_and(|manager| manager.manager().has_members()) {
@@ -101,6 +118,7 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
         }
         host.scene.faction_manager = None;
         host.scene.shared_indices.clear();
+        host.scene.finish_document_hierarchy_retirement()?;
         host.scene.retirement.as_mut().unwrap().complete = true;
         Ok(true)
     })();
@@ -267,9 +285,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[2] { entity.components.release(handle, scene.winds.get_mut(handle.slot).ok_or("wind absent")?) }
         else if handle.class_id == scene.classes[3] {
             let actor = scene.actors.actors.get_mut(handle.slot).ok_or("reference actor absent")?;
-            if actor.parent.is_some() || actor.binding.entity.is_some() || !actor.children.is_empty() || actor.current_body != actor.default_body {
-                return Err("reference actor remains attached".into());
-            }
+            if actor.current_body != actor.default_body { return Err("reference actor still owns a component body".into()); }
             entity.components.release(handle, actor)?;
             if entity.components.reference_actor == Some(handle) { entity.components.reference_actor = None; }
             Ok(())
@@ -308,7 +324,17 @@ impl ComponentReleaseWorld for Host<'_> {
         if handle.class_id == scene.classes[0] { scene.triggers.release(handle.slot)?; }
         else if handle.class_id == scene.classes[1] { scene.waters.release(handle.slot)?; }
         else if handle.class_id == scene.classes[2] { scene.winds.release(handle.slot)?; }
-        else if handle.class_id == scene.classes[3] { scene.actors.actors.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[3] {
+            let actor = scene.actors.actors.get(handle.slot).ok_or("retiring actor absent")?;
+            if actor.parent.is_some() || actor.binding.entity.is_some() || !actor.children.is_empty() {
+                let record = (handle, actor.owner.generation);
+                let state = scene.retirement.as_mut().ok_or("actor release has no world retirement owner")?;
+                if !state.retained_actors.contains(&record) {
+                    state.retained_actors.try_reserve(1).map_err(|error| format!("retiring attachment actor handles: {error}"))?;
+                    state.retained_actors.push(record);
+                }
+            } else { scene.actors.actors.release(handle.slot)?; }
+        }
         else if handle.class_id == scene.classes[4] { scene.audios.release(handle.slot)?; }
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[6] { scene.pickables.release(handle.slot)?; }

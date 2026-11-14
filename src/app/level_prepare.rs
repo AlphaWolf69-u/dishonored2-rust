@@ -978,11 +978,24 @@ pub(super) fn prepare_level(
     )
     .map_err(std::io::Error::other)?;
     drop(machinery_placements);
+    let joint_requests = match entity_document.as_ref() {
+        Some(document) => super::physics_scene::document_hierarchy::joint_requests(document, interactions.as_ref(), &placed_models)
+            .map_err(std::io::Error::other)?,
+        None => Vec::new(),
+    };
+    let joint_frames = super::joint_frames::JointFrames::prepare(catalog_for_machinery, &placed_models, &joint_requests, &machinery)
+        .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
     app.insert_resource(super::model_motion::BoundModels::new(
         entity_document
             .as_ref()
-            .map(crate::entities::entity_binds)
+            .map(|document| crate::entities::entity_binds(document).into_iter().filter(|binding| {
+                // These real rigid components own808880 attachment publication
+                // after the final joint pose. Do not also apply the old rigid
+                // parent delta to them before that sampled frame exists.
+                !interactions.as_ref().is_some_and(|interactions| interactions.readable.iter()
+                    .any(|readable| readable.entity == binding.entity_id && readable.rigid.is_some()))
+            }).collect())
             .unwrap_or_default(),
     ));
     app.insert_resource(
@@ -998,7 +1011,7 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        let physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models)
+        let physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames)
             .map_err(std::io::Error::other)?;
         app.insert_resource(live);
         app.insert_resource(entity_events);
@@ -1011,6 +1024,7 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    app.insert_resource(joint_frames);
     if let Some(interactions) = interactions {
         app.insert_resource(interactions);
     }

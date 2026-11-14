@@ -164,15 +164,17 @@ impl PhysicsScene {
         let index = component.owner.entity.ok_or("rigid entity absent")?;
         let entity = &self.entities[index];
         let id = entity.shared;
-        if live.parent(id)?.is_some() || !live.children(id)?.is_empty() || entity.entity_flags & 0x80 != 0 {
-            return Err("rigid Start requires actual bound parent/child owner".into());
-        }
+        self.validate_document_hierarchy(live, index)?;
         let definition = component.definition().ok_or("rigid definition absent")?;
-        let behavior = definition.settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
+        let authored_behavior = definition.settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
             .ok_or("rigid behavior absent")?;
         let asleep = definition.settings.start_asleep.ok_or("rigid startAsleep absent")?;
         let body = component.body().ok_or("rigid body absent")?;
         let movement = component.movement_body()?;
+        let behavior = match component.start_behavior {
+            Some(value) => value,
+            None => self.bound_document_behavior(live, index, authored_behavior)?,
+        };
         let pose = entity.frame.pose;
         let basis = crate::physworld::rigid_body_basis(pose.basis.map(|v| [v[0],v[1],v[2],0.]));
         let frame = [basis[0],basis[1],basis[2],[pose.position[0],pose.position[1],pose.position[2],0.]];
@@ -197,6 +199,7 @@ impl PhysicsScene {
             crate::gameplay::body_storage::BodyActivation::KeepDeactivated
         } else { crate::gameplay::body_storage::BodyActivation::Activate };
         let step = self.rigid_bodies.get_mut(handle.slot).ok_or("rigid absent")?.start_publication_step(frame, activation)?;
+        self.rigid_bodies.get_mut(handle.slot).ok_or("rigid absent")?.start_behavior = Some(behavior);
         if step == 3 { return Ok(()); }
         let shared = self.world.clone();
         let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;

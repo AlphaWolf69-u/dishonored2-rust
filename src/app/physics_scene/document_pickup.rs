@@ -35,9 +35,8 @@ impl PhysicsScene {
         if !matches!(item.item_type(), "TYPE_NOTE_DOCUMENT" | "12" | "TYPE_BOOK" | "25" | "TYPE_INTERACTIVE_MAP" | "24") {
             return Err("styled portable item requires actual item-specific targeting callbacks".into());
         }
-        if live.parent(id)?.is_some() || !live.children(id)?.is_empty() {
-            return Err("bound document pickup requires actual subtree detach/hide owners".into());
-        }
+        self.validate_document_hierarchy(live, index)?;
+        if !live.children(id)?.is_empty() { return Err("portable document descendants require their actual hide virtuals".into()); }
         let entity = &self.entities[index];
         let metadata = self.types.classes().metadata(entity.class).ok_or("document entity class absent")?;
         if !matches!(self.types.classes().name_text(metadata.name), Some(b"idEntity" | b"arkPickup")) {
@@ -60,13 +59,32 @@ impl PhysicsScene {
         Ok(())
     }
 
-    pub(in crate::app) fn begin_document_pickup(&mut self, live: &LiveEntities, reference: CheckedComponent, step: &mut u8)
+    pub(in crate::app) fn begin_document_pickup(&mut self, live: &mut LiveEntities, reference: CheckedComponent, step: &mut u8)
         -> Result<Option<Arc<crate::assets::wwise::SoundEventDeclaration>>,String> {
         let (index,_) = self.document_pickable(live,reference)?;
         let mut registry = self.registry.take().ok_or("document registry absent")?;
         let result = (|| {
-            // 8762d0's null-parent branch still clears the bound bit.
-            if *step == 0 && self.entities[index].components.reference_actor.is_some() { self.entities[index].entity_flags &= !0x80; }
+            // 844bf0 calls the real 8762d0 attachment owner before changing
+            // the body type/filter. Repeated pending callbacks see null parent.
+            if *step == 0 {
+                if live.parent(self.entities[index].shared)?.is_some() {
+                    // 8762d0 clears d0 bit7, then727450(null)/727880 restores
+                    // the live movement interface to type2 before parent links
+                    // disappear. The same mode cursor resumes a failed change.
+                    self.entities[index].entity_flags &= !0x80;
+                    if let Some(handle) = self.document_rigid(index)? {
+                        if self.owner(handle)?.flags & 3 > 1 {
+                            let body = self.rigid_bodies.get(handle.slot).and_then(|component| component.body()).ok_or("bound document body absent")?;
+                            let shared = self.world.clone();
+                            let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
+                            let world = &mut *guard;
+                            scene_publication_events!(self, &mut registry, events);
+                            world.storage.dynamic_single_body(&mut world.geometry, &mut events, body)?;
+                        }
+                    }
+                }
+                self.detach_document(live, index)?;
+            }
             if let Some(handle) = self.document_rigid(index)? {
                 let body = self.rigid_bodies.get(handle.slot).and_then(|component| component.body()).ok_or("document body retired")?;
                 let shared = self.world.clone();

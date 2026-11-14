@@ -195,23 +195,38 @@ fn moved_bounds(
     render_bounds(&corners)
 }
 
-pub(super) fn publish_model_poses(
-    mut pending: ResMut<ModelPoseUpdates>,
-    mut bindings: ResMut<ModelMotionBindings>,
-    mut placements: ResMut<RenderSourcePlacements>,
-    mut models: ResMut<ModelShadowSources>,
-    mut bounds: ResMut<ShadowModelBoundsSources>,
-    mut queries: ResMut<PlacedModelQueries>,
-    mut queue: ResMut<SceneRenderQueue>,
-    mut entities: Query<(&mut Transform, &mut GlobalTransform)>,
-    scene: Option<Res<super::SceneData>>,
-    mut probe_buffer: Option<ResMut<ModelProbeLighting>>,
-    mut buffers: Option<ResMut<Assets<super::ShaderBuffer>>>,
-    mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
-    bound: Option<ResMut<BoundModels>>,
-    mut effect_frames: Option<ResMut<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>>,
-    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
-) {
+#[derive(bevy::ecs::system::SystemParam)]
+pub(super) struct ModelPosePublication<'w, 's> {
+    pending: ResMut<'w, ModelPoseUpdates>,
+    bindings: ResMut<'w, ModelMotionBindings>,
+    placements: ResMut<'w, RenderSourcePlacements>,
+    models: ResMut<'w, ModelShadowSources>,
+    bounds: ResMut<'w, ShadowModelBoundsSources>,
+    queries: ResMut<'w, PlacedModelQueries>,
+    queue: ResMut<'w, SceneRenderQueue>,
+    entities: Query<'w, 's, (&'static mut Transform, &'static mut GlobalTransform)>,
+    scene: Option<Res<'w, super::SceneData>>,
+    probe_buffer: Option<ResMut<'w, ModelProbeLighting>>,
+    buffers: Option<ResMut<'w, Assets<super::ShaderBuffer>>>,
+    patches: ResMut<'w, crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
+    bound: Option<ResMut<'w, BoundModels>>,
+    effect_frames: Option<ResMut<'w, crate::rendering::bevy_backend::world_effects::WorldEffectFrames>>,
+    clock: Option<Res<'w, crate::gameplay::game_clock_runtime::ClockRuntime>>,
+}
+
+pub(super) fn publish_model_poses(publication: ModelPosePublication<'_, '_>) { publish(publication); }
+
+/// 808880 runs after the final skeletal pose producer. Its changed child
+/// deltas use the same publication owner; empty batches touch no asset tables.
+pub(super) fn publish_bound_model_poses(publication: ModelPosePublication<'_, '_>) {
+    if publication.pending.0.is_empty() { return; }
+    publish(publication);
+}
+
+fn publish(publication: ModelPosePublication<'_, '_>) {
+    let ModelPosePublication { mut pending, mut bindings, mut placements, mut models, mut bounds,
+        mut queries, mut queue, mut entities, scene, mut probe_buffer, mut buffers, mut patches,
+        bound, mut effect_frames, clock } = publication;
     if let Some(frames) = effect_frames.as_mut() {
         frames.clock = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| {
             Some(crate::rendering::bevy_backend::world_effects::WorldFxClock {

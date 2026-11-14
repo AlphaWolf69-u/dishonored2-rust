@@ -12,6 +12,20 @@ use crate::gameplay::{
 };
 use crate::app::model_motion::{ModelPose, ModelPoseUpdates};
 
+/// The shared render publisher accepts a rigid world delta from the actual
+/// source frame. Both unbound body publication and808880 attachments use it.
+pub(super) fn render_delta(initial: ReferenceFrame, current: ReferenceFrame) -> Result<[[f32; 4]; 3], String> {
+    let mut inverse = initial.basis;
+    if !crate::gameplay::reference_frame::invert_basis(&mut inverse) {
+        return Err("rigid initial render basis is singular".into());
+    }
+    let basis = crate::gameplay::reference_frame::basis_product(inverse, current.basis);
+    Ok(std::array::from_fn(|row| {
+        let moved_origin = (0..3).map(|axis| basis[axis][row] * initial.position[axis]).sum::<f32>();
+        [basis[0][row], basis[1][row], basis[2][row], current.position[row] - moved_origin]
+    }))
+}
+
 struct RigidPostHost<'a> {
     entities: &'a mut [PhysicsEntity],
     live: &'a LiveEntities,
@@ -189,17 +203,9 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
     fn notify_render_pose(&mut self, _: &mut PhysicsActorLinks, render: usize) -> Result<(), String> {
         let current = self.entity(render)?.frame.pose;
         let initial = *self.initial.get(&render).ok_or("rigid initial body frame is absent")?;
-        let mut inverse = initial.basis;
-        if !crate::gameplay::reference_frame::invert_basis(&mut inverse) {
-            return Err("rigid initial body basis is singular".into());
-        }
         // Stored basis axes are columns. This is the existing ModelPose world
         // delta, so authored mesh scale/shear and blueprint offsets survive.
-        let basis = crate::gameplay::reference_frame::basis_product(inverse, current.basis);
-        let delta = std::array::from_fn(|row| {
-            let moved_origin = (0..3).map(|axis| basis[axis][row] * initial.position[axis]).sum::<f32>();
-            [basis[0][row], basis[1][row], basis[2][row], current.position[row] - moved_origin]
-        });
+        let delta = render_delta(initial, current)?;
         self.poses.0.try_reserve(1).map_err(|error| format!("rigid render publication: {error}"))?;
         self.poses.0.push(ModelPose { placement: *self.placements.get(&render).ok_or("rigid render placement is absent")?, delta });
         Ok(())

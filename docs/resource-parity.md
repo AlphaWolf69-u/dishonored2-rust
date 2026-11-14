@@ -8359,6 +8359,62 @@ no new per-frame work and no second world or shape conversion. Native evidence:
 `analysis/decompiled/chunk_000339.c` (`140809d80`) and
 `chunk_000297.c` (`140727a00`). Source review only; no build or tests run.
 
+Readable attachment lifecycle (2026-11-14): installed map metadata contains
+32 readable rigid parent attachments in 14 level variants, including three
+`glass_joint` attachments on the real Jindosh door PhysicsSystem model.
+Prepare only those actual ancestor identities from document class metadata;
+retain the original parent-first topology in LiveEntities and the same
+PhysicsActorLinks pool. No unrelated gameplay factory or placeholder entity is
+created. Binding initialization uses `752900`/`878fd0`; demanded tag/bone
+resolution and actual startup joint poses come from the shared JointFrames
+owner. Authored tags supply their offset/quaternion and replace the initial
+child world frame; a direct bone name retains the authored relative frame.
+`727a00` resolves the effective Start type through actual started ancestor
+interfaces, otherwise keyframing the bound child. The component retains that
+resolved type through interrupted Start/rollback, instead of reparsing a
+possibly changed hierarchy during cancellation.
+
+Portable pickup clears the bound bit, then follows `8762d0` -> `727450(null)`
+-> rigid virtual `727880`: restore dynamic mode through the canonical c86800
+cursor before removing parent references and doing the existing pickup
+keyframe/filter changes. The installed vtable slot was read directly from the
+PE image, without executing game code. Whole-world shutdown follows the distinct
+`8a4830` order: component Stop/deinit runs with topology intact, then entity
+destruction removes attachments before generation retirement. **host:** Rust
+keeps the same attached actor pool slots alive briefly after their component
+headers unlink, replacing the source allocator's address-stable freed slots.
+Only compact handles/generations live in Retirement; no alternate actor pool,
+body, shape or scheduler is created. A reclamation cursor drops those slots
+after the final reciprocal detach/identity retirement. Failed preparation uses
+the same teardown, retaining leases until callbacks complete. This is short
+teardown-only retention, not a RAM-saving claim.
+
+`808880` independently computes bound render frames from the actual parent
+render placement (or the actual entity frame if no render exists), the final
+phase3 bone and retained local binding. A demand-only pass runs after the
+existing physics/usable/scene pose producers, then uses the same model-motion
+publisher for color, shadows and placed-model queries. Ordinary unbound
+publication and interaction scheduling stay in place. Managed rigid children
+are removed from the earlier generic parent-delta propagation, avoiding a
+second conflicting transform. Unchanged frames queue nothing; the second thin
+publisher returns immediately on an empty queue. No physics-body transform or
+approximate world solver is substituted. General awake-world stepping and
+unhosted desired-motion callbacks remain explicit gameplay limitations; this
+change claims actual acquisition/Start/Stop/resource retirement and the
+source's independent render virtual, not a complete dynamic collision solver.
+
+Prediction before integration: admit the 32 demanded attachments plus their
+real ancestor headers, copy only demanded joint frames, and retain no rig-bound
+definition copies. Add bounded parent/frame comparisons for those bindings;
+no new animation evaluation, world/body duplication or per-draw work. No CPU
+speed or byte-saving claim. `DOCUMENT_HIERARCHY` prepared/retired records expose
+actual admission and final zero ownership for the coordinated production
+acquisitions. Native source: saved `analysis/decompiled/chunk_000303.c`
+(`752900`), `chunk_000339.c` (`809d80`, `808880`), `chunk_000359.c`
+(`8762d0`), and existing `gameplay/entity_release.rs` (`8a4830`). Installed
+evidence: ignored `artifacts/readable-rigid-installed-20261114-v3.json`.
+Rust parsing/whitespace review passed; no builds, tests or game launches run.
+
 `844bf0` now dispatches the real generation-scoped pickedUp graph notification before inventory admission. Accepted portable notes/books/maps retain their checked identity in a retryable callback cursor: `76e2b0` keyframes the same canonical body, masks its filter with `0x0820001f`, clears velocity through the existing `c85dc0` publication owner, resumes the real Pickable update owner and posts the retained begin-pickup sound through the existing PlayerBody backend. `76ec20` then hides the same render/shadow sources; it does not delete their resources or deactivate navigation geometry. Navigation projects the same filter mask into its existing triangles. Invalid/stale/hidden Pickables cannot be read again. Authored projectile/grenade/mine callbacks and bound subtree branches are rejected before inventory/graph side effects instead of being silently omitted. Graph receiver retirement precedes shared identity retirement. Actual initial rigid body transforms, rather than unnormalized render frames, seed post-physics mesh deltas. The canonical actor task adapter publishes through the existing model-motion owner. No tests/builds were run by this agent; root owns the whole interface check. Partial level-start failure cleanup remains an explicit integration task before this lifecycle can be considered complete.
 
 

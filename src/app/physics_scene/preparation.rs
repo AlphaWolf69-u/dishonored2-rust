@@ -72,8 +72,7 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
         if step < 4 {
             let behavior = if step == 2 {
                 Some(scene.rigid_bodies.get(handle.slot).ok_or("rigid component absent")?
-                    .definition().ok_or("rigid definition absent")?.settings.physics_behavior.as_deref()
-                    .and_then(entities::rigid_body_behavior_kind).ok_or("rigid behavior absent")?)
+                    .start_behavior.ok_or("entered rigid Start behavior absent")?)
             } else { None };
             scene_publication_events!(scene, registry, events);
             match step {
