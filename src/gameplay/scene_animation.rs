@@ -95,4 +95,3 @@ impl SceneAnimation {
         self.palette_from_pose(&self.pose(scene_ms)?)
     }
 }
-
