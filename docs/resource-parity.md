@@ -8965,3 +8965,18 @@ existing archive member observer separately measures real partial-read
 cancellation. Runtime source/owner scenarios must finish before audit closure.
 No tests have been written/run and no build or runtime claim follows merely
 from source parsing.
+
+
+FX scenario applicability reconciliation (2026-11-15):
+artifacts/fx-current-consumer-role-census-20261115.json covers7407 contact FX
+names, the actual pause Common path, both player Screen-water paths and830
+possible current World FX names from5804 installed producer inputs plus
+sub-FX/inheritance closure, with zero read/closure errors. Every cross-role
+intersection is empty. Same-level live tails keep Sources wrappers, which
+UsableEffects reuses before any registry request. Marker0 releases only after
+actual outgoing workers/render/audio/FX/source retirement; marker1 follows
+completed teardown, and Catalog destruction cannot be reacquired. Thus warm
+additional-role and purged-but-live FX reacquisition are currently inapplicable
+production scenarios, rather than missing runtime observations. No manual
+purge holding a diagnostic lease or invented role pairing is used to claim
+gameplay coverage. The transactional API correction remains source-proven.
