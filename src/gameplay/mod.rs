@@ -84,6 +84,7 @@ pub mod game_logic;
 
 pub mod interaction_definition;
 pub(crate) mod pickable_component;
+pub(crate) mod loot_component;
 
 pub mod entity_lifetime;
 pub mod entity_release;

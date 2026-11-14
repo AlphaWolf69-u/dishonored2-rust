@@ -134,6 +134,7 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[4] { membership!(scene.audios) }
         else if handle.class_id == scene.classes[5] { membership!(scene.usables) }
         else if handle.class_id == scene.classes[6] { membership!(scene.pickables) }
+        else if handle.class_id == scene.classes[7] { membership!(scene.loots) }
         else { Err("physics update roster class is unsupported".into()) }
     }
 }
@@ -260,6 +261,7 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.readable_components.remove(&entity.name);
             entity.components.release(handle, component)
         }
+        else if handle.class_id == scene.classes[7] { entity.components.release(handle, scene.loots.get_mut(handle.slot).ok_or("Loot absent")?) }
         else { Err("physics shutdown class is unsupported".into()) }
     }
 
@@ -281,6 +283,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[4] { scene.audios.release(handle.slot)?; }
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[6] { scene.pickables.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[7] { scene.loots.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
         if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world, emitter)?; }

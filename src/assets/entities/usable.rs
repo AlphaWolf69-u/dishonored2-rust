@@ -89,6 +89,7 @@ pub struct ReadableBinding {
     pub locked: bool,
     pub allowed_swimming: bool,
     pub component: Arc<crate::gameplay::pickable_component::PickableDefinition>,
+    pub loot: Option<Arc<crate::gameplay::loot_component::EmptyLootDefinition>>,
 }
 
 /// 14061e1a0 lets the interaction sensor pass through a material with
@@ -124,6 +125,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
     let mut cache = HashMap::new();
     let mut result = Vec::new();
     let mut definitions = HashMap::<String, Arc<crate::gameplay::pickable_component::PickableDefinition>>::new();
+    let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::EmptyLootDefinition>>::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
             if !key.starts_with("item_add[") { continue; }
@@ -163,6 +165,34 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                 }
                 definition
             };
+            let mut loot = None;
+            for (slot, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
+                if !slot.starts_with("item_add[") { continue; }
+                let Some(entry) = scope(Some(value)) else { continue; };
+                let Some(fields) = components::entry_fields(entry, "cpntloot", &declarations, &mut cache, &mut read)? else { continue; };
+                if loot.is_some() { return Err(format!("{}: multiple Loot components are unsupported", entity.id)); }
+                let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                    .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                        .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+                if let Some(shared) = identity.as_ref().and_then(|key| loot_definitions.get(key)) {
+                    loot = Some(shared.clone());
+                    continue;
+                }
+                if !child(&fields, "m_itemDefs").iter().all(|(name, value)|
+                    name == "num" && matches!(value, Value::Atom(value) if value == "0")) {
+                    return Err(format!("{}: nonempty Loot requires its actual child spawn/attachment callbacks", entity.id));
+                }
+                let definition = Arc::new(crate::gameplay::loot_component::EmptyLootDefinition {
+                    scheduling: components::scheduling(&fields,
+                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
+                    tags: [Arc::from(atom(&fields, "m_basicLootTag").unwrap_or("belt")),
+                        Arc::from(atom(&fields, "m_specialLootTag").unwrap_or("belt02"))],
+                });
+                if !catalog.has_overlays() {
+                    if let Some(key) = identity { loot_definitions.insert(key, definition.clone()); }
+                }
+                loot = Some(definition);
+            }
             result.push(ReadableBinding {
                 entity: entity.id.clone(), item: item.to_owned(),
                 interaction_name: optional_string(interaction, "m_name"),
@@ -174,6 +204,7 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                 locked: boolean(interaction, "m_lockedInteraction", false)?,
                 allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
                 component,
+                loot,
             });
         }
     }

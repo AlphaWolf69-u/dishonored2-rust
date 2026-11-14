@@ -80,6 +80,17 @@ impl PhysicsScene {
             self.readable_components.insert(binding.entity.clone(),
                 crate::gameplay::pickable_component::CheckedComponent { handle, generation });
             self.declarations.insert(handle.packed(), declaration);
+            if let Some(definition) = &binding.loot {
+                let declaration = self.types.declaration(self.factories[7], Arc::as_ptr(definition) as usize,
+                    definition.scheduling.clone())?;
+                let handle = ComponentFactory { declaration: &declaration, pool: &mut self.loots,
+                    registry, grow_one_at_a_time: false }.create(&mut self.entities[index].components,
+                        declaration.scheduling.starts_on_spawn(), |_, _, _| {
+                            Ok(crate::gameplay::loot_component::EmptyLootComponent {
+                                owner: Default::default(), definition: definition.clone(), enabled: true })
+                        }, |_, _, _| Ok(()))?.ok_or("Loot component creation disabled")?;
+                self.declarations.insert(handle.packed(), declaration);
+            }
         }
         Ok(())
     }
