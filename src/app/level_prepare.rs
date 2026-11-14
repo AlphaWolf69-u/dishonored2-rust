@@ -993,7 +993,7 @@ pub(super) fn prepare_level(
     app.insert_resource(super::model_motion::BoundModels::new(
         entity_document
             .as_ref()
-            .map(|document| crate::entities::entity_binds(document).into_iter().filter(|binding| {
+            .map(|document| crate::entities::resolved_entity_binds(document).into_iter().filter(|binding| {
                 // These real rigid components own808880 attachment publication
                 // after the final joint pose. Do not also apply the old rigid
                 // parent delta to them before that sampled frame exists.

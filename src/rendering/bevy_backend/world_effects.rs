@@ -140,7 +140,7 @@ impl WorldEffectFrames {
                 ))
             })
             .collect::<Result<HashMap<_, _>, String>>()?;
-        for binding in crate::assets::entities::entity_binds(document) {
+        for binding in crate::assets::entities::resolved_entity_binds(document) {
             let parent = entities.get(&binding.parent).map(|entry| entry.spawn);
             if let Some(child) = entities.get_mut(&binding.entity_id) {
                 child.parent = Some(FrameBinding {

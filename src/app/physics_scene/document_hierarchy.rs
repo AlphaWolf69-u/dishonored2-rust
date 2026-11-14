@@ -27,7 +27,7 @@ pub(in crate::app) fn joint_requests(document: &entities::Document,
     interactions: Option<&super::super::interactions::Interactions>, models: &[entities::PlacedModel])
     -> Result<Vec<(usize, String)>, String> {
     let Some(interactions) = interactions else { return Ok(Vec::new()); };
-    let authored = entities::entity_binds(document).into_iter().map(|binding| (binding.entity_id.clone(), binding))
+    let authored = entities::resolved_entity_binds(document).into_iter().map(|binding| (binding.entity_id.clone(), binding))
         .collect::<HashMap<_, _>>();
     let placements = models.iter().enumerate().map(|(index, model)| (model.id.as_str(), index)).collect::<HashMap<_, _>>();
     let mut requests = Vec::new();
@@ -101,7 +101,7 @@ impl PhysicsScene {
         live: &mut LiveEntities, registry: &mut ComponentRegistry,
         constructor_tag: crate::gameplay::name_pool::NameId,
         joint_frames: &super::super::joint_frames::JointFrames) -> Result<(), String> {
-        let authored = entities::entity_binds(document).into_iter()
+        let authored = entities::resolved_entity_binds(document).into_iter()
             .map(|binding| (binding.entity_id.clone(), binding)).collect::<HashMap<_, _>>();
         let definitions = document.definitions.iter().filter(|entry| entry.kind == "entity")
             .map(|entry| (entry.id.as_str(), entry)).collect::<HashMap<_, _>>();

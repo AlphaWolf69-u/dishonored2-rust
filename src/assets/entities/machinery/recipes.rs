@@ -193,7 +193,7 @@ pub(crate) fn load_with_sources(
             .map_err(|e| e.to_string())
     };
     let mut constraints = constraints(document, read)?;
-    let binds = entities::entity_binds(document);
+    let binds = entities::resolved_entity_binds(document);
     let entity_ids: HashSet<_> = document
         .definitions
         .iter()

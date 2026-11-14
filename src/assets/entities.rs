@@ -2425,6 +2425,36 @@ pub fn entity_binds(document: &Document) -> Vec<EntityBind> {
         .collect()
 }
 
+/// Resolve authored managed entity pointers before attempting attachment.
+/// 1417f3bf0 reflects bindParent as idManagedClassPtr<idEntity>; 140877370
+/// calls 140875e80 only when 1406dc560 resolves that pointer. Deleted/null
+/// targets therefore leave the child unbound. Preserve entity_binds as the
+/// raw declaration view; all runtime attachment owners use this projection.
+/// 1408a7d90/140143650 compare managed entity names ASCII-insensitively.
+/// Lookup borrows document names and is discarded after preparation.
+pub fn resolved_entity_binds(document: &Document) -> Vec<EntityBind> {
+    #[derive(Clone, Copy)]
+    struct Name<'a>(&'a str);
+    impl PartialEq for Name<'_> {
+        fn eq(&self, other: &Self) -> bool { self.0.eq_ignore_ascii_case(other.0) }
+    }
+    impl Eq for Name<'_> {}
+    impl std::hash::Hash for Name<'_> {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            for byte in self.0.bytes() { state.write_u8(byte.to_ascii_lowercase()); }
+        }
+    }
+    let names: HashMap<_, _> = document.definitions.iter()
+        .filter(|definition| definition.kind == "entity")
+        .map(|definition| (Name(definition.id.as_str()), definition.id.as_str()))
+        .collect();
+    entity_binds(document).into_iter().filter_map(|mut binding| {
+        let parent = *names.get(&Name(&binding.parent))?;
+        if binding.parent != parent { binding.parent = parent.to_owned(); }
+        Some(binding)
+    }).collect()
+}
+
 pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
     let declarations: HashMap<&str, &Definition> = document
         .definitions

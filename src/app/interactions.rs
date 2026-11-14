@@ -106,7 +106,7 @@ impl Interactions {
         let actor_by_entity = actors.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
         let readable_by_entity = readable.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
         let breakable = entities::usable::breakable_entities(document)?;
-        let parent = entities::entity_binds(document).into_iter().map(|bind| (bind.entity_id, bind.parent)).collect();
+        let parent = entities::resolved_entity_binds(document).into_iter().map(|bind| (bind.entity_id, bind.parent)).collect();
         let pending = actors.iter().enumerate().filter_map(|(actor, value)| {
             if !value.definition.starts_on_spawn { return None; }
             let state = value.state.as_ref()?;
