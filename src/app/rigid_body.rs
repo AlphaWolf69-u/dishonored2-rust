@@ -151,11 +151,7 @@ struct StartProgress {
     phase: StartPhase,
 }
 
-pub(super) struct RigidBodyDefinition {
-    pub settings: crate::entities::RigidBodySettings,
-    pub declaration_flags: u8,
-    pub scheduling: std::sync::Arc<crate::gameplay::component_state::declaration::DeclarationScheduling>,
-}
+pub(super) use crate::entities::rigid_body::Definition as RigidBodyDefinition;
 
 pub(super) struct RigidBodyComponent {
     pub owner: ComponentOwner,

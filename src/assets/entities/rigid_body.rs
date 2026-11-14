@@ -3,6 +3,14 @@
 //! authored values are errors rather than silently selecting a default.
 use super::{RigidBodySettings, Value};
 
+/// One immutable decoded declaration shared by admitted components and their
+/// readable bindings. Per-instance body and lifecycle state stay in the app.
+pub(crate) struct Definition {
+    pub settings: RigidBodySettings,
+    pub declaration_flags: u8,
+    pub scheduling: std::sync::Arc<crate::gameplay::component_state::declaration::DeclarationScheduling>,
+}
+
 pub(crate) fn from_resolved(entity: &str, declaration: &str,
     fields: &[(String, Value)]) -> Result<RigidBodySettings, String>
 {
