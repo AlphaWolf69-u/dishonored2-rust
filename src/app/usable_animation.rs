@@ -54,6 +54,7 @@ impl Placement {
         self.asset = None;
         self.node = None;
         self.animation_pose = None;
+        self.local_pose = None;
         self.command = None;
         self.requested = false;
         self.failed = false;
