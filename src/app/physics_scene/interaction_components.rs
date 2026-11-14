@@ -60,11 +60,14 @@ impl PhysicsScene {
                 }).ok_or("readable entity class absent")?;
                 let class = *names.get(class.as_bytes()).ok_or("readable entity class is not registered")?;
                 let index = self.entities.len();
+                // A failed parse must not leave an identity outside the scene's
+                // rollback roster.
+                let pose = entities::spawn_frame(definition)?;
                 let shared = live.allocate_managed(Arc::from(binding.entity.as_str()), class, None, 0, constructor_tag)?;
                 self.entities.push(PhysicsEntity { name: binding.entity.clone(), shared,
                     components: EntityComponents::new(index), class, environment: None, flags: 0,
                     entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
-                    frame: crate::gameplay::reference_frame::PublishedFrame { pose: entities::spawn_frame(definition)?, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
+                    frame: crate::gameplay::reference_frame::PublishedFrame { pose, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
                 self.entity_flags_d4.push(0);
                 indices.insert(binding.entity.clone(), index);
                 index
