@@ -37,6 +37,7 @@ pub(super) struct Interactions {
 
 struct ReadResult {
     entity: String,
+    identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent),
     path: String,
     item: Arc<crate::assets::inventory_item::PickableItem>,
 }
@@ -74,7 +75,7 @@ impl Interactions {
         };
         let sensor = entities::usable::player_sensor(&catalog, character)?;
         let bindings = entities::usable::bindings(document, |path| read(path))?;
-        let readable = entities::usable::readable_bindings(document, |path| read(path))?;
+        let readable = entities::usable::readable_bindings(&catalog, document)?;
         super::pause_menu::trace_readable_ui(|| format!("READ_NOTE declarations admitted={} character={character}", readable.len()));
         let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character)?);
         let definitions: HashMap<&str, &entities::Definition> = document.definitions.iter()
@@ -127,7 +128,8 @@ impl Interactions {
         true
     }
 
-    pub(super) fn request_readable(&mut self, index: usize) {
+    pub(super) fn request_readable(&mut self, index: usize,
+        identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent)) {
         if self.pending_read.is_some() || self.pending_activation.is_some() { return; }
         let item = self.readable[index].item.clone();
         super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
@@ -140,11 +142,19 @@ impl Interactions {
             let mut sources = sources.0.lock().map_err(|_| "readable item source is poisoned")?;
             if closed.load(Ordering::Acquire) { return Err("readable acquisition cancelled".into()); }
             let declaration = sources.acquire(&catalog, &item)?;
-            Ok(ReadResult { entity, path: item, item: declaration })
+            Ok(ReadResult { entity, identity, path: item, item: declaration })
         })));
     }
 
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> { self.limits.clone() }
+
+    /// The same declaration source used by async reads; called only by the
+    /// level preparation worker when admitting a real Pickable component.
+    pub(super) fn acquire_readable_item(&self, path: &str)
+        -> Result<Arc<crate::assets::inventory_item::PickableItem>, String> {
+        self.item_sources.0.lock().map_err(|_| "readable item source is poisoned")?
+            .acquire(&self.catalog, path)
+    }
 
     /// Start the same fake bodies used by the original component. Their owner
     /// is the level collision world and the actor retains only its handle.
@@ -228,6 +238,8 @@ fn interaction_type(name: Option<&str>) -> i32 {
 pub(super) fn focus_and_interact(
     interactions: Option<ResMut<Interactions>>,
     world: Option<Res<super::NavigationWorld>>,
+    physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     camera: Query<&Transform, With<Camera3d>>,
     input: Res<super::player::PlayerInput>,
     mut player: Option<ResMut<super::player::PlayerState>>,
@@ -258,6 +270,7 @@ pub(super) fn focus_and_interact(
         let result = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()).and_then(|player| player.take_read_note_result());
         if let Some(result) = result {
             let (read, expected) = interactions.pending_activation.take().expect("retained read activation");
+            if !read_is_live(&read, physics.as_deref(), live.as_deref()) { return; }
             if result.is_err() { warn!("READ_NOTE activation was rejected or cancelled"); }
             if let Ok(presentation) = result {
                 if !Arc::ptr_eq(&presentation, &expected) { warn!("READ_NOTE activation descriptor differs"); return; }
@@ -296,6 +309,7 @@ pub(super) fn focus_and_interact(
             interactions.pending_read = None;
             match result.and_then(|read| super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation))) {
                 Ok((read,presentation)) => {
+                    if !read_is_live(&read, physics.as_deref(), live.as_deref()) { return; }
                     super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item acquired path={}", read.path));
                     if let Some(player) = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()) {
                         if player.read_note_state_allowed() == Some(true) && player.request_read_note(presentation.clone()) {
@@ -388,7 +402,13 @@ pub(super) fn focus_and_interact(
     if !pressed || focused.current.as_ref().is_none_or(|prompt| prompt.locked) { return; }
     let Some((is_readable, index, _)) = selected else { return };
     if is_readable {
-        interactions.request_readable(index);
+        let identity = physics.as_deref().zip(live.as_deref()).and_then(|(scene, live)| {
+            match scene.readable_identity(&interactions.readable[index].entity, live) {
+                Ok(value) => value,
+                Err(error) => { warn!("Readable identity unavailable: {error}"); None }
+            }
+        });
+        if let Some(identity) = identity { interactions.request_readable(index, identity); }
     } else {
         let changes = {
             let actor = &mut interactions.actors[index];
@@ -404,6 +424,12 @@ pub(super) fn focus_and_interact(
         // A state may change the authored prompt without a camera movement.
         interactions.selected = None;
     }
+}
+
+fn read_is_live(read: &ReadResult, physics: Option<&super::physics_scene::PhysicsScene>,
+    live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> bool {
+    physics.zip(live).is_some_and(|(scene, live)|
+        scene.readable_identity(&read.entity, live).is_ok_and(|current| current == Some(read.identity)))
 }
 
 /// 14077be20 follows the owning entity pose. Unchanged owners do not touch the

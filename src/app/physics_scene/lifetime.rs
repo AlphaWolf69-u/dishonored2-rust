@@ -133,6 +133,7 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[3] { membership!(scene.actors.actors) }
         else if handle.class_id == scene.classes[4] { membership!(scene.audios) }
         else if handle.class_id == scene.classes[5] { membership!(scene.usables) }
+        else if handle.class_id == scene.classes[6] { membership!(scene.pickables) }
         else { Err("physics update roster class is unsupported".into()) }
     }
 }
@@ -250,6 +251,15 @@ impl ComponentReleaseWorld for Host<'_> {
             Ok(())
         } else if handle.class_id == scene.classes[4] { entity.components.release(handle, scene.audios.get_mut(handle.slot).ok_or("audio absent")?) }
         else if handle.class_id == scene.classes[5] { entity.components.release(handle, scene.usables.get_mut(handle.slot).ok_or("usable absent")?) }
+        else if handle.class_id == scene.classes[6] {
+            let component = scene.pickables.get_mut(handle.slot).ok_or("Pickable absent")?;
+            component.references = None;
+            component.player = None;
+            component.item = None;
+            component.loot_owner = None;
+            scene.readable_components.remove(&entity.name);
+            entity.components.release(handle, component)
+        }
         else { Err("physics shutdown class is unsupported".into()) }
     }
 
@@ -270,6 +280,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[3] { scene.actors.actors.release(handle.slot)?; }
         else if handle.class_id == scene.classes[4] { scene.audios.release(handle.slot)?; }
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[6] { scene.pickables.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
         if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world, emitter)?; }

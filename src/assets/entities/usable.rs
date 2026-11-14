@@ -88,6 +88,7 @@ pub struct ReadableBinding {
     pub occlusion_shape: usize,
     pub locked: bool,
     pub allowed_swimming: bool,
+    pub component: Arc<crate::gameplay::pickable_component::PickableDefinition>,
 }
 
 /// 14061e1a0 lets the interaction sensor pass through a material with
@@ -115,11 +116,14 @@ pub fn breakable_entities(document: &Document) -> Result<HashSet<String>, String
 
 /// Readable pickables declare the read state on their pickup interaction;
 /// other pickables must not be converted into notes merely by model name.
-pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<ReadableBinding>, String> {
+pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document) -> Result<Vec<ReadableBinding>, String> {
+    let mut read = |path: &str| catalog.read(path).map_err(|error| error.to_string())
+        .map(|bytes| bytes.map(super::owned_declaration_text));
     let declarations: HashMap<&str, &Definition> = document.definitions.iter()
         .filter(|d| d.kind == "component").map(|d| (d.id.as_str(), d)).collect();
     let mut cache = HashMap::new();
     let mut result = Vec::new();
+    let mut definitions = HashMap::<String, Arc<crate::gameplay::pickable_component::PickableDefinition>>::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
             if !key.starts_with("item_add[") { continue; }
@@ -135,6 +139,30 @@ pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Resu
                 eprintln!("Readable component {} {key} has no inventory item", entity.id);
                 continue;
             };
+            let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                    .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+            let component = if let Some(shared) = identity.as_ref().and_then(|key| definitions.get(key)) {
+                shared.clone()
+            } else {
+                let begin_pickup_sound = atom(&fields, "m_beginPickupSoundEvent")
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
+                    .map(|name| crate::assets::wwise::event_resources::acquire_with(catalog, name, &mut read)).transpose()?;
+                let definition = Arc::new(crate::gameplay::pickable_component::PickableDefinition {
+                    item: item.to_owned(), quantity: atom(&fields, "m_quantity").unwrap_or("0").parse()
+                        .map_err(|_| "invalid pickable quantity")?, begin_pickup_sound,
+                    shadow_grapple: boolean(&fields, "m_canBeShadowGrappled", true)?,
+                    usable_by_player: boolean(&fields, "m_usableByPlayer", true)?,
+                    invisible_npc_loot: boolean(&fields, "m_invisibleNpcLoot", false)?,
+                    pickup_interaction: crate::gameplay::interaction_definition::InteractionDef::from_fields(interaction)?,
+                    scheduling: components::scheduling(&fields,
+                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
+                });
+                if !catalog.has_overlays() {
+                    if let Some(key) = identity { definitions.insert(key, definition.clone()); }
+                }
+                definition
+            };
             result.push(ReadableBinding {
                 entity: entity.id.clone(), item: item.to_owned(),
                 interaction_name: optional_string(interaction, "m_name"),
@@ -145,6 +173,7 @@ pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Resu
                 occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
                 locked: boolean(interaction, "m_lockedInteraction", false)?,
                 allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
+                component,
             });
         }
     }

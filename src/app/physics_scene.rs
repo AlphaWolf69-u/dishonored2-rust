@@ -45,6 +45,8 @@ struct PhysicsEntity {
     class: usize,
     environment: Option<(usize, bool)>,
     flags: u8,
+    entity_flags: u32,
+    entity_flags_d7: u8,
     priority: i32,
     pose: crate::gameplay::reference_frame::ReferenceFrame,
 }
@@ -53,8 +55,8 @@ struct PhysicsEntity {
 pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 6],
-    classes: [i32; 6],
+    factories: [u32; 7],
+    classes: [i32; 7],
     entities: Vec<PhysicsEntity>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
     declarations: HashMap<u64, ComponentDeclaration>,
@@ -67,6 +69,8 @@ pub(super) struct PhysicsScene {
     winds: ComponentPool<ComponentOwner>,
     audios: ComponentPool<crate::gameplay::sound::component::AudioComponent>,
     usables: ComponentPool<UsableComponent>,
+    pickables: ComponentPool<crate::gameplay::pickable_component::PickableComponent>,
+    readable_components: HashMap<String, crate::gameplay::pickable_component::CheckedComponent>,
     audio_bindings: Vec<entities::audio::AudioBinding>,
     audio_handles: Vec<ComponentHandle>,
     actors: PhysicsActorLinks,
@@ -214,6 +218,7 @@ impl PhysicsScene {
             32,
             factory(b"arkCpntAudio")?,
             factory(b"arkCpntUsableWithStateList")?,
+            factory(b"arkCpntPickable_Simple")?,
         ];
         let names = types.classes().hierarchy().registration_order().iter().map(|&index| {
             let class = types.classes().metadata(index).ok_or("physics class metadata absent")?;
@@ -226,8 +231,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 6];
-        for i in 0..6 {
+        let mut classes = [0; 7];
+        for i in 0..7 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -291,6 +296,8 @@ impl PhysicsScene {
             winds: types.create_pool(factories[2], &cvars.cvars)?,
             audios: types.create_pool(factories[4], &cvars.cvars)?,
             usables: types.create_pool(factories[5], &cvars.cvars)?,
+            pickables: types.create_pool(factories[6], &cvars.cvars)?,
+            readable_components: HashMap::new(),
             audio_bindings,
             audio_handles: Vec::new(),
             actors: PhysicsActorLinks {
@@ -365,6 +372,8 @@ impl PhysicsScene {
                         .get(placement.binding.entity_id.as_str())
                         .copied(),
                     flags: 0,
+                    entity_flags: 0x001e_8008,
+                    entity_flags_d7: 0,
                     priority: 0,
                     pose: crate::gameplay::reference_frame::ReferenceFrame {
                         position: placement.position,
@@ -461,7 +470,8 @@ impl PhysicsScene {
                     let index = scene.entities.len();
                     let shared = live.allocate_managed(Arc::from(binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
                     scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), shared, components: EntityComponents::new(index), class,
-                        environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0, priority: 0, pose: binding.frame });
+                        environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0,
+                        entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0, pose: binding.frame });
                     entity_indices.insert(binding.entity_id.clone(), index);
                     index
                 }
@@ -477,7 +487,7 @@ impl PhysicsScene {
         }
         drop(query_world);
         if let Some(interactions) = interactions {
-            scene.admit_usable_components(document, interactions, live, &mut registry, constructor_tag)?;
+            scene.admit_interaction_components(document, interactions, live, &mut registry, constructor_tag)?;
         }
         // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
         // later game-local shared component initialization/Start drain.
@@ -686,6 +696,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.audios.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[5] {
             self.usables.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[6] {
+            self.pickables.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -707,6 +719,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.audios.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[5] {
             self.usables.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[6] {
+            self.pickables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };
@@ -764,6 +778,11 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 level: &mut level,
             }
             .initialize(handle)
+        } else if handle.class_id == self.classes[6] {
+            let target = &mut self.entities[entity];
+            self.pickables.get_mut(handle.slot).ok_or("Pickable component absent")?
+                .initialize(&mut target.entity_flags, &mut target.entity_flags_d7);
+            Ok(())
         } else if handle.class_id == self.classes[3] {
             let pose = self.entities[entity].pose;
             let actor = self
@@ -905,6 +924,7 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 if handle.class_id == self.classes[2] { self.winds.schedule(handle.slot)?; }
                 else if handle.class_id == self.classes[3] { self.actors.actors.schedule(handle.slot)?; }
                 else if handle.class_id == self.classes[5] { self.usables.schedule(handle.slot)?; }
+                else if handle.class_id == self.classes[6] { self.pickables.schedule(handle.slot)?; }
                 else { return Err("scheduled physics component class is unsupported".into()); }
             }
             Ok(())
