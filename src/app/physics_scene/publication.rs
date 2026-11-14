@@ -32,7 +32,11 @@ macro_rules! scene_publication_events {
             triggers: &mut $scene.triggers, waters: &mut $scene.waters,
             actors: &mut $scene.actors, deferred: &mut $scene.deferred },
             signals: &mut $scene.signals,
-            dispatch: |_, subscriber, callback, owners, event, components| {
+            dispatch: |_: &mut crate::gameplay::signal::Signal<usize, usize>,
+                subscriber: usize, callback: usize,
+                owners: crate::gameplay::body_activation::ActivationOwners<'_>,
+                event: crate::gameplay::physics_world::PublicationEvent<'_>,
+                components: &mut crate::gameplay::trigger_body::TriggerComponentStore<'_>| -> Result<(), String> {
                 observer.dispatch(subscriber, callback, owners, event, components)
             } };
     };

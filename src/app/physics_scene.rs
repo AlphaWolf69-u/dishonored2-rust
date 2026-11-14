@@ -134,8 +134,10 @@ impl PhysicsScene {
         Ok(())
     }
 
-    pub(super) fn point_queries(&self) -> Result<Arc<RwLock<LevelPointQueries>>, &str> {
-        self.world.read().map_err(|_| "level physics query owner is poisoned")?.ready()?;
+    pub(super) fn point_queries(&self) -> Result<Arc<RwLock<LevelPointQueries>>, String> {
+        let query_owner = self.world.read().map_err(|_| "level physics query owner is poisoned".to_owned())?;
+        query_owner.ready().map_err(str::to_owned)?;
+        drop(query_owner);
         Ok(self.world.clone())
     }
 

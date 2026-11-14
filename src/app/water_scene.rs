@@ -390,9 +390,9 @@ pub(super) fn publish_water_frame(
                         *query_error = None;
                     }
                     Err(error) => {
-                        if query_error.as_deref() != Some(error) {
+                        if query_error.as_deref() != Some(error.as_str()) {
                             warn!("Physics query publication pending: {error}");
-                            *query_error = Some(error.to_owned());
+                            *query_error = Some(error);
                         }
                     }
                 }

@@ -3,6 +3,7 @@
 //! registration order and sharing the same resolved declaration leases.
 use std::{borrow::Borrow, collections::HashMap, sync::{Arc, Mutex, Weak}};
 use crate::{assets::archive::Catalog, gameplay::faction_manager::Definition};
+use super::options::decl::field;
 
 /// One canonical declaration resource name. This is session-owned and never
 /// points into PhysicsScene's level-owned class NamePool.
@@ -147,18 +148,18 @@ impl SessionFactionRegistry {
             fn relation(value: &str) -> Result<u32, String> {
                 match value.trim_matches('"') { "ALLY" => Ok(0), "NEUTRAL" => Ok(1), "ENEMY" => Ok(2), "UNDEFINED" => Ok(3), value => Err(format!("unknown faction relationship {value}")) }
             }
-            let default_relationship = match entities::field(&fields, "m_defaultRelationship") {
+            let default_relationship = match field(&fields, "m_defaultRelationship") {
                 Some(Value::Atom(value)) => relation(value)?, None => 1, // 955430: NEUTRAL
                 _ => return Err("faction default is not scalar".into()),
             };
-            let propagate_overrides = match entities::field(&fields, "m_propagateOverwrite") {
+            let propagate_overrides = match field(&fields, "m_propagateOverwrite") {
                 Some(Value::Atom(value)) if matches!(value.as_str(), "true" | "1") => true,
                 Some(Value::Atom(value)) if matches!(value.as_str(), "false" | "0") => false,
                 None => false, // 955430 initializes +0x90 to zero.
                 _ => return Err("invalid faction propagation flag".into()),
             };
             let mut relationships = Vec::new();
-            if let Some(value) = entities::field(&fields, "m_factionRelationship") {
+            if let Some(value) = field(&fields, "m_factionRelationship") {
                 let Value::Scope(items) = value else { return Err("faction relationships are not a scope".into()); };
                 for (key, value) in items {
                     if key == "item_begin" { continue; }
@@ -212,7 +213,7 @@ impl SessionFactionRegistry {
                 .ok_or_else(|| format!("faction declaration missing: {path}"))?;
             let text: Arc<str> = Arc::from(entities::owned_declaration_text(bytes));
             let fields = entities::parse_declaration(&text).map_err(|error| format!("{path}: {error}"))?;
-            let parent = match entities::field(&fields, "inherit") {
+            let parent = match field(&fields, "inherit") {
                 None => None,
                 Some(Value::Atom(name)) if !name.trim_matches('"').is_empty() => Some(self.source_lease(catalog, name.trim_matches('"'), marker, active)?),
                 Some(_) => return Err(format!("{path}: invalid faction inheritance reference")),

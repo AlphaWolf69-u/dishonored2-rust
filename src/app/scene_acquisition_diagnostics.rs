@@ -1033,7 +1033,8 @@ fn inspect_scene_resources(
                 let first = physics.point_queries()?;
                 let second = physics.point_queries()?;
                 eprintln!("LEVEL_POINT_QUERY_LEASE shared={}", std::sync::Arc::ptr_eq(&first, &second));
-                first.observe_queries()?;
+                let query_owner = first.read().map_err(|_| "level physics query owner is poisoned")?;
+                query_owner.observe_queries()?;
             }
             if matches!(mode, Mode::Upload | Mode::RuntimeFx(_)) {
                 // Only asset upload/removal is observed. No camera produces a
