@@ -777,7 +777,25 @@ loses w. Remaining, in order:
 - Hull build ported (`havok_fx::convex_hull`): bit-exact, vertex order and
   centroid included, against 25 hulls read from the running original's
   descriptors (`examples/hull_oracle.rs`); the other 41 need the decimation.
-- Collision hulls (227 declarations), next: 1401df6a0 builds the hull of
+- Collision hulls ported (`havok_fx::convex_hull::collision_shape`): the
+  3D build, buildIndices faces, the quadric decimation with its OBB-based
+  tolerance (140c0d380 3D path, planar build 140b884e0), ensureContainment
+  and the centroid reproduce all 66 hulls read from the running original
+  bit-exactly (tests/fixtures/particle_collision_hulls.txt, checked from
+  the installed models by examples/hull_oracle.rs). The 4x4 inverse was
+  generated from 140adf2d0's instructions by a symbolic SSE evaluator;
+  both hull inverses match the installed functions on 800 probe cases.
+- Convex contacts, next: SolveConvexContacts (140fbaf60) keeps one 0x120
+  shape record per stage (140fbdea0: at most 16 hull vertices re-hulled,
+  m_boundingBox replacing them by the 8 OBB corners, recentred on the new
+  centroid; +0x100 inscribed radius max(1e-5, min face distance), +0x104
+  outer radius max(inner, max |v|)); 140fbdc80 then sets the pipeline's
+  +0x30 to the inscribed and +0x34 to the outer radius (sphere stages
+  keep m_radius in both). The per-body solve 140fbb350 (2643 lines) reads
+  both WorldCollide contacts, the AngularMotion orientation, and re-queries
+  the hit bodies with the hull (140ffaaf0 / 140ffae70: convex closest
+  points and casts through the world).
+- Collision hulls (227 declarations), decode notes: 1401df6a0 builds the hull of
   m_mesh's particle-model vertices with hkgpConvexHull (build 140b88330 ->
   140baba50 on a quantized domain 140b9c1e0; when the hull has more than 16
   vertices, decimate 140b896a0(hull, 0x5f7ffff0, 16), 140b9ab30, decimate
