@@ -14,6 +14,7 @@ pub(super) struct Retirement {
     requested: usize,
     complete: bool,
     retire_next: usize,
+    stopped: std::collections::HashSet<(u64, u32)>,
 }
 
 /// Removal from World is temporary; every error and Pending result restores
@@ -50,7 +51,9 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
                 components.push((handle, scene.owner(handle)?.generation));
             }
         }
-        scene.retirement = Some(Retirement { components, ..Default::default() });
+        let mut stopped = std::collections::HashSet::new();
+        stopped.try_reserve(components.len()).map_err(|error| format!("physics Stop completion snapshot: {error}"))?;
+        scene.retirement = Some(Retirement { components, stopped, ..Default::default() });
     }
     let mut registry = scene.registry.take().ok_or("physics lifecycle registry absent")?;
     let result = (|| {
@@ -163,8 +166,14 @@ impl ComponentReleaseWorld for Host<'_> {
     }
 
     fn poll_stop(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry,
-        first: bool) -> Result<ReleaseStatus, String> {
-        if first { self.stop(handle, registry)?; }
+        _first: bool) -> Result<ReleaseStatus, String> {
+        let identity = (handle.packed(), self.owner(handle)?.generation);
+        if !self.scene.retirement.as_ref().ok_or("physics retirement progress absent")?.stopped.contains(&identity) {
+            self.stop(handle, registry)?;
+            // Capacity was reserved before any callback. Failed callbacks retry
+            // against their real body cursor; completed Stop is never replayed.
+            self.scene.retirement.as_mut().unwrap().stopped.insert(identity);
+        }
         if handle.class_id == self.scene.classes[4] {
             let generation = self.owner(handle)?.generation;
             if !super::super::audio::retire_component_object(self.world,
