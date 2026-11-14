@@ -8,7 +8,7 @@ use crate::{
     assets::entities::event_graph::atom,
     gameplay::effects::{
         graph::{FxGraphWorld, FxRuntimeParameters, GraphStep},
-        instances::FxGraphInstances,
+        instances::{FxGraphInstances, GraphEvent},
         pool::EffectPoolLinks,
         world_component::{ReferenceReadiness, WorldFxComponent, WorldFxComponentHost},
         world_node::{CreatedEffect, FxNode},
@@ -354,6 +354,11 @@ pub(crate) struct WorldParticleState {
     decal_programs: Arc<super::projected_decals::ProgramTable>,
     debug_effect: Option<String>,
     graphs: FxGraphInstances,
+    entity_graphs: HashMap<crate::gameplay::entity_lifetime::EntityId, u64>,
+    started_entity_graphs: HashSet<crate::gameplay::entity_lifetime::EntityId>,
+    pickup_subscribers: HashMap<crate::gameplay::entity_lifetime::EntityId, Vec<(u64, u32)>>,
+    actors_initialized: bool,
+    closed: bool,
     actors: HashMap<String, u32>,
     dynamic: HashMap<String, (u32, u64)>,
     dynamic_snapshot: Option<Arc<Vec<super::world_effects::DynamicEffect>>>,
@@ -387,6 +392,11 @@ impl Default for WorldParticleState {
             decal_programs: Arc::new(Default::default()),
             debug_effect: std::env::var("DH2_DEBUG_PLAY_FX").ok(),
             graphs: FxGraphInstances::default(),
+            entity_graphs: HashMap::new(),
+            started_entity_graphs: HashSet::new(),
+            pickup_subscribers: HashMap::new(),
+            actors_initialized: false,
+            closed: false,
             actors: HashMap::new(),
             dynamic: HashMap::new(),
             dynamic_snapshot: None,
@@ -426,6 +436,164 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    /// One shared graph manager is constructed before source startup callbacks.
+    /// Real admitted entities own gameplay roots; other existing map FX roots
+    /// keep their explicitly host-scoped relevance filter in this same manager.
+    pub(crate) fn prepare_graphs(&mut self, definitions: &WorldEffectDefinitions,
+        declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
+        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> Result<(), String> {
+        if self.closed || self.source.is_some() { return Err("world graph manager is already prepared or closing".into()); }
+        self.graphs = FxGraphInstances::new_level(&[], declarations, definitions.seed);
+        if let Some(live) = live {
+            let by_name: HashMap<_, _> = definitions.graphs.iter().map(|graph| (graph.owner.to_ascii_lowercase(), graph)).collect();
+            for &entity in live.spawned_entities() {
+                let (name, _) = live.get(entity).ok_or("spawned graph entity is stale")?;
+                if let Some(graph) = by_name.get(&name.to_ascii_lowercase()) {
+                    self.admit_entity_graph(entity, Arc::clone(graph), declarations, live)?;
+                }
+            }
+        }
+        for graph in definitions.graphs.iter() {
+            if self.graphs.has_root_owner(&graph.owner) { continue; }
+            let root = self.graphs.admit_render_root(Arc::clone(graph), declarations)?;
+            self.graphs.queue_loading_end(root)?;
+        }
+        for error in self.graphs.startup() { self.report(error); }
+        self.source = Some(Arc::clone(&definitions.graphs));
+        self.report_graph_lifetime("prepared");
+        Ok(())
+    }
+    fn report_graph_lifetime(&self, phase: &str) {
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() != Ok("1") { return; }
+        let (instances, definitions) = self.graphs.definition_counts();
+        let roots = self.graphs.root_owners().count();
+        let subscriptions: usize = self.pickup_subscribers.values().map(Vec::len).sum();
+        eprintln!("ENTITY_GRAPH_LIFETIME phase={phase} managed_roots={} host_roots={} instances={instances} definitions={definitions} subscriptions={subscriptions} pending={} closed={}",
+            self.entity_graphs.len(), roots.saturating_sub(self.entity_graphs.len()), self.graphs.events.pending().count(), self.closed);
+    }
+    pub(crate) fn admit_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        graph: Arc<crate::assets::entities::effects::FxGraph>,
+        declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
+        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<u64, String> {
+        use crate::gameplay::entity_lifetime::Stage;
+        if self.closed { return Err("graph manager is closing".into()); }
+        let (name, _) = live.get(entity).ok_or("graph owner has retired")?;
+        if live.stage(entity) != Some(Stage::Spawned) || !name.eq_ignore_ascii_case(&graph.owner) {
+            return Err("graph does not belong to the admitted spawned entity".into());
+        }
+        if self.entity_graphs.contains_key(&entity) || self.graphs.has_root_owner(name) {
+            return Err("entity already owns a graph in the shared manager".into());
+        }
+        let root = self.graphs.admit_root(graph, declarations)?;
+        self.entity_graphs.insert(entity, root);
+        if let Err(error) = self.start_entity_graph(entity, live) {
+            self.retire_entity_graph(entity)?;
+            return Err(error);
+        }
+        Ok(root)
+    }
+    fn start_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<(), String> {
+        let root = *self.entity_graphs.get(&entity).ok_or("entity graph is absent")?;
+        if self.started_entity_graphs.contains(&entity) { return Err("entity graph already started".into()); }
+        let indices = self.graphs.retirement_subtree(root).ok_or("graph declaration subtree is unavailable")?;
+        // 7becf0 starts each instance's actual receivers before LoadingEnd.
+        for index in indices {
+            let graph = self.graphs.instance_id(index).ok_or("graph generation is unavailable")?;
+            let (subscriptions, errors) = self.graphs.pickup_subscriptions(graph)?;
+            if !errors.is_empty() { return Err(errors.join("; ")); }
+            for (node, target) in subscriptions { self.register_pickup_receiver(graph, node, target, live)?; }
+        }
+        self.graphs.queue_loading_end(root)?;
+        self.started_entity_graphs.insert(entity);
+        Ok(())
+    }
+    fn register_pickup_receiver(&mut self, graph: u64, node: u32, target: EntityReference,
+        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<(), String> {
+        use crate::gameplay::entity_lifetime::Stage;
+        let target = match target {
+            EntityReference::Named(name) => live.find(&name),
+            EntityReference::Invalid => None,
+            // This host does not admit a managed player slot yet. Never bind
+            // a symbolic player to worldspawn or an arbitrary map entity.
+            EntityReference::Player => {
+                self.report(format!("pickup node {node} has no admitted player receiver; no placeholder subscription was created"));
+                None
+            },
+        };
+        if let Some(target) = target.filter(|id| live.stage(*id) == Some(Stage::Spawned)) {
+            let listeners = self.pickup_subscribers.entry(target).or_default();
+            if !listeners.contains(&(graph, node)) { listeners.push((graph, node)); }
+        }
+        Ok(())
+    }
+    fn reset_pickup_receiver(&mut self, graph: u64, node: u32,
+        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<(), String> {
+        self.pickup_subscribers.retain(|_, listeners| {
+            listeners.retain(|entry| *entry != (graph, node));
+            !listeners.is_empty()
+        });
+        let index = self.graphs.instance_index(graph).ok_or("pickup reset graph retired")?;
+        self.graphs[index].as_mut().ok_or("pickup reset graph busy")?.reset_notification_count(node);
+        if let Some(target) = self.graphs.pickup_subscription(graph, node)? {
+            self.register_pickup_receiver(graph, node, target, live)?;
+        }
+        Ok(())
+    }
+    /// 883d10 snapshots only this entity's receiver list and delivers it in
+    /// reverse registration order. Work joins the existing manager queue.
+    pub(crate) fn dispatch_picked_up(&mut self, target: crate::gameplay::entity_lifetime::EntityId,
+        successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
+        if self.closed || self.source.is_none() { return Err("pickup graph manager is not active".into()); }
+        if live.stage(target) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
+            return Err("pickup notification target is not a spawned entity".into());
+        }
+        let listeners = self.pickup_subscribers.get(&target).cloned().unwrap_or_default();
+        let mut errors = Vec::new();
+        let receivers = listeners.len();
+        for (graph, node) in listeners.into_iter().rev() {
+            errors.extend(self.graphs.picked_up(graph, node, successful, from_grapple)?);
+        }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("ENTITY_GRAPH_PICKUP target={target:?} receivers={receivers} successful={successful} from_grapple={from_grapple} errors={}", errors.len());
+        }
+        Ok(errors)
+    }
+    pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
+        let indices = match self.entity_graphs.get(&entity) {
+            Some(root) => self.graphs.retirement_subtree(*root).ok_or("entity graph subtree is busy")?,
+            None => { self.pickup_subscribers.remove(&entity); return Ok(()) }
+        };
+        let ids: HashSet<_> = indices.iter().filter_map(|&index| self.graphs.instance_id(index)).collect();
+        self.pickup_subscribers.retain(|target, listeners| {
+            listeners.retain(|(graph, _)| !ids.contains(graph));
+            *target != entity && !listeners.is_empty()
+        });
+        self.detach_graph_receivers(&indices.iter().copied().collect());
+        self.graphs.retire_detached(&indices)?;
+        self.started_entity_graphs.remove(&entity);
+        self.entity_graphs.remove(&entity);
+        self.report_graph_lifetime("entity-retired");
+        Ok(())
+    }
+    pub(super) fn detach_graph_receivers(&mut self, graphs: &HashSet<usize>) {
+        for entity in self.entities.values_mut() {
+            if matches!(&entity.owner, FxEntityOwner::Node { graph, .. } if graphs.contains(graph)) {
+                entity.owner = FxEntityOwner::Detached;
+            }
+        }
+        for instance in self.slots.iter_mut().flatten() {
+            if instance.actor_observer.is_some_and(|(graph, _)| graphs.contains(&graph)) {
+                instance.actor_observer = None;
+            }
+        }
+        // 7c10b0 skips queued work once its node instance has been detached.
+        self.graphs.events.retain(|event| !graphs.contains(&event.graph()));
+        self.timers.retain(|(graph, _)| !graphs.contains(graph));
+        self.started.retain(|(graph, _, _)| !graphs.contains(graph));
+        self.completed.retain(|(graph, _, _)| !graphs.contains(graph));
+        self.actor_completed.retain(|(graph, _, _)| !graphs.contains(graph));
+    }
     pub(super) fn dynamic_retired(&self) -> u64 { self.dynamic_retired }
     /// Prepare the live WORLD projections and publish compact frame records.
     /// Their target arrays remain shared with the retained committed records.
@@ -466,18 +634,13 @@ impl WorldParticleState {
         sources: &WorldEffectDefinitions,
         assets: &WorldFxSources,
         frames: &WorldEffectFrames,
+        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
     ) -> Result<(), String> {
-        if self
-            .source
-            .as_ref()
-            .is_some_and(|old| Arc::ptr_eq(old, &sources.graphs))
-        {
-            return Ok(());
-        }
-        if self.source.is_some() {
+        if self.source.as_ref().is_some_and(|old| !Arc::ptr_eq(old, &sources.graphs)) {
             return Err("world FX level changed before the shared pool was reset".into());
         }
-        self.graphs = FxGraphInstances::new(&sources.graphs, &assets.declarations, sources.seed);
+        if self.source.is_none() { self.prepare_graphs(sources, &assets.declarations, live)?; }
+        if self.actors_initialized { return Ok(()); }
         // 87e8e0 starts a placed actor's declared effect unless startOff is set.
         // It retains the scene actor after playback; NodeFx-created entities
         // have a different completion lifetime below.
@@ -532,10 +695,7 @@ impl WorldParticleState {
                 },
             );
         }
-        for error in self.graphs.loading_end() {
-            self.report(error);
-        }
-        self.source = Some(sources.graphs.clone());
+        self.actors_initialized = true;
         Ok(())
     }
     fn stop(&mut self, handle: u32, systems: &mut ParticleSystems) -> Result<(), String> {
@@ -705,6 +865,13 @@ impl WorldParticleState {
     }
 
     fn shutdown_inner(&mut self, systems: &mut ParticleSystems) -> Result<(), String> {
+        // 7c0f30 destroys graph receivers before separately owned FX tails.
+        // Closing is persistent across a fallible family clear: no later view
+        // update may resurrect graph work while shutdown is being retried.
+        self.closed = true;
+        let indices: Vec<_> = self.graphs.live_indices().collect();
+        self.detach_graph_receivers(&indices.iter().copied().collect());
+        self.graphs.retire_detached(&indices)?;
         // A family clear can notify another still-live instance in this host.
         // Disarm every completion route before the first fallible clear.
         for instance in self.slots.iter_mut().flatten() { instance.actor_observer = None; }
@@ -713,6 +880,10 @@ impl WorldParticleState {
                 entity.owner = FxEntityOwner::Detached;
             }
         }
+        self.pickup_subscribers.clear();
+        self.entity_graphs.clear();
+        self.started_entity_graphs.clear();
+        self.report_graph_lifetime("graphs-retired");
         self.started.clear();
         self.completed.clear();
         self.actor_completed.clear();
@@ -823,11 +994,12 @@ impl WorldParticleState {
         camera: ReferenceFrame,
         underwater: bool,
         world: &crate::gameplay::world_point_query::level::LevelPointQueries,
+        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
     ) -> Result<(), String> {
-        if self.frame == Some(frame) {
+        if self.closed || self.frame == Some(frame) {
             return Ok(());
         }
-        if self.source.is_none() {
+        if !self.actors_initialized {
             let audio = sounds.lock();
             for effect in sources
                 .effects
@@ -874,7 +1046,7 @@ impl WorldParticleState {
                 }
             }
         }
-        self.initialize(graphs, sources, frames)?;
+        self.initialize(graphs, sources, frames, live)?;
         self.sync_dynamic(dynamic, systems, frames)?;
         if !Arc::ptr_eq(&self.decal_programs, &decal_scene.programs) {
             self.decal_programs = decal_scene.programs.clone();
@@ -972,7 +1144,16 @@ impl WorldParticleState {
             }
             self.collect(index);
         }
-        while let Some((index, node, port)) = self.graphs.events.pop() {
+        self.graphs.events.begin_update();
+        while let Some(event) = self.graphs.events.pop() {
+            let (index, node, port) = match event {
+                GraphEvent::Action { graph, node, port } => (graph, node, port),
+                GraphEvent::LoadingEnd { graph, node } => {
+                    self.graphs[graph].as_mut().ok_or("startup graph busy")?.loading_end_node(node)?;
+                    self.collect(graph);
+                    continue;
+                }
+            };
             let mut runtime = self.graphs[index].take().ok_or("FX graph busy")?;
             runtime.notify(node, port);
             let result = runtime.step(&mut GraphHost {
@@ -985,6 +1166,10 @@ impl WorldParticleState {
             });
             self.graphs[index] = Some(runtime);
             match result {
+                Ok(GraphStep::PickupReset { node }) => {
+                    let graph = self.graphs.instance_id(index).ok_or("pickup reset graph retired")?;
+                    self.reset_pickup_receiver(graph, node, live.ok_or("pickup reset has no managed entity owner")?)?;
+                }
                 Ok(GraphStep::Action {
                     schedule: Some(node),
                 }) => {

@@ -59,6 +59,7 @@ pub trait FxGraphWorld {
     fn entity_clock(&mut self, entity: u32) -> Result<Option<f64>, String>;
 }
 pub enum GraphStep {
+    PickupReset { node: u32 },
     Idle,
     Action { schedule: Option<u32> },
 }
@@ -75,7 +76,10 @@ pub struct FxGraphRuntime {
     gate_open: HashMap<u32, bool>,
     effects: HashMap<u32, FxNode>,
     entity_effects: HashMap<u32, super::entity_node::EntityFxNode>,
+    notifications: Option<Box<HashMap<u32, NotificationState>>>,
 }
+#[derive(Default)]
+struct NotificationState { count: i32, instigator: Option<EntityReference> }
 impl GraphInputs for FxGraphRuntime {
     fn boolean_override(&self, node: &Node, name: &str) -> Option<bool> {
         (node.class == "arkKisculeNodeGate" && name == "m_isOpen")
@@ -109,6 +113,10 @@ impl GraphInputs for FxGraphRuntime {
             .iter()
             .find(|point| point.id == port)
             .ok_or("graph variable port absent")?;
+        if node.class == "arkKisculeNodePickupNotification" && point.name == "m_instigator" {
+            return Ok(Some(GraphValue::Entity(self.notifications.as_ref()
+                .and_then(|states| states.get(&node.id)).and_then(|state| state.instigator.clone()))));
+        }
         if let Some(value) = super::values::evaluate(self, node, &point.name, depth)? {
             return Ok(Some(value));
         }
@@ -171,6 +179,7 @@ impl FxGraphRuntime {
             gate_open: HashMap::new(),
             effects: HashMap::new(),
             entity_effects: HashMap::new(),
+            notifications: None,
         }
     }
     pub(super) fn set_owner(&mut self, owner: String) { self.owner = owner; }
@@ -259,6 +268,9 @@ impl FxGraphRuntime {
         std::mem::take(&mut self.pending)
     }
     pub(super) fn emit(&mut self, id: u32, name: &str) -> Result<(), String> {
+        self.emit_queued(id, name, false).map(|_| ())
+    }
+    fn emit_queued(&mut self, id: u32, name: &str, count_pruned: bool) -> Result<bool, String> {
         let definition = self.shared_definition();
         let node = definition.node(id)?;
         let links = node
@@ -267,19 +279,74 @@ impl FxGraphRuntime {
             .find(|p| p.name == name && p.kind.starts_with("Output"))
             .map(|p| p.links.as_slice())
             .unwrap_or_default();
+        let mut connected = false;
         for &(target, port) in links {
-            if !self.relevant.contains(&target) {
-                continue;
-            }
+            let relevant = self.relevant.contains(&target);
+            if !count_pruned && !relevant { continue; }
             if self.node(target).ok().is_some_and(|n| {
                 n.ports
                     .iter()
                     .any(|p| p.id == port && p.kind.starts_with("Input"))
             }) {
-                self.pending.push((target, port));
+                connected = true;
+                if relevant { self.pending.push((target, port)); }
+            }
+        }
+        Ok(connected)
+    }
+    /// 1407ac360 receives the pickedUp event on the subscribed entity. The
+    /// local player is its notification instigator; a shadow-grapple pickup
+    /// is ignored only when the connected/authored flag requests that filter.
+    pub fn picked_up(&mut self, id: u32, successful: bool, from_grapple: bool) -> Result<(), String> {
+        let definition = self.shared_definition();
+        let node = definition.node(id)?;
+        if node.class != "arkKisculeNodePickupNotification" { return Err("node is not a pickup notification".into()); }
+        let ignore_grapple = self.boolean_input(node, "m_ignoreShadowGrapple", false)?;
+        if from_grapple && ignore_grapple { return Ok(()); }
+        let maximum = self.integer_input(node, "m_maxNotificationCount", -1)?;
+        self.notifications.get_or_insert_with(Default::default).entry(id).or_default().instigator = Some(EntityReference::Player);
+        self.notification_outputs(id, maximum, if successful { "Picked Up" } else { "Picked Up Failed" })
+    }
+    fn notification_outputs(&mut self, id: u32, maximum: i32, first: &str) -> Result<(), String> {
+        for output in [first, "Out"] {
+            let count = self.notifications.as_ref().unwrap().get(&id).unwrap().count;
+            if (maximum < 0 || count < maximum) && self.emit_queued(id, output, true)? {
+                let state = self.notifications.as_mut().unwrap().get_mut(&id).unwrap();
+                state.count = state.count.wrapping_add(1);
             }
         }
         Ok(())
+    }
+    /// Reset clears the notification count; the subscription owner handles
+    /// its own unsubscribe/re-subscribe and preserves the last instigator.
+    pub fn reset_notification_count(&mut self, id: u32) {
+        if let Some(state) = self.notifications.as_mut().and_then(|states| states.get_mut(&id)) {
+            state.count = 0;
+        }
+    }
+    pub fn pickup_subscriptions(&self) -> (Vec<(u32, EntityReference)>, Vec<String>) {
+        self.notification_subscriptions("arkKisculeNodePickupNotification")
+    }
+    pub fn pickup_subscription(&self, id: u32) -> Result<Option<EntityReference>, String> {
+        let node = self.node(id)?;
+        if node.class != "arkKisculeNodePickupNotification" { return Err("node is not a pickup notification".into()); }
+        if !self.boolean_input(node, "m_enabled", true)? { return Ok(None); }
+        let default = atom(&node.params, "m_listenedEntity")
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+            .map(|name| EntityReference::Named(name.to_owned()));
+        Ok(self.entity_input(node, "m_listenedEntity", default)?.filter(|target| *target != EntityReference::Invalid))
+    }
+    fn notification_subscriptions(&self, class: &str) -> (Vec<(u32, EntityReference)>, Vec<String>) {
+        let mut subscriptions = Vec::new();
+        let mut errors = Vec::new();
+        for node in self.graph.nodes.iter().filter(|node| node.class == class && self.relevant.contains(&node.id)) {
+            match self.pickup_subscription(node.id) {
+                Ok(Some(target)) => subscriptions.push((node.id, target)),
+                Ok(None) => {},
+                Err(error) => errors.push(format!("node {}: {error}", node.id)),
+            }
+        }
+        (subscriptions, errors)
     }
     pub fn loading_end(&mut self) -> Result<(), String> {
         let nodes = self
@@ -289,10 +356,12 @@ impl FxGraphRuntime {
             .filter(|n| n.class == "arkKisculeNodeLoadingEnd")
             .map(|n| n.id)
             .collect::<Vec<_>>();
-        for id in nodes {
-            self.emit(id, "LevelLoadedFirstTime")?;
-        }
+        for id in nodes { self.loading_end_node(id)?; }
         Ok(())
+    }
+    pub fn loading_end_node(&mut self, node: u32) -> Result<(), String> {
+        if self.node(node)?.class != "arkKisculeNodeLoadingEnd" { return Err("LoadingEnd node changed".into()); }
+        self.emit(node, "LevelLoadedFirstTime")
     }
     pub fn notify(&mut self, node: u32, port: u32) {
         if self.relevant.contains(&node) {
@@ -315,6 +384,9 @@ impl FxGraphRuntime {
             .ok_or("missing event port")?;
         let mut schedule = None;
         let paired_outputs = match node.class.as_str() {
+            "arkKisculeNodePickupNotification" if port.name == "Reset" => {
+                return Ok(GraphStep::PickupReset { node: id });
+            }
             "arkKisculeNodeEntityFx" => {
                 let reference = |name| {
                     atom(&node.params, name)

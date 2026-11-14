@@ -518,14 +518,15 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 sources.effects.len(), sources.effects.values().filter(|effect| effect.is_err()).count());
             let graph_errors = instances.loading_end();
             let mut digest = blake3::Hasher::new();
-            for &(instance, node, port) in &instances.events {
-                digest.update(instances.owner(instance).as_bytes());
+            for event in instances.events.pending() {
+                    let dishonored2_rust::gameplay::effects::instances::GraphEvent::Action { graph: instance, node, port } = event else { continue };
+                digest.update(instances.owner(*instance).as_bytes());
                 digest.update(&node.to_le_bytes());
                 digest.update(&port.to_le_bytes());
             }
             println!(
                 "loading_events={} loading_errors={} event_hash={}",
-                instances.events.len(),
+                instances.events.pending().count(),
                 graph_errors.len(),
                 digest.finalize()
             );

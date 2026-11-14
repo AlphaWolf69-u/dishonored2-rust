@@ -2,6 +2,80 @@
 //! retain node state and decide which actions to execute.
 use crate::assets::entities::event_graph::{atom, Node};
 
+/// The Kiscule manager owns a startup stack and two alternating update
+/// stacks (7bf290 / 7c10b0). Ordinary callbacks enqueue into the current
+/// stack only while the manager is processing; external callbacks enqueue
+/// into the next stack. Work emitted by a startup callback enters the current
+/// update stack, which is not the startup stack being drained.
+pub struct ManagerWork<T> {
+    startup: Vec<T>,
+    current: Vec<T>,
+    deferred: Vec<T>,
+    started: bool,
+    processing: bool,
+    draining_startup: bool,
+    startup_callback: bool,
+}
+impl<T> Default for ManagerWork<T> {
+    fn default() -> Self {
+        Self { startup: Vec::new(), current: Vec::new(), deferred: Vec::new(),
+            started: false, processing: false, draining_startup: false, startup_callback: false }
+    }
+}
+impl<T> ManagerWork<T> {
+    pub fn push(&mut self, item: T) {
+        if self.startup_callback || (self.started && self.processing) { self.current.push(item); }
+        else if self.started { self.deferred.push(item); }
+        else { self.startup.push(item); }
+    }
+    /// A callback returning the same action kind is deferred (7c1202).
+    pub fn push_deferred(&mut self, item: T) {
+        if self.started { self.deferred.push(item); } else { self.startup.push(item); }
+    }
+    /// Used for the already-evaluated LoadingEnd startup callbacks until the
+    /// entity manager supplies individual startup-node dispatch.
+    pub fn startup_callback(&mut self, enabled: bool) { self.startup_callback = enabled; }
+    /// Called by the manager's startup owner, after its actual readiness gate.
+    pub fn start(&mut self) {
+        if self.started { return; }
+        self.started = true;
+        self.processing = true;
+        self.draining_startup = true;
+    }
+    pub fn begin_update(&mut self) {
+        if !self.started { return; }
+        // An owner error may have interrupted the previous drain. Resume that
+        // same list rather than swapping away its remaining work.
+        if self.processing { return; }
+        self.processing = true;
+        std::mem::swap(&mut self.current, &mut self.deferred);
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        if !self.processing { return None; }
+        if self.draining_startup {
+            if let Some(item) = self.startup.pop() { return Some(item); }
+            self.draining_startup = false;
+            // The original destroys its one-shot startup list here.
+            self.startup = Vec::new();
+            std::mem::swap(&mut self.current, &mut self.deferred);
+        }
+        match self.current.pop() {
+            Some(item) => Some(item),
+            None => { self.processing = false; None }
+        }
+    }
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        self.startup.retain(&mut keep);
+        self.current.retain(&mut keep);
+        self.deferred.retain(keep);
+    }
+    /// Borrow the retained queues for resource diagnostics. This does not
+    /// enter an execution phase or alter the manager's dispatch order.
+    pub fn pending(&self) -> impl Iterator<Item = &T> {
+        self.startup.iter().chain(&self.current).chain(&self.deferred)
+    }
+}
+
 /// Runtime entity identity, separate from serialized map names. Player resolves
 /// through the active player owner (7a8500), never a fabricated map entity name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

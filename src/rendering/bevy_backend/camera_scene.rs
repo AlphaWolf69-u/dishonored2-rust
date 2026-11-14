@@ -51,6 +51,27 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    pub(crate) fn prepare_entity_graphs(&mut self,
+        definitions: &super::world_effects::WorldEffectDefinitions,
+        sources: &crate::rendering::particles::world_sources::WorldFxSources,
+        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> Result<(), String> {
+        self.world_particles.prepare_graphs(definitions, &sources.declarations, live)
+    }
+    /// Admit an actual dynamically spawned owner using already acquired
+    /// declarations; graph construction never does archive IO on this thread.
+    pub(crate) fn admit_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        graph: std::sync::Arc<crate::assets::entities::effects::FxGraph>,
+        declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
+        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<u64, String> {
+        self.world_particles.admit_entity_graph(entity, graph, declarations, live)
+    }
+    pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
+        self.world_particles.retire_entity_graph(entity)
+    }
+    pub(crate) fn dispatch_picked_up(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
+        self.world_particles.dispatch_picked_up(entity, successful, from_grapple, live)
+    }
     /// End the player chains, then retire the world FX manager (199df0).
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         let screen = self.screen_state.shutdown(&mut self.particle_systems);
@@ -707,6 +728,7 @@ pub(crate) struct FxUpdateInputs<'w> {
     world_sounds: Res<'w, super::world_sounds::WorldSounds>,
     decals: Res<'w, super::projected_decals::DecalScene>,
     swimming_surface: Res<'w, super::water_scene::SwimmingSurfaceMailbox>,
+    live: Option<Res<'w, crate::gameplay::entity_lifetime::LiveEntities>>,
 }
 
 /// Gameplay owns the sole world/player FX simulation and particle pool. The
@@ -755,7 +777,7 @@ pub(crate) fn simulate_effects(
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
         match world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
-            particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater, &inputs.world) {
+            particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater, &inputs.world, fx.live.as_deref()) {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
                 warn!("World particle preparation pending: {error}");

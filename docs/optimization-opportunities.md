@@ -2269,3 +2269,6 @@ runtime-array ABI/write contract and affected-function evidence. The current
 serializer backing already reuses exact-sized storage. Do not claim a saving
 for this unimplemented opportunity or multiply allocation counts by source
 count. Playback values, upload scheduling and GPU work must stay unchanged.
+
+
+- World FX timer iteration (`world_particle_state::advance`) still moves out its timer Vec and pushes surviving callbacks into a new Vec. Reusing two callback buffers should remove allocation proportional to active timer frames while preserving native callback insertion order. This predates the graph-owner recovery; no gain is claimed without an isolated active-timer observation. It is left separate from the required subscription/startup/retirement contract.

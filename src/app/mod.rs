@@ -195,3 +195,5 @@ mod tests;
 mod projected_decals;
 
 mod rigid_body;
+
+mod entity_graphs;

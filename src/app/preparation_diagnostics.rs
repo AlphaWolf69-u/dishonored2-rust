@@ -123,14 +123,15 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 );
                 let errors = instances.loading_end();
                 let mut digest = blake3::Hasher::new();
-                for &(instance, node, port) in &instances.events {
-                    digest.update(instances.owner(instance).as_bytes());
+                for event in instances.events.pending() {
+                    let crate::gameplay::effects::instances::GraphEvent::Action { graph: instance, node, port } = event else { continue };
+                    digest.update(instances.owner(*instance).as_bytes());
                     digest.update(&node.to_le_bytes()); digest.update(&port.to_le_bytes());
                 }
                 eprintln!("PARTICLE_CPU_PREPARATION step={step} level={name} declaration_requests={} declaration_reads={} model_reads={} field_reads={} effects={} failures={} events={} graph_errors={} event_hash={}",
                     resources.declaration_requests, resources.declaration_reads, resources.model_reads, resources.field_image_reads,
                     sources.effects.len(), sources.effects.values().filter(|effect| effect.is_err()).count(),
-                    instances.events.len(), errors.len(), digest.finalize());
+                    instances.events.pending().count(), errors.len(), digest.finalize());
                 resources.retire_unused();
             }
             prepared.keep_registered_resources();

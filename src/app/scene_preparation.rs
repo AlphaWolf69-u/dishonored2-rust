@@ -154,6 +154,7 @@ impl ScenePreparation {
             interactions.as_ref(),
             volumes.as_ref(),
             effects.as_ref(),
+            prepared.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>(),
             Some((shared, base_image_batch_bytes)),
             &resident_images,
             &check_cancelled,

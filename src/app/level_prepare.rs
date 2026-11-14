@@ -1034,6 +1034,10 @@ pub(super) fn prepare_level(
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     super::load_timing::mark("machinery and wind");
     check_cancelled()?;
+    let graph_definitions = entity_document.as_ref().map(|document|
+        crate::assets::entities::effects::load_with_entities(document,
+            app.world().get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
+        .transpose().map_err(std::io::Error::other)?.unwrap_or_default();
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
         .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
         // Bevy allocates six depth layers for every shadow-casting point
@@ -1050,14 +1054,7 @@ pub(super) fn prepare_level(
         )
         .insert_resource(
             crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions {
-                graphs: std::sync::Arc::new(
-                    entity_document
-                        .as_ref()
-                        .map(crate::assets::entities::effects::load)
-                        .transpose()
-                        .map_err(std::io::Error::other)?
-                        .unwrap_or_default(),
-                ),
+                graphs: std::sync::Arc::new(graph_definitions),
                 actors: std::sync::Arc::new(
                     entity_document
                         .as_ref()

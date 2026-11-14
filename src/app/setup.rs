@@ -245,10 +245,10 @@ pub(super) fn setup(
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
     moving: (Option<Res<super::machinery::AmbientMachinery>>, Option<Res<super::interactions::Interactions>>),
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
-    effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>),
+    effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>, Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>),
 ) {
     let (mut programs, prepared) = programs;
-    let (effect_graphs, resident_images) = effects_and_images;
+    let (effect_graphs, resident_images, live_entities) = effects_and_images;
     let (machinery, interactions) = moving;
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
@@ -256,7 +256,7 @@ pub(super) fn setup(
         &mut meshes, None, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
         &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
-        effect_graphs.as_deref(), None, &resident_images, &|| Ok(()))
+        effect_graphs.as_deref(), live_entities.as_deref(), None, &resident_images, &|| Ok(()))
         .unwrap_or_else(|error| panic!("Scene preparation failed: {error}"));
 }
 
@@ -279,6 +279,7 @@ pub(super) fn prepare(
     interactions: Option<&super::interactions::Interactions>,
     environment_volumes: Option<&super::state::EnvironmentVolumes>,
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
+    live_entities: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
     shared_images: Option<(&super::texture_streaming::SharedImages, Option<usize>)>,
     resident_images: &super::resident_images::ResidentImages,
     check_cancelled: &impl Fn() -> Result<(), String>,
@@ -2081,6 +2082,9 @@ pub(super) fn prepare(
         for error in surface_failures { eprintln!("Particle surface: {error}"); }
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
             &mut resolver, meshes, commands));
+        let mut simulation = crate::rendering::bevy_backend::camera_scene::FxSimulation::default();
+        simulation.prepare_entity_graphs(graphs, &sources, live_entities)?;
+        commands.insert_resource(simulation);
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
     commands.insert_resource(super::texture_streaming::environment_images::OceanImageSlots(ocean_image_slots));
