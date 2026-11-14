@@ -4,10 +4,11 @@ use crate::storage::PointerList;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Default)]
-enum ReleasePhase { #[default] Idle, Stop, StopFinish, ReleasePreflight, Deinitialize, Release, ReleaseFinish, Restore }
+enum ReleasePhase { #[default] Idle, Stop, StopPoll, StopFinish, ReleasePreflight, Deinitialize, Release, ReleaseFinish, Restore }
 
 struct ImmediateRelease { component: ComponentHandle, generation: u32, shutdown_done: bool, running: bool }
 struct PendingStopCallback { component: ComponentHandle, generation: u32, running: bool }
+struct PendingStopCompletion { component: ComponentHandle, generation: u32, complete: bool }
 
 /// A callback that is waiting for an external owner retains its queue cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +26,10 @@ pub(crate) struct ReleaseProgress {
     immediate: Vec<ImmediateRelease>,
     stop_callbacks: Vec<PendingStopCallback>,
     waiting_stop: Option<(ComponentHandle, u32)>,
+    // Host: independent backend acknowledgements retain only identities.
+    // Capacity survives batches; completed callbacks are never replayed.
+    pending_stops: Vec<PendingStopCompletion>,
+    stop_poll_next: usize,
 }
 
 #[derive(Default)]
@@ -125,6 +130,7 @@ impl ComponentRegistry {
             && !self.release_progress.running && self.release_progress.immediate.is_empty()
             && self.release_progress.stop_callbacks.is_empty()
             && self.release_progress.deferred.is_empty()
+            && self.release_progress.pending_stops.is_empty() && self.release_progress.waiting_stop.is_none()
     }
 
     pub(crate) fn startup_idle(&self) -> bool {
@@ -190,6 +196,10 @@ impl ComponentRegistry {
                         let count = self.pending_stop.count();
                         self.processed_stop_count = count as i32;
                         sort_batch(&mut self.pending_stop, world)?;
+                        // Reserve before entering a callback: recording Pending
+                        // must never fail after its backend request was accepted.
+                        self.release_progress.pending_stops.try_reserve(count as usize)
+                            .map_err(|error| format!("component Stop acknowledgement batch: {error}"))?;
                         self.release_progress.count = count;
                         self.release_progress.next = count;
                         self.release_progress.phase = ReleasePhase::Stop;
@@ -204,7 +214,19 @@ impl ComponentRegistry {
                     } else { return Ok(ReleaseStatus::Complete); }
                 }
                 ReleasePhase::Stop => {
-                    if self.release_progress.next == 0 { self.release_progress.phase = ReleasePhase::StopFinish; continue; }
+                    if self.release_progress.next == 0 {
+                        if self.release_progress.pending_stops.is_empty() {
+                            self.release_progress.phase = ReleasePhase::StopFinish;
+                            continue;
+                        }
+                        // Native7ea870 issues every Stop in the captured
+                        // reverse-sorted prefix before its destruction pass.
+                        // Backend acknowledgements suspend that barrier, not
+                        // admission of unrelated Stop requests in this batch.
+                        self.release_progress.stop_poll_next = 0;
+                        self.release_progress.phase = ReleasePhase::StopPoll;
+                        return Ok(ReleaseStatus::Pending);
+                    }
                     let index = self.release_progress.next as usize - 1;
                     let component = ComponentHandle::from_packed(*self.pending_stop.values().get(index).ok_or("stop batch changed during release")?)?;
                     let generation = world.owner(component)?.generation;
@@ -215,10 +237,35 @@ impl ComponentRegistry {
                     };
                     self.release_progress.waiting_stop = Some((component, generation));
                     match world.poll_stop(component, self, first)? {
-                        ReleaseStatus::Pending => return Ok(ReleaseStatus::Pending),
-                        ReleaseStatus::Complete => self.release_progress.waiting_stop = None,
+                        ReleaseStatus::Pending => self.release_progress.pending_stops.push(PendingStopCompletion {
+                            component, generation, complete: false,
+                        }),
+                        ReleaseStatus::Complete => {},
                     }
+                    self.release_progress.waiting_stop = None;
                     self.release_progress.next -= 1;
+                }
+                ReleasePhase::StopPoll => {
+                    while self.release_progress.stop_poll_next < self.release_progress.pending_stops.len() {
+                        let index = self.release_progress.stop_poll_next;
+                        let pending = &self.release_progress.pending_stops[index];
+                        if !pending.complete {
+                            let (component, generation) = (pending.component, pending.generation);
+                            if world.owner(component)?.generation != generation {
+                                return Err("pending Stop acknowledgement generation changed".into());
+                            }
+                            if world.poll_stop(component, self, false)? == ReleaseStatus::Complete {
+                                self.release_progress.pending_stops[index].complete = true;
+                            }
+                        }
+                        self.release_progress.stop_poll_next += 1;
+                    }
+                    self.release_progress.stop_poll_next = 0;
+                    if self.release_progress.pending_stops.iter().any(|pending| !pending.complete) {
+                        return Ok(ReleaseStatus::Pending);
+                    }
+                    self.release_progress.pending_stops.clear();
+                    self.release_progress.phase = ReleasePhase::StopFinish;
                 }
                 ReleasePhase::StopFinish => {
                     if self.pending_stop.finish_prefix(self.release_progress.count, 64)? {

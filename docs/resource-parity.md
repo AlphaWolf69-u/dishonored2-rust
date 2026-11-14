@@ -8609,3 +8609,37 @@ per-frame sampling pass, extra GPU pass, per-frame I/O or rest-pose substitution
 is introduced. Startup dependency work is fidelity work, not a speed claim.
 Source metadata/provenance: main artifacts/readable-door-owner-conclusion-20261114.json
 and its installed owner/animation captures. Coherent acquisition verifies it.
+
+
+### Batched component Stop acknowledgements (2026-11-14)
+
+- Owner: `gameplay/component_state/lifecycle.rs`, existing canonical component
+  registry. Native `1407e72c0` requests Stop before release; `1407ea870`
+  (saved `chunk_000334.c`, lines3091 onward) invokes virtual30 for the entire
+  reverse-sorted captured Stop prefix, retires that prefix and pumps events,
+  then invokes all virtual20 deinitializers before the virtual78 destructors.
+- `host`: the backend may finish an accepted Stop asynchronously. Previously
+  returning Pending from the first audio object suspended the native Stop
+  iteration itself, admitting one object's retirement FIFO request per pass.
+  The saved windowless EOTW baseline at source47ed71f6 records
+  `RESOURCE_SCENE_RETIREMENT phase=complete passes=1697 output=false` in
+  `artifacts/coherent-resource-owners-20261114-20261114T181846Z-7d65fb33/scene-shared.log:13591`.
+- The same Stop iteration now issues every captured callback once, retaining
+  Pending handle/generation identities in reusable batch scratch. A separate
+  poll cursor visits every outstanding acknowledgement in original issue
+  order and never repeats completed callbacks. It preserves the exact callback
+  on error; stale generations fail. Queue-prefix removal, event pumping and
+  every deinitializer/destructor remain behind the all-Stop-complete barrier.
+  Existing audio FIFO consumption and actual acknowledgement are unchanged.
+- Prediction recorded before implementation: EOTW component retirement requires
+  two passes rather than1697 (issue all requests, then consume acknowledged
+  completion); total LevelLifetime passes may be three if a separate final
+  FX/level-audio FIFO phase suspends. Pass count must be independent of audio
+  object count. No per-round allocations, no copied component/audio world and
+  no work added to ordinary gameplay updates. Scratch capacity grows once at
+  a new Stop batch and is retained for reuse. This is an owner-round count
+  prediction, not a CPU/frame-time claim.
+- Source-only verification: original callback order and error/retry invariants
+  reviewed; Rust syntax parsing and diff checks only. No tests, builds, game
+  launches or new measurements performed by this agent. Root will record the
+  actual shared-level owner result with the coherent combined build.
