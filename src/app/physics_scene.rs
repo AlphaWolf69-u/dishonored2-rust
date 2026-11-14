@@ -479,12 +479,14 @@ impl PhysicsScene {
         if let Some(interactions) = interactions {
             scene.admit_usable_components(document, interactions, live, &mut registry, constructor_tag)?;
         }
-        for entity in &scene.entities { live.initialized(entity.shared)?; }
-        registry.initialize_and_start(&mut scene)?;
+        // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
+        // later game-local shared component initialization/Start drain.
         for (index, entity) in scene.entities.iter().enumerate() {
+            live.initialized(entity.shared)?;
             live.spawned(entity.shared)?;
             scene.shared_indices.insert(entity.shared, index);
         }
+        registry.initialize_and_start(&mut scene)?;
         scene.registry = Some(registry);
         scene.finish_point_queries()?;
         Ok(scene)
