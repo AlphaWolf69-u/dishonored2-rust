@@ -12,18 +12,26 @@ does not regress. Backend differences must remain labelled and measured.
 ## Current continuation (2026-11-14)
 
 Main `1bf3109f` includes the verified blueprint read-history lifetime fix.
-The larger component, scene, shape and audio-owner recovery remains isolated
-on `codex/fx-declaration-lifetime` until real installed-level acquisition and
-retirement succeed. Source `dc9b74a5` compiled both the game/tools target and
-the default library, and passed independent midnightScene scope, cancellation
-and Catalog-history observations. Its Edge of the World publication failed
-at the explicit uncached convex mass calculation; canonical rollback finished
-without an additional cleanup error. That is a real missing implementation,
-not an accepted level result or a memory/performance regression measurement.
+The component, scene, shape and audio-owner recovery remains isolated until
+final integration acceptance. Completed source200df5cf compiled the game/tools
+target and default library, passed scene scope/cancellation/Catalog-history
+observations, and completed paired windowless EotW/Dust/EotW acquisition and
+retirement. Shared retirement required two passes per level. These are source
+acquisition and lifetime observations, not gameplay, GPU, appearance or
+performance acceptance. The cohort exposed zero physhape headers;389ad6ff
+corrects their admission gate, and371c6435 adds hidden readable physical
+descriptors. Source371c6435 now passes compilation and paired acquisition/retirement.
+The corrected common coin path reads once instead of three times, and
+midnight projection decodes fall from65 to39 with matching recorded content.
+All36-level publication and GPU acquisition/removal remain the final acceptance
+step; no gameplay CPU or whole-process RAM gain is claimed.
 
-The installed readable census additionally identifies dynamic and attached
-body consumers that must use their actual body/hierarchy owners before
-all-level acceptance. A separately recovered level-boundary modal Clear now
+The installed readable census covers876 readable instances with839 rigid
+components, including sleeping dynamic and attached bodies. Their canonical
+body/hierarchy owners now compile and pass the paired acquisition route. The
+all-level sweep has additionally exposed an unresolved managed parent name in
+Curator high-chaos after nine successful map retirements; the reference rule
+is being reconciled with the original before final acceptance. A separately recovered level-boundary modal Clear now
 releases previous Journal/reading movies; ordinary modal Close retains its
 existing semantics. These source changes and original-code provenance are
 recorded in the parity ledger. Historical observations below describe their
