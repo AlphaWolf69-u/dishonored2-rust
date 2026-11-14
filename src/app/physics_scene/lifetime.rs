@@ -126,6 +126,7 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[2] { membership!(scene.winds) }
         else if handle.class_id == scene.classes[3] { membership!(scene.actors.actors) }
         else if handle.class_id == scene.classes[4] { membership!(scene.audios) }
+        else if handle.class_id == scene.classes[5] { membership!(scene.usables) }
         else { Err("physics update roster class is unsupported".into()) }
     }
 }
@@ -161,6 +162,22 @@ impl ComponentReleaseWorld for Host<'_> {
             drop(query_owner);
         } else if handle.class_id == scene.classes[4] {
             scene.audios.get_mut(handle.slot).ok_or("audio component absent")?.started = false;
+        } else if handle.class_id == scene.classes[5] {
+            let actor = scene.usables.get(handle.slot).ok_or("usable component absent")?.actor;
+            if !self.world.contains_resource::<super::super::interactions::Interactions>()
+                || !self.world.contains_resource::<super::super::NavigationWorld>()
+                || !self.world.contains_resource::<super::super::usable_animation::UsableAnimations>()
+                || !self.world.contains_resource::<super::super::usable_effects::UsableEffects>() {
+                return Err("usable Stop is waiting for its interaction backends".into());
+            }
+            self.world.resource_scope(|world, mut interactions: bevy::prelude::Mut<super::super::interactions::Interactions>| {
+                world.resource_scope(|world, mut navigation: bevy::prelude::Mut<super::super::NavigationWorld>| {
+                    world.resource_scope(|world, mut animations: bevy::prelude::Mut<super::super::usable_animation::UsableAnimations>| {
+                        let mut effects = world.resource_mut::<super::super::usable_effects::UsableEffects>();
+                        interactions.stop_actor(actor, &mut navigation.0, &mut animations, &mut effects);
+                    });
+                });
+            });
         }
         registry.stop_update_ownership(handle, self)
     }
@@ -226,6 +243,7 @@ impl ComponentReleaseWorld for Host<'_> {
             if entity.components.reference_actor == Some(handle) { entity.components.reference_actor = None; }
             Ok(())
         } else if handle.class_id == scene.classes[4] { entity.components.release(handle, scene.audios.get_mut(handle.slot).ok_or("audio absent")?) }
+        else if handle.class_id == scene.classes[5] { entity.components.release(handle, scene.usables.get_mut(handle.slot).ok_or("usable absent")?) }
         else { Err("physics shutdown class is unsupported".into()) }
     }
 
@@ -238,6 +256,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[2] { scene.winds.release(handle.slot)?; }
         else if handle.class_id == scene.classes[3] { scene.actors.actors.release(handle.slot)?; }
         else if handle.class_id == scene.classes[4] { scene.audios.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
         Ok(())

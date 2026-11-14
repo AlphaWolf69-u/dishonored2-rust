@@ -40,10 +40,10 @@ impl LevelLifetime {
     }
 
     pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
-        super::interactions::stop_level(world);
         // Poll while all actual support owners remain published. Pending and
         // errors preserve the sole registry, component pools and body world.
         if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
+        super::interactions::stop_level(world);
         // bevy_backend: retire player and world FX chains while their
         // support owners are still present. The caller has acknowledged the
         // outgoing render publication. This does not replace the GameLocal

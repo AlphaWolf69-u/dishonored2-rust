@@ -61,6 +61,7 @@ pub struct DefinitionData {
 pub struct Binding {
     pub entity: String,
     pub definition: Arc<DefinitionData>,
+    pub scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling,
 }
 
 /// Corners of the fake interaction box in game coordinates. 14077af40
@@ -290,7 +291,7 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
     let declarations: HashMap<&str, &Definition> = document.definitions.iter()
         .filter(|d| d.kind == "component").map(|d| (d.id.as_str(), d)).collect();
     let mut source_cache = HashMap::new();
-    let mut typed_cache: HashMap<String, Arc<DefinitionData>> = HashMap::new();
+    let mut typed_cache: HashMap<String, (Arc<DefinitionData>, crate::gameplay::component_state::declaration::DeclarationScheduling)> = HashMap::new();
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         let entries = child(child(&entity.fields, "edit"), "m_componentDecls");
@@ -299,7 +300,7 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
             let cache_key = if field(entry, "inlineDecl").is_none() {
                 atom(entry, "mapComponentDecl").or_else(|| atom(entry, "inheritedDecl")).map(str::to_owned)
             } else { None };
-            let definition = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
+            let (definition, scheduling) = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
                 shared.clone()
             } else {
                 let fields = match components::entry_fields(entry, "cpntusablewithstatelist", &declarations, &mut source_cache, &mut read) {
@@ -311,10 +312,12 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
                     Ok(definition) => Arc::new(definition),
                     Err(error) => { eprintln!("Usable component {} {key}: {error}", entity.id); continue; }
                 };
-                if let Some(key) = cache_key { typed_cache.insert(key, definition.clone()); }
-                definition
+                let scheduling = components::scheduling(&fields,
+                    crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?;
+                if let Some(key) = cache_key { typed_cache.insert(key, (definition.clone(), scheduling.clone())); }
+                (definition, scheduling)
             };
-            result.push(Binding { entity: entity.id.clone(), definition });
+            result.push(Binding { entity: entity.id.clone(), definition, scheduling });
         }
     }
     Ok(result)

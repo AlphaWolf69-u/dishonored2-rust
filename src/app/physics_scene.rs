@@ -34,6 +34,8 @@ use std::{
     },
 };
 mod startup;
+mod interaction_components;
+use interaction_components::UsableComponent;
 pub(super) mod lifetime;
 
 struct PhysicsEntity {
@@ -51,8 +53,8 @@ struct PhysicsEntity {
 pub(super) struct PhysicsScene {
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 5],
-    classes: [i32; 5],
+    factories: [u32; 6],
+    classes: [i32; 6],
     entities: Vec<PhysicsEntity>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
     declarations: HashMap<u64, ComponentDeclaration>,
@@ -64,6 +66,7 @@ pub(super) struct PhysicsScene {
     /// common component reference/lifecycle headers, not another wind field.
     winds: ComponentPool<ComponentOwner>,
     audios: ComponentPool<crate::gameplay::sound::component::AudioComponent>,
+    usables: ComponentPool<UsableComponent>,
     audio_bindings: Vec<entities::audio::AudioBinding>,
     audio_handles: Vec<ComponentHandle>,
     actors: PhysicsActorLinks,
@@ -184,6 +187,7 @@ impl PhysicsScene {
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
         live: &mut crate::gameplay::entity_lifetime::LiveEntities,
+        interactions: Option<&super::interactions::Interactions>,
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
         let constructor_tag = types.intern_name(Some(b"MAIN"))?;
@@ -209,6 +213,7 @@ impl PhysicsScene {
             factory(b"arkCpntWind")?,
             32,
             factory(b"arkCpntAudio")?,
+            factory(b"arkCpntUsableWithStateList")?,
         ];
         let names = types.classes().hierarchy().registration_order().iter().map(|&index| {
             let class = types.classes().metadata(index).ok_or("physics class metadata absent")?;
@@ -221,8 +226,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 5];
-        for i in 0..5 {
+        let mut classes = [0; 6];
+        for i in 0..6 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -285,6 +290,7 @@ impl PhysicsScene {
             waters: types.create_pool(factories[1], &cvars.cvars)?,
             winds: types.create_pool(factories[2], &cvars.cvars)?,
             audios: types.create_pool(factories[4], &cvars.cvars)?,
+            usables: types.create_pool(factories[5], &cvars.cvars)?,
             audio_bindings,
             audio_handles: Vec::new(),
             actors: PhysicsActorLinks {
@@ -470,6 +476,9 @@ impl PhysicsScene {
             scene.audio_handles.push(handle);
         }
         drop(query_world);
+        if let Some(interactions) = interactions {
+            scene.admit_usable_components(document, interactions, live, &mut registry, constructor_tag)?;
+        }
         for entity in &scene.entities { live.initialized(entity.shared)?; }
         registry.initialize_and_start(&mut scene)?;
         for (index, entity) in scene.entities.iter().enumerate() {
@@ -673,6 +682,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.actors.actors.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[4] {
             self.audios.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[5] {
+            self.usables.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -692,6 +703,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[4] {
             self.audios.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[5] {
+            self.usables.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };
@@ -889,6 +902,7 @@ impl ComponentLifecycleWorld for PhysicsScene {
             if scheduled {
                 if handle.class_id == self.classes[2] { self.winds.schedule(handle.slot)?; }
                 else if handle.class_id == self.classes[3] { self.actors.actors.schedule(handle.slot)?; }
+                else if handle.class_id == self.classes[5] { self.usables.schedule(handle.slot)?; }
                 else { return Err("scheduled physics component class is unsupported".into()); }
             }
             Ok(())

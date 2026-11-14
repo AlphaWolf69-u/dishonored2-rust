@@ -10,6 +10,7 @@ pub(super) struct Actor {
     pub frame: crate::gameplay::reference_frame::ReferenceFrame,
     pub fake_box: Option<navigation::ComponentBox>,
     pub started: bool,
+    pub scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling,
     last_delta: Option<[[f32; 4]; 3]>,
 }
 
@@ -92,7 +93,8 @@ impl Interactions {
                     Err(error) => { bevy::log::warn!("Usable {}: {error}", binding.entity); continue; }
                 } };
             let started = binding.definition.starts_on_spawn;
-            actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, started, last_delta: None });
+            actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, started,
+                scheduling: binding.scheduling, last_delta: None });
         }
         let actor_by_entity = actors.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
         let readable_by_entity = readable.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
@@ -168,6 +170,7 @@ impl Interactions {
         animations: &mut super::usable_animation::UsableAnimations,
         effects: &mut super::usable_effects::UsableEffects) {
         let actor = &mut self.actors[index];
+        if !actor.started { return; }
         actor.started = false;
         if let Some(handle) = actor.fake_box.take() { collision.remove_interaction_box(handle); }
         self.pending.retain(|change| change.actor != index);
