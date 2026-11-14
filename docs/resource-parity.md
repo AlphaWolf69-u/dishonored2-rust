@@ -4625,6 +4625,23 @@ cost or new success-path allocation; failure no longer strands a slot or leaves
 a false cached class. Production error-path exercise remains outstanding;
 no tests or compilation were run for this source fix.
 
+Host component-list allocation safety (recovered from checkpoint 2410aafb):
+`875d50` entity insertion and `7e7210`/`7eb2f0`, `7e7b10`,
+`7e7c00`, `7e72c0` registration/start/stop/release enqueue now use the same
+packed-list owner with fallible growth that retains its existing entries.
+The original non-returning allocation failure is not reproduced by a Rust
+`Result`: the earlier generic `16a4a0` capacity adapter could discard the old
+backing storage before its caller restored only the newly admitted owner's
+flags. The host adapter allocates before publishing replacement storage, so
+the existing rollback paths retain all preceding live component identities.
+Successful capacity, count flags, insertion order and generation assignment
+remain unchanged. Prediction before recovery: no new per-frame work, reads,
+resident cache or successful-growth allocation; failed growth preserves the
+previous list and returns the error. This is failure safety, not a measured
+performance improvement. Source and whitespace review only; no tests, build
+or production allocation-failure exercise was performed. The separately
+checkpointed resumable startup/release dispatcher is not claimed integrated.
+
 
 ### Host archive-session teardown
 

@@ -182,7 +182,7 @@ impl ComponentRegistry {
                 let previous_flags = owner.flags;
                 owner.flags = (owner.flags & !8) | 4;
                 let previous_count = self.pending_start.count();
-                match self.pending_start.append(component as u64, grow_one_at_a_time) {
+                match self.pending_start.append_preserving(component as u64, grow_one_at_a_time) {
                     Ok(index) if index == previous_count && self.pending_start.count() == previous_count + 1 => {}
                     Ok(_) => {
                         owner.flags = previous_flags;
@@ -225,7 +225,7 @@ impl ComponentRegistry {
         owner.declaration = Some(declaration);
         owner.entity = Some(entity);
         let previous_count = self.registered.count();
-        let result = self.registered.append(component as u64, grow_one_at_a_time);
+        let result = self.registered.append_preserving(component as u64, grow_one_at_a_time);
         let index = match result {
             Ok(index) if index == previous_count && self.registered.count() == previous_count + 1 => index,
             Ok(_) => {

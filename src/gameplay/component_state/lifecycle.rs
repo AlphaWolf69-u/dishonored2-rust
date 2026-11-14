@@ -98,7 +98,7 @@ impl ComponentRegistry {
                 let previous_flags = world.owner(component)?.flags;
                 world.owner_mut(component)?.flags = previous_flags | 3;
                 let previous_count = self.pending_release.count();
-                match self.pending_release.append(component.packed(), false) {
+                match self.pending_release.append_preserving(component.packed(), false) {
                     Ok(index) if index == previous_count && self.pending_release.count() == previous_count + 1 => {}
                     Ok(_) => {
                         world.owner_mut(component)?.flags = previous_flags;
@@ -150,7 +150,7 @@ impl ComponentRegistry {
                 world.owner_mut(component)?.flags = flags | 12;
                 if flags & 0x1000_0000 == 0 {
                     let previous_count = self.pending_stop.count();
-                    match self.pending_stop.append(component.packed(), false) {
+                    match self.pending_stop.append_preserving(component.packed(), false) {
                         Ok(index) if index == previous_count && self.pending_stop.count() == previous_count + 1 => {}
                         Ok(_) => {
                             world.owner_mut(component)?.flags = flags;

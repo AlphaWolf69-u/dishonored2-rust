@@ -174,7 +174,7 @@ impl<T: ComponentInstance> ComponentFactory<'_, T> {
         let inserted =
             match entity
                 .entries
-                .insert(position as u32, handle.packed(), self.grow_one_at_a_time)
+                .insert_preserving(position as u32, handle.packed(), self.grow_one_at_a_time)
             {
                 Ok(inserted) => inserted,
                 Err(error) => {
