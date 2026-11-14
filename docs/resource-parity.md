@@ -7910,11 +7910,10 @@ Entity lifetime recovery (main-based integration, 2026-11-14):
   Its strict unsupported-syntax errors are preserved; it is not yet a blanket
   component-admission API. `parse_preparation` is opt-in, so ordinary readers
   do not retain the entire source for an unused identity calculation.
-- Status: source ports recovered; current five-factory app host adapters are
-  being integrated separately. No full GameLocal lifecycle parity, runtime
-  verification, memory saving or CPU improvement is claimed by this core
-  recovery. Prediction: no steady-state cost change before those adapters
-  actually use the recovered owners; source ranges must die with preparation.
+- Status: source ports and current-five-factory lifecycle adapters implemented;
+  coordinated compilation and production retirement observations remain pending.
+  This does not claim full GameLocal support for the56-class checkpoint.
+  Source ranges die with preparation; no unmeasured performance gain is claimed.
 
 ### Canonical trigger body retirement (2026-11-14)
 
@@ -7968,7 +7967,7 @@ is exclusive, and the particle simulation takes one shared guard for its
 whole batch. This changes neither body output nor resource representation and
 adds no copy of the world. Prediction: unchanged body/shape residency and one
 small guard cost per query batch; no timing improvement is claimed. Component
-retirement is being connected to this mutable owner in the following slice.
+retirement uses this mutable owner through `physics_scene::lifetime`.
 The shared component metadata owner keeps one monotonic runtime-name subowner;
 registered class spellings reuse their existing identities. It survives map
 replacement with the existing catalog owner, rather than converting immutable
@@ -7989,21 +7988,15 @@ a claim that the broader checkpoint's56-class migration is complete.
 The audio retirement boundary is pollable so the audio-clock owner can retain
 accepted work and acknowledge its final object release before component reuse.
 
-Faction declaration/component recovery: the single `SessionFactionRegistry`
-class-order owner preserves0607f0/05fc00 registration-before-resolution,
-canonical resource-name identity,0610d0 swap-removal and snapshot-pinned numeric
-indices. `FactionManager` owns directional baseline/current matrices and
-entity overrides/members (604dc0,605c20,605990,6073e0); `FactionComponent` ports
-5bd9a0/5bda20/5bdad0 initialize/start/stop with generation-bearing entity IDs.
-Declaration leases retain the actual source/ancestor identity and lazily
-project faction edits through the existing processed-declaration owner; no
-parallel archive reader or cache is introduced. Acquisition and concrete
-factory admission are connected by the portable interaction host, with a
-strong session lease required across maps and the active matrix retired before
-its pinned registry snapshot. This source recovery makes no unmeasured
-performance claim; the matrix is per-level mutable state and declaration
-identities are session-owned. Notifications require the actual entity/graph
-callback owner and never substitute a no-op.
+Faction declarations/components: Catalog owns the canonical
+`SessionFactionRegistry` and its resource-marker registry. Class entries are
+weak; matrix snapshots and concrete components retain the actual leases.
+`FactionManager` owns directional baseline/current relationships and member
+state (604dc0,605c20,605990,6073e0); `FactionComponent` implements
+5bd9a0/5bda20/5bdad0 initialize/start/stop with managed generations.
+Declaration/source-parent projection is shared and lazy. Notifications require
+the actual entity/graph callback owner; no no-op is substituted. Concrete
+portable factories use this owner; the broader checkpoint is not imported.
 
 ### Autonomous skeletal scene recovery (2026-11-14)
 
@@ -8125,21 +8118,15 @@ mass remains an explicit unsupported calculation, rather than substituting a
 compound bounding-box mass for a convex shape. Alias compounds have no copied
 0xf100 property in08c9a0 and use the existing mode-zero compound calculator.
 
-Faction acquisition is now connected to its sole session class owner:
-`acquire_definition` registers before parse, shares weak source/ancestor leases
-inside that same owner and uses the retained processed-declaration resolver;
-`acquire_all_registered` drains reference-created placeholders in actual class
-order before the matrix snapshot. No per-actor declaration cache is created.
-Launch and both windowless source observers retain a strong registry root
-across map replacement and release its weak lookup at catalog-session end.
-Editable faction declarations use an explicit host `begin_preparation` phase:
-after the outgoing snapshot retires, only parsed generations reset while names
-and class order remain stable. Installed declarations keep normal reuse.
-Prediction: repeated unchanged faction requests reuse the same typed/source
-identities and perform no extra archive reads; source fields are projected
-lazily, never on the gameplay frame. The portable component host owns the
-actual begin/reserve/acquire/snapshot call sequence; no unsupported faction or
-NPC entity is manufactured by this resource API.
+Faction acquisition: `acquire_definition` registers before parsing and
+reuses source/ancestor leases in that same owner. `acquire_all_registered`
+drains reference-created placeholders before the matrix snapshot. Actual
+selected manifest header registration owns preload order and layer/container
+filtering; callers do not flatten and reserve every manifest entry again.
+Editable faction declarations reset parsed generations only at the explicit
+`begin_preparation` boundary after the outgoing snapshot retires. Installed
+sources keep normal reuse. No per-actor cache or faction-owned NPC reader is
+introduced.
 
 Retireable trigger geometry integration: the current typed scene now checks live Option slots for trigger placements, shape IDs and query resources instead of dereferencing retired arena entries. Trigger Deinitialize destroys the real body before retiring its placement/shape lease; all existing shape indices remain stable while live. The game-only WorldStorage constructor handoff now initializes the original two GameLocal timespaces once before component initialization; acoustic worlds retain their ordinary constructor setup. This composes the separate rigid-resource and motion-owner commits. No tests/build/run or measured savings.
 Singleton transition observer handoff: PublicationSignals now owns the actual distinct world+8a0 motion_type_changed signal (c892c0), and ComponentPublicationEvents dispatches it through the same real component observer host. The prior context trait boundary rejected every request; actual empty listener lists now naturally deliver no callbacks, while registered listeners execute and retain their resumable emission cursor. This does not replace the separate transform signal or silently swallow a missing handler. Source-only integration, no tests/build/runtime or performance claim.
@@ -8244,8 +8231,7 @@ Readable item generation handoff: UI requests now borrow the admitted Pickable c
   body's callback error, earlier already-transitioned bodies are skipped before
   the retained body's listener cursor resumes. A new transition or direction
   cannot consume that suspended signal; deactivation preparation remains once.
-Faction scoped-lifetime correction: Catalog now owns the canonical registry
-via OnceLock; the temporary weak global lookup/extra launch guards are removed.
+Faction resource scopes: Catalog's OnceLock owns the canonical registry.
 Class entries keep Weak declarations. Existing resource_registry::Registry
 supplies header registration, inherited producer scope/bootstrap promotion and
 map/persistent marker purge (0607f0/0661e0/060b60/060180); selected manifest
