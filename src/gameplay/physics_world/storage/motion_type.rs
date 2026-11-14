@@ -3,7 +3,7 @@ use super::*;
 use crate::gameplay::physics_world::TransformCallbacks;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Change { Static, Keyframe, Filter(u32) }
+enum Change { Static, Keyframe, Dynamic, Filter(u32) }
 pub(super) struct BodyModeProgress {
     body: u32, change: Change, step: u8, unlink: u8, attachment: u8,
     motion: u32, motion_step: u8, motion_info: Option<crate::gameplay::motion_info::MotionInfo>,
@@ -39,6 +39,13 @@ impl WorldStorage {
         self.change_body_mode(geometry, events, id, Change::Static)
     }
 
+    /// c86800(type2): restore the retained body's actual shape mass/inertia.
+    /// This changes motion ownership/type, not the world's simulation solver.
+    pub(crate) fn dynamic_single_body<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: u32) -> Result<(), String> {
+        self.change_body_mode(geometry, events, id, Change::Dynamic)
+    }
+
     /// c87640 stores the real collision filter then refreshes collision state
     /// and the existing general body signal; no body is unpublished or replaced.
     pub(crate) fn set_body_filter<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
@@ -65,6 +72,10 @@ impl WorldStorage {
                 Change::Keyframe => {
                     self.preflight_keyframe_single_body(id)?;
                     if body.flags & 4 != 0 { return Ok(()); }
+                }
+                Change::Dynamic => {
+                    if body.flags & 5 == 0 { return Ok(()); }
+                    self.preflight_keyframe_single_body(id)?;
                 }
                 Change::Filter(filter) if body.filter_info == filter => return Ok(()),
                 Change::Filter(_) => {}
@@ -129,7 +140,7 @@ impl WorldStorage {
                 }
                 return Ok(());
             }
-            if change == Change::Keyframe && creation.world.bodies.get(id).ok_or("keyframe body retired")?.flags & 1 != 0
+            if matches!(change, Change::Keyframe | Change::Dynamic) && creation.world.bodies.get(id).ok_or("body mode owner retired")?.flags & 1 != 0
                 || progress.motion_info.is_some() {
                 if progress.motion_step == 0 {
                     let body = creation.world.bodies.get(id).ok_or("keyframe body retired")?;
@@ -143,6 +154,15 @@ impl WorldStorage {
                     info.inverse_mass = 0.0;
                     info.inverse_inertia = [0.0; 4];
                     info.properties_id = properties.motion_properties_id;
+                    if change == Change::Dynamic {
+                        info.apply_body(&crate::physworld::body::BodyInfo {
+                            position: body.transform[3],
+                            orientation: crate::physworld::rotation_quaternion(body.transform[..3].try_into()
+                                .map_err(|_| "body basis is incomplete")?),
+                            motion_type: 2, motion_properties_id: properties.motion_properties_id,
+                            ..Default::default()
+                        }, mass);
+                    }
                     progress.motion_info = Some(info);
                     progress.motion_step = 1;
                 }
@@ -193,7 +213,39 @@ impl WorldStorage {
                         broadphase: creation.world.broadphase }, id, false)?;
                     progress.motion_step = 10;
                 }
-                progress.step = 2;
+                progress.step = if change == Change::Dynamic { 3 } else { 2 };
+            }
+            if change == Change::Dynamic {
+                if progress.step == 0 {
+                    // c86800 clears KEYFRAMED before c90a90 so that the mass
+                    // owner restores real inverse mass rather than zeroing it.
+                    creation.world.bodies.get_mut(id).ok_or("dynamic body retired")?.flags &= !4;
+                    progress.step = 1;
+                }
+                if progress.step == 1 {
+                    let motion = creation.world.bodies.get(id).ok_or("dynamic body retired")?.motion_id;
+                    let geometry = std::cell::RefCell::new(&mut *creation.callbacks.geometry);
+                    crate::gameplay::motion_mass::recompute_motion_mass(
+                        creation.world.bodies, creation.world.motions, motion, creation.lod.body_is_big_threshold,
+                        |bodies, body| bodies.mass_frame(body,
+                            |shape| geometry.borrow().cached_mass(shape),
+                            |shape, config| geometry.borrow().calculate_mass(shape, config)),
+                        |shape, frame| geometry.borrow_mut().bounds(shape, frame),
+                    )?;
+                    progress.step = 2;
+                }
+                if progress.step == 2 {
+                    creation.world.invalidate_collision_cache(id, 0, creation.callbacks)?;
+                    progress.step = 3;
+                }
+                if progress.step == 3 {
+                    creation.callbacks.transform_changed(ActivationOwners {
+                        bodies: creation.world.bodies, motions: creation.world.motions,
+                        deactivation: creation.world.deactivation, broadphase: creation.world.broadphase,
+                    }, id, false)?;
+                    progress.step = 4;
+                }
+                return Ok(());
             }
             if progress.step == 0 {
                 let body = creation.world.bodies.get_mut(id).ok_or("body mode owner retired")?;
@@ -204,6 +256,7 @@ impl WorldStorage {
                     }
                     Change::Filter(filter) => body.filter_info = filter,
                     Change::Static => unreachable!("static transition completed above"),
+                    Change::Dynamic => unreachable!("dynamic transition completed above"),
                 }
                 progress.step = 1;
             }

@@ -8486,3 +8486,22 @@ Source evidence: saved chunk000360879930, chunk000303752900/7506d0 and existing
 reference_frame::joints kernels. Full installed publication/retirement awaits
 the coordinated source batch; no tests, build, visual or speed acceptance is
 claimed by this source change alone.
+
+### Live detached-body motion restoration (2026-11-14)
+
+`WorldStorage::dynamic_single_body` extends the existing singleton mode cursor
+with c86800(type2). A keyframed body clears its keyframe flag before calling
+the existing c90a90 mass owner, restores the real retained shape's mass/inertia
+and preserves its motion identity. A static body uses the existing resumable
+motion allocation/attachment route with actual dynamic mass instead of zero
+inverse mass. Collision invalidation and body notification follow the native
+order. Same-type calls do nothing. This is the missing canonical leaf needed
+by8762d0 ->727450 ->727880 during a live bound pickup; it adds no simulation
+solver, duplicate body/world or archive owner.
+
+Prediction: work occurs only on an actual requested mode transition. Existing
+static/keyframe/filter paths and normal frame costs are unchanged; the new
+transition has the source-required mass recomputation and existing callback
+scratch. Source evidence is chunk000586c86800/c86ad0 and the already ported
+motion_mass::recompute_motion_mass (c90a90). No CPU/memory saving is claimed.
+Compilation and installed publication/retirement belong to the coherent batch.
