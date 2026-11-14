@@ -1520,7 +1520,7 @@ pub(super) fn prepare(
     // not move the saved camera while comparing rendering at that same pose.
     let player = match (navigation.as_ref(), scene.player_start, catalog) {
         (Some(_), Some(start), Some(catalog)) if env::var_os("DH2_REPLAY_F8").is_none() => {
-            match super::player::load_player_setup_with_source(catalog, super::pause_menu::debug_character(), &mut player_declarations) {
+            match super::player::load_player_setup_with_source_cancellable(catalog, super::pause_menu::debug_character(), &mut player_declarations, Some(&|| check_cancelled().is_err())) {
                 Ok(setup) => {
                     let yaw = start.forward_xy[1].atan2(start.forward_xy[0]);
                     crate::gameplay::player::Player::new(setup, Vec3::from(start.position), yaw, reference_horizontal_fov)

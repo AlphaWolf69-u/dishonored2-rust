@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// A scene decl with its anim names resolved to body clips.
 #[derive(Debug)]
 pub struct PreparedScene {
-    pub decl: MidnightScene,
+    pub decl: Arc<crate::assets::midnight_scene::PlayerScene>,
     /// Per (scene index, key index) of the player group: the body clip.
     pub clips: Vec<Vec<usize>>,
     /// The same for the PlayerLeftArm / PlayerRightArm groups: arm clips.

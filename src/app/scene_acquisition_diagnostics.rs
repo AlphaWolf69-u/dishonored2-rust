@@ -170,6 +170,8 @@ pub fn inspect_scene_publication(
             "--editable-sound-event" => return inspect_editable_sound_event(base, name),
             "--texture-read-cancellation" => return archive::observe_member_cancellation(base, name),
             "--particle-read-cancellation" => return crate::rendering::particles::definition::observe_cancelled_declaration(base, name),
+            "--midnight-resource-scopes" => return crate::assets::midnight_scene::observe_scopes(base, name),
+            "--midnight-read-cancellation" => return crate::assets::midnight_scene::observe_read_cancellation(base, name),
             "--usable-read-cancellation" => return super::usable_animation::observe_read_cancellation(base, name),
             "--vorbis-header-samples" => return crate::assets::wwise::observe_header_samples(&base.join("pck").join(name)).map_err(Into::into),
             "--manifest-catalog-scopes" => {

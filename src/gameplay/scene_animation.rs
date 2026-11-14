@@ -1,6 +1,6 @@
 //! Scene-driven MD6 tracks; immutable resources are shared by instances.
 use crate::{archive::Catalog, assets::animation_rig::{Clips, Rig}, edge_animation::EdgeAnimation,
-    entities::scene_motion::AnimatedMotionClip, gameplay::midnight_timing::MarkerTiming};
+    assets::midnight_scene::AnimatedScene, gameplay::midnight_timing::MarkerTiming};
 use std::{collections::HashMap, sync::Arc};
 
 struct Clip {
@@ -14,7 +14,7 @@ pub struct SceneAnimation {
     skeleton: Arc<crate::edge_skeleton::EdgeSkeleton>,
     root: crate::edge_skeleton::JointRestPose,
     clips: Vec<Clip>,
-    definition: Arc<AnimatedMotionClip>,
+    definition: Arc<AnimatedScene>,
     group: u32,
 }
 
@@ -23,7 +23,7 @@ impl SceneAnimation {
 
     /// Prepare only tracks actually cast by a started Midnight scene. Shared
     /// rigs and Edge clips remain owned by their ordinary resource owners.
-    pub fn load(catalog: &Catalog, rig: Arc<Rig>, definition: Arc<AnimatedMotionClip>, group: u32) -> Result<Self, String> {
+    pub fn load(catalog: &Catalog, rig: Arc<Rig>, definition: Arc<AnimatedScene>, group: u32) -> Result<Self, String> {
         let keys = definition.animations.get(&group).ok_or("scene animation group is absent")?;
         let mut loaded = Clips { catalog, rig: &rig, rest: &rig.skeleton.rest,
             animations: Vec::new(), loaded: HashMap::new() };

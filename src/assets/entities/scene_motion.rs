@@ -217,20 +217,44 @@ pub use super::event_graph::{Node, Port};
 pub struct Graph {
     pub owner: String,
     pub nodes: Vec<Node>,
-    pub clips: HashMap<String, Arc<MotionClip>>,
-    pub animated_clips: HashMap<String, Arc<AnimatedMotionClip>>,
+    pub clips: HashMap<String, Arc<crate::assets::midnight_scene::MotionScene>>,
+    pub animated_clips: HashMap<String, Arc<crate::assets::midnight_scene::AnimatedScene>>,
 }
 /// Host leases replace the declaration pointers copied by1405329c0 and used
 /// by140533460. A graph and its independent playbacks share immutable curves.
 /// The comparison control reproduces the previous deep copies at each lease.
-pub(crate) fn retain_clip(clip: &Arc<MotionClip>) -> Arc<MotionClip> {
+pub(crate) fn retain_clip(clip: &Arc<crate::assets::midnight_scene::MotionScene>) -> Arc<crate::assets::midnight_scene::MotionScene> {
     if std::env::var("DH2_DEBUG_SEPARATE_MOTION_CLIPS").as_deref() == Ok("1") {
         let _tag = crate::platform::allocation_tags::tag("Motion scene resources");
-        Arc::new((**clip).clone())
+        clip.duplicate()
     } else { Arc::clone(clip) }
 }
 
+/// The startup scene owner admits loops entered directly from LoadingEnd.
+/// Later event-driven Stop/replay requires the general cinematic owner.
+pub(crate) fn autonomous_scene_action(nodes: &[Node], node: &Node) -> bool {
+    if node.class != "arkKisculeNodeActionMidnightControl" { return false; }
+    let Some(play) = node.ports.iter().find(|port| port.name == "Play" && port.kind.starts_with("Input")) else { return false };
+    if play.links.is_empty() || node.ports.iter().any(|port| port.kind.starts_with("Input")
+        && matches!(port.name.as_str(), "Stop" | "Break Loop") && !port.links.is_empty()) { return false; }
+    play.links.iter().all(|(id, port)| nodes.iter().find(|source| source.id == *id).is_some_and(|source| {
+        source.class == "arkKisculeNodeLoadingEnd" && source.ports.iter().any(|output|
+            output.id == *port && output.name == "LevelLoadedFirstTime" && output.kind.starts_with("Output"))
+    }))
+}
 pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String> {
+    load_cancellable(catalog, document, None)
+}
+pub(crate) fn load_cancellable(catalog: &Catalog, document: &Document,
+    cancelled: Option<&dyn Fn() -> bool>) -> Result<Vec<Graph>, String> {
+    use crate::assets::midnight_scene::{self, Error};
+    fn selected<T>(value: Result<Arc<T>, Error>) -> Result<Option<Arc<T>>, String> {
+        match value {
+            Ok(value) => Ok(Some(value)),
+            Err(Error::Projection(_) | Error::Absent(_)) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
     let _tag = crate::platform::allocation_tags::tag("Motion scene resources");
     let mut cache = HashMap::new();
     let mut animated_cache = HashMap::new();
@@ -249,31 +273,27 @@ pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String
         }) {
             continue;
         }
-        let mut nodes = Vec::new();
+        let nodes = items(list).map(super::event_graph::parse_node).collect::<Result<Vec<_>, _>>()?;
         let mut clips = HashMap::new();
         let mut animated_clips = HashMap::new();
-        for n in items(list) {
-            let params = object(child(n, "m_parameters"));
-            if let Some(path) = atom(params, "m_declMdnt").filter(|p| *p != "NULL") {
-                let skeletal = atom(n, "m_name") == Some("arkKisculeNodeActionMidnightControl");
-                if !cache.contains_key(path) || (skeletal && !animated_cache.contains_key(path)) {
-                    let resource = format!("generated/decls/midnightscene/{path}.decl");
-                    let bytes = catalog.read(&resource).map_err(|e| e.to_string())?;
+        for node in &nodes {
+            let motion = node.class == "arkKisculeNodeActionMidnightKeyframeControl";
+            let skeletal = autonomous_scene_action(&nodes, node);
+            if !motion && !skeletal { continue; }
+            if let Some(path) = atom(&node.params, "m_declMdnt").filter(|p| *p != "NULL") {
+                if motion {
                     if !cache.contains_key(path) {
-                        cache.insert(path.to_owned(), bytes.as_ref().and_then(|b|
-                            parse_clip(&super::declaration_text(b)).ok().map(Arc::new)));
+                        cache.insert(path.to_owned(), selected(midnight_scene::acquire_motion(catalog, path, cancelled))?);
                     }
-                    if skeletal && !animated_cache.contains_key(path) {
-                        animated_cache.insert(path.to_owned(), bytes.as_ref().and_then(|b|
-                            parse_animated_clip(&super::declaration_text(b)).ok().map(Arc::new)));
-                    }
+                    if let Some(clip) = &cache[path] { clips.insert(path.to_owned(), retain_clip(clip)); }
                 }
-                if let Some(clip) = &cache[path] { clips.insert(path.to_owned(), retain_clip(clip)); }
                 if skeletal {
+                    if !animated_cache.contains_key(path) {
+                        animated_cache.insert(path.to_owned(), selected(midnight_scene::acquire_animated(catalog, path, cancelled))?);
+                    }
                     if let Some(clip) = &animated_cache[path] { animated_clips.insert(path.to_owned(), Arc::clone(clip)); }
                 }
             }
-            nodes.push(super::event_graph::parse_node(n)?);
         }
         if !clips.is_empty() || !animated_clips.is_empty()
             || nodes

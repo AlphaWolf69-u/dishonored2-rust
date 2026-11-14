@@ -965,12 +965,13 @@ pub(super) fn prepare_level(
     }
     let machinery_placements = (separate_placements && entity_document.is_some())
         .then(|| expanded_model_placements(&placed_models, catalog_for_machinery));
-    let machinery = super::machinery::AmbientMachinery::load_with_texts(
+    let machinery = super::machinery::AmbientMachinery::load_with_texts_cancellable(
         catalog_for_machinery,
         entity_document.as_ref(),
         machinery_placements.as_deref().unwrap_or(&placed_models),
         &mut physics_texts,
         &mut shape_sources,
+        Some(&|| cancelled(CancellationPoint::General)),
     )
     .map_err(std::io::Error::other)?;
     drop(machinery_placements);

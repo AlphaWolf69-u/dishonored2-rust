@@ -14,7 +14,7 @@ use crate::random::MwcRandom;
 struct Playback {
     node: u32,
     placement: usize,
-    clip: Arc<MotionClip>,
+    clip: Arc<crate::assets::midnight_scene::MotionScene>,
     group: usize,
     rate: f32,
     time_ms: f64,
@@ -75,7 +75,7 @@ struct AnimatedPlayback {
     node: u32,
     placement: usize,
     group: usize,
-    clip: std::sync::Arc<crate::entities::scene_motion::AnimatedMotionClip>,
+    clip: std::sync::Arc<crate::assets::midnight_scene::AnimatedScene>,
     time_ms: f64,
     position: [f32; 3],
     basis: [[f32; 3]; 3],
@@ -86,17 +86,10 @@ struct AnimatedPlayback {
 /// Dynamic scenes need on-demand acquisition and release when their instance
 /// starts and ends, so they remain with the general scene runtime.
 fn autonomous_scene_action(graph: &Graph, node: &Node) -> bool {
-    if node.class != "arkKisculeNodeActionMidnightControl"
-        || !graph.animated_clips.contains_key(atom(&node.params, "m_declMdnt").unwrap_or(""))
-    { return false; }
-    let Some(play) = node.ports.iter().find(|port| port.name == "Play" && port.kind.starts_with("Input")) else { return false };
-    if play.links.is_empty() || node.ports.iter().any(|port| port.kind.starts_with("Input")
-        && matches!(port.name.as_str(), "Stop" | "Break Loop") && !port.links.is_empty()) { return false; }
-    play.links.iter().all(|(id, port)| graph.nodes.iter().find(|source| source.id == *id).is_some_and(|source| {
-        source.class == "arkKisculeNodeLoadingEnd" && source.ports.iter().any(|output|
-            output.id == *port && output.name == "LevelLoadedFirstTime" && output.kind.starts_with("Output"))
-    }))
+    graph.animated_clips.contains_key(atom(&node.params, "m_declMdnt").unwrap_or(""))
+        && crate::entities::scene_motion::autonomous_scene_action(&graph.nodes, node)
 }
+
 struct MotorControl {
     node: u32,
     entity: String,
@@ -495,7 +488,7 @@ impl SceneMotion {
         let mut digest = blake3::Hasher::new();
         let mut poses = blake3::Hasher::new();
         let mut rates = Vec::new();
-        let mut record = |clip: &Arc<MotionClip>| {
+        let mut record = |clip: &Arc<crate::assets::midnight_scene::MotionScene>| {
             leases += 1;
             if unique.insert(Arc::as_ptr(clip)) {
                 payload_bytes += std::mem::size_of::<MotionClip>()
@@ -538,7 +531,7 @@ impl SceneMotion {
                 .retain_mut(|c| !c.advance(seconds, world));
         }
     }
-    pub fn animated_groups(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::entities::scene_motion::AnimatedMotionClip>, usize, i32)> {
+    pub fn animated_groups(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::assets::midnight_scene::AnimatedScene>, usize, i32)> {
         self.graphs.iter().flat_map(|graph| graph.animated.iter().filter_map(move |animated| {
             let uid = animated.clip.motion.groups[animated.group].uid;
             animated.clip.animations.get(&uid)?;

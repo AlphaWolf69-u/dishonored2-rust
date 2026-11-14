@@ -19,6 +19,7 @@ struct SceneSkin {
     lod: crate::gameplay::entity_lod::EntityLod,
     visible_previous: bool,
     source: Option<usize>,
+    physics_skin: Option<usize>,
     failed: bool,
 }
 
@@ -73,6 +74,17 @@ impl AmbientMachinery {
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
     ) -> Result<Self, String> {
+        Self::load_with_texts_cancellable(catalog, document, placements, texts, shape_sources, None)
+    }
+
+    pub(super) fn load_with_texts_cancellable(
+        catalog: &Catalog,
+        document: Option<&Document>,
+        placements: &[PlacedModel],
+        texts: &mut crate::assets::declaration_texts::PhysicsSeed,
+        shape_sources: &mut crate::physworld::source::ShapeSources,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, String> {
         let Some(document) = document else {
             return Ok(Self::default());
         };
@@ -93,7 +105,7 @@ impl AmbientMachinery {
             }
         }
         info!("Ambient machinery: {} assemblies, {} bodies, {} constraints, {} unsupported assemblies",recipes.assemblies.len(),world.bodies.iter().filter(|b|b.placement.is_some()).count(),world.joint_count(),recipes.unsupported.len());
-        let graphs = crate::entities::scene_motion::load(catalog, document)?;
+        let graphs = crate::entities::scene_motion::load_cancellable(catalog, document, cancelled)?;
         let counter = crate::platform::performance_counter::counter()? as u64;
         let scenes = crate::gameplay::scene_motion::SceneMotion::new(graphs, placements, counter);
         for diagnostic in &scenes.diagnostics {
@@ -133,7 +145,7 @@ impl AmbientMachinery {
                     }
                     scene_skins.insert(placement, SceneSkin { asset: Arc::clone(asset), publication: Default::default(),
                         time: None, lod: crate::gameplay::entity_lod::EntityLod::spawned(warmup),
-                        visible_previous: false, source: None, failed: false });
+                        visible_previous: false, source: None, physics_skin: skins.iter().position(|skin| skin.placement() == placement), failed: false });
                 }
                 Err(error) => warn!("Scene animation unavailable for placement {placement}: {error}"),
             }
@@ -377,7 +389,10 @@ pub(super) fn pose_scene_systems(
         let Some(skin) = skins.get_mut(&placement) else { continue };
         let lower = animations.as_deref().and_then(|a| a.local_pose(placement));
         if skin.failed || skin.lod.level >= 6 || (skin.time == Some(time) && lower.is_none()) { continue; }
-        if !sources.0.iter().any(|source| source.placement == placement) { continue; }
+        if !skin.source.and_then(|index| sources.0.get(index)).is_some_and(|source| source.placement == placement) {
+            skin.source = sources.0.iter().position(|source| source.placement == placement);
+        }
+        let (Some(source_index), Some(placed)) = (skin.source, placements.0.get(placement)) else { continue };
         let animation = &skin.asset.animation;
         let result = (|| {
             let pose = match lower {
@@ -388,7 +403,7 @@ pub(super) fn pose_scene_systems(
                 None => animation.pose(time)?,
             };
             let matrices = animation.matrices_from_pose(&pose)?;
-            if let Some(physics_skin) = physics_skins.iter().find(|s| s.placement() == placement) {
+            if let Some(physics_skin) = skin.physics_skin.and_then(|index| physics_skins.get(index)).filter(|skin| skin.placement() == placement) {
                 if !Arc::ptr_eq(physics_skin.skeleton(), animation.skeleton()) {
                     return Err("scene and physics skeleton owners differ".into());
                 }
@@ -399,8 +414,8 @@ pub(super) fn pose_scene_systems(
         })();
         match result {
             Ok(palette) => {
-                super::skin_publication::publish_skin(placement, &skin.asset.model, palette, &mut skin.publication,
-                    &mut meshes, &mut buffers, &mut queue, &mut sources, &placements);
+                super::skin_publication::publish_target(placed, &mut sources.0[source_index], skin.asset.model.surfaces(),
+                    palette, &mut skin.publication, &mut meshes, &mut buffers, &mut queue);
                 skin.time = Some(time);
             }
             Err(error) => { warn!("Scene pose unavailable for placement {placement}: {error}"); skin.failed = true; }
