@@ -8381,3 +8381,7 @@ The ordinary readables' actual authored RigidBody records now instantiate the sh
   creation generation) unwinds first, because its retained publication cursor
   excludes operations on previously initialized bodies. The remaining typed
   owners follow only after that cursor is idle; no success callbacks are replayed.
+
+### Host preparation failure identity (2026-11-14)
+
+The existing Initialize/Start host boundary reports the actual component handle and authored entity name before canonical rollback retires them. This changes error context only: successful startup performs no report formatting, allocation or retained diagnostic storage; normal frame and resource admission rules are unchanged. No performance gain is claimed. The preceding dc9b74a5 installed Edge of the World acquisition failed at the explicit uncached-convex mass path after successful cleanup; it is not a completed level-publication result. The coherent game/default-library compilation and source acquisition observations will be repeated after the actual missing calculation is restored.

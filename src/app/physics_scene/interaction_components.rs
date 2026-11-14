@@ -152,32 +152,51 @@ pub(super) struct Startup<'a> {
     pub live: &'a LiveEntities,
     pub events: &'a mut crate::gameplay::entity_events::EntityEvents,
 }
+impl Startup<'_> {
+    /// Host preparation errors need the authored owner before rollback retires it.
+    /// Format only on failure; successful component startup retains no report.
+    fn failure(&self, phase: &str, handle: ComponentHandle, error: String) -> String {
+        let entity = self.scene.owner(handle).ok()
+            .and_then(|owner| owner.entity)
+            .and_then(|index| self.scene.entities.get(index));
+        match entity {
+            Some(entity) => format!("{phase} component {handle:?} on {}: {error}", entity.name),
+            None => format!("{phase} component {handle:?}: {error}"),
+        }
+    }
+}
 impl ComponentLifecycleWorld for Startup<'_> {
     fn priority(&self, handle: ComponentHandle) -> Result<i32, String> { self.scene.priority(handle) }
     fn owner(&self, handle: ComponentHandle) -> Result<&ComponentOwner, String> { self.scene.owner(handle) }
     fn owner_mut(&mut self, handle: ComponentHandle) -> Result<&mut ComponentOwner, String> { self.scene.owner_mut(handle) }
     fn initialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
-        if handle.class_id == self.scene.classes[8] {
-            self.scene.initialize_placed_rigid(self.live, handle, registry, self.events)
-        } else if handle.class_id == self.scene.classes[9] {
-            self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.initialize(&self.scene.faction_session)
-        } else { self.scene.initialize(handle, registry) }
+        let result = (|| {
+            if handle.class_id == self.scene.classes[8] {
+                self.scene.initialize_placed_rigid(self.live, handle, registry, self.events)
+            } else if handle.class_id == self.scene.classes[9] {
+                self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.initialize(&self.scene.faction_session)
+            } else { self.scene.initialize(handle, registry) }
+        })();
+        result.map_err(|error| self.failure("Initialize", handle, error))
     }
     fn start(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
-        if handle.class_id == self.scene.classes[8] {
-            self.scene.start_placed_rigid(self.live, handle, registry, self.events)
-        } else if handle.class_id == self.scene.classes[9] {
-            let index = self.scene.owner(handle)?.entity.ok_or("Faction entity absent")?;
-            let id = self.scene.entities[index].shared;
-            if self.live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
-                return Err("Faction Start entity is not spawned".into());
-            }
-            self.scene.factions.get(handle.slot).ok_or("Faction component absent")?.preflight_start(id,
-                self.scene.faction_manager.as_ref().ok_or("Faction manager absent")?.manager())?;
-            self.scene.start(handle, registry)?;
-            self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.start(id,
-                self.scene.faction_manager.as_mut().ok_or("Faction manager absent")?.manager_mut(), self.events)
-        } else { self.scene.start(handle, registry) }
+        let result = (|| {
+            if handle.class_id == self.scene.classes[8] {
+                self.scene.start_placed_rigid(self.live, handle, registry, self.events)
+            } else if handle.class_id == self.scene.classes[9] {
+                let index = self.scene.owner(handle)?.entity.ok_or("Faction entity absent")?;
+                let id = self.scene.entities[index].shared;
+                if self.live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
+                    return Err("Faction Start entity is not spawned".into());
+                }
+                self.scene.factions.get(handle.slot).ok_or("Faction component absent")?.preflight_start(id,
+                    self.scene.faction_manager.as_ref().ok_or("Faction manager absent")?.manager())?;
+                self.scene.start(handle, registry)?;
+                self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.start(id,
+                    self.scene.faction_manager.as_mut().ok_or("Faction manager absent")?.manager_mut(), self.events)
+            } else { self.scene.start(handle, registry) }
+        })();
+        result.map_err(|error| self.failure("Start", handle, error))
     }
     fn stop_queued(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { self.scene.stop_queued(handle, registry) }
     fn initialization_failed(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { self.scene.initialization_failed(handle, registry) }
