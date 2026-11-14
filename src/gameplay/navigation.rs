@@ -230,8 +230,8 @@ impl CollisionWorld {
             let max = a.max(b).max(c);
             let index = world.triangles.len();
             if let Some(span) = world.owner_spans.get_mut(owner as usize) {
-                let index = u32::try_from(index).map_err(|_| io::Error::other("collision shape key exceeds u32"))?;
-                let end = index.checked_add(1).ok_or_else(|| io::Error::other("collision shape key exceeds u32"))?;
+                let index = u32::try_from(index).map_err(|_| std::io::Error::other("collision shape key exceeds u32"))?;
+                let end = index.checked_add(1).ok_or_else(|| std::io::Error::other("collision shape key exceeds u32"))?;
                 *span = match *span {
                     OwnerSpan::Empty => OwnerSpan::Contiguous { start: index, end },
                     OwnerSpan::Contiguous { start, end: previous } if previous == index => OwnerSpan::Contiguous { start, end },

@@ -133,7 +133,7 @@ impl PhysicsScene {
                 &mut world.storage.materials, settings, model, render.as_deref(), Some(&mut materials),
                 |_,_,_,_| unreachable!("startup material observers absent"))?;
             let declaration = self.types.declaration(self.factories[8], Arc::as_ptr(definition) as usize,
-                definition.scheduling.clone())?;
+                definition.scheduling.as_ref().clone())?;
             let bodies = &mut self.actors.bodies;
             let free = &mut self.free_rigid_movement;
             let handle = ComponentFactory { declaration: &declaration, pool: &mut self.rigid_bodies,
