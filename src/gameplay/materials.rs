@@ -62,6 +62,14 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
     pub fn get(&self, handle: usize) -> Option<&PhysicsMaterial> {
         self.declarations.get(handle).map(|definition| definition.material())
     }
+    /// c9c940 retains the declaration identity in the library record's +0x60.
+    pub(crate) fn material_for_id(&self, id: u16) -> Result<&PhysicsMaterial, String> {
+        let record = self.library.get(id).ok_or("material library ID absent")?;
+        let handle = u64::from(record.words[14]) | (u64::from(record.words[15]) << 32);
+        let handle = handle.checked_sub(1).ok_or("material declaration absent")?;
+        self.get(usize::try_from(handle).map_err(|_| "material declaration handle overflow")?)
+            .ok_or_else(|| "material declaration absent".into())
+    }
     pub fn resolve(
         &mut self,
         handle: usize,

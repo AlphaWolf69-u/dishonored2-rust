@@ -37,6 +37,7 @@ use std::{
 mod publication;
 mod startup;
 mod interaction_components;
+mod document_rigid;
 use interaction_components::UsableComponent;
 pub(super) mod lifetime;
 
@@ -50,7 +51,8 @@ struct PhysicsEntity {
     entity_flags: u32,
     entity_flags_d7: u8,
     priority: i32,
-    pose: crate::gameplay::reference_frame::ReferenceFrame,
+    frame: crate::gameplay::reference_frame::PublishedFrame,
+    timespace: u32,
 }
 
 #[derive(Resource)]
@@ -59,6 +61,7 @@ pub(super) struct PhysicsScene {
     entity_flags_d4: Vec<u8>,
     post_updates: crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
     post_frame: i32,
+    rigid_post_path: Vec<usize>,
     body_activation_events: crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
@@ -81,6 +84,8 @@ pub(super) struct PhysicsScene {
     loots: ComponentPool<crate::gameplay::loot_component::EmptyLootComponent>,
     rigid_bodies: ComponentPool<super::rigid_body::RigidBodyComponent>,
     free_rigid_movement: Vec<usize>,
+    rigid_placements: HashMap<usize, usize>,
+    initial_rigid_frames: HashMap<usize, crate::gameplay::reference_frame::ReferenceFrame>,
     factions: ComponentPool<super::faction_component::FactionComponent>,
     faction_session: crate::gameplay::faction_registry::SessionFactionRegistry,
     faction_manager: Option<crate::gameplay::faction_registry::ActiveFactionManager>,
@@ -115,7 +120,7 @@ impl PhysicsScene {
             // placement frame is substituted for an absent actor.
             return Ok(Some(actor.frame.current));
         }
-        Ok(Some(entity.pose))
+        Ok(Some(entity.frame.pose))
     }
 
     pub(super) fn audio_component_live(&self, packed: u64, generation: u32) -> bool {
@@ -208,6 +213,7 @@ impl PhysicsScene {
         live: &mut crate::gameplay::entity_lifetime::LiveEntities,
         interactions: Option<&super::interactions::Interactions>,
         entity_events: &mut crate::gameplay::entity_events::EntityEvents,
+        models: &[entities::PlacedModel],
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
         let constructor_tag = types.intern_name(Some(b"MAIN"))?;
@@ -330,6 +336,9 @@ impl PhysicsScene {
             loots: types.create_pool(factories[7], &cvars.cvars)?,
             rigid_bodies: types.create_pool(factories[8], &cvars.cvars)?,
             free_rigid_movement: Vec::new(),
+            rigid_post_path: Vec::new(),
+            rigid_placements: HashMap::new(),
+            initial_rigid_frames: HashMap::new(),
             factions: types.create_pool(factories[9], &cvars.cvars)?,
             faction_session,
             faction_manager,
@@ -411,10 +420,10 @@ impl PhysicsScene {
                     entity_flags: 0x001e_8008,
                     entity_flags_d7: 0,
                     priority: 0,
-                    pose: crate::gameplay::reference_frame::ReferenceFrame {
+                    frame: crate::gameplay::reference_frame::PublishedFrame { pose: crate::gameplay::reference_frame::ReferenceFrame {
                         position: placement.position,
                         basis: placement.shape.basis,
-                    },
+                    }, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0,
                 };
                 for (binding_index, binding) in scene
                     .water_bindings
@@ -508,7 +517,8 @@ impl PhysicsScene {
                     let shared = live.allocate_managed(Arc::from(binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
                     scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), shared, components: EntityComponents::new(index), class,
                         environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0,
-                        entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0, pose: binding.frame });
+                        entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
+                        frame: crate::gameplay::reference_frame::PublishedFrame { pose: binding.frame, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
                     scene.entity_flags_d4.push(0);
                     entity_indices.insert(binding.entity_id.clone(), index);
                     index
@@ -526,6 +536,7 @@ impl PhysicsScene {
         drop(query_world);
         if let Some(interactions) = interactions {
             scene.admit_interaction_components(document, interactions, live, &mut registry, constructor_tag)?;
+            scene.prepare_document_rigids(catalog, interactions, models, texts, shape_sources, &mut registry)?;
         }
         // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
         // later game-local shared component initialization/Start drain.
@@ -535,6 +546,7 @@ impl PhysicsScene {
             scene.shared_indices.insert(entity.shared, index);
         }
         registry.initialize_and_start(&mut interaction_components::Startup { scene: &mut scene, live, events: entity_events })?;
+        registry.drain_update_changes(&mut interaction_components::Startup { scene: &mut scene, live, events: entity_events })?;
         scene.registry = Some(registry);
         scene.finish_point_queries()?;
         Ok(scene)
@@ -825,7 +837,7 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .initialize(&mut target.entity_flags, &mut target.entity_flags_d7);
             Ok(())
         } else if handle.class_id == self.classes[3] {
-            let pose = self.entities[entity].pose;
+            let pose = self.entities[entity].frame.pose;
             let actor = self
                 .actors
                 .actors

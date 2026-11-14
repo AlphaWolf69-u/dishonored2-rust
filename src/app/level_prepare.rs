@@ -998,7 +998,7 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events)
+        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models)
         {
             Ok(physics) => {
                 app.insert_resource(live);

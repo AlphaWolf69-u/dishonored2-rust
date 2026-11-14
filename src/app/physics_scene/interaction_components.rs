@@ -37,7 +37,8 @@ impl PhysicsScene {
                 let shared = live.allocate_managed(Arc::from(actor.entity.as_str()), class, None, 0, constructor_tag)?;
                 self.entities.push(PhysicsEntity { name: actor.entity.clone(), shared,
                     components: EntityComponents::new(index), class, environment: None, flags: 0,
-                    entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0, pose: actor.frame });
+                    entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
+                    frame: crate::gameplay::reference_frame::PublishedFrame { pose: actor.frame, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
                 self.entity_flags_d4.push(0);
                 indices.insert(actor.entity.clone(), index);
                 index
@@ -63,7 +64,7 @@ impl PhysicsScene {
                 self.entities.push(PhysicsEntity { name: binding.entity.clone(), shared,
                     components: EntityComponents::new(index), class, environment: None, flags: 0,
                     entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
-                    pose: entities::spawn_frame(definition)? });
+                    frame: crate::gameplay::reference_frame::PublishedFrame { pose: entities::spawn_frame(definition)?, ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published() }, timespace: 0 });
                 self.entity_flags_d4.push(0);
                 indices.insert(binding.entity.clone(), index);
                 index
@@ -144,12 +145,16 @@ impl ComponentLifecycleWorld for Startup<'_> {
     fn owner(&self, handle: ComponentHandle) -> Result<&ComponentOwner, String> { self.scene.owner(handle) }
     fn owner_mut(&mut self, handle: ComponentHandle) -> Result<&mut ComponentOwner, String> { self.scene.owner_mut(handle) }
     fn initialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
-        if handle.class_id == self.scene.classes[9] {
+        if handle.class_id == self.scene.classes[8] {
+            self.scene.initialize_placed_rigid(self.live, handle, registry, self.events)
+        } else if handle.class_id == self.scene.classes[9] {
             self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.initialize(&self.scene.faction_session)
         } else { self.scene.initialize(handle, registry) }
     }
     fn start(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
-        if handle.class_id == self.scene.classes[9] {
+        if handle.class_id == self.scene.classes[8] {
+            self.scene.start_placed_rigid(self.live, handle, registry, self.events)
+        } else if handle.class_id == self.scene.classes[9] {
             let index = self.scene.owner(handle)?.entity.ok_or("Faction entity absent")?;
             let id = self.scene.entities[index].shared;
             if self.live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
@@ -164,4 +169,28 @@ impl ComponentLifecycleWorld for Startup<'_> {
     }
     fn stop_queued(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { self.scene.stop_queued(handle, registry) }
     fn initialization_failed(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { self.scene.initialization_failed(handle, registry) }
+}
+
+impl crate::gameplay::component_state::updates::ComponentUpdateWorld for Startup<'_> {
+    fn update_remove(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { registry.base_update_remove(handle, self) }
+    fn update_add(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { registry.base_update_add(handle, self) }
+    fn set_update_scheduled(&mut self, handle: ComponentHandle, scheduled: bool) -> Result<(), String> {
+        self.scene.set_component_update_scheduled(handle, scheduled)
+    }
+}
+impl PhysicsScene {
+    pub(super) fn set_component_update_scheduled(&mut self, handle: ComponentHandle, scheduled: bool) -> Result<(), String> {
+        macro_rules! membership { ($pool:expr) => { if scheduled { $pool.schedule(handle.slot) } else { $pool.unschedule(handle.slot) } }; }
+        if handle.class_id == self.classes[0] { membership!(self.triggers) }
+        else if handle.class_id == self.classes[1] { membership!(self.waters) }
+        else if handle.class_id == self.classes[2] { membership!(self.winds) }
+        else if handle.class_id == self.classes[3] { membership!(self.actors.actors) }
+        else if handle.class_id == self.classes[4] { membership!(self.audios) }
+        else if handle.class_id == self.classes[5] { membership!(self.usables) }
+        else if handle.class_id == self.classes[6] { membership!(self.pickables) }
+        else if handle.class_id == self.classes[7] { membership!(self.loots) }
+        else if handle.class_id == self.classes[8] { membership!(self.rigid_bodies) }
+        else if handle.class_id == self.classes[9] { membership!(self.factions) }
+        else { Err("component update class unsupported".into()) }
+    }
 }

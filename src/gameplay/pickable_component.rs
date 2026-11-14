@@ -71,8 +71,9 @@ impl PickableComponent {
         if self.interaction_flags & 2 != 0 || owner_forbids { return None; }
         self.interaction = self.definition.pickup_interaction;
         if let Some(item) = &self.item {
-            if matches!(item.item_type(), "TYPE_BOOK" | "25") || item.note_type != -1 {
-                let name = item.hud_name();
+            if let Some(crate::assets::inventory_item::PickableReadable::Note(note)
+                | crate::assets::inventory_item::PickableReadable::Other(note, _)) = &item.readable {
+                let name = &note.title;
                 self.interaction.name = if name.is_empty() { 0 } else { crate::assets::lang::key_id(name) };
             }
         }

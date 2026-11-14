@@ -156,7 +156,9 @@ impl ComponentReleaseWorld for Host<'_> {
 
     fn stop(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
         let scene = &mut self.scene;
-        if handle.class_id == scene.classes[0] {
+        if handle.class_id == scene.classes[8] {
+            scene.stop_placed_rigid(handle, registry, self.events)?;
+        } else if handle.class_id == scene.classes[0] {
             let declaration = scene.owner(handle)?.declaration.ok_or("trigger declaration absent")?;
             let shared = scene.world.clone();
             let mut query_owner = shared.write().map_err(|_| "level physics query owner is poisoned")?;
@@ -215,6 +217,9 @@ impl ComponentReleaseWorld for Host<'_> {
     }
 
     fn deinitialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[8] {
+            return self.scene.deinitialize_placed_rigid(handle, registry, self.events);
+        }
         if handle.class_id == self.scene.classes[9] {
             self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.deinitialize()?;
         }
@@ -292,6 +297,19 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[6] { scene.pickables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[7] { scene.loots.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[8] {
+            let component = scene.rigid_bodies.get(handle.slot).ok_or("RigidBody component absent")?;
+            if !component.can_release() { return Err("RigidBody resources still live at release".into()); }
+            let movement = component.movement_body()?;
+            if scene.actors.bodies.get(movement).ok_or("rigid movement slot absent")?.actor.is_some()
+                || scene.actors.actors.iter().any(|actor| actor.current_body == movement || actor.default_body == movement) {
+                return Err("rigid movement interface still referenced".into());
+            }
+            scene.free_rigid_movement.try_reserve(1).map_err(|error| format!("rigid free slot: {error}"))?;
+            scene.actors.bodies[movement].body_id = 0x00ff_ffff;
+            scene.free_rigid_movement.push(movement);
+            scene.rigid_bodies.release(handle.slot)?;
+        }
         else if handle.class_id == scene.classes[9] { scene.factions.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
