@@ -48,6 +48,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+mod faction_component;
 mod local_shadow_updates;
 mod fog_lights;
 mod area_lights;

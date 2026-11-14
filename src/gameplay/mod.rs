@@ -87,3 +87,6 @@ pub mod entity_lifetime;
 pub mod entity_release;
 pub mod entity_admission;
 pub mod entity_events;
+
+pub(crate) mod faction_manager;
+pub(crate) mod faction_registry;

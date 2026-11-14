@@ -7924,3 +7924,19 @@ pool rosters, necessary for matching Stop membership. This host slice is not
 a claim that the broader checkpoint's56-class migration is complete.
 The audio retirement boundary is pollable so the audio-clock owner can retain
 accepted work and acknowledge its final object release before component reuse.
+
+Faction declaration/component recovery: the single `SessionFactionRegistry`
+class-order owner preserves0607f0/05fc00 registration-before-resolution,
+canonical resource-name identity,0610d0 swap-removal and snapshot-pinned numeric
+indices. `FactionManager` owns directional baseline/current matrices and
+entity overrides/members (604dc0,605c20,605990,6073e0); `FactionComponent` ports
+5bd9a0/5bda20/5bdad0 initialize/start/stop with generation-bearing entity IDs.
+Declaration leases retain the actual source/ancestor identity and lazily
+project faction edits through the existing processed-declaration owner; no
+parallel archive reader or cache is introduced. Acquisition and concrete
+factory admission are connected by the portable interaction host, with a
+strong session lease required across maps and the active matrix retired before
+its pinned registry snapshot. This source recovery makes no unmeasured
+performance claim; the matrix is per-level mutable state and declaration
+identities are session-owned. Notifications require the actual entity/graph
+callback owner and never substitute a no-op.
