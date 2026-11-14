@@ -86,7 +86,10 @@ fn rollback_rigid(scene: &mut PhysicsScene, registry: &mut ComponentRegistry,
                     match behavior.ok_or("rigid behavior absent")? {
                         0 => world.storage.static_single_body(&mut world.geometry, &mut events, body)?,
                         1 => world.storage.keyframe_single_body(&mut world.geometry, &mut events, body)?,
-                        _ => return Err("unadmitted rigid simulation behavior".into()),
+                        // 727a00 returns on equal dynamic types. Preserve that
+                        // same motion while unwinding an entered sleeping Start.
+                        2 => {},
+                        _ => return Err("rigid behavior is invalid".into()),
                     }
                 },
                 3 => world.storage.unpublish_bodies(&mut world.geometry, &mut events, &[body], 0)?,

@@ -122,7 +122,13 @@ impl PhysicsScene {
             }
             let behavior = settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
                 .ok_or("document rigid behavior absent")?;
-            if behavior > 1 { return Err("dynamic document rigid requires actual physics simulation owner".into()); }
+            // 809d80 publishes the newly created dynamic body deactivated
+            // when startAsleep is true. It does not run a simulation step.
+            // Keep the real dynamic motion in the shared world; changing it
+            // to keyframed/static here would change later pickup callbacks.
+            if behavior == 2 && settings.start_asleep != Some(true) {
+                return Err("awake document rigid requires the canonical active simulation owner".into());
+            }
             let render = if settings.material.is_none() {
                 crate::assets::bmodel::acquire(catalog, &model.resource_path, crate::assets::bmodel::CommonModels::shared(catalog))?
             } else { None };
@@ -209,7 +215,11 @@ impl PhysicsScene {
           match behavior {
               0 => world.storage.static_single_body(&mut world.geometry, &mut events, body)?,
               1 => world.storage.keyframe_single_body(&mut world.geometry, &mut events, body)?,
-              _ => return Err("dynamic rigid simulation was not admitted".into()),
+              // 727a00 compares the current body type with the declaration.
+              // BodyInfo created this body dynamic already: equality returns
+              // without a c86800 motion conversion (including sleeping loads).
+              2 => {},
+              _ => return Err("rigid body behavior is invalid".into()),
           }
         }
         let flags = world.storage.bodies.get(body).ok_or("rigid body retired")?.flags;

@@ -8344,6 +8344,21 @@ The ordinary readables' actual authored RigidBody records now instantiate the sh
 
 ### Portable readable consumers (2026-11-14)
 
+Sleeping readable rigid admission (2026-11-14): the read-only installed map
+metadata census `artifacts/readable-rigid-installed-20261114-v2.json` found 17
+authored dynamic document bodies (one Dunwall book and eight Institute notes
+in each chaos variant), all `m_startAsleep=true`. `809d80` publishes those
+bodies deactivated into the same world; `727a00` returns when their existing
+dynamic movement type already matches the authored type. Start and unpublished
+rollback now preserve that actual dynamic motion rather than rejecting loading
+or converting it to static/keyframed. Awake startup remains an explicit missing
+active-simulation host, not an approximate solver. The existing body, material,
+shape, listener and movement-interface retirement paths remain the owners.
+Prediction: 17 additional actual body admissions over the installed map census,
+no new per-frame work and no second world or shape conversion. Native evidence:
+`analysis/decompiled/chunk_000339.c` (`140809d80`) and
+`chunk_000297.c` (`140727a00`). Source review only; no build or tests run.
+
 `844bf0` now dispatches the real generation-scoped pickedUp graph notification before inventory admission. Accepted portable notes/books/maps retain their checked identity in a retryable callback cursor: `76e2b0` keyframes the same canonical body, masks its filter with `0x0820001f`, clears velocity through the existing `c85dc0` publication owner, resumes the real Pickable update owner and posts the retained begin-pickup sound through the existing PlayerBody backend. `76ec20` then hides the same render/shadow sources; it does not delete their resources or deactivate navigation geometry. Navigation projects the same filter mask into its existing triangles. Invalid/stale/hidden Pickables cannot be read again. Authored projectile/grenade/mine callbacks and bound subtree branches are rejected before inventory/graph side effects instead of being silently omitted. Graph receiver retirement precedes shared identity retirement. Actual initial rigid body transforms, rather than unnormalized render frames, seed post-physics mesh deltas. The canonical actor task adapter publishes through the existing model-motion owner. No tests/builds were run by this agent; root owns the whole interface check. Partial level-start failure cleanup remains an explicit integration task before this lifecycle can be considered complete.
 
 
