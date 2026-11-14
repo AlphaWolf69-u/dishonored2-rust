@@ -9,37 +9,30 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
-## Current continuation (2026-11-14)
+## Current accepted continuation (2026-11-15)
 
-Main `1bf3109f` includes the verified blueprint read-history lifetime fix.
-The component, scene, shape and audio-owner recovery remains isolated until
-final integration acceptance. Source5302eabf compiles the game/tools target and
-default library and passes paired EotW/Dust/EotW acquisition/publication and
-retirement, independent scene scopes, read cancellation and Catalog history.
-Shared common-coin source reads change3 to1; midnight projection decoding
-changes65 to39 with matching recorded content. Retirement takes two passes
-per level rather than the recorded unbatched1697. These are resource/round
-counts, not gameplay CPU or whole-process RAM gains.
+Owner source021c7586 completes the supported resource lifecycle recovery. The
+game/tools dev build, default library, paired scope/cancellation/history and
+source/output comparisons pass. All36 installed variants complete actual
+publication/retirement and independent initial GPU acquisition/removal with
+no acquisition errors. Graph/hierarchy owners close, outgoing map GPU owners
+return to their intended host/common baseline, and Catalog/common/shader
+owners release at final shutdown. Full evidence is in the parity ledger.
 
-Both actual publication/retirement and initial GPU acquisition/removal now
-complete all36 installed variants. Every map retires its graph/hierarchy
-owners; outgoing GPU mesh/buffer/sky counts match intended common ownership.
-Final Catalog consumers, common payloads and shader-library live counts are
-zero. Strict acquisition acceptance remains open: four diagnostics expose a
-pre-existing skipped native cloth/noncloth mesh remapping step. The compiled
-products are installed; the rewrite incorrectly requests their unshipped raw
-mesh names. That source-format selection defect is being repaired from the
-original087820/087a20/088150/088c10 path before integration. Separate cloth
-simulation/rendering is not certified by a base-mesh acquisition fix.
+The fixes cover canonical component retirement, sleeping/attached/hidden
+readable bodies, managed-parent resolution, scoped scene/shape/faction reuse,
+playing-event/cookie ownership, modal boundary release, and compiled cloth
+metadata/noncloth base selection. The latter reads only compact demanded
+headers and standard generated meshes directly from installed archives. It
+adds no extracted files or cloth simulation approximation. Unimplemented
+cloth dynamics/rendering and other unimplemented game consumers remain
+explicitly separate from supported resource-owner completion.
 
-The installed raw readable census covers876 instances/839 rigid components,
-including sleeping dynamic and attached bodies. Hidden descriptor-only bodies
-keep their real physics resources without allocating color projections. The
-managed-parent resolver now follows the original null-target behavior across
-all attachment consumers, fixing four dangling readable-parent references in
-Curator/Palace. Ordinary modal Close retains its semantics; level-boundary
-Clear releases previous Journal/reading movie resources. Historical sections
-below concern their named source cohorts, not final acceptance of this batch.
+Measured scoped counts: retirement1697 to2 passes; common coin reads3 to1;
+midnight projection decodes65 to39 with matching recorded content. These do
+not imply whole-process RAM, gameplay CPU or FPS gains. The all36 route does
+not execute gameplay frames or certify every live effect/visibility transition.
+Historical sections below retain their original source cohorts and limits.
 
 ## Current integrated scope (2026-11-11)
 
