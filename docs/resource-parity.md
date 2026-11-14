@@ -7834,3 +7834,11 @@ Entity lifetime recovery (main-based integration, 2026-11-14):
   `analysis/decompiled/chunk_000309.c` and `chunk_000587.c`; Rust syntax parsed
   and `git diff --check` passed. No tests were added/run. Full compilation and
   the scene-host acquisition/release observation await the coordinated build.
+
+- **Failure review:** resumable observer traversal is limited to removal,
+  destruction and motion destruction, whose body IDs/mode and phase are held
+  by `WorldStorage`. Existing Added/Created dispatch keeps its previous protocol
+  rather than retaining an unowned retry. A second destruction cannot adopt an
+  unfinished Stop request. Destroying an interrupted signal cancels its cursor
+  before its property slot can be reused; legacy emission rejects such a mixed
+  host-error suspension while preserving normal native nested emission flags.

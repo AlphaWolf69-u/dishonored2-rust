@@ -85,6 +85,11 @@ impl WorldStorage {
     pub(crate) fn destroy_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
     ) -> Result<(), String> {
+        // A failed Stop must finish its own publication request before
+        // deinitialization can establish a different destruction owner.
+        if self.destruction.is_none() && !self.removal_scratch.is_idle() {
+            return Err("body unpublication must finish before destruction".into());
+        }
         let trace = std::env::var("DH2_DEBUG_COLLISION_SOURCES").as_deref() == Ok("1");
         let start = if trace { crate::loading::thread_cycles() } else { None };
         let before = if trace { self.removal_scratch.retained_bytes() } else { 0 };

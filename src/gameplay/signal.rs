@@ -40,6 +40,10 @@ impl<S: Copy + Eq, C: Copy + Eq> Signal<S, C> {
     /// ae9d00 destroys the chain immediately outside emission. While emitting,
     /// mark every slot and let the traversal release it after callbacks return.
     pub fn destroy(&mut self) {
+        // A suspended host-error traversal has no callback on the stack.
+        // Destruction cancels it; otherwise a recycled body property would
+        // retain the old cursor and marked observer slots indefinitely.
+        if self.pending_emission.take().is_some() { self.head.flags = 0; }
         let mut current = self.head.target;
         while let Some(index) = current {
             let slot = self.slots[index].as_mut().expect("missing signal slot");
@@ -120,6 +124,9 @@ impl<S: Copy + Eq, C: Copy + Eq> Signal<S, C> {
     /// observer is not part of the current traversal. Callback dispatch belongs
     /// to the world/resource owner; it receives this signal for in-flight edits.
     pub fn emit<A>(&mut self, args: &A, mut invoke: impl FnMut(&mut Self, S, C, &A)) {
+        // Original in-flight/nested emission still follows its flags. A host
+        // error suspension is distinct and belongs to its retained request.
+        assert!(self.pending_emission.is_none(), "interrupted signal must resume before another emission");
         self.head.flags = (self.head.flags & !2) | 1;
         let mut previous = None;
         let mut current = self.head.target;

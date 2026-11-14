@@ -156,6 +156,37 @@ fn emit<'a, S: Copy + Eq, C: Copy + Eq>(
     owners: ActivationOwners<'_>,
     event: PublicationEvent<'_>,
 ) -> Result<(), String> {
+    let mut error = None;
+    signal.emit(&event, |signal, subscriber, callback, &event| {
+        if error.is_none() {
+            let live = ActivationOwners {
+                bodies: &mut *owners.bodies,
+                motions: &mut *owners.motions,
+                deactivation: &mut *owners.deactivation,
+                broadphase: &mut *owners.broadphase,
+            };
+            if let Err(failure) = dispatch(signal, subscriber, callback, live, event, components) {
+                error = Some(failure);
+            }
+        }
+    });
+    error.map_or(Ok(()), Err)
+}
+
+fn emit_retirement<'a, S: Copy + Eq, C: Copy + Eq>(
+    signal: &mut Signal<S, C>,
+    components: &mut TriggerComponentStore<'a>,
+    dispatch: &mut impl FnMut(
+        &mut Signal<S, C>,
+        S,
+        C,
+        ActivationOwners<'_>,
+        PublicationEvent<'_>,
+        &mut TriggerComponentStore<'a>,
+    ) -> Result<(), String>,
+    owners: ActivationOwners<'_>,
+    event: PublicationEvent<'_>,
+) -> Result<(), String> {
     signal.emit_resumable(&event, |signal, subscriber, callback, &event| {
         let live = ActivationOwners {
             bodies: &mut *owners.bodies,
@@ -208,17 +239,17 @@ where
         )
     }
     fn removed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
-        emit(&mut self.signals.removed, &mut self.components, &mut self.dispatch,
+        emit_retirement(&mut self.signals.removed, &mut self.components, &mut self.dispatch,
             owners, PublicationEvent::Removed(ids))
     }
 
     fn destroyed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
-        emit(&mut self.signals.destroyed, &mut self.components, &mut self.dispatch,
+        emit_retirement(&mut self.signals.destroyed, &mut self.components, &mut self.dispatch,
             owners, PublicationEvent::Destroyed(ids))
     }
 
     fn motion_destroyed(&mut self, owners: ActivationOwners<'_>, motion: u32) -> Result<(), String> {
-        emit(&mut self.signals.motion_destroyed, &mut self.components, &mut self.dispatch,
+        emit_retirement(&mut self.signals.motion_destroyed, &mut self.components, &mut self.dispatch,
             owners, PublicationEvent::MotionDestroyed(motion))
     }
     fn transform_changed(
