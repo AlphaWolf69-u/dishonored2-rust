@@ -493,24 +493,61 @@ pub(super) fn retire_admitted_pickups(
 ) {
     let (Some(mut interactions),Some(mut navigation),Some(mut scene),Some(mut live)) =
         (interactions,navigation,physics,live) else { return; };
+    if let Err(error) = drain_accepted_pickups(&mut interactions,&mut scene,&mut live,&mut navigation,
+        &mut sources,&placements,&mut retired, |event| { sounds.write(event); }) {
+        warn!("document pickup callback pending: {error}");
+    }
+}
+
+/// 844bf0 completes 76e2b0/76ec20 before returning. The host's deferred
+/// callback must reach that same boundary before any component Stop, including
+/// a map request which has already gated its normal PostUpdate consumer.
+fn drain_accepted_pickups(interactions: &mut Interactions,
+    scene: &mut super::physics_scene::PhysicsScene,
+    live: &mut crate::gameplay::entity_lifetime::LiveEntities,
+    navigation: &mut super::NavigationWorld,
+    sources: &mut super::shadow_updates::ModelShadowSources,
+    placements: &super::RenderSourcePlacements,
+    hidden: &mut super::interaction_focus::RetiredPlacements,
+    mut post: impl FnMut(super::audio::SoundEvent)) -> Result<(),String> {
     while let Some(pending) = interactions.retire.first_mut() {
-        if live.get(pending.identity.0).is_none() { warn!("document pickup identity retired before callback"); return; }
-        match scene.begin_document_pickup(&mut live,pending.identity.1,&mut pending.step) {
-            Ok(Some(sound)) => {
-                // bevy_backend: the existing PlayerBody sound object is the
-                // player's Audio component host; it owns post/decode lifetime.
-                sounds.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
-                    event:sound.id,emitter:crate::gameplay::sound::Emitter::PlayerBody }));
-            },
-            Ok(None) => {},
-            Err(error) => { warn!("document pickup callback pending: {error}"); return; },
+        if live.get(pending.identity.0).is_none() { return Err("document pickup identity retired before callback".into()); }
+        if let Some(sound) = scene.begin_document_pickup(live,pending.identity.1,&mut pending.step)? {
+            // bevy_backend: PlayerBody is the existing player Audio host. Its
+            // FIFO and ordinary retirement own the accepted sound request.
+            post(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
+                event:sound.id,emitter:crate::gameplay::sound::Emitter::PlayerBody }));
         }
-        // Project the same filter change into the existing navigation backend;
-        // keep its owner/triangles/materials rather than deleting the collider.
         navigation.0.mask_placed_owner_filter(&pending.entity,0x0820_001f);
-        if let Err(error) = scene.finish_document_pickup(&live,pending.identity.1,&mut sources,&placements,&mut retired) {
-            warn!("document hide callback pending: {error}"); return;
-        }
+        scene.finish_document_pickup(live,pending.identity.1,sources,placements,hidden)?;
         interactions.retire.remove(0);
     }
+    Ok(())
+}
+
+/// Drain only already accepted work: never repeat pickedUp or inventory
+/// admission, and retain every cursor/resource when a body callback fails.
+pub(super) fn finish_accepted_pickups(world: &mut World) -> Result<(),String> {
+    if world.get_resource::<Interactions>().is_none_or(|owner| owner.retire.is_empty()) { return Ok(()); }
+    let mut state = bevy::ecs::system::SystemState::<(
+        ResMut<Interactions>, ResMut<super::physics_scene::PhysicsScene>,
+        ResMut<crate::gameplay::entity_lifetime::LiveEntities>, ResMut<super::NavigationWorld>,
+        ResMut<super::shadow_updates::ModelShadowSources>, Res<super::RenderSourcePlacements>,
+        ResMut<super::interaction_focus::RetiredPlacements>, MessageWriter<super::audio::SoundEvent>,
+    )>::new(world);
+    let result = (|| {
+        let (mut interactions,mut scene,mut live,mut navigation,mut sources,placements,mut hidden,mut sounds) =
+            state.get_mut(world).map_err(|error| format!("accepted pickup retirement owner absent: {error}"))?;
+        drain_accepted_pickups(&mut interactions,&mut scene,&mut live,&mut navigation,&mut sources,
+            &placements,&mut hidden,|event| { sounds.write(event); })
+    })();
+    state.apply(world);
+    result
+}
+
+/// Real retained queue state for phase observers. This never admits a pickup
+/// or manufactures a nonempty cursor for an otherwise idle world.
+pub(super) fn accepted_pickup_progress(world: &World) -> Vec<(String,u8)> {
+    world.get_resource::<Interactions>().map(|owner| owner.retire.iter()
+        .map(|pending| (pending.entity.clone(),pending.step)).collect()).unwrap_or_default()
 }

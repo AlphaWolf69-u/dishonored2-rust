@@ -44,6 +44,9 @@ impl LevelLifetime {
 
     pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
         if self.cleared { return Ok(true); }
+        // The source read callback is synchronous. Finish its already accepted
+        // host cursor while the real components and render/audio owners remain.
+        super::interactions::finish_accepted_pickups(world)?;
         // Poll while all actual support owners remain published. Pending and
         // errors preserve the sole registry, component pools and body world.
         if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
