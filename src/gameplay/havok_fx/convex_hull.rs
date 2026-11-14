@@ -8,6 +8,15 @@
 use crate::float::{add, multiply, subtract};
 
 const FAR: f32 = f32::from_bits(0x7f7f_ffee);
+
+/// MINPS / MAXPS lane semantics (the first operand when it compares).
+fn minps(a: f32, b: f32) -> f32 {
+    if a < b { a } else { b }
+}
+
+fn maxps(a: f32, b: f32) -> f32 {
+    if a > b { a } else { b }
+}
 const NONE: usize = usize::MAX;
 
 /// A point (0x40-byte record of +0x60, or a hull vertex of +0x38).
@@ -627,7 +636,8 @@ impl Hull {
 /// of the collision model's vertices, at most 16 of them, relative to its
 /// volume centroid (+0x1d00), and that centroid (+0x1d10).
 pub fn collision_shape(points: &[[f32; 4]]) -> Result<(Vec<[f32; 4]>, [f32; 3]), String> {
-    collision_shape_with(points, |_| Err("hkgpConvexHull oriented bounding box (140c0d380) is not ported".into()))
+    // 140b896a0: half the smallest half extent of the hull's box.
+    collision_shape_with(points, |hull| Ok(multiply(0.5, hull.smallest_box_half_extent())))
 }
 
 /// `collision_shape` with the decimation tolerance from `tolerance`.
@@ -1078,5 +1088,212 @@ mod tests {
             }
         }
         assert_eq!((four, three), (400, 400));
+    }
+}
+
+/// The axis swap of 140baba50's planar build (the dominant normal axis
+/// becomes z), undone after the chain.
+fn swap_axes(records: &mut [Point], axis: usize) {
+    for r in records.iter_mut() {
+        if axis == 0 {
+            r.grid.swap(0, 2);
+        } else if axis == 1 {
+            r.grid.swap(1, 2);
+        }
+    }
+}
+
+/// The monotone chain's turn: (a - o) x (p - o) in the grid's x, y.
+fn cross(o: &Point, a: &Point, p: &Point) -> i64 {
+    (a.grid[0] - o.grid[0]) as i64 * (p.grid[1] - o.grid[1]) as i64
+        - (p.grid[0] - o.grid[0]) as i64 * (a.grid[1] - o.grid[1]) as i64
+}
+
+/// 140c0d200: the minimum and maximum of `points` projected on `d`, four
+/// points at a time ((z + y) + x per lane) and the rest one at a time
+/// ((y + x) + z).
+fn project(d: [f32; 4], points: &[[f32; 4]]) -> (f32, f32) {
+    let far = f32::from_bits(0x7f7f_ffee);
+    let n = points.len();
+    let mut low = [far; 4];
+    let mut high = [subtract(0., far); 4];
+    let mut done = 0;
+    if n as i64 - 3 > 0 {
+        let blocks = ((n - 3 - 1) >> 2) + 1;
+        done = blocks * 4;
+        for b in 0..blocks {
+            for l in 0..4 {
+                let p = points[4 * b + l];
+                let v = add(add(multiply(p[2], d[2]), multiply(p[1], d[1])), multiply(p[0], d[0]));
+                low[l] = minps(low[l], v);
+                high[l] = maxps(high[l], v);
+            }
+        }
+    }
+    // Horizontal reduction: (l2, l3, l0, l1) then (l1, l0, l3, l2).
+    let low = [minps(low[2], low[0]), minps(low[3], low[1])];
+    let mut low = minps(low[0], low[1]);
+    let high = [maxps(high[2], high[0]), maxps(high[3], high[1])];
+    let mut high = maxps(high[0], high[1]);
+    for p in &points[done.min(n)..] {
+        let v = add(add(multiply(d[1], p[1]), multiply(d[0], p[0])), multiply(d[2], p[2]));
+        low = minps(low, v);
+        high = maxps(high, v);
+    }
+    (low, high)
+}
+
+/// 1/sqrt through SQRTPS and DIVPS, masked to 0 (140c0d380's normalize).
+fn normalized(v: [f32; 4]) -> [f32; 4] {
+    let s = add(add(multiply(v[1], v[1]), multiply(v[0], v[0])), multiply(v[2], v[2]));
+    let inverse = if s <= 0. { 0. } else { crate::float::divide(1., s.sqrt()) };
+    [multiply(v[0], inverse), multiply(v[1], inverse), multiply(v[2], inverse), 0.]
+}
+
+impl Hull {
+    /// 140b884e0 -> 140baba50 forced to two dimensions: the 2D hull of
+    /// `points` in the plane with normal `normal` (monotone chain on the
+    /// quantized coordinates with the dominant normal axis dropped), with
+    /// its edge planes (140b94be0, dims 2). None when degenerate.
+    fn build_planar(points: &[[f32; 4]], normal: [f32; 4]) -> Option<Self> {
+        let domain = Domain::new(points).ok()?;
+        let mut records: Vec<Point> = points
+            .iter()
+            .map(|&position| Point { position, grid: domain.quantize(position), extra: 0, index: -1 })
+            .collect();
+        let a = [normal[0].abs(), normal[1].abs(), normal[2].abs()];
+        let xy = if a[1] > a[0] { a[1] } else { a[0] };
+        let largest = if a[2] > xy { a[2] } else { xy };
+        let mask = (0..3).fold(0, |m, i| m | (usize::from(largest <= a[i]) << i));
+        let axis = [0, 0, 1, 1, 2, 2, 2, 2][mask];
+        swap_axes(&mut records, axis);
+        if records.len() > 1 {
+            let last = records.len() as i32 - 1;
+            sort_points(&mut records, 0, last);
+        }
+        let mut chain: Vec<Point> = Vec::new();
+        for p in &records {
+            while chain.len() >= 2 && !(0 < cross(&chain[chain.len() - 2], &chain[chain.len() - 1], p)) {
+                chain.pop();
+            }
+            chain.push(*p);
+        }
+        let lower = chain.len() + 1;
+        for p in records.iter().rev().skip(1) {
+            while chain.len() >= lower && !(0 < cross(&chain[chain.len() - 2], &chain[chain.len() - 1], p)) {
+                chain.pop();
+            }
+            chain.push(*p);
+        }
+        if chain.len() < 4 {
+            return None;
+        }
+        chain.pop();
+        swap_axes(&mut chain, axis);
+        // Orientation: the largest edge cross product about the centroid
+        // against the plane normal reverses the order when opposite.
+        let count = chain.len() as f32;
+        let mut sum = [0f32; 3];
+        for p in &chain {
+            sum = std::array::from_fn(|i| add(sum[i], p.position[i]));
+        }
+        let inverse = crate::gameplay::constraint_solver::reciprocal(count);
+        let c: [f32; 3] = sum.map(|s| multiply(s, inverse));
+        let mut best = [0f32; 3];
+        let mut previous = chain.len() - 1;
+        for current in 0..chain.len() {
+            let q: [f32; 3] = std::array::from_fn(|i| subtract(chain[previous].position[i], c[i]));
+            let p: [f32; 3] = std::array::from_fn(|i| subtract(chain[current].position[i], c[i]));
+            let z = subtract(multiply(p[1], q[0]), multiply(q[1], p[0]));
+            let x = subtract(multiply(p[2], q[1]), multiply(q[2], p[1]));
+            let y = subtract(multiply(p[0], q[2]), multiply(q[0], p[2]));
+            let size = |v: [f32; 3]| add(add(multiply(v[1], v[1]), multiply(v[0], v[0])), multiply(v[2], v[2]));
+            if size(best) < size([x, y, z]) {
+                best = [x, y, z];
+            }
+            previous = current;
+        }
+        if add(add(multiply(best[1], normal[1]), multiply(best[0], normal[0])), multiply(best[2], normal[2])) < 0. {
+            chain.reverse();
+        }
+        let mut hull = Self {
+            domain,
+            vertices: Vec::new(),
+            vertex_head: NONE,
+            triangles: Vec::new(),
+            triangle_head: NONE,
+            dimensions: 2,
+            faces: Vec::new(),
+            mark: 0,
+        };
+        for p in chain {
+            hull.new_vertex(p);
+        }
+        // 140b94be0, dims 2: an outward plane per edge, from the tail.
+        let order = hull.vertex_order();
+        let mut mean = [0f32; 3];
+        for &v in &order {
+            let p = hull.grid_position(v);
+            mean = std::array::from_fn(|i| add(p[i], mean[i]));
+        }
+        let inverse = crate::float::divide(1., order.len() as f32);
+        let mean: [f32; 3] = mean.map(|s| multiply(s, inverse));
+        let mut previous = *order.last()?;
+        for &v in &order {
+            let p = hull.grid_position(previous);
+            let q = hull.grid_position(v);
+            let e: [f32; 3] = std::array::from_fn(|i| subtract(q[i], p[i]));
+            let nz = subtract(multiply(e[1], normal[0]), multiply(normal[1], e[0]));
+            let nx = subtract(multiply(e[2], normal[1]), multiply(normal[2], e[1]));
+            let ny = subtract(multiply(e[0], normal[2]), multiply(normal[0], e[2]));
+            let s = add(add(multiply(ny, ny), multiply(nx, nx)), multiply(nz, nz));
+            let n = if 0. < s {
+                let r = crate::gameplay::constraint_solver::inverse_length(s);
+                [multiply(r, nx), multiply(r, ny), multiply(r, nz)]
+            } else {
+                [nx, ny, nz]
+            };
+            let w = subtract(0., add(add(multiply(p[1], n[1]), multiply(p[0], n[0])), multiply(p[2], n[2])));
+            let side = add(add(w, multiply(mean[1], n[1])), add(multiply(mean[2], n[2]), multiply(mean[0], n[0])));
+            let plane = if 0. <= side { [-n[0], -n[1], -n[2], -w] } else { [n[0], n[1], n[2], w] };
+            hull.faces.push(plane);
+            previous = v;
+        }
+        Some(hull)
+    }
+
+    /// 140c0d380 for a 3D hull (via 140b90690 / 140b90eb0): the box with
+    /// the smallest half surface area among the face-plane frames, whose
+    /// smallest half extent is returned.
+    pub fn smallest_box_half_extent(&self) -> f32 {
+        let points: Vec<[f32; 4]> = self.vertex_order().iter().map(|&v| self.vertices[v].point.position).collect();
+        let mut best = f32::from_bits(0x7f7f_ffee);
+        let mut halves = [0f32; 3];
+        for face in &self.faces {
+            let n1 = normalized(*face);
+            let (low1, high1) = project(n1, &points);
+            let e1 = subtract(high1, low1);
+            let Some(planar) = Hull::build_planar(&points, n1) else { continue };
+            for edge in &planar.faces {
+                let n2 = normalized(*edge);
+                let (low2, high2) = project(n2, &points);
+                let e2 = subtract(high2, low2);
+                let n3 = [
+                    subtract(multiply(n1[2], n2[1]), multiply(n2[2], n1[1])),
+                    subtract(multiply(n1[0], n2[2]), multiply(n2[0], n1[2])),
+                    subtract(multiply(n1[1], n2[0]), multiply(n2[1], n1[0])),
+                    0.,
+                ];
+                let (low3, high3) = project(n3, &points);
+                let e3 = subtract(high3, low3);
+                let area = add(add(multiply(e3, e2), multiply(e2, e1)), multiply(e3, e1));
+                if area < best {
+                    best = area;
+                    halves = [multiply(e3, 0.5), multiply(e2, 0.5), multiply(e1, 0.5)];
+                }
+            }
+        }
+        // 140b90eb0: the minimum over the three dimensions.
+        minps(minps(halves[0], halves[1]), halves[2])
     }
 }
