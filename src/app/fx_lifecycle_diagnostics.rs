@@ -51,6 +51,15 @@ impl Observation {
     pub(super) fn observe_view_gap(&mut self, world: &World) -> Result<(), String> {
         let scenario = self.scenarios.get_mut(self.next).ok_or("FX gap scenario absent")?;
         if !self.view_gap || !matches!(scenario.phase, Phase::ViewGap) { return Err("FX view gap was not requested".into()); }
+        let water = world.get_resource::<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>()
+            .ok_or("FX gap has no production water-view owner")?.0.is_none();
+        let particles = world.get_resource::<crate::rendering::bevy_backend::particle_systems::ParticleQueryFrame>()
+            .ok_or("FX gap has no production particle-query owner")?.0.is_none();
+        let effects = !world.get_resource::<crate::rendering::bevy_backend::camera_scene::FxPublication>()
+            .ok_or("FX gap has no production FX publication owner")?.has_view();
+        if !water || !particles || !effects {
+            return Err(format!("FX missing-view transition was not observed: water_absent={water} particle_queries_absent={particles} fx_publication_absent={effects}"));
+        }
         let sample = world.get_resource::<FxSimulation>().ok_or("FX simulation dropped with its view")?
             .observe_fx_owner(&format!("player:{}", scenario.first));
         let retained = scenario.source.as_ref().is_some_and(|source| source.strong_count() != 0);
@@ -59,6 +68,7 @@ impl Observation {
         }
         eprintln!("FX_ACTIVE_LIFETIME phase=view-gap effect={} before_frame={:?} after_frame={:?} handles={:?} source_live={retained}",
             scenario.path, scenario.gap_frame, sample.frame, sample.handles);
+        eprintln!("FX_ACTIVE_LIFETIME phase=view-publications-withdrawn water_absent={water} particle_queries_absent={particles} fx_publication_absent={effects}");
         self.view_gap = false;
         // The caller restores its Camera before the next ordinary App frame.
         scenario.phase = Phase::Restart;

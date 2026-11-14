@@ -111,6 +111,11 @@ pub(super) struct ParticlePublicationFrame {
 /// Particle state remains exclusively in the gameplay world.
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct FxPublication(pub(super) Option<std::sync::Arc<FxFrame>>);
+impl FxPublication {
+    /// Read-only lifecycle diagnostic; absence is published by the ordinary
+    /// view producer, never manufactured by the observer.
+    pub(crate) fn has_view(&self) -> bool { self.0.is_some() }
+}
 pub(super) struct FxFrame {
     pub camera: Entity,
     pub frame: u32,
