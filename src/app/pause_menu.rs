@@ -380,6 +380,11 @@ impl PauseMenu {
         self.modal.clear();
         let _ = self.commands.send(Command::EndHud);
         self.hud_epoch = self.hud_epoch.wrapping_add(1);
+        // Level teardown also exits Journal/READ_NOTE (140790ea0 ->
+        // 140788d70). Pause Close alone only retires the pause movie.
+        let _ = self.commands.send(Command::Modal(journal::Command {
+            epoch: self.hud_epoch, operation: journal::Operation::Clear,
+        }));
         self.hud_started = false;
         self.hud_in_flight = false;
         self.hud_in_flight_force = false;

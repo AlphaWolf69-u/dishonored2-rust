@@ -8385,3 +8385,26 @@ The ordinary readables' actual authored RigidBody records now instantiate the sh
 ### Host preparation failure identity (2026-11-14)
 
 The existing Initialize/Start host boundary reports the actual component handle and authored entity name before canonical rollback retires them. This changes error context only: successful startup performs no report formatting, allocation or retained diagnostic storage; normal frame and resource admission rules are unchanged. No performance gain is claimed. The preceding dc9b74a5 installed Edge of the World acquisition failed at the explicit uncached-convex mass path after successful cleanup; it is not a completed level-publication result. The coherent game/default-library compilation and source acquisition observations will be repeated after the actual missing calculation is restored.
+
+### Modal movie retirement on level teardown (2026-11-14)
+
+`PauseMenu::begin_level` now sends the existing modal-worker `Clear` with the
+new world epoch, in addition to clearing the main-thread modal session. Previously
+its `Close` command released only the Pause movie, leaving Journal/readable
+movie VMs and their resource leases alive until another modal opened or AppExit.
+READ_NOTE exit `140790340 -> 140790ea0 -> 140788d70` is the source movie-exit
+path. Journal's `_C_SubscreenClosed` binding (`14078c830`) still resumes the same
+Journal instance when its readable subscreen closes normally. Ordinary Pause
+close does not clear these movies. The level-loading cancellation and deferred
+AppExit paths both call `begin_level`; worker shutdown additionally drops all
+remaining movie owners. Submitted frames and session-shared bitmap libraries
+retain their existing owners; persistent discovered-document inventory is intact.
+
+Prediction: prior-level modal VMs, movie-local draw caches and item snapshots
+release on the UI worker's FIFO teardown command instead of surviving the map
+transition. This adds no normal-frame, GPU or streaming work. Source review also
+confirmed Pickable shutdown clears its item/player/loot references before pool
+release, canceled interaction preparation clears pending activation, and normal
+readable close drops the movie. No builds, tests, launches or visual checks were
+performed for this narrow retirement correction; coordinated build remains with
+the integration owner.
