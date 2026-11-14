@@ -15,13 +15,14 @@ use crate::{
 
 /// Preparation output for the component's original 140808ea0 resource
 /// acquisition. Call on the existing level preparation worker, never on the
-/// gameplay thread. Model materials must come from the live render model's
-/// resolved material declarations, in surface-slot order.
+/// gameplay thread. Model materials come from the authored model descriptor's
+/// resolved material declarations in surface-slot order, independently of
+/// whether this entity has a color-render projection.
 /// Worker-to-entity handoff. The actual entity factory consumes this once
-/// into its component, after checking the reflected slot and render source.
-pub(super) struct PreparedRigidRender {
+/// into its component after checking the reflected slot and descriptor.
+pub(super) struct PreparedRigidResources {
     pub slot: String,
-    pub source_index: usize,
+    pub source_index: Option<usize>,
     pub settings: crate::entities::RigidBodySettings,
     pub resources: Result<RigidBodyResources, String>,
 }
@@ -159,9 +160,11 @@ pub(super) struct RigidBodyComponent {
     movement_body: Option<usize>,
     pub velocities: crate::gameplay::collision_user_data::velocity::CollisionVelocities,
     definition: Option<std::sync::Arc<RigidBodyDefinition>>,
-    /// The actual render source and its acquired shape/material lease, held by
+    /// The authored model's acquired physical shape/material lease, held by
     /// this component until Initialize consumes it or admission rolls back.
-    prepared: Option<(usize, RigidBodyResources)>,
+    /// Physical resources do not require a color-render placement. The inner
+    /// optional index refers only to a real projection, never a dummy slot.
+    prepared_resources: Option<(Option<usize>, RigidBodyResources)>,
     shape: Option<usize>,
     body: Option<u32>,
     component: Option<ComponentHandle>,
@@ -189,7 +192,7 @@ pub(super) struct RigidBodyComponent {
 
 impl Default for RigidBodyComponent {
     fn default() -> Self {
-        Self { owner: ComponentOwner::default(), movement_body: None, velocities: Default::default(), definition: None, prepared: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None,
+        Self { owner: ComponentOwner::default(), movement_body: None, velocities: Default::default(), definition: None, prepared_resources: None, shape: None, body: None, component: None, initialize_listeners: None, start_listeners: None, activation_listener: None,
             requested_motion: [0.0; 6], requested_motion_flags: 0, requested_motion_additive: false, requested_motion_pending: false, freeze_state: 0, update_paused_by_body: false,
             materials: Vec::new(), pending_info: None, creation_mass_resolved: false, initialization: Initialization::Empty, start: None, start_behavior: None, stop: None, deinit: None }
     }
@@ -230,33 +233,33 @@ impl RigidBodyComponent {
     pub(super) fn initialize_listeners_pending(&self) -> bool { self.initialization == Initialization::BaseReady && self.initialize_listeners.is_none() }
 
     pub(super) fn can_release(&self) -> bool {
-        self.prepared.is_none() && self.shape.is_none() && self.body.is_none() && self.initialize_listeners.is_none() && self.start_listeners.is_none() && self.activation_listener.is_none()
+        self.prepared_resources.is_none() && self.shape.is_none() && self.body.is_none() && self.initialize_listeners.is_none() && self.start_listeners.is_none() && self.activation_listener.is_none()
             && matches!(self.initialization, Initialization::Empty | Initialization::Retired)
     }
 
-    pub(super) fn has_prepared_render(&self) -> bool { self.prepared.is_some() }
+    pub(super) fn has_prepared_resources(&self) -> bool { self.prepared_resources.is_some() }
 
-    pub(super) fn bind_prepared_render(&mut self, source_index: usize, resources: RigidBodyResources) -> Result<(), String> {
-        if self.initialization != Initialization::Empty || self.prepared.is_some() {
-            return Err("rigid-body render resource is already bound or initialized".into());
+    pub(super) fn bind_prepared_resources(&mut self, source_index: Option<usize>, resources: RigidBodyResources) -> Result<(), String> {
+        if self.initialization != Initialization::Empty || self.prepared_resources.is_some() {
+            return Err("rigid-body resources are already bound or initialized".into());
         }
-        self.prepared = Some((source_index, resources));
+        self.prepared_resources = Some((source_index, resources));
         Ok(())
     }
 
     /// The caller retains the returned source and resources through the real
     /// Initialize boundary, or retires them when admission is rolled back.
-    pub(super) fn prepared_material(&self) -> Option<u16> { self.prepared.as_ref()?.1.materials.first().copied() }
+    pub(super) fn prepared_material(&self) -> Option<u16> { self.prepared_resources.as_ref()?.1.materials.first().copied() }
 
-    pub(super) fn take_prepared_render(&mut self) -> Option<(usize, RigidBodyResources)> {
-        self.prepared.take()
+    pub(super) fn take_prepared_resources(&mut self) -> Option<(Option<usize>, RigidBodyResources)> {
+        self.prepared_resources.take()
     }
 
-    pub(super) fn retire_uninitialized_render(&mut self) -> Result<(), String> {
-        if self.prepared.is_some() && self.initialization != Initialization::Empty {
-            return Err("live rigid-body render lease requires native deinitialization".into());
+    pub(super) fn retire_uninitialized_resources(&mut self) -> Result<(), String> {
+        if self.prepared_resources.is_some() && self.initialization != Initialization::Empty {
+            return Err("live rigid-body resource lease requires native deinitialization".into());
         }
-        self.prepared = None;
+        self.prepared_resources = None;
         Ok(())
     }
 
@@ -621,7 +624,7 @@ impl RigidBodyComponent {
     }
     pub(super) fn advance_unpublished_abort(&mut self, step: u8) -> Result<(), String> {
         self.initialization = match step {
-            0 => { self.prepared = None; Initialization::Retired },
+            0 => { self.prepared_resources = None; Initialization::Retired },
             1 => Initialization::GeometryReady,
             2 => {
                 if self.initialize_listeners.is_some() { return Err("rigid Initialize listeners remain registered".into()); }

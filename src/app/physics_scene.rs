@@ -548,7 +548,7 @@ impl PhysicsScene {
             if let Some(interactions) = interactions {
                 scene.admit_interaction_components(document, interactions, live, &mut registry, constructor_tag)?;
                 scene.prepare_document_hierarchy(document, interactions, models, live, &mut registry, constructor_tag, joint_frames)?;
-                scene.prepare_document_rigids(catalog, interactions, models, texts, shape_sources, &mut registry)?;
+                scene.prepare_document_rigids(catalog, document, interactions, models, texts, shape_sources, &mut registry)?;
             }
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
             // later game-local shared component initialization/Start drain.

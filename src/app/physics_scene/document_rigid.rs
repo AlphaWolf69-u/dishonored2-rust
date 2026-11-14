@@ -15,7 +15,7 @@ impl PhysicsScene {
         let shared = self.world.clone();
         let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
         let world = &mut *guard;
-        if component.has_prepared_render() {
+        if component.has_prepared_resources() {
             let definition = component.definition().ok_or("placed rigid definition is absent")?;
             // Rotation locks require the source ref-counted MassDistribution;
             // reject that authored branch before consuming the prepared lease.
@@ -45,7 +45,7 @@ impl PhysicsScene {
                 .prepared_material().ok_or("placed rigid materials are absent")?;
             let density = world.storage.materials.material_for_id(material)?.density;
             let (_, resources) = self.rigid_bodies.get_mut(handle.slot).ok_or("placed rigid component is absent")?
-                .take_prepared_render().ok_or("placed rigid prepared render lease is absent")?;
+                .take_prepared_resources().ok_or("placed rigid prepared resource lease is absent")?;
             // The first source material controls density even when the body
             // material is zero because the shape has per-surface tags.
             let basis = crate::physworld::rigid_body_basis(frame.basis.map(|v| [v[0], v[1], v[2], 0.0]));
@@ -98,61 +98,95 @@ impl PhysicsScene {
         Ok(component)
     }
 
-    pub(super) fn prepare_document_rigids(&mut self, catalog: &archive::Catalog,
+    pub(super) fn prepare_document_rigids(&mut self, catalog: &archive::Catalog, document: &entities::Document,
         interactions: &super::super::interactions::Interactions, models: &[entities::PlacedModel],
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         sources: &mut crate::physworld::source::ShapeSources,
         registry: &mut ComponentRegistry) -> Result<(), String> {
         let model_indices: HashMap<_,_> = models.iter().enumerate().map(|(i,m)| (m.id.as_str(),i)).collect();
+        let definitions: HashMap<_,_> = document.definitions.iter().filter(|definition| definition.kind == "entity")
+            .map(|definition| (definition.id.as_str(), definition)).collect();
+        let mut projections = [0usize; 2];
         let mut materials = super::super::material_loading::MaterialCache::default();
         let shared = self.world.clone();
         let mut guard = shared.write().map_err(|_| "level physics query owner is poisoned")?;
         let world = &mut *guard;
         for binding in &interactions.readable {
             let Some(definition) = &binding.rigid else { continue; };
-            let index = self.entities.iter().position(|entity| entity.name == binding.entity)
-                .ok_or("document rigid entity absent")?;
-            let source_index = *model_indices.get(binding.entity.as_str()).ok_or("document rigid render placement absent")?;
-            let model = &models[source_index];
-            let settings = &definition.settings;
-            if settings.lock_rotation.iter().any(|v| *v)
-                || settings.wind_speed_factor.ok_or("rigid wind factor absent")? > 0.0
-                || definition.declaration_flags & 0x80 != 0 {
-                return Err(format!("{}: authored rigid requires unhosted rotation/wind/critical owner", binding.entity));
-            }
-            let behavior = settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
-                .ok_or("document rigid behavior absent")?;
-            // 809d80 publishes the newly created dynamic body deactivated
-            // when startAsleep is true. It does not run a simulation step.
-            // Keep the real dynamic motion in the shared world; changing it
-            // to keyframed/static here would change later pickup callbacks.
-            if behavior == 2 && settings.start_asleep != Some(true) {
-                return Err("awake document rigid requires the canonical active simulation owner".into());
-            }
-            let render = if settings.material.is_none() {
-                crate::assets::bmodel::acquire(catalog, &model.resource_path, crate::assets::bmodel::CommonModels::shared(catalog))?
-            } else { None };
-            if !world.storage.materials.library.added.is_empty() {
-                return Err("rigid resource preparation requires actual material observer host".into());
-            }
-            let resources = super::super::rigid_body::prepare_resources(catalog, sources, texts,
-                &mut world.storage.materials, settings, model, render.as_deref(), Some(&mut materials),
-                |_,_,_,_| unreachable!("startup material observers absent"))?;
-            let declaration = self.types.declaration(self.factories[8], Arc::as_ptr(definition) as usize,
-                definition.scheduling.as_ref().clone())?;
-            let bodies = &mut self.actors.bodies;
-            let free = &mut self.free_rigid_movement;
-            let handle = ComponentFactory { declaration: &declaration, pool: &mut self.rigid_bodies,
-                registry, grow_one_at_a_time: false }.create(&mut self.entities[index].components,
-                    declaration.scheduling.starts_on_spawn(), |_,_,_| {
-                        let mut component = super::super::rigid_body::RigidBodyComponent::new(definition.clone(), bodies, free)?;
-                        component.bind_prepared_render(source_index, resources)?;
-                        Ok(component)
-                    }, |_,_,_| Ok(()))?.ok_or("document rigid creation disabled")?;
-            self.rigid_placements.insert(index, source_index);
-            self.declarations.insert(handle.packed(), declaration);
+            (|| -> Result<(), String> {
+                let pickable = self.readable_components.get(&binding.entity).ok_or("admitted readable component absent")?;
+                let pickable_owner = &self.pickables.get(pickable.handle.slot).ok_or("admitted readable slot absent")?.owner;
+                if pickable_owner.generation != pickable.generation { return Err("admitted readable generation is stale".into()); }
+                let index = pickable_owner.entity.ok_or("admitted readable entity absent")?;
+                if self.entities.get(index).is_none_or(|entity| entity.name != binding.entity) {
+                    return Err("admitted readable entity identity differs".into());
+                }
+                let authored = definitions.get(binding.entity.as_str())
+                    .ok_or_else(|| format!("readable rigid {}: authored entity definition absent", binding.entity))?;
+                let source_index = model_indices.get(binding.entity.as_str()).copied();
+                //808ea0 consumes the RenderModel name and scale, not a color draw.
+                // Hidden entities keep that authored descriptor without allocating
+                // a mesh/material/GPU projection merely to acquire their bodies.
+                let descriptor;
+                let model = match source_index {
+                    Some(index) => &models[index],
+                    None => {
+                        descriptor = entities::model_descriptor(authored, |path| catalog.read(path)
+                            .map_err(|error| error.to_string()).map(|bytes| bytes.map(entities::owned_declaration_text)))?
+                            .ok_or_else(|| format!("readable rigid {}: no authored RenderModel descriptor", binding.entity))?;
+                        &descriptor
+                    }
+                };
+                let hidden = entities::entity_hidden(authored);
+                if hidden { self.entities[index].entity_flags |= 1; }
+                let settings = &definition.settings;
+                if settings.lock_rotation.iter().any(|v| *v)
+                    || settings.wind_speed_factor.ok_or("rigid wind factor absent")? > 0.0
+                    || definition.declaration_flags & 0x80 != 0 {
+                    return Err(format!("{}: authored rigid requires unhosted rotation/wind/critical owner", binding.entity));
+                }
+                let behavior = settings.physics_behavior.as_deref().and_then(entities::rigid_body_behavior_kind)
+                    .ok_or("document rigid behavior absent")?;
+                // 809d80 publishes the newly created dynamic body deactivated
+                // when startAsleep is true. It does not run a simulation step.
+                // Keep the real dynamic motion in the shared world; changing it
+                // to keyframed/static here would change later pickup callbacks.
+                if behavior == 2 && settings.start_asleep != Some(true) {
+                    return Err("awake document rigid requires the canonical active simulation owner".into());
+                }
+                let render = if settings.material.is_none() {
+                    crate::assets::bmodel::acquire(catalog, &model.resource_path, crate::assets::bmodel::CommonModels::shared(catalog))?
+                } else { None };
+                if !world.storage.materials.library.added.is_empty() {
+                    return Err("rigid resource preparation requires actual material observer host".into());
+                }
+                let resources = super::super::rigid_body::prepare_resources(catalog, sources, texts,
+                    &mut world.storage.materials, settings, model, render.as_deref(), Some(&mut materials),
+                    |_,_,_,_| unreachable!("startup material observers absent"))
+                    .map_err(|error| format!("readable rigid {} [{}], model={}, hidden={hidden}, color_projection={source_index:?}: {error}",
+                        binding.entity, settings.declaration_id, model.resource_path))?;
+                let declaration = self.types.declaration(self.factories[8], Arc::as_ptr(definition) as usize,
+                    definition.scheduling.as_ref().clone())?;
+                let bodies = &mut self.actors.bodies;
+                let free = &mut self.free_rigid_movement;
+                let handle = ComponentFactory { declaration: &declaration, pool: &mut self.rigid_bodies,
+                    registry, grow_one_at_a_time: false }.create(&mut self.entities[index].components,
+                        declaration.scheduling.starts_on_spawn(), |_,_,_| {
+                            let mut component = super::super::rigid_body::RigidBodyComponent::new(definition.clone(), bodies, free)?;
+                            component.bind_prepared_resources(source_index, resources)?;
+                            Ok(component)
+                        }, |_,_,_| Ok(()))?.ok_or("document rigid creation disabled")?;
+                if let Some(source_index) = source_index { self.rigid_placements.insert(index, source_index); }
+                self.declarations.insert(handle.packed(), declaration);
+                projections[usize::from(source_index.is_some())] += 1;
+                Ok(())
+            })().map_err(|error| format!("readable rigid entity={} declaration={}: {error}",
+                binding.entity, definition.settings.declaration_id))?;
         }
         materials.finish_body_physics_preparation();
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("READABLE_RIGID_RESOURCES phase=prepared descriptor_only={} color_projection={}", projections[0], projections[1]);
+        }
         Ok(())
     }
 

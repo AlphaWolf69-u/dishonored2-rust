@@ -2646,107 +2646,130 @@ fn placed_models_using(
     inherited: &HashMap<String, String>,
     blueprints: bool,
 ) -> Vec<PlacedModel> {
-    let mut result = Vec::new();
-    for definition in &document.definitions {
-        if definition.kind != "entity" {
-            continue;
+    document.definitions.iter().filter(|definition| definition.kind == "entity" && !entity_hidden(definition))
+        .filter_map(|definition| placed_model_descriptor(definition, inherited.get(&definition.id).map(String::as_str), blueprints))
+        .collect()
+}
+
+/// Authored visibility belongs to the entity, independently of its physical
+/// resource descriptor. A hidden model can still own collision resources.
+pub(crate) fn entity_hidden(definition: &Definition) -> bool {
+    scope(field(&definition.fields, "edit"))
+        .and_then(|edit| scope(field(edit, "flags")))
+        .and_then(|flags| field(flags, "hide"))
+        .is_some_and(|value| matches!(value, Value::Atom(flag) if flag == "true"))
+}
+
+/// Acquire just one entity's authored RenderModel descriptor.808ea0 reads
+/// that model name/scale even when the entity produces no color projection.
+/// No generic definition clone or whole-map model collection is retained.
+pub(crate) fn model_descriptor(
+    definition: &Definition,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Option<PlacedModel>, String> {
+    let edit = scope(field(&definition.fields, "edit")).unwrap_or(&[]);
+    let explicit = scope(field(edit, "renderModelInfo")).and_then(|info| field(info, "model"));
+    let inherited = if explicit.is_none() {
+        match field(&definition.fields, "inherit") {
+            Some(Value::Atom(name)) => inherited_model(name.trim_matches('"'), 0, &mut HashMap::new(), &mut read)?,
+            _ => None,
         }
-        let Some(edit) = scope(field(&definition.fields, "edit")) else {
-            continue;
-        };
-        if scope(field(edit, "flags"))
-            .and_then(|flags| field(flags, "hide"))
-            .is_some_and(|value| matches!(value, Value::Atom(flag) if flag == "true"))
-        {
-            continue;
-        }
-        let render_info = scope(field(edit, "renderModelInfo"));
-        let model_path = match render_info.and_then(|info| field(info, "model")) {
-            Some(Value::Atom(path)) => path.as_str(),
-            _ => match inherited.get(&definition.id) {
-                Some(path) => path.as_str(),
-                None => continue,
-            },
-        };
-        let model_path = model_path.trim_matches('"');
-        let resource_path = if let Some(stem) = model_path.strip_suffix(".lwo") {
-            format!("generated/model/{stem}.bmodel")
-        } else if model_path.ends_with(".bmodel") {
-            format!("generated/model/{model_path}")
-        } else if blueprints && model_path.ends_with(".blueprint") {
-            format!("generated/decls/blueprint/{model_path}.decl")
-        } else if blueprints && model_path.ends_with(".md6") {
-            format!(
-                "generated/basemodel/{}.bmd6model",
-                model_path.trim_end_matches(".md6")
-            )
-        } else {
-            continue;
-        };
-        let Some(position) =
-            scope(field(edit, "spawnPosition")).and_then(|values| vector(values, [0.0; 3]))
-        else {
-            continue;
-        };
-        let scale = render_info
-            .and_then(|info| scope(field(info, "scale")))
-            .and_then(|values| vector(values, [1.0; 3]))
-            .unwrap_or([1.0; 3]);
-        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let rotation = scope(field(edit, "spawnOrientation"))
-            .and_then(|values| scope(field(values, "mat")))
-            .and_then(|matrix| {
-                let mut rows = identity;
-                for row in 0..3 {
-                    if let Some(values) = scope(field(matrix, &format!("mat[{row}]"))) {
-                        rows[row] = vector(values, identity[row])?;
-                    }
-                }
-                Some(rows)
-            })
-            .unwrap_or(identity);
-        let custom_materials = render_info
-            .and_then(|info| scope(field(info, "m_customMaterials")))
-            .map(|overrides| {
-                let count = match field(overrides, "num") {
-                    Some(Value::Atom(value)) => value
-                        .parse::<usize>()
-                        .ok()
-                        .filter(|&n| n <= 64)
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-                (0..count)
-                    .map(|index| match field(overrides, &format!("item[{index}]")) {
-                        Some(Value::Atom(path))
-                            if !path.trim_matches('"').is_empty()
-                                && !path.trim_matches('"').eq_ignore_ascii_case("NULL") =>
-                        {
-                            Some(path.trim_matches('"').to_string())
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let max_visible_range = render_info
-            .and_then(|info| field(info, "maxVisibleRange"))
-            .and_then(|value| match value {
-                Value::Atom(text) => text.strip_suffix('m').unwrap_or(text).parse::<f32>().ok(),
-                _ => None,
-            })
-            .filter(|value| value.is_finite());
-        result.push(PlacedModel {
-            id: definition.id.clone(),
-            resource_path,
-            position,
-            scale,
-            rotation,
-            custom_materials,
-            max_visible_range,
-        });
+    } else { None };
+    let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true);
+    if descriptor.is_none() && (explicit.is_some() || inherited.is_some()) {
+        return Err(format!("{}: authored RenderModel descriptor is unsupported or incomplete: model={explicit:?}, inherited={inherited:?}", definition.id));
     }
-    result
+    Ok(descriptor)
+}
+
+fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool) -> Option<PlacedModel> {
+    if definition.kind != "entity" { return None; }
+    let edit = scope(field(&definition.fields, "edit"))?;
+    let render_info = scope(field(edit, "renderModelInfo"));
+    let model_path = match render_info.and_then(|info| field(info, "model")) {
+        Some(Value::Atom(path)) => path.as_str(),
+        _ => match inherited {
+            Some(path) => path,
+            None => return None,
+        },
+    };
+    let model_path = model_path.trim_matches('"');
+    let resource_path = if let Some(stem) = model_path.strip_suffix(".lwo") {
+        format!("generated/model/{stem}.bmodel")
+    } else if model_path.ends_with(".bmodel") {
+        format!("generated/model/{model_path}")
+    } else if blueprints && model_path.ends_with(".blueprint") {
+        format!("generated/decls/blueprint/{model_path}.decl")
+    } else if blueprints && model_path.ends_with(".md6") {
+        format!(
+            "generated/basemodel/{}.bmd6model",
+            model_path.trim_end_matches(".md6")
+        )
+    } else {
+        return None;
+    };
+    let Some(position) =
+        scope(field(edit, "spawnPosition")).and_then(|values| vector(values, [0.0; 3]))
+    else {
+        return None;
+    };
+    let scale = render_info
+        .and_then(|info| scope(field(info, "scale")))
+        .and_then(|values| vector(values, [1.0; 3]))
+        .unwrap_or([1.0; 3]);
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let rotation = scope(field(edit, "spawnOrientation"))
+        .and_then(|values| scope(field(values, "mat")))
+        .and_then(|matrix| {
+            let mut rows = identity;
+            for row in 0..3 {
+                if let Some(values) = scope(field(matrix, &format!("mat[{row}]"))) {
+                    rows[row] = vector(values, identity[row])?;
+                }
+            }
+            Some(rows)
+        })
+        .unwrap_or(identity);
+    let custom_materials = render_info
+        .and_then(|info| scope(field(info, "m_customMaterials")))
+        .map(|overrides| {
+            let count = match field(overrides, "num") {
+                Some(Value::Atom(value)) => value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n <= 64)
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            (0..count)
+                .map(|index| match field(overrides, &format!("item[{index}]")) {
+                    Some(Value::Atom(path))
+                        if !path.trim_matches('"').is_empty()
+                            && !path.trim_matches('"').eq_ignore_ascii_case("NULL") =>
+                    {
+                        Some(path.trim_matches('"').to_string())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let max_visible_range = render_info
+        .and_then(|info| field(info, "maxVisibleRange"))
+        .and_then(|value| match value {
+            Value::Atom(text) => text.strip_suffix('m').unwrap_or(text).parse::<f32>().ok(),
+            _ => None,
+        })
+        .filter(|value| value.is_finite());
+    Some(PlacedModel {
+        id: definition.id.clone(),
+        resource_path,
+        position,
+        scale,
+        rotation,
+        custom_materials,
+        max_visible_range,
+    })
 }
 
 /// Resolve map-local pickable components referenced by placed pickup entities.

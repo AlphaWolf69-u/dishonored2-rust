@@ -49,9 +49,7 @@ impl RigidPostHost<'_> {
         if self.live.parent(entity.shared)?.is_some() || !self.live.children(entity.shared)?.is_empty() {
             return Err("rigid actor requires the actual bound hierarchy owner".into());
         }
-        if !self.placements.contains_key(&index) || !self.initial.contains_key(&index) {
-            return Err("rigid actor has no admitted render placement or initial body frame".into());
-        }
+        if !self.initial.contains_key(&index) { return Err("rigid actor has no initial body frame".into()); }
         Ok(entity)
     }
 
@@ -60,8 +58,10 @@ impl RigidPostHost<'_> {
         let entity = value.owner.entity.ok_or("rigid reference actor entity is absent")?;
         let record = self.entity(entity)?;
         let handle = record.components.reference_actor.ok_or("rigid reference actor handle is absent")?;
+        //8762d0 retains the old joint index after clearing the parent. A
+        // dormant index alone is not a live attachment or resource owner.
         if usize::from(handle.slot) != actor || value.parent.is_some() || value.binding.entity.is_some()
-            || value.binding.joint >= 0 || !value.children.is_empty() {
+            || !value.children.is_empty() {
             return Err("rigid actor has an unhosted binding or descendant".into());
         }
         // +18 dispatch needs the real requested-velocity/command owner. The
@@ -172,7 +172,7 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
     }
     fn render_entity(&self, entity: usize) -> Result<Option<usize>, String> {
         self.entity(entity)?;
-        Ok(Some(entity))
+        Ok(self.placements.contains_key(&entity).then_some(entity))
     }
     fn render_binding(&self, actors: &PhysicsActorLinks, actor: usize) -> Result<Option<usize>, String> {
         self.actor_entity(actors, actor)?;

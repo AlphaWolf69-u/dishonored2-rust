@@ -8662,3 +8662,50 @@ measured again rather than claimed from the old zero-header observation.
 Faction matrix semantics and shape content must remain unchanged; no frame
 work/GPU pass is added. Whole-map source comparisons and final release counts
 are repeated for the corrected gate. No CPU/RAM saving is claimed yet.
+### Hidden readable physical-resource descriptors (2026-11-14)
+
+Original `140808ea0` requires the entity's actual RenderModel descriptor
+(`entity+0xf0`) and reads its model name and entity scale for `14008c840` shape
+acquisition. Color visibility is not that descriptor's lifetime. The host
+had incorrectly required a color-render placement after its model collector
+had excluded authored `edit.flags.hide` entities. `assets/entities.rs` now
+factors the existing model field decoder: color collection retains its exact
+hide predicate, while the physical owner can read one requested definition's
+descriptor without cloning generic syntax or collecting another map of models.
+An actually absent or unsupported descriptor is still an error, with entity,
+component declaration and model/resource context.
+
+`RigidBodyComponent` retains prepared resources with an optional real render
+index; `None` denotes no color projection, rather than a synthetic slot zero.
+Body, material, shape and movement-interface ownership proceeds through the
+same Initialize/Start/Stop/deinitialize/cancellation paths. The entity's source
+hide flag remains set. Actor frame publication still uses the canonical body;
+its optional render callback returns no projection when one was never created.
+No hidden mesh, draw, material projection or GPU upload is fabricated. Method
+and field names now say prepared resources, matching that responsibility.
+Preparation resolves its entity through the already admitted Pickable handle
+and generation instead of repeatedly scanning all entity names. The native
+`8762d0` dormant joint index is ignored once its parent is null, preserving
+generation/attachment validation without mistaking an old index for a live
+owner.
+
+Installed all-36 metadata evidence is
+`artifacts/readable-rigid-installed-20261114-v4.json`: 25 hidden readable rigid
+instances in six level variants (Bunker high-chaos20, Bunker low-chaos1,
+Palace and Palace Streets high/low-chaos1 each). All are static HKT bodies with
+explicit model descriptors and `contactsystem/po.paper` override. One is
+parent-bound without a tag. The targeted descriptor census
+`artifacts/hidden-readable-model-descriptors-20261114.json` confirms authored
+positions and six matching compiled shape keys; it finds no new shape,
+dynamic, rotation-lock, wind or ExtraHD branch. The complete map-authored
+readable census remains876 instances/839 rigid components; it does not claim
+blueprint-expanded runtime counts.
+
+Prediction for the coordinated source acquisitions: admit the 25 physical
+resource consumers formerly blocked by hidden color projection, preserve color
+placement/mesh/GPU counts, reuse the existing six demanded shape identities,
+and retain no descriptor after prepared resources are handed off. There is no
+CPU-speed or byte-saving claim. `READABLE_RIGID_RESOURCES` (load diagnostics)
+reports descriptor-only versus real color projections. Source parsing and
+whitespace review passed; no builds, tests or game launches were run by this
+leaf. Actual all-level publication/upload/removal evidence remains pending.
