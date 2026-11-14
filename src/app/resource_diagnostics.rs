@@ -3,6 +3,64 @@
 //! Neither observation writes configuration files or collects performance timings.
 use bevy::{prelude::*, render::renderer::RenderDevice, window::PrimaryWindow};
 
+
+#[derive(Resource, Clone, Default)]
+pub(super) struct TargetObservation(std::sync::Arc<std::sync::Mutex<TargetState>>);
+#[derive(Default)]
+struct TargetState {
+    request: Option<(&'static str, usize)>,
+    ready: bool,
+    rows: Vec<String>,
+    submitted: Option<bevy::render::render_resource::PollType>,
+}
+
+/// Install only for an offscreen observation. Normal gameplay has no target
+/// snapshot system, shared mailbox, fence polling or allocation-range tracing.
+pub(super) fn install_offscreen(app: &mut App) {
+    let observation = TargetObservation::default();
+    let submitted = bevy::render::renderer::ObservedSubmission::default();
+    app.insert_resource(observation.clone());
+    app.insert_resource(submitted.clone());
+    app.sub_app_mut(bevy::render::RenderApp)
+        .insert_resource(observation).insert_resource(submitted)
+        .add_systems(bevy::render::Render, observe_submitted_targets.in_set(bevy::render::RenderSystems::Cleanup));
+}
+
+fn observe_submitted_targets(world: &mut World) {
+    let observation = world.resource::<TargetObservation>().clone();
+    let mut state = observation.0.lock().unwrap();
+    if state.request.is_none() { return; }
+    let (fog_ready, mut rows) = crate::rendering::bevy_backend::fog_scene::observe_target_resources(world);
+    let (camera_ready, camera_rows) = crate::rendering::bevy_backend::camera_scene::observe_target_resources(world);
+    rows.extend(camera_rows);
+    state.rows = rows;
+    state.ready = fog_ready && camera_ready;
+    state.submitted = world.resource::<bevy::render::renderer::ObservedSubmission>().latest();
+}
+
+fn submitted_targets_ready(observation: Option<&TargetObservation>, device: &RenderDevice,
+    kind: &'static str, sample: usize) -> bool {
+    let Some(observation) = observation else { return true; };
+    let mut state = observation.0.lock().unwrap();
+    if state.request != Some((kind, sample)) {
+        state.request = Some((kind, sample));
+        state.ready = false;
+        state.submitted = None;
+        return false;
+    }
+    if !state.ready { return false; }
+    let Some(submission) = state.submitted.take() else { return false; };
+    if let Err(error) = device.poll(submission) {
+        eprintln!("MEMORY {kind} submission wait failed: sample={sample} error={error}");
+        state.ready = false;
+        return false;
+    }
+    for row in state.rows.drain(..) { eprintln!("MEMORY {kind} rendered target: sample={sample} {row}"); }
+    eprintln!("MEMORY {kind} actual submission completed: sample={sample}");
+    state.request = None;
+    true
+}
+
 #[derive(Default)]
 pub(super) struct ResizeSequence {
     origin: Option<UVec2>,
@@ -20,6 +78,7 @@ pub(super) fn observe_resize(
     cameras: Query<&Camera, With<Camera3d>>,
     scene: Res<super::SceneRenderQueue>,
     device: Res<RenderDevice>,
+    targets: Option<Res<TargetObservation>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -63,6 +122,7 @@ pub(super) fn observe_resize(
     if sequence.frames < 120 {
         return;
     }
+    if !submitted_targets_ready(targets.as_deref(), &device, "resize", sequence.step) { return; }
     let finer_bytes: u64 = scene
         .diffuse_mip_states
         .iter()
@@ -114,6 +174,10 @@ pub(super) fn allocator_snapshot(device: &RenderDevice, kind: &str, sample: usiz
                 eprintln!("MEMORY {kind} allocation block unavailable: sample={sample} block={index}");
                 return false;
             };
+            for allocation in allocations {
+                eprintln!("MEMORY {kind} allocation range: sample={sample} block={index} name={:?} offset={} bytes={}",
+                    allocation.name, allocation.offset, allocation.size);
+            }
             let bytes: u64 = allocations.iter().map(|allocation| allocation.size).sum();
             eprintln!("MEMORY {kind} allocation block: sample={sample} block={index} reserved_bytes={} allocated_bytes={bytes} allocations={}",
                 block.size, allocations.len());
@@ -183,6 +247,7 @@ pub(super) fn observe_quality(
     local_done: Res<crate::rendering::bevy_backend::shadow_pass::LocalShadowCompletion>,
     fog: Res<crate::rendering::bevy_backend::fog::FogSceneFrame>,
     device: Res<RenderDevice>,
+    targets: Option<Res<TargetObservation>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -294,6 +359,10 @@ pub(super) fn observe_quality(
     sequence.frames += 1;
     if sequence.frames < 120 {
         return;
+    }
+    if !submitted_targets_ready(targets.as_deref(), &device, "quality", sequence.step) { return; }
+    for (role, image) in [("directional", parallel.target_image.id()), ("local", local.atlas_image.id()), ("local-cache", local.cache_image.id())] {
+        eprintln!("MEMORY quality target identity: sample={} role={role} image={image:?}", sequence.step);
     }
     eprintln!("MEMORY quality snapshot: sample={} extent={extent:?} values={:?} parallel={:?} local_atlas={:?} local_cache={:?} finer_bytes={} reserved_stream_bytes={}",
         sequence.step, sequence.states[sequence.step], parallel.dimensions, local.atlas_image.id(), local.cache_image.id(),

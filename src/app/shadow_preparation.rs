@@ -836,13 +836,14 @@ impl ParallelShadowOwner {
         let target_image = if let Some(target) = retained_target {
             target
         } else {
-            images.add(shadow_pipeline::shadow_depth_image(
+            images.add(shadow_pipeline::shadow_depth_image_named(
                 bevy::render::render_resource::Extent3d {
                     width: dimensions.width,
                     height: dimensions.height,
                     depth_or_array_layers: dimensions.layers,
                 },
                 format,
+                "directional shadow atlas",
             )?)
         };
         Ok(Self {

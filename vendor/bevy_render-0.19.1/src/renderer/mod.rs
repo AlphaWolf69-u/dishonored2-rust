@@ -69,6 +69,14 @@ pub enum RenderGraphSystems {
 /// The main render system that drives the rendering process. This system runs the [`RenderGraph`]
 /// schedule, runs any finalization commands like screenshot captures and GPU readbacks, and
 /// calls present on swap chains that need to be presented.
+/// Opt-in observation of the renderer's existing final submission. The shared
+/// value contains no GPU resource lease and adds no command batch or GPU wait.
+#[derive(Resource, Clone, Default)]
+pub struct ObservedSubmission(Arc<std::sync::Mutex<Option<wgpu::PollType>>>);
+impl ObservedSubmission {
+    pub fn latest(&self) -> Option<wgpu::PollType> { self.0.lock().unwrap().clone() }
+}
+
 pub fn render_system(
     world: &mut World,
     state: &mut SystemState<Query<(&ViewTarget, &ExtractedCamera)>>,
@@ -88,7 +96,10 @@ pub fn render_system(
         crate::view::screenshot::submit_screenshot_commands(world, &mut encoder);
         crate::gpu_readback::submit_readback_commands(world, &mut encoder);
 
-        render_queue.submit([encoder.finish()]);
+        let submitted = render_queue.submit([encoder.finish()]);
+        if let Some(observed) = world.get_resource::<ObservedSubmission>() {
+            *observed.0.lock().unwrap() = Some(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
+        }
     }
 
     {

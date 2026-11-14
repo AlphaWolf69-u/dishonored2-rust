@@ -1124,3 +1124,19 @@ fn render_camera<const PREPARE_ALPHA: bool>(
         }
     }
 }
+
+/// Scalar target provenance only, inspected after ordinary graph execution.
+pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
+    let Some(gpu) = world.get_resource::<CameraGpu>() else { return (false, vec![]); };
+    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec![]); };
+    let skipped = world.get_resource::<super::display_scene::DisplaySceneFrame>().and_then(|frame| frame.0.as_ref())
+        .and_then(|frame| frame.lens.as_ref()).is_some_and(|lens| lens.settings.skip_post_process);
+    let expected = (water.camera, water.matrices.frame);
+    let mut rows = vec![format!("owner=camera expected={expected:?} completed={:?} skipped={skipped}", gpu.completed)];
+    if let Some((camera, view)) = &gpu.current {
+        for (role, texture) in view.capture_planes() {
+            rows.push(format!("owner=camera camera={camera:?} role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
+        }
+    }
+    (skipped || gpu.completed == Some(expected), rows)
+}

@@ -40,6 +40,13 @@ pub(super) struct GeneralHeap {
 }
 
 impl GeneralHeap {
+    pub(super) fn report_lifetime(&self, role: &str) {
+        use windows::core::Interface;
+        let used: u64 = self.ranges.lock().allocated_ranges().map(|range| range.end - range.start).sum();
+        log::warn!(target: "wgpu_hal::dx12::resource_lifetime",
+            "DX12_DESCRIPTOR_HEAP role={role} heap={:#x} capacity={} used={used} descriptor_stride={} address_span_bytes={} driver_bytes=unknown",
+            self.raw.as_raw() as usize, self.total_handles, self.handle_size, self.total_handles * self.handle_size);
+    }
     pub(super) fn new(
         device: &Direct3D12::ID3D12Device,
         ty: Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
@@ -197,6 +204,14 @@ pub(super) struct CpuPool {
 }
 
 impl CpuPool {
+    pub(super) fn report_lifetime(&self, role: &str) {
+        use windows::core::Interface;
+        for heap in &self.heaps {
+            log::warn!(target: "wgpu_hal::dx12::resource_lifetime",
+                "DX12_DESCRIPTOR_HEAP role={role} heap={:#x} capacity={HEAP_SIZE_FIXED} used={} descriptor_stride={} address_span_bytes={} driver_bytes=unknown",
+                heap._raw.as_raw() as usize, HEAP_SIZE_FIXED - heap.availability.count_ones() as usize, heap.handle_size, HEAP_SIZE_FIXED * heap.handle_size);
+        }
+    }
     pub(super) fn new(
         device: Direct3D12::ID3D12Device,
         ty: Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,

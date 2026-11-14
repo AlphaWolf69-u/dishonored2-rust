@@ -1459,3 +1459,28 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
         }
     }
 }
+
+/// Diagnostic projection after the real graph, never a completion producer.
+pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
+    let Some(gpu) = world.get_resource::<FogGpu>() else { return (false, vec![]); };
+    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec![]); };
+    let expected = (water.camera, water.matrices.frame);
+    let mut rows = vec![format!("owner=fog expected={expected:?} completed={:?}", gpu.completed)];
+    let Some(view) = &gpu.current else { return (false, rows); };
+    for (role, attachment) in [("interior", &view.fog.targets.interior), ("depth", &view.fog.targets.depth),
+        ("canvas", &view.fog.targets.canvas), ("shadow", &view.fog.targets.shadow),
+        ("world", &view.fog.targets.world), ("filtered", &view.fog.targets.filtered)] {
+        let texture = &attachment.texture;
+        rows.push(format!("owner=fog role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
+    }
+    if let Some(ocean) = &view.ocean {
+        rows.push(format!("owner=ocean draws={} frame={}", ocean.draw_count(), water.matrices.frame));
+        for (role, texture) in ocean.capture_planes() {
+            rows.push(format!("owner=ocean role={role} texture={:?} size={:?} format={:?}", texture.id(), texture.size(), texture.format()));
+        }
+    }
+    let water_ready = world.get_resource::<WaterSubmission>().is_none_or(|submission| {
+        submission.error.is_none() && submission.boat_error.is_none() && submission.underwater_error.is_none()
+    });
+    (gpu.completed == Some(expected) && water_ready, rows)
+}
