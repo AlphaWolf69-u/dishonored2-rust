@@ -158,13 +158,14 @@ pub fn inspect_runtime_lifecycles(
     let mut exit_requested = false;
     let mut draining_since = None;
     let mut fx = None;
-    let mut audio = None;
+    let mut audio: Option<super::audio::observation::Scenario> = None;
     let mut readable = None;
     let mut ui_transition = (mode == "ui-transition").then(||
         super::ui_lifecycle_diagnostics::TransitionObservation::new(level, args.get(2).map(String::as_str)));
     let mut last_frame = 0;
     let mut first_stream_position = None;
     let mut stream_moved = false;
+    let mut milestone_reached = false;
     let mut failure = None;
     loop {
         match runtime.step() {
@@ -339,6 +340,7 @@ pub fn inspect_runtime_lifecycles(
             }
         }
         if complete {
+            milestone_reached = true;
             record(runtime.app.world(), "exit-request")?;
             runtime.request_exit();
             exit_requested = true;
@@ -362,6 +364,10 @@ pub fn inspect_runtime_lifecycles(
         failure.get_or_insert_with(|| {
             "no real pending UI image reply was observed before exit".into()
         });
+    }
+    if matches!(mode.as_str(), "exit-worker" | "exit-published" | "exit-reading" | "read-exit" | "streaming")
+        && !milestone_reached {
+        failure.get_or_insert_with(|| format!("runtime exited before the actual {mode} milestone"));
     }
     drop(runtime);
     let readbacks = crate::rendering::bevy_backend::readback_lifecycle::snapshot();
