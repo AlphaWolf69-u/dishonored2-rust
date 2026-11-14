@@ -392,6 +392,11 @@ impl PauseMenu {
         state.pending.is_some() && !state.closing
     }
 
+    /// Actual worker acknowledgement, used only by runtime ownership observation.
+    pub(super) fn readable_ready(&self) -> bool {
+        self.modal.active == Some(journal::Kind::Readable) && self.modal.ready
+    }
+
     pub(super) fn begin_level(&mut self) {
         self.modal.clear();
         let _ = self.commands.send(Command::EndHud);

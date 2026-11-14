@@ -832,16 +832,26 @@ struct TextureReadQueue {
 struct TextureReadJobs {
     queue: Mutex<TextureReadQueue>,
     cancelled: AtomicBool,
+    #[cfg(feature = "debug_allocations")]
+    active_slot: std::sync::atomic::AtomicUsize,
+    #[cfg(feature = "debug_allocations")]
+    source_reads: std::sync::atomic::AtomicU64,
+    #[cfg(feature = "debug_allocations")]
+    source_returns: std::sync::atomic::AtomicU64,
 }
 
 struct ActiveTextureRead<'a> {
     queue: &'a Mutex<TextureReadQueue>,
+    #[cfg(feature = "debug_allocations")]
+    active_slot: &'a std::sync::atomic::AtomicUsize,
     released: bool,
 }
 
 impl Drop for ActiveTextureRead<'_> {
     fn drop(&mut self) {
         if !self.released {
+            #[cfg(feature = "debug_allocations")]
+            self.active_slot.store(0, Ordering::Release);
             self.queue.lock().unwrap_or_else(|error| error.into_inner()).reading = false;
         }
     }
@@ -867,6 +877,19 @@ struct TextureReadRequests {
     completed_tx: mpsc::Sender<TextureReadResult>,
 }
 
+#[derive(Debug, Default, serde::Serialize)]
+pub(super) struct TextureReadObservation {
+    pub queued: usize,
+    pub task_running: bool,
+    pub closing: bool,
+    pub active_slot: Option<usize>,
+    pub source_reads: u64,
+    pub source_returns: u64,
+    pub inflight: usize,
+    pub ready: usize,
+    pub ready_bytes: usize,
+}
+
 impl Drop for TextureReadWorker {
     fn drop(&mut self) {
         self.close_acquisitions();
@@ -874,6 +897,27 @@ impl Drop for TextureReadWorker {
 }
 
 impl TextureReadWorker {
+    /// Host-only runtime observation. Normal builds keep no per-read counters;
+    /// these snapshots never drain results or supply worker/GPU completion.
+    pub(super) fn observe(&self) -> TextureReadObservation {
+        let queue = self.requests.jobs.queue.lock().unwrap_or_else(|error| error.into_inner());
+        let mut snapshot = TextureReadObservation {
+            queued: queue.pending.len(), task_running: queue.reading, closing: self.closing,
+            inflight: self.inflight_count, ready: self.ready.len(),
+            ready_bytes: self.ready.iter().filter_map(|(_,_,result)| result.as_ref().ok()?.as_ref())
+                .map(|image| image.image.data.as_ref().map_or(0, Vec::len)
+                    + image.uploads.iter().map(|mip| mip.payload.len()).sum::<usize>()).sum(),
+            ..Default::default()
+        };
+        #[cfg(feature = "debug_allocations")]
+        {
+            let jobs = &self.requests.jobs;
+            snapshot.active_slot = jobs.active_slot.load(Ordering::Acquire).checked_sub(1);
+            snapshot.source_reads = jobs.source_reads.load(Ordering::Relaxed);
+            snapshot.source_returns = jobs.source_returns.load(Ordering::Relaxed);
+        }
+        snapshot
+    }
     /// The installed archives, for on-demand diagnostic reads.
     pub(super) fn catalog(&self) -> &archive::Catalog {
         &self.requests.catalog
@@ -944,7 +988,10 @@ impl TextureReadRequests {
             .spawn(async move {
                 let _tag = crate::platform::allocation_tags::tag("texture worker");
                 let cancelled = || jobs.cancelled.load(Ordering::Relaxed);
-                let mut lease = ActiveTextureRead { queue: &jobs.queue, released: false };
+                let mut lease = ActiveTextureRead { queue: &jobs.queue,
+                    #[cfg(feature = "debug_allocations")]
+                    active_slot: &jobs.active_slot,
+                    released: false };
                 loop {
                     let Some((slot, stem, target)) = ({
                         let mut queue = jobs.queue.lock().unwrap();
@@ -959,7 +1006,17 @@ impl TextureReadRequests {
                     }) else {
                         return;
                     };
+                    #[cfg(feature = "debug_allocations")]
+                    {
+                        jobs.active_slot.store(slot + 1, Ordering::Release);
+                        jobs.source_reads.fetch_add(1, Ordering::Relaxed);
+                    }
                     let result = read_diffuse_image(&catalog, &stem, target, false, Some(&cancelled));
+                    #[cfg(feature = "debug_allocations")]
+                    {
+                        jobs.source_returns.fetch_add(1, Ordering::Relaxed);
+                        jobs.active_slot.store(0, Ordering::Release);
+                    }
                     if cancelled() { return; }
                     if completed_tx.send((slot, target, result)).is_err() {
                         return;

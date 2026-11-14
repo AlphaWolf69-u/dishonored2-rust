@@ -8883,3 +8883,85 @@ Its source remains reachable as
 refs/archive/worktree-cleanup-20261115/final-resource-verification. The active
 authoring checkout and external rendering checkout are retained. Protected
 older feature checkpoints remain preserved separately from completed work.
+
+
+### Reopened active lifecycle work (2026-11-15; runtime evidence pending)
+
+The initial021c all36 publication/removal acceptance is retained with its
+original scope. It does not certify live demand changes, accepted interactions,
+active output/tails or replacement. The whole audit is active again; current
+source changes below are not yet marked verified.
+
+- Ordinary audio admission/Stop/watch ownership (d11a8376): native0c4550/
+  0c6030 allocates the actual ID/cookie at accepted Post, before queued source
+  preparation. Native1127000->10e9950 Stop cancels pending actions as well as
+  voices;10e1290 releases End only after action/voice ownership finishes. The
+  host now transfers that same ticket through deferred queues, cancels prior
+  matching posts without waiting for IO, distinguishes watch generations and
+  matches actual End IDs. Prediction:16 accepted ordinary cookies occupy the
+  real object immediately; a17th is rejected against its actual existing count;
+  Stop withdraws pending clients in its consumer pass. No packet/PCM/readiness
+  algorithm or whole-frame CPU claim changes.
+- Accepted pickup teardown (3e8ffbca): native844bf0 completes76e2b0/76ec20
+  synchronously. One shared host cursor consumer now drains already accepted
+  work before typed component Stop; stage5 prevents sound/body replay and
+  inventory/pickedUp are never replayed. Empty queue adds no allocation.
+  Actual portable readable requests use their admitted item/entity/generation.
+- FX warm-role publication (920c8f88): fallible requested-family preparation
+  precedes restoring a purged live generation's registry pin. Read/parse
+  cancellation preserves existing consumer identity and leaves no newly
+  restored pin. Existing immutable failure and overlay policies remain. Genuine
+  current multi-role producer reachability is being reconciled independently
+  of same-WORLD overlap; no artificial role pairing is counted as gameplay.
+- Mutable-shape detach (7887ee3f): nativecdfcb0/ce03d0/ce04a0 visits active then
+  pooled registrations and unsubscribes both channels before clearing shape.
+  A Rust lookup/identity error now retains unfinished arrays/registrations and
+  ordering; shape=None is the completed-entry cursor. Borrowed release methods
+  preserve ownership on Err. Success frees list storage; no extra per-frame
+  field/allocation. Actual installed subscription counts are observed without
+  changing source flags. No supported mutation-event producer currently exists.
+
+Production observation adapters (host mechanisms, not alternate simulation):
+app/offscreen_runtime shares the normal launchbuilder and actual game/render/
+loading/retirement schedules; it creates only an Image presentation target and
+logical viewport metadata, with Winit/native windows/display changes disabled.
+The same actual output decoder has one real-time paced consumer thread pulling
+1024frames at its declared rate/channels and discarding PCM, without hardware
+playback, a second engine or fabricated callbacks. App/consumer teardown occurs
+before audio and Catalog session caches.
+
+Active FX observation drives actual installed EffectRequests and real App time
+through Start/overlap/view withdrawal/Stop/restart/native tails/map clear. A
+view gap must actually withdraw WaterSceneFrame, ParticleQueryFrame and final
+FX view publication, while keeping the same simulation/source leases; merely
+setting Camera.is_active=false is insufficient. The offscreen adapter retains
+and restores actual Camera3d components to exercise that production absence.
+Native223dd0/223f60/220520/230960/230980/2307e0/199df0 govern Stop and chains;
+persistent decal tails are not assigned an invented expiry.
+
+UI observation records real named-image requests/replies, actual waiting,
+movie Clear/Close/epoch acknowledgements, frame leases and worker join. Only
+bounded weak histories are retained. Source-backed named-view snapshot rules
+remain unchanged:1410150f0/14101d290/2df8c0/2f5530. Installed census finds215
+UI identities and zero cross-role matches across8036 entity/material/environment
+sources; no fabricated scene/UI alias is introduced to create a supposed bug.
+Actual worker interruption at Last precedes existing ExitDrain while First
+continues servicing replies.
+
+Live quality/resize retains the existing sevenstates and120ready frames, but
+now waits for real fog/camera/ocean render-world target identities and the
+existing postgraph submission fence at observation boundaries. Static distinct
+shadow roles, perallocation offsets and opt-in DX12 resource/heap create/free
+ranges distinguish real occupied heaps from empty/warm capacity. Opaque driver
+pipeline/descriptor bytes are explicitly unknown rather than reported as zero.
+No extra GPU pass/submission is added; normal output/target policy is unchanged.
+
+The central inspect-runtime-lifecycles command drives these real owners without
+a visible application, source-byte substitutes or manual completion credits.
+Streaming observations reuse saved camera input and record actual worker/queue/
+reservation/committed state; perread counters exist only in debug_allocations.
+They identify an active source-read interval, not a claimed byte offset; the
+existing archive member observer separately measures real partial-read
+cancellation. Runtime source/owner scenarios must finish before audit closure.
+No tests have been written/run and no build or runtime claim follows merely
+from source parsing.

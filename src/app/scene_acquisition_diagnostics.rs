@@ -1021,6 +1021,21 @@ fn inspect_scene_resources(
             prepared.publish(app.world_mut());
             lifetime.published(app.world(), &before);
             resource_snapshot(app.world(), step, "published");
+            if std::env::var("DH2_DEBUG_MUTABLE_SHAPE_OWNERS").as_deref() == Ok("1") {
+                let physics = app.world().get_resource::<super::physics_scene::PhysicsScene>()
+                    .ok_or("published mutable-shape observation has no canonical physics owner")?;
+                let owner = physics.point_queries()?;
+                let owner = owner.read().map_err(|_| "mutable-shape query owner is poisoned")?;
+                let mut counts = (0usize, 0usize, 0usize, 0usize);
+                for shape in owner.geometry.shapes.iter().flatten() {
+                    counts.0 += 1;
+                    counts.1 += usize::from(shape.is_mutable);
+                    counts.2 += usize::from(!shape.signals.mutated.is_empty());
+                    counts.3 += usize::from(!shape.signals.destroyed.is_empty());
+                }
+                eprintln!("MUTABLE_SHAPE_LIFETIME step={step} phase=published shapes={} mutable={} mutation_signal_owners={} destruction_signal_owners={}",
+                    counts.0, counts.1, counts.2, counts.3);
+            }
             if std::env::var_os("DH2_DEBUG_VISIBILITY_SCRATCH").is_some_and(|value| value == "1") {
                 super::visibility_queries::observe_query_scratch(app.world_mut())?;
             }

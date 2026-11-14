@@ -104,7 +104,8 @@ fn run() -> Result<()> {
         | "inspect-acoustics" | "inspect-ui-bitmap-ownership" | "inspect-ui-fonts" | "inspect-fonts"
         | "inspect-fx-resources" | "inspect-fx-definitions" | "inspect-material-program"
         | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation"
-        | "inspect-scene-preparation" | "inspect-scene-publication" | "inspect-scene-gpu-resources" => {
+        | "inspect-scene-preparation" | "inspect-scene-publication" | "inspect-scene-gpu-resources"
+        | "inspect-runtime-lifecycles" => {
             return resource_audit::run(&args[1], base, &args[3..]);
         }
         _ => {}

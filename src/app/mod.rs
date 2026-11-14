@@ -63,6 +63,10 @@ mod load_timing;
 mod resource_diagnostics;
 mod preparation_diagnostics;
 mod scene_acquisition_diagnostics;
+mod runtime_lifecycle_diagnostics;
+mod fx_lifecycle_diagnostics;
+mod ui_lifecycle_diagnostics;
+pub use runtime_lifecycle_diagnostics::inspect_runtime_lifecycles;
 pub use scene_acquisition_diagnostics::{inspect_scene_preparation, inspect_scene_publication, inspect_scene_gpu_resources};
 pub use preparation_diagnostics::{inspect_cpu_preparation, inspect_ui_bitmap_ownership};
 mod level_lifetime;
@@ -172,6 +176,7 @@ use light_culling::{
 mod performance;
 use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rate};
 mod launch;
+mod offscreen_runtime;
 mod loading_screen;
 mod level_prepare;
 mod loading_movie;

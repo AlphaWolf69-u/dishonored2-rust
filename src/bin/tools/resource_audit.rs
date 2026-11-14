@@ -59,6 +59,12 @@ fn observe_decal_leases(
 
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-runtime-lifecycles" => {
+            #[cfg(feature = "game")]
+            dishonored2_rust::app::inspect_runtime_lifecycles(base, args)?;
+            #[cfg(not(feature = "game"))]
+            return Err("inspect-runtime-lifecycles requires the game feature".into());
+        }
         "inspect-scene-gpu-resources" => {
             #[cfg(feature = "game")]
             dishonored2_rust::app::inspect_scene_gpu_resources(base, args)?;

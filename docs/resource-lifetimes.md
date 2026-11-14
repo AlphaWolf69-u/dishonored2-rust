@@ -9,9 +9,9 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
-## Current accepted continuation (2026-11-15)
+## Reopened runtime lifecycle audit (2026-11-15)
 
-Owner source021c7586 completes the supported resource lifecycle recovery. The
+Owner source021c7586 verified initial acquisition and retirement only. The
 game/tools dev build, default library, paired scope/cancellation/history and
 source/output comparisons pass. All36 installed variants complete actual
 publication/retirement and independent initial GPU acquisition/removal with
@@ -33,6 +33,32 @@ midnight projection decodes65 to39 with matching recorded content. These do
 not imply whole-process RAM, gameplay CPU or FPS gains. The all36 route does
 not execute gameplay frames or certify every live effect/visibility transition.
 Historical sections below retain their original source cohorts and limits.
+
+The whole audit remains active. Initial all36 acceptance must not be used as
+proof of active streaming, effects, output consumption or replacement. Current
+runtime closure work uses the same production App schedules with image output
+and no native window, display changes, synthetic clock or fake acknowledgement.
+No tests are written or run. Source fixes are not called verified until their
+actual runtime observations finish.
+
+| Runtime path | Current disposition |
+|---|---|
+| Moving-view fine-mip demand, pressure, withdrawal/revival and GPU handoff | Reuse recorded EotW walking inputs and actual streamer/render graph; pending production observation |
+| Pending ordinary sounds, watched generations and output End/cookies | Source defect fixed: reserve ID/cookie before deferred preparation and cancel queued posts on Stop; actual output-consumer observation pending |
+| Accepted pickup/read and usable animation at map shutdown | Source defect fixed: drain the retained accepted-pickup cursor before component Stop, without replaying inventory/notifications; actual pending-action observation pending |
+| Active world/screen FX tails and temporary view gaps | Production-owner observer implemented; actual authored Start/Stop/overlap/restart/tail/map-clear observation pending |
+| Warm FX family addition and cancelled reacquisition of a purged live generation | Source defect fixed: prepare requested role before restoring registry pin; actual supported role-pair reachability and observation under review |
+| Live quality/viewport target replacement and pending readbacks | Active offscreen production adapter and precise allocation attribution being implemented; prior initial GPU sweeps do not cover live target replacement |
+| Movie-worker image acquisition interrupted by close/map transition/quit | Actual worker/exit observation pending; existing joined-close and live VM collection evidence retained |
+| Live UI view replacement | Existing native snapshot semantics are correct; installed census finds215 UI identities and zero cross-role matches across8036 scene/env sources. Do not invent a scene/UI alias to manufacture a production case |
+| Whole-map acquisition cancellation, blocked handoff and outgoing render acknowledgement | Real acquisition/exit phase observers added; complete offscreen cancellation/retry sequence pending |
+| Nonempty mutable shape subscriptions | Count real prepared subscriptions across installed maps; no supported mutation/destroyed-signal producer exists. Do not fabricate a mutable source or mutation event |
+
+Ordinary managed-entity removal currently has no production entity-release
+host. An unused FX reference-removal helper is future consumer integration,
+not evidence of an active-map leak: current map shutdown already clears FX.
+Fatal invariant exits explicitly remain unsuccessful process aborts; they are
+not converted to successful retirement or an infinite hidden retry loop.
 
 ## Current integrated scope (2026-11-11)
 

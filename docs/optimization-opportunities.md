@@ -2272,3 +2272,12 @@ count. Playback values, upload scheduling and GPU work must stay unchanged.
 
 
 - World FX timer iteration (`world_particle_state::advance`) still moves out its timer Vec and pushes surviving callbacks into a new Vec. Reusing two callback buffers should remove allocation proportional to active timer frames while preserving native callback insertion order. This predates the graph-owner recovery; no gain is claimed without an isolated active-timer observation. It is left separate from the required subscription/startup/retirement contract.
+
+
+Host benchmark camera replay (2026-11-15): controls::camera_controls currently
+rebuilds its segment-length Vec each replay frame. A prepared segment table
+would avoid one allocation and the repeated distance calculations for an
+unchanged path (storage proportional to path segments). This exists only in
+the explicit benchmark driver, not ordinary player movement. It is outside
+the current correctness repairs and must be measured in that function before
+claiming or implementing an improvement; no FPS/CPU gain is claimed here.
