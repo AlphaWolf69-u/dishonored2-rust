@@ -149,6 +149,7 @@ fn motion_cache_matches_complete_executed_body_frame_bounds_and_lod() {
         };
         let mut observers = NoEvents;
         PublicationContext {
+            timespaces: None,
             geometry: &mut geometry,
             events: &mut observers,
             cache: settings,

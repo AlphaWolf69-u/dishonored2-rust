@@ -52,7 +52,7 @@ impl<S, C> Default for PublicationSignals<S, C> {
 
 #[derive(Clone, Copy)]
 pub enum PublicationEvent<'a> {
-    Activation { ids: &'a [u32], active: bool },
+    Activation { ids: &'a [u32], active: bool, timespaces: Option<&'a crate::gameplay::motion_timespaces::MotionTimespaces> },
     Added(&'a [u32]),
     Removed(&'a [u32]),
     Destroyed(&'a [u32]),
@@ -229,8 +229,16 @@ where
             &mut self.components,
             &mut self.dispatch,
             owners,
-            PublicationEvent::Activation { ids, active },
+            PublicationEvent::Activation { ids, active, timespaces: None },
         )
+    }
+    fn activation_with_timespaces(
+        &mut self, owners: ActivationOwners<'_>, ids: &[u32], active: bool,
+        timespaces: Option<&crate::gameplay::motion_timespaces::MotionTimespaces>,
+    ) -> Result<(), String> {
+        let signal = if active { &mut self.signals.activation.activated } else { &mut self.signals.activation.deactivated };
+        emit(signal, &mut self.components, &mut self.dispatch, owners,
+            PublicationEvent::Activation { ids, active, timespaces })
     }
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
         emit(

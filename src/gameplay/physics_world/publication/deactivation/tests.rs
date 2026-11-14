@@ -102,6 +102,7 @@ fn attached_transform_matches_complete_executed_deactivation_update() {
         let mut broadphase = HybridBroadphase::with_body_capacity(32);
         let mut callbacks = Callbacks::default();
         PublicationContext {
+            timespaces: None,
             geometry: &mut NoGeometry,
             events: &mut callbacks,
             cache: BodyCacheSettings {

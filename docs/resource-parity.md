@@ -8200,3 +8200,42 @@ Readable item generation handoff: UI requests now borrow the admitted Pickable c
 - **Validation status:** source checked against saved decompilation and local
   Bevy runner/window/schedule source. Syntax/whitespace validation only; no tests,
   builds, visible launches or runtime acceptance claim for this slice.
+
+### Canonical per-body activation wrapper (2026-11-14)
+
+- **Prediction before implementation:** added/removed/destroyed publication
+  updates one compact per-slot state. Only subscribed bodies allocate a signal;
+  body destruction drops that signal before the slot can be reused. Actual
+  active/inactive transitions notify the existing rigid component and update its
+  timespace velocity payload once. No second world, pose cache, resource read,
+  per-frame scan or GPU operation is added; no timing/byte saving is claimed.
+- **Original evidence:** `1400932d0` installs world callbacks before component
+  bodies initialize. `1400941e0` stores0/1 from the live active bit;
+  `140094130` emits only1->0, `140094280` prepares derived-timespace velocity
+  through `14018cf30` then emits only0->1, `140094460` stores2 on removal,
+  and `1400943d0` destroys the signal and stores3 on destruction. Saved
+  decompilation is `chunk_000025.c` / `chunk_000071.c`. The dump omits
+  `140094460`; its installed executable instructions were read directly and
+  confirm the low24 slot write of2, without a callback. Ghidra MCP had no active
+  project, so no project switch or extra JVM was started.
+- **ported:** `gameplay::physics_world::body_activation_events` owns those
+  transitions and weak component-generation identities. Publication forwards
+  the existing world's borrowed `MotionTimespaces` instead of copying a world
+  or guessing a factor. `CollisionVelocities::body_deactivated` preserves the
+  requested-linear flag lane and zero-factor behavior of `14018cf30`.
+- **host:** a failed listener retains the exact body/direction, preparation bit
+  and existing signal cursor. Earlier successful listeners and the velocity
+  preparation are not replayed, and a different request cannot consume a
+  suspended traversal. Destruction releases the signal before body-ID reuse.
+- **composition:** `physics_scene::startup::WorldActivationObserver` borrows
+  the real rigid pool, component registry and body-event owner. It validates
+  listener generation/body/entity before invoking its mandatory entity callback.
+  That callback must borrow the actual entityd4 flags and generation-aware
+  hierarchy update owner when calling `RigidBodyComponent::on_body_activation`;
+  no shadow flags vector or no-op hierarchy callback is provided. The ninth
+  factory owner installs these subscriptions and replaces publication-site
+  rejection callbacks as part of its coherent Rigid Start/Stop integration.
+- **Validation status:** source provenance, Rust syntax and whitespace checked.
+  Four existing context fixture constructors receive only `timespaces: None`
+  for compatibility; no assertions or tests were added/run. No builds/launches
+  or production acceptance claim before the coordinated factory integration.

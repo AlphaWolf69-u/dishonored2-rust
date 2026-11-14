@@ -790,6 +790,7 @@ impl WorldStorage {
             enable_deactivation: self.info.enable_deactivation,
             phase: self.phase,
             step_index: self.step_index,
+            timespaces: self.motion_timespaces.as_ref(),
         };
         let mut world = BodyPublication {
             bodies: &mut self.bodies,

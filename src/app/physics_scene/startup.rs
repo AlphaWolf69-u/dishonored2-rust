@@ -1,5 +1,8 @@
 //! Level declaration/ownership boundaries of trigger and water startup.
 use super::*;
+#[path = "activation_events.rs"]
+mod activation_events;
+pub(super) use activation_events::{install as install_activation_observers, WorldActivationObserver};
 use crate::gameplay::{
     body_activation::ActivationOwners,
     physics_world::PublicationEvent,

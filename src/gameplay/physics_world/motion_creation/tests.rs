@@ -162,6 +162,7 @@ fn motion_creation_matches_complete_executed_manager_states_and_observers() {
                 };
                 let mut geometry = NoGeometry;
                 let mut callbacks = PublicationContext {
+            timespaces: None,
                     geometry: &mut geometry,
                     events: &mut events,
                     cache: BodyCacheSettings {

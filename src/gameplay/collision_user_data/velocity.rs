@@ -12,6 +12,19 @@ pub struct CollisionVelocities {
     pub requested_angular: [f32; 4],
 }
 
+impl CollisionVelocities {
+    /// 14018cf30 precedes deactivation listeners. A zero timespace preserves
+    /// requested vectors; the requested-linear flag lane is always retained.
+    pub(crate) fn body_deactivated(&mut self, factor: f32) {
+        if factor != 0.0 {
+            self.requested_linear[..3].fill(0.0);
+            self.requested_angular = [0.0; 4];
+        }
+        self.scaled_linear = [0.0; 4];
+        self.scaled_angular = [0.0; 4];
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

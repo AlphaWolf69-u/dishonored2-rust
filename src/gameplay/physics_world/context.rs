@@ -22,6 +22,10 @@ pub trait PublicationEvents {
         ids: &[u32],
         active: bool,
     ) -> Result<(), String>;
+    fn activation_with_timespaces(
+        &mut self, owners: ActivationOwners<'_>, ids: &[u32], active: bool,
+        _timespaces: Option<&crate::gameplay::motion_timespaces::MotionTimespaces>,
+    ) -> Result<(), String> { self.activation(owners, ids, active) }
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String>;
     fn removed(&mut self, _owners: ActivationOwners<'_>, _ids: &[u32]) -> Result<(), String> {
         Err("body-removal observer dispatch is unavailable".into())
@@ -56,6 +60,7 @@ pub struct PublicationContext<'a, G, E> {
     pub enable_deactivation: bool,
     pub phase: u32,
     pub step_index: u32,
+    pub(crate) timespaces: Option<&'a crate::gameplay::motion_timespaces::MotionTimespaces>,
 }
 
 impl<G, E: super::MotionCreationCallbacks> super::MotionCreationCallbacks
@@ -103,7 +108,7 @@ impl<G: PublicationGeometry, E: PublicationEvents> PublicationCallbacks
         ids: &[u32],
         active: bool,
     ) -> Result<(), String> {
-        self.events.activation(owners, ids, active)
+        self.events.activation_with_timespaces(owners, ids, active, self.timespaces)
     }
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
         self.events.added(owners, ids)
