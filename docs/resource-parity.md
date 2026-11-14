@@ -8096,3 +8096,19 @@ source retirement and geometry-only diagnostic fingerprints. Uncached convex
 mass remains an explicit unsupported calculation, rather than substituting a
 compound bounding-box mass for a convex shape. Alias compounds have no copied
 0xf100 property in08c9a0 and use the existing mode-zero compound calculator.
+
+Faction acquisition is now connected to its sole session class owner:
+`acquire_definition` registers before parse, shares weak source/ancestor leases
+inside that same owner and uses the retained processed-declaration resolver;
+`acquire_all_registered` drains reference-created placeholders in actual class
+order before the matrix snapshot. No per-actor declaration cache is created.
+Launch and both windowless source observers retain a strong registry root
+across map replacement and release its weak lookup at catalog-session end.
+Editable faction declarations use an explicit host `begin_preparation` phase:
+after the outgoing snapshot retires, only parsed generations reset while names
+and class order remain stable. Installed declarations keep normal reuse.
+Prediction: repeated unchanged faction requests reuse the same typed/source
+identities and perform no extra archive reads; source fields are projected
+lazily, never on the gameplay frame. The portable component host owns the
+actual begin/reserve/acquire/snapshot call sequence; no unsupported faction or
+NPC entity is manufactured by this resource API.

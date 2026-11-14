@@ -36,6 +36,9 @@ struct FactionSource {
     fields: std::sync::OnceLock<Result<Arc<Vec<(String, Value)>>, String>>,
 }
 impl ComponentDeclarationLease {
+    pub(crate) fn source_name(&self) -> &str { &self._source.id }
+    pub(crate) fn parent(&self) -> Option<&Arc<Self>> { self._parent.as_ref() }
+
     /// The source acquisition owner supplies the canonical declaration and
     /// its already-acquired parent. No I/O or secondary cache is created here.
     pub(crate) fn new(source: Arc<Definition>, parent: Option<Arc<Self>>, faction_text: Option<Arc<str>>) -> Self {

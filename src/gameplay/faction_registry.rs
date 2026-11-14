@@ -31,6 +31,7 @@ struct FactionRegistry {
     entries: Vec<Entry>,
     indices: HashMap<ResourceName, usize>,
     active_snapshot: Option<Weak<SnapshotPin>>,
+    sources: HashMap<ResourceName, Weak<crate::assets::entities::spawn::ComponentDeclarationLease>>,
 }
 
 // Like the difficulty declaration owner, this lookup does not itself keep a
@@ -113,6 +114,97 @@ impl SessionFactionRegistry {
         sessions.insert(id, Arc::downgrade(&inner));
         Ok(Self { catalog: id, inner })
     }
+    /// Editable resource layers are a host feature. Reparse their generation
+    /// at the real map-preparation boundary, after the outgoing matrix retires;
+    /// names and registry order remain the same. Installed archives keep reuse.
+    pub(crate) fn begin_preparation(&self, catalog: &Catalog) -> Result<(), String> {
+        self.check_catalog(catalog)?;
+        if !catalog.has_overlay_declaration("generated/decls/cpntfaction/") { return Ok(()); }
+        let mut owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
+        owner.can_change_order()?;
+        if owner.entries.iter().any(|entry| entry.resolving) { return Err("faction preparation overlaps active declaration resolution".into()); }
+        for entry in &mut owner.entries { entry.definition = None; }
+        owner.sources.clear();
+        Ok(())
+    }
+
+    /// Complete one source through the same class registry used by Initialize.
+    /// The serial map preparation owns acquisition; gameplay callbacks only
+    /// borrow these prepared leases and never read archives.
+    pub(crate) fn acquire_definition(&self, catalog: &Catalog, name: &str) -> Result<Arc<Definition>, String> {
+        use crate::assets::entities::{self, Value, event_graph::atom};
+        self.resolve(catalog, name, |registry, identity| {
+            let lease = registry.source_lease(catalog, identity.as_str(), &mut Vec::new())?;
+            let fields = lease.faction_fields()?;
+            let parent = lease.parent().map(|value| registry.begin(catalog, value.source_name()).map(|value| value.0)).transpose()?;
+            fn relation(value: &str) -> Result<u32, String> {
+                match value.trim_matches('"') { "ALLY" => Ok(0), "NEUTRAL" => Ok(1), "ENEMY" => Ok(2), "UNDEFINED" => Ok(3), value => Err(format!("unknown faction relationship {value}")) }
+            }
+            let default_relationship = match entities::field(&fields, "m_defaultRelationship") {
+                Some(Value::Atom(value)) => relation(value)?, None => 1, // 955430: NEUTRAL
+                _ => return Err("faction default is not scalar".into()),
+            };
+            let propagate_overrides = match entities::field(&fields, "m_propagateOverwrite") {
+                Some(Value::Atom(value)) if matches!(value.as_str(), "true" | "1") => true,
+                Some(Value::Atom(value)) if matches!(value.as_str(), "false" | "0") => false,
+                None => false, // 955430 initializes +0x90 to zero.
+                _ => return Err("invalid faction propagation flag".into()),
+            };
+            let mut relationships = Vec::new();
+            if let Some(value) = entities::field(&fields, "m_factionRelationship") {
+                let Value::Scope(items) = value else { return Err("faction relationships are not a scope".into()); };
+                for (key, value) in items {
+                    if key == "item_begin" { continue; }
+                    if !key.starts_with("item_add[") && !key.starts_with("item[") { return Err(format!("unsupported faction relationship entry {key}")); }
+                    let Value::Scope(item) = value else { return Err("faction relationship entry is not a scope".into()); };
+                    let target = atom(item, "m_faction").ok_or("faction relationship has no target")?;
+                    let value = relation(atom(item, "m_relationship").ok_or("faction relationship has no value")?)?;
+                    relationships.push((registry.begin(catalog, target)?.0, value));
+                }
+            }
+            Ok(Arc::new(Definition { faction_name: Arc::from(atom(&fields, "m_factionName").unwrap_or("")),
+                lease, name: identity.clone(), parent, default_relationship, relationships, propagate_overrides }))
+        })
+    }
+
+    /// References parsed above may append entries. Drain precisely that same
+    /// registered order before capturing the numeric matrix snapshot.
+    pub(crate) fn acquire_all_registered(&self, catalog: &Catalog) -> Result<(), String> {
+        while let Some(name) = self.next_pending()? { self.acquire_definition(catalog, name.as_str())?; }
+        Ok(())
+    }
+
+    fn source_lease(&self, catalog: &Catalog, name: &str, active: &mut Vec<String>)
+        -> Result<Arc<crate::assets::entities::spawn::ComponentDeclarationLease>, String> {
+        use crate::assets::entities::{self, Value, event_graph::atom, spawn::ComponentDeclarationLease};
+        let (identity, _) = self.begin(catalog, name)?;
+        if let Some(source) = self.inner.lock().map_err(|_| "faction registry is poisoned")?
+            .sources.get(&identity).and_then(Weak::upgrade) { return Ok(source); }
+        let path = format!("generated/decls/cpntfaction/{}.decl", identity.as_str());
+        if active.contains(&path) || active.len() > 16 { return Err(format!("faction declaration inheritance cycle or depth limit at {path}")); }
+        active.push(path.clone());
+        let result = (|| {
+            let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("faction declaration missing: {path}"))?;
+            let text: Arc<str> = Arc::from(entities::owned_declaration_text(bytes));
+            let fields = entities::parse_declaration(&text).map_err(|error| format!("{path}: {error}"))?;
+            let parent = match entities::field(&fields, "inherit") {
+                None => None,
+                Some(Value::Atom(name)) if !name.trim_matches('"').is_empty() => Some(self.source_lease(catalog, name.trim_matches('"'), active)?),
+                Some(_) => return Err(format!("{path}: invalid faction inheritance reference")),
+            };
+            let class = atom(&fields, "class").unwrap_or("").to_owned();
+            let source = Arc::new(entities::Definition { kind: "component".into(), class, id: name.to_owned(), fields });
+            let lease = Arc::new(ComponentDeclarationLease::new(source, parent, Some(text)));
+            let mut owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
+            if let Some(existing) = owner.sources.get(&identity).and_then(Weak::upgrade) { return Ok(existing); }
+            owner.sources.insert(identity, Arc::downgrade(&lease));
+            Ok(lease)
+        })();
+        active.pop();
+        result
+    }
+
     /// Remove only the lookup at catalog shutdown. Existing leases retain the
     /// same registry until their own consumers have finished retiring.
     pub(crate) fn release_catalog(id: u64) {
@@ -255,6 +347,7 @@ impl SessionFactionRegistry {
             .is_some_and(|snapshot| index < snapshot.count) {
             return Err("cannot retire a faction identity used by a live matrix".into());
         }
+        owner.sources.remove(name);
         owner.indices.remove(name);
         owner.entries.swap_remove(index);
         if let Some(moved) = owner.entries.get(index).map(|entry| entry.name.clone()) {
@@ -279,6 +372,7 @@ impl SessionFactionRegistry {
         let mut owner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         owner.can_change_order()?;
         owner.entries.clear();
+        owner.sources.clear();
         owner.indices.clear();
         owner.active_snapshot = None;
         Ok(())

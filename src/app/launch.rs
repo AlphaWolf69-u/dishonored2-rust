@@ -20,6 +20,7 @@ use bevy::prelude::*;
 pub(super) struct CatalogSession(pub(super) u64);
 impl Drop for CatalogSession {
     fn drop(&mut self) {
+        crate::gameplay::faction_registry::SessionFactionRegistry::release_catalog(self.0);
         archive::Catalog::release_shared(self.0);
     }
 }
@@ -46,6 +47,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let game_base = Some(base);
     let catalog = Some(archive::Catalog::shared(game_base.as_deref().unwrap())?);
     let _catalog_session = CatalogSession(catalog.as_ref().unwrap().identity());
+    let _faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog.as_ref().unwrap())?;
     // Drop App and its worker owners before audio caches, then the catalog.
     let _audio_session = super::audio::AudioSession::begin()?;
     super::load_timing::mark("catalog");

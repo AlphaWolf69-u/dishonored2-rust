@@ -947,6 +947,7 @@ fn inspect_scene_resources(
     }
     let catalog = archive::Catalog::shared(base)?;
     let catalog_session = super::launch::CatalogSession(catalog.identity());
+    let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(&catalog)?;
     let session = super::audio::AudioSession::begin()?;
     let observe_initial_images = std::env::var_os("DH2_DEBUG_OBSERVE_INITIAL_IMAGE_LOAD").is_some_and(|v| v == "1");
     let stop_initial_images = observe_initial_images
@@ -1207,6 +1208,7 @@ fn inspect_scene_resources(
     }
     eprintln!("COMMON_MODEL_HOST_RELEASE sessions={} retained=0", common_sessions.len());
     drop(session);
+    drop(faction_session);
     drop(catalog);
     drop(catalog_session);
     if trace_callers {
@@ -1285,6 +1287,7 @@ fn observe_shader_buffer_updates(world: &World, step: usize) {
 
 fn inspect_common_mesh_cancellation(base: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let catalog = Arc::new(archive::Catalog::open(base)?);
+    let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(&catalog)?;
     let session = super::audio::AudioSession::begin()?;
     let mut app = scene_host(true);
     let shared = app.world().resource::<super::common_model_meshes::Shared>().clone();
@@ -1319,6 +1322,8 @@ fn inspect_common_mesh_cancellation(base: &std::path::Path, name: &str) -> Resul
     drop(shared);
     drop(app);
     drop(session);
+    drop(faction_session);
+    crate::gameplay::faction_registry::SessionFactionRegistry::release_catalog(catalog.identity());
     drop(catalog);
     Ok(())
 }
