@@ -38,6 +38,28 @@ pub struct HavokCollisions {
     pub accuracy: u32,
     /// m_layer (arkCollisionLayer_t, default 4).
     pub layer: u32,
+    /// UpdateCollisionShape (1401df6a0) of m_mesh and the convex solver's
+    /// shape record (140fbdea0), filled by the definition loader.
+    pub hull: Option<std::sync::Arc<CollisionHull>>,
+}
+
+/// A stage's collision hull: at most 16 vertices around the centroid
+/// (+0x1d00), the centroid (+0x1d10) and SolveConvexContacts' record.
+pub struct CollisionHull {
+    pub vertices: Vec<[f32; 4]>,
+    pub centroid: [f32; 3],
+    pub shape: crate::gameplay::havok_fx::solve_convex_contacts::ConvexShape,
+}
+
+impl CollisionHull {
+    /// 1401df6a0 over the model's vertices, then 140fbdea0.
+    pub fn build(model: &crate::assets::particle_model::ParticleModel, bounding_box: bool) -> Result<Self, String> {
+        let points: Vec<[f32; 4]> = model.vertices.iter().map(|v| [v.position[0], v.position[1], v.position[2], 0.]).collect();
+        let (vertices, centroid) = crate::gameplay::havok_fx::convex_hull::collision_shape(&points)
+            .map_err(|error| format!("arkHavokParticleStageDesc::UpdateCollisionShape() failed: {error}"))?;
+        let shape = crate::gameplay::havok_fx::solve_convex_contacts::ConvexShape::from_hull(&vertices, bounding_box)?;
+        Ok(Self { vertices, centroid, shape })
+    }
 }
 
 /// simulation_t (+0x440): the Integrate parameters 1401e78b0 samples.
@@ -128,6 +150,7 @@ impl Default for ParticleHavokStageAsset {
                 },
                 accuracy: 1,
                 layer: 4,
+                hull: None,
             },
             simulation: HavokSimulation {
                 gravity: ScalarParameter::constant(1.),

@@ -24,7 +24,8 @@ use crate::{
         havok_fx::{
             integrate::Integrate,
             physics_collide::{self, CollideScratch, CollideTuning, CollideWorld, StaticCache},
-            solve_contacts::SolveContacts,
+            solve_contacts::{BodyState, SolveContacts},
+            solve_convex_contacts::SolveConvexContacts,
             world_collide::WorldCollide,
             Pipeline,
         },
@@ -49,11 +50,66 @@ struct PendingSpawn {
     angular: Option<([f32; 4], [f32; 3])>,
 }
 
+/// 1401dfc20's contact solver: SolveConvexContacts (140fbda60 with the
+/// stage's collision hull) when m_mesh is set, else SolveSphereContacts.
+pub enum ContactSolver {
+    Sphere(SolveContacts),
+    Convex(SolveConvexContacts),
+}
+
+impl ContactSolver {
+    pub fn bodies(&self) -> &[BodyState] {
+        match self {
+            Self::Sphere(solver) => &solver.bodies,
+            Self::Convex(solver) => &solver.bodies,
+        }
+    }
+
+    pub fn bodies_mut(&mut self) -> &mut [BodyState] {
+        match self {
+            Self::Sphere(solver) => &mut solver.bodies,
+            Self::Convex(solver) => &mut solver.bodies,
+        }
+    }
+
+    /// +0x28 friction, +0x2c restitution.
+    pub fn own_material(&self) -> [f32; 2] {
+        match self {
+            Self::Sphere(solver) => [solver.friction, solver.restitution],
+            Self::Convex(solver) => [solver.friction, solver.restitution],
+        }
+    }
+
+    /// 1401e1d10: +0x28..+0x38.
+    fn set_material(&mut self, [friction, restitution, stickiness, restitution_threshold, friction_threshold]: [f32; 5]) {
+        macro_rules! set {
+            ($solver:expr) => {{
+                $solver.friction = friction;
+                $solver.restitution = restitution;
+                $solver.stickiness = stickiness;
+                $solver.restitution_threshold = restitution_threshold;
+                $solver.friction_threshold = friction_threshold;
+            }};
+        }
+        match self {
+            Self::Sphere(solver) => set!(solver),
+            Self::Convex(solver) => set!(solver),
+        }
+    }
+
+    fn allocate(&mut self, bodies: &[i32]) {
+        match self {
+            Self::Sphere(solver) => solver.allocate(bodies),
+            Self::Convex(solver) => solver.allocate(bodies),
+        }
+    }
+}
+
 /// The collision effects 1401dfc20 adds with m_enableCollisions:
-/// PhysicsCollide (over WorldCollide) and SolveSphereContacts.
+/// PhysicsCollide (over WorldCollide) and the contact solver.
 pub struct Collisions {
     pub world: WorldCollide,
-    pub solver: SolveContacts,
+    pub solver: ContactSolver,
     pub tuning: CollideTuning,
     cache: Vec<StaticCache>,
     scratch: CollideScratch,
@@ -141,7 +197,13 @@ impl HavokStageSimulation {
         let spawn_seed = crate::random::lcg_step(system_seed);
         let angular = definition.enable_collisions && definition.collisions.mesh.is_some()
             || definition.collisions.enable_angular_motion;
-        let pipeline = Pipeline::new(capacity, definition.collisions.radius, angular);
+        let mut pipeline = Pipeline::new(capacity, definition.collisions.radius, angular);
+        let shape = definition.collisions.hull.as_ref().filter(|_| definition.enable_collisions).map(|hull| hull.shape.clone());
+        if let Some(shape) = &shape {
+            // 140fbdc80 with the stage's single shape record.
+            pipeline.inner_radius = shape.inner;
+            pipeline.radius = shape.outer;
+        }
         let counter = definition.collisions.counter;
         let counters = if counter[0] != 0 && counter[1] != 0 { vec![0; capacity] } else { Vec::new() };
         let emitter = ParticleEmitter::havok(Arc::new(stage.emitter.clone()), spawn_seed, pose)?;
@@ -184,7 +246,14 @@ impl HavokStageSimulation {
             counters,
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
-                solver: SolveContacts::new(capacity),
+                solver: match shape {
+                    Some(shape) => {
+                        let mut solver = SolveConvexContacts::new(capacity);
+                        solver.shapes = vec![shape];
+                        ContactSolver::Convex(solver)
+                    }
+                    None => ContactSolver::Sphere(SolveContacts::new(capacity)),
+                },
                 tuning: CollideTuning::default(),
                 cache: vec![StaticCache::default(); capacity],
                 scratch: CollideScratch::default(),
@@ -232,12 +301,7 @@ impl HavokStageSimulation {
             let restitution_threshold = positive(material.restitution_threshold.sample(fraction, &mut seed)?);
             self.contact_material = [friction, restitution, stickiness, restitution_threshold, friction_threshold];
             if let Some(collisions) = self.collisions.as_mut() {
-                let solver = &mut collisions.solver;
-                solver.friction = friction;
-                solver.restitution = restitution;
-                solver.stickiness = stickiness;
-                solver.restitution_threshold = restitution_threshold;
-                solver.friction_threshold = friction_threshold;
+                collisions.solver.set_material(self.contact_material);
             }
         }
         Ok(())
@@ -313,10 +377,10 @@ impl HavokStageSimulation {
         self.live.len()
     }
 
-    /// 1401df200: the collision hull centroid the bodies are drawn around;
-    /// zero until hulls are built (stages with a hull are not admitted).
+    /// 1401df200: the collision hull centroid (+0x1d10) the bodies are
+    /// drawn around; zero without a hull.
     pub fn centroid_offset(&self) -> [f32; 3] {
-        [0.; 3]
+        self.definition().collisions.hull.as_ref().map_or([0.; 3], |hull| hull.centroid)
     }
 
     /// 1401e83f0: sprite (1401eeea0) and mesh (1401ebc50) updates of every
@@ -388,12 +452,12 @@ impl HavokStageSimulation {
                 accuracy => return Err(format!("unknown Havok particle collision accuracy {accuracy}")),
             };
             if mode == 4 {
-                let states = collisions.solver.bodies.clone();
+                let states = collisions.solver.bodies().to_vec();
                 physics_collide::static_ground_truth(
                     dt,
                     collisions.tuning,
                     self.pipeline.radius,
-                    [collisions.solver.friction, collisions.solver.restitution],
+                    collisions.solver.own_material(),
                     self.pipeline.plane,
                     level,
                     &bodies,
@@ -407,8 +471,8 @@ impl HavokStageSimulation {
                 let step = physics_collide::CachedStep {
                     dt,
                     tuning: collisions.tuning,
-                    radii: [self.pipeline.radius; 2],
-                    own: [collisions.solver.friction, collisions.solver.restitution],
+                    radii: [self.pipeline.inner_radius, self.pipeline.radius],
+                    own: collisions.solver.own_material(),
                     plane: self.pipeline.plane,
                     mode,
                     world: level,
@@ -417,13 +481,21 @@ impl HavokStageSimulation {
                     &step,
                     &bodies,
                     &self.pipeline.linear,
-                    &collisions.solver.bodies,
+                    collisions.solver.bodies(),
                     &mut collisions.world,
                     &mut collisions.cache,
                     &mut collisions.scratch,
                 )?;
             }
-            collisions.solver.solve_spheres(dt, self.pipeline.radius, &bodies, &collisions.world, &mut self.pipeline.linear)?;
+            match &mut collisions.solver {
+                ContactSolver::Sphere(solver) => {
+                    solver.solve_spheres(dt, self.pipeline.radius, &bodies, &collisions.world, &mut self.pipeline.linear)?
+                }
+                ContactSolver::Convex(solver) => {
+                    let angular = self.pipeline.angular.as_mut().ok_or("SolveConvexContacts needs AngularMotion")?;
+                    solver.solve(dt, self.pipeline.radius, &bodies, &collisions.world, &mut self.pipeline.linear, angular);
+                }
+            }
         }
         let trash = self.integrate.integrate(
             dt,
@@ -436,9 +508,9 @@ impl HavokStageSimulation {
         self.pipeline.trash(&trash);
         // Stage 1: PhysicsCollide's CCD pass.
         if let Some(collisions) = self.collisions.as_mut() {
-            let states = &collisions.solver.bodies;
+            let states = collisions.solver.bodies();
             physics_collide::static_ccd(
-                self.pipeline.radius,
+                self.pipeline.inner_radius,
                 &bodies,
                 &|body| states[body as usize].state,
                 &mut collisions.cache,
@@ -477,7 +549,7 @@ impl HavokStageSimulation {
             let mut killed = self.kill_all;
             // The collision reactions, from the contact solver's state.
             if let Some(collisions) = self.collisions.as_mut().filter(|_| reacts) {
-                let state = collisions.solver.bodies[index].state;
+                let state = collisions.solver.bodies()[index].state;
                 'react: {
                     if state <= 0 {
                         break 'react;
@@ -504,7 +576,7 @@ impl HavokStageSimulation {
                             angular[index][1] = [0.; 4];
                         }
                         if sleep {
-                            collisions.solver.bodies[index].state = 0x7f;
+                            collisions.solver.bodies_mut()[index].state = 0x7f;
                         }
                     }
                 }

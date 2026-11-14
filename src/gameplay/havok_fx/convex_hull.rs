@@ -1110,7 +1110,7 @@ fn cross(o: &Point, a: &Point, p: &Point) -> i64 {
 }
 
 /// 140c0d200: the minimum and maximum of `points` projected on `d`, four
-/// points at a time ((z + y) + x per lane) and the rest one at a time
+/// points at a time ((y + x) + z per lane, transposed) and the rest one at a time
 /// ((y + x) + z).
 fn project(d: [f32; 4], points: &[[f32; 4]]) -> (f32, f32) {
     let far = f32::from_bits(0x7f7f_ffee);
@@ -1124,7 +1124,7 @@ fn project(d: [f32; 4], points: &[[f32; 4]]) -> (f32, f32) {
         for b in 0..blocks {
             for l in 0..4 {
                 let p = points[4 * b + l];
-                let v = add(add(multiply(p[2], d[2]), multiply(p[1], d[1])), multiply(p[0], d[0]));
+                let v = add(add(multiply(p[1], d[1]), multiply(p[0], d[0])), multiply(p[2], d[2]));
                 low[l] = minps(low[l], v);
                 high[l] = maxps(high[l], v);
             }
@@ -1263,12 +1263,15 @@ impl Hull {
     }
 
     /// 140c0d380 for a 3D hull (via 140b90690 / 140b90eb0): the box with
-    /// the smallest half surface area among the face-plane frames, whose
-    /// smallest half extent is returned.
-    pub fn smallest_box_half_extent(&self) -> f32 {
+    /// the smallest half surface area among the face-plane frames. Rows 0..2
+    /// are the box axes (n3, n2, n1) with their half extents in w; row 3 is
+    /// the centre, ((h3 + l3) 0.5) n3 + ((h2 + l2) 0.5) n2 + ((h1 + l1) 0.5) n1
+    /// accumulated in that order. The identity at the origin when no frame
+    /// is found.
+    pub fn smallest_box(&self) -> [[f32; 4]; 4] {
         let points: Vec<[f32; 4]> = self.vertex_order().iter().map(|&v| self.vertices[v].point.position).collect();
         let mut best = f32::from_bits(0x7f7f_ffee);
-        let mut halves = [0f32; 3];
+        let mut frame = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0.; 4]];
         for face in &self.faces {
             let n1 = normalized(*face);
             let (low1, high1) = project(n1, &points);
@@ -1289,10 +1292,30 @@ impl Hull {
                 let area = add(add(multiply(e3, e2), multiply(e2, e1)), multiply(e3, e1));
                 if area < best {
                     best = area;
-                    halves = [multiply(e3, 0.5), multiply(e2, 0.5), multiply(e1, 0.5)];
+                    let c3 = multiply(add(high3, low3), 0.5);
+                    let c2 = multiply(add(high2, low2), 0.5);
+                    let c1 = multiply(add(high1, low1), 0.5);
+                    let centre: [f32; 4] = std::array::from_fn(|i| {
+                        let t = multiply(c3, n3[i]);
+                        let t = add(multiply(c2, n2[i]), t);
+                        add(multiply(c1, n1[i]), t)
+                    });
+                    frame = [
+                        [n3[0], n3[1], n3[2], multiply(e3, 0.5)],
+                        [n2[0], n2[1], n2[2], multiply(e2, 0.5)],
+                        [n1[0], n1[1], n1[2], multiply(e1, 0.5)],
+                        centre,
+                    ];
                 }
             }
         }
+        frame
+    }
+
+    /// 140b90eb0: the smallest half extent of 140c0d380's box.
+    pub fn smallest_box_half_extent(&self) -> f32 {
+        let frame = self.smallest_box();
+        let halves = [frame[0][3], frame[1][3], frame[2][3]];
         // 140b90eb0: the minimum over the three dimensions.
         minps(minps(halves[0], halves[1]), halves[2])
     }

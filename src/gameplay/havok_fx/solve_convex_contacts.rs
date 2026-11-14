@@ -29,18 +29,30 @@ pub struct ConvexShape {
 }
 
 impl ConvexShape {
-    /// 140fbdea0 without m_boundingBox: at most 16 vertices of the stage's
-    /// collision hull, re-hulled; recentred on that hull's centroid (w 0);
-    /// the inscribed radius max(1e-5, the centroid's least face distance)
-    /// and the outer radius max(inner, the farthest vertex).
-    pub fn from_hull(vertices: &[[f32; 4]]) -> Result<Self, String> {
-        let vertices = &vertices[..vertices.len().min(16)];
+    /// 140fbdea0: at most 16 vertices of the stage's collision hull,
+    /// re-hulled (with m_boundingBox replaced by the 8 corners of the
+    /// hull's box, 140b90690, and re-hulled again); recentred on that hull's
+    /// centroid (w 0); the inscribed radius max(1e-5, the centroid's least
+    /// face distance) and the outer radius max(inner, the farthest vertex).
+    pub fn from_hull(vertices: &[[f32; 4]], bounding_box: bool) -> Result<Self, String> {
+        let mut vertices = vertices[..vertices.len().min(16)].to_vec();
         if vertices.is_empty() {
             return Ok(Self { vertices: Vec::new(), inner: 0., outer: 0. });
         }
         // The stage only admits three-dimensional hulls (1401df6a0), so the
         // re-hull is three-dimensional too.
-        let hull = super::convex_hull::Hull::build(vertices)?;
+        let mut hull = super::convex_hull::Hull::build(&vertices)?;
+        if bounding_box {
+            let [r0, r1, r2, r3] = hull.smallest_box();
+            vertices = (0..8)
+                .map(|i| {
+                    let sign = |bit: i32| if i & bit != 0 { -1. } else { 1. };
+                    let (fx, fy, fz) = (multiply(sign(1), r0[3]), multiply(sign(2), r1[3]), multiply(sign(4), r2[3]));
+                    lanes(|l| add(add(add(multiply(fy, r1[l]), multiply(fx, r0[l])), multiply(fz, r2[l])), r3[l]))
+                })
+                .collect();
+            hull = super::convex_hull::Hull::build(&vertices).map_err(|error| format!("Invalid OOBB: {error}"))?;
+        }
         let c = hull.centroid()?;
         let vertices: Vec<[f32; 4]> = vertices.iter().map(|v| [subtract(v[0], c[0]), subtract(v[1], c[1]), subtract(v[2], c[2]), 0.]).collect();
         let mut least = f32::from_bits(0x7f7f_ffee);

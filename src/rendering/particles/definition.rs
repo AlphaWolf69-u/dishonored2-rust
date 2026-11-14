@@ -192,6 +192,14 @@ impl ParticleResources {
                     mesh.model = Some(self.models[&resource].clone());
                 }
             }
+            for stage in &mut declaration.havok_stages {
+                let Some(source) = &stage.collisions.mesh else { continue };
+                let resource = crate::assets::particle_model::resource_path(source)?;
+                self.model(catalog, &resource, marker)?;
+                let hull = crate::assets::fx::particle_havok_stage::CollisionHull::build(&self.models[&resource], stage.collisions.bounding_box)
+                    .map_err(|error| format!("{path}: {source}: {error}"))?;
+                stage.collisions.hull = Some(Arc::new(hull));
+            }
 
             Ok(Arc::new(declaration))
         });
@@ -427,7 +435,9 @@ fn havok_stage_admission(
     let asset = &stage.stage;
     if stage.enable_collisions {
         if stage.collisions.mesh.is_some() {
-            return Err("Havok particle collision hulls (1401df6a0) and SolveConvexContacts are not ported".into());
+            if stage.collisions.hull.is_none() {
+                return Err("Havok particle collision hull was not built".into());
+            }
         }
         if stage.collisions.self_collisions {
             return Err("Havok particle self collisions (SolveSelfContacts) are not ported".into());
