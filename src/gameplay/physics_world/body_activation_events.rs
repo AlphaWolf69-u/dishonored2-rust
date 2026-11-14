@@ -78,7 +78,14 @@ impl BodyActivationEvents {
         let slot = self.slot(body)?;
         let expected = u8::from(active);
         if let Some(pending) = &self.pending {
-            if pending.body != body || pending.active != active { return Err("another body activation signal is incomplete".into()); }
+            if pending.body != body {
+                // The outer world signal resumes its original batch. Earlier
+                // bodies already published their new state and must be skipped
+                // before reaching this body's retained listener cursor.
+                if self.states[slot] != expected { return Ok(false); }
+                return Err("another body activation signal is incomplete".into());
+            }
+            if pending.active != active { return Err("body activation direction differs from its suspended signal".into()); }
             if self.states[slot] != expected { return Err("body activation state changed during a suspended signal".into()); }
         } else {
             if self.states[slot] != expected { return Ok(false); }

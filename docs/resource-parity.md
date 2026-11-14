@@ -8239,3 +8239,8 @@ Readable item generation handoff: UI requests now borrow the admitted Pickable c
   Four existing context fixture constructors receive only `timespaces: None`
   for compatibility; no assertions or tests were added/run. No builds/launches
   or production acceptance claim before the coordinated factory integration.
+
+- **Batch retry review:** when an outer activation batch resumes after one
+  body's callback error, earlier already-transitioned bodies are skipped before
+  the retained body's listener cursor resumes. A new transition or direction
+  cannot consume that suspended signal; deactivation preparation remains once.
