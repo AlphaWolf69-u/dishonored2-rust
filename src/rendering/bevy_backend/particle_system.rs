@@ -102,6 +102,13 @@ pub(crate) struct ParticleSystem {
     world_texture_images: Option<Vec<Arc<crate::rendering::particles::image_resources::ParticleImage>>>,
     probe_query: crate::probe_lighting::ProbeQuery,
     debug_reported_child_draw: bool,
+    /// System +0x1cf0: the arkFXEventInstances (140201760).
+    fx_events: Vec<crate::gameplay::particles::fx_event::FxEventInstance>,
+    /// +0x1df8: the selected camera position (1401ff460).
+    view_origin: [f32; 3],
+    /// FX the event instances started at the last spawn pass (1401fc020),
+    /// with the record target each takes; the FX manager starts them.
+    pub fx_starts: Vec<(crate::gameplay::particles::fx_event::FxEventStart, crate::gameplay::particles::beam::BeamTarget)>,
 }
 impl ParticleSystem {
     pub fn draw_pose(&self, frame: u32) -> Option<ReferenceFrame> {
@@ -736,6 +743,12 @@ impl ParticleSystem {
             world_texture_images: None,
             probe_query: Default::default(),
             debug_reported_child_draw: false,
+            fx_events: crate::gameplay::particles::events::fx_event_instances(declaration)
+                .into_iter()
+                .map(crate::gameplay::particles::fx_event::FxEventInstance::new)
+                .collect(),
+            view_origin: [0.; 3],
+            fx_starts: Vec::new(),
         })
     }
 
@@ -769,6 +782,58 @@ impl ParticleSystem {
         })
     }
 
+    /// The Havok stages' events to the ordinary stages' input queues and
+    /// the FX event instances (their listener calls in the original).
+    fn route_havok_events(
+        havok_stages: &mut [crate::gameplay::particles::havok_stage::HavokStageSimulation],
+        stages: &mut [StageSimulation],
+        fx_events: &mut [crate::gameplay::particles::fx_event::FxEventInstance],
+        declaration: &crate::assets::fx::particle_declaration::ParticleDeclaration,
+    ) {
+        for havok in havok_stages {
+            for delivery in havok.deliveries.drain(..) {
+                if let Some(receiver) = stages.iter_mut().find(|stage| stage.index == delivery.receiver) {
+                    let worldspace = receiver.declaration.stages[receiver.index].worldspace;
+                    receiver.particles.enqueue(delivery.input, worldspace, receiver.owner_pose.position, receiver.owner_pose.basis);
+                }
+            }
+            Self::record_fx_events(fx_events, declaration, havok.fx_pending.drain(..));
+        }
+    }
+
+    /// 1401db0b0 for each record, in publication order.
+    fn record_fx_events(
+        fx_events: &mut [crate::gameplay::particles::fx_event::FxEventInstance],
+        declaration: &crate::assets::fx::particle_declaration::ParticleDeclaration,
+        records: impl Iterator<Item = (usize, crate::gameplay::particles::fx_event::FxEventRecord)>,
+    ) {
+        for (instance, record) in records {
+            if let Some(event) = fx_events.get_mut(instance) {
+                event.record(&declaration.fx_events[event.index], record);
+            }
+        }
+    }
+
+    /// 1401fc020 after the system's simulation: every pending record starts
+    /// its FX. The target is the system origin (+0x1860/+0x186c) or the
+    /// system's target (+0x1d10).
+    fn start_fx_events(&mut self, origin: ReferenceFrame) {
+        let declaration = self.declaration.clone();
+        for event in &mut self.fx_events {
+            let asset = &declaration.fx_events[event.index];
+            let mut starts = Vec::new();
+            event.start(asset, self.view_origin, &mut self.system_seed, &mut starts);
+            for start in starts {
+                let target = if start.target_is_system_target {
+                    crate::gameplay::particles::beam::BeamTarget { position: self.beam_target.position, basis: self.beam_target.basis }
+                } else {
+                    crate::gameplay::particles::beam::BeamTarget { position: origin.position, basis: origin.basis }
+                };
+                self.fx_starts.push((start, target));
+            }
+        }
+    }
+
     pub fn update(
         &mut self,
         now: f32,
@@ -789,6 +854,7 @@ impl ParticleSystem {
             });
             stage.step(frame.delta, gravity, level)?;
         }
+        Self::route_havok_events(&mut self.havok_stages, &mut self.stages, &mut self.fx_events, &self.declaration);
         // 140227b90: the FX record's target parameters.
         self.beam_target = frame.target;
         crate::render_model::update_particle_water_flags(
@@ -834,6 +900,7 @@ impl ParticleSystem {
             ],
         );
         self.detail_level = declaration.detail_level(camera.emitter_distance);
+        self.view_origin = camera.position;
         let size = declaration
             .distance
             .size
@@ -973,6 +1040,11 @@ impl ParticleSystem {
             None
         };
         self.simulate(frame, surface, self.source_velocity, schedule.delta)?;
+        // bevy_backend: the original starts these at the system's render
+        // submission (1401fc340); the FX manager starts them next frame.
+        if let Some(origin) = self.publication.as_ref().map(|publication| publication.pose) {
+            self.start_fx_events(origin);
+        }
         self.visibility.simulated();
         self.visible_frame = schedule.draw.then_some(frame);
         Ok(())
@@ -992,6 +1064,10 @@ impl ParticleSystem {
             return Ok(());
         };
         self.clipping = ParticleClipPlanes::new(&self.declaration.clipping, publication.pose, surface);
+        // 140202060: the FX event clocks advance before the stages.
+        for event in &mut self.fx_events {
+            event.advance(&self.declaration.fx_events[event.index], delta);
+        }
         for stage_slot in 0..self.stages.len() {
             let parent_slot = self.stages[stage_slot].parent.filter(|&slot| slot != stage_slot);
             let (stage, parent) = match parent_slot {
@@ -1070,6 +1146,7 @@ impl ParticleSystem {
                 }
             }
             self.stages[stage_slot].events.pending = deliveries;
+            Self::record_fx_events(&mut self.fx_events, &self.declaration, self.stages[stage_slot].events.fx_pending.drain(..));
         }
         // 1401fef80 for each Havok stage, after the ordinary stages. Havok
         // bodies are world space: the descriptor box moves with the origin.
@@ -1093,6 +1170,10 @@ impl ParticleSystem {
                     self.source_motion.as_ref(),
                 )?;
             }
+        }
+        // Birth events of the Havok stages' new records.
+        Self::route_havok_events(&mut self.havok_stages, &mut self.stages, &mut self.fx_events, &self.declaration);
+        {
         }
         let declaration = self.declaration.clone();
         // 1401fde70 for each beam, before the trails. Its first frame

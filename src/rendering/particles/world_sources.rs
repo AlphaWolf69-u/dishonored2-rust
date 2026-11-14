@@ -112,6 +112,19 @@ fn cloned_value_bytes(value: &Value) -> usize {
     }
 }
 
+/// The FX of the enabled, valid m_fxEvents entries of loaded particle
+/// definitions.
+fn fx_event_effects(particles: &[Result<super::definition::ParticleDefinition, String>]) -> Vec<String> {
+    particles
+        .iter()
+        .filter_map(|particle| particle.as_ref().ok())
+        .flat_map(|particle| particle.declarations.iter().flatten())
+        .flat_map(|declaration| declaration.fx_events.iter())
+        .filter(|event| event.enabled && event.valid())
+        .filter_map(|event| event.fx.clone())
+        .collect()
+}
+
 impl WorldFxSources {
     /// Reference one already prepared effect and its declared sub-effects
     /// without retaining every unrelated effect in the level.
@@ -125,6 +138,9 @@ impl WorldFxSources {
             for child in loaded.groups.iter().flat_map(|group| &group.asset.sub_effects)
                 .flat_map(|sub| sub.effects.iter().flatten()) {
                 pending.push(child.clone());
+            }
+            for group in &loaded.groups {
+                pending.extend(fx_event_effects(&group.particles));
             }
             result.effects.insert(name, definition.clone());
         }
@@ -363,7 +379,7 @@ impl WorldFxSources {
                         .map(|fields| {
                             ParticleDefinition::load(fields, catalog, library, resources)
                         })
-                        .collect();
+                        .collect::<Vec<_>>();
                     let decals = match descriptor_fields(scope(fields, "m_decals").unwrap_or(&[])) {
                         Ok(descriptors) => descriptors.iter()
                             .filter(|fields| atom(fields, "m_enabled") != Some("false"))
@@ -401,6 +417,9 @@ impl WorldFxSources {
                             .iter()
                             .flat_map(|sub| sub.effects.iter().flatten().cloned()),
                     );
+                    // The FX the particle declarations' m_fxEvents start
+                    // (their idDeclFX references load with the declaration).
+                    children.extend(fx_event_effects(&particles));
                     groups.push(WorldEffectGroup {
                         asset,
                         particles,

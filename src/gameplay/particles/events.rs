@@ -9,6 +9,9 @@ use crate::{
 
 pub struct Subscription {
     receivers: Vec<usize>,
+    /// The system's arkFXEventInstances listening to this event
+    /// (1401fd6c0 subscribes them after the stages).
+    fx_receivers: Vec<usize>,
     threshold: i32,
     life: Option<f32>,
 }
@@ -21,6 +24,35 @@ pub struct StageEvents {
     death: Subscription,
     life: Vec<Subscription>,
     pub pending: Vec<Delivery>,
+    /// Records for FX event instances: (instance, position, velocity,
+    /// normal); ordinary stages send the zero normal (1401f2040).
+    pub fx_pending: Vec<(usize, super::fx_event::FxEventRecord)>,
+}
+
+/// The system's FX event instances in m_fxEvents order: the enabled,
+/// valid entries (140201760).
+pub fn fx_event_instances(declaration: &ParticleDeclaration) -> Vec<usize> {
+    declaration
+        .fx_events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.enabled && event.valid())
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The FX event instances (by position in `fx_event_instances`) named
+/// `name`.
+pub fn fx_receivers(declaration: &ParticleDeclaration, name: &str) -> Vec<usize> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    fx_event_instances(declaration)
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, index)| declaration.fx_events[index].event == name)
+        .map(|(instance, _)| instance)
+        .collect()
 }
 impl StageEvents {
     pub fn new(declaration: &ParticleDeclaration, sender: usize) -> Self {
@@ -37,6 +69,7 @@ impl StageEvents {
                         .then_some(i)
                 })
                 .collect(),
+            fx_receivers: fx_receivers(declaration, &event.name),
             // 1efcc0 /1f2270 retain a signed threshold; no clamping is applied.
             threshold: crate::float::truncate_i32(multiply(
                 event.frequency,
@@ -50,6 +83,7 @@ impl StageEvents {
             death: subscription(&events.death),
             life: events.life.iter().map(subscription).collect(),
             pending: Vec::new(),
+            fx_pending: Vec::new(),
         }
     }
     pub fn birth(
@@ -60,7 +94,7 @@ impl StageEvents {
         worldspace: bool,
     ) {
         if Self::admitted(&self.birth, seed) {
-            Self::publish(&self.birth, &mut self.pending, particle, pose, worldspace);
+            Self::publish(&self.birth, &mut self.pending, &mut self.fx_pending, particle, pose, worldspace);
         }
     }
     pub fn integrated(
@@ -74,7 +108,7 @@ impl StageEvents {
     ) {
         if !alive {
             if Self::admitted(&self.death, seed) {
-                Self::publish(&self.death, &mut self.pending, particle, pose, worldspace);
+                Self::publish(&self.death, &mut self.pending, &mut self.fx_pending, particle, pose, worldspace);
             }
             return;
         }
@@ -84,17 +118,18 @@ impl StageEvents {
                 .life
                 .is_some_and(|life| previous_age <= life && life <= particle.age)
             {
-                Self::publish(event, &mut self.pending, particle, pose, worldspace);
+                Self::publish(event, &mut self.pending, &mut self.fx_pending, particle, pose, worldspace);
             }
         }
     }
     fn admitted(event: &Subscription, seed: &mut u32) -> bool {
-        !event.receivers.is_empty()
+        !(event.receivers.is_empty() && event.fx_receivers.is_empty())
             && (((crate::random::lcg_step(seed) >> 10) & 0x7fff) as i32) < event.threshold
     }
     fn publish(
         event: &Subscription,
         pending: &mut Vec<Delivery>,
+        fx_pending: &mut Vec<(usize, super::fx_event::FxEventRecord)>,
         particle: &ParticleState,
         pose: ReferenceFrame,
         worldspace: bool,
@@ -128,6 +163,9 @@ impl StageEvents {
                 .receivers
                 .iter()
                 .map(|&receiver| Delivery { receiver, input }),
+        );
+        fx_pending.extend(
+            event.fx_receivers.iter().map(|&instance| (instance, [input.position, input.directions[0], [0.; 3]])),
         );
     }
 }

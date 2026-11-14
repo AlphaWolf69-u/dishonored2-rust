@@ -7,6 +7,7 @@ pub mod beam_system;
 pub mod emitter;
 pub mod events;
 pub mod field;
+pub mod fx_event;
 pub mod mesh;
 pub mod mesh_appearance;
 pub mod orientation;

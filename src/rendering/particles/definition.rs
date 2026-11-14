@@ -464,13 +464,15 @@ fn havok_stage_admission(
     if asset.enable_wind && declaration.wind.enabled {
         return Err("Havok particle wind (arkWindHavokEffect) is not ported".into());
     }
-    let events = &stage.events;
-    if [&events.birth, &events.collision, &events.ocean_collision, &events.stop, &events.death]
-        .into_iter()
-        .chain(events.life.iter())
-        .any(|event| !event.name.is_empty())
-    {
-        return Err("Havok particle events are not connected".into());
+    // Birth, collision, stop, death and life events are published
+    // (1401e3df0, 1401e3ee0, 1401e40c0); the ocean query is not ported.
+    if !stage.events.ocean_collision.name.is_empty() {
+        return Err("Havok particle ocean collision events are not connected".into());
+    }
+    // 1401e6420 subscribes a Havok stage to events naming its burst event;
+    // its event-driven emission is not ported.
+    if asset.burst && !asset.burst_event.is_empty() {
+        return Err("Havok particle event bursts are not connected".into());
     }
     if stage.spawn_collisions.position_sphere_query || stage.spawn_collisions.velocity_ray_cast {
         return Err("Havok particle spawn collision queries are not connected".into());

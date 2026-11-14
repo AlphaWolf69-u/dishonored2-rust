@@ -814,6 +814,69 @@ impl WorldParticleState {
         }
         Ok(())
     }
+    /// 14019d100 + 1401a2ff0 for one particle FX event: a detached FX
+    /// entity at the event pose whose instance starts with the deferred
+    /// starts.
+    fn start_event_effect(
+        &mut self,
+        start: crate::gameplay::particles::fx_event::FxEventStart,
+        target: crate::gameplay::particles::beam::BeamTarget,
+        sources: &WorldFxSources,
+    ) -> Result<(), String> {
+        let definition = sources
+            .effects
+            .get(&start.fx)
+            .ok_or_else(|| format!("particle FX event effect {} was not prepared", start.fx))?
+            .as_ref()
+            .map_err(Clone::clone)?
+            .clone();
+        admit(&start.fx, &definition, &sources.effects, self.sounds.as_ref(), &self.decal_programs, &mut HashSet::new())?;
+        let mut slot = u16::MAX;
+        if !self.pool.acquire(&mut slot)? {
+            return Ok(());
+        }
+        let pose = ReferenceFrame { position: start.position, basis: start.axis };
+        let parameters = FxRuntimeParameters { effect: Some(start.fx), ..Default::default() };
+        let entity = self.next_entity;
+        self.next_entity = entity.wrapping_add(1);
+        let motion = crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() };
+        self.entities.insert(
+            entity,
+            FxEntity {
+                owner: FxEntityOwner::Detached,
+                parameters: parameters.clone(),
+                component: Default::default(),
+                suspended: false,
+                pose,
+                local: None,
+                dynamic_sources: None,
+                motion,
+            },
+        );
+        let id = self.next_instance;
+        self.next_instance = id.wrapping_add(1);
+        self.slots[usize::from(slot)] = Some(Instance {
+            id,
+            entity,
+            definition,
+            parameters,
+            pose,
+            local: None,
+            dynamic_sources: None,
+            motion,
+            age: 0.,
+            head: u16::MAX,
+            sound_head: u16::MAX,
+            decal_head: u16::MAX,
+            sub_effects: Vec::new(),
+            actor_observer: None,
+            target,
+        });
+        self.handles.insert(id, slot);
+        self.pending_starts.push(slot);
+        Ok(())
+    }
+
     pub fn advance(
         &mut self,
         graphs: &WorldEffectDefinitions,
@@ -1093,6 +1156,14 @@ impl WorldParticleState {
             .cvars
             .float("pm_screenParticleOffset")
             .ok_or("pm_screenParticleOffset is not registered")?;
+        // FX the particle systems' m_fxEvents started (1401da820: an FX
+        // entity at the event with the system's origin or target as its
+        // record target, then 1401a2ff0).
+        for (start, target) in systems.take_fx_starts() {
+            if let Err(error) = self.start_event_effect(start, target, sources) {
+                self.report(error);
+            }
+        }
         // 1a16d0 drains deferred starts forward before ANY active instance
         // update can consume the manager's shared random stream.
         for slot in std::mem::take(&mut self.pending_starts) {

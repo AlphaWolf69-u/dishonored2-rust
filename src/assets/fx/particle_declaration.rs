@@ -338,6 +338,133 @@ pub struct ParticleDeclaration {
     pub ribbons: Vec<super::particle_ribbon::ParticleRibbonAsset>,
     /// Declaration +0x5c8's arkHavokParticleStageDesc list.
     pub havok_stages: Vec<super::particle_havok_stage::ParticleHavokStageAsset>,
+    /// Declaration +0x608's arkFXEventDesc list.
+    pub fx_events: Vec<FxEventAsset>,
+}
+
+/// arkFXEventDesc (0x58 bytes, reflection 14155c730, constructor
+/// 1401da020): an FX started where a stage event fires.
+pub struct FxEventAsset {
+    /// +0 m_event.
+    pub event: String,
+    /// +8 m_enabled (true).
+    pub enabled: bool,
+    /// +0xc m_interval (0): the least time between two started FX.
+    pub interval: f32,
+    /// +0x10 m_fx.
+    pub fx: Option<String>,
+    /// +0x18 m_axisMode: false VELOCITY_PROJECTED (the event normal is
+    /// z), true CUSTOM.
+    pub custom_axis: bool,
+    /// +0x1c m_customAxis: m_velocityAxis (Z), m_reverseVelocityAxis
+    /// (true), m_viewAxis (X), m_reverseViewAxis (false).
+    pub velocity_axis: usize,
+    pub reverse_velocity_axis: bool,
+    pub view_axis: usize,
+    pub reverse_view_axis: bool,
+    /// +0x2c m_rotation, arkFXMinMax<idVec3> in [maximum, minimum] order,
+    /// degrees.
+    pub rotation: [[f32; 3]; 2],
+    /// +0x44 m_rotationOrder (idAngles::XYZ).
+    pub rotation_order: usize,
+    /// +0x48 m_offset along the event frame.
+    pub offset: [f32; 3],
+    /// +0x54 m_target: false PARTICLESYSTEM_ORIGIN, true
+    /// PARTICLESYSTEM_TARGET (the default).
+    pub target_is_system_target: bool,
+}
+
+impl FxEventAsset {
+    /// 1401da0d0: a name, an FX, and distinct custom axes.
+    pub fn valid(&self) -> bool {
+        !self.event.is_empty() && self.fx.is_some() && !(self.custom_axis && self.velocity_axis == self.view_axis)
+    }
+}
+
+fn axis(value: &Value) -> Result<usize, String> {
+    // arkFXEventDesc::axis_mapping_t (1419fbb10).
+    match atom(value)?.rsplit("::").next().unwrap_or("") {
+        "X" => Ok(0),
+        "Y" => Ok(1),
+        "Z" => Ok(2),
+        other => Err(format!("unknown FX event axis {other}")),
+    }
+}
+
+fn fx_event(fields: &Fields) -> Result<FxEventAsset, String> {
+    let mut event = FxEventAsset {
+        event: String::new(),
+        enabled: true,
+        interval: 0.,
+        fx: None,
+        custom_axis: false,
+        velocity_axis: 2,
+        reverse_velocity_axis: true,
+        view_axis: 0,
+        reverse_view_axis: false,
+        rotation: [[0.; 3]; 2],
+        rotation_order: 0,
+        offset: [0.; 3],
+        target_is_system_target: true,
+    };
+    for (name, value) in fields {
+        match name.as_str() {
+            "m_event" => event.event = atom(value)?.to_owned(),
+            "m_enabled" => event.enabled = boolean(value)?,
+            "m_interval" => event.interval = number(value)?,
+            "m_fx" => event.fx = Some(atom(value)?.to_owned()).filter(|fx| !fx.is_empty()),
+            // arkFXEventDesc::axis_mode_t (1419fbba0).
+            "m_axisMode" => {
+                event.custom_axis = match atom(value)?.rsplit("::").next().unwrap_or("") {
+                    "VELOCITY_PROJECTED" => false,
+                    "CUSTOM" => true,
+                    other => return Err(format!("unknown FX event axis mode {other}")),
+                }
+            }
+            "m_customAxis" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_velocityAxis" => event.velocity_axis = axis(value)?,
+                        "m_reverseVelocityAxis" => event.reverse_velocity_axis = boolean(value)?,
+                        "m_viewAxis" => event.view_axis = axis(value)?,
+                        "m_reverseViewAxis" => event.reverse_view_axis = boolean(value)?,
+                        _ => return Err(format!("unknown FX event custom axis field {name}")),
+                    }
+                }
+            }
+            "m_rotation" => {
+                for (name, value) in scope(value)? {
+                    match name.as_str() {
+                        "m_max" => super::particles::vector(&mut event.rotation[0], scope(value)?)?,
+                        "m_min" => super::particles::vector(&mut event.rotation[1], scope(value)?)?,
+                        _ => return Err(format!("unknown FX event rotation field {name}")),
+                    }
+                }
+            }
+            "m_rotationOrder" => {
+                event.rotation_order = match atom(value)?.trim_start_matches("idAngles::") {
+                    "XYZ" => 0,
+                    "YZX" => 1,
+                    "ZXY" => 2,
+                    "XZY" => 3,
+                    "YXZ" => 4,
+                    "ZYX" => 5,
+                    mode => return Err(format!("unknown FX event rotation order {mode}")),
+                }
+            }
+            "m_offset" => super::particles::vector(&mut event.offset, scope(value)?)?,
+            // arkFXEventDesc::target_t (1419fbc10).
+            "m_target" => {
+                event.target_is_system_target = match atom(value)?.rsplit("::").next().unwrap_or("") {
+                    "PARTICLESYSTEM_ORIGIN" => false,
+                    "PARTICLESYSTEM_TARGET" => true,
+                    other => return Err(format!("unknown FX event target {other}")),
+                }
+            }
+            _ => return Err(format!("unknown FX event field {name}")),
+        }
+    }
+    Ok(event)
 }
 
 impl ParticleDeclaration {
@@ -437,6 +564,7 @@ pub fn declaration(fields: &Fields) -> Result<ParticleDeclaration, String> {
             "m_trails" => descriptor_list(&mut result.trails, scope(value)?, super::particle_trail::declaration_trail)?,
             "m_ribbons" => descriptor_list(&mut result.ribbons, scope(value)?, super::particle_ribbon::ribbon)?,
             "m_havokStages" => descriptor_list(&mut result.havok_stages, scope(value)?, super::particle_havok_stage::havok_stage)?,
+            "m_fxEvents" => descriptor_list(&mut result.fx_events, scope(value)?, fx_event)?,
             _ => return Err(format!("unresolved particle declaration producer {name}")),
         }
     }

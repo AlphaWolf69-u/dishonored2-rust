@@ -165,6 +165,73 @@ pub struct HavokStageSimulation {
     /// +0x350: each body's remaining collisions before it reacts; sized
     /// only when both m_collisionCounter bounds are non-zero.
     counters: Vec<i8>,
+    /// +0x750..+0x7d0: the stage events' listeners.
+    events: HavokEventLists,
+    /// Events for the system's ordinary stages and FX event instances,
+    /// delivered by the owning system after each frame and step.
+    pub deliveries: Vec<super::events::Delivery>,
+    pub fx_pending: Vec<(usize, super::fx_event::FxEventRecord)>,
+}
+
+/// One Havok stage event's listeners (1401e6420): the ordinary stages whose
+/// m_burstEvent names it and the system's FX event instances, with the
+/// frequency threshold (x 32767, truncated) and a life event's age.
+struct HavokSubscription {
+    stages: Vec<usize>,
+    fx: Vec<usize>,
+    threshold: i32,
+    life: f32,
+}
+
+impl HavokSubscription {
+    fn new(declaration: &ParticleDeclaration, event: &crate::assets::fx::particle_stage::ParticleEvent) -> Self {
+        let stages = if event.name.is_empty() {
+            Vec::new()
+        } else {
+            declaration
+                .stages
+                .iter()
+                .enumerate()
+                .filter(|(_, stage)| stage.enabled && !stage.burst_event.is_empty() && stage.burst_event == event.name)
+                .map(|(index, _)| index)
+                .collect()
+        };
+        Self {
+            stages,
+            fx: super::events::fx_receivers(declaration, &event.name),
+            threshold: crate::float::truncate_i32(multiply(event.frequency, f32::from_bits(0x46ff_fe00))),
+            life: event.life.unwrap_or(0.),
+        }
+    }
+
+    fn listened(&self) -> bool {
+        !(self.stages.is_empty() && self.fx.is_empty())
+    }
+}
+
+/// +0x758 birth, +0x770 collision, +0x7a0 stop, +0x7b8 death and the
+/// +0x7c8 life events.
+struct HavokEventLists {
+    birth: HavokSubscription,
+    collision: HavokSubscription,
+    stop: HavokSubscription,
+    death: HavokSubscription,
+    life: Vec<HavokSubscription>,
+}
+
+/// Every listener's handler with the event's position, velocity and normal.
+fn deliver(
+    subscription: &HavokSubscription,
+    deliveries: &mut Vec<super::events::Delivery>,
+    fx_pending: &mut Vec<(usize, super::fx_event::FxEventRecord)>,
+    record: super::fx_event::FxEventRecord,
+) {
+    let [position, velocity, normal] = record;
+    deliveries.extend(subscription.stages.iter().map(|&receiver| super::events::Delivery {
+        receiver,
+        input: super::SpawnInput { position, directions: [velocity, normal] },
+    }));
+    fx_pending.extend(subscription.fx.iter().map(|&instance| (instance, record)));
 }
 
 impl HavokStageSimulation {
@@ -244,6 +311,15 @@ impl HavokStageSimulation {
             kill_all: false,
             contact_material: [0.; 5],
             counters,
+            events: HavokEventLists {
+                birth: HavokSubscription::new(&declaration, &definition.events.birth),
+                collision: HavokSubscription::new(&declaration, &definition.events.collision),
+                stop: HavokSubscription::new(&declaration, &definition.events.stop),
+                death: HavokSubscription::new(&declaration, &definition.events.death),
+                life: definition.events.life.iter().map(|event| HavokSubscription::new(&declaration, event)).collect(),
+            },
+            deliveries: Vec::new(),
+            fx_pending: Vec::new(),
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
                 solver: match shape {
@@ -359,6 +435,15 @@ impl HavokStageSimulation {
                 self.emitter.havok_burst(delta, room, frame.lod, multiplier, &mut bindings)?;
             } else {
                 self.emitter.havok_continuous(delta, room, frame.lod, multiplier, &mut bindings)?;
+            }
+            // 1401e3df0: a birth event per pending record.
+            if self.events.birth.listened() {
+                for record in &self.pending {
+                    let draw = ((crate::random::lcg_step(&mut self.emitter.seed) >> 10) & 0x7fff) as i32;
+                    if draw < self.events.birth.threshold {
+                        deliver(&self.events.birth, &mut self.deliveries, &mut self.fx_pending, [record.position, record.velocity, [0.; 3]]);
+                    }
+                }
             }
             self.update_renderers(delta)?;
         }
@@ -536,12 +621,10 @@ impl HavokStageSimulation {
         let reacts = reaction.kill_on_collision
             || reaction.stop_on_collision
             || reaction.sleep_on_collision
-            || !definition.events.collision.name.is_empty()
+            || self.events.collision.listened()
+            || self.events.stop.listened()
             || !self.counters.is_empty();
         let (kill, stop, sleep) = (reaction.kill_on_collision, reaction.stop_on_collision, reaction.sleep_on_collision);
-        if reacts && !definition.events.collision.name.is_empty() {
-            return Err("Havok particle collision events are not connected".into());
-        }
         let first_contacts = if kill { 3 } else { 2 };
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
         for body in bodies {
@@ -553,6 +636,18 @@ impl HavokStageSimulation {
                 'react: {
                     if state <= 0 {
                         break 'react;
+                    }
+                    if state <= first_contacts {
+                        // 1401e3ee0 at the body's last published position.
+                        Self::publish_contact(
+                            &self.events.collision,
+                            &mut self.emitter.seed,
+                            &self.particles,
+                            &collisions.world,
+                            index,
+                            &mut self.deliveries,
+                            &mut self.fx_pending,
+                        );
                     }
                     if state <= first_contacts && !self.counters.is_empty() {
                         let counter = &mut self.counters[index];
@@ -567,8 +662,16 @@ impl HavokStageSimulation {
                     if kill {
                         killed = true;
                     } else if stop {
-                        if state < 3 && !definition.events.stop.name.is_empty() {
-                            return Err("Havok particle stop events are not connected".into());
+                        if state < 3 {
+                            Self::publish_contact(
+                                &self.events.stop,
+                                &mut self.emitter.seed,
+                                &self.particles,
+                                &collisions.world,
+                                index,
+                                &mut self.deliveries,
+                                &mut self.fx_pending,
+                            );
                         }
                         let linear = &mut self.pipeline.linear[index];
                         linear[1] = [0., 0., 0., linear[1][3]];
@@ -595,6 +698,7 @@ impl HavokStageSimulation {
                 if position[i] <= self.bounds[0][i] { self.bounds[0][i] = position[i]; }
                 if self.bounds[1][i] <= position[i] { self.bounds[1][i] = position[i]; }
             }
+            let previous_age = self.particles.get(index).map_or(0., |particle| particle.state.age);
             self.particles.set(
                 body as usize,
                 Some(Particle {
@@ -610,12 +714,24 @@ impl HavokStageSimulation {
                 }),
             );
             if !killed && self.inside(position) {
+                // 1401e40c0: life events crossed this step, no draw.
+                for event in &self.events.life {
+                    if previous_age <= event.life && event.life <= age {
+                        deliver(event, &mut self.deliveries, &mut self.fx_pending, [position, [v[0], v[1], v[2]], [0.; 3]]);
+                    }
+                }
                 self.live.push(body);
             } else {
                 self.dead.push(body);
             }
         }
-        // 1401e3ff0.
+        // Death events (1401e3ee0 over the dead list), then 1401e3ff0.
+        if self.events.death.listened() {
+            let world = self.collisions.as_ref().map(|collisions| &collisions.world);
+            for &body in &self.dead {
+                Self::publish_event(&self.events.death, &mut self.emitter.seed, &self.particles, world, body as usize, &mut self.deliveries, &mut self.fx_pending);
+            }
+        }
         for &body in &self.dead {
             self.particles.set(body as usize, None);
         }
@@ -624,6 +740,48 @@ impl HavokStageSimulation {
         self.dead = dead;
         self.kill_all = false;
         Ok(())
+    }
+
+    /// 1401e3ee0 for a body with a collision world.
+    fn publish_contact(
+        subscription: &HavokSubscription,
+        seed: &mut u32,
+        particles: &ParticleStage,
+        world: &WorldCollide,
+        body: usize,
+        deliveries: &mut Vec<super::events::Delivery>,
+        fx_pending: &mut Vec<(usize, super::fx_event::FxEventRecord)>,
+    ) {
+        Self::publish_event(subscription, seed, particles, Some(world), body, deliveries, fx_pending);
+    }
+
+    /// 1401e3ee0: with listeners, a draw from the spawn seed below the
+    /// threshold sends the body's published position (+0x310) and velocity
+    /// (+0x320) with its static contact normal (zero without WorldCollide).
+    fn publish_event(
+        subscription: &HavokSubscription,
+        seed: &mut u32,
+        particles: &ParticleStage,
+        world: Option<&WorldCollide>,
+        body: usize,
+        deliveries: &mut Vec<super::events::Delivery>,
+        fx_pending: &mut Vec<(usize, super::fx_event::FxEventRecord)>,
+    ) {
+        if !subscription.listened() {
+            return;
+        }
+        let draw = ((crate::random::lcg_step(seed) >> 10) & 0x7fff) as i32;
+        if !(draw < subscription.threshold) {
+            return;
+        }
+        let normal = world.map_or([0.; 3], |world| {
+            let plane = world.static_contacts[body].plane;
+            [plane[0], plane[1], plane[2]]
+        });
+        let (position, velocity) = particles
+            .get(body)
+            .map_or(([0.; 3], [0.; 3]), |particle| (particle.state.position, particle.state.velocity));
+        deliver(subscription, deliveries, fx_pending, [position, velocity, normal]);
     }
 
     /// 1401e3d20: inside the system box and on the kept side of every plane.

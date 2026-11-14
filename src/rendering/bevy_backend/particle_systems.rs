@@ -134,6 +134,12 @@ impl ParticleSystems {
             }
         })
     }
+    /// The FX every system's m_fxEvents started since the last call.
+    pub fn take_fx_starts(
+        &mut self,
+    ) -> Vec<(crate::gameplay::particles::fx_event::FxEventStart, crate::gameplay::particles::beam::BeamTarget)> {
+        self.slots.iter_mut().flatten().flat_map(|system| system.fx_starts.drain(..)).collect()
+    }
     pub fn capacity(&self) -> (usize, usize) {
         let mut instances = 0;
         let mut draws = 0;
