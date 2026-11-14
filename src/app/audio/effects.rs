@@ -89,6 +89,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             bridge.listeners[0] = Some(crate::gameplay::sound::acoustic_world::AdmissionListener { position: listener.position, zone });
             bridge.motion[0] = scene.listener_motion();
         }
+        if bridge.playing_ids.is_none() { bridge.playing_ids = Some(engine.playing_ids()); }
         bridge.ready = engine.activity().is_some() && mix.physics_scale.is_some() && scene.listener().is_some();
         if state.source.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &sources.0)) {
             let source_started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
@@ -267,7 +268,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
                 loading_tickets.push(ticket);
                 continue;
             }
-            let playing_id = engine.playing_id();
+            let playing_id = ticket.id().value();
             for action in prepared.actions.iter() {
                 match action {
                     SourceAction::SetState { action, target_path } => {

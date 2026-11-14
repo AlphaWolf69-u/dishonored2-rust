@@ -1,10 +1,25 @@
 //! Accepted event registrations and their pending-action/voice ownership.
 //! The playing ID exists before actions execute (1410c96c0/1410e0fe0).
 use crate::gameplay::sound::Emitter;
-use std::{collections::HashMap, sync::{Arc, Mutex, Weak, atomic::{AtomicBool, Ordering}}};
+use std::{collections::HashMap, sync::{Arc, Mutex, Weak, atomic::{AtomicBool, AtomicU32, Ordering}}};
+
+/// One Wwise PostEvent ID namespace shared by ordinary and FX producers.
+#[derive(Clone, Default)]
+pub(crate) struct PlayingIds(Arc<AtomicU32>);
+impl PlayingIds {
+    pub(crate) fn allocate(&self) -> u32 {
+        loop {
+            let id = self.0.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if id != 0 { return id; }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlayingId(u32);
+impl PlayingId {
+    pub(crate) fn value(self) -> u32 { self.0 }
+}
 
 #[derive(Clone, Copy)]
 pub struct Event {
@@ -66,6 +81,9 @@ impl Ticket {
 pub struct PlayingEvents {
     next: u32,
     active: HashMap<PlayingId, Weak<Registration>>,
+    /// c6030: sixteen cookies per actual sound object. Keep admission until
+    /// c47a0 consumes End, including the gap after the last voice drops.
+    object_counts: HashMap<Emitter, u8>,
     completions: Arc<Mutex<Vec<Notification>>>,
 }
 
@@ -75,12 +93,27 @@ impl PlayingEvents {
     /// voice's success or allocate an ID for an unresolved request.
     pub fn register(&mut self, event: Event) -> Result<Ticket, String> {
         let id = self.next.checked_add(1).ok_or("audio playing IDs exhausted")?;
+        self.register_with_id(id, event)
+    }
+
+    pub(crate) fn can_register_object(&self, object: Emitter) -> bool {
+        self.object_counts.get(&object).copied().unwrap_or(0) < 16
+    }
+
+    /// c4550 stores the actual accepted PostEvent return ID in its cookie.
+    pub(crate) fn register_with_id(&mut self, id: u32, event: Event) -> Result<Ticket, String> {
+        if id == 0 { return Err("zero is not a playing ID".into()); }
         let id = PlayingId(id);
+        if self.active.contains_key(&id) { return Err("audio playing ID is already retained".into()); }
+        if !self.can_register_object(event.object) { return Err("sound object cookie pool is full".into()); }
+        self.active.try_reserve(1).map_err(|error| format!("playing event allocation: {error}"))?;
+        self.object_counts.try_reserve(1).map_err(|error| format!("sound object cookie allocation: {error}"))?;
         let registration = Arc::new(Registration {
             id, event, completions: self.completions.clone(), source_ready: AtomicBool::new(false),
         });
         self.active.insert(id, Arc::downgrade(&registration));
-        self.next = id.0;
+        *self.object_counts.entry(event.object).or_default() += 1;
+        self.next = self.next.max(id.0);
         Ok(Ticket(registration))
     }
 
@@ -89,7 +122,7 @@ impl PlayingEvents {
     /// True while any pending action or playing voice retains this
     /// declaration reference. The registry itself owns only weak tickets.
     pub fn references_object(&self, object: Emitter) -> bool {
-        self.active.values().filter_map(Weak::upgrade).any(|entry| entry.event.object == object)
+        self.object_counts.contains_key(&object)
     }
 
     pub fn references_declaration(&self, declaration: u32) -> bool {
@@ -102,7 +135,12 @@ impl PlayingEvents {
         let completed = std::mem::take(&mut *self.completions.lock()
             .unwrap_or_else(|error| error.into_inner()));
         for notification in &completed {
-            if matches!(notification.kind, NotificationKind::End) { self.active.remove(&notification.id); }
+            if matches!(notification.kind, NotificationKind::End) && self.active.remove(&notification.id).is_some() {
+                if let Some(count) = self.object_counts.get_mut(&notification.event.object) {
+                    *count -= 1;
+                    if *count == 0 { self.object_counts.remove(&notification.event.object); }
+                }
+            }
         }
         completed
     }

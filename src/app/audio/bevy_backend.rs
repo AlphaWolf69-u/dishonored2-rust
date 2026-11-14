@@ -4,7 +4,7 @@ pub(super) mod buses;
 use super::graph;
 use buses::{Buses, FRAMES};
 use bevy::{audio::{ChannelCount, Decodable, SampleRate, Source}, prelude::*};
-use std::{sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}}, time::Duration};
+use std::{sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use crate::gameplay::sound::{activity::Activity, ducking::Ducking};
 
 pub(super) type ActionTarget = Option<Arc<[u32]>>;
@@ -15,7 +15,7 @@ pub(super) type StateGroups = Arc<Mutex<crate::gameplay::sound::states::States>>
 pub(super) struct Engine {
     shared: Option<Arc<Mutex<Shared>>>,
     activity: Option<Arc<Activity>>,
-    playing_ids: AtomicU32,
+    playing_ids: crate::gameplay::sound::playing::PlayingIds,
 }
 
 struct Control { paused: AtomicBool, stopped: AtomicBool, finished: AtomicBool }
@@ -180,18 +180,16 @@ impl Engine {
             pending_actions: Vec::new(), due: Vec::new(), fallbacks: Vec::new(), pending_plays: Vec::new(), action_serial: 0, failed: false, error: None, retiring_objects: Default::default(), object_voices: Default::default(), idle_retirements: Vec::new(), trace_retirement: std::env::var("DH2_DEBUG_AUDIO_RESOURCES").as_deref() == Ok("1") }));
         let output = OutputAudio { shared: shared.clone(), channels: ChannelCount::new(2).ok_or("invalid host stereo format")?,
             rate: SampleRate::new(48000).ok_or("invalid host processing rate")? };
-        Ok((Self { shared: Some(shared), activity: Some(activity), playing_ids: AtomicU32::new(0) }, output))
+        Ok((Self { shared: Some(shared), activity: Some(activity), playing_ids: Default::default() }, output))
     }
 
     pub fn activity(&self) -> Option<Arc<Activity>> { self.activity.clone() }
     /// Host event-instance keys keep every action from one Post in the same
     /// playing-ID scope. Zero remains the wildcard/invalid value.
     pub fn playing_id(&self) -> u32 {
-        loop {
-            let id = self.playing_ids.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-            if id != 0 { return id; }
-        }
+        self.playing_ids.allocate()
     }
+    pub(super) fn playing_ids(&self) -> crate::gameplay::sound::playing::PlayingIds { self.playing_ids.clone() }
 
     pub fn post_state(&self, action: crate::assets::wwise::StateAction, target_path: ActionTarget, event: u32,
         emitter: crate::gameplay::sound::Emitter) -> Result<(), String> {

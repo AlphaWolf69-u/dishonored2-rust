@@ -129,6 +129,9 @@ impl SoundCompletions {
     fn pump(&mut self) {
         use crate::gameplay::sound::playing::NotificationKind;
         for note in self.playing.take_notifications() {
+            // Unwatched posts still own a real object cookie and source ticket,
+            // but cannot complete a separate watched post with the same key.
+            if note.event.callbacks & 8 == 0 { continue; }
             match note.kind {
                 NotificationKind::SourceReady => { self.started.insert(note.id); },
                 NotificationKind::End => {
@@ -144,9 +147,6 @@ impl SoundCompletions {
         }
     }
 }
-#[derive(Component)]
-struct TrackedSound(#[allow(dead_code)] crate::gameplay::sound::playing::Ticket);
-
 #[derive(Resource, Default)]
 struct WwiseRegistry {
     banks: Arc<Vec<Bank>>,
@@ -1056,15 +1056,26 @@ fn play_events(
                 pending.0.push(PendingSound { request, media: holds, watched: queued.watched });
                 continue;
             }
-            let tracked = if completions.waiting.remove(&(event, emitter)) {
-                match completions.playing.register(crate::gameplay::sound::playing::Event {
-                    declaration: event, object: emitter, callbacks: 8,
-                }) {
-                    Ok(ticket) => { completions.active.insert((event, emitter)); Some(ticket) },
-                    Err(error) => { warn!("Wwise completion registration failed: {error}"); completions.completed.insert((event, emitter), false); None },
-                }
-            } else { None };
+            let watched = completions.waiting.remove(&(event, emitter));
+            if !completions.playing.can_register_object(emitter) {
+                warn!("Wwise event {event:#010x}: sound object cookie pool is full");
+                if watched { completions.completed.insert((event, emitter), false); }
+                continue;
+            }
             let playing_id = engine.playing_id();
+            let tracked = match completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
+                declaration: event, object: emitter, callbacks: if watched { 8 } else { 0 },
+            }) {
+                Ok(ticket) => {
+                    if watched { completions.active.insert((event, emitter)); }
+                    Some(ticket)
+                },
+                Err(error) => {
+                    warn!("Wwise event registration failed: {error}");
+                    if watched { completions.completed.insert((event, emitter), false); }
+                    continue;
+                },
+            };
             for action in actions.iter().cloned() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
@@ -1079,22 +1090,24 @@ fn play_events(
                     },
                     SourceAction::Play { settings, definition } => {
                         match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position, settings) {
-                            Ok((source, scheduled)) => {
+                            Ok((mut source, scheduled)) => {
+                                // The audio source survives ECS removal while
+                                // its output tail/stop is still being processed.
+                                // End belongs to that real owner, not its proxy.
+                                if let Some(ticket) = &tracked { source.retain_event(ticket.clone()); }
                                 let audio_target = AudioTarget { event, emitter, paused: false, world_paused: false };
                                 if source.can_route() {
                                     match engine.submit(source, playing_id, event) {
                                         Ok(voice) => {
-                                            let mut entity = commands.spawn((voice, audio_target, scheduled, StreamedMedia(holds.clone())));
-                                            if let Some(ticket) = &tracked { ticket.source_ready(); entity.insert(TrackedSound(ticket.clone())); }
+                                            commands.spawn((voice, audio_target, scheduled, StreamedMedia(holds.clone())));
                                         },
                                         Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
                                     }
                                 } else {
                                     match engine.register_fallback(scheduled.clone(), event, emitter) {
                                         Ok(control) => {
-                                            let mut entity = commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
+                                            commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
                                                 audio_target, scheduled, control, StreamedMedia(holds.clone())));
-                                            if let Some(ticket) = &tracked { ticket.source_ready(); entity.insert(TrackedSound(ticket.clone())); }
                                         },
                                         Err(error) => error!("Wwise event {event:#010x} action control unavailable: {error}"),
                                     }

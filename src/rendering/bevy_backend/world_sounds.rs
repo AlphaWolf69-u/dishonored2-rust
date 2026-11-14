@@ -59,6 +59,7 @@ pub(crate) struct SoundState {
     pub queued: Vec<Ticket>,
     pub released: Vec<Emitter>,
     pub playing: PlayingEvents,
+    pub(crate) playing_ids: Option<crate::gameplay::sound::playing::PlayingIds>,
     pub notifications: Vec<Notification>,
     pub acoustics: Option<Arc<Mutex<AcousticWorld>>>,
     pub listeners: [Option<AdmissionListener>; 8],
@@ -127,7 +128,9 @@ impl SoundObjectWorld for WorldSounds {
             && declaration.duration[1] <= 2.0
             && admission::motion_inaudible(source.position, source.displacement, declaration.max_distance, &state.motion)
         { return Ok(None); }
-        let ticket = state.playing.register(Event { object, declaration: event, callbacks: 0x8009 })?;
+        if !state.playing.can_register_object(object) { return Err("sound object cookie pool is full".into()); }
+        let playing_id = state.playing_ids.as_ref().ok_or("shared audio playing-ID owner is absent")?.allocate();
+        let ticket = state.playing.register_with_id(playing_id, Event { object, declaration: event, callbacks: 0x8009 })?;
         let id = ticket.id();
         let source = state.objects.get_mut(&object).ok_or("FX sound object was removed")?;
         source.events.push((id, declaration.max_distance));

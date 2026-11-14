@@ -8435,3 +8435,14 @@ query primitive owners, which this rewrite has not admitted here. Source shape
 paths are now attached to mass failures, using allocation only on error. This
 recovery has source/syntax review only; root owns the coordinated compilation
 and actual installed level publication. No tests or visible clients launched.
+
+
+### Supported sound-post cookie and playing-ID ownership (2026-11-14)
+
+Source: `1400c4550` reserves a cookie before posting and stores the actual `1410c95f0` playing ID; `1400c6030` exhausts at sixteen retained cookies per sound object; `1400c47a0` dispatches End before returning its cookie. Saved read-only evidence: `artifacts/audio-post-cookie-source-20261114.json` (ignored).
+
+Prediction before editing: ordinary and FX posts must each allocate one shared output playing ID, retain one object admission through queued actions, real source/output tails and consumed End, and reject a seventeenth retained post for the same emitter. Previously unwatched ordinary posts need bounded ticket bookkeeping; this is a fidelity/ownership change with no CPU-time or MB-saving claim. Object references become a direct count lookup instead of scanning every weak registration. The hash map count is the host representation of the embedded fixed cookie pool; callback range/duration/speech/game-defined branches are unchanged.
+
+Implemented in the existing `gameplay/sound/playing.rs` owner: real-ID registration, bounded per-emitter admission, and retained object counts removed only when End is consumed. The existing Engine ID allocator is shared with FX cold admission, and FX output consumes its already-assigned ticket ID instead of allocating a second identity. Ordinary posts now retain the ticket in the scheduled audio source, following the existing FX path; removing its ECS proxy cannot release its cookie before the actual output/stop tail. SourceReady comes from the real decoder processing boundary, instead of being synthesized when its proxy is spawned. Unwatched End packets cannot complete another watched post with the same event/emitter. Existing decode/source fences, ordered FIFO return markers, voice acknowledgement and per-component retirement are preserved. Static syntax and whitespace review only; no build/tests/launches or runtime timing measurements were run by this agent. Root owns the coordinated compiler/runtime validation.
+
+Deferred consumer evidence: current Rigid initialization/start registers numeric timespace/motion/impulse listeners, but the corresponding runtime message producers are not admitted. The checkpoint `app/entity_event_host.rs` and `app/physics_scene/placed_rigid.rs` retain the exact dispatcher/handler source for a future supported producer slice. No invented producer or blanket 56-class host was added.
