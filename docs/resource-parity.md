@@ -7912,7 +7912,7 @@ class tables back into per-level metadata copies merely to intern `MAIN`.
 
 The current-five-factory app adapter now runs Stop/deinitialize/pool release
 against the canonical query/body owner before resource destruction. Trigger
-retirement uses779bc0/7794e0 body unpublication/destruction, water/wind headers
+retirement uses140779a40/140779910 body unpublication/destruction, water/wind headers
 unlink through7e7530, and audio object retirement follows708620/c7ab0 before
 its pool slot is recycled. Registry stop/release and body mutation cursors
 survive Pending/errors; the loading screen polls them without dropping the
