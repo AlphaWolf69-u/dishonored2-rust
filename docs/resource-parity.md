@@ -8345,3 +8345,34 @@ The ordinary readables' actual authored RigidBody records now instantiate the sh
 ### Portable readable consumers (2026-11-14)
 
 `844bf0` now dispatches the real generation-scoped pickedUp graph notification before inventory admission. Accepted portable notes/books/maps retain their checked identity in a retryable callback cursor: `76e2b0` keyframes the same canonical body, masks its filter with `0x0820001f`, clears velocity through the existing `c85dc0` publication owner, resumes the real Pickable update owner and posts the retained begin-pickup sound through the existing PlayerBody backend. `76ec20` then hides the same render/shadow sources; it does not delete their resources or deactivate navigation geometry. Navigation projects the same filter mask into its existing triangles. Invalid/stale/hidden Pickables cannot be read again. Authored projectile/grenade/mine callbacks and bound subtree branches are rejected before inventory/graph side effects instead of being silently omitted. Graph receiver retirement precedes shared identity retirement. Actual initial rigid body transforms, rather than unnormalized render frames, seed post-physics mesh deltas. The canonical actor task adapter publishes through the existing model-motion owner. No tests/builds were run by this agent; root owns the whole interface check. Partial level-start failure cleanup remains an explicit integration task before this lifecycle can be considered complete.
+
+
+### Unpublished physics preparation cancellation (2026-11-14)
+
+- Owner: `app/physics_scene/preparation.rs`, borrowing the canonical scene,
+  component registry, managed identities and query world. Host boundary: original
+  synchronous Initialize/Start (`1407ea340`, rigid `140808ea0` / `140809d80`)
+  becomes fallible during installed-resource acquisition. Errors now restore the
+  real startup registry and unwind entered creation before geometry can drop.
+- `ported`: body reservations abort through `WorldStorage.abort_disabled_component_body`;
+  entered Start completes its exact transform/publication/motion cursor, then
+  unpublishes, unregisters actual entity/body listeners, detaches the movement
+  interface, destroys the body, and retires the registered shape lease. These
+  use the existing rigid rollback steps and source teardown `14080a260`,
+  `140809bc0`, world destruction `140c8f6b0`.
+- `host`: the existing `1407e72c0` / `1407ea870` registry drain accepts an explicit
+  unpublished context. Before publication there are no Engine emitters,
+  interaction actions or entity-graph instances; it does not fabricate audio
+  acknowledgements or construct another Bevy/physics world. Pools, immutable
+  prepared sources, unused movement slots and world profiles remain ordinary
+  scene-owned Rust allocations and drop after the typed drain. Managed identities
+  are recorded before fallible factory work and retired by the same owner.
+- Failure behavior: required physics preparation errors propagate to the loading
+  owner instead of publishing a level without physics under a misleading
+  'pending' message. A rollback failure preserves the primary error and reports
+  the precise incomplete phase; it does not report clean cancellation.
+- Prediction before implementation: no per-frame CPU/GPU work or residency
+  changes on success; failed preparation releases partial body/motion/shape and
+  identity ownership before scene source leases drop. PreparedLevel cancellation
+  invokes the same helper before clearing boxed resources and Catalog acquisitions. No timing or runtime parity
+  claim. Syntax-only Rust parsing and diff checks performed; no builds/tests run.

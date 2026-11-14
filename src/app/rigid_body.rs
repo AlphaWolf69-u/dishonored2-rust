@@ -137,7 +137,7 @@ pub(super) fn body_info(model: &crate::entities::PlacedModel,
 enum Initialization { Empty, GeometryReady, Creating, BodyCreated, BaseReady, Ready, AbortListeners, AbortBody, AbortShape, Retired }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StartPhase { Transform, Publish, BodyPublished, Complete, RollbackUnpublish, RollbackCallbacks }
+enum StartPhase { Transform, Publish, BodyPublished, Complete, RollbackUnpublish, RollbackRemove, RollbackCallbacks }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StopPhase { BeforeUnpublish, Unpublish, AfterUnpublish, Complete }
@@ -582,6 +582,61 @@ impl RigidBodyComponent {
         Ok(())
     }
 
+    /// Host cancellation of an unpublished scene splits the same rollback
+    /// cursor around callbacks borrowing this component's actual pool.
+    pub(super) fn unpublished_start_request(&mut self)
+        -> Option<(crate::gameplay::shape_transform::ShapeMatrix, BodyActivation, u8)> {
+        let progress = self.start.as_mut()?;
+        let step = match progress.phase {
+            StartPhase::Transform => 0, StartPhase::Publish => 1,
+            StartPhase::BodyPublished | StartPhase::Complete | StartPhase::RollbackUnpublish => 2,
+            StartPhase::RollbackRemove => 3,
+            StartPhase::RollbackCallbacks => 4,
+        };
+        Some((progress.frame, progress.activation, step))
+    }
+    pub(super) fn advance_unpublished_start(&mut self, step: u8) -> Result<(), String> {
+        let progress = self.start.as_mut().ok_or("unpublished rigid Start cursor absent")?;
+        progress.phase = match step {
+            0 => StartPhase::RollbackCallbacks,
+            1 => StartPhase::RollbackUnpublish,
+            2 => StartPhase::RollbackRemove,
+            3 => StartPhase::RollbackCallbacks,
+            4 => { self.start = None; self.stop = Some(StopPhase::Complete); return Ok(()); },
+            _ => return Err("invalid unpublished rigid Start step".into()),
+        };
+        Ok(())
+    }
+    pub(super) fn unpublished_abort_step(&mut self) -> Result<u8, String> {
+        if self.start.is_some() { return Err("rigid Start must unwind before creation abort".into()); }
+        Ok(match self.initialization {
+            Initialization::Empty => 0,
+            Initialization::Creating => 1,
+            Initialization::BodyCreated | Initialization::BaseReady | Initialization::Ready | Initialization::AbortListeners => 2,
+            Initialization::AbortBody => 3,
+            Initialization::GeometryReady | Initialization::AbortShape => 4,
+            Initialization::Retired => 5,
+        })
+    }
+    pub(super) fn advance_unpublished_abort(&mut self, step: u8) -> Result<(), String> {
+        self.initialization = match step {
+            0 => { self.prepared = None; Initialization::Retired },
+            1 => Initialization::GeometryReady,
+            2 => {
+                if self.initialize_listeners.is_some() { return Err("rigid Initialize listeners remain registered".into()); }
+                Initialization::AbortBody
+            },
+            3 => { self.body = None; Initialization::AbortShape },
+            4 => {
+                self.shape = None; self.pending_info = None; self.component = None; self.materials.clear();
+                Initialization::Retired
+            },
+            _ => return Err("invalid unpublished rigid creation step".into()),
+        };
+        Ok(())
+    }
+    pub(super) fn retained_shape(&self) -> Option<usize> { self.shape }
+
     /// Run 140726f10 after creating the body and before registering listeners.
     pub(super) fn initialize_base(
         &mut self, base: impl FnOnce() -> Result<(), String>,
@@ -658,7 +713,7 @@ impl RigidBodyComponent {
             self.start = Some(StartProgress { frame, activation, phase: StartPhase::Transform });
         }
         let progress = self.start.as_mut().expect("start progress exists");
-        if matches!(progress.phase, StartPhase::RollbackUnpublish | StartPhase::RollbackCallbacks) {
+        if matches!(progress.phase, StartPhase::RollbackUnpublish | StartPhase::RollbackRemove | StartPhase::RollbackCallbacks) {
             return Err("rigid-body start rollback is in progress".into());
         }
         if progress.phase == StartPhase::Transform {
@@ -692,7 +747,7 @@ impl RigidBodyComponent {
         if matches!(progress.phase, StartPhase::BodyPublished | StartPhase::Complete) {
             progress.phase = StartPhase::RollbackUnpublish;
         }
-        if progress.phase == StartPhase::RollbackUnpublish {
+        if matches!(progress.phase, StartPhase::RollbackUnpublish | StartPhase::RollbackRemove) {
             world.unpublish_bodies(geometry, events, &[body], 0)?;
             progress.phase = StartPhase::RollbackCallbacks;
         }

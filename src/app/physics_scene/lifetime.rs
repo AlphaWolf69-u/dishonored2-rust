@@ -35,7 +35,7 @@ pub(in crate::app) fn poll(world: &mut bevy::prelude::World) -> Result<bool, Str
         world.insert_resource(scene);
         return Err("physics retirement has no entity event owner".into());
     };
-    let result = poll_owned(world, &mut scene, &mut live, &mut events);
+    let result = poll_owned(Some(&mut *world), &mut scene, &mut live, &mut events);
     world.insert_resource(events);
     world.insert_resource(live);
     world.insert_resource(scene);
@@ -43,7 +43,7 @@ pub(in crate::app) fn poll(world: &mut bevy::prelude::World) -> Result<bool, Str
     result
 }
 
-fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
+pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut PhysicsScene,
     live: &mut LiveEntities, events: &mut EntityEvents) -> Result<bool, String> {
     if scene.retirement.as_ref().is_some_and(|state| state.complete) { return Ok(true); }
     if scene.retirement.is_none() {
@@ -63,7 +63,7 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
     }
     let mut registry = scene.registry.take().ok_or("physics lifecycle registry absent")?;
     let result = (|| {
-        let mut host = Host { world: &mut *world, scene: &mut *scene, events: &mut *events };
+        let mut host = Host { world, scene: &mut *scene, events: &mut *events };
         loop {
             let state = host.scene.retirement.as_ref().ok_or("physics retirement progress absent")?;
             let Some(&(handle, generation)) = state.components.get(state.requested) else { break; };
@@ -89,7 +89,7 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
         while host.scene.retirement.as_ref().unwrap().retire_next < host.scene.entities.len() {
             let index = host.scene.retirement.as_ref().unwrap().retire_next;
             let entity = &host.scene.entities[index];
-            super::super::entity_graphs::retire(host.world, entity.shared)?;
+            if let Some(world) = host.world.as_deref_mut() { super::super::entity_graphs::retire(world, entity.shared)?; }
             if live.retire_for_world_shutdown(entity.shared).is_none() {
                 return Err("physics managed entity remains attached during retirement".into());
             }
@@ -109,7 +109,7 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
 }
 
 struct Host<'a> {
-    world: &'a mut bevy::prelude::World,
+    world: Option<&'a mut bevy::prelude::World>,
     scene: &'a mut PhysicsScene,
     events: &'a mut EntityEvents,
 }
@@ -156,9 +156,10 @@ impl ComponentReleaseWorld for Host<'_> {
     }
 
     fn stop(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
+        let published = self.world.is_some();
         let scene = &mut self.scene;
         if handle.class_id == scene.classes[8] {
-            scene.stop_placed_rigid(handle, registry, self.events)?;
+            if !scene.rigid_bodies.get(handle.slot).ok_or("RigidBody component absent")?.can_release() { scene.stop_placed_rigid(handle, registry, self.events)?; }
         } else if handle.class_id == scene.classes[0] {
             let declaration = scene.owner(handle)?.declaration.ok_or("trigger declaration absent")?;
             let shared = scene.world.clone();
@@ -169,21 +170,27 @@ impl ComponentReleaseWorld for Host<'_> {
             crate::gameplay::trigger_body::startup::stop_trigger(&mut world.storage, &mut world.geometry,
                 &mut events, handle, keyframed, |components, reference| {
                     let body = components.trigger(reference)?.movement_body;
-                    let actor = components.actors.bodies.get(body).and_then(|body| body.actor).ok_or("trigger reference actor absent")?;
-                    components.actors.detach_body(actor, body)
+                    let actor = components.actors.bodies.get(body).ok_or("trigger movement interface absent")?.actor;
+                    match actor {
+                        Some(actor) => components.actors.detach_body(actor, body),
+                        None if !published => Ok(()), // Failed Start never completed attachment.
+                        None => Err("trigger reference actor absent".into()),
+                    }
                 })?;
             drop(query_owner);
         } else if handle.class_id == scene.classes[4] {
             scene.audios.get_mut(handle.slot).ok_or("audio component absent")?.started = false;
         } else if handle.class_id == scene.classes[5] {
             let actor = scene.usables.get(handle.slot).ok_or("usable component absent")?.actor;
-            if !self.world.contains_resource::<super::super::interactions::Interactions>()
-                || !self.world.contains_resource::<super::super::NavigationWorld>()
-                || !self.world.contains_resource::<super::super::usable_animation::UsableAnimations>()
-                || !self.world.contains_resource::<super::super::usable_effects::UsableEffects>() {
+            // Preparation has not published interactions or submitted game actions.
+            let Some(world) = self.world.as_deref_mut() else { return registry.stop_update_ownership(handle, &mut **scene); };
+            if !world.contains_resource::<super::super::interactions::Interactions>()
+                || !world.contains_resource::<super::super::NavigationWorld>()
+                || !world.contains_resource::<super::super::usable_animation::UsableAnimations>()
+                || !world.contains_resource::<super::super::usable_effects::UsableEffects>() {
                 return Err("usable Stop is waiting for its interaction backends".into());
             }
-            self.world.resource_scope(|world, mut interactions: bevy::prelude::Mut<super::super::interactions::Interactions>| {
+            world.resource_scope(|world, mut interactions: bevy::prelude::Mut<super::super::interactions::Interactions>| {
                 world.resource_scope(|world, mut navigation: bevy::prelude::Mut<super::super::NavigationWorld>| {
                     world.resource_scope(|world, mut animations: bevy::prelude::Mut<super::super::usable_animation::UsableAnimations>| {
                         let mut effects = world.resource_mut::<super::super::usable_effects::UsableEffects>();
@@ -207,9 +214,9 @@ impl ComponentReleaseWorld for Host<'_> {
             // against their real body cursor; completed Stop is never replayed.
             self.scene.retirement.as_mut().unwrap().stopped.insert(identity);
         }
-        if handle.class_id == self.scene.classes[4] {
+        if handle.class_id == self.scene.classes[4] && self.world.is_some() {
             let generation = self.owner(handle)?.generation;
-            if !super::super::audio::retire_component_object(self.world,
+            if !super::super::audio::retire_component_object(self.world.as_deref_mut().ok_or("published audio owner absent")?,
                 crate::gameplay::sound::Emitter::Component { handle: handle.packed(), generation })? {
                 return Ok(ReleaseStatus::Pending);
             }
@@ -219,7 +226,10 @@ impl ComponentReleaseWorld for Host<'_> {
 
     fn deinitialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
         if handle.class_id == self.scene.classes[8] {
-            return self.scene.deinitialize_placed_rigid(handle, registry, self.events);
+            if !self.scene.rigid_bodies.get(handle.slot).ok_or("RigidBody component absent")?.can_release() {
+                return self.scene.deinitialize_placed_rigid(handle, registry, self.events);
+            }
+            return self.shutdown(handle, registry);
         }
         if handle.class_id == self.scene.classes[9] {
             self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.deinitialize()?;
@@ -235,9 +245,9 @@ impl ComponentReleaseWorld for Host<'_> {
                 .ok_or("trigger declaration absent")?;
             world.geometry.retire_placement(placement)?;
         }
-        if handle.class_id == self.scene.classes[4] {
+        if handle.class_id == self.scene.classes[4] && self.world.is_some() {
             let generation = self.owner(handle)?.generation;
-            if !super::super::audio::retire_component_object(self.world,
+            if !super::super::audio::retire_component_object(self.world.as_deref_mut().ok_or("published audio owner absent")?,
                 crate::gameplay::sound::Emitter::Component { handle: handle.packed(), generation })? {
                 return Err("audio object retirement lost its acknowledged Stop".into());
             }
@@ -275,6 +285,11 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle, component)
         }
         else if handle.class_id == scene.classes[7] { entity.components.release(handle, scene.loots.get_mut(handle.slot).ok_or("Loot absent")?) }
+        else if handle.class_id == scene.classes[8] {
+            let component = scene.rigid_bodies.get_mut(handle.slot).ok_or("RigidBody absent")?;
+            if !component.can_release() { return Err("RigidBody resources remain at shutdown".into()); }
+            entity.components.release(handle, component)
+        }
         else if handle.class_id == scene.classes[9] { entity.components.release(handle, scene.factions.get_mut(handle.slot).ok_or("Faction absent")?) }
         else { Err("physics shutdown class is unsupported".into()) }
     }
@@ -282,9 +297,9 @@ impl ComponentReleaseWorld for Host<'_> {
     fn released(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
         registry.ensure_no_update_references(handle)?;
         if self.owner(handle)?.entity.is_some() { return Err("component remains linked at pool release".into()); }
-        let audio = if handle.class_id == self.scene.classes[4] {
+        let audio = if handle.class_id == self.scene.classes[4] && self.world.is_some() {
             let emitter = crate::gameplay::sound::Emitter::Component { handle: handle.packed(), generation: self.owner(handle)?.generation };
-            if !super::super::audio::retire_component_object(self.world, emitter)? {
+            if !super::super::audio::retire_component_object(self.world.as_deref_mut().ok_or("published audio owner absent")?, emitter)? {
                 return Err("audio pool release requires its acknowledged sound object".into());
             }
             Some(emitter)
@@ -314,7 +329,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[9] { scene.factions.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
-        if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world, emitter)?; }
+        if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world.as_deref_mut().ok_or("published audio owner absent")?, emitter)?; }
         Ok(())
     }
 }

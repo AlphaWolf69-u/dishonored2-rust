@@ -73,6 +73,9 @@ impl PreparedLevel {
 impl Drop for PreparedLevel {
     fn drop(&mut self) {
         let Some(catalog) = self.unpublished_catalog.take() else { return; };
+        if let Err(error) = super::physics_scene::preparation::discard(self) {
+            eprintln!("Unpublished level cancellation incomplete: {error}");
+        }
         self.resources.clear();
         self.publications.clear();
         catalog.discard_unpublished_level();
