@@ -30,13 +30,14 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, RwLock,
     },
 };
 mod startup;
 
 struct PhysicsEntity {
     name: String,
+    shared: crate::gameplay::entity_lifetime::EntityId,
     components: EntityComponents,
     class: usize,
     environment: Option<(usize, bool)>,
@@ -47,11 +48,12 @@ struct PhysicsEntity {
 
 #[derive(Resource)]
 pub(super) struct PhysicsScene {
-    world: Arc<LevelPointQueries>,
+    world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
     factories: [u32; 5],
     classes: [i32; 5],
     entities: Vec<PhysicsEntity>,
+    shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
     declarations: HashMap<u64, ComponentDeclaration>,
     water_bindings: Vec<entities::water::WaterBinding>,
     water_declarations: Vec<crate::gameplay::water_component::startup::WaterDeclaration>,
@@ -77,6 +79,23 @@ pub(super) struct PhysicsScene {
 }
 
 impl PhysicsScene {
+    pub(super) fn entity_frame(&self, live: &crate::gameplay::entity_lifetime::LiveEntities,
+        id: crate::gameplay::entity_lifetime::EntityId)
+        -> Result<Option<crate::gameplay::reference_frame::ReferenceFrame>, String> {
+        let Some((name, class)) = live.get(id) else { return Err("entity frame identity is stale".into()); };
+        let Some(&index) = self.shared_indices.get(&id) else { return Ok(None); };
+        let entity = self.entities.get(index).ok_or("entity frame index is stale")?;
+        if entity.class != class || !entity.name.eq_ignore_ascii_case(name) { return Err("entity frame owner differs".into()); }
+        if live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) { return Ok(None); }
+        if let Some(handle) = entity.components.reference_actor {
+            let actor = self.actors.actors.get(handle.slot).ok_or("entity reference actor absent")?;
+            // The reference actor owns the current physics transform. No render
+            // placement frame is substituted for an absent actor.
+            return Ok(Some(actor.frame.current));
+        }
+        Ok(Some(entity.pose))
+    }
+
     pub(super) fn visit_audio(&mut self, mut visit: impl FnMut(ComponentHandle,
         &entities::audio::AudioBinding, &mut crate::gameplay::sound::component::AudioComponent) -> Result<(), String>) -> Result<(), String>
     {
@@ -87,13 +106,15 @@ impl PhysicsScene {
         Ok(())
     }
 
-    pub(super) fn point_queries(&self) -> Result<Arc<LevelPointQueries>, &str> {
-        self.world.ready()?;
+    pub(super) fn point_queries(&self) -> Result<Arc<RwLock<LevelPointQueries>>, &str> {
+        self.world.read().map_err(|_| "level physics query owner is poisoned")?.ready()?;
         Ok(self.world.clone())
     }
 
     fn finish_point_queries(&mut self) -> Result<(), String> {
-        let owners = self.world.resolve_wind_owners(|body| {
+        let shared_world = self.world.clone();
+        let world = shared_world.read().map_err(|_| "level physics query owner is poisoned")?;
+        let owners = world.resolve_wind_owners(|body| {
             let data =
                 crate::gameplay::collision_user_data::CollisionUserData::decode(body.user_data)?;
             let entity = data.entity(|handle| self.owner(handle).ok())?;
@@ -127,9 +148,11 @@ impl PhysicsScene {
                     .clone(),
             ))
         });
-        // Component startup is the last writer to the trigger query world.
+        drop(world);
+        // Publish through the existing owner after all component startup writes.
         // Once published, render/FX leases share the same immutable geometry.
-        let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
+        let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+        let world = &mut *query_owner;
         world.geometry.release_immutable_sources();
         world.publish_wind_owners(owners);
         Ok(())
@@ -142,7 +165,7 @@ impl PhysicsScene {
         &mut self,
         position: [f32; 3],
     ) -> Result<Option<f32>, String> {
-        self.world.particle_water_body_height(&mut self.executor, position)
+        self.world.read().map_err(|_| "level physics query owner is poisoned")?.particle_water_body_height(&mut self.executor, position)
     }
 
     pub(super) fn load(
@@ -152,8 +175,10 @@ impl PhysicsScene {
         volumes: &[crate::rendering::environment::RuntimeEnvironmentVolume],
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
         shape_sources: &mut crate::physworld::source::ShapeSources,
+        live: &mut crate::gameplay::entity_lifetime::LiveEntities,
     ) -> Result<Self, String> {
         let types = ComponentTypes::acquire(catalog)?;
+        let constructor_tag = types.intern_name(Some(b"MAIN"))?;
         let factory = |name: &[u8]| {
             types
                 .factories()
@@ -247,7 +272,7 @@ impl PhysicsScene {
         )?;
         let cvars = crate::platform::console::shared().read();
         let mut scene = Self {
-            world: Arc::new(LevelPointQueries::new(world, geometry)),
+            world: Arc::new(RwLock::new(LevelPointQueries::new(world, geometry))),
             triggers: types.create_pool(factories[0], &cvars.cvars)?,
             waters: types.create_pool(factories[1], &cvars.cvars)?,
             winds: types.create_pool(factories[2], &cvars.cvars)?,
@@ -262,6 +287,7 @@ impl PhysicsScene {
             factories,
             classes,
             entities: Vec::new(),
+            shared_indices: HashMap::new(),
             declarations: HashMap::new(),
             water_bindings,
             water_declarations,
@@ -286,8 +312,10 @@ impl PhysicsScene {
             .take()
             .ok_or("physics component registry absent")?;
         let mut entity_indices = HashMap::<String, usize>::new();
-        for index in 0..scene.world.geometry.placements.len() {
-            let placement = &scene.world.geometry.placements[index];
+        let query_owner = scene.world.clone();
+        let query_world = query_owner.read().map_err(|_| "level physics query owner is poisoned")?;
+        for index in 0..query_world.geometry.placements.len() {
+            let placement = &query_world.geometry.placements[index];
             let existing = entity_indices.get(&placement.binding.entity_id).copied();
             let entity_index = existing.unwrap_or(scene.entities.len());
             let definition = definitions
@@ -312,8 +340,10 @@ impl PhysicsScene {
                 .get(class.as_bytes())
                 .ok_or_else(|| format!("trigger entity class unsupported: {class}"))?;
             if existing.is_none() {
+                let shared = live.allocate_managed(Arc::from(placement.binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
                 let mut entity = PhysicsEntity {
                     name: placement.binding.entity_id.clone(),
+                    shared,
                     components: EntityComponents::new(entity_index),
                     class,
                     environment: volume_indices
@@ -414,7 +444,8 @@ impl PhysicsScene {
                     }).ok_or("audio entity class name absent")?;
                     let class = *names.get(class.as_bytes()).ok_or_else(|| format!("audio entity class unsupported: {class}"))?;
                     let index = scene.entities.len();
-                    scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), components: EntityComponents::new(index), class,
+                    let shared = live.allocate_managed(Arc::from(binding.entity_id.as_str()), class, None, 0, constructor_tag)?;
+                    scene.entities.push(PhysicsEntity { name: binding.entity_id.clone(), shared, components: EntityComponents::new(index), class,
                         environment: volume_indices.get(binding.entity_id.as_str()).copied(), flags: 0, priority: 0, pose: binding.frame });
                     entity_indices.insert(binding.entity_id.clone(), index);
                     index
@@ -429,7 +460,13 @@ impl PhysicsScene {
             scene.declarations.insert(handle.packed(), declaration);
             scene.audio_handles.push(handle);
         }
+        drop(query_world);
+        for entity in &scene.entities { live.initialized(entity.shared)?; }
         registry.initialize_and_start(&mut scene)?;
+        for (index, entity) in scene.entities.iter().enumerate() {
+            live.spawned(entity.shared)?;
+            scene.shared_indices.insert(entity.shared, index);
+        }
         scene.registry = Some(registry);
         scene.finish_point_queries()?;
         Ok(scene)
@@ -451,10 +488,12 @@ impl PhysicsScene {
     /// the caller accepts only 1. Otherwise any started water contact admits
     /// the group. This Boolean result is independent of the distance sort.
     pub(super) fn water_at(&mut self, position: [f32; 3]) -> Result<bool, String> {
+        let shared_world = self.world.clone();
+        let world = shared_world.read().map_err(|_| "level physics query owner is poisoned")?;
         let mut contacts = Vec::new();
-        self.world.storage.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
+        world.storage.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
             Ok(WorldQueryShape {
-                shapes: &self.world.geometry.shapes.get(shape).ok_or("water query shape absent")?.query_shapes,
+                shapes: &world.geometry.shapes.get(shape).ok_or("water query shape absent")?.query_shapes,
                 materials: None,
             })
         }, &mut contacts)?;
@@ -483,13 +522,15 @@ impl PhysicsScene {
         let mut head_water_surface: Option<f32> = None;
         let mut head_water_is_ocean = false;
         let mut head_water_current = None;
+        let shared_world = self.world.clone();
+        let world = shared_world.read().map_err(|_| "level physics query owner is poisoned")?;
         let completed = view.resolve(
-            &self.world.storage,
+            &world.storage,
             &mut self.executor,
             &mut self.queries,
             |shape| {
                 Ok(WorldQueryShape {
-                    shapes: &self.world
+                    shapes: &world
                         .geometry
                         .shapes
                         .get(shape)
@@ -661,8 +702,10 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .owner(handle)?
                 .declaration
                 .ok_or("trigger declaration absent")?;
-            let position = self.world.geometry.placements[placement].position;
-            let collision = self.world.geometry.placements[placement].binding.collision;
+            let (position, collision) = {
+                let world = self.world.read().map_err(|_| "level physics query owner is poisoned")?;
+                (world.geometry.placements[placement].position, world.geometry.placements[placement].binding.collision)
+            };
             let entity = &mut self.entities[entity];
             let mut level = startup::TriggerLevel {
                 entity: &entity.components,
@@ -688,7 +731,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 signals: &mut self.signals,
                 dispatch: startup::dispatch_observer,
             };
-            let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
+            let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+            let world = &mut *query_owner;
             crate::gameplay::trigger_body::initialization::physics::TriggerPhysicsInitialization {
                 world: &mut world.storage,
                 geometry: &mut world.geometry,
@@ -739,10 +783,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .owner(handle)?
                 .declaration
                 .ok_or("trigger declaration absent")?;
-            let keyframed = self.world.geometry.placements[declaration]
-                .binding
-                .collision
-                .keyframed;
+            let keyframed = self.world.read().map_err(|_| "level physics query owner is poisoned")?
+                .geometry.placements[declaration].binding.collision.keyframed;
             let actor = if keyframed {
                 Some(self.reference_actor(entity_index, registry)?)
             } else {
@@ -760,7 +802,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 signals: &mut self.signals,
                 dispatch: startup::dispatch_observer,
             };
-            let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
+            let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+            let world = &mut *query_owner;
             crate::gameplay::trigger_body::startup::start_trigger(
                 &mut world.storage,
                 &mut world.geometry,
@@ -804,7 +847,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 signals: &mut self.signals,
                 dispatch: startup::dispatch_observer,
             };
-            let world = Arc::get_mut(&mut self.world).ok_or("level point queries already shared")?;
+            let mut query_owner = self.world.write().map_err(|_| "level physics query owner is poisoned")?;
+            let world = &mut *query_owner;
             crate::gameplay::water_component::startup::physics::WaterPhysicsStartup {
                 world: &mut world.storage,
                 geometry: &mut world.geometry,

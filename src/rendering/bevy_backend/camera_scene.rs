@@ -773,7 +773,9 @@ pub(crate) fn simulate_effects(
                     let view = particle_view.0.as_ref()
                         .filter(|view| view.camera == water.camera && view.frame == water.matrices.frame)
                         .ok_or("particle visibility awaits the current camera frame")?;
-                    simulation.particle_systems.simulate(water.matrices.frame, &q.world, ocean_height,
+                    // One shared read lease covers the complete particle batch.
+                    let query_world = q.world.read().map_err(|_| "level physics query owner is poisoned")?;
+                    simulation.particle_systems.simulate(water.matrices.frame, &query_world, ocean_height,
                         &water.matrices.current, view.state.as_ref(), &view.wind)
                 });
             let publication = publish_particles(&mut simulation.particle_systems, water,

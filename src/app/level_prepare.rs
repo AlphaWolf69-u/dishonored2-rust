@@ -992,9 +992,12 @@ pub(super) fn prepare_level(
             .unwrap_or(&level.entities)
             .strip_suffix(".entities")
             .ok_or("physics entity resource has no map name")?;
-        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources)
+        let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
+        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live)
         {
             Ok(physics) => {
+                app.insert_resource(live);
+                app.insert_resource(crate::gameplay::entity_events::EntityEvents::default());
                 app.insert_resource(physics);
             }
             Err(error) => eprintln!("Level physics publication pending: {error}"),

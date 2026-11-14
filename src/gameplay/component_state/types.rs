@@ -13,6 +13,9 @@ use crate::{
 use std::sync::{Arc, OnceLock};
 
 pub struct ComponentTypes {
+    // bevy_backend: preserve immutable shared class metadata while dynamic
+    // atomic names use one monotonic name owner for this same catalog scope.
+    runtime_names: std::sync::Mutex<crate::gameplay::name_pool::NamePool>,
     classes: ClassRegistry,
     factories: Vec<ComponentPoolDeclaration>,
     initialization: Vec<crate::assets::class_metadata::ComponentTypeDeclaration>,
@@ -123,6 +126,7 @@ impl ComponentTypes {
         let initialization_plan = InitializationPlan::build(&inputs)
             .map_err(|e| format!("installed component initialization graph: {e:?}"))?;
         Ok(Self {
+            runtime_names: Default::default(),
             classes,
             factories: installed.component_pools,
             initialization: installed.component_types,
@@ -133,6 +137,19 @@ impl ComponentTypes {
 
     pub fn classes(&self) -> &ClassRegistry {
         &self.classes
+    }
+
+    /// Reuse registered class spellings before admitting a dynamic name.
+    /// All runtime entity/tag clients of this shared type owner use this API.
+    pub fn intern_name(&self, bytes: Option<&[u8]>) -> Result<crate::gameplay::name_pool::NameId, String> {
+        if let Some(bytes) = bytes {
+            for &class in self.classes.hierarchy().registration_order() {
+                let metadata = self.classes.metadata(class).ok_or("registered class metadata absent")?;
+                if self.classes.name_text(metadata.name) == Some(bytes) { return Ok(metadata.name); }
+                if self.classes.name_text(metadata.base_name) == Some(bytes) { return Ok(metadata.base_name); }
+            }
+        }
+        self.runtime_names.lock().map_err(|_| "component runtime-name owner is poisoned")?.intern(bytes)
     }
 
     /// Actual virtual80 priority, resolved from the installed dependency graph.

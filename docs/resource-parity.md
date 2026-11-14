@@ -7858,3 +7858,19 @@ Entity lifetime recovery (main-based integration, 2026-11-14):
   unfinished Stop request. Destroying an interrupted signal cancels its cursor
   before its property slot can be reused; legacy emission rejects such a mixed
   host-error suspension while preserving normal native nested emission flags.
+Five-factory physics host integration: `PhysicsScene` now creates managed
+identities for its actual trigger/water/wind/reference-actor/audio entity hosts,
+advances their initialization/spawn stages after their real component batch,
+and publishes the same `LiveEntities` owner with the prepared level. It does
+not register unsupported render-only entities as fully spawned actors.
+`LevelPointQueries` remains the only owner of its body slots/broadphase/shapes.
+Host synchronization uses its existing shared lease plus an `RwLock`: mutation
+is exclusive, and the particle simulation takes one shared guard for its
+whole batch. This changes neither body output nor resource representation and
+adds no copy of the world. Prediction: unchanged body/shape residency and one
+small guard cost per query batch; no timing improvement is claimed. Component
+retirement is being connected to this mutable owner in the following slice.
+The shared component metadata owner keeps one monotonic runtime-name subowner;
+registered class spellings reuse their existing identities. It survives map
+replacement with the existing catalog owner, rather than converting immutable
+class tables back into per-level metadata copies merely to intern `MAIN`.
