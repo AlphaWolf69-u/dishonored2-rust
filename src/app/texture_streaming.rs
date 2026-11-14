@@ -877,7 +877,7 @@ struct TextureReadRequests {
     completed_tx: mpsc::Sender<TextureReadResult>,
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default)]
 pub(super) struct TextureReadObservation {
     pub queued: usize,
     pub task_running: bool,

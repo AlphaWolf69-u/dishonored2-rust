@@ -40,18 +40,14 @@ fn record(world: &World, phase: &str) -> Result<(), String> {
         let worker = world
             .get_resource::<TextureReadWorker>()
             .map(TextureReadWorker::observe);
-        let state = serde_json::json!({
-            "phase": phase, "frame": queue.texture_stream_frame,
-            "slots": queue.diffuse_image_paths.len(),
-            "free_slots": queue.diffuse_image_paths.iter().filter(|path| path.is_empty()).count(),
-            "resident": queue.diffuse_image_handles.iter().filter(|handle| handle.is_some()).count(),
-            "pending_uploads": queue.diffuse_image_pending.iter().filter(|handle| handle.is_some()).count(),
-            "upgrades": queue.diffuse_mip_upgrades,
-            "finer_bytes": queue.diffuse_mip_states.iter().map(|state| state.streamed_bytes).sum::<u64>(),
-            "reserved_bytes": queue.diffuse_mip_states.iter().map(|state| state.reserved_bytes).sum::<u64>(),
-            "worker": worker,
-        });
-        eprintln!("RUNTIME_IMAGE_LIFETIME {state}");
+        eprintln!("RUNTIME_IMAGE_LIFETIME phase={phase} frame={} slots={} free_slots={} resident={} pending_uploads={} upgrades={} finer_bytes={} reserved_bytes={} worker={worker:?}",
+            queue.texture_stream_frame, queue.diffuse_image_paths.len(),
+            queue.diffuse_image_paths.iter().filter(|path| path.is_empty()).count(),
+            queue.diffuse_image_handles.iter().filter(|handle| handle.is_some()).count(),
+            queue.diffuse_image_pending.iter().filter(|handle| handle.is_some()).count(),
+            queue.diffuse_mip_upgrades,
+            queue.diffuse_mip_states.iter().map(|state| state.streamed_bytes).sum::<u64>(),
+            queue.diffuse_mip_states.iter().map(|state| state.reserved_bytes).sum::<u64>());
     }
     if let Some(progress) = super::loading_screen::observe_exit_progress(world) {
         eprintln!("RUNTIME_EXIT_LIFETIME phase={phase} progress={progress:?}");
@@ -170,10 +166,8 @@ pub fn inspect_runtime_lifecycles(
                     )?;
                 }
                 eprintln!(
-                    "RUNTIME_AUDIO_LIFETIME phase=shutdown snapshot={}",
-                    serde_json::to_string(&super::audio::observation::snapshot(
-                        runtime.app.world_mut()
-                    ))?
+                    "RUNTIME_AUDIO_LIFETIME phase=shutdown snapshot={:?}",
+                    super::audio::observation::snapshot(runtime.app.world_mut())
                 );
                 break;
             }
@@ -330,8 +324,8 @@ pub fn inspect_runtime_lifecycles(
     }
     drop(runtime);
     eprintln!(
-        "RUNTIME_UI_RETIREMENT phase=host-dropped snapshot={}",
-        serde_json::to_string(&super::ui_lifecycle_diagnostics::snapshot())?
+        "RUNTIME_UI_RETIREMENT phase=host-dropped snapshot={:?}",
+        super::ui_lifecycle_diagnostics::snapshot()
     );
     eprintln!(
         "RUNTIME_RESOURCE_LIFETIME level={level} mode={mode} complete={}",
