@@ -186,20 +186,6 @@ pub(super) fn stop_level(world: &mut World) {
         interactions.pending_activation = None;
         interactions.retire.clear();
         interactions.selected = None;
-        if world.contains_resource::<super::NavigationWorld>()
-            && world.contains_resource::<super::usable_animation::UsableAnimations>()
-            && world.contains_resource::<super::usable_effects::UsableEffects>() {
-            world.resource_scope(|world, mut navigation: Mut<super::NavigationWorld>| {
-                world.resource_scope(|world, mut animations: Mut<super::usable_animation::UsableAnimations>| {
-                    let mut effects = world.resource_mut::<super::usable_effects::UsableEffects>();
-                    for index in 0..interactions.actors.len() {
-                        interactions.stop_actor(index, &mut navigation.0, &mut animations, &mut effects);
-                    }
-                });
-            });
-            interactions.pending.clear();
-            return;
-        }
         // Partially prepared levels may not have published these backends.
         for (index, actor) in interactions.actors.iter_mut().enumerate() {
             actor.started = false;
@@ -208,12 +194,12 @@ pub(super) fn stop_level(world: &mut World) {
                     navigation.0.remove_interaction_box(handle);
                 }
             }
-            if let Some(mut animations) = world.get_resource_mut::<super::usable_animation::UsableAnimations>() {
-                animations.stop_actor(index);
-            }
             if let Some(mut effects) = world.get_resource_mut::<super::usable_effects::UsableEffects>() {
                 effects.stop_usable(index);
             }
+        }
+        if let Some(mut animations) = world.get_resource_mut::<super::usable_animation::UsableAnimations>() {
+            animations.stop_all();
         }
         interactions.pending.clear();
     });

@@ -48,6 +48,18 @@ struct Placement {
     animation_pose: Option<Vec<super::physics_skinning::Affine>>,
 }
 
+impl Placement {
+    fn stop(&mut self) {
+        self.asset = None;
+        self.node = None;
+        self.animation_pose = None;
+        self.command = None;
+        self.requested = false;
+        self.failed = false;
+        self.initialized = false;
+    }
+}
+
 #[derive(Resource, Default)]
 pub(super) struct UsableAnimations {
     placements: HashMap<usize, Placement>,
@@ -63,15 +75,14 @@ impl UsableAnimations {
     /// palette with its existing placement rather than resetting its pose.
     pub(super) fn stop_actor(&mut self, actor: usize) {
         for slot in self.placements.values_mut().filter(|slot| slot.actor == actor) {
-            slot.asset = None;
-            slot.node = None;
-            slot.animation_pose = None;
-            slot.command = None;
-            slot.requested = false;
-            slot.failed = false;
-            slot.initialized = false;
+            slot.stop();
         }
         self.lookup.retain(|_, asset| asset.strong_count() != 0);
+    }
+
+    pub(super) fn stop_all(&mut self) {
+        for slot in self.placements.values_mut() { slot.stop(); }
+        self.lookup.clear();
     }
     fn request_asset(&mut self, key: String, path: String, interactions: &super::interactions::Interactions) {
         self.loading.entry(key).or_insert_with(|| {
