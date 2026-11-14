@@ -108,9 +108,21 @@ impl<T: ?Sized, E: Clone> Registry<T, E> {
     pub(crate) fn acquire_when(&mut self, path: &str, inherited_marker: u8,
         load: impl FnOnce(u8) -> Result<Arc<T>, E>, publish: impl FnOnce() -> bool,
     ) -> Result<Arc<T>, E> {
+        self.acquire_prepared_when(path, inherited_marker, load, |_| Ok(()), publish)
+    }
+
+    /// Complete a consumer's fallible preparation before restoring residency.
+    /// An old consumer may lease a purged generation whose new role needs more
+    /// decoding; withdrawal must leave that generation unpinned. Preparation
+    /// failures are consumer-local, unlike immutable errors from `load`.
+    pub(crate) fn acquire_prepared_when(&mut self, path: &str, inherited_marker: u8,
+        load: impl FnOnce(u8) -> Result<Arc<T>, E>,
+        prepare: impl FnOnce(&Arc<T>) -> Result<(), E>, publish: impl FnOnce() -> bool,
+    ) -> Result<Arc<T>, E> {
         let entry = self.admit(path, inherited_marker);
         if let Some(error) = &entry.failure { return Err(error.clone()); }
         if let Some(value) = entry.current.as_ref().and_then(Weak::upgrade) {
+            prepare(&value)?;
             // A live consumer may still lease a generation whose cache pin
             // was retired. A withdrawn worker must not restore that pin.
             // An already resident value needs no redundant Arc replacement.
@@ -120,6 +132,7 @@ impl<T: ?Sized, E: Clone> Registry<T, E> {
             return Ok(value);
         }
         let loaded = load(if entry.bootstrap_phase { 2 } else { entry.marker });
+        if let Ok(value) = &loaded { prepare(value)?; }
         if !publish() { return loaded; }
         match loaded {
             Ok(value) => {

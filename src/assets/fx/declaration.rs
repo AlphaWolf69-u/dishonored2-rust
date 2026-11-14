@@ -55,7 +55,7 @@ pub(crate) fn acquire(catalog: &Catalog, name: &str, consumer: super::definition
         crate::assets::declaration_texts::read_common_or_catalog(catalog, path))
 }
 pub(crate) fn acquire_with(catalog: &Catalog, name: &str, consumer: super::definition::Consumer, cancelled: Option<&dyn Fn() -> bool>,
-    mut read: impl FnMut(&str) -> Result<Option<String>, String>)
+    read: impl FnMut(&str) -> Result<Option<String>, String>)
     -> Result<std::sync::Arc<super::definition::Definition>, String> {
     let _tag = crate::platform::allocation_tags::tag("FX declaration resources");
     if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
@@ -66,11 +66,14 @@ pub(crate) fn acquire_with(catalog: &Catalog, name: &str, consumer: super::defin
     let started = trace.then(crate::loading::thread_cycles).flatten();
     let mut decoded = false;
     let mut extended = false;
+    // The registry invokes these callbacks sequentially. Borrow one reader
+    // across cold loading and warm preparation without a second source owner.
+    let read = std::cell::RefCell::new(read);
     let load = |_| {
         decoded = true;
         let mut sources = Vec::new();
         let fields = read_with(name, |path| {
-            let value = read(path)?;
+            let value = (read.borrow_mut())(path)?;
             if value.is_some() { sources.push(path.to_owned()); }
             Ok(value)
         })?;
@@ -83,16 +86,21 @@ pub(crate) fn acquire_with(catalog: &Catalog, name: &str, consumer: super::defin
     };
     let shared = !catalog.has_overlays()
         && std::env::var_os("DH2_DEBUG_SEPARATE_FX_DECLARATIONS").is_none_or(|value| value != "1");
+    let prepare = |definition: &std::sync::Arc<super::definition::Definition>| {
+        if definition.needs(consumer) {
+            extended = true;
+            let fields = read_with(name, |path| (read.borrow_mut())(path))?;
+            definition.prepare(&fields, consumer, cancelled)?;
+        }
+        Ok(())
+    };
     let definition = if shared {
-        owner.acquire_when(&resource, 0, load, || !cancelled.is_some_and(|stop| stop()))
+        owner.acquire_prepared_when(&resource, 0, load, prepare,
+            || !cancelled.is_some_and(|stop| stop()))
     } else {
         owner.acquire_with_sharing(&resource, 0, false, load)
     }?;
-    if definition.needs(consumer) {
-        extended = true;
-        let fields = read_with(name, &mut read)?;
-        definition.prepare(&fields, consumer, cancelled)?;
-    }
+    if cancelled.is_some_and(|stop| stop()) { return Err("effect acquisition cancelled".into()); }
     if trace {
         let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(a, b)| b.saturating_sub(a));
         eprintln!("FX_DECLARATION_ACQUIRE path={resource} decoded={decoded} extended={extended} shared={shared} groups={} sources={} cycles={cycles}",
