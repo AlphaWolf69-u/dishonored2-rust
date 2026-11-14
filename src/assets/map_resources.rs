@@ -53,6 +53,7 @@ fn preload_declaration_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("particledt") || kind.eq_ignore_ascii_case("staticParticleModel")
         || kind.eq_ignore_ascii_case("kiscule") || kind.eq_ignore_ascii_case("soundevent") || kind.eq_ignore_ascii_case("soundauxbus") || kind.eq_ignore_ascii_case("soundrtpc")
         || kind.eq_ignore_ascii_case("massprops") || kind.eq_ignore_ascii_case("physSystem")
+        || kind.eq_ignore_ascii_case("physhape") || kind.eq_ignore_ascii_case("cpntFaction")
         || kind.eq_ignore_ascii_case("ragdoll") || kind.eq_ignore_ascii_case("physicsMaterial")
         || kind.eq_ignore_ascii_case("midnightScene") || kind.eq_ignore_ascii_case("decal") || kind.eq_ignore_ascii_case("fade") || kind.eq_ignore_ascii_case("fx")
         || kind.eq_ignore_ascii_case("difficultyManager") || kind.eq_ignore_ascii_case("difficultyPreset")

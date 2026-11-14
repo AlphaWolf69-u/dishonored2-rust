@@ -8643,3 +8643,22 @@ and its installed owner/animation captures. Coherent acquisition verifies it.
   reviewed; Rust syntax parsing and diff checks only. No tests, builds, game
   launches or new measurements performed by this agent. Root will record the
   actual shared-level owner result with the coherent combined build.
+
+### Header admission gate reconciliation (2026-11-14)
+
+The200df5cf paired observation exposes a prediction mismatch: midnightScene
+sharing reduces projection decodes from65 to39, but every physhape report has
+zero registered headers and no common source hits. Source review found a
+concrete wiring defect: physhape/cpntFaction registration arms existed
+downstream, while preload_declaration_kind rejected both before header
+selection and reuse resolution. Their lifecycle hooks could not run at all.
+
+Add those two existing supported owners to the same admission predicate used
+by primary/reuse/header-selection phases. This does not eagerly decode shapes
+or faction payloads. Prediction: selected bootstrap headers reach their real
+owners; only demanded common shapes become resident and subsequent same-session
+requests reuse them. The previously stated coin3-to-1 read example must be
+measured again rather than claimed from the old zero-header observation.
+Faction matrix semantics and shape content must remain unchanged; no frame
+work/GPU pass is added. Whole-map source comparisons and final release counts
+are repeated for the corrected gate. No CPU/RAM saving is claimed yet.
