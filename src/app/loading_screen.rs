@@ -4,7 +4,7 @@
 use crate::assets::{archive::Catalog, level::LevelResources};
 use bevy::{
     ecs::{
-        schedule::{ConditionWithAccess, ScheduleLabel, Schedules as BevySchedules, SystemKey, common_conditions::on_message},
+        schedule::{ConditionWithAccess, ScheduleLabel, Schedules as BevySchedules, SystemKey},
         system::IntoSystem,
     },
     prelude::*,
@@ -14,6 +14,8 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
 };
+
+mod session_exit;
 
 static REQUESTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static REQUEST_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -146,6 +148,7 @@ pub(super) struct Acquisition {
     base: PathBuf,
     input: Option<(Arc<Catalog>, LevelResources, PathBuf)>,
     result: Option<Mutex<mpsc::Receiver<Result<PreparedLevel, String>>>>,
+    map_worker: Option<std::thread::JoinHandle<()>>,
     frames: u32,
     startup: Option<Schedule>,
     published: bool,
@@ -278,6 +281,7 @@ pub(super) fn install(
         base: base.clone(),
         input: Some((catalog, level, base)),
         result: None,
+        map_worker: None,
         frames: 0,
         startup,
         published: false,
@@ -314,23 +318,17 @@ pub(super) fn install(
         First,
         super::resident_images::service_ui_images.after(acquire),
     )
-    .add_systems(Update, loading_input)
+    .add_systems(Update, loading_input.run_if(session_exit::running))
     .add_systems(
         PostUpdate,
         super::resident_images::publish_ui_images.before(bevy::asset::AssetEventSystems),
     )
-    .add_systems(Last, (initial_render_ready, finish_loading).chain())
-    .add_systems(
-        Last,
-        close_session_acquisitions
-            .after(finish_loading)
-            .after(bevy::window::ExitSystems)
-            .run_if(on_message::<AppExit>),
-    )
+    .add_systems(Last, (initial_render_ready, finish_loading).chain().run_if(session_exit::running))
     .add_systems(PostUpdate, (super::texture_streaming::particle_images::publish,
         super::texture_streaming::environment_images::publish_ocean)
         .before(bevy::asset::AssetEventSystems))
     .add_systems(PostUpdate, super::loading_fade::advance_fade);
+    session_exit::install(app);
     Ok(())
 }
 
@@ -368,15 +366,24 @@ fn show_bootstrap(
     super::load_timing::mark("startup loading display");
 }
 
-fn close_session_acquisitions(world: &mut World) {
-    super::audio::close_session_admission();
-    super::level_lifetime::close_level_acquisitions(world);
-    if let Some(mut state) = world.get_resource_mut::<Acquisition>() {
-        state.result = None;
+/// The worker can continue its initial image reader after publishing setup.
+/// Retain its actual thread handle until that reader has returned; observing
+/// a result alone does not establish that source owners have retired.
+fn retire_map_worker(state: &mut Acquisition) -> Result<bool, String> {
+    if state.map_worker.as_ref().is_some_and(|worker| !worker.is_finished()) { return Ok(false); }
+    if let Some(worker) = state.map_worker.take() {
+        worker.join().map_err(|error| {
+            let detail = error.downcast_ref::<&str>().copied()
+                .or_else(|| error.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("non-string panic payload");
+            format!("map acquisition worker failed during retirement: {detail}")
+        })?;
     }
+    Ok(true)
 }
 
 fn acquire(world: &mut World) {
+    if session_exit::pending(world) { return; }
     let current = world.resource::<Acquisition>();
     if current.finished
         && !current.debug_sequence_active
@@ -482,6 +489,17 @@ fn acquire(world: &mut World) {
         {
             world.insert_resource(state);
             return;
+        }
+        match retire_map_worker(&mut state) {
+            Ok(true) => {},
+            Ok(false) => { world.insert_resource(state); return; },
+            Err(error) => {
+                error!("Outgoing map worker retirement failed: {error}");
+                crate::platform::client_diagnostics::record(&error);
+                world.write_message(AppExit::error());
+                world.insert_resource(state);
+                return;
+            }
         }
         {
             let _span = super::load_timing::Span::new("outgoing world release");
@@ -630,7 +648,7 @@ fn acquire(world: &mut World) {
             let initial_load = state.initial_load;
             let (send, receive) = mpsc::channel();
             state.result = Some(Mutex::new(receive));
-            std::thread::Builder::new()
+            let worker = std::thread::Builder::new()
                 .name("map acquisition".into())
                 .stack_size(32 << 20)
                 .spawn(move || {
@@ -653,8 +671,15 @@ fn acquire(world: &mut World) {
                         }
                         Err(error) => { let _ = send.send(Err(error)); }
                     }
-                })
-                .expect("map acquisition thread");
+                });
+            match worker {
+                Ok(worker) => state.map_worker = Some(worker),
+                Err(error) => {
+                    error!("Map acquisition thread creation failed: {error}");
+                    crate::platform::client_diagnostics::record(&format!("Map acquisition thread creation failed: {error}"));
+                    world.write_message(AppExit::error());
+                }
+            }
         }
     }
     let result =

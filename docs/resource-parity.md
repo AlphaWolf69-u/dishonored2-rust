@@ -8127,3 +8127,48 @@ compound bounding-box mass for a convex shape. Alias compounds have no copied
 0xf100 property in08c9a0 and use the existing mode-zero compound calculator.
 
 Readable item generation handoff: UI requests now borrow the admitted Pickable component's actual item Arc instead of reacquiring a declaration from another I/O task. This preserves the instantiated editable generation and removes an unnecessary task/lock/source lookup from the interaction event; item acquisition still occurs on the existing preparation worker. Closing the level clears the one pending request immediately, with no reader to join. Prediction: zero extra resource read/parse/task submission per already-admitted read request, unchanged steady-state walking path; no CPU-time claim without measurement. Map-component Usable declarations now also reuse their immutable typed record when obsolete inline siblings are normalized away, matching00c710. Source syntax/whitespace review only, no tests/build/runtime exercise.
+
+
+### Session quit uses the canonical level retirement boundary (2026-11-14)
+
+- **Prediction before implementation:** a normal quit/close will request the
+  same component/FX/audio teardown as a map handoff, before Winit clears owners.
+  Every retained map reader must actually return and the outgoing render owner
+  must acknowledge release before the level drops. There is no new conversion,
+  worker, device or alternate shutdown implementation. Steady gameplay performs
+  only the host's exit-request checks; completion waits yield across host frames.
+- **Original evidence:** `1408a4830` enters the GameLocal context, invokes its
+  shutdown owner and releases its owned world; deleting destructor `1408a5f60`
+  calls it before freeing the GameLocal. `1400410f0` is the separate resource
+  purge boundary (also used by `140062bd0` transitions), not a substitute for
+  component destruction. Existing sound return/stream-device ownership remains
+  `1400c7a20 /1400c8320` then `1400bc8f0 /1410bf740`.
+- **Host defect:** Bevy0.19.1 `App::should_exit` observes AppExit after update;
+  Winit's `exiting` clears windows and the world before `App::run` returns. The
+  previous Last hook only closed acquisition admission and dropped the result
+  receiver; it never invoked the level's typed teardown. WindowPlugin's default
+  close also destroys its window before the outgoing render owner can retire.
+- **host:** `loading_screen::session_exit` captures exit requests after Last,
+  preserves Bevy's first-error precedence, closes admission, disables map
+  publication, and advances the existing `LevelLifetime::clear` only after
+  workers and the existing GPU phase3/4 handoff retire. The final AppExit is
+  emitted only after that acknowledgement. No new GameLocal/resource manager
+  or second component/audio shutdown path is added.
+- **host:** a real quit immediately releases cursor capture and hides the user's
+  window. The same window/device remain alive for cleanup. No focus/restore or
+  display-mode change occurs; the drain uses the existing unfocused game update
+  cadence, including when a benchmark had selected continuous hidden updates.
+- **host:** Acquisition now owns the actual map-thread JoinHandle, including
+  the initial texture reader that may continue after the prepared result was
+  sent. Map handoff and quit observe `is_finished` and join only finished
+  threads. Closing the existing result/rendezvous receivers cancels unpublished
+  work through its existing owners; a received setup result alone is not used
+  as evidence that the reader has ended.
+- **Failure:** a completed worker panic or teardown error records the precise
+  incomplete phase and emits an error exit; normal Rust owner destruction then
+  runs. That path is explicitly a failed clean shutdown, never a fabricated
+  acknowledgement or a hidden process left waiting indefinitely. No arbitrary
+  timeout converts valid pending work into success/failure.
+- **Validation status:** source checked against saved decompilation and local
+  Bevy runner/window/schedule source. Syntax/whitespace validation only; no tests,
+  builds, visible launches or runtime acceptance claim for this slice.

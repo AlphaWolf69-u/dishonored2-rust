@@ -173,6 +173,9 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ..default()
             })
             .set(bevy::window::WindowPlugin {
+                // The loading owner drains the canonical level before the
+                // runner drops the world. Window close uses that same path.
+                close_when_requested: false,
                 primary_window: Some({
                     // The cvars choose the window (display_settings).
                     let (window, state) =
