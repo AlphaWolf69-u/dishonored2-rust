@@ -33,6 +33,38 @@ pub(super) fn pending(world: &World) -> bool {
 
 pub(super) fn running(exit: Res<ExitState>) -> bool { exit.request.is_none() }
 
+/// Actual owner state for windowless phase observers; no worker, GPU or
+/// retirement acknowledgement is supplied by this snapshot.
+#[derive(Debug)]
+pub(in crate::app) struct ExitProgress {
+    pub requested: bool,
+    pub started: bool,
+    pub emitted: bool,
+    pub phase: &'static str,
+    pub worker_finished: Option<bool>,
+    pub result_receiver: bool,
+    pub published: bool,
+    pub gpu_phase: u8,
+}
+
+pub(super) fn progress(world: &World) -> Option<ExitProgress> {
+    let exit = world.get_resource::<ExitState>()?;
+    let acquisition = world.get_resource::<Acquisition>()?;
+    Some(ExitProgress { requested: exit.request.is_some(), started: exit.started,
+        emitted: exit.emitted, phase: exit.phase,
+        worker_finished: acquisition.map_worker.as_ref().map(|worker| worker.is_finished()),
+        result_receiver: acquisition.result.is_some(), published: acquisition.published,
+        gpu_phase: acquisition.gpu.0.load(std::sync::atomic::Ordering::Acquire) })
+}
+
+pub(super) fn observe_drain(world: &mut World) -> Result<(), String> {
+    if !world.contains_resource::<ExitState>() || !world.contains_resource::<Acquisition>() {
+        return Err("session exit observer requires the installed loading/session owners".into());
+    }
+    drain(world);
+    Ok(())
+}
+
 fn request(exit: &mut ExitState, next: AppExit) {
     // Match App::should_exit: the first error takes precedence over success.
     if exit.request.is_none() || (next.is_error() && exit.request.as_ref().is_some_and(AppExit::is_success)) {

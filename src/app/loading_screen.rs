@@ -16,6 +16,26 @@ use std::{
 };
 
 mod session_exit;
+pub(super) use session_exit::ExitProgress;
+
+pub(super) fn observe_exit_progress(world: &World) -> Option<ExitProgress> {
+    session_exit::progress(world)
+}
+
+/// Run only the installed acquisition owner. The diagnostic caller drives
+/// actual asset/render epochs separately, never a gameplay update or fake ack.
+pub(super) fn observe_acquisition_step(world: &mut World) -> Result<(), String> {
+    if !world.contains_resource::<Acquisition>() {
+        return Err("acquisition observer requires the installed loading owner".into());
+    }
+    acquire(world);
+    Ok(())
+}
+
+/// Consumes actual AppExit/window-close requests through the same exit drain.
+pub(super) fn observe_exit_drain(world: &mut World) -> Result<(), String> {
+    session_exit::observe_drain(world)
+}
 
 static REQUESTS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static REQUEST_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
