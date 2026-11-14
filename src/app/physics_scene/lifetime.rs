@@ -63,7 +63,7 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
     }
     let mut registry = scene.registry.take().ok_or("physics lifecycle registry absent")?;
     let result = (|| {
-        let mut host = Host { world, scene, events };
+        let mut host = Host { world: &mut *world, scene: &mut *scene, events: &mut *events };
         loop {
             let state = host.scene.retirement.as_ref().ok_or("physics retirement progress absent")?;
             let Some(&(handle, generation)) = state.components.get(state.requested) else { break; };
