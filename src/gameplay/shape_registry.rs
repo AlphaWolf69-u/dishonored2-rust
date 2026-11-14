@@ -191,30 +191,39 @@ impl ShapeRegistry {
     }
     /// cdfcb0/ce03d0 release active entries, then pooled entries. The resource
     /// owner supplies each live shape's signal pair before dropping that shape.
-    pub fn release(mut self, signals: &mut impl ShapeSignalStore) -> Result<(), String> {
+    pub fn release(&mut self, signals: &mut impl ShapeSignalStore) -> Result<(), String> {
         self.detach_all(signals).map(|_| ())
     }
 
     pub fn detach_all(&mut self, signals: &mut impl ShapeSignalStore) -> Result<usize, String> {
-        let order = std::mem::take(&mut self.active).into_iter()
-            .chain(std::mem::take(&mut self.recycled));
         let mut released = 0;
-        let mut failure = None;
-        for entry in order {
-            if let Some(shape) = self.registrations[entry].shape {
-                let result = signals.signals_mut(shape).and_then(|pair| {
+        // cdfcb0 visits active entries before pooled entries in source order.
+        // Host lookups can fail where native ce03d0 is infallible. Keep both
+        // lists and every registration until the complete drain succeeds.
+        for pooled in [false, true] {
+            let count = if pooled { self.recycled.len() } else { self.active.len() };
+            for index in 0..count {
+                let entry = if pooled { self.recycled[index] } else { self.active[index] };
+                let shape = self.registrations.get(entry)
+                    .ok_or("shape release registration is missing")?.shape;
+                if let Some(shape) = shape {
+                    let pair = signals.signals_mut(shape)?;
                     self.detach(ShapeObserver { owner: self.owner, entry }, shape,
-                        &mut pair.mutated, &mut pair.destroyed)
-                });
-                match result {
-                    Ok(()) => released += 1,
-                    Err(error) => { failure.get_or_insert(error); }
+                        &mut pair.mutated, &mut pair.destroyed)?;
+                    // ce04a0 cleared this shape only after both unsubscriptions.
+                    // That None is the completed-prefix cursor on retry: never
+                    // replay a successful detach or discard a failing owner.
+                    released += 1;
                 }
             }
         }
+        // Keep the former successful-release allocation policy; only the
+        // error path retains the lists for its original owner and order.
+        self.active = Vec::new();
+        self.recycled = Vec::new();
         self.registrations.clear();
         self.pending = false;
-        failure.map_or(Ok(released), Err)
+        Ok(released)
     }
 }
 

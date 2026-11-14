@@ -851,7 +851,7 @@ impl WorldStorage {
     }
 
     /// Detach mutable-shape observers while the level's resources still live.
-    pub fn release(self, geometry: &mut impl BodyCreationGeometry) -> Result<(), String> {
+    pub fn release(&mut self, geometry: &mut impl BodyCreationGeometry) -> Result<(), String> {
         self.registry.release(geometry)
     }
 
