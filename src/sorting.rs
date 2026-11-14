@@ -1,4 +1,29 @@
 //! Shared idLib sort; callers retain the source comparator and tie ordering.
+/// Midpoint-pivot partitioning shared by the collision tree (1290410/d92ea0)
+/// and geometry construction (bace30/b97e70). Equal-key swaps are significant;
+/// this is a separate algorithm from idLib's quicksort below.
+pub(crate) fn midpoint_by_key<T, K: Copy + PartialOrd>(values: &mut [T], key: impl Fn(&T) -> K) {
+    fn sort<T, K: Copy + PartialOrd>(values: &mut [T], key: &impl Fn(&T) -> K, mut lo: isize, hi: isize) {
+        loop {
+            let (mut i, mut j) = (lo, hi);
+            let pivot = key(&values[((lo + hi) >> 1) as usize]);
+            loop {
+                while key(&values[i as usize]) < pivot { i += 1; }
+                while pivot < key(&values[j as usize]) { j -= 1; }
+                if j < i { break; }
+                if i != j { values.swap(i as usize, j as usize); }
+                i += 1;
+                j -= 1;
+                if i > j { break; }
+            }
+            if lo < j { sort(values, key, lo, j); }
+            if hi <= i { return; }
+            lo = i;
+        }
+    }
+    if values.len() > 1 { sort(values, &key, 0, values.len() as isize - 1); }
+}
+
 /// `idSort_Quick::Sort` (`FUN_1403949a0`): idLib's quicksort with an
 /// explicit stack and a selection sort below four elements.
 pub(crate) fn quick_sort<T: Copy>(a: &mut [T], cmp: impl Fn(&T, &T) -> i32) {

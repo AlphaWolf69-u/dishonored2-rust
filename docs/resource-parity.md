@@ -8561,3 +8561,5 @@ transition has the source-required mass recomputation and existing callback
 scratch. Source evidence is chunk000586c86800/c86ad0 and the already ported
 motion_mass::recompute_motion_mass (c90a90). No CPU/memory saving is claimed.
 Compilation and installed publication/retirement belong to the coherent batch.
+
+Convex mass source completion: the first coherent compiler report51119ad4 found two references to the missing shared midpoint-pivot helper. Restore the already source-backed checkpoint sorting primitive (bace30/b97e70), preserving equal-key swaps used by hull topology and face-area order; the existing idLib sorter remains unchanged. This repairs a missing dependency of the recovered mass calculator, with no new frame work, allocation or algorithm substitution.
