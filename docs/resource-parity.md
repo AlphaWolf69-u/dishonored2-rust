@@ -7718,3 +7718,28 @@ Extend only the existing production catalog-scope observation to include this
 real installed kind. The absence of common blueprints is installed-data scope,
 not an object-name exception or a claim about future dynamic entity spawning.
 Census: artifacts/motion-blueprint-shape-installed-20261111.json.
+
+Entity lifetime recovery (main-based integration, 2026-11-14):
+- `gameplay/entity_lifetime.rs` is the one generation-bearing managed-name,
+  spawn-tag, hierarchy, context/update and removal-queue owner recovered from
+  checkpoint2410aafb. Original registration/name lookup:140657ae0,
+  1407b5e30,1408a7d90/140143650; remove admission:1408794b0;
+  batched release:1408ab380; child/component release:1408791f0.
+- `gameplay/entity_release.rs` retains request and retire cursors across host
+  suspension, and separates whole-world retirement from ordinary removal.
+  `entity_events.rs` retains the sole normal/post-removal queue ordering
+  (140810000/140810200/140810410) and listener mutation rules
+  (140810430/140810550). Payloads without an integrated domain owner remain
+  in the recovery checkpoint instead of retaining unsupported resource trees.
+- `assets/entities/processed_decl.rs` retains source ranges only during
+  preparation, and implements inherited edit-list processing/inline writing
+  (1400fe1f0/140154100/1407040f0). Map parsing separates the outer literal-
+  backslash lexer (1400acba0) from reflected declaration text (1400a9c50).
+  Its strict unsupported-syntax errors are preserved; it is not yet a blanket
+  component-admission API. `parse_preparation` is opt-in, so ordinary readers
+  do not retain the entire source for an unused identity calculation.
+- Status: source ports recovered; current five-factory app host adapters are
+  being integrated separately. No full GameLocal lifecycle parity, runtime
+  verification, memory saving or CPU improvement is claimed by this core
+  recovery. Prediction: no steady-state cost change before those adapters
+  actually use the recovered owners; source ranges must die with preparation.

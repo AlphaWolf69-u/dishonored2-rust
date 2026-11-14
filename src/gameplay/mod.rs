@@ -82,3 +82,8 @@ pub mod gameflow;
 pub mod game_logic;
 
 pub mod interaction_definition;
+
+pub mod entity_lifetime;
+pub mod entity_release;
+pub mod entity_admission;
+pub mod entity_events;

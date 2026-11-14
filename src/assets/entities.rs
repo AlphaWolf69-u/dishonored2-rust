@@ -4,6 +4,8 @@ mod light_sources;
 use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
+mod processed_decl;
+pub mod spawn;
 pub use components::scheduling_bindings as component_scheduling;
 pub(crate) use components::overlay_owned;
 pub mod wind;
@@ -141,6 +143,20 @@ pub struct Definition {
 pub struct Document {
     pub version: u32,
     pub definitions: Vec<Definition>,
+}
+
+/// Optional map-entry metadata, indexed into `Document::definitions`.
+/// Entries without authored layers or groups occupy no storage here.
+#[derive(Debug, Default)]
+pub struct MapMetadata {
+    pub entries: Vec<MapEntryMetadata>,
+}
+
+#[derive(Debug)]
+pub struct MapEntryMetadata {
+    pub definition_index: usize,
+    pub layers: Vec<String>,
+    pub groups: Vec<String>,
 }
 
 /// Authored visuals shadow preset. `cull_distance` is `m_shadowCullDistance`,
@@ -443,6 +459,7 @@ pub struct PlacedEnvironmentVolume {
 struct Lexer<'a> {
     text: &'a str,
     at: usize,
+    map_quotes: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -490,7 +507,7 @@ impl<'a> Lexer<'a> {
         while self.at < bytes.len() {
             let byte = bytes[self.at];
             if let Some(open_quote) = quote {
-                if byte == b'\\' {
+                if byte == b'\\' && !self.map_quotes {
                     self.at = (self.at + 2).min(bytes.len());
                     continue;
                 }
@@ -520,7 +537,7 @@ impl<'a> Lexer<'a> {
 /// Shared original-declaration tokenization; keep drawing-state parsing on the
 /// same comment/string rules as material and render-parameter declarations.
 pub(crate) fn declaration_lexemes(text: &str) -> Result<Vec<&str>, String> {
-    let mut lexer = Lexer { text, at: 0 };
+    let mut lexer = Lexer { text, at: 0, map_quotes: false };
     let mut result = Vec::new();
     while let Some(token) = lexer.next()? {
         result.push(match token {
@@ -544,7 +561,14 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Result<Self, String> {
-        let mut lexer = Lexer { text, at: 0 };
+        let mut lexer = Lexer { text, at: 0, map_quotes: false };
+        let ahead = lexer.next()?;
+        Ok(Self { lexer, ahead })
+    }
+    fn new_map(text: &'a str) -> Result<Self, String> {
+        // idMapFile uses lexer flag 0x20: backslashes are literal and do not
+        // escape a following quote (1400acba0 / 140135700).
+        let mut lexer = Lexer { text, at: 0, map_quotes: true };
         let ahead = lexer.next()?;
         Ok(Self { lexer, ahead })
     }
@@ -591,7 +615,27 @@ impl<'a> Parser<'a> {
             if !direct_scope {
                 self.expect(Token::Equals)?;
             }
-            let value = if self.ahead == Some(Token::Open) {
+            // 140014850 reads these entity-definition properties as raw
+            // braced text (14013c5d0), not reflected property dictionaries.
+            // Brush primitives contain anonymous scopes and plane tuples.
+            let value = if depth == 0 && matches!(key.as_str(), "primitives" | "kisculeDiff")
+                && self.ahead == Some(Token::Open) {
+                let start = self.lexer.at - 1;
+                let mut nesting = 0usize;
+                let end = loop {
+                    let end = self.lexer.at;
+                    match self.advance()? {
+                        Some(Token::Open) => nesting += 1,
+                        Some(Token::Close) => {
+                            nesting -= 1;
+                            if nesting == 0 { break end; }
+                        }
+                        None => return Err("unterminated raw entity-definition property".into()),
+                        _ => {}
+                    }
+                };
+                Value::Atom(self.lexer.text[start..end].to_owned())
+            } else if self.ahead == Some(Token::Open) {
                 self.advance()?;
                 let nested = self.fields(depth + 1)?;
                 self.expect(Token::Close)?;
@@ -627,20 +671,68 @@ impl<'a> Parser<'a> {
         }
         Ok(fields)
     }
-    fn document(&mut self) -> Result<Document, String> {
+    fn map_names(&mut self, names: &mut Vec<String>) -> Result<(), String> {
+        self.expect(Token::Open)?;
+        loop {
+            match self.advance()? {
+                Some(Token::Close) => return Ok(()),
+                Some(Token::Atom(atom)) => {
+                    if let Some(name) = atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                        if !names.iter().any(|existing| existing == name) {
+                            names.push(name.to_owned());
+                        }
+                    }
+                }
+                None => return Err("unterminated map metadata block".into()),
+                Some(Token::Open) => return Err("nested map metadata block".into()),
+                Some(Token::Equals | Token::Semicolon) => {}
+            }
+        }
+    }
+
+    fn document(&mut self, capture_ranges: bool) -> Result<(Document, MapMetadata, Vec<std::ops::Range<usize>>), String> {
         if self.atom()? != "Version" {
             return Err("missing Version header".into());
         }
         let version = self.atom()?.parse().map_err(|_| "invalid version number")?;
         let mut definitions = Vec::new();
+        let mut metadata = MapMetadata::default();
+        let mut definition_ranges = Vec::new();
         while self.ahead.is_some() {
             let kind = self.atom()?.to_string();
             self.expect(Token::Open)?;
+            let mut layers = Vec::new();
+            let mut groups = Vec::new();
+            while kind == "entity" {
+                match self.ahead {
+                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(&mut layers)?; }
+                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(&mut groups)?; }
+                    _ => break,
+                }
+            }
             let class = self.atom()?.to_string();
             let id = self.atom()?.to_string();
+            // `ahead` is the opening brace and the lexer has already consumed
+            // that one byte. Keep the entire reflected edit as a batch range.
+            let definition_start = self.lexer.at.saturating_sub(1);
+            // 1400a9c50 extracts the braced entityDef text with 140133d00
+            // and submits it to the declaration owner (1400136c0/140012160).
+            // Its strings follow declaration rules, not the outer map's
+            // literal-backslash lexer flags (1400acba0: 0x230).
+            let map_quotes = self.lexer.map_quotes;
+            self.lexer.map_quotes = false;
             self.expect(Token::Open)?;
             let fields = self.fields(0)?;
+            let definition_end = self.lexer.at;
+            self.lexer.map_quotes = map_quotes;
             self.expect(Token::Close)?;
+            while kind == "entity" {
+                match self.ahead {
+                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(&mut layers)?; }
+                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(&mut groups)?; }
+                    _ => break,
+                }
+            }
             self.expect(Token::Close)?;
             definitions.push(Definition {
                 kind,
@@ -648,16 +740,49 @@ impl<'a> Parser<'a> {
                 id,
                 fields,
             });
+            if capture_ranges { definition_ranges.push(definition_start..definition_end); }
+            if !layers.is_empty() || !groups.is_empty() {
+                metadata.entries.push(MapEntryMetadata {
+                    definition_index: definitions.len() - 1,
+                    layers,
+                    groups,
+                });
+            }
         }
-        Ok(Document {
+        Ok((Document {
             version,
             definitions,
-        })
+        }, metadata, definition_ranges))
     }
 }
 
 pub fn parse(text: &str) -> Result<Document, String> {
-    Parser::new(text)?.document()
+    parse_map(text).map(|(document, _)| document)
+}
+
+pub fn parse_map(text: &str) -> Result<(Document, MapMetadata), String> {
+    let (document, metadata, _) = Parser::new_map(text)?.document(false)?;
+    Ok((document, metadata))
+}
+
+/// Source ranges are preparation-scoped; runtime entities retain only their
+/// resolved declarations, never this complete map source lease.
+pub(crate) struct DeclarationSources {
+    text: std::sync::Arc<str>,
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl DeclarationSources {
+    fn definition(&self, index: usize) -> Result<Vec<processed_decl::Node>, String> {
+        let range = self.ranges.get(index).ok_or_else(|| "invalid definition index".to_owned())?;
+        processed_decl::parse(processed_decl::Source::range(self.text.clone(), range.clone()))
+    }
+}
+
+pub(crate) fn parse_preparation(text: std::sync::Arc<str>)
+    -> Result<(Document, MapMetadata, DeclarationSources), String> {
+    let (document, metadata, ranges) = Parser::new_map(&text)?.document(true)?;
+    Ok((document, metadata, DeclarationSources { text, ranges }))
 }
 
 fn find_atom<'a>(fields: &'a [(String, Value)], wanted: &str) -> Option<&'a str> {
@@ -2468,7 +2593,7 @@ fn inherited_model(
 /// Declaration bodies may contain brush/patch syntax rather than key-value
 /// fields. Inspect only the two property paths needed for model inheritance.
 fn declaration_inheritance(text: &str) -> Result<(Option<String>, Option<String>), String> {
-    let mut lexer = Lexer { text, at: 0 };
+    let mut lexer = Lexer { text, at: 0, map_quotes: false };
     let mut scopes = Vec::<String>::new();
     let mut previous = None;
     let mut before_previous = None;
