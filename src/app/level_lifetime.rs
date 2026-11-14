@@ -39,14 +39,17 @@ impl LevelLifetime {
             .collect();
     }
 
-    pub fn clear(&mut self, world: &mut World) -> Result<(), String> {
+    pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
         super::interactions::stop_level(world);
+        // Poll while all actual support owners remain published. Pending and
+        // errors preserve the sole registry, component pools and body world.
+        if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
         // bevy_backend: retire player and world FX chains while their
         // support owners are still present. The caller has acknowledged the
         // outgoing render publication. This does not replace the GameLocal
         // component/entity/graph shutdown phases still being integrated.
-        let effects_shutdown = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>()
-            .map_or(Ok(()), |mut effects| effects.shutdown());
+        world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>()
+            .map_or(Ok(()), |mut effects| effects.shutdown())?;
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
@@ -122,7 +125,7 @@ impl LevelLifetime {
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();
         }
-        effects_shutdown
+        Ok(true)
     }
 }
 

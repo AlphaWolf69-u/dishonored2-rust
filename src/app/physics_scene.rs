@@ -34,6 +34,7 @@ use std::{
     },
 };
 mod startup;
+pub(super) mod lifetime;
 
 struct PhysicsEntity {
     name: String,
@@ -76,6 +77,7 @@ pub(super) struct PhysicsScene {
     dependency_ranges: [[i32; 2]; 2],
     queries: CollisionQueries<WorldPointRequest, ShapePointContact>,
     executor: WorldPointQuery,
+    retirement: Option<lifetime::Retirement>,
 }
 
 impl PhysicsScene {
@@ -94,6 +96,12 @@ impl PhysicsScene {
             return Ok(Some(actor.frame.current));
         }
         Ok(Some(entity.pose))
+    }
+
+    pub(super) fn audio_component_live(&self, packed: u64, generation: u32) -> bool {
+        let Ok(handle) = ComponentHandle::from_packed(packed) else { return false };
+        handle.class_id == self.classes[4] && self.audios.get(handle.slot)
+            .is_some_and(|audio| audio.started && audio.owner.entity.is_some() && audio.owner.generation == generation)
     }
 
     pub(super) fn visit_audio(&mut self, mut visit: impl FnMut(ComponentHandle,
@@ -304,6 +312,7 @@ impl PhysicsScene {
             dependency_ranges,
             queries: CollisionQueries::default(),
             executor: WorldPointQuery::new(u32::MAX)?,
+            retirement: None,
         };
         drop(cvars);
         scene.queries.set_submission_allowed(true);
@@ -863,19 +872,25 @@ impl ComponentLifecycleWorld for PhysicsScene {
             let audio = self.audios.get_mut(handle.slot).ok_or("audio component absent")?;
             // 140708fc0 clears the special update counter before base admission.
             if audio.owner.flags & (1 << 30) != 0 { audio.owner.flags &= 0xf800003f; }
-            crate::gameplay::component_state::prepare_admission(&mut audio.owner.flags,
+            let scheduled = crate::gameplay::component_state::prepare_admission(&mut audio.owner.flags,
                 u8::from(scheduling.priority < 8), scheduling.priority, priority);
             audio.startup = startup;
             audio.started = true;
+            if scheduled { self.audios.schedule(handle.slot)?; }
             Ok(())
         } else {
             let priority = self.entities[entity_index].priority;
-            crate::gameplay::component_state::prepare_admission(
+            let scheduled = crate::gameplay::component_state::prepare_admission(
                 &mut self.owner_mut(handle)?.flags,
                 u8::from(scheduling.priority < 8),
                 scheduling.priority,
                 priority,
             );
+            if scheduled {
+                if handle.class_id == self.classes[2] { self.winds.schedule(handle.slot)?; }
+                else if handle.class_id == self.classes[3] { self.actors.actors.schedule(handle.slot)?; }
+                else { return Err("scheduled physics component class is unsupported".into()); }
+            }
             Ok(())
         }
     }

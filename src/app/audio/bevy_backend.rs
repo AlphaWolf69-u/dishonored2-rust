@@ -124,6 +124,33 @@ impl Engine {
         });
     }
 
+    /// 140708620/1400c7ab0 release the component's actual sound object,
+    /// including scheduled work. Keep every other object and the output clock.
+    pub(super) fn release_object(&self, emitter: crate::gameplay::sound::Emitter) {
+        let Some(shared) = &self.shared else { return };
+        let mut shared = shared.lock().unwrap_or_else(|error| error.into_inner());
+        shared.voices.retain(|voice| {
+            if voice.audio.emitter() != emitter { return true; }
+            voice.control.stopped.store(true, Ordering::Relaxed);
+            voice.control.finished.store(true, Ordering::Relaxed);
+            false
+        });
+        shared.fallbacks.retain(|voice| {
+            if voice.emitter != emitter { return true; }
+            voice.control.stopped.store(true, Ordering::Relaxed);
+            voice.control.finished.store(true, Ordering::Relaxed);
+            false
+        });
+        shared.pending_actions.retain(|pending| pending.emitter != emitter);
+        shared.pending_plays.retain(|pending| !pending.control.stopped.load(Ordering::Relaxed));
+        shared.due.retain(|due| match due {
+            Due::Action(pending) => pending.emitter != emitter,
+            Due::Play(pending) => !pending.control.stopped.load(Ordering::Relaxed),
+        });
+        shared.switches.lock().unwrap_or_else(|error| error.into_inner())
+            .controllers.retain_objects(|object| object != emitter);
+    }
+
     pub fn new(mixer: &crate::gameplay::sound::mix::Mixer, states: StateGroups, base: &std::path::Path) -> Result<(Self, OutputAudio), String> {
         let activity = Arc::new(Activity::new(mixer)?);
         let ducking = Ducking::new(mixer)?;

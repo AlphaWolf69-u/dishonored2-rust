@@ -7874,3 +7874,18 @@ The shared component metadata owner keeps one monotonic runtime-name subowner;
 registered class spellings reuse their existing identities. It survives map
 replacement with the existing catalog owner, rather than converting immutable
 class tables back into per-level metadata copies merely to intern `MAIN`.
+
+The current-five-factory app adapter now runs Stop/deinitialize/pool release
+against the canonical query/body owner before resource destruction. Trigger
+retirement uses779bc0/7794e0 body unpublication/destruction, water/wind headers
+unlink through7e7530, and audio object retirement follows708620/c7ab0 before
+its pool slot is recycled. Registry stop/release and body mutation cursors
+survive Pending/errors; the loading screen polls them without dropping the
+sole owners. A source-backed five-factory entity frame getter exposes actual
+reference-actor poses and refuses stale managed generations. Unsupported
+render-only actors do not acquire fabricated live poses. Source review also
+fixed previously ignored common Start scheduling results for audio/wind/actor
+pool rosters, necessary for matching Stop membership. This host slice is not
+a claim that the broader checkpoint's56-class migration is complete.
+The audio retirement boundary is pollable so the audio-clock owner can retain
+accepted work and acknowledge its final object release before component reuse.

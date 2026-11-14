@@ -353,6 +353,32 @@ struct PendingSound {
     watched: bool,
 }
 
+/// Retire one actual component object before its generation can be recycled.
+/// Decode jobs remain shared with their other admitted clients.
+pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Result<bool, String> {
+    world.resource::<bevy_backend::Engine>().release_object(emitter);
+    if let Some(mut level) = world.get_resource_mut::<level::LevelAudio>() { level.release_object(emitter); }
+    let mut failed = Vec::new();
+    if let Some(mut pending) = world.get_resource_mut::<PendingSounds>() {
+        pending.0.retain(|queued| {
+            let (event, owner) = match queued.request {
+                Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
+                    | Request::PostAt { event, emitter, .. } | Request::Stop { event, emitter } => (event, emitter),
+            };
+            if owner == emitter && queued.watched { failed.push(event); }
+            owner != emitter
+        });
+    }
+    if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
+        for event in failed { completions.failed(event, emitter); }
+    }
+    if let Some(registry) = world.get_resource::<WwiseRegistry>() {
+        registry.scheduled_selections.lock().unwrap_or_else(|error| error.into_inner())
+            .retain(|(_, owner), _| *owner != Some(emitter));
+    }
+    Ok(true)
+}
+
 pub(super) fn begin_level(world: &mut World) {
     world.resource::<bevy_backend::Engine>().release_level();
     let mut registry = world.resource_mut::<WwiseRegistry>();
@@ -773,6 +799,7 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
 
 fn play_events(
     mut commands: Commands,
+    physics: Option<Res<super::physics_scene::PhysicsScene>>,
     mut events: MessageReader<SoundEvent>,
     mut registry: ResMut<WwiseRegistry>,
     mut scheduled_sources: ResMut<Assets<graph::ScheduledAudio>>,
@@ -831,6 +858,21 @@ fn play_events(
         })).collect();
     let mut waiting = Vec::new();
     for queued in requests {
+        let emitter = match queued.request {
+            Request::Post { emitter, .. } | Request::PostWithParameter { emitter, .. }
+                | Request::PostAt { emitter, .. } | Request::Stop { emitter, .. } => emitter,
+        };
+        if let Emitter::Component { handle, generation } = emitter {
+            if !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)) {
+                if queued.watched {
+                    match queued.request {
+                        Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed(event, emitter),
+                        Request::Stop { .. } => {}
+                    }
+                }
+                continue;
+            }
+        }
         let request = queued.request;
         let (event, emitter, parameter, position) = match request {
             Request::Post { event, emitter } => (event, emitter, None, None),

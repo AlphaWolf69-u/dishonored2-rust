@@ -485,12 +485,16 @@ fn acquire(world: &mut World) {
         }
         {
             let _span = super::load_timing::Span::new("outgoing world release");
-            if let Err(error) = state.lifetime.clear(world) {
-                error!("Outgoing level release failed: {error}");
-                crate::platform::client_diagnostics::record(&format!("Outgoing level release failed: {error}"));
-                world.write_message(AppExit::error());
-                world.insert_resource(state);
-                return;
+            match state.lifetime.clear(world) {
+                Ok(true) => {}
+                Ok(false) => { world.insert_resource(state); return; }
+                Err(error) => {
+                    error!("Outgoing level release failed: {error}");
+                    crate::platform::client_diagnostics::record(&format!("Outgoing level release failed: {error}"));
+                    world.write_message(AppExit::error());
+                    world.insert_resource(state);
+                    return;
+                }
             }
         }
         let level = state.next.take().unwrap();
