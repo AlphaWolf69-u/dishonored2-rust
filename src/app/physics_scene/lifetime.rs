@@ -95,6 +95,10 @@ fn poll_owned(world: &mut bevy::prelude::World, scene: &mut PhysicsScene,
             host.scene.retirement.as_mut().unwrap().retire_next += 1;
         }
         host.events.clear_for_world_shutdown();
+        if host.scene.faction_manager.as_ref().is_some_and(|manager| manager.manager().has_members()) {
+            return Err("Faction manager still owns live component memberships".into());
+        }
+        host.scene.faction_manager = None;
         host.scene.shared_indices.clear();
         host.scene.retirement.as_mut().unwrap().complete = true;
         Ok(true)
@@ -135,6 +139,8 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[5] { membership!(scene.usables) }
         else if handle.class_id == scene.classes[6] { membership!(scene.pickables) }
         else if handle.class_id == scene.classes[7] { membership!(scene.loots) }
+        else if handle.class_id == scene.classes[8] { membership!(scene.rigid_bodies) }
+        else if handle.class_id == scene.classes[9] { membership!(scene.factions) }
         else { Err("physics update roster class is unsupported".into()) }
     }
 }
@@ -156,11 +162,7 @@ impl ComponentReleaseWorld for Host<'_> {
             let mut query_owner = shared.write().map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
             let keyframed = world.geometry.placements.get(declaration).and_then(Option::as_ref).ok_or("trigger placement absent")?.binding.collision.keyframed;
-            let mut events = ComponentPublicationEvents {
-                components: TriggerComponentStore { trigger_class: scene.classes[0], water_class: scene.classes[1],
-                    triggers: &mut scene.triggers, waters: &mut scene.waters, actors: &mut scene.actors, deferred: &mut scene.deferred },
-                signals: &mut scene.signals, dispatch: startup::dispatch_observer,
-            };
+            scene_publication_events!(scene, registry, events);
             crate::gameplay::trigger_body::startup::stop_trigger(&mut world.storage, &mut world.geometry,
                 &mut events, handle, keyframed, |components, reference| {
                     let body = components.trigger(reference)?.movement_body;
@@ -186,6 +188,9 @@ impl ComponentReleaseWorld for Host<'_> {
                     });
                 });
             });
+        } else if handle.class_id == scene.classes[9] {
+            scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?
+                .stop(scene.faction_manager.as_mut().ok_or("Faction manager absent")?.manager_mut());
         }
         registry.stop_update_ownership(handle, self)
     }
@@ -210,16 +215,15 @@ impl ComponentReleaseWorld for Host<'_> {
     }
 
     fn deinitialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[9] {
+            self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.deinitialize()?;
+        }
         if handle.class_id == self.scene.classes[0] {
             let scene = &mut self.scene;
             let shared = scene.world.clone();
             let mut query_owner = shared.write().map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
-            let mut events = ComponentPublicationEvents {
-                components: TriggerComponentStore { trigger_class: scene.classes[0], water_class: scene.classes[1],
-                    triggers: &mut scene.triggers, waters: &mut scene.waters, actors: &mut scene.actors, deferred: &mut scene.deferred },
-                signals: &mut scene.signals, dispatch: startup::dispatch_observer,
-            };
+            scene_publication_events!(scene, registry, events);
             crate::gameplay::trigger_body::startup::deinitialize_trigger(&mut world.storage, &mut world.geometry, &mut events, handle)?;
             let placement = scene.triggers.get(handle.slot).ok_or("trigger component absent")?.owner.declaration
                 .ok_or("trigger declaration absent")?;
@@ -265,6 +269,7 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle, component)
         }
         else if handle.class_id == scene.classes[7] { entity.components.release(handle, scene.loots.get_mut(handle.slot).ok_or("Loot absent")?) }
+        else if handle.class_id == scene.classes[9] { entity.components.release(handle, scene.factions.get_mut(handle.slot).ok_or("Faction absent")?) }
         else { Err("physics shutdown class is unsupported".into()) }
     }
 
@@ -287,6 +292,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[6] { scene.pickables.release(handle.slot)?; }
         else if handle.class_id == scene.classes[7] { scene.loots.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[9] { scene.factions.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
         if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world, emitter)?; }

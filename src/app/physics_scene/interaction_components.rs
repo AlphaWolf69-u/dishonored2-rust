@@ -38,6 +38,7 @@ impl PhysicsScene {
                 self.entities.push(PhysicsEntity { name: actor.entity.clone(), shared,
                     components: EntityComponents::new(index), class, environment: None, flags: 0,
                     entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0, pose: actor.frame });
+                self.entity_flags_d4.push(0);
                 indices.insert(actor.entity.clone(), index);
                 index
             };
@@ -63,6 +64,7 @@ impl PhysicsScene {
                     components: EntityComponents::new(index), class, environment: None, flags: 0,
                     entity_flags: 0x001e_8008, entity_flags_d7: 0, priority: 0,
                     pose: entities::spawn_frame(definition)? });
+                self.entity_flags_d4.push(0);
                 indices.insert(binding.entity.clone(), index);
                 index
             };
@@ -91,6 +93,19 @@ impl PhysicsScene {
                         }, |_, _, _| Ok(()))?.ok_or("Loot component creation disabled")?;
                 self.declarations.insert(handle.packed(), declaration);
             }
+            if let Some((name, scheduling)) = &binding.faction {
+                let definition = self.faction_session.definition(name)?;
+                let declaration = self.types.declaration(self.factories[9], Arc::as_ptr(&definition) as usize,
+                    scheduling.clone())?;
+                let handle = ComponentFactory { declaration: &declaration, pool: &mut self.factions,
+                    registry, grow_one_at_a_time: false }.create(&mut self.entities[index].components,
+                        declaration.scheduling.starts_on_spawn(), |_, _, _| {
+                            let mut component = super::super::faction_component::FactionComponent::default();
+                            component.set_definition(definition.clone())?;
+                            Ok(component)
+                        }, |_, _, _| Ok(()))?.ok_or("Faction component creation disabled")?;
+                self.declarations.insert(handle.packed(), declaration);
+            }
         }
         Ok(())
     }
@@ -117,4 +132,36 @@ impl PhysicsScene {
             .ok_or("readable Pickable item lease is absent")?;
         Ok(Some((identity, item.clone())))
     }
+}
+
+pub(super) struct Startup<'a> {
+    pub scene: &'a mut PhysicsScene,
+    pub live: &'a LiveEntities,
+    pub events: &'a mut crate::gameplay::entity_events::EntityEvents,
+}
+impl ComponentLifecycleWorld for Startup<'_> {
+    fn priority(&self, handle: ComponentHandle) -> Result<i32, String> { self.scene.priority(handle) }
+    fn owner(&self, handle: ComponentHandle) -> Result<&ComponentOwner, String> { self.scene.owner(handle) }
+    fn owner_mut(&mut self, handle: ComponentHandle) -> Result<&mut ComponentOwner, String> { self.scene.owner_mut(handle) }
+    fn initialize(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[9] {
+            self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.initialize(&self.scene.faction_session)
+        } else { self.scene.initialize(handle, registry) }
+    }
+    fn start(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
+        if handle.class_id == self.scene.classes[9] {
+            let index = self.scene.owner(handle)?.entity.ok_or("Faction entity absent")?;
+            let id = self.scene.entities[index].shared;
+            if self.live.stage(id) != Some(crate::gameplay::entity_lifetime::Stage::Spawned) {
+                return Err("Faction Start entity is not spawned".into());
+            }
+            self.scene.factions.get(handle.slot).ok_or("Faction component absent")?.preflight_start(id,
+                self.scene.faction_manager.as_ref().ok_or("Faction manager absent")?.manager())?;
+            self.scene.start(handle, registry)?;
+            self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.start(id,
+                self.scene.faction_manager.as_mut().ok_or("Faction manager absent")?.manager_mut(), self.events)
+        } else { self.scene.start(handle, registry) }
+    }
+    fn stop_queued(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { self.scene.stop_queued(handle, registry) }
+    fn initialization_failed(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> { self.scene.initialization_failed(handle, registry) }
 }

@@ -90,6 +90,8 @@ pub struct ReadableBinding {
     pub allowed_swimming: bool,
     pub component: Arc<crate::gameplay::pickable_component::PickableDefinition>,
     pub loot: Option<Arc<crate::gameplay::loot_component::EmptyLootDefinition>>,
+    pub rigid: Option<Arc<super::rigid_body::Definition>>,
+    pub faction: Option<(String, crate::gameplay::component_state::declaration::DeclarationScheduling)>,
 }
 
 /// 14061e1a0 lets the interaction sensor pass through a material with
@@ -126,6 +128,8 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
     let mut result = Vec::new();
     let mut definitions = HashMap::<String, Arc<crate::gameplay::pickable_component::PickableDefinition>>::new();
     let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::EmptyLootDefinition>>::new();
+    let mut rigid_definitions = HashMap::<String, Arc<super::rigid_body::Definition>>::new();
+    let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog)?;
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
             if !key.starts_with("item_add[") { continue; }
@@ -166,9 +170,51 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                 definition
             };
             let mut loot = None;
+            let mut rigid = None;
+            let mut faction = None;
             for (slot, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
                 if !slot.starts_with("item_add[") { continue; }
                 let Some(entry) = scope(Some(value)) else { continue; };
+                let kind = components::entry_class(entry, &declarations)?;
+                if kind.as_deref() == Some("cpntrigidbody") {
+                    if rigid.is_some() { return Err(format!("{}: multiple RigidBody components are unsupported", entity.id)); }
+                    let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                        .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                            .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+                    if let Some(shared) = identity.as_ref().and_then(|key| rigid_definitions.get(key)) {
+                        rigid = Some(shared.clone());
+                        continue;
+                    }
+                    let fields = components::entry_fields(entry, "cpntrigidbody", &declarations, &mut cache, &mut read)?
+                        .ok_or("RigidBody declaration resolution changed class")?;
+                    let name = atom(entry, "mapComponentDecl").or_else(|| atom(entry, "inheritedDecl"))
+                        .ok_or("RigidBody declaration identity is absent")?;
+                    let definition = Arc::new(super::rigid_body::Definition {
+                        settings: super::rigid_body::from_resolved("", name, &fields)?,
+                        declaration_flags: super::rigid_body::declaration_flags(&fields)?,
+                        scheduling: Arc::new(components::scheduling(&fields,
+                            crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?),
+                    });
+                    if !catalog.has_overlays() {
+                        if let Some(key) = identity { rigid_definitions.insert(key, definition.clone()); }
+                    }
+                    rigid = Some(definition);
+                    continue;
+                }
+                if kind.as_deref() == Some("cpntfaction") {
+                    if faction.is_some() { return Err(format!("{}: multiple Faction components are unsupported", entity.id)); }
+                    if atom(entry, "mapComponentDecl").is_some() || field(entry, "inlineDecl").is_some() {
+                        return Err(format!("{}: map/inline Faction requires its processed declaration identity", entity.id));
+                    }
+                    let resource = atom(entry, "inheritedDecl").ok_or("Faction declaration identity is absent")?;
+                    let name = resource.rsplit_once('.').filter(|(_, extension)| extension.eq_ignore_ascii_case("cpntfaction"))
+                        .map(|(name, _)| name).ok_or("Faction declaration extension is invalid")?;
+                    let definition = faction_session.acquire_definition(catalog, name)?;
+                    let fields = definition.lease.resolved_fields_for_entry(entry)?;
+                    faction = Some((name.to_owned(), components::scheduling(&fields,
+                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?));
+                    continue;
+                }
                 let Some(fields) = components::entry_fields(entry, "cpntloot", &declarations, &mut cache, &mut read)? else { continue; };
                 if loot.is_some() { return Err(format!("{}: multiple Loot components are unsupported", entity.id)); }
                 let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
@@ -205,6 +251,8 @@ pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document)
                 allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
                 component,
                 loot,
+                rigid,
+                faction,
             });
         }
     }

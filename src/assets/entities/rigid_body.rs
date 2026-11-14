@@ -5,6 +5,7 @@ use super::{RigidBodySettings, Value};
 
 /// One immutable decoded declaration shared by admitted components and their
 /// readable bindings. Per-instance body and lifecycle state stay in the app.
+#[derive(Debug)]
 pub(crate) struct Definition {
     pub settings: RigidBodySettings,
     pub declaration_flags: u8,

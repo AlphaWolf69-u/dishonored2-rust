@@ -28,7 +28,7 @@ pub(in crate::app::physics_scene) struct WorldActivationObserver<'a, F> {
 
 impl<F> WorldActivationObserver<'_, F>
 where F: FnMut(usize, &mut crate::app::rigid_body::RigidBodyComponent, bool, u32,
-    &mut ComponentRegistry) -> Result<(), String>,
+    &mut ComponentRegistry, &mut PhysicsActorLinks) -> Result<(), String>,
 {
     pub(in crate::app::physics_scene) fn dispatch(&mut self, subscriber: usize, callback: usize,
         owners: ActivationOwners<'_>, event: PublicationEvent<'_>,
@@ -78,7 +78,7 @@ where F: FnMut(usize, &mut crate::app::rigid_body::RigidBodyComponent, bool, u32
                         }
                         let entity = component.owner.entity.ok_or("activation listener entity is absent")?;
                         let flags = owners.bodies.get(body).ok_or("activation listener body disappeared")?.flags;
-                        entity_activation(entity, component, active, flags, registry)
+                        entity_activation(entity, component, active, flags, registry, components.actors)
                     })?;
                 }
             }

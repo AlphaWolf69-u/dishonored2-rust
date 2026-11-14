@@ -37,7 +37,18 @@ pub struct CollisionWorld {
     owner_ids: HashMap<Arc<str>, Vec<u32>>,
     owner_names: Vec<Option<Arc<str>>>,
     owner_active: Vec<bool>,
+    /// Placed bodies normally occupy one contiguous triangle run. Keep one
+    /// compact locator per owner; arbitrary interleaved inputs retain a scan.
+    owner_spans: Vec<OwnerSpan>,
     materials: Vec<PhysicsMaterial>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum OwnerSpan {
+    #[default]
+    Empty,
+    Contiguous { start: u32, end: u32 },
+    Scattered,
 }
 
 /// Host broad phase replacing Havok's compressed-mesh tree. Once built, its
@@ -204,6 +215,7 @@ impl CollisionWorld {
             owner_ids,
             owner_names,
             owner_active: vec![true; owner_count],
+            owner_spans: vec![OwnerSpan::Empty; owner_count],
             materials,
         };
         for (source_index, ([a, b, c], owner, material, filter)) in source.into_iter().enumerate() {
@@ -217,6 +229,14 @@ impl CollisionWorld {
             let min = a.min(b).min(c);
             let max = a.max(b).max(c);
             let index = world.triangles.len();
+            if let Some(span) = world.owner_spans.get_mut(owner as usize) {
+                let index = u32::try_from(index).map_err(|_| "collision shape key exceeds u32")?;
+                *span = match *span {
+                    OwnerSpan::Empty => OwnerSpan::Contiguous { start: index, end: index + 1 },
+                    OwnerSpan::Contiguous { start, end } if end == index => OwnerSpan::Contiguous { start, end: index + 1 },
+                    _ => OwnerSpan::Scattered,
+                };
+            }
             world.triangles.push(Triangle {
                 a,
                 b,
@@ -292,6 +312,29 @@ impl CollisionWorld {
         };
         for &index in indices {
             self.owner_active[index as usize] = active;
+        }
+        true
+    }
+
+    /// Project the canonical body's c87640 AND-mask into its existing static
+    /// navigation geometry. 81a5f0 material overrides only clear bits, so the
+    /// same mask commutes with the already-decoded primary/ExtraHD leaf filters.
+    /// This retains geometry, materials and owner identity; it does not create
+    /// another collider or disable unrelated component-owned interaction boxes.
+    pub(crate) fn mask_placed_owner_filter(&mut self, id: &str, mask: u32) -> bool {
+        let Some(owners) = self.owner_ids.get(id) else { return false; };
+        for &owner in owners {
+            match self.owner_spans.get(owner as usize).copied().unwrap_or_default() {
+                OwnerSpan::Empty => {},
+                OwnerSpan::Contiguous { start, end } => {
+                    for triangle in &mut self.triangles[start as usize..end as usize] { triangle.filter &= mask; }
+                },
+                OwnerSpan::Scattered => {
+                    for triangle in &mut self.triangles {
+                        if triangle.owner == owner { triangle.filter &= mask; }
+                    }
+                },
+            }
         }
         true
     }
