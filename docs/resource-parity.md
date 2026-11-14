@@ -8868,3 +8868,18 @@ It certifies supported resource acquisition, sharing and release, not every
 unimplemented game system, every active emitter/draw transition or live
 appearance. No tests were written/run and no visible game was launched.
 No whole-process RAM, walking CPU or FPS improvement is inferred from counts.
+
+
+Integration/cleanup (2026-11-15): the accepted owner source is merged into
+local main. The normal game configuration also passes
+`cargo check --locked --features game --bin dishonored2-rust --jobs 1`,
+without debug_allocations (artifacts/client-config-check-20261115.result.json);
+this is a compilation check, not a newly linked release executable. Completed
+agent work is committed; temporary agent/verification worktrees are removed.
+The final verification checkout's276 ignored evidence/runtime files
+(579337761 bytes) were moved on the same volume and exact paths/lengths verified
+in artifacts/worktree-archive-20261115/DH2-fx-level-lifetime/preservation-manifest.json.
+Its source remains reachable as
+refs/archive/worktree-cleanup-20261115/final-resource-verification. The active
+authoring checkout and external rendering checkout are retained. Protected
+older feature checkpoints remain preserved separately from completed work.
