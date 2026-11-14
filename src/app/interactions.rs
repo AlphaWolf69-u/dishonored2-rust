@@ -551,3 +551,69 @@ pub(super) fn accepted_pickup_progress(world: &World) -> Vec<(String,u8)> {
     world.get_resource::<Interactions>().map(|owner| owner.retire.iter()
         .map(|pending| (pending.entity.clone(),pending.step)).collect()).unwrap_or_default()
 }
+
+/// Request the same action as a focused real readable. Phase observers use
+/// installed bindings and admitted generations, then let ordinary App frames
+/// perform READ_NOTE, pickedUp, inventory admission and movie publication.
+pub(super) fn request_admitted_readable(world: &mut World) -> Result<Option<(usize,String)>,String> {
+    if !world.contains_resource::<Interactions>() { return Ok(None); }
+    world.resource_scope(|world, mut interactions: Mut<Interactions>| {
+        if interactions.acquisitions_closed.load(Ordering::Acquire) {
+            return Err("readable observation cannot admit into a closing level".into());
+        }
+        if interactions.pending_read.is_some() || interactions.pending_activation.is_some()
+            || !interactions.retire.is_empty() {
+            return Err("readable observation already has an unfinished action".into());
+        }
+        let scene = world.get_resource::<super::physics_scene::PhysicsScene>()
+            .ok_or("readable observation has no admitted component owner")?;
+        let live = world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
+            .ok_or("readable observation has no live entity owner")?;
+        let sources = world.get_resource::<super::shadow_updates::ModelShadowSources>()
+            .ok_or("readable observation has no render source owner")?;
+        let placements = world.get_resource::<super::RenderSourcePlacements>()
+            .ok_or("readable observation has no model placements")?;
+        let mut selected = None;
+        for (index,binding) in interactions.readable.iter().enumerate() {
+            // These are the same source-family exclusions as the normal
+            // focused action, not a diagnostic-only admission path.
+            if binding.locked || !binding.component.usable_by_player
+                || interactions.parent.contains_key(&binding.entity) || !binding.unsupported_pickup_components.is_empty() { continue; }
+            let Some((identity,item)) = scene.readable_item(&binding.entity,live)? else { continue; };
+            let portable = match &item.readable {
+                Some(crate::assets::inventory_item::PickableReadable::Note(note)
+                    | crate::assets::inventory_item::PickableReadable::Other(note,_)) => note.can_be_picked_up,
+                Some(crate::assets::inventory_item::PickableReadable::Map(map)) => map.can_be_picked_up,
+                None => false,
+            };
+            if !portable { continue; }
+            if let Err(error) = scene.preflight_document_pickup(live,identity.1,sources,placements) {
+                eprintln!("READABLE_ACTION_UNAVAILABLE entity={} reason={error}",binding.entity);
+                continue;
+            }
+            selected = Some((index,binding.entity.clone(),identity,item));
+            break;
+        }
+        let Some((index,entity,identity,item)) = selected else { return Ok(None); };
+        interactions.request_readable(index,identity,item);
+        if !interactions.pending_read.as_ref().is_some_and(|read| read.identity == identity) {
+            return Err("the real readable action did not accept its request".into());
+        }
+        Ok(Some((index,entity)))
+    })
+}
+
+#[derive(Clone,Copy,Debug)]
+pub(super) struct ReadActionProgress {
+    pub pending_read: bool,
+    pub pending_activation: bool,
+    pub accepted_pickups: usize,
+    pub acquisitions_closed: bool,
+}
+
+pub(super) fn read_action_progress(world: &World) -> Option<ReadActionProgress> {
+    let owner = world.get_resource::<Interactions>()?;
+    Some(ReadActionProgress { pending_read: owner.pending_read.is_some(),
+        pending_activation: owner.pending_activation.is_some(), accepted_pickups: owner.retire.len(),
+        acquisitions_closed: owner.acquisitions_closed.load(Ordering::Acquire) })
+}
