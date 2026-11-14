@@ -38,9 +38,6 @@ impl RigidPostHost<'_> {
         if !self.placements.contains_key(&index) || !self.initial.contains_key(&index) {
             return Err("rigid actor has no admitted render placement or initial body frame".into());
         }
-        if entity.entity_flags & 3 != 0 || entity.frame.scale != [1.; 3] {
-            return Err("rigid actor requires an unhosted render predicate or entity scale owner".into());
-        }
         Ok(entity)
     }
 
@@ -152,12 +149,12 @@ impl PostPhysicsWorld for RigidPostHost<'_> {
             return BasicBody::Embedded.handles_render_entity(actors, actor);
         }
         self.body(actors, actor)?;
-        // 808880 returns false for the actual null-binding, ordinary-render
-        // branch. Flags0/1 select another render owner, never an assumed false.
-        if self.entity(entity)?.entity_flags & 3 != 0 {
-            return Err("rigid render flags require the actual deferred render owner".into());
-        }
-        Ok(false)
+        // 808880 first tests 878c60/878d10. Either actual entity flag returns
+        // true immediately; pickup's existing owner has already projected the
+        // hide to the render sources. 753c10 still publishes the entity frame
+        // before this predicate and skips only additional render pose work.
+        // With both flags clear, this admitted null binding returns false.
+        Ok(self.entity(entity)?.entity_flags & 3 != 0)
     }
     fn render_entity(&self, entity: usize) -> Result<Option<usize>, String> {
         self.entity(entity)?;

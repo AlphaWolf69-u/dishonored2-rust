@@ -4736,6 +4736,20 @@ Source/whitespace review only; no builds, tests or runtime exercise performed.
 
 ### Host archive-session teardown
 
+Hidden rigid render predicate correction (2026-11-14). `140808880` tests
+`140878c60`/`140878d10` before reading a parent binding: either real entity
+render flag returns true, while an ordinary null binding returns false.
+The portable pickup owner already sets those entity bits and projects hiding
+into the actual render sources. The rigid movement adapter now follows that
+predicate rather than rejecting hidden queued actors. The existing `140753c10`
+kernel continues its body/entity PublishedFrame update before skipping only
+the additional render pose publication. A scale-owner check likewise stays
+at the actual visible scale setter, not the common entity lookup. Prediction:
+hidden queued frames complete normally with zero added ModelPose updates;
+visible null-bound frames and body/task identities are unchanged, with no new
+allocations, asset reads or GPU work. Source/whitespace review only; no tests,
+builds or runtime exercise performed for this correction.
+
 Ordinary rigid actor publication prediction (2026-11-14). The installed
 `140806de0` movement vtable at `141c74798` selects `140808e30` (active-body
 predicate), `140809ab0` (desired-motion route), `14080a5f0`/`14080b7c0` (body-origin
