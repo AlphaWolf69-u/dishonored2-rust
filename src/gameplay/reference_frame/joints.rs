@@ -52,11 +52,19 @@ pub fn local_bound_frame(
         .and_then(|i| source.transforms.get(i))
         .ok_or("mapped joint transform is missing")?;
     let joint = matrix_frame(*matrix);
-    let scaled = std::array::from_fn::<_, 3, _>(|i| multiply(source.model_scale[i], offset[i]));
+    *output = bind_local_frame(joint, source.model_scale, offset, orientation);
+    Ok(true)
+}
+
+/// The same53d3f0 composition when the host already owns the selected joint
+/// matrix. No artificial channel/remap vectors are allocated for attachments.
+pub fn bind_local_frame(joint: ReferenceFrame, model_scale: [f32; 3], offset: [f32; 3],
+    orientation: [f32; 4]) -> ReferenceFrame {
+    let scaled = std::array::from_fn::<_, 3, _>(|i| multiply(model_scale[i], offset[i]));
     //53d3f0 sums the products before ADDSS(translation, sum). Ghidra's
     // flattened expression suggests a different grouping; retain the machine
     // sequence and its translation operand order.
-    output.position = std::array::from_fn(|i| {
+    let position = std::array::from_fn(|i| {
         add(
             joint.position[i],
             add(
@@ -68,8 +76,7 @@ pub fn local_bound_frame(
             ),
         )
     });
-    output.basis = basis_product(quaternion_basis(orientation), joint.basis);
-    Ok(true)
+    ReferenceFrame { position, basis: basis_product(quaternion_basis(orientation), joint.basis) }
 }
 
 /// Complete00f2c0: normalize the first axis, rebuild the third by cross product,

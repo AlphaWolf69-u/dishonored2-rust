@@ -128,6 +128,7 @@ pub(super) fn advance(
     mut meshes: ResMut<Assets<Mesh>>,
     mut buffers: ResMut<Assets<super::ShaderBuffer>>,
     machinery: Option<Res<super::machinery::AmbientMachinery>>,
+    mut joint_frames: Option<ResMut<super::joint_frames::JointFrames>>,
 ) {
     let Some(mut interactions) = interactions else { return };
     if !owner.initialized {
@@ -256,6 +257,7 @@ pub(super) fn advance(
             if slot.physics_owned {
                 slot.animation_pose = Some(matrices);
             } else {
+                if let Some(frames) = joint_frames.as_deref_mut() { frames.publish(index, &matrices); }
                 let Some(inverse_bind) = asset.rig.skeleton.inverse_bind.get(..matrices.len()) else {
                     bevy::log::warn!("Usable skeleton has fewer inverse bind matrices than joints");
                     continue;
@@ -269,7 +271,7 @@ pub(super) fn advance(
         }
         if slot.physics_owned && !scene_active {
             let (Some(animation), Some(machinery)) = (&slot.animation_pose, machinery.as_deref()) else { continue };
-            let Some(result) = machinery.animated_palette(index, animation) else { continue };
+            let Some(result) = machinery.animated_palette(index, animation, joint_frames.as_deref_mut()) else { continue };
             match result {
                 Ok(palette) => super::skin_publication::publish_skin(index, &asset.model, palette, &mut slot.publication,
                     &mut meshes, &mut buffers, &mut queue, &mut sources, &placements),

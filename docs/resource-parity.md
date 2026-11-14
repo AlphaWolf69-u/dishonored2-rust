@@ -8461,3 +8461,28 @@ Prediction before editing: ordinary and FX posts must each allocate one shared o
 Implemented in the existing `gameplay/sound/playing.rs` owner: real-ID registration, bounded per-emitter admission, and retained object counts removed only when End is consumed. The existing Engine ID allocator is shared with FX cold admission, and FX output consumes its already-assigned ticket ID instead of allocating a second identity. Ordinary posts now retain the ticket in the scheduled audio source, following the existing FX path; removing its ECS proxy cannot release its cookie before the actual output/stop tail. SourceReady comes from the real decoder processing boundary, instead of being synthesized when its proxy is spawned. Unwatched End packets cannot complete another watched post with the same event/emitter. Existing decode/source fences, ordered FIFO return markers, voice acknowledgement and per-component retirement are preserved. Static syntax and whitespace review only; no build/tests/launches or runtime timing measurements were run by this agent. Root owns the coordinated compiler/runtime validation.
 
 Deferred consumer evidence: current Rigid initialization/start registers numeric timespace/motion/impulse listeners, but the corresponding runtime message producers are not admitted. The checkpoint `app/entity_event_host.rs` and `app/physics_scene/placed_rigid.rs` retain the exact dispatcher/handler source for a future supported producer slice. No invented producer or blanket 56-class host was added.
+
+### Demanded attachment joint frames (2026-11-14)
+
+The installed readable-body census finds three tag-bound variants, all on the
+same MD6 PhysicsSystem parent class. `app::joint_frames` resolves actual MD6
+properties/joint names through the existing Rig owner (879930/25bfe0/256080),
+then retains only requested tag metadata and initial/current joint frames.
+Preparation samples the existing SystemSkin body/map/ancestor composition;
+an absent pose producer is an error, never a rest-pose substitution. Rigs used
+for lookup are temporary shared leases, not a second asset cache. The existing
+level resource owner retires the compact demand map with its consumers.
+
+Prediction: startup adds only dependency-driven tag resolution and a sample
+from already prepared physics skin data. Normal pose producers copy demanded
+raw matrices before inverse-bind; no new sampling, full-palette copy, archive
+read, lock, frame allocation, mesh, shader buffer or GPU pass is added. Empty
+maps exit before lookup. This is new faithful binding work, not a CPU/RAM
+saving claim. Physics, usable-over-physics and scene composition publish into
+one host projection; actual phase0 and phase3 frames stay distinct. The shared
+53d3f0 helper preserves model-scale offset arithmetic and53de90 basis
+normalization without constructing artificial remap vectors on each query.
+Source evidence: saved chunk000360879930, chunk000303752900/7506d0 and existing
+reference_frame::joints kernels. Full installed publication/retirement awaits
+the coordinated source batch; no tests, build, visual or speed acceptance is
+claimed by this source change alone.

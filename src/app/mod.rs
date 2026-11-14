@@ -58,6 +58,7 @@ mod model_motion;
 mod particle_view;
 mod particle_surface;
 mod machinery;
+mod joint_frames;
 mod load_timing;
 mod resource_diagnostics;
 mod preparation_diagnostics;

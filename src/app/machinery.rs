@@ -45,10 +45,19 @@ impl AmbientMachinery {
     pub(super) fn scene_layer_active(&self, placement: usize) -> bool {
         self.scene_skins.contains_key(&placement)
     }
-    pub(super) fn animated_palette(&self, placement: usize, animation: &[super::physics_skinning::Affine])
+    pub(super) fn animated_palette(&self, placement: usize, animation: &[super::physics_skinning::Affine],
+        joint_frames: Option<&mut super::joint_frames::JointFrames>)
         -> Option<Result<Vec<super::physics_skinning::Affine>, String>> {
         self.skins.iter().find(|skin| skin.placement() == placement)
-            .map(|skin| skin.animated_palette(&self.physics, animation))
+            .map(|skin| skin.animated_palette(&self.physics, animation, joint_frames))
+    }
+    pub(super) fn initial_joint_matrix(&self, placement: usize, joint: i16,
+        skeleton: &Arc<crate::edge_skeleton::EdgeSkeleton>)
+        -> Result<Option<super::physics_skinning::Affine>, String> {
+        let Some(skin) = self.skins.iter().find(|skin| skin.placement() == placement) else { return Ok(None); };
+        if !Arc::ptr_eq(skin.skeleton(), skeleton) { return Err("attachment and physics pose skeleton owners differ".into()); }
+        let current = skin.current_with_animation(&self.physics, None)?;
+        Ok(usize::try_from(joint).ok().and_then(|joint| current.get(joint)).copied())
     }
     pub(super) fn skin_models(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::bmd6::ModelInfo>)> {
         self.skins.iter().map(|skin| (skin.placement(), skin.model()))
@@ -353,6 +362,7 @@ pub(super) fn pose_physics_systems(
     mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     placements: Res<super::RenderSourcePlacements>,
     animations: Option<Res<super::usable_animation::UsableAnimations>>,
+    mut joint_frames: Option<ResMut<super::joint_frames::JointFrames>>,
 ) {
     let machinery = &mut *machinery;
     if machinery.skins.is_empty() {
@@ -368,6 +378,7 @@ pub(super) fn pose_physics_systems(
         &placements,
         animations.as_deref(),
         |placement| machinery.scene_skins.contains_key(&placement),
+        joint_frames.as_deref_mut(),
     );
 }
 
@@ -381,6 +392,7 @@ pub(super) fn pose_scene_systems(
     mut queue: ResMut<super::SceneRenderQueue>,
     mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     placements: Res<super::RenderSourcePlacements>,
+    mut joint_frames: Option<ResMut<super::joint_frames::JointFrames>>,
 ) {
     let machinery = &mut *machinery;
     let (scenes, skins, physics_skins, physics) = (&machinery.scenes, &mut machinery.scene_skins,
@@ -407,8 +419,9 @@ pub(super) fn pose_scene_systems(
                 if !Arc::ptr_eq(physics_skin.skeleton(), animation.skeleton()) {
                     return Err("scene and physics skeleton owners differ".into());
                 }
-                physics_skin.animated_palette(physics, &matrices)
+                physics_skin.animated_palette(physics, &matrices, joint_frames.as_deref_mut())
             } else {
+                if let Some(frames) = joint_frames.as_deref_mut() { frames.publish(placement, &matrices); }
                 crate::edge_skeleton::skin_palette(&matrices, &animation.skeleton().inverse_bind)
             }
         })();
