@@ -7967,3 +7967,43 @@ consumers. Prediction: ordinary readers perform zero layer/group String
 allocations, with the same entity fields and token traversal. This avoids
 introducing temporary work through the recovered parser; no measured CPU or
 resident-memory saving is claimed.
+
+
+### Ordered sound-object return and acknowledgement (2026-11-14)
+
+- **Prediction before implementation:** accepted FX tickets remain in their
+  existing queue while media is pending, submit before the object's return,
+  and retain their declaration/source leases until actual voice or delayed
+  action completion. The object and its acoustic/spatial/history state survive
+  the return marker until the output consumer acknowledges idle. No audio-world
+  copy, format conversion, output stream or GPU work is added. Counts change
+  only on voice insertion/removal; idle objects add no per-block voice scans.
+- **Original evidence:** `1400c7a20` calls `1400c4230` and enqueues deferred
+  return via `1400c8150`; `1400c8320` requeues objects while `1400c3e00`
+  reports callback/playing ownership, then calls `1400c7be0` to unregister.
+  `1400c4230(�,1)` issues the actual stop through `1400c5db0`. The component
+  path is `140709020 ->140709c00 /140708620 ->1400c7ab0`. Accepted event IDs
+  and final callbacks are owned by `1410c96c0 /1410e0fe0 /1410e1290`.
+- **host:** `world_sounds` retains accepted tickets and their object through
+  the existing FX submission consumer. `app::audio` uses one shared message
+  cursor for normal frames and exclusive lifecycle advancement. The output
+  owner consumes an ordered return marker, stops the object's actual voices
+  and delayed actions, and signals idle when its counted voice owners leave.
+  Stop/State actions now retain the existing event ticket while delayed.
+- **host:** component Stop remains pending until this acknowledgement and event
+  leases retire; deinitialization/pool release preserve the component generation
+  until then and forget the completed acknowledgement after actual slot return.
+  The output clock and all unrelated/menu objects remain in the same owner.
+  A failed output reports an error instead of disappearing markers being
+  mistaken for acknowledgement. A diagnostic owner with no output/voices
+  consumes its marker synchronously through the same producer/consumer path.
+- `LevelLifetime` must begin/poll this return after releasing FX handles and
+  before dropping support owners. Normal loading yields across host frames;
+  windowless acquisition can drain finite no-output progress, never busy-wait
+  for the audio callback. The five-factory host restores scene resources before
+  invoking the consumer, and shares its generation-checked ownership.
+- **Validation status:** saved decompilation checked (`chunk_000032.c`,
+  `chunk_000033.c`, `chunk_000291.c`), source syntax and whitespace checked.
+  No tests/builds/launches were run for this source slice. Coordinated full
+  compilation and production retirement observations remain required; no byte
+  saving, CPU timing gain or runtime acceptance is claimed yet.

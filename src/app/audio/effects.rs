@@ -30,6 +30,7 @@ pub(super) struct EffectAudio {
     pending_media: std::collections::HashMap<crate::gameplay::sound::playing::PlayingId, Vec<super::graph::StreamHold>>,
     pending_events: std::collections::HashSet<u32>,
     failed_events: std::collections::HashMap<u32, String>,
+    pub(super) last_error: Option<String>,
 }
 
 /// Prepare dependencies, publish actual sound-object frames, then execute
@@ -40,8 +41,9 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
     level: Option<ResMut<super::level::LevelAudio>>, mut scene: ResMut<super::spatial::Scene>,
     engine: Res<super::bevy_backend::Engine>, mut commands: Commands,
     playing: Query<(Entity, &super::AudioTarget, &super::graph::Playing)>,
-    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>, mut error: Local<Option<String>>,
-    mut decodes: ResMut<super::SoundDecodeQueue>)
+    paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
+    mut decodes: ResMut<super::SoundDecodeQueue>, mut retiring: ResMut<super::RetiringSounds>,
+    mut sound_events: MessageWriter<super::SoundEvent>)
 {
     let (Some(sources), Some(sounds), Some(mixer), Some(mut level)) = (sources, sounds, &mix.mixer, level) else { return };
     let mut bridge = sounds.lock();
@@ -204,12 +206,6 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         if trace_fx_sound_limits() && !bridge.released.is_empty() {
             eprintln!("FX_SOUND_RELEASED {} frame={}", bridge.released.len(), state.trace_frame);
         }
-        for emitter in std::mem::take(&mut bridge.released) {
-            for (entity, target, _) in &playing {
-                if target.emitter == emitter { commands.entity(entity).try_despawn(); }
-            }
-            level.release_object(emitter);
-        }
         let detail = crate::platform::console::shared().read().cvars.int("s_environmentalDetailLevel")
             .ok_or("environmental audio detail is absent")?;
         for (&emitter, object) in &mut bridge.objects {
@@ -234,6 +230,17 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         let mut submitted = 0u32;
         // A ticket whose streamed media is still being read stays queued.
         let mut loading_tickets = Vec::new();
+        // Validate before moving the batch: one missing owner must not drop
+        // unrelated accepted tickets while returning an error.
+        for ticket in &bridge.queued {
+            let event = ticket.event();
+            if state.events.get(event.declaration as usize).and_then(Option::as_ref).is_none() {
+                return Err("accepted FX event declaration is absent".into());
+            }
+            if !bridge.objects.contains_key(&event.object) {
+                return Err("accepted FX event object is absent".into());
+            }
+        }
         for ticket in std::mem::take(&mut bridge.queued) {
             let previous_media = state.pending_media.remove(&ticket.id());
             let event = ticket.event();
@@ -264,12 +271,12 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             for action in prepared.actions.iter() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
-                        if let Err(error) = engine.post_state(*action, target_path.clone(), prepared.declaration.declaration.id, event.object) {
+                        if let Err(error) = engine.post_state_with_ticket(*action, target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone())) {
                             warn!("FX event {} Set State unavailable: {error}", prepared.declaration.name);
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object) {
+                        if let Err(error) = engine.post_stop_with_ticket(action.clone(), target_path.clone(), prepared.declaration.declaration.id, event.object, Some(ticket.clone())) {
                             warn!("FX event {} Stop unavailable: {error}", prepared.declaration.name);
                         }
                     },
@@ -303,6 +310,17 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             }
         }
         bridge.queued.splice(0..0, loading_tickets);
+        for emitter in std::mem::take(&mut bridge.released) {
+            if bridge.queued.iter().any(|ticket| ticket.event().object == emitter) {
+                bridge.released.push(emitter);
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = retiring.0.entry(emitter) {
+                entry.insert(super::ObjectRetirement::Queued);
+                sound_events.write(super::SoundEvent(crate::gameplay::sound::Request::Retire { emitter }));
+            }
+        }
+
         // DH2_TRACE_FX_SOUND_LIMITS=1: FX voices playing at once, every 2 s.
         if trace_fx_sound_limits() && state.trace_frame % 120 == 0 {
             let mut voices = std::collections::BTreeMap::<String, Vec<String>>::new();
@@ -327,10 +345,11 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
         Ok(())
     })();
     match result {
-        Ok(()) => *error = None,
+        Ok(()) => state.last_error = None,
         Err(message) => {
             bridge.ready = false;
-            if error.as_ref() != Some(&message) { warn!("World FX audio unavailable: {message}"); *error = Some(message); }
+            if state.last_error.as_ref() != Some(&message) { warn!("World FX audio unavailable: {message}"); }
+            state.last_error = Some(message);
         }
     }
 }

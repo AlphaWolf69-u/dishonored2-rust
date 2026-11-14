@@ -53,6 +53,12 @@ impl Default for Scene {
         emitters: HashMap::new(), propagated: HashMap::new(), rates: HashMap::new(), time_dilation: None } }
 }
 impl Scene {
+    pub(super) fn release_object(&mut self, emitter: Emitter) {
+        self.emitters.remove(&emitter);
+        self.propagated.remove(&emitter);
+        self.rates.remove(&emitter);
+    }
+
     pub fn emitter(&self, emitter: Emitter) -> Option<Position> { self.emitters.get(&emitter).copied() }
     pub fn propagated(&self, emitter: Emitter) -> Option<&Propagated> { self.propagated.get(&emitter) }
     pub fn listener(&self) -> Option<spatial::Listener> { self.listener }
@@ -83,10 +89,18 @@ impl Scene {
 
 pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<Camera3d>>,
     player: Option<Res<super::super::player::PlayerState>>, mix: Res<super::AudioMix>,
-    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>) {
-    scene.emitters.clear();
-    scene.propagated.clear();
-    scene.rates.clear();
+    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
+    retiring: Res<super::RetiringSounds>) {
+    if retiring.0.is_empty() {
+        scene.emitters.clear();
+        scene.propagated.clear();
+        scene.rates.clear();
+    } else {
+        let keep = |emitter: &Emitter| retiring.0.get(emitter).is_some_and(|state| *state != super::ObjectRetirement::Complete);
+        scene.emitters.retain(|emitter, _| keep(emitter));
+        scene.propagated.retain(|emitter, _| keep(emitter));
+        scene.rates.retain(|emitter, _| keep(emitter));
+    }
     scene.time_dilation = mix.time_dilation;
     scene.listener = None;
     scene.minimum = environment::Levels::default();

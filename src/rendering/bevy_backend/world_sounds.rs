@@ -26,6 +26,7 @@ pub(crate) struct SoundObject {
     pub audible_mask: u32,
     pub range: f32,
     events: Vec<(PlayingId, f32)>,
+    retiring: bool,
 }
 impl SoundObject {
     pub fn has_events(&self) -> bool { !self.events.is_empty() }
@@ -107,7 +108,7 @@ impl SoundObjectWorld for WorldSounds {
             position, pending_position: position, front: context.axis.x_axis,
             pending_front: context.axis.x_axis, displacement: Vec3::ZERO,
             scale: 1.0, energy: None, source_occlusion: true, audible_mask: 0,
-            range: -1.0, events: Vec::new(),
+            range: -1.0, events: Vec::new(), retiring: false,
         });
         Ok(Some(emitter))
     }
@@ -115,6 +116,7 @@ impl SoundObjectWorld for WorldSounds {
         event: u32, _: &SoundFrame) -> Result<Option<PlayingId>, String>
     {
         let mut state = self.lock();
+        if state.objects.get(&object).is_some_and(|object| object.retiring) { return Err("FX sound object is retiring".into()); }
         let declaration = state.declarations.get(event as usize).and_then(Option::as_ref)
             .ok_or("FX sound declaration reference is absent")?.clone();
         let declaration = &declaration.declaration;
@@ -137,11 +139,15 @@ impl SoundObjectWorld for WorldSounds {
     }
     fn release(&mut self, object: Emitter, stop: bool) -> Result<(), String> {
         let mut state = self.lock();
-        state.objects.remove(&object).ok_or("FX sound object released twice")?;
-        if stop {
-            state.queued.retain(|ticket| ticket.event().object != object);
-            state.released.push(object);
+        if !state.objects.contains_key(&object) || state.released.contains(&object) {
+            return Err("FX sound object released twice".into());
         }
+        if stop {
+            // Accepted tickets retain their object until submission and the
+            // ordered return marker; the audio consumer owns final removal.
+            state.objects.get_mut(&object).expect("validated sound object").retiring = true;
+            state.released.push(object);
+        } else { state.objects.remove(&object); }
         Ok(())
     }
     fn initialize_posted(&mut self, object: Emitter, _: &SoundFrame) -> Result<(), String> {

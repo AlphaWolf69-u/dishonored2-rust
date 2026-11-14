@@ -20,6 +20,10 @@ pub(super) use contacts::ContactSound;
 #[derive(Message, Clone, Copy)]
 pub struct SoundEvent(pub Request);
 
+/// The scheduled and exclusive lifecycle consumer share one message cursor.
+#[derive(Resource, Default)]
+struct SoundEventCursor(bevy::ecs::message::MessageCursor<SoundEvent>);
+
 /// One in-flight decode per event and level bank generation. Each client has
 /// its own lease, so canceling an FX or UI request does not cancel another.
 #[derive(Clone, Copy)]
@@ -345,6 +349,28 @@ impl Plugin for AudioAssetsPlugin {
 #[derive(Resource, Default)]
 struct PendingSounds(Vec<PendingSound>);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObjectRetirement { Queued, Submitted, Complete }
+#[derive(Resource, Default)]
+struct RetiringSounds(std::collections::HashMap<Emitter, ObjectRetirement>);
+
+fn request_emitter(request: &Request) -> Emitter {
+    match *request {
+        Request::Post { emitter, .. } | Request::PostWithParameter { emitter, .. }
+        | Request::PostAt { emitter, .. } | Request::Stop { emitter, .. } | Request::Retire { emitter } => emitter,
+    }
+}
+
+fn request_object_retirement(world: &mut World, emitter: Emitter) -> Result<(), String> {
+    if !world.contains_resource::<RetiringSounds>() || !world.contains_resource::<Messages<SoundEvent>>() {
+        return Err("sound object retirement requires the active audio owners".into());
+    }
+    if world.resource::<RetiringSounds>().0.contains_key(&emitter) { return Ok(()); }
+    world.resource_mut::<RetiringSounds>().0.insert(emitter, ObjectRetirement::Queued);
+    world.write_message(SoundEvent(Request::Retire { emitter }));
+    Ok(())
+}
+
 struct PendingSound {
     request: Request,
     // A retry must not release its already completed reads while another
@@ -356,31 +382,100 @@ struct PendingSound {
 /// Retire one actual component object before its generation can be recycled.
 /// Decode jobs remain shared with their other admitted clients.
 pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Result<bool, String> {
-    world.resource::<bevy_backend::Engine>().release_object(emitter);
-    if let Some(mut level) = world.get_resource_mut::<level::LevelAudio>() { level.release_object(emitter); }
-    let mut failed = Vec::new();
-    if let Some(mut pending) = world.get_resource_mut::<PendingSounds>() {
-        pending.0.retain(|queued| {
-            let (event, owner) = match queued.request {
-                Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
-                    | Request::PostAt { event, emitter, .. } | Request::Stop { event, emitter } => (event, emitter),
-            };
-            if owner == emitter && queued.watched { failed.push(event); }
-            owner != emitter
-        });
+    request_object_retirement(world, emitter)?;
+    Ok(world.resource::<RetiringSounds>().0.get(&emitter) == Some(&ObjectRetirement::Complete))
+}
+
+/// Called after the component pool actually releases the acknowledged generation.
+pub(super) fn forget_retired_component_object(world: &mut World, emitter: Emitter) -> Result<(), String> {
+    let mut retiring = world.resource_mut::<RetiringSounds>();
+    if retiring.0.get(&emitter) != Some(&ObjectRetirement::Complete) {
+        return Err("component sound object has not acknowledged retirement".into());
     }
-    if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
-        for event in failed { completions.failed(event, emitter); }
+    retiring.0.remove(&emitter);
+    Ok(())
+}
+
+/// Advance the existing consumer after exclusive callers restore scene owners.
+/// The output callback progresses independently; never spin waiting for it.
+pub(in crate::app) fn has_output(world: &World) -> bool { world.resource::<bevy_backend::Engine>().has_output() }
+
+pub(in crate::app) fn poll_object_retirements(world: &mut World) -> Result<(), String> {
+    world.run_system_cached(bevy_backend::retire).map_err(|error| error.to_string())?;
+    world.run_system_cached(play_events).map_err(|error| error.to_string())?;
+    world.run_system_cached(reap_retiring_objects).map_err(|error| error.to_string())?;
+    if let Some(error) = world.resource::<RetiringSounds>().0.iter().find_map(|(&emitter, &state)|
+        (state != ObjectRetirement::Complete).then(|| world.resource::<bevy_backend::Engine>().object_retirement_pending(emitter).err()).flatten()) {
+        return Err(error);
     }
-    if let Some(registry) = world.get_resource::<WwiseRegistry>() {
+    Ok(())
+}
+
+/// Keep the exact sound object and its histories until its accepted posts,
+/// output voices and event tickets have all retired.
+fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut<RetiringSounds>,
+    mut registry: ResMut<WwiseRegistry>, mut completions: ResMut<SoundCompletions>,
+    level: Option<ResMut<level::LevelAudio>>, mut scene: ResMut<spatial::Scene>,
+    sounds: Option<Res<crate::rendering::bevy_backend::world_sounds::WorldSounds>>) {
+    if retiring.0.is_empty() { return; }
+    let mut level = level;
+    for (&emitter, state) in &mut retiring.0 {
+        if *state != ObjectRetirement::Submitted { continue; }
+        if !matches!(engine.object_retirement_pending(emitter), Ok(false)) { continue; }
+        if completions.playing.references_object(emitter) { continue; }
+        if sounds.as_ref().is_some_and(|sounds| sounds.lock().playing.references_object(emitter)) { continue; }
+        let events: std::collections::HashSet<_> = completions.waiting.iter().chain(completions.active.iter())
+            .filter_map(|&(event, object)| (object == emitter).then_some(event)).collect();
+        completions.waiting.retain(|(_, object)| *object != emitter);
+        completions.active.retain(|(_, object)| *object != emitter);
+        completions.completed.retain(|(_, object), _| *object != emitter);
+        for event in events { completions.retire_if_unused(event); }
         registry.scheduled_selections.lock().unwrap_or_else(|error| error.into_inner())
-            .retain(|(_, owner), _| *owner != Some(emitter));
+            .retain(|(_, object), _| *object != Some(emitter));
+        if let Some(level) = level.as_deref_mut() { level.release_object(emitter); }
+        scene.release_object(emitter);
+        if let Some(sounds) = &sounds { sounds.lock().objects.remove(&emitter); }
+        *state = ObjectRetirement::Complete;
     }
-    Ok(true)
+    // Components retain acknowledgement until their pool slot is released.
+    retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete || matches!(emitter, Emitter::Component { .. }));
+}
+
+pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
+    world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    world.run_system_cached(play_events).map_err(|error| error.to_string())?;
+    let mut emitters = world.resource::<bevy_backend::Engine>().level_emitters();
+    if let Some(level) = world.get_resource::<level::LevelAudio>() { emitters.extend(level.emitters()); }
+    emitters.extend(world.resource::<PendingSounds>().0.iter().map(|queued| request_emitter(&queued.request)));
+    emitters.extend(world.query::<&AudioTarget>().iter(world).map(|target| target.emitter));
+    emitters.remove(&Emitter::Menu);
+    if let Some(sounds) = world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>() {
+        let sounds = sounds.lock();
+        for ticket in &sounds.queued { emitters.remove(&ticket.event().object); }
+        for emitter in &sounds.released { emitters.remove(emitter); }
+    }
+    for emitter in emitters { request_object_retirement(world, emitter)?; }
+    Ok(())
+}
+
+pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, String> {
+    world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    poll_object_retirements(world)?;
+    let pending = world.resource::<PendingSounds>().0.iter().any(|queued| request_emitter(&queued.request) != Emitter::Menu);
+    let retiring = world.resource::<RetiringSounds>().0.iter().any(|(&emitter, &state)| emitter != Emitter::Menu && state != ObjectRetirement::Complete);
+    let fx_pending = world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>()
+        .is_some_and(|sounds| { let sounds = sounds.lock(); !sounds.queued.is_empty() || !sounds.released.is_empty() });
+    if fx_pending {
+        if let Some(error) = world.resource::<effects::EffectAudio>().last_error.as_ref() {
+            return Err(format!("world FX sound retirement failed: {error}"));
+        }
+    }
+    Ok(!pending && !retiring && !fx_pending)
 }
 
 pub(super) fn begin_level(world: &mut World) {
     world.resource::<bevy_backend::Engine>().release_level();
+    world.resource_mut::<RetiringSounds>().0.retain(|emitter, _| *emitter == Emitter::Menu);
     let mut registry = world.resource_mut::<WwiseRegistry>();
     registry.sources.clear();
     let keep = registry.shared_banks;
@@ -441,6 +536,8 @@ pub(super) fn initialize_resources(app: &mut App) {
         .init_resource::<effects::EffectAudio>()
         .init_resource::<WwiseRegistry>()
         .init_resource::<acquisition::SourceJobs>()
+        .init_resource::<SoundEventCursor>()
+        .init_resource::<RetiringSounds>()
         .init_resource::<PendingSounds>()
         .init_resource::<SoundCompletions>()
         .init_resource::<SoundDecodeQueue>()
@@ -459,7 +556,7 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -800,7 +897,8 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
 fn play_events(
     mut commands: Commands,
     physics: Option<Res<super::physics_scene::PhysicsScene>>,
-    mut events: MessageReader<SoundEvent>,
+    events: Res<Messages<SoundEvent>>,
+    mut event_cursor: ResMut<SoundEventCursor>,
     mut registry: ResMut<WwiseRegistry>,
     mut scheduled_sources: ResMut<Assets<graph::ScheduledAudio>>,
     mix: Res<AudioMix>,
@@ -809,6 +907,7 @@ fn play_events(
     mut pending: ResMut<PendingSounds>,
     mut completions: ResMut<SoundCompletions>,
     mut decodes: ResMut<SoundDecodeQueue>,
+    mut retiring: ResMut<RetiringSounds>,
 ) {
     completions.pump();
     for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
@@ -830,17 +929,33 @@ fn play_events(
     }
     let Some(mixer) = &mix.mixer else {
         for queued in std::mem::take(&mut pending.0) {
+            if let Request::Retire { emitter } = queued.request {
+                match engine.release_object(emitter) {
+                    Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
+                    Err(error) => { warn!("Sound object retirement failed: {error}"); pending.0.push(queued); },
+                }
+                continue;
+            }
             match queued.request {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
                     | Request::PostAt { event, emitter, .. } if queued.watched => completions.failed(event, emitter),
                 _ => {},
             }
         }
-        for message in events.read() {
+        for message in event_cursor.0.read(&events) {
             match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
                     | Request::PostAt { event, emitter, .. } => completions.failed(event, emitter),
                 Request::Stop { .. } => {},
+                Request::Retire { emitter } => {
+                    match engine.release_object(emitter) {
+                        Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
+                        Err(error) => {
+                            warn!("Sound object retirement failed: {error}");
+                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: false });
+                        },
+                    }
+                },
             }
         }
         return;
@@ -848,30 +963,30 @@ fn play_events(
     // A request whose streamed media is still being read waits, keeping its
     // place ahead of later requests for the same emitter.
     let requests: Vec<PendingSound> = std::mem::take(&mut pending.0).into_iter()
-        .chain(events.read().map(|message| {
+        .chain(event_cursor.0.read(&events).map(|message| {
             let watched = match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
                     | Request::PostAt { event, emitter, .. } => completions.waiting.contains(&(event, emitter)),
-                Request::Stop { .. } => false,
+                Request::Stop { .. } | Request::Retire { .. } => false,
             };
             PendingSound { request: message.0, media: Vec::new(), watched }
         })).collect();
     let mut waiting = Vec::new();
     for queued in requests {
-        let emitter = match queued.request {
-            Request::Post { emitter, .. } | Request::PostWithParameter { emitter, .. }
-                | Request::PostAt { emitter, .. } | Request::Stop { emitter, .. } => emitter,
-        };
-        if let Emitter::Component { handle, generation } = emitter {
-            if !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)) {
-                if queued.watched {
-                    match queued.request {
-                        Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed(event, emitter),
-                        Request::Stop { .. } => {}
-                    }
+        let emitter = request_emitter(&queued.request);
+        let is_retire = matches!(queued.request, Request::Retire { .. });
+        let state = retiring.0.get(&emitter).copied();
+        let stale_component = matches!(emitter, Emitter::Component { handle, generation }
+            if state != Some(ObjectRetirement::Queued)
+                && !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)));
+        if !is_retire && (stale_component || matches!(state, Some(ObjectRetirement::Submitted | ObjectRetirement::Complete))) {
+            if queued.watched {
+                match queued.request {
+                    Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed(event, emitter),
+                    _ => {}
                 }
-                continue;
             }
+            continue;
         }
         let request = queued.request;
         let (event, emitter, parameter, position) = match request {
@@ -879,6 +994,14 @@ fn play_events(
             Request::PostWithParameter { event, emitter, parameter, value } => (event, emitter, Some((parameter, value)), None),
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
+            Request::Retire { emitter } => {
+                if waiting.contains(&emitter) { pending.0.push(queued); continue; }
+                match engine.release_object(emitter) {
+                    Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
+                    Err(error) => { warn!("Sound object retirement failed: {error}"); pending.0.push(queued); },
+                }
+                continue;
+            }
             Request::Stop { event, emitter } => {
                 if waiting.contains(&emitter) { pending.0.push(queued); continue; }
                 engine.stop_event(event, emitter);
@@ -945,12 +1068,12 @@ fn play_events(
             for action in actions.iter().cloned() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
-                        if let Err(error) = engine.post_state(action, target_path, event, emitter) {
+                        if let Err(error) = engine.post_state_with_ticket(action, target_path, event, emitter, tracked.clone()) {
                             warn!("Wwise event {event:#010x} Set State unavailable: {error}");
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop(action, target_path, event, emitter) {
+                        if let Err(error) = engine.post_stop_with_ticket(action, target_path, event, emitter, tracked.clone()) {
                             warn!("Wwise event {event:#010x} Stop unavailable: {error}");
                         }
                     },

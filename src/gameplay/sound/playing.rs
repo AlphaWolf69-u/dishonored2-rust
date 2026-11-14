@@ -88,6 +88,10 @@ impl PlayingEvents {
 
     /// True while any pending action or playing voice retains this
     /// declaration reference. The registry itself owns only weak tickets.
+    pub fn references_object(&self, object: Emitter) -> bool {
+        self.active.values().filter_map(Weak::upgrade).any(|entry| entry.event.object == object)
+    }
+
     pub fn references_declaration(&self, declaration: u32) -> bool {
         self.active.values().filter_map(Weak::upgrade).any(|entry| entry.event.declaration == declaration)
     }

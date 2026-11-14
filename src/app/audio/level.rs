@@ -41,6 +41,7 @@ impl LevelAudio {
             listener_position: None, listener_zone: None, auxiliary_buses })
     }
     pub(super) fn release_object(&mut self, emitter: Emitter) { self.objects.remove(&emitter); }
+    pub(super) fn emitters(&self) -> impl Iterator<Item = Emitter> + '_ { self.objects.keys().copied() }
 
     /// Shared c2b60/c3a00 publication for retained component and FX objects.
     /// The caller supplies the object's actual range and settings; this owner

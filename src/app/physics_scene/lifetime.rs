@@ -17,6 +17,11 @@ pub(super) struct Retirement {
     stopped: std::collections::HashSet<(u64, u32)>,
 }
 
+pub(in crate::app) fn retirement_progress(world: &bevy::prelude::World) -> Option<(usize, usize, usize, bool)> {
+    world.get_resource::<PhysicsScene>()?.retirement.as_ref()
+        .map(|state| (state.requested, state.stopped.len(), state.retire_next, state.complete))
+}
+
 /// Removal from World is temporary; every error and Pending result restores
 /// these sole owners. No resource destruction follows an incomplete drain.
 pub(in crate::app) fn poll(world: &mut bevy::prelude::World) -> Result<bool, String> {
@@ -34,6 +39,7 @@ pub(in crate::app) fn poll(world: &mut bevy::prelude::World) -> Result<bool, Str
     world.insert_resource(events);
     world.insert_resource(live);
     world.insert_resource(scene);
+    if matches!(result, Ok(false)) { super::super::audio::poll_object_retirements(world)?; }
     result
 }
 
@@ -250,6 +256,13 @@ impl ComponentReleaseWorld for Host<'_> {
     fn released(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
         registry.ensure_no_update_references(handle)?;
         if self.owner(handle)?.entity.is_some() { return Err("component remains linked at pool release".into()); }
+        let audio = if handle.class_id == self.scene.classes[4] {
+            let emitter = crate::gameplay::sound::Emitter::Component { handle: handle.packed(), generation: self.owner(handle)?.generation };
+            if !super::super::audio::retire_component_object(self.world, emitter)? {
+                return Err("audio pool release requires its acknowledged sound object".into());
+            }
+            Some(emitter)
+        } else { None };
         let scene = &mut self.scene;
         if handle.class_id == scene.classes[0] { scene.triggers.release(handle.slot)?; }
         else if handle.class_id == scene.classes[1] { scene.waters.release(handle.slot)?; }
@@ -259,6 +272,7 @@ impl ComponentReleaseWorld for Host<'_> {
         else if handle.class_id == scene.classes[5] { scene.usables.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
+        if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world, emitter)?; }
         Ok(())
     }
 }
