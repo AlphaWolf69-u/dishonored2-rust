@@ -190,7 +190,8 @@ pub(super) struct MovieResidency {
 }
 impl MovieResidency {
     pub(super) fn new(label: &'static str, catalog: &Catalog, resources: &[(usize, String)], images: &MovieBitmaps) -> Option<Self> {
-        if !std::env::var_os("DH2_DEBUG_UI_RESIDENCY").is_some_and(|v| v == "1") { return None; }
+        if !super::ui_lifecycle_diagnostics::enabled()
+            && !std::env::var_os("DH2_DEBUG_UI_RESIDENCY").is_some_and(|v| v == "1") { return None; }
         let libraries = resources.iter().map(|(index, path)| {
             let members: Vec<_> = images.iter().filter(|(id, _)| id.library == *index).map(|(_, image)| image).collect();
             let bytes = members.iter().map(|image| image.bytes.len()).sum();
@@ -200,11 +201,13 @@ impl MovieResidency {
             info!("UI residency open: movie={label} library={path} payload_bytes={bytes} session_registry={cached}");
             (path.clone(), bytes, eligible, weak)
         }).collect();
+        super::ui_lifecycle_diagnostics::movie(label, true);
         Some(Self { label, catalog_identity: catalog.identity(), libraries })
     }
 }
 impl Drop for MovieResidency {
     fn drop(&mut self) {
+        super::ui_lifecycle_diagnostics::movie(self.label, false);
         for (path, opened, eligible, images) in &self.libraries {
             let cached = *eligible && bitmap_resources::debug_resident(self.catalog_identity, path);
             let (mut live_bytes, mut live_images, mut externally_held) = (0usize, 0usize, 0usize);
@@ -325,11 +328,14 @@ impl Drop for PauseMenu {
         };
         if let Some(reply) = reply {
             // A full slot already contains the real result and needs no wake.
-            let _ = reply.try_send(Err("movie session ended".into()));
+            let sent = reply.try_send(Err("movie session ended".into())).is_ok();
+            super::ui_lifecycle_diagnostics::cancellation_wake(sent);
         }
         let _ = self.commands.send(Command::Shutdown);
         if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() {
+            let panicked = worker.join().is_err();
+            super::ui_lifecycle_diagnostics::joined(panicked);
+            if panicked {
                 eprintln!("Pause movie worker panicked during session teardown");
             }
         }
@@ -351,6 +357,7 @@ impl Default for PauseMenu {
             .name("pause movie".into())
             .stack_size(256 << 20)
             .spawn(move || {
+                let _lifecycle = super::ui_lifecycle_diagnostics::worker_started();
                 let notify = outbox.clone();
                 crate::flash::iggy_functions::set_texture_resolver(Box::new(move |name| {
                     let (reply, response) = std::sync::mpsc::sync_channel(1);
@@ -359,12 +366,14 @@ impl Default for PauseMenu {
                         if state.closing { return Err("movie session ended".into()); }
                         state.pending = Some(reply.clone());
                     }
+                    let diagnostic_id = super::ui_lifecycle_diagnostics::request(name);
                     let result = (|| {
-                        texture_sender.send(super::resident_images::UiTextureRequest { name: name.to_owned(), reply }).map_err(|e| e.to_string())?;
+                        texture_sender.send(super::resident_images::UiTextureRequest { name: name.to_owned(), reply, diagnostic_id }).map_err(|e| e.to_string())?;
                         notify.send(Event::TexturePending).map_err(|e| e.to_string())?;
                         response.recv().map_err(|e| e.to_string())?
                     })();
                     worker_wait.lock().unwrap_or_else(|e| e.into_inner()).pending = None;
+                    super::ui_lifecycle_diagnostics::received(diagnostic_id, result.is_ok());
                     result
                 }));
                 run(inbox, outbox);
@@ -376,10 +385,18 @@ impl Default for PauseMenu {
 }
 
 impl PauseMenu {
+    /// The actual synchronous resolver wait, for the opt-in lifecycle observer.
+    /// Never used to hold, postpone or manufacture a movie request.
+    pub(super) fn texture_reply_pending(&self) -> bool {
+        let state = self.texture_wait.lock().unwrap_or_else(|error| error.into_inner());
+        state.pending.is_some() && !state.closing
+    }
+
     pub(super) fn begin_level(&mut self) {
         self.modal.clear();
         let _ = self.commands.send(Command::EndHud);
         self.hud_epoch = self.hud_epoch.wrapping_add(1);
+        super::ui_lifecycle_diagnostics::boundary("level-epoch", self.hud_epoch);
         // Level teardown also exits Journal/READ_NOTE (140790ea0 ->
         // 140788d70). Pause Close alone only retires the pause movie.
         let _ = self.commands.send(Command::Modal(journal::Command {
@@ -588,7 +605,12 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
       let mut changed = false;
       for command in commands {
         match command {
-            Command::Modal(command) => modal.command(command, &mut generation, &outbox),
+            Command::Modal(command) => {
+                let cleared = matches!(&command.operation, journal::Operation::Clear);
+                let epoch = command.epoch;
+                modal.command(command, &mut generation, &outbox);
+                if cleared { super::ui_lifecycle_diagnostics::boundary("modal-cleared", epoch); }
+            },
             Command::Shutdown => return,
             Command::StartHud { screen, epoch } => {
                 trace_readable_ui(|| format!("HUD worker loading epoch={epoch}"));
@@ -649,7 +671,10 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                     if let Err(e) = movie.mouse_button(down, button) { let _ = frames.send(Err(e)); }
                 }
             }
-            Command::EndLoading => loading = None,
+            Command::EndLoading => {
+                loading = None;
+                super::ui_lifecycle_diagnostics::boundary("loading-closed", hud_epoch);
+            },
             Command::Prepare { screen } => {
                 if loaded.is_none() && prepared.as_ref().is_none_or(|p| p.screen != screen) {
                     match prepare(screen) {
@@ -674,6 +699,7 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 // 1410298b0 closes the movie and its draw ownership. Only an
                 // actually submitted frame may outlive it, not this reuse slot.
                 last_frame = None;
+                super::ui_lifecycle_diagnostics::boundary("pause-closed", hud_epoch);
             },
             Command::DebugDump { window } => {
                 let Some(l) = loaded.as_mut() else { continue };

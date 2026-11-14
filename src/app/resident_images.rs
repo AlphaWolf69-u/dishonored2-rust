@@ -676,6 +676,7 @@ pub(super) fn publish_ui_images(
         named.insert(name.clone(), image.handle.clone());
     }
     frame.game_images = std::sync::Arc::new(named);
+    super::ui_lifecycle_diagnostics::frame(frame);
 }
 
 /// Synchronous Iggy callback, fulfilled on the main world that owns Assets.
@@ -683,6 +684,7 @@ pub(super) fn publish_ui_images(
 pub(super) struct UiTextureRequest {
     pub name: String,
     pub reply: std::sync::mpsc::SyncSender<Result<crate::flash::iggy_functions::BoundTexture, String>>,
+    pub diagnostic_id: u64,
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -703,7 +705,9 @@ impl UiImageService<'_> {
             if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
                 eprintln!("LOAD UI texture binding: {} {result:?}", request.name);
             }
-            let _ = request.reply.send(result);
+            super::ui_lifecycle_diagnostics::reply(&request.name, &result);
+            let sent = request.reply.send(result).is_ok();
+            super::ui_lifecycle_diagnostics::reply_sent(request.diagnostic_id, sent);
         }
     }
 }
