@@ -67,9 +67,9 @@ pub(crate) struct BodyCreation<'a, 'world, 'resources, G, E> {
     pub properties: &'a mut [BodyPropertyBits],
 }
 
-struct Attachment<'a, G> {
-    geometry: &'a mut G,
-    deactivation: &'a mut DeactivationWorld,
+pub(super) struct Attachment<'a, G> {
+    pub(super) geometry: &'a mut G,
+    pub(super) deactivation: &'a mut DeactivationWorld,
 }
 impl<G: BodyCreationGeometry> AttachmentWorld for Attachment<'_, G> {
     fn shape_flags(&mut self, shape: usize) -> Result<u16, String> {

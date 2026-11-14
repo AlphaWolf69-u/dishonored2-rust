@@ -4682,6 +4682,22 @@ runtime teardown. Existing fixture constructors receive only new-field defaults
 and the request-only fixture declares its absent execution callbacks; no tests
 were added or run. Compilation is reserved for the coordinated host batch.
 
+Singleton rigid-body mode recovery (`c86800`, `c87640`, `c90020`, `c92500`):
+the canonical WorldStorage now retains the actual body while switching a
+singleton between static and keyframed motion or refreshing its collision
+filter. Static conversion releases its last motion through the existing
+deactivation/motion owners; static-to-keyframe computes the real retained
+mass frame and attaches a zero-inverse-mass motion. The separate world+8a0
+motion-kind observer and general transform observer retain their source order.
+Per-operation cursors retain partially finished activation/attachment callbacks
+and reject a conflicting request until completion. Compound splitting remains
+an explicit admission error; there is no fabricated alternate body/world.
+Prediction: no additional resources or frame work before a real mode-change
+request, unchanged body/broadphase identity, and one motion allocation only
+for static-to-motion-backed conversion. This is a prerequisite for the portable
+document pickup callbacks, not a claim those consumers are connected yet.
+Source/whitespace review only; no builds, tests or runtime exercise performed.
+
 
 ### Host archive-session teardown
 

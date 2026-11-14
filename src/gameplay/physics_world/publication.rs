@@ -126,6 +126,11 @@ impl<C: PublicationCallbacks> ActivationCallbacks for Activation<'_, C> {
 }
 
 impl BodyPublication<'_> {
+    pub(crate) fn activate_body_resumable(&mut self, id: u32, controller: &mut BodyActivationController,
+        callbacks: &mut impl PublicationCallbacks) -> Result<bool, String> {
+        controller.activate_resumable(self.bodies, self.motions, self.deactivation, id, self.phase,
+            &mut Activation { broadphase: &mut *self.broadphase, callbacks })
+    }
     pub(crate) fn remove(
         &mut self, ids: &[u32], mode: i32, scratch: &mut RemovalScratch,
         callbacks: &mut impl PublicationCallbacks,

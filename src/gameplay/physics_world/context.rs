@@ -32,6 +32,10 @@ pub trait PublicationEvents {
     fn motion_destroyed(&mut self, _owners: ActivationOwners<'_>, _motion: u32) -> Result<(), String> {
         Err("motion-destruction observer dispatch is unavailable".into())
     }
+    /// c892c0: the distinct world+8a0 static/motion-backed transition signal.
+    fn motion_type_changed(&mut self, _owners: ActivationOwners<'_>, _body: u32, _is_static: bool) -> Result<(), String> {
+        Err("body motion-kind observer dispatch is unavailable".into())
+    }
     fn transform_changed(
         &mut self,
         owners: ActivationOwners<'_>,

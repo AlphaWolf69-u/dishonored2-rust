@@ -24,6 +24,7 @@ use crate::gameplay::{
     space_cells::SpaceCells,
     world_point_query::{WorldPointQuery, WorldPointRequest, WorldQueryShape},
 };
+mod motion_type;
 
 pub(crate) struct WorldStorage {
     pub info: WorldInfo,
@@ -50,6 +51,8 @@ pub(crate) struct WorldStorage {
     registry: ShapeRegistry,
     removal_scratch: super::publication::RemovalScratch,
     destruction: Option<DestructionProgress>,
+    body_mode_progress: Option<motion_type::BodyModeProgress>,
+    activation_scratch: crate::gameplay::body_activation::BodyActivationController,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,6 +70,7 @@ impl WorldStorage {
     /// Host mutation fence for resumable owner operations.
     pub(crate) fn publication_idle(&self) -> bool {
         self.removal_scratch.is_idle() && self.destruction.is_none()
+            && self.body_mode_progress.is_none() && self.activation_scratch.is_idle()
     }
 
     /// 140c8f080 cancels pending publication and removes live broadphase bodies.
@@ -74,6 +78,9 @@ impl WorldStorage {
         &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
     ) -> Result<(), String> {
         if self.destruction.is_some() { return Err("body destruction must finish before another unpublication".into()); }
+        if self.body_mode_progress.is_some() || !self.activation_scratch.is_idle() {
+            return Err("body mode or activation update must finish before unpublication".into());
+        }
         let mut scratch = std::mem::take(&mut self.removal_scratch);
         let result = self.edit_bodies(geometry, events, |creation|
             creation.world.remove(ids, mode, &mut scratch, creation.callbacks));
@@ -85,10 +92,14 @@ impl WorldStorage {
     pub(crate) fn destroy_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
     ) -> Result<(), String> {
+<<<<<<< HEAD
         // A failed Stop must finish its own publication request before
         // deinitialization can establish a different destruction owner.
         if self.destruction.is_none() && !self.removal_scratch.is_idle() {
             return Err("body unpublication must finish before destruction".into());
+=======
+        if self.body_mode_progress.is_some() || !self.activation_scratch.is_idle() {
+            return Err("body mode or activation update must finish before destruction".into());
         }
         let trace = std::env::var("DH2_DEBUG_COLLISION_SOURCES").as_deref() == Ok("1");
         let start = if trace { crate::loading::thread_cycles() } else { None };
@@ -213,6 +224,8 @@ impl WorldStorage {
             registry: ShapeRegistry::new(identity),
             removal_scratch: Default::default(),
             destruction: None,
+            body_mode_progress: None,
+            activation_scratch: Default::default(),
             qualities,
             cells,
             step: SweptBoundsStep::initial(),
@@ -293,6 +306,20 @@ impl WorldStorage {
                 .world
                 .set_material(id, material, mode, creation.callbacks)
         })
+    }
+
+    pub(crate) fn activate_body<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, id: u32,
+    ) -> Result<bool, String> {
+        let mut scratch = std::mem::take(&mut self.activation_scratch);
+        let result = if !self.publication_idle() {
+            Err("world publication must finish before body activation".into())
+        } else {
+            self.edit_bodies(geometry, events, |creation|
+                creation.world.activate_body_resumable(id, &mut scratch, creation.callbacks))
+        };
+        self.activation_scratch = scratch;
+        result
     }
 
     fn edit_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks, R>(
