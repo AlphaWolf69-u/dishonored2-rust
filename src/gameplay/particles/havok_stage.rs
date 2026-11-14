@@ -167,6 +167,10 @@ pub struct HavokStageSimulation {
     counters: Vec<i8>,
     /// +0x750..+0x7d0: the stage events' listeners.
     events: HavokEventLists,
+    /// +0x698: the attractor states (1401cdff0 from the spawn seed),
+    /// prepared each simulated frame (1401e7650) and applied to the bodies
+    /// by arkAttractorsHavokEffect (1401ce600).
+    attractors: Vec<super::attractor::AttractorState>,
     /// Events for the system's ordinary stages and FX event instances,
     /// delivered by the owning system after each frame and step.
     pub deliveries: Vec<super::events::Delivery>,
@@ -320,6 +324,7 @@ impl HavokStageSimulation {
             },
             deliveries: Vec::new(),
             fx_pending: Vec::new(),
+            attractors: Vec::new(),
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
                 solver: match shape {
@@ -336,6 +341,13 @@ impl HavokStageSimulation {
                 filter: crate::gameplay::collision_filter::filter_info(definition.collisions.layer) & 0xf7df_ffff,
             }),
         };
+        result.attractors = result
+            .definition()
+            .stage
+            .attractors
+            .iter()
+            .map(|attractor| super::attractor::AttractorState::new(attractor, result.emitter.seed))
+            .collect();
         result.set_integrate(world_gravity)?;
         Ok(result)
     }
@@ -419,6 +431,17 @@ impl HavokStageSimulation {
             // 1401e6f50.
             self.clip_bounds = frame.bounds;
             self.clip_planes = frame.planes.to_vec();
+            // 1401e7650: the attractors from the system origin in world
+            // space, with a copy of the cycle seed and the spawn seed.
+            if !self.attractors.is_empty() {
+                let space = super::space::ParticleSpace::new(frame.pose.basis, true);
+                let mut cycle_seed = self.emitter.cycle_seed();
+                let fraction = self.emitter.cycle.fraction;
+                let attractors = &self.declaration.havok_stages[self.index].stage.attractors;
+                for (state, attractor) in self.attractors.iter_mut().zip(attractors) {
+                    state.prepare(attractor, frame.pose.position, &space, fraction, &mut cycle_seed, &mut self.emitter.seed, delta)?;
+                }
+            }
             let room = self.pipeline.allocator.capacity() as i32 - self.pending.len() as i32 - self.live.len() as i32;
             let multiplier = frame.rate;
             let burst = definition.stage.burst;
@@ -525,6 +548,27 @@ impl HavokStageSimulation {
         self.pipeline.allocator.update_allocated();
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
         let dt = if 0. <= dt { dt } else { 0. };
+        // arkAttractorsHavokEffect (1401ce600), before the collision effects.
+        if !self.attractors.is_empty() {
+            let attractors = &self.declaration.havok_stages[self.index].stage.attractors;
+            for &body in &bodies {
+                let index = body as usize;
+                let age = divide(self.pipeline.linear[index][0][3], self.life[index]);
+                // approximate_: the strength seed is the body's +0x340 word,
+                // sized but never written by the stage.
+                let mut seed = 0;
+                for (state, attractor) in self.attractors.iter().zip(attractors) {
+                    let [p, v] = self.pipeline.linear[index];
+                    if let Some(pull) = state.pull([p[0], p[1], p[2]], [v[0], v[1], v[2]]) {
+                        let strength = attractor.strength_over_life.sample_particle_rate(age, &mut seed)?;
+                        let linear = &mut self.pipeline.linear[index][1];
+                        for i in 0..3 {
+                            linear[i] = add(multiply(dt, multiply(pull[i], strength)), linear[i]);
+                        }
+                    }
+                }
+            }
+        }
         // Stage 0 per body: PhysicsCollide's CD pass, then the contact
         // solve, then Integrate.
         if let Some(collisions) = self.collisions.as_mut() {

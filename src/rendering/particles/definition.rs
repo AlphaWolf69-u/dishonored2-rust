@@ -455,9 +455,6 @@ fn havok_stage_admission(
     if !asset.vector_fields.is_empty() || !asset.acceleration_fields.is_empty() || !asset.spawn_fields.is_empty() {
         return Err("Havok particle vector fields (arkVectorFieldsHavokEffect) are not ported".into());
     }
-    if !asset.attractors.is_empty() {
-        return Err("Havok particle attractors (arkAttractorsHavokEffect) are not ported".into());
-    }
     if stage.acceleration_over_life.range.iter().flatten().any(|&value| value != 0.)
         || stage.linear_acceleration_over_life.range.iter().any(|&value| value != 0.)
     {
