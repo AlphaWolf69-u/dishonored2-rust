@@ -671,15 +671,15 @@ impl<'a> Parser<'a> {
         }
         Ok(fields)
     }
-    fn map_names(&mut self, names: &mut Vec<String>) -> Result<(), String> {
+    fn map_names(&mut self, mut names: Option<&mut Vec<String>>) -> Result<(), String> {
         self.expect(Token::Open)?;
         loop {
             match self.advance()? {
                 Some(Token::Close) => return Ok(()),
                 Some(Token::Atom(atom)) => {
                     if let Some(name) = atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                        if !names.iter().any(|existing| existing == name) {
-                            names.push(name.to_owned());
+                        if let Some(names) = names.as_deref_mut() {
+                            if !names.iter().any(|existing| existing == name) { names.push(name.to_owned()); }
                         }
                     }
                 }
@@ -690,7 +690,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn document(&mut self, capture_ranges: bool) -> Result<(Document, MapMetadata, Vec<std::ops::Range<usize>>), String> {
+    fn document(&mut self, capture_metadata: bool, capture_ranges: bool) -> Result<(Document, MapMetadata, Vec<std::ops::Range<usize>>), String> {
         if self.atom()? != "Version" {
             return Err("missing Version header".into());
         }
@@ -705,8 +705,8 @@ impl<'a> Parser<'a> {
             let mut groups = Vec::new();
             while kind == "entity" {
                 match self.ahead {
-                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(&mut layers)?; }
-                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(&mut groups)?; }
+                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut layers))?; }
+                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut groups))?; }
                     _ => break,
                 }
             }
@@ -728,8 +728,8 @@ impl<'a> Parser<'a> {
             self.expect(Token::Close)?;
             while kind == "entity" {
                 match self.ahead {
-                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(&mut layers)?; }
-                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(&mut groups)?; }
+                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut layers))?; }
+                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut groups))?; }
                     _ => break,
                 }
             }
@@ -757,11 +757,11 @@ impl<'a> Parser<'a> {
 }
 
 pub fn parse(text: &str) -> Result<Document, String> {
-    parse_map(text).map(|(document, _)| document)
+    Parser::new_map(text)?.document(false, false).map(|(document, _, _)| document)
 }
 
 pub fn parse_map(text: &str) -> Result<(Document, MapMetadata), String> {
-    let (document, metadata, _) = Parser::new_map(text)?.document(false)?;
+    let (document, metadata, _) = Parser::new_map(text)?.document(true, false)?;
     Ok((document, metadata))
 }
 
@@ -781,7 +781,7 @@ impl DeclarationSources {
 
 pub(crate) fn parse_preparation(text: std::sync::Arc<str>)
     -> Result<(Document, MapMetadata, DeclarationSources), String> {
-    let (document, metadata, ranges) = Parser::new_map(&text)?.document(true)?;
+    let (document, metadata, ranges) = Parser::new_map(&text)?.document(true, true)?;
     Ok((document, metadata, DeclarationSources { text, ranges }))
 }
 
