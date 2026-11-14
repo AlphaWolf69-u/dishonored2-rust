@@ -58,8 +58,28 @@ pub struct MotionClip {
 /// motion key as an autonomous animation. Other cinematic resources stay owned
 /// by their future scene runtime. No filename or entity-name exceptions.
 pub fn parse_clip(text: &str) -> Result<MotionClip, String> {
+    parse_clip_tracks(text, false).map(|(clip, _, _, _)| clip)
+}
+
+#[derive(Clone, Debug)]
+pub struct AnimatedMotionClip {
+    pub motion: MotionClip,
+    pub animations: HashMap<u32, Vec<super::midnight::AnimKey>>,
+    pub motion_groups: std::collections::HashSet<u32>,
+    pub blend_out_seconds: f32,
+}
+
+/// Prepare the same looping graph with both motion and skeletal tracks.
+/// Admission is separate until the scene-driven skeleton owner is connected.
+pub fn parse_animated_clip(text: &str) -> Result<AnimatedMotionClip, String> {
+    let (motion, animations, motion_groups, blend_out_seconds) = parse_clip_tracks(text, true)?;
+    Ok(AnimatedMotionClip { motion, animations, motion_groups, blend_out_seconds })
+}
+
+fn parse_clip_tracks(text: &str, animated: bool) -> Result<(MotionClip, HashMap<u32, Vec<super::midnight::AnimKey>>, std::collections::HashSet<u32>, f32), String> {
     let fields = parse_declaration(text)?;
     let edit = child(&fields, "edit");
+    let blend_out = if animated { number(child(edit, "m_settings"), "m_blendOutTime", 0.3)? } else { 0.3 };
     let scenes: Vec<_> = items(child(edit, "m_scenes")).collect();
     if scenes.len() != 1 {
         return Err("requires one scene".into());
@@ -96,6 +116,8 @@ pub fn parse_clip(text: &str) -> Result<MotionClip, String> {
     }
     let infos: Vec<_> = items(child(edit, "m_groupsInfo")).collect();
     let mut groups = Vec::new();
+    let mut animations = HashMap::new();
+    let mut motion_groups = std::collections::HashSet::new();
     for wrapper in items(child(scene, "m_groups")) {
         let group = object(wrapper);
         if atom(group, "m_isDisabled") == Some("true") {
@@ -123,11 +145,28 @@ pub fn parse_clip(text: &str) -> Result<MotionClip, String> {
                 other => return Err(format!("unsupported interpolation {other}")),
             };
         let tracks: Vec<_> = items(child(group, "m_lTracks")).map(object).collect();
-        if tracks.len() != 1 || atom(tracks[0], "m_trackType") != Some("EMTT_MOTION") {
+        let motion_tracks: Vec<_> = tracks.iter().copied().filter(|t| atom(t, "m_trackType") == Some("EMTT_MOTION")).collect();
+        if motion_tracks.len() > 1 || (!animated && motion_tracks.len() != 1) || tracks.iter().any(|t| {
+            let kind = atom(t, "m_trackType");
+            kind != Some("EMTT_MOTION") && !(animated && kind == Some("EMTT_ANIM"))
+        }) {
             return Err("scene has non-motion tracks".into());
         }
+        let mut animation = Vec::new();
+        for track in tracks.iter().copied().filter(|t| atom(t, "m_trackType") == Some("EMTT_ANIM")) {
+            for key in items(child(track, "m_keys")) {
+                if atom(key, "m_type") != Some("EMKT_CLIP")
+                    || atom(child(key, "m_keyProp"), "m_class") != Some("arkMidnightKeyPropAnim")
+                    || atom(key, "m_playingDirection").is_some_and(|direction| direction != "EMPD_BOTH" && direction != "EMPD_FORWARD") {
+                    return Err("unsupported animation key".into());
+                }
+                let key = super::midnight::anim_key(key)?;
+                if key.anim.is_empty() || key.duration_ms <= 0 { return Err("invalid animation clip".into()); }
+                animation.push(key);
+            }
+        }
         let mut keys = Vec::new();
-        for key in items(child(tracks[0], "m_keys")) {
+        for key in motion_tracks.first().into_iter().flat_map(|track| items(child(track, "m_keys"))) {
             if atom(key, "m_type") != Some("EMKT_POINT") {
                 return Err("non-point motion key".into());
             }
@@ -148,11 +187,15 @@ pub fn parse_clip(text: &str) -> Result<MotionClip, String> {
                 angle_out: angles(child(p, "m_tangentOutOr"))?,
             });
         }
-        if keys.is_empty() || keys.windows(2).any(|p| p[0].time_ms >= p[1].time_ms) {
+        if (!motion_tracks.is_empty() && keys.is_empty()) || keys.windows(2).any(|p| p[0].time_ms >= p[1].time_ms)
+            || (motion_tracks.is_empty() && animation.is_empty()) {
             return Err("invalid motion key times".into());
         }
+        let uid = id.parse().map_err(|_| "invalid group UID")?;
+        if !motion_tracks.is_empty() { motion_groups.insert(uid); }
+        if !animation.is_empty() { animations.insert(uid, animation); }
         groups.push(MotionGroup {
-            uid: id.parse().map_err(|_| "invalid group UID")?,
+            uid,
             name: atom(info, "m_name").unwrap_or("").into(),
             curve: MotionCurve {
                 interpolation,
@@ -163,10 +206,10 @@ pub fn parse_clip(text: &str) -> Result<MotionClip, String> {
     if groups.is_empty() {
         return Err("no motion groups".into());
     }
-    Ok(MotionClip {
+    Ok((MotionClip {
         length_ms: length,
         groups,
-    })
+    }, animations, motion_groups, blend_out))
 }
 
 pub use super::event_graph::{Node, Port};
@@ -175,6 +218,7 @@ pub struct Graph {
     pub owner: String,
     pub nodes: Vec<Node>,
     pub clips: HashMap<String, Arc<MotionClip>>,
+    pub animated_clips: HashMap<String, Arc<AnimatedMotionClip>>,
 }
 /// Host leases replace the declaration pointers copied by1405329c0 and used
 /// by140533460. A graph and its independent playbacks share immutable curves.
@@ -189,6 +233,7 @@ pub(crate) fn retain_clip(clip: &Arc<MotionClip>) -> Arc<MotionClip> {
 pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String> {
     let _tag = crate::platform::allocation_tags::tag("Motion scene resources");
     let mut cache = HashMap::new();
+    let mut animated_cache = HashMap::new();
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         let list = child(child(child(&entity.fields, "edit"), "m_kiscule"), "m_nodes");
@@ -197,6 +242,7 @@ pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String
                 atom(n, "m_name"),
                 Some(
                     "arkKisculeNodeActionMidnightKeyframeControl"
+                        | "arkKisculeNodeActionMidnightControl"
                         | "arkKisculeNodeActionAngularPhysicsMotorControl"
                 )
             )
@@ -205,24 +251,31 @@ pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String
         }
         let mut nodes = Vec::new();
         let mut clips = HashMap::new();
+        let mut animated_clips = HashMap::new();
         for n in items(list) {
             let params = object(child(n, "m_parameters"));
             if let Some(path) = atom(params, "m_declMdnt").filter(|p| *p != "NULL") {
-                if !cache.contains_key(path) {
+                let skeletal = atom(n, "m_name") == Some("arkKisculeNodeActionMidnightControl");
+                if !cache.contains_key(path) || (skeletal && !animated_cache.contains_key(path)) {
                     let resource = format!("generated/decls/midnightscene/{path}.decl");
-                    let clip = catalog
-                        .read(&resource)
-                        .map_err(|e| e.to_string())?
-                        .and_then(|b| parse_clip(&super::declaration_text(&b)).ok().map(Arc::new));
-                    cache.insert(path.to_owned(), clip);
+                    let bytes = catalog.read(&resource).map_err(|e| e.to_string())?;
+                    if !cache.contains_key(path) {
+                        cache.insert(path.to_owned(), bytes.as_ref().and_then(|b|
+                            parse_clip(&super::declaration_text(b)).ok().map(Arc::new)));
+                    }
+                    if skeletal && !animated_cache.contains_key(path) {
+                        animated_cache.insert(path.to_owned(), bytes.as_ref().and_then(|b|
+                            parse_animated_clip(&super::declaration_text(b)).ok().map(Arc::new)));
+                    }
                 }
-                if let Some(clip) = &cache[path] {
-                    clips.insert(path.to_owned(), retain_clip(clip));
+                if let Some(clip) = &cache[path] { clips.insert(path.to_owned(), retain_clip(clip)); }
+                if skeletal {
+                    if let Some(clip) = &animated_cache[path] { animated_clips.insert(path.to_owned(), Arc::clone(clip)); }
                 }
             }
             nodes.push(super::event_graph::parse_node(n)?);
         }
-        if !clips.is_empty()
+        if !clips.is_empty() || !animated_clips.is_empty()
             || nodes
                 .iter()
                 .any(|n| n.class == "arkKisculeNodeActionAngularPhysicsMotorControl")
@@ -231,6 +284,7 @@ pub fn load(catalog: &Catalog, document: &Document) -> Result<Vec<Graph>, String
                 owner: entity.id.clone(),
                 nodes,
                 clips,
+                animated_clips,
             });
         }
     }

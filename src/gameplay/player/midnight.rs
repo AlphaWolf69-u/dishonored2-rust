@@ -243,7 +243,7 @@ pub struct Midnight {
 }
 
 /// FUN_14018fe90 with KeyCurve_Float slot 13 (FUN_140182e00).
-fn weight(curve: &Option<FloatCurve>, x: i32) -> f32 {
+pub(crate) fn weight(curve: &Option<FloatCurve>, x: i32) -> f32 {
     let Some(c) = curve else { return 1.0 };
     let n = c.times.len();
     if n == 0 {

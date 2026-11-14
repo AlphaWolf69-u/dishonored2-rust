@@ -316,6 +316,15 @@ impl Rig {
         None
     }
 
+    /// Borrow markers from the same retained alias owner used by the clip.
+    /// 247a40 resolves the model's ordered AnimSets; 18e810 consumes that
+    /// selected record, so no source text or second marker cache is needed.
+    pub(crate) fn animation_marker_events(&self, alias: &str) -> Result<&[crate::edge_animation::AnimMarker], String> {
+        let set = self.animsets.iter().find(|set| set.alias(alias).is_some())
+            .ok_or_else(|| format!("no animset alias {alias}"))?;
+        set.markers(alias).map_err(str::to_owned)
+    }
+
     /// The marker events for an animation are stored in its model's animsets,
     /// rather than in the compressed animation. 14018e810 converts their
     /// authored frame numbers to milliseconds using the animation frame rate.

@@ -6,6 +6,22 @@ use crate::{
     gameplay::{game_clock_runtime::ClockRuntime, machinery_world::MachineryWorld},
 };
 use bevy::prelude::*;
+use std::{collections::HashMap, sync::Arc};
+
+struct SceneAsset {
+    animation: crate::gameplay::scene_animation::SceneAnimation,
+    model: crate::bmd6::SkinModel,
+}
+struct SceneSkin {
+    asset: Arc<SceneAsset>,
+    publication: super::skin_publication::SkinPublication,
+    time: Option<i32>,
+    lod: crate::gameplay::entity_lod::EntityLod,
+    visible_previous: bool,
+    source: Option<usize>,
+    failed: bool,
+}
+
 #[derive(Resource, Default)]
 pub(super) struct AmbientMachinery {
     physics: MachineryWorld,
@@ -15,11 +31,18 @@ pub(super) struct AmbientMachinery {
     /// Render +0x1c31 keeps the main view's visibility for two frame parities.
     visible_previous: Vec<bool>,
     skins: Vec<super::physics_skinning::SystemSkin>,
+    scene_skins: HashMap<usize, SceneSkin>,
 }
 impl AmbientMachinery {
     /// Placements whose MD6 vertices are re-posed from simulated bodies.
     pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
+        self.skins.iter().map(|s| s.placement()).chain(self.scene_skins.keys().copied()).collect()
+    }
+    pub(super) fn physics_placements(&self) -> std::collections::HashSet<usize> {
         self.skins.iter().map(|s| s.placement()).collect()
+    }
+    pub(super) fn scene_layer_active(&self, placement: usize) -> bool {
+        self.scene_skins.contains_key(&placement)
     }
     pub(super) fn animated_palette(&self, placement: usize, animation: &[super::physics_skinning::Affine])
         -> Option<Result<Vec<super::physics_skinning::Affine>, String>> {
@@ -82,6 +105,39 @@ impl AmbientMachinery {
         );
         let visible_previous = vec![false; world.bodies.len()];
         let skins = super::physics_skinning::load_skins(catalog, &world, placements);
+        // Only playback admitted by the startup graph acquires skeletal data.
+        // Each started instance leases an immutable asset; no scene references
+        // alone preload rigs, meshes or compressed animations.
+        let mut scene_skins = HashMap::new();
+        let mut scene_assets = HashMap::new();
+        for (placement, clip, group, _) in scenes.animated_groups() {
+            let Some(placed) = placements.get(placement) else { continue };
+            let key = (placed.resource_path.clone(), Arc::as_ptr(clip) as usize, group,
+                catalog.has_overlays().then_some(placement));
+            let asset = scene_assets.entry(key).or_insert_with(|| -> Result<Arc<SceneAsset>, String> {
+                let declaration = crate::bmd6::declaration_path(&placed.resource_path)
+                    .ok_or("scene model is not a compiled MD6")?;
+                let model_name = declaration.strip_prefix("generated/decls/md6def/")
+                    .and_then(|name| name.strip_suffix(".decl")).ok_or("scene MD6 path is invalid")?;
+                let rig = crate::assets::animation_rig::Rig::acquire(catalog, model_name)?;
+                let model = crate::bmd6::ModelSources::acquire_skin_for_rig(catalog, &placed.resource_path, &rig, None)?;
+                let uid = clip.motion.groups[group].uid;
+                let animation = crate::gameplay::scene_animation::SceneAnimation::load(catalog, rig, Arc::clone(clip), uid)?;
+                Ok(Arc::new(SceneAsset { animation, model }))
+            });
+            match asset {
+                Ok(asset) => {
+                    if scene_skins.contains_key(&placement) {
+                        warn!("Multiple scene animation tracks target placement {placement}");
+                        continue;
+                    }
+                    scene_skins.insert(placement, SceneSkin { asset: Arc::clone(asset), publication: Default::default(),
+                        time: None, lod: crate::gameplay::entity_lod::EntityLod::spawned(warmup),
+                        visible_previous: false, source: None, failed: false });
+                }
+                Err(error) => warn!("Scene animation unavailable for placement {placement}: {error}"),
+            }
+        }
         info!("Physics systems: {} simulated, {} skinned", world.systems.len(), skins.len());
         Ok(Self {
             physics: world,
@@ -89,6 +145,7 @@ impl AmbientMachinery {
             sources: None,
             visible_previous,
             skins,
+            scene_skins,
         })
     }
 }
@@ -178,6 +235,27 @@ fn update_lod_levels(
     for (index, old, new) in changes {
         machinery.physics.entity_level_changed(index, old, new);
     }
+    // 54b430 disables the animation tree at LOD >= 6; its scene clock
+    // continues so reappearing actors resume at the current scene time.
+    for (&placement, skin) in &mut machinery.scene_skins {
+        if !skin.source.and_then(|i| sources.0.get(i)).is_some_and(|s| s.placement == placement) {
+            skin.source = sources.0.iter().position(|s| s.placement == placement);
+        }
+        let source = skin.source.and_then(|i| sources.0.get(i));
+        let visible_now = source.is_some_and(|source| scene.instances[source.instances.clone()].iter().any(|i| i.visible));
+        let visible = visible_now || skin.visible_previous;
+        skin.visible_previous = visible_now;
+        if !skin.lod.listed() { continue; }
+        let level = match source {
+            Some(source) => render_level(source.bounds, source.flags_1c30, visible, false, view, &distances),
+            None => match placements.0.get(placement) {
+                Some(placed) => origin_level(placed.position, view, &distances),
+                None => continue,
+            },
+        };
+        skin.lod.request(level);
+    }
+
 }
 
 pub(super) fn update_machinery(
@@ -277,7 +355,57 @@ pub(super) fn pose_physics_systems(
         &mut sources,
         &placements,
         animations.as_deref(),
+        |placement| machinery.scene_skins.contains_key(&placement),
     );
+}
+
+/// Compose the live lower tree and scene tracks before caster collection.
+/// Startup loops own independently prepared meshes until map retirement.
+pub(super) fn pose_scene_systems(
+    mut machinery: ResMut<AmbientMachinery>,
+    animations: Option<Res<super::usable_animation::UsableAnimations>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut buffers: ResMut<Assets<super::ShaderBuffer>>,
+    mut queue: ResMut<super::SceneRenderQueue>,
+    mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
+    placements: Res<super::RenderSourcePlacements>,
+) {
+    let machinery = &mut *machinery;
+    let (scenes, skins, physics_skins, physics) = (&machinery.scenes, &mut machinery.scene_skins,
+        &machinery.skins, &machinery.physics);
+    for (placement, _, _, time) in scenes.animated_groups() {
+        let Some(skin) = skins.get_mut(&placement) else { continue };
+        let lower = animations.as_deref().and_then(|a| a.local_pose(placement));
+        if skin.failed || skin.lod.level >= 6 || (skin.time == Some(time) && lower.is_none()) { continue; }
+        if !sources.0.iter().any(|source| source.placement == placement) { continue; }
+        let animation = &skin.asset.animation;
+        let result = (|| {
+            let pose = match lower {
+                Some((skeleton, pose)) => {
+                    if !Arc::ptr_eq(skeleton, animation.skeleton()) { return Err("scene and lower tree skeleton owners differ".into()); }
+                    animation.pose_over(time, pose.clone())?
+                }
+                None => animation.pose(time)?,
+            };
+            let matrices = animation.matrices_from_pose(&pose)?;
+            if let Some(physics_skin) = physics_skins.iter().find(|s| s.placement() == placement) {
+                if !Arc::ptr_eq(physics_skin.skeleton(), animation.skeleton()) {
+                    return Err("scene and physics skeleton owners differ".into());
+                }
+                physics_skin.animated_palette(physics, &matrices)
+            } else {
+                crate::edge_skeleton::skin_palette(&matrices, &animation.skeleton().inverse_bind)
+            }
+        })();
+        match result {
+            Ok(palette) => {
+                super::skin_publication::publish_skin(placement, &skin.asset.model, palette, &mut skin.publication,
+                    &mut meshes, &mut buffers, &mut queue, &mut sources, &placements);
+                skin.time = Some(time);
+            }
+            Err(error) => { warn!("Scene pose unavailable for placement {placement}: {error}"); skin.failed = true; }
+        }
+    }
 }
 
 #[cfg(test)]

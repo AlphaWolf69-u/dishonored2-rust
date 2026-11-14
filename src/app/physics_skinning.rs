@@ -154,6 +154,8 @@ impl SystemSkin {
         Ok(out)
     }
 
+    pub(super) fn skeleton(&self) -> &Arc<edge_skeleton::EdgeSkeleton> { &self.skeleton }
+
     pub(super) fn animated_palette(&self, world: &MachineryWorld, animation: &[Affine]) -> Result<Vec<Affine>, String> {
         if animation.len() != self.rest.len() { return Err("animation and physics skeleton joint counts differ".into()); }
         let current = self.current_with_animation(world, Some(animation))?;
@@ -173,8 +175,10 @@ pub(super) fn pose_physics_systems(
     sources: &mut ModelShadowSources,
     placements: &RenderSourcePlacements,
     animated: Option<&super::usable_animation::UsableAnimations>,
+    scene_owned: impl Fn(usize) -> bool,
 ) {
     for skin in skins {
+        if scene_owned(skin.placement) { continue; }
         if animated.is_some_and(|animations| animations.combines_physics(skin.placement)) { continue; }
         let Some(placement) = placements.0.get(skin.placement) else {
             continue;

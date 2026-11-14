@@ -400,6 +400,11 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters)
             .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::machinery::pose_scene_systems
+            .after(super::usable_animation::advance)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters)
+            .run_if(super::loading_screen::is_playing))
         .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
             super::runtime_fx_images::synchronize,
             super::runtime_materials::coordinate.run_if(super::runtime_materials::needs_update),

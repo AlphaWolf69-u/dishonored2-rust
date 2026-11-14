@@ -46,6 +46,7 @@ struct Placement {
     initialized: bool,
     physics_owned: bool,
     animation_pose: Option<Vec<super::physics_skinning::Affine>>,
+    local_pose: Option<crate::gameplay::player::animation::Pose>,
 }
 
 impl Placement {
@@ -104,6 +105,11 @@ impl UsableAnimations {
 
     /// Physics publishes until an overlap has an actual animation pose; then
     /// this owner publishes their combined pose exactly once per frame.
+    pub(super) fn local_pose(&self, placement: usize) -> Option<(&Arc<crate::edge_skeleton::EdgeSkeleton>, &crate::gameplay::player::animation::Pose)> {
+        let slot = self.placements.get(&placement)?;
+        Some((&slot.asset.as_ref()?.rig.skeleton, slot.local_pose.as_ref()?))
+    }
+
     pub(super) fn combines_physics(&self, placement: usize) -> bool {
         self.placements.get(&placement).is_some_and(|slot|
             slot.physics_owned && slot.asset.is_some() && slot.animation_pose.is_some())
@@ -124,13 +130,13 @@ pub(super) fn advance(
 ) {
     let Some(mut interactions) = interactions else { return };
     if !owner.initialized {
-        let physics = machinery.as_ref().map(|m| m.deformed_placements()).unwrap_or_default();
+        let physics = machinery.as_ref().map(|m| m.physics_placements()).unwrap_or_default();
         let shadow_sources: HashMap<_, _> = sources.0.iter().enumerate().map(|(index, source)| (source.placement, index)).collect();
         for (index, placement) in placements.0.iter().enumerate() {
             let Some(actor) = animated_actor(&interactions, placement) else { continue };
             owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), source_index: shadow_sources.get(&index).copied(), asset: None,
                 node: None, publication: Default::default(), requested: false, failed: false, command: None,
-                initialized: false, physics_owned: physics.contains(&index), animation_pose: None });
+                initialized: false, physics_owned: physics.contains(&index), animation_pose: None, local_pose: None });
         }
         owner.initialized = true;
     }
@@ -224,7 +230,8 @@ pub(super) fn advance(
             }
             slot.initialized = true;
         }
-        let changed = slot.command.is_some() || !node.is_settled();
+        let scene_active = machinery.as_deref().is_some_and(|m| m.scene_layer_active(index));
+        let changed = slot.command.is_some() || !node.is_settled() || (scene_active && slot.local_pose.is_none());
         if changed {
             node.update(dt, slot.command.take(), &asset.rig.animations);
         }
@@ -232,12 +239,17 @@ pub(super) fn advance(
             *playing |= node.current_clip().is_some_and(|(_, _, playing)| playing);
         }
         if changed {
-            let joints = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
-                Ok(Some(pose)) => pose.joints,
+            let pose = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
+                Ok(Some(pose)) => pose,
                 Ok(None) => continue,
                 Err(error) => { bevy::log::warn!("Usable animation evaluation: {error}"); continue; }
             };
-            let matrices = match crate::edge_skeleton::pose_matrices(&joints, &asset.rig.skeleton.hierarchy, &asset.rig.root) {
+            if scene_active {
+                slot.local_pose = Some(pose);
+                continue;
+            }
+            slot.local_pose = None;
+            let matrices = match crate::edge_skeleton::pose_matrices(&pose.joints, &asset.rig.skeleton.hierarchy, &asset.rig.root) {
                 Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skeleton pose: {error}"); continue; }
             };
             if slot.physics_owned {
@@ -254,7 +266,7 @@ pub(super) fn advance(
                     &mut meshes, &mut buffers, &mut queue, &mut sources, &placements);
             }
         }
-        if slot.physics_owned {
+        if slot.physics_owned && !scene_active {
             let (Some(animation), Some(machinery)) = (&slot.animation_pose, machinery.as_deref()) else { continue };
             let Some(result) = machinery.animated_palette(index, animation) else { continue };
             match result {
@@ -283,14 +295,16 @@ pub(super) fn advance(
     }
     // A stationary pose lives in the published palette; the source rig and
     // clips need not remain resident solely because the actor once moved.
-    for slot in owner.placements.values_mut() {
+    for (&index, slot) in &mut owner.placements {
+        let scene_active = machinery.as_deref().is_some_and(|m| m.scene_layer_active(index));
         let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
         let playing = slot.node.as_ref().and_then(AnimBasicNode::current_clip).is_some_and(|(_, _, playing)| playing);
-        if !visible && !playing && slot.command.is_none() && slot.asset.is_some() {
+        if !scene_active && !visible && !playing && slot.command.is_none() && slot.asset.is_some() {
             slot.asset = None;
             slot.node = None;
             slot.animation_pose = None;
+            slot.local_pose = None;
             slot.requested = false;
             // A later acquisition creates a fresh node. Reapply the current
             // authored idle state instead of leaving that node at its rest pose.

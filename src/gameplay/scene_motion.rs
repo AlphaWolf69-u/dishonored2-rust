@@ -23,9 +23,13 @@ struct Playback {
 }
 impl Playback {
     fn delta(&self) -> [[f32; 4]; 3] {
-        let (position, angles) = self.clip.groups[self.group]
+        scene_delta(&self.clip, self.group, self.time_ms, self.position, self.basis)
+    }
+}
+fn scene_delta(clip: &MotionClip, group: usize, time_ms: f64, origin: [f32; 3], basis: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
+        let (position, angles) = clip.groups[group]
             .curve
-            .sample(self.time_ms as i32);
+            .sample(time_ms as i32);
         let local = angle_basis(angles);
         //817060 captures the owner's reference frame;816710 composes the
         //unwrapped Euler curve with that frame. Publish a WORLD delta so all
@@ -35,7 +39,7 @@ impl Playback {
                 (0..3)
                     .map(|a| {
                         (0..3)
-                            .map(|b| self.basis[a][r] * local[b][a] * self.basis[b][c])
+                            .map(|b| basis[a][r] * local[b][a] * basis[b][c])
                             .sum::<f32>()
                     })
                     .sum()
@@ -46,14 +50,13 @@ impl Playback {
                 if c < 3 {
                     rotation[r][c]
                 } else {
-                    self.position[r] + (0..3).map(|a| self.basis[a][r] * position[a]).sum::<f32>()
+                    origin[r] + (0..3).map(|a| basis[a][r] * position[a]).sum::<f32>()
                         - (0..3)
-                            .map(|a| rotation[r][a] * self.position[a])
+                            .map(|a| rotation[r][a] * origin[a])
                             .sum::<f32>()
                 }
             })
         })
-    }
 }
 
 struct RunningGraph {
@@ -64,9 +67,36 @@ struct RunningGraph {
     random: HashMap<u32, f32>,
     variables: HashMap<String, f32>,
     playing: Vec<Playback>,
+    animated: Vec<AnimatedPlayback>,
     motor_controls: Vec<MotorControl>,
 }
 
+struct AnimatedPlayback {
+    node: u32,
+    placement: usize,
+    group: usize,
+    clip: std::sync::Arc<crate::entities::scene_motion::AnimatedMotionClip>,
+    time_ms: f64,
+    position: [f32; 3],
+    basis: [[f32; 3]; 3],
+}
+
+/// The level-scoped scene-skin owner currently admits autonomous loops that
+/// start once with the level and cannot receive later stop/replay requests.
+/// Dynamic scenes need on-demand acquisition and release when their instance
+/// starts and ends, so they remain with the general scene runtime.
+fn autonomous_scene_action(graph: &Graph, node: &Node) -> bool {
+    if node.class != "arkKisculeNodeActionMidnightControl"
+        || !graph.animated_clips.contains_key(atom(&node.params, "m_declMdnt").unwrap_or(""))
+    { return false; }
+    let Some(play) = node.ports.iter().find(|port| port.name == "Play" && port.kind.starts_with("Input")) else { return false };
+    if play.links.is_empty() || node.ports.iter().any(|port| port.kind.starts_with("Input")
+        && matches!(port.name.as_str(), "Stop" | "Break Loop") && !port.links.is_empty()) { return false; }
+    play.links.iter().all(|(id, port)| graph.nodes.iter().find(|source| source.id == *id).is_some_and(|source| {
+        source.class == "arkKisculeNodeLoadingEnd" && source.ports.iter().any(|output|
+            output.id == *port && output.name == "LevelLoadedFirstTime" && output.kind.starts_with("Output"))
+    }))
+}
 struct MotorControl {
     node: u32,
     entity: String,
@@ -331,6 +361,33 @@ impl RunningGraph {
                             other => return Err(format!("unsupported scene event {other}")),
                         }
                     }
+                    "arkKisculeNodeActionMidnightControl" => {
+                        if !autonomous_scene_action(&self.graph, n) { return Ok(()); }
+                        let Some(clip) = self.graph.animated_clips.get(atom(n.params, "m_declMdnt").unwrap_or("")).cloned() else { return Ok(()) };
+                        match p.name.as_str() {
+                            "Stop" => {
+                                self.playing.retain(|playback| playback.node != id);
+                                self.animated.retain(|playback| playback.node != id);
+                                self.emit(n, "Stop", &mut q);
+                            }
+                            "Play" => {
+                                if self.animated.iter().any(|playback| playback.node == id) {
+                                    if atom(n.params, "m_resetOnPlay") == Some("true") {
+                                        return Err("scene reset on replay is not integrated".into());
+                                    }
+                                    return Ok(());
+                                }
+                                for (group, entity) in self.bindings(n, &clip.motion)? {
+                                    let (placement, model) = placements.iter().enumerate().find(|(_, p)| p.id == entity)
+                                        .ok_or_else(|| format!("scene entity {entity} has no render placement"))?;
+                                    self.animated.push(AnimatedPlayback { node: id, placement, group, clip: clip.clone(),
+                                        time_ms: 0., position: model.position, basis: model.rotation });
+                                }
+                                self.emit(n, "Play", &mut q);
+                            }
+                            other => return Err(format!("unsupported scene event {other}")),
+                        }
+                    }
                     other => return Err(format!("unsupported startup node {other}")),
                 }
                 Ok(())
@@ -362,6 +419,7 @@ impl SceneMotion {
                 .iter()
                 .filter(|n| {
                     n.class == "arkKisculeNodeActionAngularPhysicsMotorControl"
+                        || autonomous_scene_action(&graph, n)
                         || (n.class == "arkKisculeNodeActionMidnightKeyframeControl"
                             && graph
                                 .clips
@@ -399,6 +457,7 @@ impl SceneMotion {
                 random: HashMap::new(),
                 variables: HashMap::new(),
                 playing: Vec::new(),
+                animated: Vec::new(),
                 motor_controls: Vec::new(),
             };
             for n in &run.graph.nodes {
@@ -470,7 +529,21 @@ impl SceneMotion {
             self.graphs.len(), self.playing_count(), unique.len(), digest.finalize(), poses.finalize());
     }
     pub fn playing_count(&self) -> usize {
-        self.graphs.iter().map(|g| g.playing.len()).sum()
+        self.graphs.iter().map(|g| g.playing.len() + g.animated.len()).sum()
+    }
+    pub fn advance_motors(&mut self, seconds: f32, world: &mut MachineryWorld) {
+        for graph in &mut self.graphs {
+            graph
+                .motor_controls
+                .retain_mut(|c| !c.advance(seconds, world));
+        }
+    }
+    pub fn animated_groups(&self) -> impl Iterator<Item = (usize, &std::sync::Arc<crate::entities::scene_motion::AnimatedMotionClip>, usize, i32)> {
+        self.graphs.iter().flat_map(|graph| graph.animated.iter().filter_map(move |animated| {
+            let uid = animated.clip.motion.groups[animated.group].uid;
+            animated.clip.animations.get(&uid)?;
+            Some((animated.placement, &animated.clip, animated.group, animated.time_ms as i32))
+        }))
     }
     pub fn advance_motors(&mut self, seconds: f32, world: &mut MachineryWorld) {
         for graph in &mut self.graphs {
@@ -495,6 +568,12 @@ impl SceneMotion {
     }
     pub fn step(&mut self, seconds: f32, mut publish: impl FnMut(usize, [[f32; 4]; 3])) {
         for g in &mut self.graphs {
+            for p in &mut g.animated {
+                p.time_ms = (p.time_ms + seconds as f64 * 1000.).rem_euclid(p.clip.motion.length_ms as f64);
+                if p.clip.motion_groups.contains(&p.clip.motion.groups[p.group].uid) {
+                    publish(p.placement, scene_delta(&p.clip.motion, p.group, p.time_ms, p.position, p.basis));
+                }
+            }
             for p in &mut g.playing {
                 p.time_ms = (p.time_ms + seconds as f64 * 1000. * p.rate as f64)
                     .rem_euclid(p.clip.length_ms as f64);
