@@ -4736,6 +4736,42 @@ Source/whitespace review only; no builds, tests or runtime exercise performed.
 
 ### Host archive-session teardown
 
+Canonical motion-owner recovery prediction (2026-11-14). Original world
+construction `140c8c250` owns `140ca5510`/`140ca5550` motion properties initialized
+from the authored gravity vector. GameLocal `1400932d0` creates two timespaces
+and `140092c30` derives five initial profiles in each, with reciprocal mappings.
+Recover those owners in the existing WorldStorage, not a parallel world.
+Expect five base plus ten derived live records after game-world initialization
+(16 retained 64-byte slots with the existing growth policy), no source reads,
+and no new per-frame work until an actual component requests a mapping or body.
+The acoustic world receives its own five constructor profiles but no game
+timespaces. Component-disabled creation follows `140c8e5b0`/`140c92be0` on the
+same buffers; its generation-keyed cursor retains one body/motion reservation
+through host callback errors and releases partial reservations on explicit
+abort. Shape/declaration leases stay with the real component until completion
+or abort. No performance improvement or runtime acceptance is claimed before
+the coordinated compile and production exercise.
+
+Recovered leaf implementation: `WorldStorage::new` owns the existing profile
+library, rejects an unresolved external library, and preserves the constructor's
+gravity magnitude arithmetic. `initialize_game_timespaces` is an explicit
+GameLocal-only phase; the component factory must call it before resolving its
+authored timespace. The shared removal signal clears reciprocal profile maps
+before recycling a profile. Unfinished removals fence subsequent mutation.
+Disabled component-body requests retain their exact component/generation key,
+body/motion IDs, attachment phase and entered observer cursor. The component
+must abort before retiring its source geometry, with uninitialized reservations
+returned directly and initialized objects using the real destruction observers.
+Mutation fences reject overlapping world operations; a different component can
+never resume or cancel the request. All tables/cursors are world-owned Rust
+storage and retire with that same canonical world; no process cache, duplicate
+world, new asset format, or per-frame acquisition is introduced. Source review
+used checkpoint `2410aafb` and the saved decompilation at `140c8c250`,
+`140ca5550`, `140092c30`, `1400932d0`, `140c8e5b0`, and `140c92be0`.
+Scene factory/start/stop integration belongs to the interaction recovery slice;
+this leaf does not claim that runtime integration has already succeeded.
+No tests, build, or runtime exercise were performed for this leaf.
+
 The desktop launch now holds an explicit catalog-session root around the
 application. Its teardown releases the static shared catalog reference on
 both success and setup/runtime failure. Outstanding world or worker Arcs

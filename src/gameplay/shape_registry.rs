@@ -38,6 +38,7 @@ pub(crate) struct ShapeRegistry {
     pending: bool,
 }
 impl ShapeRegistry {
+    pub(crate) fn owner(&self) -> usize { self.owner }
     pub(crate) fn validate_body_removal(&self, shape: usize, body: u32,
         signals: &mut impl ShapeSignalStore) -> Result<(), String> {
         let entry = self.active.iter().copied()

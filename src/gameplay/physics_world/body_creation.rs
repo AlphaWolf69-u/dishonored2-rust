@@ -7,7 +7,7 @@ use crate::{
     assets::physworld::{body::BodyInfo, mass::PrincipalMassProperties, shape::ShapeHeader},
     gameplay::{
         body_activation::ActivationOwners,
-        body_attachment::{attach_body_motion, AttachmentSettings, AttachmentWorld},
+        body_attachment::{attach_body_motion, attach_unpublished_body_resumable, AttachmentSettings, AttachmentWorld},
         body_lod::BodyLodConfig,
         body_storage::{BodyActivation, BodyCreationAssets, BodyPropertyBits},
         deactivation::DeactivationWorld,
@@ -67,6 +67,27 @@ pub(crate) struct BodyCreation<'a, 'world, 'resources, G, E> {
     pub properties: &'a mut [BodyPropertyBits],
 }
 
+/// One disabled c8e5b0 request owns these IDs until completion. The caller
+/// retains the corresponding shape and declaration leases throughout.
+pub(crate) struct DisabledCreationProgress {
+    pub key: (crate::gameplay::component_state::entity::ComponentHandle, u32),
+    pub info: BodyInfo,
+    pub(super) body: u32,
+    pub(super) motion: u32,
+    motion_info: Option<MotionInfo>,
+    pub(super) step: u8,
+    pub(super) attachment_step: u8,
+    callback_pending: bool,
+    pub(super) abort_step: u8,
+    pub(super) unlink_step: u8,
+    pub(super) aborting: bool,
+}
+impl DisabledCreationProgress {
+    pub fn new(key: (crate::gameplay::component_state::entity::ComponentHandle, u32), info: BodyInfo) -> Self {
+        Self { key, info, body: u32::MAX, motion: u32::MAX, motion_info: None, step: 0, attachment_step: 0, callback_pending: false, abort_step: 0, unlink_step: 0, aborting: false }
+    }
+}
+
 pub(super) struct Attachment<'a, G> {
     pub(super) geometry: &'a mut G,
     pub(super) deactivation: &'a mut DeactivationWorld,
@@ -93,6 +114,130 @@ impl<G: BodyCreationGeometry> AttachmentWorld for Attachment<'_, G> {
 impl<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>
     BodyCreation<'_, '_, '_, G, E>
 {
+    pub fn finish_creation_callback(&mut self, progress: &mut DisabledCreationProgress) -> Result<(), String> {
+        if !progress.callback_pending { return Ok(()); }
+        let owners = ActivationOwners { bodies: self.world.bodies, motions: self.world.motions,
+            deactivation: self.world.deactivation, broadphase: self.world.broadphase };
+        match progress.step {
+            0 => self.callbacks.events.body_capacity_requested(owners)?,
+            3 => self.callbacks.events.motion_capacity_requested(owners)?,
+            7 => self.callbacks.events.motion_created(owners, progress.motion_info.as_ref().ok_or("motion creation info is absent")?, progress.motion)?,
+            10 => self.callbacks.events.body_created(owners, &progress.info, progress.body)?,
+            _ => return Err("invalid pending creation callback".into()),
+        }
+        progress.callback_pending = false;
+        // Created observers have now seen this object and its teardown must
+        // use the corresponding actual destruction observer.
+        if progress.step == 7 || progress.step == 10 { progress.step += 1; }
+        Ok(())
+    }
+
+    pub fn create_disabled_resumable(&mut self, progress: &mut DisabledCreationProgress) -> Result<u32, String> {
+        let info = &progress.info;
+        if progress.step == 0 {
+            if progress.callback_pending || (info.reserved_body_id & 0xffffff == 0xffffff && !self.world.bodies.has_free_slot()) {
+                progress.callback_pending = true;
+                self.callbacks.events.body_capacity_requested(ActivationOwners {
+                    bodies: self.world.bodies, motions: self.world.motions,
+                    deactivation: self.world.deactivation, broadphase: self.world.broadphase,
+                })?;
+                progress.callback_pending = false;
+            }
+            progress.step = 1;
+        }
+        if progress.step == 1 {
+            progress.body = if info.reserved_body_id & 0xffffff == 0xffffff {
+                self.world.bodies.reserve(self.properties)?
+            } else { info.reserved_body_id };
+            progress.step = 2;
+        }
+        if progress.step == 2 {
+            if info.reserved_motion_id != 0x7fff_ffff {
+                progress.motion = info.reserved_motion_id;
+                progress.step = 8;
+            } else if info.motion_type == 0 {
+                progress.motion = 0;
+                progress.step = 8;
+            } else {
+                progress.motion_info = Some(self.callbacks.geometry.prepare_motion(info)?);
+                progress.step = 3;
+            }
+        }
+        if progress.step == 3 {
+            if progress.callback_pending || !self.world.motions.has_free_slot() {
+                progress.callback_pending = true;
+                self.callbacks.events.motion_capacity_requested(ActivationOwners {
+                    bodies: self.world.bodies, motions: self.world.motions,
+                    deactivation: self.world.deactivation, broadphase: self.world.broadphase,
+                })?;
+                progress.callback_pending = false;
+            }
+            progress.step = 4;
+        }
+        if progress.step == 4 {
+            progress.motion = self.world.motions.reserve()?;
+            progress.step = 5;
+        }
+        let motion_info = progress.motion_info.as_ref();
+        if progress.step == 5 {
+            self.world.motions.initialize(progress.motion, motion_info.ok_or("motion creation info is absent")?, self.cells)?;
+            progress.step = 6;
+        }
+        if progress.step == 6 {
+            self.world.deactivation.initialize_motion_state(progress.motion, motion_info.ok_or("motion creation info is absent")?.enable_deactivation)?;
+            progress.step = 7;
+        }
+        if progress.step == 7 {
+            progress.callback_pending = true;
+            self.callbacks.events.motion_created(ActivationOwners {
+                bodies: self.world.bodies, motions: self.world.motions,
+                deactivation: self.world.deactivation, broadphase: self.world.broadphase,
+            }, motion_info.ok_or("motion creation info is absent")?, progress.motion)?;
+            progress.callback_pending = false;
+            progress.step = 8;
+        }
+        if progress.step == 8 {
+            let dynamic = self.world.motions.get(progress.motion).ok_or("body creation motion is missing")?.requires_dynamic_body();
+            let assets = self.callbacks.geometry.creation_assets(info)?;
+            self.world.bodies.initialize(progress.body, info, dynamic, assets)?;
+            progress.step = 9;
+        }
+        if progress.step == 9 {
+            let dynamic = self.world.motions.get(progress.motion).ok_or("body creation motion is missing")?.requires_dynamic_body();
+            if dynamic {
+                let settings = AttachmentSettings { qualities: self.world.qualities, lod: self.lod,
+                    tolerance: self.world.tolerance, step: self.world.step, packing: self.world.packing };
+                attach_unpublished_body_resumable(self.world.bodies, self.world.motions, progress.body,
+                    progress.motion, Some(info.orientation), &settings,
+                    &mut Attachment { geometry: self.callbacks.geometry, deactivation: self.world.deactivation },
+                    &mut progress.attachment_step)?;
+            } else {
+                let body = self.world.bodies.get_mut(progress.body).ok_or("created static body is missing")?;
+                body.next_attached_body_id = body.id;
+                body.refresh_inverse_frame();
+                body.update_size_and_static_lod(self.lod.body_is_big_threshold, false);
+            }
+            progress.step = 10;
+        }
+        if progress.step == 10 {
+            progress.callback_pending = true;
+            self.callbacks.events.body_created(ActivationOwners {
+                bodies: self.world.bodies, motions: self.world.motions,
+                deactivation: self.world.deactivation, broadphase: self.world.broadphase,
+            }, info, progress.body)?;
+            progress.callback_pending = false;
+            progress.step = 11;
+        }
+        if progress.step == 11 {
+            if self.callbacks.geometry.is_mutable(info.shape)? {
+                let shape = self.world.bodies.get(progress.body).ok_or("created mutable body is missing")?.shape;
+                self.registry.register_body(shape, progress.body, self.callbacks.geometry)?;
+            }
+            progress.step = 12;
+        }
+        Ok(progress.body)
+    }
+
     pub fn create(
         &mut self,
         info: &BodyInfo,

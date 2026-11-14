@@ -83,6 +83,20 @@ pub struct BodyStorage {
 }
 
 impl BodyStorage {
+    pub(crate) fn cancel_uninitialized_reservation(&mut self, id: u32) -> Result<(), String> {
+        let index = (id & 0x00ff_ffff) as usize;
+        let body = self.get(id).ok_or("reserved body is missing")?;
+        if body.status & 1 != 0 { return Err("body reservation was already initialized".into()); }
+        let count = self.active_count.checked_sub(1).ok_or("body count underflow")?;
+        let body = &mut self.bodies[index];
+        body.id |= 0x00ff_ffff;
+        body.motion_id = 0x7fff_ffff;
+        self.next_free[index] = self.free_head;
+        self.free_head = Some(index);
+        self.active_count = count;
+        Ok(())
+    }
+
     pub(crate) fn verify_detached(&self, id: u32) -> Result<(), String> {
         let index = (id & 0x00ff_ffff) as usize;
         if index == 0 { return Err("cannot release the static anchor body".into()); }

@@ -12,6 +12,21 @@ pub struct MotionStorage {
     cell_lists: [Vec<u32>; 32],
 }
 impl MotionStorage {
+    pub(crate) fn cancel_uninitialized_reservation(&mut self, id: u32) -> Result<(), String> {
+        let index = id as usize;
+        let motion = self.motions.get(index).ok_or("reserved motion is missing")?;
+        if index == 0 || self.initialized.get(index).copied() != Some(false)
+            || motion.space_splitter_weight == 0 || motion.first_body_id != 0x00ff_ffff {
+            return Err("motion is not an uninitialized reservation".into());
+        }
+        let count = self.active_count.checked_sub(1).ok_or("motion count underflow")?;
+        self.motions[index] = Motion::default();
+        self.next_free[index] = self.free_head;
+        self.free_head = Some(index);
+        self.active_count = count;
+        Ok(())
+    }
+
     /// 140cd7310 retires the motion after its last body and solver entry.
     pub(crate) fn release_detached(&mut self, id: u32) -> Result<(), String> {
         let index = id as usize;

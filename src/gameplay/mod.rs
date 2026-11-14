@@ -70,6 +70,7 @@ pub mod trigger_body;
 pub mod water_component;
 pub(crate) mod water_contacts;
 pub mod motion_properties;
+pub(crate) mod motion_timespaces;
 pub(crate) mod materials;
 pub mod convex_support;
 pub mod polytope_query;

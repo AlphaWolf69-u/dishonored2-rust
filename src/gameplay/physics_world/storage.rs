@@ -2,7 +2,7 @@
 //! This projects the corresponding c8c250 owners; geometry and components are
 //! borrowed from the level, never duplicated in a query-only world.
 use super::{
-    body_creation::{BodyCreation, BodyCreationCallbacks, BodyCreationGeometry, BodyInfoModifier},
+    body_creation::{BodyCreation, BodyCreationCallbacks, BodyCreationGeometry, BodyInfoModifier, DisabledCreationProgress},
     BodyAddition, BodyPublication, PublicationContext, PublicationEvents, WorldInfo,
 };
 use crate::assets::physworld::body::BodyInfo;
@@ -40,6 +40,8 @@ pub(crate) struct WorldStorage {
     pub step_index: u32,
     pub properties: Vec<BodyPropertyBits>,
     pub materials: MaterialOwner<usize, usize>,
+    pub motion_properties: crate::gameplay::motion_properties::MotionPropertiesLibrary<usize, usize>,
+    pub(crate) motion_timespaces: Option<crate::gameplay::motion_timespaces::MotionTimespaces>,
     /// Per-body event chains (world+9e8). The source's signal-head word is an
     /// owned typed signal here; no parallel body-to-subscriber map is needed.
     pub body_events: BodyProperties<
@@ -51,6 +53,8 @@ pub(crate) struct WorldStorage {
     registry: ShapeRegistry,
     removal_scratch: super::publication::RemovalScratch,
     destruction: Option<DestructionProgress>,
+    disabled_creation: Option<DisabledCreationProgress>,
+    disabled_creation_busy: bool,
     body_mode_progress: Option<motion_type::BodyModeProgress>,
     activation_scratch: crate::gameplay::body_activation::BodyActivationController,
 }
@@ -66,17 +70,195 @@ struct DestructionProgress {
     shared_motion: Option<bool>,
 }
 
+const TIMESPACE_PROFILE_REMOVED: usize = 0;
+
 impl WorldStorage {
+    /// GameLocal 1400932d0: use the two real timespaces only for the game world;
+    /// acoustic and other hknpWorld consumers keep their constructor library.
+    pub(crate) fn initialize_game_timespaces(&mut self) -> Result<(), String> {
+        if self.motion_timespaces.as_ref().is_some_and(|timespaces| timespaces.presets_ready()) {
+            return Err("game physics timespaces are already initialized".into());
+        }
+        if !self.motion_properties.added.is_empty() {
+            return Err("initial motion profiles require the original pre-observer phase".into());
+        }
+        if self.motion_timespaces.is_none() {
+            self.motion_timespaces = Some(crate::gameplay::motion_timespaces::MotionTimespaces::new(2)?);
+        }
+        self.motion_timespaces.as_mut().ok_or("physics timespace owner is absent")?
+            .initialize_presets(&mut self.motion_properties, |_, _, _, _| unreachable!("no initial profile observers"))?;
+        self.motion_properties.removed.subscribe(self.registry.owner(), TIMESPACE_PROFILE_REMOVED);
+        Ok(())
+    }
+
+    /// Retain exactly this component generation's unpublished c8e5b0 request.
+    /// The component keeps its shape/declaration leases through resume or abort.
+    pub(crate) fn begin_disabled_component_body(
+        &mut self,
+        component: crate::gameplay::component_state::entity::ComponentHandle,
+        generation: u32,
+        info: &BodyInfo,
+    ) -> Result<(), String> {
+        if self.disabled_creation.is_some() || self.disabled_creation_busy {
+            return Err("another disabled component body is being created".into());
+        }
+        if !self.publication_idle() { return Err("world publication must finish before component body creation".into()); }
+        if info.reserved_body_id & 0xffffff != 0xffffff {
+            return Err("component creation cannot adopt an externally reserved body slot".into());
+        }
+        if info.reserved_motion_id != 0x7fff_ffff {
+            let motion = self.motions.get(info.reserved_motion_id)
+                .filter(|motion| info.reserved_motion_id != 0 && motion.requires_dynamic_body())
+                .ok_or("component creation requires a live dynamic shared motion")?;
+            let first = self.bodies.get(motion.first_body_id)
+                .ok_or("shared motion has no live first body")?;
+            if first.motion_id != info.reserved_motion_id {
+                return Err("shared motion's first body has a different owner".into());
+            }
+        }
+        self.disabled_creation = Some(DisabledCreationProgress::new((component, generation), info.clone()));
+        Ok(())
+    }
+
+    pub(crate) fn disabled_component_creation_owner(&self)
+        -> Option<(crate::gameplay::component_state::entity::ComponentHandle, u32)> {
+        self.disabled_creation.as_ref().map(|progress| progress.key)
+    }
+
+    /// Resume successful reservations/initialization and entered observers
+    /// without replaying their already completed phases.
+    pub(crate) fn resume_disabled_component_body<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E,
+        component: crate::gameplay::component_state::entity::ComponentHandle, generation: u32,
+    ) -> Result<u32, String> {
+        if self.disabled_creation_busy { return Err("disabled component body creation is active".into()); }
+        let mut progress = self.disabled_creation.take().ok_or("disabled component body creation is absent")?;
+        if progress.key != (component, generation) {
+            self.disabled_creation = Some(progress);
+            return Err("disabled component body belongs to another generation".into());
+        }
+        if progress.aborting {
+            self.disabled_creation = Some(progress);
+            return Err("disabled component body creation is being retired".into());
+        }
+        self.disabled_creation_busy = true;
+        let result = self.edit_bodies(geometry, events, |mut creation| creation.create_disabled_resumable(&mut progress));
+        self.disabled_creation_busy = false;
+        if result.is_err() { self.disabled_creation = Some(progress); }
+        result
+    }
+
+    /// Complete entered observers, then retire their actual objects. Never
+    /// release another component's request or reuse an interrupted reservation.
+    pub(crate) fn abort_disabled_component_body<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E,
+        component: crate::gameplay::component_state::entity::ComponentHandle, generation: u32,
+    ) -> Result<(), String> {
+        if self.disabled_creation_busy { return Err("disabled component body creation is active".into()); }
+        let mut progress = self.disabled_creation.take().ok_or("disabled component body creation is absent")?;
+        if progress.key != (component, generation) {
+            self.disabled_creation = Some(progress);
+            return Err("disabled component body belongs to another generation".into());
+        }
+        progress.aborting = true;
+        self.disabled_creation_busy = true;
+        let result = (|| -> Result<(), String> {
+            if progress.abort_step == 0 {
+                self.edit_bodies(geometry, events, |mut creation| creation.finish_creation_callback(&mut progress))?;
+                progress.abort_step = 1;
+            }
+            if progress.abort_step == 1 {
+                if progress.step >= 11 {
+                    events.destroyed(crate::gameplay::body_activation::ActivationOwners {
+                        bodies: &mut self.bodies, motions: &mut self.motions,
+                        deactivation: &mut self.deactivation, broadphase: &mut self.broadphase,
+                    }, &[progress.body])?;
+                }
+                progress.abort_step = 2;
+            }
+            if progress.abort_step == 2 {
+                if progress.step >= 9 {
+                    self.body_events.release_body(progress.body, |signal| { signal.destroy(); Ok(()) })?;
+                }
+                progress.abort_step = 3;
+            }
+            if progress.abort_step == 3 {
+                if progress.attachment_step != 0 && progress.info.reserved_motion_id != 0x7fff_ffff {
+                    self.bodies.unlink_shared_motion(progress.body, &mut self.motions, &mut self.deactivation,
+                        &mut progress.unlink_step)?;
+                } else if progress.attachment_step != 0 {
+                    let broadphase = &mut self.broadphase;
+                    self.bodies.unlink_last_motion(progress.body, &mut self.motions, &mut self.deactivation,
+                        &mut progress.unlink_step, |bodies, motions, deactivation, motion| events.motion_destroyed(
+                            crate::gameplay::body_activation::ActivationOwners {
+                                bodies, motions, deactivation, broadphase: &mut *broadphase,
+                            }, motion))?;
+                } else if progress.info.reserved_motion_id == 0x7fff_ffff
+                    && progress.motion != u32::MAX && progress.motion != 0 {
+                    if progress.step == 5 {
+                        self.motions.cancel_uninitialized_reservation(progress.motion)?;
+                    } else {
+                        if progress.step >= 8 {
+                            events.motion_destroyed(crate::gameplay::body_activation::ActivationOwners {
+                                bodies: &mut self.bodies, motions: &mut self.motions,
+                                deactivation: &mut self.deactivation, broadphase: &mut self.broadphase,
+                            }, progress.motion)?;
+                        }
+                        progress.abort_step = 4;
+                        self.motions.release_detached(progress.motion)?;
+                    }
+                }
+                progress.abort_step = 5;
+            }
+            if progress.abort_step == 4 {
+                self.motions.release_detached(progress.motion)?;
+                progress.abort_step = 5;
+            }
+            if progress.abort_step == 5 {
+                if progress.body != u32::MAX {
+                    if progress.step < 9 { self.bodies.cancel_uninitialized_reservation(progress.body)?; }
+                    else { self.bodies.release_detached(progress.body)?; }
+                }
+                progress.abort_step = 6;
+            }
+            Ok(())
+        })();
+        self.disabled_creation_busy = false;
+        if result.is_err() { self.disabled_creation = Some(progress); }
+        result
+    }
+
+    pub(crate) fn remove_motion_property(&mut self, id: u16,
+        mut dispatch: impl FnMut(&mut crate::gameplay::signal::Signal<usize, usize>, usize, usize, u16) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.motion_properties.removal_idle() && !self.publication_idle() {
+            return Err("world physics work must finish before removing a motion property".into());
+        }
+        let owner = self.registry.owner();
+        let timespaces = &mut self.motion_timespaces;
+        self.motion_properties.remove(id, |signal, subscriber, callback, profile| {
+            if timespaces.is_some() && subscriber == owner && callback == TIMESPACE_PROFILE_REMOVED {
+                timespaces.as_mut().ok_or("game physics timespace owner is absent")?.forget_profile(profile)
+            } else {
+                dispatch(signal, subscriber, callback, profile)
+            }
+        })
+    }
+
+
     /// Host mutation fence for resumable owner operations.
     pub(crate) fn publication_idle(&self) -> bool {
         self.removal_scratch.is_idle() && self.destruction.is_none()
             && self.body_mode_progress.is_none() && self.activation_scratch.is_idle()
+            && self.disabled_creation.is_none() && !self.disabled_creation_busy
+            && self.motion_properties.removal_idle()
     }
 
     /// 140c8f080 cancels pending publication and removes live broadphase bodies.
     pub(crate) fn unpublish_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
     ) -> Result<(), String> {
+        if self.disabled_creation.is_some() || self.disabled_creation_busy { return Err("disabled creation must complete or abort before unpublication".into()); }
         if self.destruction.is_some() { return Err("body destruction must finish before another unpublication".into()); }
         if self.body_mode_progress.is_some() || !self.activation_scratch.is_idle() {
             return Err("body mode or activation update must finish before unpublication".into());
@@ -92,8 +274,8 @@ impl WorldStorage {
     pub(crate) fn destroy_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
     ) -> Result<(), String> {
-        // A failed Stop must finish its own publication request before
-        // deinitialization can establish a different destruction owner.
+        if self.disabled_creation.is_some() || self.disabled_creation_busy { return Err("disabled creation must complete or abort before destruction".into()); }
+        // A failed Stop must finish its publication request before destruction.
         if self.destruction.is_none() && !self.removal_scratch.is_idle() {
             return Err("body unpublication must finish before destruction".into());
         }
@@ -194,6 +376,9 @@ impl WorldStorage {
         if info.user_body_buffer.is_some() || info.user_motion_buffer.is_some() {
             return Err("external physics buffers require their actual owner".into());
         }
+        if info.motion_properties_library.is_some() {
+            return Err("external motion-property libraries require their actual owner".into());
+        }
         if info.quality_library.is_some()
             || info.broad_phase_config.is_some()
             || info.broad_phase_type != 1
@@ -202,6 +387,16 @@ impl WorldStorage {
                 "custom physics quality/broadphase resources require their actual owner".into(),
             );
         }
+        let [x, y, z, _] = info.gravity;
+        let squared = crate::float::add(crate::float::add(crate::float::multiply(y, y), crate::float::multiply(x, x)), crate::float::multiply(z, z));
+        let gravity = if squared <= 0. { 0. } else {
+            let estimate = crate::gameplay::convex_support::faces::reciprocal_sqrt_estimate(squared);
+            let correction = crate::float::subtract(3., crate::float::multiply(crate::float::multiply(estimate, squared), estimate));
+            crate::float::multiply(crate::float::multiply(crate::float::multiply(correction, estimate), 0.5), squared)
+        };
+        let mut motion_properties = crate::gameplay::motion_properties::MotionPropertiesLibrary::default();
+        // This newly constructed library has no observers yet.
+        motion_properties.initialize(gravity, |_, _, _, _| {})?;
         let qualities = BodyQualityLibrary::new(BodyQualityConfig {
             enable_welding_for_default_objects: info.enable_welding_for_default_objects,
             enable_welding_for_critical_objects: info.enable_welding_for_critical_objects,
@@ -223,6 +418,8 @@ impl WorldStorage {
             registry: ShapeRegistry::new(identity),
             removal_scratch: Default::default(),
             destruction: None,
+            disabled_creation: None,
+            disabled_creation_busy: false,
             body_mode_progress: None,
             activation_scratch: Default::default(),
             qualities,
@@ -232,6 +429,8 @@ impl WorldStorage {
             step_index: 0,
             properties: Vec::new(),
             materials,
+            motion_properties,
+            motion_timespaces: None,
             body_events: BodyProperties::default(),
             constraint_heads: Vec::new(),
             constraints: Vec::new(),
