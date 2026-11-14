@@ -358,8 +358,17 @@ pub(super) struct AudioAssetsPlugin;
 enum PlaybackBackend { Absent, Hardware, Observation }
 impl Plugin for AudioAssetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_audio_source::<graph::ScheduledAudio>()
-            .add_audio_source::<bevy_backend::OutputAudio>();
+        if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
+            // Bevy's playback systems require AudioOutput, GlobalVolume and
+            // DefaultSpatialScale, supplied only by its hardware AudioPlugin.
+            app.add_audio_source::<graph::ScheduledAudio>()
+                .add_audio_source::<bevy_backend::OutputAudio>();
+        } else {
+            // Acquisition and the sole offline consumer need asset ownership,
+            // not hardware playback/cleanup systems or a dummy output device.
+            app.init_asset::<graph::ScheduledAudio>()
+                .init_asset::<bevy_backend::OutputAudio>();
+        }
     }
 }
 
