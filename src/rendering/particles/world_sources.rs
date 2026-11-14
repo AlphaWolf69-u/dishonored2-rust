@@ -112,6 +112,11 @@ fn cloned_value_bytes(value: &Value) -> usize {
     }
 }
 
+/// The surface source naming a shared sprite grid level.
+pub fn sprite_grid_source(level: u32) -> String {
+    format!("sprite-grid:{level}")
+}
+
 /// The FX of the enabled, valid m_fxEvents entries of loaded particle
 /// definitions.
 fn fx_event_effects(particles: &[Result<super::definition::ParticleDefinition, String>]) -> Vec<String> {
@@ -185,13 +190,28 @@ impl WorldFxSources {
             .flat_map(|e| &e.groups).flat_map(|g| &g.particles).filter_map(|p| p.as_ref().ok())
         {
             for declaration in definition.declarations.iter().flatten() {
-                for stage in declaration.stages.iter().filter(|stage| stage.enabled) {
+                let havok_stages = declaration.havok_stages.iter().map(|stage| &stage.stage);
+                for stage in declaration.stages.iter().chain(havok_stages).filter(|stage| stage.enabled) {
                     for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
                         let (Some(material), Some(source), Some(model)) = (&mesh.material, &mesh.source, &mesh.model) else {
                             continue;
                         };
                         if definition.world_mesh_materials.contains(material) {
                             pairs.entry((source.clone(), material.clone())).or_insert_with(|| model.clone());
+                        }
+                    }
+                    // A sprite renderer's surface is the shared grid its
+                    // tessellation distance selects (1eee40): level 0 unless
+                    // the distance can select finer ones.
+                    for sprite in stage.sprites.iter().filter(|sprite| sprite.enabled) {
+                        let Some(material) = sprite.material.as_ref().filter(|material| definition.world_mesh_materials.contains(*material)) else {
+                            continue;
+                        };
+                        let levels = if 0. < sprite.tessellation_distance { 0..=5 } else { 0..=0 };
+                        for level in levels {
+                            pairs.entry((sprite_grid_source(level), material.clone())).or_insert_with(|| {
+                                Arc::new(crate::assets::particle_model::ParticleModel { history: None, vertices: Vec::new(), bytes_after_vertices: 0 })
+                            });
                         }
                     }
                 }

@@ -94,12 +94,14 @@ rewrite's dynamic caster list with their instance records.
 
 ## Not gaps
 
-World-material sprite renderers: the original publishes sprite and mesh
-renderers as the same surface record, so a sprite with a world MAIN program
-would draw through its material's passes. No installed content does this:
-all 8,909 installed FX declarations (and every level's world FX) contain 0
-sprites with world materials; the 56 world-material particle surfaces are all
-meshes, which `particle_meshes` already draws.
+World-material sprite renderers (connected): the original publishes sprite
+and mesh renderers as the same surface record (1401fbad0 / 1401edab0), so a
+sprite with a world MAIN program draws through its material's passes over
+the shared grid its tessellation distance selects (1dc5b0 vertices with
+idDrawVert::Clear's attributes). Havok glass shards use one
+(models/effects/breakable/glass/generic/small_pieces.material, arkDefault, 76
+declarations); they draw through the instanced particle surfaces with source
+`sprite-grid:<level>`. Not yet compared with an original capture.
 
 ## Stage-to-stage spawning (`m_spawnStage`), connected
 

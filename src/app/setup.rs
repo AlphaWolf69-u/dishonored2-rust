@@ -2022,9 +2022,14 @@ pub(super) fn prepare_particle_surfaces(
             Ok(_) => {}
             Err(error) => eprintln!("Particle surface {source} {material}: {error}"),
         }
-        let prepared_mesh = match super::particle_surface::prepare_mesh(&model) {
-            Ok(mesh) => mesh,
-            Err(error) => { failures.push(format!("{source} {error}")); continue; }
+        let grid = source.strip_prefix("sprite-grid:").map(str::parse::<u32>);
+        let prepared_mesh = match grid {
+            Some(Ok(level)) => super::particle_surface::prepare_sprite_grid(level),
+            Some(Err(error)) => { failures.push(format!("{source} {error}")); continue; }
+            None => match super::particle_surface::prepare_mesh(&model) {
+                Ok(mesh) => mesh,
+                Err(error) => { failures.push(format!("{source} {error}")); continue; }
+            },
         };
         instanced.extension.surface.particle_instances.x = 1;
         let images = resolver.model_images(&material);

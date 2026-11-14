@@ -289,6 +289,28 @@ impl ParticleSystem {
                 let Some(name) = sprite.material.as_ref() else {
                     continue;
                 };
+                let grid_level = crate::rendering::particles::geometry::SpriteGrid::level_for_distance(
+                    sprite.tessellation_distance,
+                    context.camera.emitter_distance,
+                );
+                // A world-program sprite is its material's surface over the
+                // selected grid (1401edab0), like a world-material mesh.
+                if self.world_mesh_materials.contains(name) {
+                    let mut instances = Vec::with_capacity(draw.particles.len());
+                    let bounds = crate::rendering::particles::publication::stage_instances(
+                        draw, index, transform, &view, self.query_visibility, alpha_scale,
+                        context.camera.admission_plane, sprite.minimal_distance, order.as_deref(), &mut instances,
+                    )?;
+                    if bounds.is_some() && !instances.is_empty() {
+                        world_meshes.push(WorldMeshDraw {
+                            source: crate::rendering::particles::world_sources::sprite_grid_source(grid_level),
+                            material: name.clone(),
+                            lighting: lighting.ok_or("world particle sprite lighting was not selected")?,
+                            instances,
+                        });
+                    }
+                    continue;
+                }
                 let material = self
                     .materials
                     .get(name)

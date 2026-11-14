@@ -21,6 +21,18 @@ pub(super) fn prepare_mesh(model: &ParticleModel) -> Result<Mesh, &'static str> 
     Ok(super::view_geometry::source_mesh(&positions, &uvs, &indices, &packed, false))
 }
 
+/// A shared sprite grid (1dc5b0) as a surface: its positions and half UVs
+/// with idDrawVert::Clear's remaining attributes (14000b0e0: zero second UV,
+/// normal bytes 00 00 00 55, zero tangent, white colour) and its indices.
+pub(super) fn prepare_sprite_grid(level: u32) -> Mesh {
+    let grid = crate::rendering::particles::geometry::SpriteGrid::new(level);
+    let positions: Vec<[f32; 3]> = grid.vertices.iter().map(|v| v.position).collect();
+    let uvs: Vec<[f32; 2]> = grid.vertices.iter()
+        .map(|v| v.uv.map(|x| half::f16::from_bits(crate::float::pack_half_truncated(x)).to_f32())).collect();
+    let packed = vec![[0u8, 0, 0, 0, 0, 0, 0, 0x55, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]; positions.len()];
+    super::view_geometry::source_mesh(&positions, &uvs, &grid.indices, &packed, false)
+}
+
 /// The worker owns these CPU-side results until the current level accepts
 /// them. No world entities are reserved while a request can still fail.
 pub(super) struct PreparedSurface {

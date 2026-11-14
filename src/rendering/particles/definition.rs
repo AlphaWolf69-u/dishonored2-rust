@@ -262,8 +262,10 @@ impl ParticleDefinition {
         for declaration in declarations.iter().flatten() {
             let havok_stages = declaration.havok_stages.iter().map(|stage| &stage.stage);
             for stage in declaration.stages.iter().chain(havok_stages).filter(|stage| stage.enabled) {
-                for mesh in stage.meshes.iter().filter(|mesh| mesh.enabled) {
-                    if let Some(name) = &mesh.material {
+                let world_candidates = stage.meshes.iter().filter(|mesh| mesh.enabled).map(|mesh| &mesh.material)
+                    .chain(stage.sprites.iter().filter(|sprite| sprite.enabled).map(|sprite| &sprite.material));
+                for material in world_candidates {
+                    if let Some(name) = material {
                         let key = name.replace('\\', "/").to_ascii_lowercase();
                         if *resources
                             .world_materials
