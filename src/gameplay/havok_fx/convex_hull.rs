@@ -158,6 +158,41 @@ fn sort_points(points: &mut [Point], low: i32, high: i32) {
     }
 }
 
+/// 140b97e70: quicksort of (triangle, area) by decreasing area.
+fn sort_by_area(items: &mut [(usize, f32)], low: i32, high: i32) {
+    let mut low = low;
+    loop {
+        let pivot = items[((high + low) >> 1) as usize].1;
+        let (mut i, mut j) = (low, high);
+        loop {
+            while 0. < subtract(items[i as usize].1, pivot) {
+                i += 1;
+            }
+            while 0. < subtract(pivot, items[j as usize].1) {
+                j -= 1;
+            }
+            if j < i {
+                break;
+            }
+            if j != i {
+                items.swap(i as usize, j as usize);
+            }
+            i += 1;
+            j -= 1;
+            if j < i {
+                break;
+            }
+        }
+        if low < j {
+            sort_by_area(items, low, j);
+        }
+        if high <= i {
+            return;
+        }
+        low = i;
+    }
+}
+
 pub struct Hull {
     pub domain: Domain,
     pub vertices: Vec<Vertex>,
@@ -166,6 +201,8 @@ pub struct Hull {
     pub triangle_head: usize,
     /// +0x1e0.
     pub dimensions: i32,
+    /// +0x70: face planes (unit normal, offset) after `build_indices`.
+    pub faces: Vec<[f32; 4]>,
     mark: i32,
 }
 
@@ -416,11 +453,14 @@ impl Hull {
             triangles: Vec::new(),
             triangle_head: NONE,
             dimensions: 3,
+            faces: Vec::new(),
             mark: 0,
         };
         if !hull.build_3d(&mut points) {
             return Err("hkgpConvexHull input is not three-dimensional".into());
         }
+        // 140bacdf3: the configuration builds indices (140b94be0).
+        hull.build_indices();
         Ok(hull)
     }
 
@@ -480,6 +520,87 @@ impl Hull {
         Ok(std::array::from_fn(|i| add(multiply(multiply(moment[i], inverse), 0.25), reference[i])))
     }
 
+    /// buildIndices (140b94be0, 3D part): vertex indices in list order, and
+    /// faces: triangles by decreasing area (140b97e70) seed a face with
+    /// their unit plane and flood across edges into triangles whose plane
+    /// is degenerate or within the configuration's 0.99999 of it.
+    pub fn build_indices(&mut self) {
+        let order = self.triangle_order();
+        let position = |hull: &Self, v: usize| hull.grid_position(v);
+        // Areas, then the quicksort by decreasing area.
+        let mut by_area: Vec<(usize, f32)> = order
+            .iter()
+            .map(|&t| {
+                let [v0, v1, v2] = self.triangles[t].vertices;
+                let (p0, p1, p2) = (position(self, v0), position(self, v1), position(self, v2));
+                let a: [f32; 3] = std::array::from_fn(|i| subtract(p2[i], p0[i]));
+                let b: [f32; 3] = std::array::from_fn(|i| subtract(p1[i], p0[i]));
+                let z = subtract(multiply(a[1], b[0]), multiply(b[1], a[0]));
+                let x = subtract(multiply(a[2], b[1]), multiply(b[2], a[1]));
+                let y = subtract(multiply(a[0], b[2]), multiply(b[0], a[2]));
+                let squared = add(add(multiply(y, y), multiply(x, x)), multiply(z, z));
+                (t, multiply(crate::gameplay::constraint_solver::inverse_length(squared), squared))
+            })
+            .collect();
+        if by_area.len() > 1 {
+            let last = by_area.len() as i32 - 1;
+            sort_by_area(&mut by_area, 0, last);
+        }
+        // Unit planes in list order.
+        let mut planes = vec![[0f32; 4]; self.triangles.len()];
+        for &t in &order {
+            let [v0, v1, v2] = self.triangles[t].vertices;
+            let (p0, p1, p2) = (position(self, v0), position(self, v1), position(self, v2));
+            let a: [f32; 3] = std::array::from_fn(|i| subtract(p2[i], p0[i]));
+            let b: [f32; 3] = std::array::from_fn(|i| subtract(p1[i], p0[i]));
+            let z = subtract(multiply(a[1], b[0]), multiply(b[1], a[0]));
+            let x = subtract(multiply(a[2], b[1]), multiply(b[2], a[1]));
+            let y = subtract(multiply(a[0], b[2]), multiply(b[0], a[2]));
+            let squared = add(add(multiply(y, y), multiply(x, x)), multiply(z, z));
+            let n = if 0. < squared {
+                let inverse = crate::gameplay::constraint_solver::inverse_length(squared);
+                [multiply(inverse, x), multiply(inverse, y), multiply(inverse, z)]
+            } else {
+                [x, y, z]
+            };
+            let w = subtract(0., add(add(multiply(n[1], p0[1]), multiply(n[0], p0[0])), multiply(n[2], p0[2])));
+            planes[t] = [n[0], n[1], n[2], w];
+            self.triangles[t].face = -1;
+        }
+        for (index, v) in self.vertex_order().into_iter().enumerate() {
+            self.vertices[v].point.index = index as i32;
+        }
+        self.faces.clear();
+        let tolerance = f32::from_bits(0x3f7f_ff58);
+        for &(seed, _) in &by_area {
+            if self.triangles[seed].face != -1 {
+                continue;
+            }
+            let face = self.faces.len() as i32;
+            let p = planes[seed];
+            self.triangles[seed].face = face;
+            self.faces.push(p);
+            let mut stack: Vec<Link> = self.triangles[seed].links.iter().filter_map(|l| *l).collect();
+            while let Some(at) = stack.pop() {
+                if self.triangles[at.triangle].face != -1 {
+                    continue;
+                }
+                let q = planes[at.triangle];
+                let valid = q[..3].iter().all(|v| !v.is_nan());
+                let length = subtract(add(add(multiply(q[1], q[1]), multiply(q[0], q[0])), multiply(q[2], q[2])), 1.).abs();
+                let dot = add(add(multiply(p[1], q[1]), multiply(p[0], q[0])), multiply(p[2], q[2]));
+                if !valid || f32::from_bits(0x38d1_b717) <= length || tolerance <= dot {
+                    self.triangles[at.triangle].face = face;
+                    for edge in [next_edge(at.edge), previous_edge(at.edge)] {
+                        if let Some(link) = self.triangles[at.triangle].links[edge] {
+                            stack.push(link);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Vertices from the list head (140b90970 / 140b90a40).
     pub fn vertex_order(&self) -> Vec<usize> {
         let mut out = Vec::new();
@@ -506,9 +627,22 @@ impl Hull {
 /// of the collision model's vertices, at most 16 of them, relative to its
 /// volume centroid (+0x1d00), and that centroid (+0x1d10).
 pub fn collision_shape(points: &[[f32; 4]]) -> Result<(Vec<[f32; 4]>, [f32; 3]), String> {
-    let hull = Hull::build(points)?;
+    collision_shape_with(points, |_| Err("hkgpConvexHull oriented bounding box (140c0d380) is not ported".into()))
+}
+
+/// `collision_shape` with the decimation tolerance from `tolerance`.
+pub fn collision_shape_with(
+    points: &[[f32; 4]],
+    tolerance: impl Fn(&Hull) -> Result<f32, String>,
+) -> Result<(Vec<[f32; 4]>, [f32; 3]), String> {
+    let mut hull = Hull::build(points)?;
     if hull.vertex_order().len() > 16 {
-        return Err("hkgpConvexHull decimation (140b896a0) is not ported".into());
+        let limit = f32::from_bits(0x5f7f_fff0);
+        let t = tolerance(&hull)?;
+        hull.decimate(16, if limit < t { limit } else { t })?;
+        hull.ensure_containment(points)?;
+        let t = tolerance(&hull)?;
+        hull.decimate(16, if limit < t { limit } else { t })?;
     }
     let centroid = hull.centroid()?;
     let vertices = hull
@@ -520,4 +654,429 @@ pub fn collision_shape(points: &[[f32; 4]]) -> Result<(Vec<[f32; 4]>, [f32; 3]),
         })
         .collect();
     Ok((vertices, centroid))
+}
+
+/// hkMatrix4 inverse with a determinant tolerance (140adf2d0 via
+/// 140b5ce50), generated from its instructions: `m` is four columns, None
+/// when |det| < `tolerance`.
+pub fn invert(m: &[f32; 16], tolerance: f32) -> Option<[f32; 16]> {
+    use crate::float::divide;
+    let t0 = subtract(multiply(m[15], m[10]), multiply(m[14], m[11]));
+    let t1 = multiply(m[13], m[11]);
+    let t2 = multiply(m[15], m[9]);
+    let t3 = subtract(t1, t2);
+    let t4 = subtract(multiply(m[14], m[9]), multiply(m[13], m[10]));
+    let t5 = add(add(multiply(m[5], t0), multiply(t3, m[6])), multiply(t4, m[7]));
+    let t6 = multiply(m[12], m[10]);
+    let t7 = multiply(m[14], m[8]);
+    let t8 = subtract(t6, t7);
+    let t9 = subtract(multiply(m[13], m[8]), multiply(m[12], m[9]));
+    let t10 = add(add(multiply(m[4], t4), multiply(t8, m[5])), multiply(t9, m[6]));
+    let t11 = multiply(t10, m[3]);
+    let t12 = subtract(multiply(m[12], m[11]), multiply(m[15], m[8]));
+    let t13 = subtract(t7, t6);
+    let t14 = add(add(multiply(m[6], t12), multiply(t13, m[7])), multiply(t0, m[4]));
+    let t15 = multiply(t14, m[1]);
+    let t16 = add(t11, t15);
+    let t17 = subtract(t2, t1);
+    let t18 = add(add(multiply(m[7], t9), multiply(t17, m[4])), multiply(t12, m[5]));
+    let t19 = -multiply(t18, m[2]);
+    let t20 = -multiply(t5, m[0]);
+    let t21 = add(t19, t20);
+    let det = add(t16, t21);
+    if !(tolerance <= det.abs()) {
+        return None;
+    }
+    let t22 = divide(f32::from_bits(0x3f800000), add(t16, t21));
+    let t23 = subtract(multiply(m[6], m[1]), multiply(m[2], m[5]));
+    let t24 = multiply(m[3], m[5]);
+    let t25 = multiply(m[1], m[7]);
+    let t26 = subtract(t24, t25);
+    let t27 = subtract(multiply(m[7], m[2]), multiply(m[3], m[6]));
+    let t28 = divide(f32::from_bits(0x3f800000), add(t21, t16));
+    let t29 = multiply(m[0], m[6]);
+    let t30 = multiply(m[2], m[4]);
+    let t31 = subtract(t29, t30);
+    let t32 = subtract(multiply(m[4], m[3]), multiply(m[0], m[7]));
+    let t33 = add(t15, t11);
+    let t34 = add(t20, t19);
+    let t35 = divide(f32::from_bits(0x3f800000), add(t33, t34));
+    let t36 = subtract(t25, t24);
+    let t37 = subtract(multiply(m[5], m[0]), multiply(m[1], m[4]));
+    let t38 = divide(f32::from_bits(0x3f800000), add(t34, t33));
+    let t39 = subtract(t30, t29);
+    Some([
+        multiply(-t5, t22),
+        multiply(add(multiply(m[3], t4), add(multiply(t3, m[2]), multiply(t0, m[1]))), t22),
+        multiply(-add(multiply(m[15], t23), add(multiply(t26, m[14]), multiply(t27, m[13]))), t22),
+        multiply(add(multiply(m[11], t23), add(multiply(t26, m[10]), multiply(t27, m[9]))), t22),
+        multiply(t14, t28),
+        multiply(-add(multiply(m[0], t0), add(multiply(t13, m[3]), multiply(t12, m[2]))), t28),
+        multiply(add(multiply(m[12], t27), add(multiply(t31, m[15]), multiply(t32, m[14]))), t28),
+        multiply(-add(multiply(m[8], t27), add(multiply(t31, m[11]), multiply(t32, m[10]))), t28),
+        multiply(-t18, t35),
+        multiply(add(multiply(m[1], t12), add(multiply(t17, m[0]), multiply(t9, m[3]))), t35),
+        multiply(-add(multiply(m[13], t32), add(multiply(t36, m[12]), multiply(t37, m[15]))), t35),
+        multiply(add(multiply(m[9], t32), add(multiply(t36, m[8]), multiply(t37, m[11]))), t35),
+        multiply(t10, t38),
+        multiply(-add(multiply(m[2], t9), add(multiply(t8, m[1]), multiply(t4, m[0]))), t38),
+        multiply(add(multiply(m[14], t37), add(multiply(t39, m[13]), multiply(t23, m[12]))), t38),
+        multiply(-add(multiply(m[10], t37), add(multiply(t39, m[9]), multiply(t23, m[8]))), t38),
+    ])
+}
+
+/// sqrt(1.19e-7) through RSQRTPS + Newton (140b896a0's local_258).
+fn epsilon_root() -> f32 {
+    let e = f32::from_bits(0x3400_0000);
+    multiply(crate::gameplay::constraint_solver::inverse_length(e), e)
+}
+
+/// One candidate collapse of 140b896a0: position (w = 1) and cost.
+#[derive(Clone, Copy, Debug)]
+struct Collapse {
+    position: [f32; 4],
+    cost: f32,
+}
+
+type Quadric = [f32; 16];
+
+/// v^T Q v with 140b8a355's transpose order: row i = (q[4i+3] v3 +
+/// q[4i+2] v2) + (q[4i+1] v1 + q[4i] v0), then (t3 + t1) + (t2 + t0).
+fn quadric_cost(q: &Quadric, v: [f32; 4]) -> f32 {
+    let t: [f32; 4] = std::array::from_fn(|i| {
+        let row = &q[4 * i..4 * i + 4];
+        let dot = add(
+            add(multiply(row[3], v[3]), multiply(row[2], v[2])),
+            add(multiply(row[1], v[1]), multiply(row[0], v[0])),
+        );
+        multiply(dot, v[i])
+    });
+    let sum = add(add(t[3], t[1]), add(t[2], t[0]));
+    if 0. > sum { 0. } else { sum }
+}
+
+impl Hull {
+    /// 140b9bc60 with planes: inside every face plane within `tolerance`.
+    fn accepts(&self, p: [f32; 4], tolerance: f32) -> bool {
+        self.faces.iter().all(|f| {
+            !(tolerance < add(add(add(multiply(f[1], p[1]), multiply(f[0], p[0])), multiply(f[2], p[2])), f[3]))
+        })
+    }
+
+    /// The optimal collapse of an edge (140b5ce50 inverse, checked both
+    /// ways against the identity, then the plane test), or the midpoint.
+    fn collapse(&self, sum: &Quadric, small: [f32; 4], large: [f32; 4], root: f32, tolerance: f32) -> Collapse {
+        let m: [f32; 16] = [
+            sum[0], sum[4], sum[8], 0., sum[1], sum[5], sum[9], 0., sum[2], sum[6], sum[10], 0., sum[3], sum[7], sum[11], 1.,
+        ];
+        if let Some(inv) = invert(&m, root) {
+            let col = |x: &[f32; 16], k: usize| [x[4 * k], x[4 * k + 1], x[4 * k + 2], x[4 * k + 3]];
+            let mut worst = 0f32;
+            for c in 0..4 {
+                let (ic, mcol) = (col(&inv, c), col(&m, c));
+                for r in 0..4 {
+                    let mi = add(
+                        add(add(multiply(ic[1], m[4 + r]), multiply(ic[0], m[r])), multiply(ic[2], m[8 + r])),
+                        multiply(ic[3], m[12 + r]),
+                    );
+                    let im = add(
+                        add(add(multiply(mcol[1], inv[4 + r]), multiply(mcol[0], inv[r])), multiply(mcol[2], inv[8 + r])),
+                        multiply(mcol[3], inv[12 + r]),
+                    );
+                    let identity = if c == r { 1. } else { 0. };
+                    for value in [subtract(mi, identity), subtract(im, identity)] {
+                        let value = value.abs();
+                        worst = if worst > value { worst } else { value };
+                    }
+                }
+            }
+            if worst < root {
+                let candidate = [inv[12], inv[13], inv[14], 1.];
+                if self.accepts(candidate, tolerance) {
+                    return Collapse { position: candidate, cost: quadric_cost(sum, candidate) };
+                }
+            }
+        }
+        let mid = [
+            multiply(add(large[0], small[0]), 0.5),
+            multiply(add(large[1], small[1]), 0.5),
+            multiply(add(large[2], small[2]), 0.5),
+            1.,
+        ];
+        Collapse { position: mid, cost: quadric_cost(sum, mid) }
+    }
+
+    /// 140b896a0 (decimateVertices): quadric edge collapses over the edges
+    /// between different faces until at most `target` such vertices remain
+    /// and no collapse costs less than tolerance^2; then the hull of the
+    /// surviving positions. `tolerance` is min(limit, half the smallest
+    /// OBB extent).
+    pub fn decimate(&mut self, target: usize, tolerance: f32) -> Result<(), String> {
+        self.build_indices();
+        let root = epsilon_root();
+        let order = self.vertex_order();
+        let n = order.len();
+        let mut positions: Vec<[f32; 4]> = order.iter().map(|&v| self.vertices[v].point.position).collect();
+        let original = positions.clone();
+        let mut quadrics = vec![[0f32; 16]; n];
+        let mut planes: Vec<Vec<[f32; 4]>> = vec![Vec::new(); n];
+        let mut keys: Vec<u32> = Vec::new();
+        for t in self.triangle_order() {
+            let tri = self.triangles[t];
+            let index = |v: usize| self.vertices[v].point.index as u32;
+            for edge in 0..3 {
+                let neighbour = tri.links[edge].expect("closed hull").triangle;
+                if self.triangles[neighbour].face != tri.face {
+                    let a = index(tri.vertices[edge]);
+                    let b = index(tri.vertices[next_edge(edge)]);
+                    let key = if a < b { a << 16 | (b & 0xffff) } else { b << 16 | (a & 0xffff) };
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+            }
+            let p = self.faces[tri.face as usize];
+            for k in 0..3 {
+                let v = index(tri.vertices[k]) as usize;
+                let known = planes[v].iter().any(|q| (0..3).all(|i| subtract(q[i], p[i]).abs() <= root));
+                planes[v].push(p);
+                if !known {
+                    let q = &mut quadrics[v];
+                    for i in 0..4 {
+                        for j in 0..4 {
+                            q[4 * i + j] = add(multiply(p[i], p[j]), q[4 * i + j]);
+                        }
+                    }
+                }
+            }
+        }
+        let words = (n + 31) >> 5;
+        let mut removed = vec![u32::MAX; words];
+        let mut collapses = Vec::with_capacity(keys.len());
+        let far = f32::from_bits(0x7f7f_ffee);
+        let (mut best, mut best_cost) = (usize::MAX, far);
+        for (i, &key) in keys.iter().enumerate() {
+            let (small, large) = ((key >> 16) as usize, (key & 0xffff) as usize);
+            let sum: Quadric = std::array::from_fn(|k| add(quadrics[small][k], quadrics[large][k]));
+            let c = self.collapse(&sum, positions[small], positions[large], root, tolerance);
+            if c.cost < best_cost {
+                best_cost = c.cost;
+                best = i;
+            }
+            collapses.push(c);
+            for v in [large, small] {
+                removed[v >> 5] &= !(1 << (v & 31));
+            }
+        }
+        let mut set = 0u32;
+        let mut mask = (!(u32::MAX << ((n as u32).wrapping_sub(1) & 31))) << 1 | 1;
+        for w in (0..words).rev() {
+            set += (removed[w] & mask).count_ones();
+            mask = u32::MAX;
+        }
+        let mut alive = n as i32 - set as i32;
+        let limit = multiply(tolerance, tolerance);
+        while (target as i32) < alive || (best_cost < limit && 6 < keys.len()) {
+            let key = keys[best];
+            let (keep, gone) = ((key >> 16) as usize, (key & 0xffff) as usize);
+            positions[keep] = collapses[best].position;
+            removed[gone >> 5] |= 1 << (gone & 31);
+            let moved = quadrics[gone];
+            for k in 0..16 {
+                quadrics[keep][k] = add(moved[k], quadrics[keep][k]);
+            }
+            keys.swap_remove(best);
+            collapses.swap_remove(best);
+            let mut i = keys.len() as i32 - 1;
+            while 0 <= i {
+                let at = i as usize;
+                let (a, b) = (keys[at] & 0xffff, keys[at] >> 16);
+                if [a, b].iter().any(|&v| v as usize == keep || v as usize == gone) {
+                    let a = if a as usize == gone { keep as u32 } else { a };
+                    let b = if b as usize == gone { keep as u32 } else { b };
+                    let (small, large) = if a < b { (a, b) } else { (b, a) };
+                    let key = small << 16 | large;
+                    keys[at] = key;
+                    if keys.iter().rposition(|&k| k == key) == Some(at) {
+                        let (small, large) = (small as usize, large as usize);
+                        let sum: Quadric = std::array::from_fn(|k| add(quadrics[small][k], quadrics[large][k]));
+                        collapses[at] = self.collapse(&sum, positions[small], positions[large], root, tolerance);
+                    } else {
+                        keys.swap_remove(at);
+                        collapses.swap_remove(at);
+                    }
+                }
+                i -= 1;
+            }
+            best = 0;
+            best_cost = collapses.first().map_or(far, |c| c.cost);
+            for (j, c) in collapses.iter().enumerate().skip(1) {
+                if c.cost < best_cost {
+                    best_cost = c.cost;
+                    best = j;
+                }
+            }
+            alive -= 1;
+        }
+        // Compact the surviving positions (swap from the end).
+        let mut count = n;
+        for v in (0..n).rev() {
+            if removed[v >> 5] >> (v & 31) & 1 != 0 {
+                count -= 1;
+                if count != v {
+                    positions[v] = positions[count];
+                }
+            }
+        }
+        if count < n {
+            let rebuilt = if 2 < alive { Hull::build(&positions[..count]).ok() } else { None };
+            *self = match rebuilt {
+                Some(hull) => hull,
+                None => Hull::build(&original)?,
+            };
+        }
+        Ok(())
+    }
+}
+
+/// 140ae12e0 on the 140ae1cb0 transpose of three planes' rows: the inverse
+/// rows (out[0..12]) or None when |det| is below 1.19e-7 of the product of
+/// the rows' absolute sums.
+pub fn invert_transposed(i: [f32; 4], j: [f32; 4], k: [f32; 4]) -> Option<[f32; 12]> {
+    let (a, s, m) = (add, subtract, multiply);
+    // 140ae1cb0: rows (i0, j0, k0, k1), (i1, j1, k1, k3), (i2, j2, k2, k3).
+    let r0 = [i[0], j[0], k[0], k[1]];
+    let r1 = [i[1], j[1], k[1], k[3]];
+    let r2 = [i[2], j[2], k[2], k[3]];
+    let (f2, f3, f4) = (r0[0], r0[1], r0[2]);
+    let (f5, f6, f11) = (r1[0], r1[1], r1[2]);
+    let (f7, f8, f9) = (r2[0], r2[1], r2[2]);
+    let c22 = s(m(f8, f5), m(f6, f7));
+    let c23 = s(m(f9, f6), m(f11, f8));
+    let c24 = s(m(f7, f11), m(f5, f9));
+    let c25 = s(m(f5, f4), m(f2, f11));
+    let c26 = s(m(r1[3], r0[3]), m(r0[3], r1[3]));
+    let det = a(a(m(f3, c24), m(f2, c23)), m(f4, c22));
+    let sum1 = a(a(f6.abs(), f5.abs()), f11.abs());
+    let sum2 = a(a(f8.abs(), f7.abs()), f9.abs());
+    let sum0 = a(a(f3.abs(), f2.abs()), f4.abs());
+    if !(m(m(m(sum2, sum1), sum0), f32::from_bits(0x3400_0000)) < det.abs()) {
+        return None;
+    }
+    let r = crate::gameplay::constraint_solver::reciprocal(det);
+    Some([
+        m(r, c23),
+        m(r, s(m(f4, f8), m(f9, f3))),
+        m(r, s(m(f11, f3), m(f4, f6))),
+        m(r, c25),
+        m(c24, r),
+        m(s(m(f2, f9), m(f7, f4)), r),
+        m(c25, r),
+        m(c26, r),
+        m(r, c22),
+        m(r, s(m(f3, f7), m(f8, f2))),
+        m(r, s(m(f6, f2), m(f3, f5))),
+        m(r, c26),
+    ])
+}
+
+impl Hull {
+    /// 140b886c0: the hull of every plane triple's intersection point that
+    /// lies within 1e-5 inside all other planes.
+    pub fn from_planes(planes: &[[f32; 4]]) -> Result<Self, String> {
+        let tolerance = f32::from_bits(0x3727_c5ac);
+        let mut points = Vec::new();
+        let n = planes.len();
+        for i in 0..n {
+            for j in i + 1..n {
+                for k in j + 1..n {
+                    let Some(out) = invert_transposed(planes[i], planes[j], planes[k]) else { continue };
+                    let (wi, wj, wk) = (subtract(0., planes[i][3]), subtract(0., planes[j][3]), subtract(0., planes[k][3]));
+                    let p = [
+                        add(add(multiply(wj, out[4]), multiply(wi, out[0])), multiply(wk, out[8])),
+                        add(add(multiply(wj, out[5]), multiply(wi, out[1])), multiply(wk, out[9])),
+                        add(add(multiply(wj, out[6]), multiply(wi, out[2])), multiply(wk, out[10])),
+                        add(add(multiply(wj, out[7]), multiply(wi, out[3])), multiply(wk, out[11])),
+                    ];
+                    let inside = (0..n).filter(|&q| q != i && q != j && q != k).all(|q| {
+                        let f = planes[q];
+                        !(tolerance < add(add(add(f[3], multiply(p[1], f[1])), multiply(p[2], f[2])), multiply(p[0], f[0])))
+                    });
+                    if inside {
+                        points.push(p);
+                    }
+                }
+            }
+        }
+        if points.len() < 4 {
+            return Err("hkgpConvexHull from planes has fewer than four vertices".into());
+        }
+        Hull::build(&points)
+    }
+
+    /// ensureContainment (140b9ab30, 3D part): every face plane moved out
+    /// to contain `points`, then the hull of the moved planes.
+    pub fn ensure_containment(&mut self, points: &[[f32; 4]]) -> Result<(), String> {
+        if self.faces.len() < 4 {
+            return Err("hkgpConvexHull::ensureContainment requires at least 4 planes".into());
+        }
+        let planes: Vec<[f32; 4]> = self
+            .faces
+            .iter()
+            .map(|f| {
+                let mut reach = 0f32;
+                for p in points {
+                    let d = add(add(f[3], multiply(f[1], p[1])), add(multiply(f[2], p[2]), multiply(f[0], p[0])));
+                    reach = if reach > d { reach } else { d };
+                }
+                [f[0], f[1], f[2], subtract(f[3], reach)]
+            })
+            .collect();
+        *self = Hull::from_planes(&planes)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(fields: &[&str]) -> Vec<u32> {
+        fields.iter().map(|h| u32::from_str_radix(h, 16).unwrap()).collect()
+    }
+
+    /// Outputs of the installed 140adf2d0 and 140ae1cb0 + 140ae12e0
+    /// (analysis/probe_hull_matrix_inverses.py).
+    #[test]
+    fn matrix_inverses_match_the_original() {
+        let text = include_str!("../../../tests/fixtures/hull_matrix_inverse_cases.txt");
+        let (mut four, mut three) = (0, 0);
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let values = words(&fields[1..]);
+            let f = |w: u32| f32::from_bits(w);
+            if fields[0] == "M4" {
+                let m: [f32; 16] = std::array::from_fn(|i| f(values[i]));
+                let ok = values[16] == 0;
+                let result = invert(&m, 0.00034527_f32);
+                assert_eq!(result.is_some(), ok, "status of {line}");
+                if let Some(r) = result {
+                    let ours: Vec<u32> = r.iter().map(|v| v.to_bits()).collect();
+                    assert_eq!(ours, values[17..33].to_vec(), "{line}");
+                }
+                four += 1;
+            } else {
+                let p = |k: usize| [f(values[4 * k]), f(values[4 * k + 1]), f(values[4 * k + 2]), f(values[4 * k + 3])];
+                let ok = values[12] == 0;
+                let result = invert_transposed(p(0), p(1), p(2));
+                assert_eq!(result.is_some(), ok, "status of {line}");
+                if let Some(r) = result {
+                    let ours: Vec<u32> = r.iter().map(|v| v.to_bits()).collect();
+                    assert_eq!(ours, values[13..25].to_vec(), "{line}");
+                }
+                three += 1;
+            }
+        }
+        assert_eq!((four, three), (400, 400));
+    }
 }
