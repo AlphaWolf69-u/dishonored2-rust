@@ -141,7 +141,11 @@ pub fn inspect_runtime_lifecycles(
         runtime
             .app
             .init_resource::<PendingUiExit>()
-            .add_systems(Last, quit_during_pending_ui);
+            .add_systems(Last, quit_during_pending_ui)
+            .add_systems(
+                First,
+                quit_during_pending_ui.before(super::resident_images::service_ui_images),
+            );
     }
     let started = Instant::now();
     let mut playing_since = None;
