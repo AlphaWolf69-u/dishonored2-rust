@@ -12,6 +12,9 @@ struct HistoryState { scopes: usize, sources: HashMap<Arc<str>, usize> }
 struct ReadHistory { catalog: u64, state: Mutex<HistoryState> }
 impl ReadHistory {
     fn acquire(self: &Arc<Self>, path: &str) -> SourceReadLease {
+        // Count the in-flight read before Catalog can publish its history.
+        // Failed/missing generations participate too: their rollback cannot
+        // remove a successful generation's credit while that source is live.
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let path = state.sources.get_key_value(path).map(|(key, _)| key.clone())
             .unwrap_or_else(|| Arc::from(path));
@@ -28,6 +31,8 @@ impl Drop for SourceReadLease {
         if *count == 0 {
             state.sources.remove(self.path.as_ref());
             if state.scopes == 0 {
+                // Keep the state lock through forget. A replacement source
+                // cannot begin its read until this old credit has retired.
                 crate::loading::forget(self.history.catalog, "physhape", &self.path);
             }
         }
@@ -66,6 +71,19 @@ pub struct ShapeSource {
     // locks the bootstrap registry; registry -> history -> loading is the sole
     // nested lock order for admission and retirement.
     _history: Option<SourceReadLease>,
+}
+impl ShapeSource {
+    fn require_hkx(&self) -> Result<(), ShapeSourceError> {
+        if self.alias.is_some() {
+            // 14008c9a0 resolves an alias through 1400607f0 and constructs a
+            // Havok scaled wrapper. Model triangle extraction already handles
+            // this scale; compound/query users have no such wrapper port yet.
+            // Preserve their existing parse/admission failure, never expose the
+            // alias descriptor's unused schema as a successfully loaded shape.
+            return Err(ShapeSourceError::Parse("compact HKX alias requires model geometry acquisition".into()));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) enum ShapeSourceError { Read(String), Parse(String) }
@@ -249,6 +267,7 @@ impl ShapeSources {
         let key = source_key(path);
         if self.enabled {
             if let Some(source) = self.sources.get(key.as_ref()) {
+                source.require_hkx()?;
                 counts.hits += 1;
                 log_source(self.trace, role, path, source, true);
                 return Ok(Some(source.clone()));
@@ -256,7 +275,7 @@ impl ShapeSources {
         }
         let hits = counts.hits;
         let Some(source) = acquire_source(catalog, path, false, counts)? else { return Ok(None); };
-        if source.alias.is_some() { return Err(ShapeSourceError::Parse("compact HKX alias requires model geometry acquisition".into())); }
+        source.require_hkx()?;
         let source = source.into_shared();
         log_source(self.trace, role, path, &source, counts.hits != hits);
         if self.accepting && matches!(role, ShapeUse::Area) {
@@ -281,6 +300,7 @@ impl ShapeSources {
         let key = source_key(path);
         if self.enabled {
             if let Some(source) = self.sources.get(key.as_ref()) {
+                source.require_hkx().map_err(ShapeSourceError::message)?;
                 counts.hits += 1;
                 log_source(self.trace, role, path, source, true);
                 return source.physics.standalone_shapes(&source.bytes).map(Some);
@@ -288,7 +308,7 @@ impl ShapeSources {
         }
         let hits = counts.hits;
         let Some(source) = acquire_source(catalog, path, false, counts).map_err(ShapeSourceError::message)? else { return Ok(None); };
-        if source.alias.is_some() { return Err("compact HKX alias requires model geometry acquisition".into()); }
+        source.require_hkx().map_err(ShapeSourceError::message)?;
         log_source(self.trace, role, path, &source, counts.hits != hits);
         source.physics.standalone_shapes(&source.bytes).map(Some)
     }
