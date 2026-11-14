@@ -9,6 +9,8 @@ pub(crate) struct Declaration {
     pub path: Arc<str>,
     pub tokens: Arc<[String]>,
     lod_zero_mesh: LodZeroMesh,
+    /// Standard skinned product selected by088c10 before model acquisition.
+    cloth_base: Option<Option<String>>,
     pub parent: Option<usize>,
     parent_record: Option<Lease>,
     pub parent_declaration: Option<Arc<Declaration>>,
@@ -107,7 +109,10 @@ impl ModelReference {
         let mut current = Some(self.declaration.as_ref());
         while let Some(layer) = current {
             match layer.lod_zero_mesh {
-                LodZeroMesh::Local(index) => return crate::bmd6::compiled_mesh_resource(&layer.tokens[index as usize]),
+                LodZeroMesh::Local(index) => return match &layer.cloth_base {
+                    Some(base) => base.clone(),
+                    None => crate::bmd6::compiled_mesh_resource(&layer.tokens[index as usize]),
+                },
                 LodZeroMesh::Inherited => current = layer.parent_declaration.as_deref(),
                 LodZeroMesh::Unresolved => return None,
             }
@@ -261,6 +266,10 @@ fn parse(catalog: &Catalog, path: Arc<str>, source: &str, scope: LoadContext) ->
     let mesh = crate::bmd6::compiled_mesh_name(source).filter(|name| name.ends_with(".md6mesh"));
     let lod_zero_token = mesh.and_then(|name| lexemes.iter().position(|&token| std::ptr::eq(token, name)))
         .and_then(|index| u32::try_from(index).ok());
+    let cloth_base = match mesh {
+        Some(mesh) => crate::bmd6::cloth::select_base_tokens(catalog, &path, &lexemes, mesh, scope as u8, None)?,
+        None => None,
+    };
     let tokens: Arc<[String]> = lexemes.into_iter().map(str::to_owned).collect();
     let mut depth = 0usize;
     let mut parent = None;
@@ -319,7 +328,7 @@ fn parse(catalog: &Catalog, path: Arc<str>, source: &str, scope: LoadContext) ->
         crc.update(source.as_bytes());
         crc
     });
-    Ok(Declaration { path, tokens, lod_zero_mesh, parent, parent_record, parent_declaration, animsets, source_bytes: source.len(), source_crc })
+    Ok(Declaration { path, tokens, lod_zero_mesh, cloth_base, parent, parent_record, parent_declaration, animsets, source_bytes: source.len(), source_crc })
 }
 
 fn normalized(path: &str) -> Cow<'_, str> {

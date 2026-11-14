@@ -398,7 +398,7 @@ pub fn parse_ragdoll(bytes: &[u8]) -> Result<Vec<RagdollEntry>, String> {
 }
 
 /// The MD5 the resource system uses for generated names (14010caf0/14010c160).
-fn md5(input: &[u8]) -> [u8; 16] {
+pub(crate) fn md5(input: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
         9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,

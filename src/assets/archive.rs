@@ -100,6 +100,7 @@ pub struct Catalog {
     pub(crate) fade_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::fade::Fade>>>,
     pub(crate) decal_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::decal::DecalMaterials<String>, crate::assets::decal::ResourceError>>>,
     pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::resources::Definition>>>,
+    pub(crate) cloth_headers: std::sync::OnceLock<crate::assets::bmd6::cloth::Owner>,
     pub(crate) physics_system_resources: std::sync::OnceLock<crate::assets::physworld::physics_system::Resources>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
     pub(crate) shape_sources: std::sync::OnceLock<crate::assets::physworld::source::Owner>,
@@ -166,6 +167,8 @@ impl Drop for Catalog {
         self.decal_resources.take();
         crate::assets::entities::physics_material::resources::report_retirement(self);
         self.physics_material_resources.take();
+        crate::assets::bmd6::cloth::report(self, "catalog-retiring");
+        self.cloth_headers.take();
         crate::assets::physworld::physics_system::report_retirement(self);
         self.physics_system_resources.take();
         crate::assets::physworld::mass::resources::report_retirement(self);
@@ -267,6 +270,7 @@ impl Catalog {
         crate::assets::midnight_scene::release_marker(self, 0);
         crate::assets::decal::release_marker(self, 0);
         crate::assets::entities::physics_material::resources::release_marker(self, 0);
+        crate::assets::bmd6::cloth::release_marker(self, 0);
         crate::assets::physworld::physics_system::release_marker(self, 0);
         self.release_pickable_level();
     }
@@ -284,6 +288,7 @@ impl Catalog {
         crate::assets::midnight_scene::release_marker(self, 1);
         crate::assets::decal::release_marker(self, 1);
         crate::assets::entities::physics_material::resources::release_marker(self, 1);
+        crate::assets::bmd6::cloth::release_marker(self, 1);
         crate::assets::physworld::physics_system::release_marker(self, 1);
         crate::assets::entities::effects::declarations::release_marker(self, 1);
         crate::assets::inventory_item::configuration::release_persistent(self);
@@ -534,6 +539,7 @@ impl Catalog {
             fade_resources: Default::default(),
             midnight_scenes: Default::default(),
             decal_resources: Default::default(),
+            cloth_headers: Default::default(),
             physics_system_resources: Default::default(),
             common_models: Default::default(),
             difficulty_definitions: Default::default(),

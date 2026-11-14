@@ -4,6 +4,8 @@
 //! Field order follows the installed game's idMD6Model loader and BTRI v2
 //! reader (Ghidra functions 0x14025aa00, 0x140259960, 0x14025a040).
 
+pub(crate) mod cloth;
+
 // Host equivalent of the resource registry's scoped purge (140060180).
 static HISTORY_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
 
@@ -128,7 +130,15 @@ pub(crate) fn compiled_mesh_parent(declaration: &str) -> Option<&str> {
 
 pub fn resolve_compiled_mesh(
     compiled_guess: &str,
+    read_declaration: impl FnMut(&str) -> Option<String>,
+) -> Result<String, String> {
+    resolve_mesh_with(compiled_guess, read_declaration, |_, _, mesh| Ok(mesh))
+}
+
+fn resolve_mesh_with(
+    compiled_guess: &str,
     mut read_declaration: impl FnMut(&str) -> Option<String>,
+    mut select: impl FnMut(&str, &str, String) -> Result<String, String>,
 ) -> Result<String, String> {
     let mut declaration =
         declaration_path(compiled_guess).ok_or("not a compiled MD6 model path")?;
@@ -143,7 +153,7 @@ pub fn resolve_compiled_mesh(
             return Ok(compiled_guess.into());
         };
         if let Some(mesh) = compiled_mesh_path(&text) {
-            return Ok(mesh);
+            return select(&declaration, &text, mesh);
         }
         let Some(inherited) = compiled_mesh_parent(&text) else {
             return Ok(compiled_guess.into());
@@ -767,7 +777,7 @@ impl ModelSources {
         let reused_declaration = admitted.is_some();
         let path = match admitted {
             Some(path) => path,
-            None => resolve_compiled_mesh(resource, |decl| {
+            None => resolve_mesh_with(resource, |decl| {
                 catalog.read_cancellable(decl, cancelled).ok().flatten().map(|bytes| {
                     if started.is_some() {
                         declaration_reads += 1;
@@ -775,6 +785,13 @@ impl ModelSources {
                     }
                     crate::assets::declaration_texts::adopt_utf8(bytes, "md6")
                 })
+            }, |declaration, source, mesh| {
+                let name = compiled_mesh_name(source).ok_or("selected MD6 mesh has no source name")?;
+                match cloth::select_base(catalog, declaration, source, name, 0, cancelled)? {
+                    None => Ok(mesh),
+                    Some(Some(base)) => Ok(base),
+                    Some(None) => Err(format!("{declaration}: cloth-only model requires the unimplemented cloth runtime; no standard skinned projection")),
+                }
             })?,
         };
         if started.is_some() {
