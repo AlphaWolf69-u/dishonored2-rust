@@ -356,7 +356,7 @@ impl RunningGraph {
                     }
                     "arkKisculeNodeActionMidnightControl" => {
                         if !autonomous_scene_action(&self.graph, n) { return Ok(()); }
-                        let Some(clip) = self.graph.animated_clips.get(atom(n.params, "m_declMdnt").unwrap_or("")).cloned() else { return Ok(()) };
+                        let Some(clip) = self.graph.animated_clips.get(atom(&n.params, "m_declMdnt").unwrap_or("")).cloned() else { return Ok(()) };
                         match p.name.as_str() {
                             "Stop" => {
                                 self.playing.retain(|playback| playback.node != id);
@@ -365,7 +365,7 @@ impl RunningGraph {
                             }
                             "Play" => {
                                 if self.animated.iter().any(|playback| playback.node == id) {
-                                    if atom(n.params, "m_resetOnPlay") == Some("true") {
+                                    if atom(&n.params, "m_resetOnPlay") == Some("true") {
                                         return Err("scene reset on replay is not integrated".into());
                                     }
                                     return Ok(());
@@ -537,13 +537,6 @@ impl SceneMotion {
             animated.clip.animations.get(&uid)?;
             Some((animated.placement, &animated.clip, animated.group, animated.time_ms as i32))
         }))
-    }
-    pub fn advance_motors(&mut self, seconds: f32, world: &mut MachineryWorld) {
-        for graph in &mut self.graphs {
-            graph
-                .motor_controls
-                .retain_mut(|c| !c.advance(seconds, world));
-        }
     }
     pub fn notify(&mut self, event: &str, placements: &[PlacedModel]) {
         for graph in &mut self.graphs {

@@ -430,11 +430,26 @@ pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: 
     advance(world)?;
     let admitted = world.resource::<UsableEffects>().loading.len();
     let texture = super::texture_streaming::observe_level_acquisition(world);
-    let readable = world.get_resource_mut::<super::interactions::Interactions>().is_some_and(|mut interactions| {
-        if interactions.readable.is_empty() { return false; }
-        interactions.request_readable(0);
+    let readable_request = {
+        let mut request = None;
+        if let (Some(interactions), Some(physics), Some(live)) = (
+            world.get_resource::<super::interactions::Interactions>(),
+            world.get_resource::<super::physics_scene::PhysicsScene>(),
+            world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>(),
+        ) {
+            for (index, readable) in interactions.readable.iter().enumerate() {
+                if let Some((identity, item)) = physics.readable_item(&readable.entity, live)? {
+                    request = Some((index, identity, item));
+                    break;
+                }
+            }
+        }
+        request
+    };
+    let readable = if let Some((index, identity, item)) = readable_request {
+        world.resource_mut::<super::interactions::Interactions>().request_readable(index, identity, item);
         true
-    });
+    } else { false };
     let rig = super::usable_animation::observe_level_acquisition(world);
     super::level_lifetime::close_level_acquisitions(world);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);

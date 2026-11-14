@@ -100,6 +100,16 @@ impl FxGraphInstances {
             .filter_map(|node| instance_declaration(node).map(|name| (node.id, name.to_owned())))
             .collect::<Vec<_>>();
 
+        let mut runtime = FxGraphRuntime::new(graph, HashMap::new());
+        runtime.set_owner(owner.clone());
+        runtime.random_owner = Some(Arc::clone(random));
+        let effectful = runtime.definition().nodes.iter().any(|node|
+            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx"));
+        let mut targets = runtime.definition().nodes.iter().filter(|node|
+            all_nodes || node.class == "arkKisculeNodeEntityFx"
+                || (parent.is_some() && node.class == "arkKisculeNodeDeclExit"))
+            .map(|node| node.id).collect::<Vec<_>>();
+
         let index = if let Some(index) = self.free.pop() {
             self.runtimes[index] = Some(runtime);
             self.parents[index] = parent;

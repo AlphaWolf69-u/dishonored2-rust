@@ -1040,7 +1040,7 @@ pub(super) fn prepare_level(
     check_cancelled()?;
     let graph_definitions = entity_document.as_ref().map(|document|
         crate::assets::entities::effects::load_with_entities(document,
-            app.world().get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
+            app.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
         .transpose().map_err(std::io::Error::other)?.unwrap_or_default();
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
         .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))

@@ -776,8 +776,13 @@ pub(crate) fn simulate_effects(
         water.delta_seconds, underwater, camera_frame);
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
-        match world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
-            particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater, &inputs.world, fx.live.as_deref()) {
+        // The frame retains the authoritative shared query owner. Hold its
+        // actual read lease through this FX batch; never clone a physics world.
+        let result = inputs.world.read().map_err(|_| "level physics query owner is poisoned".to_owned())
+            .and_then(|world| world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
+                particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater,
+                &world, fx.live.as_deref()));
+        match result {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
                 warn!("World particle preparation pending: {error}");
