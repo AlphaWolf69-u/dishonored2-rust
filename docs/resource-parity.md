@@ -8277,3 +8277,17 @@ Prediction: this is a missing lifecycle/behavior path, not a CPU optimization. D
 Document factory composition (2026-11-14, source stage): inherited read-only Faction references acquire through the canonical session owner, all actually registered definitions resolve before the manager snapshot, and the real Faction pool runs5bd9a0/5bda20/5bdad0 lifecycle with the same shared EntityEvents queue. Typed Rigid metadata now shares its asset Definition Arc with the component owner; map/inline Faction identities remain explicitly unsupported rather than losing overrides. The world-wrapper's five activation subscriptions now dispatch through the real rigid/trigger pools and registry. Its d4 flags live in one authoritative per-entity array, and hierarchy requests retain actual actor generations in the existing bounded ObjectUpdateTask. No flag mirror, alternate query world or no-op activation callback was introduced. This stage reserves the Rigid factory but does not yet construct its bodies; concrete809d80/pickup integration follows before the coordinated build.
 
 Navigation pickup-filter projection:81a5f0 only AND-clears material-controlled bits, so projecting c87640's0820001f mask into existing primary/ExtraHD triangle filters is exact. The owner keeps geometry/materials/identity active; component fake boxes are separate. A compact12-byte owner-span locator enables ordinary contiguous-body updates without a full-world scan or per-triangle index; interleaved inputs retain an exact owner scan. Prediction: unchanged walking queries, one small locator per initial placed-collision owner and only that body's run touched at pickup. No measured performance or memory saving is claimed; no tests/build/run.
+
+
+### Body-owner interface integration correction (2026-11-14)
+
+The cohesive compilation exposed two source integration defects. Prediction:
+zero allocation/capacity change or altered floating arithmetic; the existing
+body retirement path compiles and clears exactly the removed body's pending
+mark. `1412862b0` explicitly ANDs the existing word with the inverse of that
+body's bit, so `BitField::reset` now provides that exact owner operation instead
+of calling a nonexistent method or rebuilding/clearing the field. The gravity
+initializer reuses the existing x86RSQRT estimate helper with visibility widened
+only to its gameplay ancestor; its estimate and refinement sequence are unchanged.
+Saved decompilation `chunk_000752.c` confirms the bit operation. Syntax and
+whitespace inspected; no test/build rerun here, pending the coordinated batch.

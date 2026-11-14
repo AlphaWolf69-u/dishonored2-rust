@@ -101,7 +101,7 @@ impl HybridBroadphase {
             tree.remove_body(id, leaf)?;
             self.dirty[layer] = true;
             let slot = (id & 0x00ff_ffff) as usize;
-            if slot < self.pending_bodies.len() { self.pending_bodies.clear(slot)?; }
+            if slot < self.pending_bodies.len() { self.pending_bodies.reset(slot)?; }
         }
         Ok(())
     }
