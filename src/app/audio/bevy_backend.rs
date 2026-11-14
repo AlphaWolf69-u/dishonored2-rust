@@ -99,6 +99,18 @@ struct Shared {
 impl Engine {
     pub(super) fn has_output(&self) -> bool { self.shared.is_some() }
 
+    pub(super) fn observe_output(&self) -> super::observation::OutputSnapshot {
+        let Some(shared) = &self.shared else { return Default::default() };
+        let shared = shared.lock().unwrap_or_else(|error| error.into_inner());
+        super::observation::OutputSnapshot {
+            present: true, blocks: shared.tick, voices: shared.voices.len(),
+            fallback_voices: shared.fallbacks.len(), pending_actions: shared.pending_actions.len(),
+            pending_plays: shared.pending_plays.len(), due: shared.due.len(),
+            retiring_objects: shared.retiring_objects.len(), object_voices: shared.object_voices.values().sum(),
+            error: shared.error.clone(),
+        }
+    }
+
     pub fn retain_nodes(&self, actors: &std::collections::HashSet<u32>) {
         let Some(shared) = &self.shared else { return };
         let shared = shared.lock().unwrap_or_else(|e| e.into_inner());

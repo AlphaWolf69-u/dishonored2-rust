@@ -9,6 +9,7 @@ mod bevy_backend;
 mod fade;
 pub(super) mod contacts;
 mod acquisition;
+pub(super) mod observation;
 use crate::assets::declaration_texts;
 mod effects;
 mod spatial;
@@ -353,8 +354,8 @@ pub(super) struct AudioAssetsPlugin;
 
 /// Host capability: source acquisition also runs without AudioPlugin. Such
 /// Apps must not create an output mixer with no playback consumer.
-#[derive(Resource)]
-struct PlaybackBackend(bool);
+#[derive(Resource, Clone, Copy, PartialEq, Eq)]
+enum PlaybackBackend { Absent, Hardware, Observation }
 impl Plugin for AudioAssetsPlugin {
     fn build(&self, app: &mut App) {
         app.add_audio_source::<graph::ScheduledAudio>()
@@ -553,7 +554,10 @@ pub(super) fn begin_level(world: &mut World) {
 /// Acquisition owners without gameplay schedules or an audio output device.
 /// The client and windowless resource observations use the same initialization.
 pub(super) fn initialize_resources(app: &mut App) {
-    app.insert_resource(PlaybackBackend(app.is_plugin_added::<bevy::audio::AudioPlugin>()));
+    let hardware = app.is_plugin_added::<bevy::audio::AudioPlugin>();
+    let offline = app.world().contains_resource::<observation::Observation>();
+    assert!(!(hardware && offline), "offline audio requires hardware AudioPlugin disabled");
+    app.insert_resource(if offline { PlaybackBackend::Observation } else if hardware { PlaybackBackend::Hardware } else { PlaybackBackend::Absent });
     if !app.world().contains_resource::<Assets<graph::ScheduledAudio>>() {
         app.init_asset::<graph::ScheduledAudio>();
     }
@@ -581,6 +585,8 @@ pub(super) fn initialize_resources(app: &mut App) {
     let mut registry = app.world_mut().resource_mut::<WwiseRegistry>();
     registry.source_jobs = source_jobs;
     registry.media_generation = graph::retain_media(&Default::default());
+    drop(registry);
+    observation::attach(app.world_mut());
 }
 
 impl Plugin for SoundPlugin {
@@ -650,13 +656,13 @@ fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
     let Some(source) = source else { return };
     let (catalog, map) = source.acquisition_source();
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
-    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands, catalog, map, backend.0);
+    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands, catalog, map, *backend);
 }
 
 fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
     engine: &mut bevy_backend::Engine,
     outputs: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<bevy_backend::OutputAudio>,
-    commands: &mut super::setup_commands::SetupCommands, catalog: &crate::archive::Catalog, map: &str, playback: bool) {
+    commands: &mut super::setup_commands::SetupCommands, catalog: &crate::archive::Catalog, map: &str, playback: PlaybackBackend) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let base = catalog.base();
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
@@ -755,12 +761,16 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
-            if let Some(mixer) = mix.mixer.as_ref().filter(|_| playback) {
+            if let Some(mixer) = mix.mixer.as_ref().filter(|_| playback != PlaybackBackend::Absent) {
                 match bevy_backend::Engine::new(mixer, registry.states.clone(), catalog.base()) {
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
-                        commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE, super::level_lifetime::SessionEntity));
+                        if playback == PlaybackBackend::Observation {
+                            commands.queue(move |world: &mut World| observation::install_output(world, output));
+                        } else {
+                            commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE, super::level_lifetime::SessionEntity));
+                        }
                         info!("Shared stereo audio output initialized with installed bus effects");
                     },
                     Err(error) => error!("Shared Wwise audio output unavailable: {error}"),
@@ -1222,7 +1232,7 @@ fn update_playing_volume(
 pub(super) struct AudioPreparation {
     registry: WwiseRegistry, mix: AudioMix, engine: bevy_backend::Engine,
     outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch<bevy_backend::OutputAudio>,
-    playback: bool,
+    playback: PlaybackBackend,
 }
 impl AudioPreparation {
     pub fn take(world: &mut World) -> Self {
@@ -1231,7 +1241,7 @@ impl AudioPreparation {
             mix: std::mem::take(&mut *world.resource_mut::<AudioMix>()),
             engine: std::mem::take(&mut *world.resource_mut::<bevy_backend::Engine>()),
             outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch::new(world.resource::<Assets<bevy_backend::OutputAudio>>()),
-            playback: world.resource::<PlaybackBackend>().0,
+            playback: *world.resource::<PlaybackBackend>(),
         }
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands,

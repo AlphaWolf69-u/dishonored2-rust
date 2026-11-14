@@ -85,6 +85,8 @@ pub struct PlayingEvents {
     /// c47a0 consumes End, including the gap after the last voice drops.
     object_counts: HashMap<Emitter, u8>,
     completions: Arc<Mutex<Vec<Notification>>>,
+    // Host observation copies only packets consumed by this canonical owner.
+    observer: Option<Arc<Mutex<Vec<Notification>>>>,
 }
 
 impl PlayingEvents {
@@ -119,6 +121,13 @@ impl PlayingEvents {
 
     pub fn is_empty(&self) -> bool { self.active.is_empty() }
 
+    pub(crate) fn observe_notifications(&mut self, observer: Arc<Mutex<Vec<Notification>>>) {
+        self.observer = Some(observer);
+    }
+    pub(crate) fn observation(&self) -> (Vec<PlayingId>, Vec<(Emitter, u8)>) {
+        (self.active.keys().copied().collect(), self.object_counts.iter().map(|(&object, &count)| (object, count)).collect())
+    }
+
     /// True while any pending action or playing voice retains this
     /// declaration reference. The registry itself owns only weak tickets.
     pub fn references_object(&self, object: Emitter) -> bool {
@@ -141,6 +150,9 @@ impl PlayingEvents {
                     if *count == 0 { self.object_counts.remove(&notification.event.object); }
                 }
             }
+        }
+        if let Some(observer) = &self.observer {
+            observer.lock().unwrap_or_else(|error| error.into_inner()).extend_from_slice(&completed);
         }
         completed
     }
