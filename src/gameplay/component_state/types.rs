@@ -313,6 +313,7 @@ mod tests {
             processed_start_count: 0,
             queue_reset_count: 0,
             pending_release: crate::storage::PointerList::owned_with_capacity(64).unwrap(),
+            ..super::super::ComponentRegistry::new().unwrap()
         };
         let handle = super::super::entity::ComponentFactory {
             declaration: &declaration,

@@ -93,6 +93,12 @@ impl ComponentLifecycleWorld for World {
 }
 
 impl ComponentReleaseWorld for World {
+    fn stop(&mut self, _: ComponentHandle, _: &mut ComponentRegistry) -> Result<(), String> {
+        Err("release-request fixture has no Stop execution owner".into())
+    }
+    fn deinitialize(&mut self, _: ComponentHandle, _: &mut ComponentRegistry) -> Result<(), String> {
+        Err("release-request fixture has no Deinitialize execution owner".into())
+    }
     fn shutdown(&mut self, h: ComponentHandle, r: &mut ComponentRegistry) -> Result<(), String> {
         self.record(0x10, h, r);
         self.owners[h.slot as usize].flags &= !3;

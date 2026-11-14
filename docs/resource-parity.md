@@ -4661,6 +4661,27 @@ Runtime entity Stop dispatch and portable document rigid-body retirement still
 require the shared entity/five-factory physics-host integration; this does not
 claim those adapters are already connected.
 
+Component dispatcher recovery from checkpoint `2410aafb`: the existing
+ComponentRegistry now owns the `7ea870` stop/deinitialize/destroy drain,
+`7eac80`/`7eb060` entity-scoped teardown and `7ea6e0` update membership queues.
+Deinitialization and destruction remain separate reverse-priority passes,
+with the shared entity-event pump between completed batches. Checked handles
+retain their generation while an actual asynchronous Stop is pending. Host
+callback errors retain successful callback cursors and deferred queue entries;
+the existing `7ea340` startup path likewise resumes instead of replaying a
+finished initialization callback. The common owner performs actual roster
+remove/add callbacks and refuses to recycle slots still held by update queues.
+No second component pool, world or event dispatcher is added. Prediction:
+one existing callback per successfully completed phase, queue ownership retained
+through host errors, and no per-frame work until the real host requests an
+update membership change; the two 16-entry update queues add 256 bytes of
+initial pointer storage per registry. No memory/time improvement is claimed.
+The current-five-factory scene host is the integration consumer, owned by the
+coordinating entity-lifecycle slice; this commit alone does not claim successful
+runtime teardown. Existing fixture constructors receive only new-field defaults
+and the request-only fixture declares its absent execution callbacks; no tests
+were added or run. Compilation is reserved for the coordinated host batch.
+
 
 ### Host archive-session teardown
 
