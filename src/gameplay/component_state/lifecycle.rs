@@ -133,6 +133,17 @@ impl ComponentRegistry {
             && self.startup_progress.deferred.is_empty()
     }
 
+    /// Host cancellation must finish the entered callback's world cursor
+    /// before another component can request body publication/destruction.
+    pub(crate) fn interrupted_startup_component(&self) -> Result<Option<ComponentHandle>, String> {
+        let value = if self.startup_progress.initialization_active {
+            self.registered.values().get(self.startup_progress.initialization_next as usize)
+        } else if self.startup_progress.start_active {
+            self.pending_start.values().get(self.startup_progress.start_next as usize)
+        } else { None };
+        value.copied().map(ComponentHandle::from_packed).transpose()
+    }
+
     /// 7ea870: stops precede releases; each sorted batch is visited in reverse.
     /// Deinitialization and destruction are separate passes, since callbacks
     /// may still refer to other components in the same release batch. The

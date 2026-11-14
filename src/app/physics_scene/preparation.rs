@@ -32,8 +32,16 @@ pub(super) fn rollback(scene: &mut PhysicsScene, live: &mut LiveEntities,
     let result = (|| {
         // Start and creation callbacks borrow the real component pool. Split
         // their cursors around that borrow, never move a component out of it.
-        let handles: Vec<_> = scene.entities.iter().flat_map(|entity| entity.components.entries.values().iter().copied())
+        let mut handles: Vec<_> = scene.entities.iter().flat_map(|entity| entity.components.entries.values().iter().copied())
             .map(ComponentHandle::from_packed).collect::<Result<_, _>>()?;
+        // A suspended creation/Start owns the world's publication cursor.
+        // Unwind that component before touching previously completed bodies.
+        let creation = scene.world.read().map_err(|_| "level physics query owner is poisoned")?
+            .storage.disabled_component_creation_owner().map(|(handle, _)| handle);
+        if let Some(entered) = creation.or(registry.interrupted_startup_component()?) {
+            if let Some(index) = handles.iter().position(|handle| *handle == entered) { handles.swap(0, index); }
+            else { return Err("entered physics startup component is not retained by its scene".into()); }
+        }
         for handle in handles {
             if handle.class_id == scene.classes[8] {
                 rollback_rigid(scene, &mut registry, entity_events, handle)

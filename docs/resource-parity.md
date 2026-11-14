@@ -8376,3 +8376,8 @@ The ordinary readables' actual authored RigidBody records now instantiate the sh
   identity ownership before scene source leases drop. PreparedLevel cancellation
   invokes the same helper before clearing boxed resources and Catalog acquisitions. No timing or runtime parity
   claim. Syntax-only Rust parsing and diff checks performed; no builds/tests run.
+
+- Cancellation ordering: the exact interrupted registry callback (or disabled
+  creation generation) unwinds first, because its retained publication cursor
+  excludes operations on previously initialized bodies. The remaining typed
+  owners follow only after that cursor is idle; no success callbacks are replayed.
