@@ -52,6 +52,7 @@ pub(super) fn read_world(words: &mut impl Iterator<Item = u32>) -> DeactivationW
                 cache_priority,
                 pairs,
                 pair_step,
+                removed_bodies: Vec::new(),
                 wake,
                 queued,
             })

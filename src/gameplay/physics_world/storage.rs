@@ -48,9 +48,133 @@ pub(crate) struct WorldStorage {
     pub constraints: Vec<ConstraintLink>,
     pub constraint_next: Vec<[u32; 2]>,
     registry: ShapeRegistry,
+    removal_scratch: super::publication::RemovalScratch,
+    destruction: Option<DestructionProgress>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DestructionPhase { Unpublish, Notify, Resources, Motion, Release }
+struct DestructionProgress {
+    ids: Vec<u32>,
+    mode: i32,
+    index: usize,
+    phase: DestructionPhase,
+    motion_step: u8,
+    shared_motion: Option<bool>,
 }
 
 impl WorldStorage {
+    /// Host mutation fence for resumable owner operations.
+    pub(crate) fn publication_idle(&self) -> bool {
+        self.removal_scratch.is_idle() && self.destruction.is_none()
+    }
+
+    /// 140c8f080 cancels pending publication and removes live broadphase bodies.
+    pub(crate) fn unpublish_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
+    ) -> Result<(), String> {
+        if self.destruction.is_some() { return Err("body destruction must finish before another unpublication".into()); }
+        let mut scratch = std::mem::take(&mut self.removal_scratch);
+        let result = self.edit_bodies(geometry, events, |creation|
+            creation.world.remove(ids, mode, &mut scratch, creation.callbacks));
+        self.removal_scratch = scratch;
+        result
+    }
+
+    /// 140c8f6b0 releases observers, shape registration, motion and body slots in order.
+    pub(crate) fn destroy_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
+        &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
+    ) -> Result<(), String> {
+        let trace = std::env::var("DH2_DEBUG_COLLISION_SOURCES").as_deref() == Ok("1");
+        let start = if trace { crate::loading::thread_cycles() } else { None };
+        let before = if trace { self.removal_scratch.retained_bytes() } else { 0 };
+        let mut progress = if let Some(progress) = self.destruction.take() {
+            if progress.ids != ids || progress.mode != mode {
+                self.destruction = Some(progress);
+                return Err("another body destruction is incomplete".into());
+            }
+            progress
+        } else {
+            let mut owned = Vec::new();
+            owned.try_reserve_exact(ids.len()).map_err(|error| format!("body destruction identity: {error}"))?;
+            owned.extend_from_slice(ids);
+            DestructionProgress { ids: owned, mode, index: 0, phase: DestructionPhase::Unpublish, motion_step: 0, shared_motion: None }
+        };
+        let result = (|| -> Result<(), String> {
+            loop {
+                match progress.phase {
+                    DestructionPhase::Unpublish => {
+                        self.unpublish_bodies(geometry, events, &progress.ids, mode)?;
+                        progress.phase = DestructionPhase::Notify;
+                    }
+                    DestructionPhase::Notify => {
+                        events.destroyed(crate::gameplay::body_activation::ActivationOwners {
+                            bodies: &mut self.bodies, motions: &mut self.motions,
+                            deactivation: &mut self.deactivation, broadphase: &mut self.broadphase,
+                        }, &progress.ids)?;
+                        progress.phase = DestructionPhase::Resources;
+                    }
+                    DestructionPhase::Resources => {
+                        if progress.index == progress.ids.len() { return Ok(()); }
+                        self.release_body_resources(geometry, progress.ids[progress.index])?;
+                        progress.phase = DestructionPhase::Motion;
+                    }
+                    DestructionPhase::Motion => {
+                        let id = progress.ids[progress.index];
+                        let body = self.bodies.get(id).ok_or("destroyed body disappeared")?;
+                        let motion = body.motion_id;
+                        let shared = *progress.shared_motion.get_or_insert(body.next_attached_body_id != id);
+                        if motion != 0 && motion != 0x7fff_ffff {
+                            if !shared {
+                                let broadphase = &mut self.broadphase;
+                                self.bodies.unlink_last_motion(id, &mut self.motions, &mut self.deactivation,
+                                    &mut progress.motion_step,
+                                    |bodies, motions, deactivation, motion| events.motion_destroyed(
+                                        crate::gameplay::body_activation::ActivationOwners {
+                                            bodies, motions, deactivation, broadphase: &mut *broadphase,
+                                        }, motion))?;
+                            } else {
+                                self.bodies.unlink_shared_motion(id, &mut self.motions, &mut self.deactivation,
+                                    &mut progress.motion_step)?;
+                            }
+                        }
+                        progress.phase = DestructionPhase::Release;
+                    }
+                    DestructionPhase::Release => {
+                        self.bodies.release_detached(progress.ids[progress.index])?;
+                        progress.index += 1;
+                        progress.motion_step = 0;
+                        progress.shared_motion = None;
+                        progress.phase = DestructionPhase::Resources;
+                    }
+                }
+            }
+        })();
+        if result.is_err() { self.destruction = Some(progress); }
+        result?;
+        if trace {
+            let cycles = start.and_then(|start| crate::loading::thread_cycles().map(|end| end.saturating_sub(start)));
+            eprintln!("MEMORY collision body retirement: bodies={} mode={mode} scratch_before={before} scratch_after={} cycles={cycles:?}",
+                ids.len(), self.removal_scratch.retained_bytes());
+        }
+        Ok(())
+    }
+
+    /// 140ceab10 and 140cdffd0 release the property chain and mutable-shape registration.
+    pub(crate) fn release_body_resources<G: BodyCreationGeometry>(
+        &mut self, geometry: &mut G, id: u32,
+    ) -> Result<(), String> {
+        let shape = self.bodies.get(id).ok_or("retired body is missing")?.shape;
+        let mutable = geometry.is_mutable(shape)?;
+        if mutable { self.registry.validate_body_removal(shape, id, geometry)?; }
+        self.body_events.release_body(id, |signal| { signal.destroy(); Ok(()) })?;
+        if mutable {
+            self.registry.remove_body(shape, id, geometry)?;
+        }
+        Ok(())
+    }
+
+
     pub fn new(info: WorldInfo, identity: usize, materials: MaterialOwner<usize, usize>) -> Result<Self, String> {
         if info.user_body_buffer.is_some() || info.user_motion_buffer.is_some() {
             return Err("external physics buffers require their actual owner".into());
@@ -82,6 +206,8 @@ impl WorldStorage {
             broadphase: HybridBroadphase::with_body_capacity(info.body_buffer_capacity as usize),
             quantization: BroadphaseQuantization::new(info.broad_phase_aabb),
             registry: ShapeRegistry::new(identity),
+            removal_scratch: Default::default(),
+            destruction: None,
             qualities,
             cells,
             step: SweptBoundsStep::initial(),
@@ -109,6 +235,7 @@ impl WorldStorage {
         activation: BodyActivation,
         modifier: Option<&mut dyn BodyInfoModifier>,
     ) -> Result<u32, String> {
+        if !self.publication_idle() { return Err("world retirement must finish before publication".into()); }
         self.edit_bodies(geometry, events, |mut creation| {
             creation.create(info, addition, activation, modifier)
         })
@@ -121,6 +248,7 @@ impl WorldStorage {
         geometry: &mut G,
         events: &mut E,
     ) -> Result<(), String> {
+        if !self.publication_idle() { return Err("world retirement must finish before publication".into()); }
         for activation in [BodyActivation::Activate, BodyActivation::KeepDeactivated] {
             let ids = self.bodies.queued_additions(activation).to_vec();
             if !ids.is_empty() { self.add_bodies(geometry, events, &ids, BodyAddition::Immediate, activation)?; }
@@ -138,6 +266,7 @@ impl WorldStorage {
         addition: BodyAddition,
         activation: BodyActivation,
     ) -> Result<(), String> {
+        if !self.publication_idle() { return Err("world retirement must finish before publication".into()); }
         self.edit_bodies(geometry, events, |creation| {
             creation
                 .world
@@ -153,6 +282,7 @@ impl WorldStorage {
         material: u16,
         mode: i32,
     ) -> Result<bool, String> {
+        if !self.publication_idle() { return Err("world retirement must finish before publication".into()); }
         self.edit_bodies(geometry, events, |creation| {
             creation
                 .world

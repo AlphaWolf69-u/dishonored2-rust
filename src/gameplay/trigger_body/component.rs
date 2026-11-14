@@ -16,6 +16,8 @@ pub struct TriggerComponent {
     pub wind: Option<ComponentHandle>,
     /// Source+d0: initialized false, copied from owner bit30 by779530.
     pub spawn_owner_bit30: bool,
+    /// Host retry state: actor detach precedes fallible body unpublication.
+    pub(crate) actor_detached: bool,
 }
 
 impl TriggerComponent {
@@ -35,6 +37,7 @@ impl TriggerComponent {
             water: None,
             wind: None,
             spawn_owner_bit30: false,
+            actor_detached: false,
         })
     }
 }

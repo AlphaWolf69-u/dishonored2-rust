@@ -4,6 +4,7 @@ use crate::gameplay::{body_storage::BodyStorage, motion_storage::MotionStorage};
 #[path = "notifications.rs"]
 mod notifications;
 pub use notifications::BodyActivationCommand;
+pub(crate) use notifications::ActivationNotifyProgress;
 
 #[derive(Clone, Copy, Debug)]
 pub struct IslandCacheLink {
@@ -22,6 +23,8 @@ pub struct DeactivatedIsland {
     pub cache_priority: u32,
     pub pairs: Vec<[u32; 2]>,
     pub pair_step: u32,
+    /// Removed body IDs awaiting island contact maintenance (+0x80).
+    pub removed_bodies: Vec<u32>,
     pub wake: u8,
     pub queued: u8,
 }

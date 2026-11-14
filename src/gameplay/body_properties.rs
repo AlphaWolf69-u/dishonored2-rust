@@ -8,6 +8,8 @@ struct Property<T> {
     value: T,
 }
 
+struct ReleaseProgress { body: u32, first: u16, current: u16 }
+
 #[derive(Default)]
 pub struct BodyProperties<T = u64> {
     heads: Vec<u16>,
@@ -15,6 +17,7 @@ pub struct BodyProperties<T = u64> {
     free: Option<u16>,
     deferred_release: Vec<u16>,
     dispatching: bool,
+    pending_release: Option<ReleaseProgress>,
 }
 
 impl<T: Default> BodyProperties<T> {
@@ -27,20 +30,41 @@ impl<T: Default> BodyProperties<T> {
         body: u32,
         mut destroy_value: impl FnMut(&mut T) -> Result<(), String>,
     ) -> Result<(), String> {
-        let Some(head) = self.heads.get_mut((body & 0x00ff_ffff) as usize) else {
-            return Ok(());
-        };
-        if *head == u16::MAX {
-            return Ok(());
-        }
-        let first = *head;
-        *head = u16::MAX;
-        if self.dispatching {
-            self.deferred_release.push(first);
+        if let Some(progress) = &self.pending_release {
+            if progress.body != body { return Err("another body-property release is incomplete".into()); }
         } else {
-            self.release_chain(first, &mut destroy_value)?;
+            let Some(&first) = self.heads.get((body & 0x00ff_ffff) as usize) else { return Ok(()); };
+            if first == u16::MAX { return Ok(()); }
+            // Validate the complete chain before detaching its public head.
+            let mut current = first;
+            let mut visited = 0;
+            while current != u16::MAX {
+                if visited >= self.properties.len() { return Err("cyclic released body-property chain".into()); }
+                current = self.properties.get(current as usize).ok_or("released property chain points outside storage")?.next;
+                visited += 1;
+            }
+            if self.dispatching {
+                self.deferred_release.try_reserve(1).map_err(|error| format!("deferred property release: {error}"))?;
+                self.heads[(body & 0x00ff_ffff) as usize] = u16::MAX;
+                self.deferred_release.push(first);
+                return Ok(());
+            }
+            self.heads[(body & 0x00ff_ffff) as usize] = u16::MAX;
+            self.pending_release = Some(ReleaseProgress { body, first, current: first });
         }
-        Ok(())
+        loop {
+            let progress = self.pending_release.as_mut().expect("property release progress exists");
+            let property = self.properties.get_mut(progress.current as usize).ok_or("released property disappeared")?;
+            destroy_value(&mut property.value)?;
+            let next = property.next;
+            if next == u16::MAX {
+                property.next = self.free.unwrap_or(u16::MAX);
+                self.free = Some(progress.first);
+                self.pending_release = None;
+                return Ok(());
+            }
+            progress.current = next;
+        }
     }
 
     /// ceb0c0 emits global listeners, then zero, one or two body listener

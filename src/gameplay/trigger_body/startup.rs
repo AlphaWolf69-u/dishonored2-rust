@@ -62,6 +62,57 @@ where
         .subscribe(reference, BodyEventCallback::TriggerContact);
     if keyframed {
         attach_actor(&mut events.components, reference)?;
+        events.components.trigger_mut(reference)?.actor_detached = false;
+    }
+    Ok(())
+}
+
+/// 140779a40: detach actor, unpublish body, then remove contact observer.
+pub(crate) fn stop_trigger<'a, G: BodyCreationGeometry, F>(
+    world: &mut WorldStorage,
+    geometry: &mut G,
+    events: &mut ComponentPublicationEvents<'a, usize, usize, F>,
+    reference: ComponentHandle,
+    keyframed: bool,
+    detach_actor: impl FnOnce(&mut TriggerComponentStore<'a>, ComponentHandle) -> Result<(), String>,
+) -> Result<(), String>
+where
+    F: FnMut(&mut Signal<usize, usize>, usize, usize, ActivationOwners<'_>, PublicationEvent<'_>,
+        &mut TriggerComponentStore<'a>) -> Result<(), String>,
+{
+    if keyframed && !events.components.trigger(reference)?.actor_detached {
+        detach_actor(&mut events.components, reference)?;
+        events.components.trigger_mut(reference)?.actor_detached = true;
+    }
+    let body = events.components.referenced_body(reference)?;
+    world.unpublish_bodies(geometry, events, &[body], 1)?;
+    let body = events.components.referenced_body(reference)?;
+    world.body_events.get_or_create(world.bodies.capacity(), body, 0)?
+        .unsubscribe(reference, BodyEventCallback::TriggerContact);
+    Ok(())
+}
+
+/// 140779910: clear dependencies and destroy the canonical physics body.
+pub(crate) fn deinitialize_trigger<'a, G: BodyCreationGeometry, F>(
+    world: &mut WorldStorage,
+    geometry: &mut G,
+    events: &mut ComponentPublicationEvents<'a, usize, usize, F>,
+    reference: ComponentHandle,
+) -> Result<(), String>
+where
+    F: FnMut(&mut Signal<usize, usize>, usize, usize, ActivationOwners<'_>, PublicationEvent<'_>,
+        &mut TriggerComponentStore<'a>) -> Result<(), String>,
+{
+    let movement = {
+        let trigger = events.components.trigger_mut(reference)?;
+        trigger.water = None;
+        trigger.wind = None;
+        trigger.movement_body
+    };
+    let body = events.components.referenced_body(reference)?;
+    if body & 0x00ff_ffff != 0x00ff_ffff {
+        world.destroy_bodies(geometry, events, &[body], 1)?;
+        events.components.actors.bodies.get_mut(movement).ok_or("trigger movement body absent")?.body_id = 0x00ff_ffff;
     }
     Ok(())
 }

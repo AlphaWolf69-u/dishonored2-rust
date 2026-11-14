@@ -24,7 +24,51 @@ impl Default for BodyChange {
     }
 }
 impl BodyStorage {
-    pub(super) fn cancel_pending_addition(&mut self, body: u32) -> Result<(), String> {
+    /// c8f080 first cancels queued additions and gathers only bodies already
+    /// published in broadphase. The caller owns the reusable batch and must
+    /// issue removed-body callbacks before changing those published bodies.
+    pub(crate) fn prepare_removal(&mut self, ids: &[u32], published: &mut Vec<u32>) -> Result<(), String> {
+        // Validate the whole request and reserve its output before canceling
+        // any queued additions. A stale later ID must not partially mutate an
+        // earlier body's queued-add state.
+        published.try_reserve(ids.len()).map_err(|error| format!("body removal list: {error}"))?;
+        for &id in ids {
+            self.get(id).ok_or("removed body ID is stale")?;
+            let index = *self.change_indices.get((id & 0xffffff) as usize).ok_or("removed body exceeds storage")?;
+            if index != u32::MAX {
+                let change = self.changes.get(index as usize).ok_or("removed body change is missing")?;
+                if change.flags & 3 != 0 {
+                    let queue = if change.flags & 1 != 0 { &self.queued_active } else { &self.queued_deactivated };
+                    if queue.get(change.queue_index as usize) != Some(&id) {
+                        return Err("pending body queue entry does not match its change".into());
+                    }
+                    let moved = *queue.last().ok_or("pending body queue is empty")?;
+                    let moved_index = *self.change_indices.get((moved & 0xffffff) as usize)
+                        .ok_or("moved pending body exceeds storage")?;
+                    if self.changes.get(moved_index as usize).is_none() {
+                        return Err("moved pending body change is missing".into());
+                    }
+                }
+            }
+        }
+        published.clear();
+        for &id in ids {
+            let body = self.get(id).ok_or("removed body ID is stale")?;
+            let in_world = body.broadphase_id != u32::MAX;
+            let index = self.change_indices[(id & 0xffffff) as usize];
+            let pending = if index == u32::MAX { false } else {
+                self.changes.get(index as usize).ok_or("removed body change is missing")?.flags & 3 != 0
+            };
+            if pending {
+                self.cancel_pending_addition(id)?;
+            } else if in_world {
+                published.push(id);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cancel_pending_addition(&mut self, body: u32) -> Result<(), String> {
         let slot = (body & 0xffffff) as usize;
         let change_index = *self
             .change_indices
@@ -50,13 +94,17 @@ impl BodyStorage {
             return Err("pending body queue index exceeds its queue".into());
         }
         let moved = *queue.last().unwrap();
+        let moved_change = if index + 1 < queue.len() {
+            let moved_slot = (moved & 0xffffff) as usize;
+            let change = *self.change_indices.get(moved_slot).ok_or("moved pending body exceeds storage")?;
+            if self.changes.get(change as usize).is_none() {
+                return Err("moved pending body change is missing".into());
+            }
+            Some(change as usize)
+        } else { None };
         queue.swap_remove(index);
-        if index < queue.len() {
-            let moved_change = self.change_indices[(moved & 0xffffff) as usize];
-            self.changes
-                .get_mut(moved_change as usize)
-                .ok_or("moved pending body change is missing")?
-                .queue_index = index as u32;
+        if let Some(moved_change) = moved_change {
+            self.changes[moved_change].queue_index = index as u32;
         }
         let change = &mut self.changes[change_index as usize];
         change.queue_index = u32::MAX;
@@ -112,6 +160,17 @@ impl BodyStorage {
 
     /// c87dc0 invalidates collision history only for a published body. Keep
     /// unrelated change flags and reuse the existing per-body change record.
+    pub(crate) fn validate_collision_invalidation(&self, id: u32) -> Result<(), String> {
+        let index = (id & 0xff_ffff) as usize;
+        self.get_by_index(index as u32).ok_or("invalidated body is missing")?;
+        self.previous_bounds.get(index).ok_or("previous body bounds index exceeds storage")?;
+        let change = *self.change_indices.get(index).ok_or("body change index exceeds storage")?;
+        if change != u32::MAX && self.changes.get(change as usize).is_none() {
+            return Err("body change lookup points outside its records".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn invalidate_collision_history(&mut self, id: u32) -> Result<(), String> {
         let index = (id & 0xffffff) as usize;
         let body = self.get_by_index(index as u32).ok_or("invalidated body is missing")?;

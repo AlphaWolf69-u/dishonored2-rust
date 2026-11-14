@@ -24,6 +24,38 @@ pub enum BodyAddition {
     Queued,
 }
 
+/// Level-owned scratch for removal batches; retained capacities avoid repeated
+/// allocation on component stop and are released with the world.
+#[derive(Default)]
+pub(crate) struct RemovalScratch {
+    published: Vec<u32>,
+    hits: Vec<u32>,
+    locations: Vec<(u32, u32)>,
+    request: Vec<u32>,
+    progress: Option<RemovalProgress>,
+    activation: BodyActivationController,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemovalPhase { Notify, Body, OverlapQuery, OverlapHit, OverlapActivate, Active, ActiveSolver, Broadphase, Finalize, Reconcile }
+struct RemovalProgress {
+    mode: i32,
+    phase: RemovalPhase,
+    index: usize,
+    overlap_index: usize,
+    overlap_body: u32,
+}
+
+impl RemovalScratch {
+    pub(crate) fn is_idle(&self) -> bool { self.progress.is_none() }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.published.capacity() * std::mem::size_of::<u32>()
+            + self.hits.capacity() * std::mem::size_of::<u32>()
+            + self.locations.capacity() * std::mem::size_of::<(u32, u32)>()
+            + self.request.capacity() * std::mem::size_of::<u32>()
+            + self.activation.retained_bytes()
+    }
+}
+
 /// Required resource/event boundaries. Geometry must use the selected shape's
 /// actual calcAabb. Broadphase queries run directly on the shared index.
 pub trait PublicationCallbacks {
@@ -35,6 +67,9 @@ pub trait PublicationCallbacks {
         active: bool,
     ) -> Result<(), String>;
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String>;
+    fn removed(&mut self, _owners: ActivationOwners<'_>, _ids: &[u32]) -> Result<(), String> {
+        Err("body-removal observer dispatch is unavailable".into())
+    }
 }
 
 pub struct BodyPublication<'a> {
@@ -91,6 +126,125 @@ impl<C: PublicationCallbacks> ActivationCallbacks for Activation<'_, C> {
 }
 
 impl BodyPublication<'_> {
+    pub(crate) fn remove(
+        &mut self, ids: &[u32], mode: i32, scratch: &mut RemovalScratch,
+        callbacks: &mut impl PublicationCallbacks,
+    ) -> Result<(), String> {
+        let RemovalScratch { published, hits, locations, request, progress, activation } = scratch;
+        if let Some(active) = progress.as_ref() {
+            if request.as_slice() != ids || active.mode != mode { return Err("another body removal is incomplete".into()); }
+        } else {
+            request.clear();
+            request.try_reserve_exact(ids.len()).map_err(|error| format!("body removal identity: {error}"))?;
+            request.extend_from_slice(ids);
+            self.bodies.prepare_removal(ids, published)?;
+            if published.is_empty() { return Ok(()); }
+            *progress = Some(RemovalProgress { mode, phase: RemovalPhase::Notify, index: 0,
+                overlap_index: 0, overlap_body: 0 });
+        }
+        let active = progress.as_mut().expect("removal progress exists");
+        loop {
+            match active.phase {
+                RemovalPhase::Notify => {
+                    callbacks.removed(ActivationOwners {
+                        bodies: &mut *self.bodies, motions: &mut *self.motions,
+                        deactivation: &mut *self.deactivation, broadphase: &mut *self.broadphase,
+                    }, published)?;
+                    active.phase = RemovalPhase::Body;
+                }
+                RemovalPhase::Body => {
+                    if active.index == published.len() { active.index = 0; active.phase = RemovalPhase::Broadphase; continue; }
+                    let id = published[active.index];
+                    let body = self.bodies.get(id).ok_or("removed body disappeared")?;
+                    if body.broadphase_id == u32::MAX { active.index += 1; continue; }
+                    let flags = body.flags;
+                    if flags & 1 != 0 {
+                        active.phase = RemovalPhase::OverlapQuery;
+                    } else {
+                        if flags & 9 == 0 { self.deactivation.detach_removed_body(self.bodies, id, mode != 0)?; }
+                        active.phase = RemovalPhase::Active;
+                    }
+                }
+                RemovalPhase::OverlapQuery => {
+                    let id = published[active.index];
+                    let bounds = self.bodies.get(id).ok_or("removed static body is missing")?.bounds;
+                    hits.clear();
+                    self.broadphase.overlap_bodies(bounds, self.packing, hits)?;
+                    active.overlap_index = 0;
+                    active.phase = RemovalPhase::OverlapHit;
+                }
+                RemovalPhase::OverlapHit => {
+                    if active.overlap_index == hits.len() {
+                        active.index += 1; active.phase = RemovalPhase::Body; continue;
+                    }
+                    let other = hits[active.overlap_index];
+                    if published.contains(&other) { active.overlap_index += 1; continue; }
+                    let body = self.bodies.get_by_index(other & 0xffffff).ok_or("removal overlap body is missing")?;
+                    if body.flags & 9 != 0 { active.overlap_index += 1; continue; }
+                    let actual = body.id;
+                    if mode == 0 {
+                        if !self.deactivation.queue_removed_static(self.bodies, published[active.index], actual)? {
+                            active.overlap_body = actual;
+                            active.phase = RemovalPhase::OverlapActivate;
+                            continue;
+                        }
+                    } else {
+                        self.deactivation.queue_island(self.bodies, actual, 0)?;
+                    }
+                    active.overlap_index += 1;
+                }
+                RemovalPhase::OverlapActivate => {
+                    activation.activate_resumable(self.bodies, self.motions, self.deactivation,
+                        active.overlap_body, self.phase, &mut Activation { broadphase: &mut *self.broadphase, callbacks })?;
+                    active.overlap_index += 1;
+                    active.phase = RemovalPhase::OverlapHit;
+                }
+                RemovalPhase::Active => {
+                    let id = published[active.index];
+                    let body = self.bodies.get(id).ok_or("removed body disappeared")?;
+                    if body.flags & 8 != 0 {
+                        let sole = body.next_attached_body_id == id;
+                        self.bodies.remove_active(id)?;
+                        if sole { active.phase = RemovalPhase::ActiveSolver; continue; }
+                    }
+                    active.index += 1;
+                    active.phase = RemovalPhase::Body;
+                }
+                RemovalPhase::ActiveSolver => {
+                    let motion = self.bodies.get(published[active.index]).ok_or("removed body disappeared")?.motion_id;
+                    self.motions.remove_from_solver(motion)?;
+                    active.index += 1;
+                    active.phase = RemovalPhase::Body;
+                }
+                RemovalPhase::Broadphase => {
+                    if active.index == published.len() { active.index = 0; active.phase = RemovalPhase::Finalize; continue; }
+                    let id = published[active.index];
+                    let body = self.bodies.get(id).ok_or("unpublished body disappeared")?;
+                    locations.clear();
+                    locations.push((id, body.broadphase_id));
+                    self.broadphase.remove_bodies(locations)?;
+                    active.index += 1;
+                }
+                RemovalPhase::Finalize => {
+                    if active.index == published.len() { break; }
+                    let id = published[active.index];
+                    let body = self.bodies.get_mut(id).ok_or("unpublished body disappeared")?;
+                    body.broadphase_id = u32::MAX;
+                    body.status |= 1;
+                    active.phase = RemovalPhase::Reconcile;
+                }
+                RemovalPhase::Reconcile => {
+                    let motion = self.bodies.get(published[active.index]).ok_or("unpublished body disappeared")?.motion_id;
+                    self.bodies.reconcile_removed_motion(motion, self.motions, self.deactivation)?;
+                    active.index += 1;
+                    active.phase = RemovalPhase::Finalize;
+                }
+            }
+        }
+        *progress = None;
+        Ok(())
+    }
+
     fn activate(
         &mut self,
         id: u32,

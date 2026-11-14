@@ -23,6 +23,15 @@ pub trait PublicationEvents {
         active: bool,
     ) -> Result<(), String>;
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String>;
+    fn removed(&mut self, _owners: ActivationOwners<'_>, _ids: &[u32]) -> Result<(), String> {
+        Err("body-removal observer dispatch is unavailable".into())
+    }
+    fn destroyed(&mut self, _owners: ActivationOwners<'_>, _ids: &[u32]) -> Result<(), String> {
+        Err("body-destruction observer dispatch is unavailable".into())
+    }
+    fn motion_destroyed(&mut self, _owners: ActivationOwners<'_>, _motion: u32) -> Result<(), String> {
+        Err("motion-destruction observer dispatch is unavailable".into())
+    }
     fn transform_changed(
         &mut self,
         owners: ActivationOwners<'_>,
@@ -94,6 +103,9 @@ impl<G: PublicationGeometry, E: PublicationEvents> PublicationCallbacks
     }
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
         self.events.added(owners, ids)
+    }
+    fn removed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
+        self.events.removed(owners, ids)
     }
 }
 

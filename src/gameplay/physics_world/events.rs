@@ -20,6 +20,9 @@ pub(crate) enum BodyEventCallback {
 pub struct PublicationSignals<S, C> {
     pub activation: ActivationSignals<S, C>,
     pub added: Signal<S, C>,
+    pub motion_destroyed: Signal<S, C>,
+    pub destroyed: Signal<S, C>,
+    pub removed: Signal<S, C>,
     pub static_transform: Signal<S, C>,
     pub transform: Signal<S, C>,
     pub motion_capacity_requested: Signal<S, C>,
@@ -32,6 +35,9 @@ impl<S, C> Default for PublicationSignals<S, C> {
         Self {
             activation: ActivationSignals::default(),
             added: Signal::default(),
+            motion_destroyed: Signal::default(),
+            destroyed: Signal::default(),
+            removed: Signal::default(),
             static_transform: Signal::default(),
             transform: Signal::default(),
             motion_capacity_requested: Signal::default(),
@@ -46,6 +52,9 @@ impl<S, C> Default for PublicationSignals<S, C> {
 pub enum PublicationEvent<'a> {
     Activation { ids: &'a [u32], active: bool },
     Added(&'a [u32]),
+    Removed(&'a [u32]),
+    Destroyed(&'a [u32]),
+    MotionDestroyed(u32),
     Transform { body: u32, static_only: bool },
     MotionCapacityRequested,
     MotionCreated { info: &'a MotionInfo, motion: u32 },
@@ -147,21 +156,15 @@ fn emit<'a, S: Copy + Eq, C: Copy + Eq>(
     owners: ActivationOwners<'_>,
     event: PublicationEvent<'_>,
 ) -> Result<(), String> {
-    let mut error = None;
-    signal.emit(&event, |signal, subscriber, callback, &event| {
-        if error.is_none() {
-            let live = ActivationOwners {
-                bodies: &mut *owners.bodies,
-                motions: &mut *owners.motions,
-                deactivation: &mut *owners.deactivation,
-                broadphase: &mut *owners.broadphase,
-            };
-            if let Err(failure) = dispatch(signal, subscriber, callback, live, event, components) {
-                error = Some(failure);
-            }
-        }
-    });
-    error.map_or(Ok(()), Err)
+    signal.emit_resumable(&event, |signal, subscriber, callback, &event| {
+        let live = ActivationOwners {
+            bodies: &mut *owners.bodies,
+            motions: &mut *owners.motions,
+            deactivation: &mut *owners.deactivation,
+            broadphase: &mut *owners.broadphase,
+        };
+        dispatch(signal, subscriber, callback, live, event, components)
+    })
 }
 
 impl<'a, S: Copy + Eq, C: Copy + Eq, F> PublicationEvents
@@ -203,6 +206,20 @@ where
             owners,
             PublicationEvent::Added(ids),
         )
+    }
+    fn removed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
+        emit(&mut self.signals.removed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::Removed(ids))
+    }
+
+    fn destroyed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
+        emit(&mut self.signals.destroyed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::Destroyed(ids))
+    }
+
+    fn motion_destroyed(&mut self, owners: ActivationOwners<'_>, motion: u32) -> Result<(), String> {
+        emit(&mut self.signals.motion_destroyed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::MotionDestroyed(motion))
     }
     fn transform_changed(
         &mut self,

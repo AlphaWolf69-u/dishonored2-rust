@@ -38,6 +38,17 @@ pub(crate) struct ShapeRegistry {
     pending: bool,
 }
 impl ShapeRegistry {
+    pub(crate) fn validate_body_removal(&self, shape: usize, body: u32,
+        signals: &mut impl ShapeSignalStore) -> Result<(), String> {
+        let entry = self.active.iter().copied()
+            .find(|&entry| self.registrations[entry].shape == Some(shape))
+            .ok_or("removed body has no shape registration")?;
+        let bodies = &self.registrations[entry].bodies;
+        if !bodies.contains(&body) { return Err("removed body is missing from its shape registration".into()); }
+        if bodies.len() == 1 { signals.signals_mut(shape)?; }
+        Ok(())
+    }
+
     /// cdfc70. The owner key replaces this manager's process-pointer identity.
     pub fn new(owner: usize) -> Self {
         Self {
@@ -68,11 +79,13 @@ impl ShapeRegistry {
         body: u32,
         signals: &mut impl ShapeSignalStore,
     ) -> Result<(), String> {
-        let entry = if let Some(&entry) = self
+        let existing = self
             .active
             .iter()
             .find(|&&i| self.registrations[i].shape == Some(shape))
-        {
+            .copied();
+        if existing.is_none() { signals.signals_mut(shape)?; }
+        let entry = if let Some(entry) = existing {
             entry
         } else {
             let entry = if let Some(entry) = self.recycled.pop() {
@@ -115,9 +128,11 @@ impl ShapeRegistry {
             .iter()
             .position(|&id| id == body)
             .ok_or("removed body is missing from its shape registration")?;
-        self.registrations[entry].bodies.swap_remove(body_index);
-        if self.registrations[entry].bodies.is_empty() {
+        if self.registrations[entry].bodies.len() == 1 {
+            // Resolve the actual signal owner before removing its last body.
+            // A failed lookup must leave the registration retryable.
             let pair = signals.signals_mut(shape)?;
+            self.registrations[entry].bodies.swap_remove(body_index);
             self.detach(
                 ShapeObserver {
                     owner: self.owner,
@@ -129,6 +144,8 @@ impl ShapeRegistry {
             )?;
             self.active.swap_remove(active_index);
             self.recycled.push(entry);
+        } else {
+            self.registrations[entry].bodies.swap_remove(body_index);
         }
         Ok(())
     }

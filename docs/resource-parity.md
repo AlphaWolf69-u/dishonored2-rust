@@ -7800,3 +7800,37 @@ Entity lifetime recovery (main-based integration, 2026-11-14):
   verification, memory saving or CPU improvement is claimed by this core
   recovery. Prediction: no steady-state cost change before those adapters
   actually use the recovered owners; source ranges must die with preparation.
+
+### Canonical trigger body retirement (2026-11-14)
+
+- **Prediction before implementation:** supported trigger Stop/deinitialize will
+  return their existing body and final motion slots to their owning free lists,
+  destroy per-body event chains, and unregister mutable-shape observers. No body,
+  geometry or query-world copy is introduced. This is a missing lifetime path;
+  no per-frame CPU/GPU improvement or byte saving is claimed before measurement.
+- **Original evidence:** `140779a40` detaches the actor, calls `140c8f080`, removes
+  the contact callback, then calls common component Stop. `140779910` clears
+  dependency references, calls `140c8f6b0`, invalidates the body handle, and calls
+  common deinitialization. `140c8f080` cancels queued additions, notifies removal,
+  updates islands/active lists, removes broadphase entries and reconciles motions.
+  `140c8f6b0` then notifies destruction, releases `140ceab10` property chains and
+  `140cdffd0` mutable-shape registrations, detaches motions through `140c927c0`,
+  and returns slots through `140caea70` / `140cd7310`.
+- **ported:** `gameplay::physics_world::{storage,publication,events}` now expose
+  those operations on the canonical `WorldStorage`; `trigger_body::startup`
+  supplies Stop/deinitialize adapters. `broadphase::HybridTree::remove_body`
+  ports `14128fbd0` and the layer owner ports `1412862b0`. Body IDs keep their
+  generation checks and shape resources remain in their existing resource owner.
+- **host:** fallible Rust observer dispatch retains a cursor and teardown phase
+  after a callback error, so successful prior callbacks and actor detachment are
+  not replayed. Reusable level-owned removal scratch retires with `WorldStorage`.
+  No new resource format conversion or background task is added.
+- **Integration boundary:** the current five-factory scene host must call these
+  adapters in its component drain and dispatch real observers. Dynamic island
+  contact-maintenance queues remain owned by the simulation; adding an API does
+  not establish parity for unsupported dynamic collision simulation. This slice
+  does not import the old 56-factory host or claim all entity classes supported.
+- **Validation:** source checked against saved decompilation
+  `analysis/decompiled/chunk_000309.c` and `chunk_000587.c`; Rust syntax parsed
+  and `git diff --check` passed. No tests were added/run. Full compilation and
+  the scene-host acquisition/release observation await the coordinated build.
