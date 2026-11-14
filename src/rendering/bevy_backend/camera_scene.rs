@@ -72,6 +72,16 @@ impl FxSimulation {
         successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
         self.world_particles.dispatch_picked_up(entity, successful, from_grapple, live)
     }
+    /// Diagnostic snapshots borrow the actual manager without starting or
+    /// advancing another simulation. No ordinary-frame observer is installed.
+    pub(crate) fn observe_fx_owner(&self, owner: &str) -> super::world_particle_state::OwnerSnapshot {
+        self.world_particles.observe_owner(owner)
+    }
+    pub(crate) fn observe_fx_pools(&self) -> (usize, usize, u16, u16, u16) {
+        let (instances, pending, sounds, decals) = self.world_particles.observe_pool_counts();
+        (instances, pending, self.particle_systems.allocated_count(), sounds, decals)
+    }
+
     /// End the player chains, then retire the world FX manager (199df0).
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         let screen = self.screen_state.shutdown(&mut self.particle_systems);

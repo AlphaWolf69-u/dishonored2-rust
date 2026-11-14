@@ -20,6 +20,9 @@ use crate::{
 use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
+mod lifecycle_observation;
+pub(crate) use lifecycle_observation::OwnerSnapshot;
+
 struct FxEntity {
     owner: FxEntityOwner,
     parameters: FxRuntimeParameters,
