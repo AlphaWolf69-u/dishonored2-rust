@@ -1139,7 +1139,7 @@ fn inspect_scene_resources(
             // No camera/view frame was produced. Upload mode completed its
             // asset queue work above; view-pass owners were not installed.
             // Use the actual main-world teardown and asset-removal owners.
-            lifetime.clear(app.world_mut())?;
+            lifetime.clear_without_output(app.world_mut())?;
             if !observed_poses.is_empty() {
                 let retained = observed_poses.iter().filter(|pose| pose.strong_count() != 0).count();
                 eprintln!("SKIN_PUBLICATION_SCOPE step={step} retained={retained}");
@@ -1311,7 +1311,7 @@ fn inspect_common_mesh_cancellation(base: &std::path::Path, name: &str) -> Resul
     let (mut lifetime, before) = super::level_lifetime::LevelLifetime::begin(app.world_mut(), catalog.clone());
     prepared.publish(app.world_mut());
     lifetime.published(app.world(), &before);
-    lifetime.clear(app.world_mut())?;
+    lifetime.clear_without_output(app.world_mut())?;
     let (resident, retry_builds) = shared.counts();
     if resident == 0 || retry_builds <= after.1 { return Err("retry reused unpublished common mesh identities".into()); }
     eprintln!("COMMON_MODEL_CANCELLATION built={} cancelled_resident={} retry_built={} retry_resident={resident}",

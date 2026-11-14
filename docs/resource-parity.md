@@ -8007,3 +8007,14 @@ resident-memory saving is claimed.
   No tests/builds/launches were run for this source slice. Coordinated full
   compilation and production retirement observations remain required; no byte
   saving, CPU timing gain or runtime acceptance is claimed yet.
+
+Level teardown now retains every supporting resource through component/audio
+acknowledgement and FX shutdown; successful phases are recorded before polling
+the next one. The two source-acquisition diagnostic clear callers use the same
+production sound FIFO without installing an output device: a further pass is
+allowed only after strictly advancing real finite retirement cursors. They
+never ignore Pending, run a game/application schedule, fabricate completion or
+wait by spinning on an audio callback. `RESOURCE_SCENE_RETIREMENT phase=complete`
+is emitted only after the actual clear has finished. Failure or Pending in the
+production clear leaves all sole owners present; repeated completed clear is
+idempotent. This is lifecycle correctness, not a CPU-performance claim.
