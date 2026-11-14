@@ -4642,6 +4642,25 @@ performance improvement. Source and whitespace review only; no tests, build
 or production allocation-failure exercise was performed. The separately
 checkpointed resumable startup/release dispatcher is not claimed integrated.
 
+Usable backend retirement recovery (`77b610`, `77bda0`, `4cd920`): the
+existing Interactions owner now keeps live started state separately from the
+authored starts-on-spawn flag. Its Stop removes the same fake collision box,
+cancels pending animation/effect commands, stops the existing usable animation
+layer and removes its desired FX publication. The last submitted pose remains
+with the render placement; existing FX tails retain their actual source leases.
+The existing level-clear boundary invokes this Stop while collision, animation
+and effect owners are still alive and before FxSimulation shutdown. It also
+closes readable acquisition and clears pending read activation, preventing an
+outgoing UI result from publishing into the next world. Late shared animation
+acquisitions cannot reattach a stopped actor. Partially prepared worlds retire
+whichever backends were actually published. Prediction: unchanged active-world
+rendering and frame work except the started-state admission check; stopped
+actors make no new animation acquisition. No memory/time savings are claimed.
+No tests, build or runtime exercise was performed for this recovered slice.
+Runtime entity Stop dispatch and portable document rigid-body retirement still
+require the shared entity/five-factory physics-host integration; this does not
+claim those adapters are already connected.
+
 
 ### Host archive-session teardown
 

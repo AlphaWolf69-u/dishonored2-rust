@@ -9,6 +9,7 @@ pub(super) struct Actor {
     pub state: Option<Usable>,
     pub frame: crate::gameplay::reference_frame::ReferenceFrame,
     pub fake_box: Option<navigation::ComponentBox>,
+    pub started: bool,
     last_delta: Option<[[f32; 4]; 3]>,
 }
 
@@ -90,7 +91,8 @@ impl Interactions {
                     Ok(state) => Some(state),
                     Err(error) => { bevy::log::warn!("Usable {}: {error}", binding.entity); continue; }
                 } };
-            actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, last_delta: None });
+            let started = binding.definition.starts_on_spawn;
+            actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, started, last_delta: None });
         }
         let actor_by_entity = actors.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
         let readable_by_entity = readable.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
@@ -146,7 +148,7 @@ impl Interactions {
     /// is the level collision world and the actor retains only its handle.
     pub fn start_boxes(&mut self, world: &mut navigation::CollisionWorld) {
         for actor in &mut self.actors {
-            if !actor.definition.starts_on_spawn || !actor.definition.fake_collision { continue; }
+            if !actor.started || !actor.definition.fake_collision || actor.fake_box.is_some() { continue; }
             let corners = entities::usable::fake_box_corners(&actor.frame, &actor.definition).map(super::game_to_view);
             actor.fake_box = Some(world.add_interaction_box(&actor.entity, corners));
         }
@@ -157,6 +159,64 @@ impl Interactions {
             world.remove_interaction_box(handle);
         }
     }
+
+    /// 77b610/4cd920 detach the same usable collision and animation owners.
+    /// The published last pose remains with its render placement until that
+    /// placement retires; stopping does not hide or destroy the entity.
+    pub(super) fn stop_actor(&mut self, index: usize,
+        collision: &mut navigation::CollisionWorld,
+        animations: &mut super::usable_animation::UsableAnimations,
+        effects: &mut super::usable_effects::UsableEffects) {
+        let actor = &mut self.actors[index];
+        actor.started = false;
+        if let Some(handle) = actor.fake_box.take() { collision.remove_interaction_box(handle); }
+        self.pending.retain(|change| change.actor != index);
+        animations.stop_actor(index);
+        effects.stop_usable(index);
+        self.selected = None;
+    }
+}
+
+/// Called after render acknowledgement, before supporting level resources
+/// disappear. No outgoing async read may reopen a note or restart a usable.
+pub(super) fn stop_level(world: &mut World) {
+    if !world.contains_resource::<Interactions>() { return; }
+    world.resource_scope(|world, mut interactions: Mut<Interactions>| {
+        interactions.close_acquisitions();
+        interactions.pending_activation = None;
+        interactions.retire.clear();
+        interactions.selected = None;
+        if world.contains_resource::<super::NavigationWorld>()
+            && world.contains_resource::<super::usable_animation::UsableAnimations>()
+            && world.contains_resource::<super::usable_effects::UsableEffects>() {
+            world.resource_scope(|world, mut navigation: Mut<super::NavigationWorld>| {
+                world.resource_scope(|world, mut animations: Mut<super::usable_animation::UsableAnimations>| {
+                    let mut effects = world.resource_mut::<super::usable_effects::UsableEffects>();
+                    for index in 0..interactions.actors.len() {
+                        interactions.stop_actor(index, &mut navigation.0, &mut animations, &mut effects);
+                    }
+                });
+            });
+            interactions.pending.clear();
+            return;
+        }
+        // Partially prepared levels may not have published these backends.
+        for (index, actor) in interactions.actors.iter_mut().enumerate() {
+            actor.started = false;
+            if let Some(handle) = actor.fake_box.take() {
+                if let Some(mut navigation) = world.get_resource_mut::<super::NavigationWorld>() {
+                    navigation.0.remove_interaction_box(handle);
+                }
+            }
+            if let Some(mut animations) = world.get_resource_mut::<super::usable_animation::UsableAnimations>() {
+                animations.stop_actor(index);
+            }
+            if let Some(mut effects) = world.get_resource_mut::<super::usable_effects::UsableEffects>() {
+                effects.stop_usable(index);
+            }
+        }
+        interactions.pending.clear();
+    });
 }
 
 fn interaction_type(name: Option<&str>) -> i32 {
@@ -284,7 +344,7 @@ pub(super) fn focus_and_interact(
                     interactions.readable[index].allowed_swimming)
             } else if let Some(index) = actor {
                 let Some(state) = interactions.actors[index].state.as_ref() else { continue };
-                if !state.definition.starts_on_spawn { continue; }
+                if !interactions.actors[index].started { continue; }
                 let step = state.state;
                 let entry = &state.definition.steps[step];
                 (false, index, step, if entry.overrides_interaction { entry.maximum_distance } else { state.definition.maximum_distance },

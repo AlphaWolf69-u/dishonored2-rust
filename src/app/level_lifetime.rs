@@ -40,6 +40,7 @@ impl LevelLifetime {
     }
 
     pub fn clear(&mut self, world: &mut World) -> Result<(), String> {
+        super::interactions::stop_level(world);
         // bevy_backend: retire player and world FX chains while their
         // support owners are still present. The caller has acknowledged the
         // outgoing render publication. This does not replace the GameLocal

@@ -59,6 +59,20 @@ pub(super) struct UsableAnimations {
 }
 
 impl UsableAnimations {
+    /// 77b610/77bda0: stop the usable layer, retaining the last published
+    /// palette with its existing placement rather than resetting its pose.
+    pub(super) fn stop_actor(&mut self, actor: usize) {
+        for slot in self.placements.values_mut().filter(|slot| slot.actor == actor) {
+            slot.asset = None;
+            slot.node = None;
+            slot.animation_pose = None;
+            slot.command = None;
+            slot.requested = false;
+            slot.failed = false;
+            slot.initialized = false;
+        }
+        self.lookup.retain(|_, asset| asset.strong_count() != 0);
+    }
     fn request_asset(&mut self, key: String, path: String, interactions: &super::interactions::Interactions) {
         self.loading.entry(key).or_insert_with(|| {
             let catalog = interactions.catalog.clone();
@@ -109,10 +123,12 @@ pub(super) fn advance(
         }
         owner.initialized = true;
     }
+    let interactions = &mut *interactions;
     // Interactive state changes post commands; they remain pending on the
     // placement until its worker acquisition finishes.
     for change in &mut interactions.pending {
         if let Some(command) = change.animation.take() {
+            if !interactions.actors[change.actor].started { continue; }
             for slot in owner.placements.values_mut().filter(|slot| slot.actor == change.actor) {
                 slot.command = Some(command);
             }
@@ -120,6 +136,7 @@ pub(super) fn advance(
     }
     let mut load = Vec::new();
     for (&index, slot) in &mut owner.placements {
+        if !interactions.actors[slot.actor].started { continue; }
         let visible = slot.source_index.and_then(|source| sources.0.get(source))
             .is_some_and(|source| queue.instances.get(source.instances.clone()).is_some_and(|instances| instances.iter().any(|i| i.visible)));
         if slot.asset.is_none() && !slot.requested && (visible || slot.command.is_some()) {
@@ -153,17 +170,18 @@ pub(super) fn advance(
                 owner.lookup.insert(key.clone(), Arc::downgrade(&asset));
                 for (&index, slot) in &mut owner.placements {
                     let matches = if interactions.catalog.has_overlays() { key == format!("{}#{index}", slot.model) } else { key == slot.model };
-                    if slot.requested && slot.asset.is_none() && matches {
+                    if interactions.actors[slot.actor].started && slot.requested && slot.asset.is_none() && matches {
                         slot.node = Some(asset.instantiate());
                         slot.asset = Some(asset.clone());
                     }
                 }
+                if Arc::strong_count(&asset) == 1 { owner.lookup.remove(&key); }
             }
             Err(error) => {
                 bevy::log::warn!("Usable animation acquisition failed for {key}: {error}");
                 for (&index, slot) in &mut owner.placements {
                     let matches = if interactions.catalog.has_overlays() { key == format!("{}#{index}", slot.model) } else { key == slot.model };
-                    if slot.requested && matches { slot.failed = true; }
+                    if interactions.actors[slot.actor].started && slot.requested && matches { slot.failed = true; }
                 }
             }
         }
@@ -178,6 +196,9 @@ pub(super) fn advance(
     // minimum-duration transitions. A pending acquisition, however, must not
     // be mistaken for a finished animation.
     owner.playing.fill(Some(false));
+    for (index, actor) in interactions.actors.iter().enumerate() {
+        if !actor.started { owner.playing[index] = None; }
+    }
     for slot in owner.placements.values() {
         if slot.asset.is_none() && !slot.failed {
             owner.playing[slot.actor] = None;

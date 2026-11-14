@@ -130,6 +130,16 @@ impl Drop for UsableEffects {
 }
 
 impl UsableEffects {
+    /// Stop desired publication; already-running particle/sound tails retain
+    /// their own immutable source leases until the shared FX owner finishes.
+    pub(super) fn stop_usable(&mut self, index: usize) {
+        let actor = EffectOwner::Usable(index);
+        self.wanted.remove(&actor);
+        if self.ready.remove(&actor).is_some() { self.retirement = self.retirement.wrapping_add(1); }
+        self.placements.remove(&actor);
+        self.revision = self.revision.wrapping_add(1);
+        self.cleanup_dirty = true;
+    }
     pub(super) fn cancellation_token(&self) -> Arc<AtomicBool> { self.cancelled.clone() }
 
     pub(super) fn close_acquisitions(&self) {
@@ -316,11 +326,7 @@ pub(super) fn prepare_requests(
         for change in &mut interactions.pending {
             let actor = EffectOwner::Usable(change.actor);
             if change.stop_effect {
-                owner.wanted.remove(&actor);
-                if owner.ready.remove(&actor).is_some() { owner.retirement = owner.retirement.wrapping_add(1); }
-                owner.placements.remove(&actor);
-                owner.revision = owner.revision.wrapping_add(1);
-                owner.cleanup_dirty = true;
+                owner.stop_usable(change.actor);
                 change.stop_effect = false;
             }
             if let Some(spawn) = change.start_effect.take() {
