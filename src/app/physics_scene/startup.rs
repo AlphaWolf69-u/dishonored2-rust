@@ -43,11 +43,12 @@ impl<F> TriggerLevelInitialization<TriggerAssets, F> for TriggerLevel<'_> {
             return Err("trigger shape owner differs from entity".into());
         }
         Ok(Some(LoadedTriggerShape {
-            shape: *geometry
+            shape: geometry
                 .shape_resources
                 .get(self.index)
+                  .copied().flatten()
                 .ok_or("trigger shape resource absent")?,
-            basis: geometry.placements[self.index].shape.basis,
+            basis: geometry.placements[self.index].as_ref().ok_or("trigger placement retired")?.shape.basis,
         }))
     }
     fn dependency(

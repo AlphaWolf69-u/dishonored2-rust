@@ -155,7 +155,7 @@ impl ComponentReleaseWorld for Host<'_> {
             let shared = scene.world.clone();
             let mut query_owner = shared.write().map_err(|_| "level physics query owner is poisoned")?;
             let world = &mut *query_owner;
-            let keyframed = world.geometry.placements.get(declaration).ok_or("trigger placement absent")?.binding.collision.keyframed;
+            let keyframed = world.geometry.placements.get(declaration).and_then(Option::as_ref).ok_or("trigger placement absent")?.binding.collision.keyframed;
             let mut events = ComponentPublicationEvents {
                 components: TriggerComponentStore { trigger_class: scene.classes[0], water_class: scene.classes[1],
                     triggers: &mut scene.triggers, waters: &mut scene.waters, actors: &mut scene.actors, deferred: &mut scene.deferred },
@@ -221,6 +221,9 @@ impl ComponentReleaseWorld for Host<'_> {
                 signals: &mut scene.signals, dispatch: startup::dispatch_observer,
             };
             crate::gameplay::trigger_body::startup::deinitialize_trigger(&mut world.storage, &mut world.geometry, &mut events, handle)?;
+            let placement = scene.triggers.get(handle.slot).ok_or("trigger component absent")?.owner.declaration
+                .ok_or("trigger declaration absent")?;
+            world.geometry.retire_placement(placement)?;
         }
         if handle.class_id == self.scene.classes[4] {
             let generation = self.owner(handle)?.generation;

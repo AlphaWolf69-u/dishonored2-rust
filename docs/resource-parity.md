@@ -8112,3 +8112,5 @@ identities and perform no extra archive reads; source fields are projected
 lazily, never on the gameplay frame. The portable component host owns the
 actual begin/reserve/acquire/snapshot call sequence; no unsupported faction or
 NPC entity is manufactured by this resource API.
+
+Retireable trigger geometry integration: the current typed scene now checks live Option slots for trigger placements, shape IDs and query resources instead of dereferencing retired arena entries. Trigger Deinitialize destroys the real body before retiring its placement/shape lease; all existing shape indices remain stable while live. The game-only WorldStorage constructor handoff now initializes the original two GameLocal timespaces once before component initialization; acoustic worlds retain their ordinary constructor setup. This composes the separate rigid-resource and motion-owner commits. No tests/build/run or measured savings.

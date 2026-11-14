@@ -285,11 +285,12 @@ impl PhysicsScene {
         let bounds = entities::physics::world_physics_bounds(document)?
             .ok_or("physics worldspawn bounds absent")?;
         static NEXT_WORLD: AtomicUsize = AtomicUsize::new(1);
-        let world = WorldStorage::new(
+        let mut world = WorldStorage::new(
             WorldInfo::game_settings(bounds),
             NEXT_WORLD.fetch_add(1, Ordering::Relaxed),
             materials,
         )?;
+        world.initialize_game_timespaces()?;
         let cvars = crate::platform::console::shared().read();
         let mut scene = Self {
             world: Arc::new(RwLock::new(LevelPointQueries::new(world, geometry))),
@@ -340,7 +341,7 @@ impl PhysicsScene {
         let query_owner = scene.world.clone();
         let query_world = query_owner.read().map_err(|_| "level physics query owner is poisoned")?;
         for index in 0..query_world.geometry.placements.len() {
-            let placement = &query_world.geometry.placements[index];
+            let placement = query_world.geometry.placements[index].as_ref().ok_or("prepared trigger placement absent")?;
             let existing = entity_indices.get(&placement.binding.entity_id).copied();
             let entity_index = existing.unwrap_or(scene.entities.len());
             let definition = definitions
@@ -526,7 +527,7 @@ impl PhysicsScene {
         let mut contacts = Vec::new();
         world.storage.point_query(&mut self.executor, &WorldPointRequest::water(position), |shape| {
             Ok(WorldQueryShape {
-                shapes: &world.geometry.shapes.get(shape).ok_or("water query shape absent")?.query_shapes,
+                shapes: &world.geometry.shapes.get(shape).and_then(Option::as_ref).ok_or("water query shape absent")?.query_shapes,
                 materials: None,
             })
         }, &mut contacts)?;
@@ -567,6 +568,7 @@ impl PhysicsScene {
                         .geometry
                         .shapes
                         .get(shape)
+                        .and_then(Option::as_ref)
                         .ok_or("environment shape absent")?
                         .query_shapes,
                     materials: None,
@@ -749,7 +751,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .ok_or("trigger declaration absent")?;
             let (position, collision) = {
                 let world = self.world.read().map_err(|_| "level physics query owner is poisoned")?;
-                (world.geometry.placements[placement].position, world.geometry.placements[placement].binding.collision)
+                let placement = world.geometry.placements[placement].as_ref().ok_or("trigger placement retired")?;
+                (placement.position, placement.binding.collision)
             };
             let entity = &mut self.entities[entity];
             let mut level = startup::TriggerLevel {
@@ -834,7 +837,7 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 .declaration
                 .ok_or("trigger declaration absent")?;
             let keyframed = self.world.read().map_err(|_| "level physics query owner is poisoned")?
-                .geometry.placements[declaration].binding.collision.keyframed;
+                .geometry.placements[declaration].as_ref().ok_or("trigger placement retired")?.binding.collision.keyframed;
             let actor = if keyframed {
                 Some(self.reference_actor(entity_index, registry)?)
             } else {
