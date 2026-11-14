@@ -983,7 +983,11 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         None => Vec::new(),
     };
-    let joint_frames = super::joint_frames::JointFrames::prepare(catalog_for_machinery, &placed_models, &joint_requests, &machinery)
+    let usable_animations = super::usable_animation::UsableAnimations::prepare_dependencies(
+        catalog_for_machinery, interactions.as_ref(), &placed_models, &joint_requests, &machinery,
+        || cancelled(CancellationPoint::General))
+        .map_err(std::io::Error::other)?;
+    let joint_frames = super::joint_frames::JointFrames::prepare(catalog_for_machinery, &placed_models, &joint_requests, &machinery, &usable_animations)
         .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
     app.insert_resource(super::model_motion::BoundModels::new(
@@ -1031,7 +1035,7 @@ pub(super) fn prepare_level(
     app.insert_resource(super::interaction_focus::FocusedInteraction::default());
     app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory });
     app.insert_resource(super::interaction_focus::RetiredPlacements::default());
-    app.insert_resource(super::usable_animation::UsableAnimations::default());
+    app.insert_resource(usable_animations);
     app.insert_resource(super::usable_effects::EffectRequests::default());
     app.insert_resource(super::usable_effects::UsableEffects::default());
     app.insert_resource(super::usable_effects::DynamicWorldMaterials::default());

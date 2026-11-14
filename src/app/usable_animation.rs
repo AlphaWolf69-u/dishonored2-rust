@@ -47,14 +47,22 @@ struct Placement {
     physics_owned: bool,
     animation_pose: Option<Vec<super::physics_skinning::Affine>>,
     local_pose: Option<crate::gameplay::player::animation::Pose>,
+    /// Dependency-driven startup sample, consumed by the ordinary publisher.
+    prepared_pose: Option<Vec<super::physics_skinning::Affine>>,
 }
 
 impl Placement {
+    fn new(actor: usize, model: String, physics_owned: bool) -> Self {
+        Self { actor, model, source_index: None, asset: None, node: None,
+            publication: Default::default(), requested: false, failed: false, command: None,
+            initialized: false, physics_owned, animation_pose: None, local_pose: None, prepared_pose: None }
+    }
     fn stop(&mut self) {
         self.asset = None;
         self.node = None;
         self.animation_pose = None;
         self.local_pose = None;
+        self.prepared_pose = None;
         self.command = None;
         self.requested = false;
         self.failed = false;
@@ -73,6 +81,62 @@ pub(super) struct UsableAnimations {
 }
 
 impl UsableAnimations {
+    /// 77b3b0 initializes the actual state's idle or held transition frame.
+    /// An attachment needs that pose before body admission, even off screen.
+    /// The same asset, node and sample become the live animation owner.
+    pub(super) fn prepare_dependencies(catalog: &crate::archive::Catalog,
+        interactions: Option<&super::interactions::Interactions>, models: &[crate::entities::PlacedModel],
+        requests: &[(usize, String)], machinery: &super::machinery::AmbientMachinery,
+        cancelled: impl Fn() -> bool) -> Result<Self, String> {
+        let mut owner = Self::default();
+        if requests.is_empty() { return Ok(owner); }
+        let Some(interactions) = interactions else { return Ok(owner); };
+        let physics = machinery.physics_placements();
+        for &(index, _) in requests {
+            if owner.placements.contains_key(&index) { continue; }
+            if cancelled() { return Err("bound animation preparation cancelled".into()); }
+            let placed = models.get(index).ok_or("bound animation parent placement is absent")?;
+            let Some(actor) = animated_actor(interactions, placed) else { continue; };
+            let key = if catalog.has_overlays() { format!("{}#{index}", placed.resource_path) } else { placed.resource_path.clone() };
+            let asset = match owner.lookup.get(&key).and_then(Weak::upgrade) {
+                Some(asset) => asset,
+                None => {
+                    let asset = Asset::load(catalog, &placed.resource_path, &cancelled)?;
+                    owner.lookup.insert(key, Arc::downgrade(&asset));
+                    asset
+                },
+            };
+            let mut node = asset.instantiate();
+            let command = interactions.actors[actor].state.as_ref().and_then(|state| state.initial().animation);
+            node.update(0.0, command, &asset.rig.animations);
+            let pose = node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest)?;
+            // No active leaf retains the model's initialized skeleton pose,
+            // as the normal publisher does; a failed animation is an error.
+            let joints = pose.as_ref().map_or(asset.rig.skeleton.rest.as_slice(), |pose| pose.joints.as_slice());
+            let matrices = crate::edge_skeleton::pose_matrices(joints, &asset.rig.skeleton.hierarchy, &asset.rig.root)?;
+            let mut slot = Placement::new(actor, placed.resource_path.clone(), physics.contains(&index));
+            slot.node = Some(node);
+            slot.asset = Some(asset);
+            slot.requested = true;
+            slot.initialized = true;
+            slot.prepared_pose = Some(matrices);
+            owner.placements.insert(index, slot);
+        }
+        Ok(owner)
+    }
+
+    pub(super) fn prepared_rig(&self, placement: usize) -> Option<&Arc<crate::assets::animation_rig::Rig>> {
+        Some(&self.placements.get(&placement)?.asset.as_ref()?.rig.rig)
+    }
+
+    pub(super) fn initial_joint_matrix(&self, placement: usize, joint: i16,
+        skeleton: &Arc<crate::edge_skeleton::EdgeSkeleton>)
+        -> Result<Option<super::physics_skinning::Affine>, String> {
+        let Some(slot) = self.placements.get(&placement) else { return Ok(None); };
+        let asset = slot.asset.as_ref().ok_or("bound animation asset was retired during preparation")?;
+        if !Arc::ptr_eq(&asset.rig.skeleton, skeleton) { return Err("attachment and usable skeleton owners differ".into()); }
+        Ok(usize::try_from(joint).ok().and_then(|joint| slot.prepared_pose.as_ref()?.get(joint)).copied())
+    }
     /// 77b610/77bda0: stop the usable layer, retaining the last published
     /// palette with its existing placement rather than resetting its pose.
     pub(super) fn stop_actor(&mut self, actor: usize) {
@@ -136,9 +200,8 @@ pub(super) fn advance(
         let shadow_sources: HashMap<_, _> = sources.0.iter().enumerate().map(|(index, source)| (source.placement, index)).collect();
         for (index, placement) in placements.0.iter().enumerate() {
             let Some(actor) = animated_actor(&interactions, placement) else { continue };
-            owner.placements.insert(index, Placement { actor, model: placement.resource_path.clone(), source_index: shadow_sources.get(&index).copied(), asset: None,
-                node: None, publication: Default::default(), requested: false, failed: false, command: None,
-                initialized: false, physics_owned: physics.contains(&index), animation_pose: None, local_pose: None });
+            let slot = owner.placements.entry(index).or_insert_with(|| Placement::new(actor, placement.resource_path.clone(), physics.contains(&index)));
+            slot.source_index = shadow_sources.get(&index).copied();
         }
         owner.initialized = true;
     }
@@ -233,6 +296,7 @@ pub(super) fn advance(
             slot.initialized = true;
         }
         let scene_active = machinery.as_deref().is_some_and(|m| m.scene_layer_active(index));
+        let prepared = slot.prepared_pose.take();
         let changed = slot.command.is_some() || !node.is_settled() || (scene_active && slot.local_pose.is_none());
         if changed {
             node.update(dt, slot.command.take(), &asset.rig.animations);
@@ -240,19 +304,24 @@ pub(super) fn advance(
         if let Some(playing) = &mut playing[slot.actor] {
             *playing |= node.current_clip().is_some_and(|(_, _, playing)| playing);
         }
-        if changed {
-            let pose = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
-                Ok(Some(pose)) => pose,
-                Ok(None) => continue,
-                Err(error) => { bevy::log::warn!("Usable animation evaluation: {error}"); continue; }
-            };
-            if scene_active {
-                slot.local_pose = Some(pose);
-                continue;
-            }
-            slot.local_pose = None;
-            let matrices = match crate::edge_skeleton::pose_matrices(&pose.joints, &asset.rig.skeleton.hierarchy, &asset.rig.root) {
-                Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skeleton pose: {error}"); continue; }
+        if changed || prepared.is_some() {
+            let matrices = if !changed {
+                prepared.expect("unchanged startup pose is retained")
+            } else {
+                let pose = match node.evaluate(&asset.rig.animations, &asset.rig.skeleton.rest) {
+                    Ok(Some(pose)) => pose,
+                    Ok(None) => continue,
+                    Err(error) => { bevy::log::warn!("Usable animation evaluation: {error}"); continue; }
+                };
+                if scene_active {
+                    slot.local_pose = Some(pose);
+                    continue;
+                }
+                slot.local_pose = None;
+                let matrices = match crate::edge_skeleton::pose_matrices(&pose.joints, &asset.rig.skeleton.hierarchy, &asset.rig.root) {
+                    Ok(value) => value, Err(error) => { bevy::log::warn!("Usable skeleton pose: {error}"); continue; }
+                };
+                matrices
             };
             if slot.physics_owned {
                 slot.animation_pose = Some(matrices);

@@ -8582,3 +8582,30 @@ no-output branch, without fake acknowledgements or advancing an audio clock.
 Prediction: no normal game output/frame work changes; source-only acquisition
 avoids unused DSP/output objects and can complete its real teardown. No CPU,
 RAM or GPU saving for gameplay is claimed. Coherent validation follows.
+
+### Usable pose acquisition for bound dependencies (2026-11-14)
+
+The completed47ed71f6 run compiled both targets, passed independent source
+scopes, and actually loaded/retired Edge of the World. Dust District then
+exposed a missing acquisition dependency: a tag parent with keyframed physics
+is driven by Usable AnimBasic, not the ambient dynamic PhysicsSystem owner.
+Installed metadata and77b3b0 (chunk000310:577) show an initial held transition
+frame: no idle animation plus transition index0 selects StayOnFirstFrame of
+open. A bare rest pose would be wrong, despite the absence of a looping clip.
+
+The existing UsableAnimations owner now prepares only actual requested parent
+dependencies during loading. It uses its ordinary shared Asset/BasicRig/node,
+the real Usable::initial command at dt0, and the same evaluated joint matrices.
+JointFrames borrows that exact rig identity and startup sample; it does not
+create another animation cache. The prepared owner/node moves into gameplay,
+where the ordinary publisher consumes the unchanged startup sample or advances
+that same node. Runtime placement registration preserves prepared slots and
+adds final render source indices once available. Stop releases pending samples
+and asset/node leases through the existing owner.
+
+Prediction: only tag-dependent parents acquire assets earlier; other levels
+return before scanning physics placements. No duplicate node/rig/mesh, second
+per-frame sampling pass, extra GPU pass, per-frame I/O or rest-pose substitution
+is introduced. Startup dependency work is fidelity work, not a speed claim.
+Source metadata/provenance: main artifacts/readable-door-owner-conclusion-20261114.json
+and its installed owner/animation captures. Coherent acquisition verifies it.

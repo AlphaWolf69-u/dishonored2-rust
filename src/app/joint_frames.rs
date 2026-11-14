@@ -33,12 +33,13 @@ pub(super) struct JointFrames {
 
 impl JointFrames {
     pub(super) fn prepare(catalog: &Catalog, models: &[PlacedModel], requests: &[(usize, String)],
-        machinery: &super::machinery::AmbientMachinery) -> Result<Self, String> {
+        machinery: &super::machinery::AmbientMachinery,
+        animations: &super::usable_animation::UsableAnimations) -> Result<Self, String> {
         let mut result = Self::default();
         let mut rigs = HashMap::new();
         for (placement, name) in requests {
             let model = models.get(*placement).ok_or("joint attachment placement is absent")?;
-            let rig = match rigs.entry(model.resource_path.clone()) {
+            let rig = if let Some(rig) = animations.prepared_rig(*placement) { rig } else { match rigs.entry(model.resource_path.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let declaration = crate::bmd6::declaration_path(&model.resource_path)
@@ -47,7 +48,7 @@ impl JointFrames {
                         .and_then(|path| path.strip_suffix(".decl")).ok_or("joint attachment MD6 path is invalid")?;
                     entry.insert(crate::assets::animation_rig::Rig::acquire(catalog, path)?)
                 },
-            };
+            } };
             let binding = match rig.optional_tag_quaternion_in_group("_info", name)? {
                 Some((joint, offset, orientation)) => JointBinding {
                     joint: i16::try_from(joint).map_err(|_| "bound joint index exceeds signed representation")?,
@@ -61,10 +62,13 @@ impl JointFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
             });
             if let std::collections::hash_map::Entry::Vacant(entry) = frames.joints.entry(binding.joint) {
-                // These admitted attachments are driven by the existing physics
-                // skin owner. Sample its real startup body/joint composition,
-                // never substitute a rest joint when a producer is absent.
-                let matrix = machinery.initial_joint_matrix(*placement, binding.joint, &rig.skeleton)?
+                // Native77b3b0 can hold an initial usable transition frame.
+                // Sample the actual prepared controller before considering
+                // physics-driven skin data; neither branch fabricates a pose.
+                let matrix = match animations.initial_joint_matrix(*placement, binding.joint, &rig.skeleton)? {
+                    Some(matrix) => Some(matrix),
+                    None => machinery.initial_joint_matrix(*placement, binding.joint, &rig.skeleton)?,
+                }
                     .ok_or_else(|| format!("{} joint {name} has no prepared pose producer", model.id))?;
                 let initial = matrix_frame(matrix);
                 entry.insert(Frames { initial, current: initial });
