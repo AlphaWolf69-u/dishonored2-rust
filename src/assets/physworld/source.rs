@@ -155,6 +155,7 @@ impl StandaloneShape {
             scale: resource.scale, resource_identity: ShapeAlias::identity(resource),
         }).collect();
         shapes.wrap_aliases(&wrappers)?;
+        shapes.retain_aliases(&self.wrappers);
         Ok(shapes)
     }
 
@@ -183,7 +184,9 @@ impl ShapeSource {
     pub(crate) fn query_shapes(self: &Arc<Self>, root: usize)
         -> Result<super::query_geometry::QueryShapes, String> {
         self.require_hkx().map_err(ShapeSourceError::message)?;
-        self.physics.query_shapes(&self.bytes, root)
+        let mut shapes = self.physics.query_shapes(&self.bytes, root)?;
+        shapes.retain_source(self.clone());
+        Ok(shapes)
     }
 }
 

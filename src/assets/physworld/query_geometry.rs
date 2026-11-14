@@ -16,13 +16,50 @@ pub struct QueryShape {
     pub geometry: QueryGeometry,
 }
 
-#[derive(Debug)]
 pub struct QueryShapes {
     root: usize,
     shapes: BTreeMap<usize, QueryShape>,
+    // Present only when the tree's resource identities refer to standalone
+    // source/wrapper records. Geometry leases must not outlive those records.
+    resources: Option<Box<ResourceLeases>>,
+}
+
+#[derive(Default)]
+struct ResourceLeases {
+    sources: Vec<std::sync::Arc<super::source::ShapeSource>>,
+    aliases: Vec<std::sync::Arc<super::source::ShapeAlias>>,
+}
+
+impl std::fmt::Debug for QueryShapes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Retain the geometry-only diagnostic representation. Leases have no
+        // effect on shape fingerprints, and do not print source byte buffers.
+        f.debug_struct("QueryShapes").field("root", &self.root)
+            .field("shapes", &self.shapes).finish()
+    }
 }
 
 impl QueryShapes {
+    pub(crate) fn retain_source(&mut self, source: std::sync::Arc<super::source::ShapeSource>) {
+        self.resources.get_or_insert_with(Default::default).sources.push(source);
+    }
+
+    pub(crate) fn retain_aliases(&mut self, aliases: &[std::sync::Arc<super::source::ShapeAlias>]) {
+        if aliases.is_empty() { return; }
+        self.resources.get_or_insert_with(Default::default).aliases.extend_from_slice(aliases);
+    }
+
+    fn absorb_resources(&mut self, other: &mut Self) {
+        let Some(mut resources) = other.resources.take() else { return; };
+        match &mut self.resources {
+            None => self.resources = Some(resources),
+            Some(own) => {
+                own.sources.append(&mut resources.sources);
+                own.aliases.append(&mut resources.aliases);
+            },
+        }
+    }
+
     pub(crate) fn set_root_resource_identity(&mut self, identity: u64) -> Result<(), String> {
         self.shapes.get_mut(&self.root).ok_or("root query shape is missing")?.header.user_data = identity;
         Ok(())
@@ -93,7 +130,7 @@ impl PhysWorld {
             };
             shapes.insert(index, QueryShape { header, geometry });
         }
-        Ok(QueryShapes { root, shapes })
+        Ok(QueryShapes { root, shapes, resources: None })
     }
 }
 

@@ -8086,3 +8086,13 @@ checkpoint's unrelated compressed-mesh, deferred-convex or runtime-hull query
 algorithms. Unknown roots retain explicit admission errors. Source recovery
 awaits the coordinated complete-feature compilation and actual app factory
 integration; no tests, visual observations or measured savings are claimed.
+
+Standalone query trees retain an optional resource-lease sidecar, including
+both children of an extra-HD compound. This keeps root/wrapper userData
+identities alive through the final query consumer even if its component has
+already retired. Source records never point back to query trees, so no cycle
+is introduced. Trigger-only trees allocate no sidecar and retain their existing
+source retirement and geometry-only diagnostic fingerprints. Uncached convex
+mass remains an explicit unsupported calculation, rather than substituting a
+compound bounding-box mass for a convex shape. Alias compounds have no copied
+0xf100 property in08c9a0 and use the existing mode-zero compound calculator.

@@ -64,6 +64,7 @@ impl QueryShapes {
                 instances: vec![instance(primary_root, tags[0]), instance(extra_root, tags[1])], nodes, root: 3 }),
         });
         self.root = root;
+        self.absorb_resources(&mut extra);
         Ok(self)
     }
 
