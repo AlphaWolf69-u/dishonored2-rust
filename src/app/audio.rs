@@ -90,9 +90,12 @@ impl SoundDecodeQueue {
 /// post is finished only after every submitted voice releases its event ticket.
 #[derive(Resource, Default)]
 pub(super) struct SoundCompletions {
-    waiting: std::collections::HashSet<(u32, Emitter)>,
+    // Host subscriptions have generations: cancel/re-watch must not resurrect
+    // an older pending post or let its End complete the replacement.
+    waiting: std::collections::HashMap<(u32, Emitter), u64>,
+    next_watch: u64,
     completed: std::collections::HashMap<(u32, Emitter), bool>,
-    active: std::collections::HashSet<(u32, Emitter)>,
+    active: std::collections::HashMap<(u32, Emitter), crate::gameplay::sound::playing::PlayingId>,
     playing: crate::gameplay::sound::playing::PlayingEvents,
     started: std::collections::HashSet<crate::gameplay::sound::playing::PlayingId>,
     decode_failures: std::collections::HashMap<u32, String>,
@@ -102,7 +105,9 @@ pub(super) struct SoundCompletions {
 impl SoundCompletions {
     pub fn watch(&mut self, event: u32, emitter: Emitter) {
         self.completed.remove(&(event, emitter));
-        self.waiting.insert((event, emitter));
+        self.next_watch = self.next_watch.checked_add(1).expect("sound watch identity exhausted");
+        self.waiting.insert((event, emitter), self.next_watch);
+        self.active.remove(&(event, emitter));
     }
     /// `true` means at least one voice was submitted and has now ended;
     /// `false` means preparation, streaming or submission failed.
@@ -116,12 +121,17 @@ impl SoundCompletions {
         self.retire_if_unused(event);
     }
     fn failed(&mut self, event: u32, emitter: Emitter) {
-        if self.waiting.remove(&(event, emitter)) { self.completed.insert((event, emitter), false); }
+        if self.waiting.remove(&(event, emitter)).is_some() { self.completed.insert((event, emitter), false); }
         self.retire_if_unused(event);
     }
+    fn failed_watch(&mut self, event: u32, emitter: Emitter, watch: Option<u64>) {
+        if watch.is_some() && self.waiting.get(&(event, emitter)).copied() == watch {
+            self.failed(event, emitter);
+        }
+    }
     fn retire_if_unused(&mut self, event: u32) {
-        if !self.waiting.iter().any(|(id, _)| *id == event)
-            && !self.active.iter().any(|(id, _)| *id == event)
+        if !self.waiting.keys().any(|(id, _)| *id == event)
+            && !self.active.keys().any(|(id, _)| *id == event)
             && self.dynamic_sources.remove(&event) {
             self.retired_sources.push(event);
         }
@@ -137,7 +147,8 @@ impl SoundCompletions {
                 NotificationKind::End => {
                     let submitted = self.started.remove(&note.id);
                     let key = (note.event.declaration, note.event.object);
-                    if self.active.remove(&key) {
+                    if self.active.get(&key) == Some(&note.id) {
+                        self.active.remove(&key);
                         self.completed.insert(key, submitted);
                         self.retire_if_unused(key.0);
                     }
@@ -381,7 +392,23 @@ struct PendingSound {
     // A retry must not release its already completed reads while another
     // source is pending; the source's own resident lookup is deliberately weak.
     media: Vec<graph::StreamHold>,
-    watched: bool,
+    watched: Option<u64>,
+    // c4550/c6030 admit the playing ID and object cookie before source preparation.
+    ticket: Option<crate::gameplay::sound::playing::Ticket>,
+}
+
+fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut SoundCompletions,
+    emitter: Emitter, event: Option<u32>) {
+    pending.retain(|queued| {
+        let id = match queued.request {
+            Request::Post { event, .. } | Request::PostWithParameter { event, .. }
+                | Request::PostAt { event, .. } => event,
+            _ => return true,
+        };
+        if request_emitter(&queued.request) != emitter || event.is_some_and(|event| event != id) { return true; }
+        completions.failed_watch(id, emitter, queued.watched);
+        false
+    });
 }
 
 /// Retire one actual component object before its generation can be recycled.
@@ -429,10 +456,10 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
         if !matches!(engine.object_retirement_pending(emitter), Ok(false)) { continue; }
         if completions.playing.references_object(emitter) { continue; }
         if sounds.as_ref().is_some_and(|sounds| sounds.lock().playing.references_object(emitter)) { continue; }
-        let events: std::collections::HashSet<_> = completions.waiting.iter().chain(completions.active.iter())
+        let events: std::collections::HashSet<_> = completions.waiting.keys().chain(completions.active.keys())
             .filter_map(|&(event, object)| (object == emitter).then_some(event)).collect();
-        completions.waiting.retain(|(_, object)| *object != emitter);
-        completions.active.retain(|(_, object)| *object != emitter);
+        completions.waiting.retain(|(_, object), _| *object != emitter);
+        completions.active.retain(|(_, object), _| *object != emitter);
         completions.completed.retain(|(_, object), _| *object != emitter);
         for event in events { completions.retire_if_unused(event); }
         registry.scheduled_selections.lock().unwrap_or_else(|error| error.into_inner())
@@ -506,7 +533,7 @@ pub(super) fn begin_level(world: &mut World) {
     world.resource_mut::<WwiseRegistry>().media_generation = graph::retain_media(&sound_ids);
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         let waiting = std::mem::take(&mut completions.waiting);
-        for key in waiting { completions.completed.insert(key, false); }
+        for (key, _) in waiting { completions.completed.insert(key, false); }
         completions.decode_failures.clear();
         // Active menu voices can outlive a level, but their old acquisition
         // keys must never evict a new level's event with the same numeric ID.
@@ -917,7 +944,7 @@ fn play_events(
 ) {
     completions.pump();
     for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
-    let wanted_decodes: std::collections::HashSet<_> = completions.waiting.iter().map(|(event, _)| *event).collect();
+    let wanted_decodes: std::collections::HashSet<_> = completions.waiting.keys().map(|(event, _)| *event).collect();
     decodes.retain_client(DecodeClient::Watched, &wanted_decodes);
     decodes.poll();
     for event in wanted_decodes {
@@ -944,7 +971,7 @@ fn play_events(
             }
             match queued.request {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
-                    | Request::PostAt { event, emitter, .. } if queued.watched => completions.failed(event, emitter),
+                    | Request::PostAt { event, emitter, .. } if queued.watched.is_some() => completions.failed_watch(event, emitter, queued.watched),
                 _ => {},
             }
         }
@@ -958,7 +985,7 @@ fn play_events(
                         Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
                         Err(error) => {
                             warn!("Sound object retirement failed: {error}");
-                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: false });
+                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: None, ticket: None });
                         },
                     }
                 },
@@ -966,19 +993,19 @@ fn play_events(
         }
         return;
     };
-    // A request whose streamed media is still being read waits, keeping its
-    // place ahead of later requests for the same emitter.
+    // Posts retain FIFO order while preparation waits. Stop/Retire bypass a
+    // cold post to cancel its real preparation owner, as they do queued actions.
     let requests: Vec<PendingSound> = std::mem::take(&mut pending.0).into_iter()
         .chain(event_cursor.0.read(&events).map(|message| {
             let watched = match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
-                    | Request::PostAt { event, emitter, .. } => completions.waiting.contains(&(event, emitter)),
-                Request::Stop { .. } | Request::Retire { .. } => false,
+                    | Request::PostAt { event, emitter, .. } => completions.waiting.get(&(event, emitter)).copied(),
+                Request::Stop { .. } | Request::Retire { .. } => None,
             };
-            PendingSound { request: message.0, media: Vec::new(), watched }
+            PendingSound { request: message.0, media: Vec::new(), watched, ticket: None }
         })).collect();
     let mut waiting = Vec::new();
-    for queued in requests {
+    for mut queued in requests {
         let emitter = request_emitter(&queued.request);
         let is_retire = matches!(queued.request, Request::Retire { .. });
         let state = retiring.0.get(&emitter).copied();
@@ -986,9 +1013,9 @@ fn play_events(
             if state != Some(ObjectRetirement::Queued)
                 && !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)));
         if !is_retire && (stale_component || matches!(state, Some(ObjectRetirement::Submitted | ObjectRetirement::Complete))) {
-            if queued.watched {
+            if queued.watched.is_some() {
                 match queued.request {
-                    Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed(event, emitter),
+                    Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed_watch(event, emitter, queued.watched),
                     _ => {}
                 }
             }
@@ -1001,7 +1028,8 @@ fn play_events(
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Retire { emitter } => {
-                if waiting.contains(&emitter) { pending.0.push(queued); continue; }
+                cancel_pending_posts(&mut pending.0, &mut completions, emitter, None);
+                waiting.retain(|object| *object != emitter);
                 match engine.release_object(emitter) {
                     Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
                     Err(error) => { warn!("Sound object retirement failed: {error}"); pending.0.push(queued); },
@@ -1009,20 +1037,37 @@ fn play_events(
                 continue;
             }
             Request::Stop { event, emitter } => {
-                if waiting.contains(&emitter) { pending.0.push(queued); continue; }
+                // 141127000 stops voices AND cancels pending actions (1410e9950).
+                cancel_pending_posts(&mut pending.0, &mut completions, emitter, Some(event));
+                if !pending.0.iter().any(|post| request_emitter(&post.request) == emitter) {
+                    waiting.retain(|object| *object != emitter);
+                }
                 engine.stop_event(event, emitter);
                 continue;
             }
         };
+        if queued.watched.is_some() && completions.waiting.get(&(event, emitter)).copied() != queued.watched { continue; }
+        if queued.ticket.is_none() {
+            let playing_id = engine.playing_id();
+            match completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
+                declaration: event, object: emitter, callbacks: if queued.watched.is_some() { 8 } else { 0 },
+            }) {
+                Ok(ticket) => queued.ticket = Some(ticket),
+                Err(error) => {
+                    warn!("Wwise event registration failed: {error}");
+                    completions.failed_watch(event, emitter, queued.watched);
+                    continue;
+                },
+            }
+        }
         if waiting.contains(&emitter) { pending.0.push(queued); continue; }
-        if queued.watched && !completions.waiting.contains(&(event, emitter)) { continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
-        if scene.frozen(emitter) { completions.failed(event, emitter); continue; }
-        if queued.watched && !registry.sources.contains_key(&event) {
+        if scene.frozen(emitter) { completions.failed_watch(event, emitter, queued.watched); continue; }
+        if queued.watched.is_some() && !registry.sources.contains_key(&event) {
             if let Some(error) = completions.decode_failures.remove(&event) {
                 warn!("Wwise event {event:#010x} background preparation failed: {error}");
-                completions.failed(event, emitter);
+                completions.failed_watch(event, emitter, queued.watched);
                 continue;
             }
             decodes.request(event, DecodeClient::Watched, &registry);
@@ -1031,7 +1076,7 @@ fn play_events(
             continue;
         }
         if let Err(error) = registry.prepare(event) {
-            completions.failed(event, emitter);
+            completions.failed_watch(event, emitter, queued.watched);
             warn!("Wwise event {event:#010x} has no supported route: {error}");
             continue;
         }
@@ -1053,35 +1098,21 @@ fn play_events(
             // All previously ready sources now have replacement holds. Keep
             // the old ones alive through acquisition, then transfer ownership.
             drop(queued.media);
-            if stream_failed && completions.waiting.contains(&(event, emitter)) {
-                completions.failed(event, emitter);
+            if stream_failed && queued.watched.is_some() {
+                completions.failed_watch(event, emitter, queued.watched);
                 continue;
             }
             if loading {
                 waiting.push(emitter);
-                pending.0.push(PendingSound { request, media: holds, watched: queued.watched });
+                pending.0.push(PendingSound { request, media: holds, watched: queued.watched, ticket: queued.ticket });
                 continue;
             }
-            let watched = completions.waiting.remove(&(event, emitter));
-            if !completions.playing.can_register_object(emitter) {
-                warn!("Wwise event {event:#010x}: sound object cookie pool is full");
-                if watched { completions.completed.insert((event, emitter), false); }
-                continue;
+            let tracked = queued.ticket.take();
+            let playing_id = tracked.as_ref().expect("admitted ordinary post").id().value();
+            if queued.watched.is_some() {
+                completions.waiting.remove(&(event, emitter));
+                completions.active.insert((event, emitter), tracked.as_ref().unwrap().id());
             }
-            let playing_id = engine.playing_id();
-            let tracked = match completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
-                declaration: event, object: emitter, callbacks: if watched { 8 } else { 0 },
-            }) {
-                Ok(ticket) => {
-                    if watched { completions.active.insert((event, emitter)); }
-                    Some(ticket)
-                },
-                Err(error) => {
-                    warn!("Wwise event registration failed: {error}");
-                    if watched { completions.completed.insert((event, emitter), false); }
-                    continue;
-                },
-            };
             for action in actions.iter().cloned() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
@@ -1124,8 +1155,13 @@ fn play_events(
                     }
                 }
             }
-        } else { completions.failed(event, emitter); }
+        } else { completions.failed_watch(event, emitter, queued.watched); }
     }
+    // Cancellation releases only this client's preparation lease. A shared FX
+    // decode keeps its own client, and a running task cannot republish here
+    // once the last watched request has gone.
+    let wanted: std::collections::HashSet<_> = completions.waiting.keys().map(|(event, _)| *event).collect();
+    decodes.retain_client(DecodeClient::Watched, &wanted);
 }
 
 /// Wwise RTPC changes affect sounds already playing. Mirror that when a
