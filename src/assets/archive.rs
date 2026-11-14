@@ -100,6 +100,7 @@ pub struct Catalog {
     pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::resources::Definition>>>,
     pub(crate) physics_system_resources: std::sync::OnceLock<crate::assets::physworld::physics_system::Resources>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
+    pub(crate) shape_sources: std::sync::OnceLock<crate::assets::physworld::source::Owner>,
     pub(crate) common_models: std::sync::OnceLock<std::result::Result<crate::assets::bmodel::CommonModels, String>>,
     pub(crate) difficulty_definitions: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Definition>>>,
     pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
@@ -165,6 +166,8 @@ impl Drop for Catalog {
         crate::assets::physworld::mass::resources::report_retirement(self);
         crate::assets::wwise::event_resources::report_retirement(self);
         self.mass_resources.take();
+        crate::assets::physworld::source::report(self, "catalog-retiring");
+        self.shape_sources.take();
         crate::assets::wwise::auxiliary_resources::report_retirement(self);
         crate::assets::wwise::rtpc_resources::report_retirement(self);
         crate::assets::difficulty::report_retirement(self);
@@ -252,6 +255,7 @@ impl Catalog {
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::difficulty::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
+        crate::assets::physworld::source::release_level(self);
         crate::assets::fx::declaration::release_marker(self, 0);
         crate::assets::fx::fade::release_marker(self, 0);
         crate::assets::decal::release_marker(self, 0);
@@ -512,6 +516,7 @@ impl Catalog {
             skeleton_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
+            shape_sources: Default::default(),
             component_types: Default::default(),
             material_constants: Default::default(),
             physics_material_resources: Default::default(),

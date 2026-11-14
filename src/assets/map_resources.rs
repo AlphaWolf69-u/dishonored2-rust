@@ -357,6 +357,7 @@ impl LevelList {
             crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
             crate::assets::difficulty::promote_bootstrap(catalog)?;
             crate::assets::physworld::mass::resources::promote_bootstrap(catalog)?;
+            crate::assets::physworld::source::promote_bootstrap(catalog)?;
             crate::assets::fx::declaration::promote_bootstrap(catalog)?;
             crate::assets::fx::fade::promote_bootstrap(catalog)?;
             crate::assets::decal::promote_bootstrap(catalog)?;
@@ -433,6 +434,11 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("massprops") {
                 crate::assets::physworld::mass::resources::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("physhape") {
+                // Physhape is absent from 142280ee0's marker-1 type table.
+                // Register bootstrap names without parsing unused HKX files;
+                // ordinary map shapes retain the accepted transient policy.
+                crate::assets::physworld::source::register_preload(catalog, &resource.path, section < 2)?;
             } else if resource.kind.eq_ignore_ascii_case("fx") {
                 crate::assets::fx::declaration::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;

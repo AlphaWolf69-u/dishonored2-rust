@@ -3767,6 +3767,25 @@ code was removed from normal source after measurement. Evidence: local
 
 ### Physics-shape scope evidence
 
+Demand-loaded bootstrap shape ownership prediction (2026-11-14). Original
+`14008c840` resolves the installed shape key through registry lookup
+`1400607f0`; `140060b60` promotes already registered bootstrap identities to
+marker 2, and `140060180` purges the selected marker. Physhape is absent
+from the conditional marker-1 table. Register the selected init/common shape
+names without reading or parsing their payloads, and retain only demanded
+bootstrap source/schema objects in the Catalog. Keep the accepted temporary
+area-source map policy; do not add a cache of map alias targets or pin all map
+HKX. Compact alias dependencies inherit their parent's bootstrap scope while
+using this same source owner. Expect the previously observed common coin's
+three acquisitions across maps to read/parse its immutable source once rather
+than three times. The retained payload is one demanded source/schema, not
+the 116-name common corpus. Unused bootstrap payload acquisitions remain zero;
+the installed map acquisition/geometry fingerprints and accepted 1,013-read
+map sharing saving must remain unchanged. Per-source history credits survive
+their live consumers, bootstrap credits survive map retirement, and final
+session retirement releases them. Measure only production source acquisition
+read/byte/count/cycle spans; no gameplay CPU or GPU gain is predicted.
+
 The saved original bootstrap registry snapshot contains 128 `physhape`
 and 118 `massprops` resources before a map is loaded; the saved Edge of
 the World snapshot contains 1,723 and 1,309 respectively. These are
@@ -3833,11 +3852,27 @@ nonempty pending queue is source-reviewed rather than claimed as exercised.
 
 A rewrite history snapshot contained one common-list physhape: a coin
 collider read by the static-model path three times across the level sequence.
-The rewrite currently has no reusable session owner for that decoded shape, so
-its last level lease retires the read-history identity even when the name is
-listed as common. The next request already rereads it; clearing the stale
-history does not introduce that read. This is a host bookkeeping boundary, not
-a claim that the original discards its common shape.
+The demand-loaded `physworld::source::Owner` now registers selected bootstrap
+headers and promotes them separately, retaining only acquired source/schema
+objects through map transitions. Model collision, including compact scaled
+aliases and their dependencies, uses this same owner. Physhape never receives
+conditional marker 1. Map sources keep the accepted temporary area cache and
+one-shot alias-target policy rather than gaining a second resident map cache.
+Their actual live sources lease read credits; dropping the last map scope
+prunes outgoing credits while preserving bootstrap and live mutable inputs.
+Source credits share an independent history state, not the registry or Catalog,
+so a session source cannot retain its owner in a cycle. Lock order is bootstrap
+registry -> credit state -> loading history; credit drop never reenters the
+registry. History hash capacity shrinks at the map boundary even when a common
+source remains. Catalog teardown drops its common payload leases; live source
+consumers retain their own bytes/schema. Source files are read directly and
+their owned bytes are moved into the source without copying or format changes.
+Host: unused bootstrap shapes remain unparsed and ordinary map HKX is not
+pinned. Verification: implementation source-reviewed against the saved
+`14008c840` / `1400607f0` / `140060b60` / `140060180` decompilation; affected
+production read/byte/cycle and matching-geometry measurement awaits the
+coordinated build slot. Earlier three-read observations are baseline evidence,
+not a measured result of this implementation.
 
 ### Model, particle and camera-metadata scopes
 
