@@ -9,6 +9,26 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
+## Current continuation (2026-11-14)
+
+Main `1bf3109f` includes the verified blueprint read-history lifetime fix.
+The larger component, scene, shape and audio-owner recovery remains isolated
+on `codex/fx-declaration-lifetime` until real installed-level acquisition and
+retirement succeed. Source `dc9b74a5` compiled both the game/tools target and
+the default library, and passed independent midnightScene scope, cancellation
+and Catalog-history observations. Its Edge of the World publication failed
+at the explicit uncached convex mass calculation; canonical rollback finished
+without an additional cleanup error. That is a real missing implementation,
+not an accepted level result or a memory/performance regression measurement.
+
+The installed readable census additionally identifies dynamic and attached
+body consumers that must use their actual body/hierarchy owners before
+all-level acceptance. A separately recovered level-boundary modal Clear now
+releases previous Journal/reading movies; ordinary modal Close retains its
+existing semantics. These source changes and original-code provenance are
+recorded in the parity ledger. Historical observations below describe their
+original source cohorts, not the acceptance status of this pending batch.
+
 ## Current integrated scope (2026-11-11)
 
 Main ff333c2e includes the accepted packed texture readers, common CPU/GPU
