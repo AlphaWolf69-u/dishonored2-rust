@@ -87,12 +87,18 @@ impl JointFrames {
         }
     }
 
-    pub(super) fn bound_frame(&self, placement: usize, joint: i16, phase: u8,
-        offset: [f32; 3], orientation: [f32; 4], parent_world: ReferenceFrame)
+    pub(super) fn local_frame(&self, placement: usize, joint: i16, phase: u8,
+        offset: [f32; 3], orientation: [f32; 4])
         -> Result<Option<ReferenceFrame>, String> {
         let Some(frame) = self.frame(placement, joint, phase)? else { return Ok(None); };
         let scale = self.placements.get(&placement).ok_or("joint attachment placement disappeared")?.scale;
-        let local = reference_frame::joints::bind_local_frame(frame, scale, offset, orientation);
+        Ok(Some(reference_frame::joints::bind_local_frame(frame, scale, offset, orientation)))
+    }
+
+    pub(super) fn bound_frame(&self, placement: usize, joint: i16, phase: u8,
+        offset: [f32; 3], orientation: [f32; 4], parent_world: ReferenceFrame)
+        -> Result<Option<ReferenceFrame>, String> {
+        let Some(local) = self.local_frame(placement, joint, phase, offset, orientation)? else { return Ok(None); };
         let mut world = reference_frame::compose(parent_world, local);
         world.basis = reference_frame::joints::normalize_basis(world.basis);
         Ok(Some(world))
