@@ -127,6 +127,13 @@ impl Default for ParentSpawnStage {
     }
 }
 
+/// arkParticleSystemDescStructures::arkPhysicsShapesSpawn (0x198 bytes).
+pub struct PhysicsShapesSpawn {
+    pub enabled: bool,
+    pub normal_offset: ScalarParameter,
+    pub normal_to_velocity: ScalarParameter,
+}
+
 pub struct ParticleStageAsset {
     pub name: String,
     pub enabled: bool,
@@ -148,6 +155,10 @@ pub struct ParticleStageAsset {
     pub use_event_location: bool,
     pub event_velocity: ScalarParameter,
     pub event_normal: ScalarParameter,
+    /// m_physicsShapesSpawn (spawn_t +0x598, arkPhysicsShapesSpawn
+    /// 141576f00): m_enabled +0, m_normalOffset +8, m_normalToVelocity
+    /// +0xd0 (default 141d94b90).
+    pub physics_shapes_spawn: PhysicsShapesSpawn,
     pub location: SpawnVector,
     pub velocity: SpawnVector,
     pub spawn_mesh: crate::gameplay::particles::mesh::SpawnMesh,
@@ -203,6 +214,11 @@ impl Default for ParticleStageAsset {
             use_event_location: true,
             event_velocity: ScalarParameter::constant(0.),
             event_normal: ScalarParameter::constant(0.),
+            physics_shapes_spawn: PhysicsShapesSpawn {
+                enabled: false,
+                normal_offset: ScalarParameter::constant(0.),
+                normal_to_velocity: ScalarParameter::constant(0.),
+            },
             location: SpawnVector::new([0.; 3]),
             velocity: SpawnVector::new([0., 0., 1.]),
             spawn_mesh: Default::default(),
@@ -337,6 +353,17 @@ impl ParticleStageAsset {
                 }
                 "m_eventNormal" => {
                     particles::scalar_parameter(&mut self.event_normal, scope(value)?)?
+                }
+                "m_physicsShapesSpawn" => {
+                    let spawn = &mut self.physics_shapes_spawn;
+                    for (name, value) in scope(value)? {
+                        match name.as_str() {
+                            "m_enabled" => spawn.enabled = boolean(value)?,
+                            "m_normalOffset" => particles::scalar_parameter(&mut spawn.normal_offset, scope(value)?)?,
+                            "m_normalToVelocity" => particles::scalar_parameter(&mut spawn.normal_to_velocity, scope(value)?)?,
+                            _ => return Err(format!("unknown physics shapes spawn field {name}")),
+                        }
+                    }
                 }
                 "m_spawnStage" => {
                     for (name, value) in scope(value)? {

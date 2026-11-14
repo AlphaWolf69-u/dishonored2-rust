@@ -331,9 +331,6 @@ pub fn havok_stage(fields: &Fields) -> Result<ParticleHavokStageAsset, String> {
                             }
                             spawn_orientation(&mut velocity.value, &orientation)?;
                         }
-                        "m_physicsShapesSpawn" => {
-                            return Err("unresolved particle spawn producer m_physicsShapesSpawn".into())
-                        }
                         _ => ordinary.push((name.clone(), value.clone())),
                     }
                 }
