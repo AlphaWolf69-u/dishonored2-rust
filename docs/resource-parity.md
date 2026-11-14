@@ -4736,6 +4736,34 @@ Source/whitespace review only; no builds, tests or runtime exercise performed.
 
 ### Host archive-session teardown
 
+Rigid-body Start publication recovery prediction (2026-11-14). Original
+`140c85860` updates the existing body/motion transform and ordered observers;
+`140c8e930` publishes that same body into the broadphase and activates actual
+overlaps/constraint neighbors. Restore the checkpoint's retained transform and
+single-body static/dynamic publication cursors in the canonical WorldStorage.
+Expect no additional source reads, body/motion identities, duplicate world, or
+per-frame work before a real Start/transform request. Scratch overlap storage
+grows only for the first/largest request and retires with the world; completed
+callbacks are not replayed after a host error. Source payload and normal
+publication order must remain unchanged. No speedup or runtime acceptance is
+claimed; compilation remains reserved for the coherent root integration batch.
+
+Recovered implementation: `set_body_transform`, `add_static_body_resumable` and
+`add_dynamic_body_resumable` retain their request identity, source-order phase,
+overlap traversal and activation cursor on the same WorldStorage. Attachment
+distance (`140c88440`) and constraint-neighbor (`140c932d0`) traversal now accept
+retained cursors, while existing callers retain the same one-shot entry points.
+The world fences unrelated mutation/retirement until that request finishes;
+component rollback finishes an entered publication before unpublishing it.
+The existing unsupported published-static transform branch still rejects
+before mutation because its actual overlap-activation owner is not supplied by
+this slice. Unpublished static and dynamic Start paths use actual shape bounds,
+motion, constraint and broadphase owners. Broken tree/attachment invariants are
+fatal admission errors rather than replayed structural insertions. No extra
+source conversion, source cache, query world or callback dispatcher was added.
+Source review used checkpoint `2410aafb` and the existing saved decompilation;
+no tests, build, or runtime exercise were performed for this follow-up.
+
 Canonical motion-owner recovery prediction (2026-11-14). Original world
 construction `140c8c250` owns `140ca5510`/`140ca5550` motion properties initialized
 from the authored gravity vector. GameLocal `1400932d0` creates two timespaces

@@ -9,6 +9,14 @@ fn distance(value: f32) -> u16 {
     truncate_i32(value) as u16
 }
 
+pub(crate) struct TransformDistanceCursor {
+    current: u32,
+    visited: usize,
+}
+impl TransformDistanceCursor {
+    pub(crate) fn new(first: u32) -> Self { Self { current: first, visited: 0 } }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +94,15 @@ impl BodyStorage {
         linear: [f32; 4],
         angular: [f32; 4],
         scale: [f32; 4],
+        refresh: impl FnMut(&mut Self, u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut cursor = TransformDistanceCursor::new(first);
+        self.accumulate_transform_distance_resumable(first, linear, angular, scale, &mut cursor, refresh)
+    }
+
+    pub(crate) fn accumulate_transform_distance_resumable(
+        &mut self, first: u32, linear: [f32; 4], angular: [f32; 4], scale: [f32; 4],
+        cursor: &mut TransformDistanceCursor,
         mut refresh: impl FnMut(&mut Self, u32) -> Result<(), String>,
     ) -> Result<(), String> {
         let linear = distance(multiply(linear[0], scale[0]));
@@ -94,19 +111,16 @@ impl BodyStorage {
             f32::from_bits(0x3f7f_f972),
         ))
         .clamp(0, 65535) as u16;
-        let mut current = first;
-        let mut visited = 0;
         loop {
-            if visited >= self.bodies.len() {
+            if cursor.visited >= self.bodies.len() {
                 return Err(
                     "transform-distance attachment ring does not return to its first body".into(),
                 );
             }
-            visited += 1;
-            refresh(self, current)?;
+            refresh(self, cursor.current)?;
             let body = self
                 .bodies
-                .get_mut((current & 0xffffff) as usize)
+                .get_mut((cursor.current & 0xffffff) as usize)
                 .ok_or("transform-distance body index exceeds storage")?;
             let radius = f32::from_bits(u32::from(body.packed_radius) << 16);
             let rotation = distance(multiply(multiply(radius, angular[0]), scale[0]));
@@ -116,8 +130,9 @@ impl BodyStorage {
             body.angular_tim_distance = body.angular_tim_distance.saturating_add(rotation);
             body.tim_angle = body.tim_angle.saturating_add(angle);
             body.status |= 4;
-            current = body.next_attached_body_id;
-            if current == first {
+            cursor.current = body.next_attached_body_id;
+            cursor.visited += 1;
+            if cursor.current == first {
                 return Ok(());
             }
         }

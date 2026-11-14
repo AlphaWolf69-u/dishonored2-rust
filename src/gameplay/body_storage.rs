@@ -16,6 +16,7 @@ mod activation;
 pub(crate) use activation::AttachmentCellCursor;
 #[path = "body_storage/transform_distance.rs"]
 mod transform_distance;
+pub(crate) use transform_distance::TransformDistanceCursor;
 #[cfg(test)]
 pub(crate) use activation::tests::{initialize as activation_test_state, snapshot as activation_snapshot};
 
