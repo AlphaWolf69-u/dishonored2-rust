@@ -770,6 +770,13 @@ loses w. Remaining, in order:
   (1401e5980) over the post-step live list. The inherited-velocity
   argument (+0x63c) the simulator passes is unused by the trail code
   (14020dd80, 140209de0). Census 670 -> 530.
+- Measured in the running original (2026-11-14, break after the mode-1
+  query at 0x140fcdcb1): the static hit distance is the centre-to-surface
+  distance |p - q| of the query point (collector +0x50; second best +0xb0
+  as decoded), so the port's point query is the original's.
+- Hull build ported (`havok_fx::convex_hull`): bit-exact, vertex order and
+  centroid included, against 25 hulls read from the running original's
+  descriptors (`examples/hull_oracle.rs`); the other 41 need the decimation.
 - Collision hulls (227 declarations), next: 1401df6a0 builds the hull of
   m_mesh's particle-model vertices with hkgpConvexHull (build 140b88330 ->
   140baba50 on a quantized domain 140b9c1e0; when the hull has more than 16

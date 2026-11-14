@@ -8,6 +8,8 @@
 //! Smoke, vorticity, tracers) is not linked into any installed content.
 #[path = "havok_fx/allocator.rs"]
 pub mod allocator;
+#[path = "havok_fx/convex_hull.rs"]
+pub mod convex_hull;
 #[path = "havok_fx/integrate.rs"]
 pub mod integrate;
 #[path = "havok_fx/packed.rs"]
