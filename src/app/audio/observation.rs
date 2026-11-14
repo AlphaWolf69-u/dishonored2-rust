@@ -9,6 +9,9 @@ use crate::gameplay::sound::playing::{Notification, NotificationKind};
 #[derive(Resource, Default)]
 pub(in crate::app) struct Observation {
     notifications: Arc<Mutex<Vec<Notification>>>,
+    admissions: Mutex<Vec<Admission>>,
+    ended: Mutex<std::collections::HashSet<u32>>,
+    ready: Mutex<std::collections::HashSet<u32>>,
 }
 #[derive(Default)]
 struct Consumed { samples: u64, nonzero_samples: u64, peak: f32, error: Option<String> }
@@ -153,6 +156,19 @@ pub(in crate::app) struct Callback {
     pub object: String,
     pub kind: &'static str,
 }
+#[derive(Clone, serde::Serialize)]
+pub(in crate::app) struct Admission {
+    pub message_id: Option<usize>, pub playing_id: u32, pub event: u32,
+    pub object: String, pub cookies_after: u8, pub error: Option<String>,
+}
+impl Observation {
+    pub(super) fn record_admission(&self, message_id: Option<usize>, playing_id: u32, event: u32,
+        object: Emitter, cookies_after: u8, error: Option<&String>) {
+        self.admissions.lock().unwrap_or_else(|error| error.into_inner()).push(Admission {
+            message_id, playing_id, event, object: format!("{object:?}"), cookies_after, error: error.cloned(),
+        });
+    }
+}
 #[derive(Default, serde::Serialize)]
 pub(in crate::app) struct Snapshot {
     pub output: OutputSnapshot,
@@ -164,11 +180,15 @@ pub(in crate::app) struct Snapshot {
     pub ordinary_cookies: Vec<(String, u8)>,
     pub watched_waiting: usize,
     pub watched_active: usize,
+    pub watch_waiting: Vec<(u32, String, u64)>,
+    pub watch_active: Vec<(u32, String, u32)>,
     pub fx_pending_ids: Vec<u32>,
     pub fx_ids: Vec<u32>,
     pub fx_cookies: Vec<(String, u8)>,
     pub object_retirements: Vec<(String, String)>,
     pub callbacks: Vec<Callback>,
+    pub admissions: Vec<Admission>,
+    pub source_jobs: Vec<(u32, u8, bool)>,
 }
 
 /// Snapshot never drains an owner queue or invokes a callback. Only the copy
@@ -188,6 +208,8 @@ pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {
         result.ordinary_ids = ids.into_iter().map(|id| id.value()).collect();
         result.ordinary_cookies = counts.into_iter().map(|(object, count)| (format!("{object:?}"), count)).collect();
         result.watched_waiting = completions.waiting.len(); result.watched_active = completions.active.len();
+        result.watch_waiting = completions.waiting.iter().map(|(&(event, object), &generation)| (event, format!("{object:?}"), generation)).collect();
+        result.watch_active = completions.active.iter().map(|(&(event, object), id)| (event, format!("{object:?}"), id.value())).collect();
     }
     if let Some(sounds) = world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>() {
         let sounds = sounds.lock();
@@ -199,11 +221,197 @@ pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {
     if let Some(retiring) = world.get_resource::<RetiringSounds>() {
         result.object_retirements = retiring.0.iter().map(|(object, state)| (format!("{object:?}"), match state { ObjectRetirement::Queued => "Queued", ObjectRetirement::Submitted => "Submitted", ObjectRetirement::Complete => "Complete" }.to_owned())).collect();
     }
+    if let Some(decodes) = world.get_resource::<SoundDecodeQueue>() {
+        result.source_jobs = decodes.0.iter().map(|(&id, job)| (id, job.clients, job.result.is_some())).collect();
+    }
     if let Some(observer) = world.get_resource::<Observation>() {
+        result.admissions = observer.admissions.lock().unwrap_or_else(|error| error.into_inner()).clone();
         result.callbacks = std::mem::take(&mut *observer.notifications.lock().unwrap_or_else(|error| error.into_inner())).into_iter().map(|note| Callback {
             playing_id: note.id.value(), declaration: note.event.declaration, object: format!("{:?}", note.event.object),
             kind: match note.kind { NotificationKind::SourceReady => "SourceReady", NotificationKind::End => "End", NotificationKind::EventPlaying => "EventPlaying" },
         }).collect();
+        observer.ended.lock().unwrap_or_else(|error| error.into_inner())
+            .extend(result.callbacks.iter().filter(|note| note.kind == "End").map(|note| note.playing_id));
+        observer.ready.lock().unwrap_or_else(|error| error.into_inner())
+            .extend(result.callbacks.iter().filter(|note| note.kind == "SourceReady").map(|note| note.playing_id));
     }
     result
+}
+
+// These are observation requests through the production API, not executable
+// specifications. No cache is cleared to manufacture cold IO, no IDs/cookies
+// are arranged, and only consumed native-owner End packets finish a phase.
+use crate::gameplay::effects::sound::handle::SoundHandle;
+use crate::gameplay::sound::playing::PlayingId;
+use crate::rendering::bevy_backend::world_sounds::{WorldSounds, SoundFrame};
+
+#[derive(Default)]
+pub(in crate::app) struct ScenarioOptions {
+    pub ordinary_event: Option<u32>,
+    pub fx_event_name: Option<String>,
+}
+#[derive(Debug)]
+enum Phase { ColdPost, ColdDrain, WatchOld, WatchNew, WatchDrain, Burst, BurstDrain, FxCold, FxColdDrain, FxNatural, FxReturn, Complete }
+pub(in crate::app) struct Scenario {
+    phase: Phase,
+    event: u32,
+    fx_reference: u32,
+    fx_name: String,
+    requests: Vec<usize>,
+    accepted: std::collections::HashSet<u32>,
+    fx_handle: SoundHandle<Emitter, PlayingId>,
+    fx_object: Option<Emitter>,
+    fx_id: Option<u32>,
+    frames: u64,
+    last_observation: String,
+}
+fn request(world: &mut World, event: u32) -> usize {
+    world.resource_mut::<Messages<SoundEvent>>().write(SoundEvent(Request::Post { event, emitter: Emitter::PlayerBody })).id
+}
+fn stop(world: &mut World, event: u32) {
+    world.resource_mut::<Messages<SoundEvent>>().write(SoundEvent(Request::Stop { event, emitter: Emitter::PlayerBody }));
+}
+fn watch(world: &mut World, event: u32) {
+    let mut completions = world.resource_mut::<SoundCompletions>();
+    completions.cancel(event, Emitter::PlayerBody);
+    completions.watch(event, Emitter::PlayerBody);
+}
+
+pub(in crate::app) fn begin_scenario(world: &mut World, options: ScenarioOptions) -> Result<Scenario, String> {
+    if !world.contains_resource::<Observation>() || !world.contains_resource::<Output>() {
+        return Err("audio scenario requires the live production offline output".into());
+    }
+    let registry = world.resource::<WwiseRegistry>();
+    let has_play = |id: &u32| registry.sources.get(id).is_some_and(|actions| actions.iter().any(|action| matches!(action, SourceAction::Play { .. })));
+    let event = if let Some(event) = options.ordinary_event {
+        if !has_play(&event) { return Err(format!("installed ordinary event {event:#x} has no prepared Play source")); }
+        event
+    } else if has_play(&0xc64fd6cf) { 0xc64fd6cf } else {
+        registry.sources.keys().filter(|id| has_play(id)).copied().min().ok_or("no installed prepared ordinary Play event")?
+    };
+    let sounds = world.get_resource::<WorldSounds>().ok_or("FX sound bridge is absent")?.lock();
+    if !sounds.ready { return Err("FX sound bridge is not ready".into()); }
+    let (fx_reference, fx_event) = sounds.declarations.iter().enumerate().filter_map(|(reference, event)| event.as_ref().map(|event| (reference, event)))
+        .filter(|(_, event)| options.fx_event_name.as_ref().is_none_or(|name| *name == event.name)
+            && !event.declaration.persistent_loop() && event.declaration.duration[1] > 0.0 && has_play(&event.declaration.id))
+        .min_by(|(_, a), (_, b)| a.name.cmp(&b.name)).ok_or("no installed finite FX Play declaration available for real EOF observation")?;
+    let fx_reference = u32::try_from(fx_reference).map_err(|error| error.to_string())?;
+    let fx_name = fx_event.name.clone();
+    let baseline = world.resource::<SoundCompletions>().playing.object_count(Emitter::PlayerBody);
+    eprintln!("AUDIO_ACTIVE_LIFETIME begin ordinary={event:#x} fx={fx_name} fx_reference={fx_reference} baseline_player_cookies={baseline} ordinary_prepared=true cold_io_not_assumed=true");
+    drop(sounds);
+    watch(world, event);
+    let first = request(world, event);
+    Ok(Scenario { phase: Phase::ColdPost, event, fx_reference, fx_name, requests: vec![first],
+        accepted: Default::default(), fx_handle: Default::default(), fx_object: None, fx_id: None, frames: 0, last_observation: String::new() })
+}
+
+impl Scenario {
+    pub(in crate::app) fn pending_description(&self) -> String {
+        format!("audio {:?}: ordinary={:#x}, FX={}, accepted_ids={:?}", self.phase, self.event, self.fx_name, self.accepted)
+    }
+    fn ended(&self, world: &World) -> bool {
+        let observer = world.resource::<Observation>();
+        let ended = observer.ended.lock().unwrap_or_else(|error| error.into_inner());
+        self.accepted.iter().all(|id| ended.contains(id))
+    }
+    fn start_fx(&mut self, world: &mut World) -> Result<(), String> {
+        let listener = world.resource::<spatial::Scene>().listener().ok_or("audio scenario has no actual player listener")?;
+        let clock = world.get_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectFrames>()
+            .and_then(|frames| frames.clock).ok_or("audio scenario has no published FX clock")?;
+        let context = SoundFrame { axis: listener.axis, scale: clock.scale };
+        let mut sounds = world.resource::<WorldSounds>().clone();
+        if !self.fx_handle.post(&mut sounds, self.fx_reference, listener.position, &context)? {
+            return Err("actual FX sound admission rejected the observation request".into());
+        }
+        let object = self.fx_handle.object().ok_or("accepted FX request has no allocated object")?;
+        let bridge = sounds.lock();
+        let id = bridge.queued.iter().rev().find(|ticket| ticket.event().object == object).ok_or("accepted FX post has no actual queued ticket")?.id().value();
+        self.fx_object = Some(object); self.fx_id = Some(id); self.accepted.insert(id);
+        eprintln!("AUDIO_ACTIVE_LIFETIME fx_post name={} object={object:?} id={id} queued=true", self.fx_name);
+        Ok(())
+    }
+    fn return_fx(&mut self, world: &mut World) -> Result<(), String> {
+        let mut sounds = world.resource::<WorldSounds>().clone();
+        self.fx_handle.release(&mut sounds)
+    }
+    fn fx_returned(&self, world: &World) -> bool {
+        let sounds = world.resource::<WorldSounds>().lock();
+        self.fx_object.is_none_or(|object| !sounds.objects.contains_key(&object) && !sounds.playing.references_object(object))
+    }
+}
+
+/// Call once after each full Runtime::step. A watchdog belongs to the caller;
+/// elapsed duration cannot substitute for End or successful resource release.
+pub(in crate::app) fn poll_scenario(world: &mut World, scenario: &mut Scenario) -> Result<bool, String> {
+    let state = snapshot(world);
+    scenario.frames += 1;
+    for admission in state.admissions.iter().filter(|admission| admission.message_id.is_some_and(|id| scenario.requests.contains(&id))) {
+        if admission.error.is_none() { scenario.accepted.insert(admission.playing_id); }
+    }
+    // Include actual queue/decode transitions and rejection reasons, even when
+    // IO completes too quickly to observe a pending interval on this machine.
+    let signature = serde_json::to_string(&serde_json::json!({
+        "phase": format!("{:?}", scenario.phase), "pending": state.pending_ids, "ordinary": state.ordinary_ids,
+        "fx_pending": state.fx_pending_ids, "fx": state.fx_ids, "jobs": state.source_jobs,
+        "waiting": state.watch_waiting, "active": state.watch_active, "retiring": state.object_retirements,
+        "admissions": state.admissions.len(), "callbacks": state.callbacks,
+        "voices": state.output.voices, "actions": state.output.pending_actions,
+    })).map_err(|error| error.to_string())?;
+    if signature != scenario.last_observation {
+        eprintln!("AUDIO_ACTIVE_LIFETIME phase={:?} step={} state={}", scenario.phase, scenario.frames,
+            serde_json::to_string(&state).map_err(|error| error.to_string())?);
+        scenario.last_observation = signature;
+    }
+    let observed_requests = scenario.requests.iter().all(|id| state.admissions.iter().any(|admission| admission.message_id == Some(*id)));
+    match scenario.phase {
+        Phase::ColdPost if observed_requests => {
+            let pending_seen = state.pending_ids.iter().any(|id| scenario.accepted.contains(id));
+            eprintln!("AUDIO_ACTIVE_LIFETIME ordinary_stop pending_preparation_observed={pending_seen} cold_interleaving_claimed={pending_seen}");
+            stop(world, scenario.event); scenario.phase = Phase::ColdDrain;
+        },
+        Phase::ColdDrain if scenario.ended(world) => {
+            watch(world, scenario.event); scenario.requests.push(request(world, scenario.event)); scenario.phase = Phase::WatchOld;
+        },
+        Phase::WatchOld if observed_requests => {
+            // Keep the actual old voice/ticket live; cancel only its completion
+            // subscription, then re-watch and post through the same real API.
+            watch(world, scenario.event); scenario.requests.push(request(world, scenario.event)); scenario.phase = Phase::WatchNew;
+        },
+        Phase::WatchNew if observed_requests => { stop(world, scenario.event); scenario.phase = Phase::WatchDrain; },
+        Phase::WatchDrain if scenario.ended(world) => {
+            let replacement = world.resource_mut::<SoundCompletions>().take(scenario.event, Emitter::PlayerBody);
+            eprintln!("AUDIO_ACTIVE_LIFETIME replacement_completion={replacement:?}");
+            if replacement.is_none() { return Err("replacement watched post ended without completing its subscription".into()); }
+            world.resource_mut::<SoundCompletions>().cancel(scenario.event, Emitter::PlayerBody);
+            let baseline = world.resource::<SoundCompletions>().playing.object_count(Emitter::PlayerBody);
+            eprintln!("AUDIO_ACTIVE_LIFETIME burst baseline_player_cookies={baseline} attempts=17 external_native_capacity=16");
+            for _ in 0..17 { scenario.requests.push(request(world, scenario.event)); }
+            scenario.phase = Phase::Burst;
+        },
+        Phase::Burst if observed_requests => {
+            let burst_messages: std::collections::HashSet<_> = scenario.requests.iter().rev().take(17).copied().collect();
+            let attempts: Vec<_> = state.admissions.iter().filter(|admission| admission.message_id.is_some_and(|id| burst_messages.contains(&id))).collect();
+            let admitted = attempts.iter().filter(|admission| admission.error.is_none()).count();
+            let before = attempts.first().map(|admission| admission.cookies_after - u8::from(admission.error.is_none()));
+            let maximum = attempts.iter().map(|admission| admission.cookies_after).max();
+            eprintln!("AUDIO_ACTIVE_LIFETIME burst_result actual_before={before:?} admitted={admitted} rejected={} maximum_cookies={maximum:?} external_native_capacity=16", attempts.len() - admitted);
+            stop(world, scenario.event); scenario.phase = Phase::BurstDrain;
+        },
+        Phase::BurstDrain if scenario.ended(world) => { scenario.start_fx(world)?; scenario.phase = Phase::FxCold; },
+        Phase::FxCold => { scenario.return_fx(world)?; scenario.phase = Phase::FxColdDrain; },
+        Phase::FxColdDrain if scenario.ended(world) && scenario.fx_returned(world) => {
+            scenario.start_fx(world)?; scenario.phase = Phase::FxNatural;
+        },
+        Phase::FxNatural if scenario.ended(world) => {
+            let id = scenario.fx_id.ok_or("natural FX post has no actual ID")?;
+            if !world.resource::<Observation>().ready.lock().unwrap_or_else(|error| error.into_inner()).contains(&id) {
+                return Err(format!("finite FX id {id} ended without actual SourceReady; natural EOF was not exercised"));
+            }
+            scenario.return_fx(world)?; scenario.phase = Phase::FxReturn;
+        },
+        Phase::FxReturn if scenario.fx_returned(world) && scenario.ended(world) => { scenario.phase = Phase::Complete; },
+        _ => {},
+    }
+    Ok(matches!(scenario.phase, Phase::Complete))
 }

@@ -390,6 +390,7 @@ fn request_object_retirement(world: &mut World, emitter: Emitter) -> Result<(), 
 
 struct PendingSound {
     request: Request,
+    message_id: Option<usize>,
     // A retry must not release its already completed reads while another
     // source is pending; the source's own resident lookup is deliberately weak.
     media: Vec<graph::StreamHold>,
@@ -951,6 +952,7 @@ fn play_events(
     mut completions: ResMut<SoundCompletions>,
     mut decodes: ResMut<SoundDecodeQueue>,
     mut retiring: ResMut<RetiringSounds>,
+    observer: Option<Res<observation::Observation>>,
 ) {
     completions.pump();
     for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
@@ -995,7 +997,7 @@ fn play_events(
                         Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
                         Err(error) => {
                             warn!("Sound object retirement failed: {error}");
-                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: None, ticket: None });
+                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: None, ticket: None, message_id: None });
                         },
                     }
                 },
@@ -1006,13 +1008,13 @@ fn play_events(
     // Posts retain FIFO order while preparation waits. Stop/Retire bypass a
     // cold post to cancel its real preparation owner, as they do queued actions.
     let requests: Vec<PendingSound> = std::mem::take(&mut pending.0).into_iter()
-        .chain(event_cursor.0.read(&events).map(|message| {
+        .chain(event_cursor.0.read_with_id(&events).map(|(message, message_id)| {
             let watched = match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
                     | Request::PostAt { event, emitter, .. } => completions.waiting.get(&(event, emitter)).copied(),
                 Request::Stop { .. } | Request::Retire { .. } => None,
             };
-            PendingSound { request: message.0, media: Vec::new(), watched, ticket: None }
+            PendingSound { request: message.0, message_id: Some(message_id.id), media: Vec::new(), watched, ticket: None }
         })).collect();
     let mut waiting = Vec::new();
     for mut queued in requests {
@@ -1059,9 +1061,14 @@ fn play_events(
         if queued.watched.is_some() && completions.waiting.get(&(event, emitter)).copied() != queued.watched { continue; }
         if queued.ticket.is_none() {
             let playing_id = engine.playing_id();
-            match completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
+            let admitted = completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
                 declaration: event, object: emitter, callbacks: if queued.watched.is_some() { 8 } else { 0 },
-            }) {
+            });
+            if let Some(observer) = &observer {
+                observer.record_admission(queued.message_id, playing_id, event, emitter,
+                    completions.playing.object_count(emitter), admitted.as_ref().err());
+            }
+            match admitted {
                 Ok(ticket) => queued.ticket = Some(ticket),
                 Err(error) => {
                     warn!("Wwise event registration failed: {error}");
@@ -1114,7 +1121,7 @@ fn play_events(
             }
             if loading {
                 waiting.push(emitter);
-                pending.0.push(PendingSound { request, media: holds, watched: queued.watched, ticket: queued.ticket });
+                pending.0.push(PendingSound { request, message_id: queued.message_id, media: holds, watched: queued.watched, ticket: queued.ticket });
                 continue;
             }
             let tracked = queued.ticket.take();

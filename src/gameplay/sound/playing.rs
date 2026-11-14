@@ -98,9 +98,8 @@ impl PlayingEvents {
         self.register_with_id(id, event)
     }
 
-    pub(crate) fn can_register_object(&self, object: Emitter) -> bool {
-        self.object_counts.get(&object).copied().unwrap_or(0) < 16
-    }
+    pub(crate) fn object_count(&self, object: Emitter) -> u8 { self.object_counts.get(&object).copied().unwrap_or(0) }
+    pub(crate) fn can_register_object(&self, object: Emitter) -> bool { self.object_count(object) < 16 }
 
     /// c4550 stores the actual accepted PostEvent return ID in its cookie.
     pub(crate) fn register_with_id(&mut self, id: u32, event: Event) -> Result<Ticket, String> {
