@@ -92,12 +92,11 @@ impl WorldStorage {
     pub(crate) fn destroy_bodies<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
         &mut self, geometry: &mut G, events: &mut E, ids: &[u32], mode: i32,
     ) -> Result<(), String> {
-<<<<<<< HEAD
         // A failed Stop must finish its own publication request before
         // deinitialization can establish a different destruction owner.
         if self.destruction.is_none() && !self.removal_scratch.is_idle() {
             return Err("body unpublication must finish before destruction".into());
-=======
+        }
         if self.body_mode_progress.is_some() || !self.activation_scratch.is_idle() {
             return Err("body mode or activation update must finish before destruction".into());
         }
