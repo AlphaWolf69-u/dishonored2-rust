@@ -248,6 +248,7 @@ fn player_bytes(scene: &MidnightScene) -> usize {
 
 /// Observe the actual declaration owner against an installed source, without
 /// advancing gameplay, launching a window, or loading rig-bound resources.
+#[cfg(feature = "game")]
 pub(crate) fn observe_scopes(base: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let catalog = Catalog::open(base)?;
     let path = path(name);
@@ -296,6 +297,7 @@ pub(crate) fn observe_scopes(base: &std::path::Path, name: &str) -> Result<(), B
 
 /// Withdraw immediately after the production archive reader credits its real
 /// source read, then retry through the same owner. No synthetic resource data.
+#[cfg(feature = "game")]
 pub(crate) fn observe_read_cancellation(base: &std::path::Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let catalog = Catalog::open(base)?;
     let path = path(name);
