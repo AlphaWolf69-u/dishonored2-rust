@@ -696,6 +696,9 @@ pub(super) fn skin_streams(
 
 #[derive(Clone)]
 pub(super) struct CachedMaterial {
+    pub(super) physics_material: Option<std::sync::Arc<str>>,
+    pub(super) physics_material_source_present: bool,
+    pub(super) physics_material_preprocessing_required: bool,
     pub(super) handle: MaterialHandle,
     pub(super) diffuse_image_slot: Option<usize>,
     pub(super) images: Vec<(usize, surface_gpu::ImageRole)>,

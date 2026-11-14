@@ -90,7 +90,7 @@ impl LevelPointQueries {
     }
 
     fn shape(&self, index: usize) -> Result<WorldQueryShape<'_>, String> {
-        let shape = self.geometry.shapes.get(index).ok_or("published query body has no retained geometry")?;
+        let shape = self.geometry.shapes.get(index).and_then(Option::as_ref).ok_or("published query body has no retained geometry")?;
         Ok(WorldQueryShape { shapes: &shape.query_shapes, materials: None })
     }
 

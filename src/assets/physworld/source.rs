@@ -2,7 +2,7 @@
 //! 140779530 -> 14008c840 acquires physhape identity through 1400607f0.
 use super::{parse_hkx, PhysWorld, TagField, TagItem, TagType};
 use crate::assets::archive::Catalog;
-use std::{borrow::Cow, collections::HashMap, sync::{Arc, Mutex, OnceLock}};
+use std::{borrow::Cow, collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak}};
 
 // Host: map payloads retain the accepted temporary area sharing policy rather
 // than being pinned until purge. Read credits have their own owner, independent
@@ -76,13 +76,114 @@ impl ShapeSource {
     fn require_hkx(&self) -> Result<(), ShapeSourceError> {
         if self.alias.is_some() {
             // 14008c9a0 resolves an alias through 1400607f0 and constructs a
-            // Havok scaled wrapper. Model triangle extraction already handles
-            // this scale; compound/query users have no such wrapper port yet.
-            // Preserve their existing parse/admission failure, never expose the
-            // alias descriptor's unused schema as a successfully loaded shape.
-            return Err(ShapeSourceError::Parse("compact HKX alias requires model geometry acquisition".into()));
+            // Havok scaled wrapper. Standalone component acquisition retains
+            // that chain; legacy direct-root callers request neither wrapper
+            // identity nor bounds. Preserve their explicit admission failure
+            // instead of exposing the compact descriptor's unused schema.
+            return Err(ShapeSourceError::Parse("compact HKX alias requires standalone shape acquisition".into()));
         }
         Ok(())
+    }
+}
+
+/// A standalone physhape and its authored wrapper chain (14008c9a0).
+/// Each wrapper retains its own resource lookup identity, outermost first;
+/// the component owns this lease until its body is deinitialized.
+pub(crate) struct StandaloneShape {
+    pub catalog_identity: u64,
+    /// Overlay-backed paths must not be deduplicated by name alone.
+    pub shareable: bool,
+    pub source: Arc<ShapeSource>,
+    pub source_path: String,
+    /// The innermost resource's first four serialized bytes.
+    pub source_header: u32,
+    pub wrappers: Vec<Arc<ShapeAlias>>,
+}
+
+pub(crate) struct ShapeAlias {
+    /// Normalized catalog path for the resource which owns this wrapper.
+    pub path: String,
+    pub scale: f32,
+    pub header: u32,
+    pub target: String,
+    // Retains the exact child generation represented by this resource.
+    _child: AliasChild,
+    // The compact source owns its own read credit through final wrapper retirement.
+    _source: Arc<ShapeSource>,
+}
+
+enum AliasChild { Source(Arc<ShapeSource>), Alias(Arc<ShapeAlias>) }
+impl AliasChild {
+    fn identity(&self) -> usize {
+        match self { Self::Source(source) => Arc::as_ptr(source) as usize,
+            Self::Alias(alias) => Arc::as_ptr(alias) as usize }
+    }
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct AliasKey {
+    catalog: u64,
+    path: String,
+    header: u32,
+    scale_bits: u32,
+    target: String,
+    child_identity: usize,
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct StandaloneSourceKey { catalog: u64, path: String }
+
+impl ShapeAlias {
+    /// The stable host resource record is the identity carried by the alias
+    /// compound's userData; the Arc lease owns it through body retirement.
+    pub(crate) fn identity(resource: &Arc<Self>) -> u64 { Arc::as_ptr(resource) as usize as u64 }
+}
+
+impl StandaloneShape {
+    /// This is the innermost shape, not the full resource when `wrappers` is
+    /// nonempty. The component must retain and apply each compound wrapper.
+    pub(crate) fn base_query_shapes(&self) -> Result<super::query_geometry::QueryShapes, String> {
+        self.source.query_shapes(1)
+    }
+
+    /// Decode the acquired source and retain its actual alias-wrapper chain.
+    pub(crate) fn query_shapes(&self) -> Result<super::query_geometry::QueryShapes, String> {
+        use super::query_geometry::alias::AliasInstance;
+        let mut shapes = self.base_query_shapes()?;
+        shapes.set_root_resource_identity(Arc::as_ptr(&self.source) as usize as u64)?;
+        let wrappers: Vec<_> = self.wrappers.iter().map(|resource| AliasInstance {
+            scale: resource.scale, resource_identity: ShapeAlias::identity(resource),
+        }).collect();
+        shapes.wrap_aliases(&wrappers)?;
+        Ok(shapes)
+    }
+
+    /// Derive the legacy movement surface from this same acquired source.
+    /// Alias scales are applied from innermost to outermost, as in 14008c9a0;
+    /// the resulting triangles are not the owner of the original shape.
+    pub(crate) fn movement_triangles(&self) -> Result<Vec<[[f32; 3]; 3]>, String> {
+        let geometry = self.source.physics.standalone_shapes(&self.source.bytes)?;
+        if !geometry.compressed_decode_failures.is_empty() || !geometry.unknown_shapes.is_empty() {
+            return Err(format!("incomplete HKX geometry: {:?}, {:?}",
+                geometry.compressed_decode_failures, geometry.unknown_shapes));
+        }
+        let mut triangles: Vec<_> = geometry.triangles.into_iter().map(|triangle| triangle.vertices).collect();
+        for wrapper in self.wrappers.iter().rev() {
+            for triangle in &mut triangles {
+                for vertex in triangle {
+                    for coordinate in vertex { *coordinate *= wrapper.scale; }
+                }
+            }
+        }
+        Ok(triangles)
+    }
+}
+
+impl ShapeSource {
+    pub(crate) fn query_shapes(self: &Arc<Self>, root: usize)
+        -> Result<super::query_geometry::QueryShapes, String> {
+        self.require_hkx().map_err(ShapeSourceError::message)?;
+        self.physics.query_shapes(&self.bytes, root)
     }
 }
 
@@ -112,7 +213,19 @@ fn read_source(catalog: &Catalog, path: &str, counts: &mut Counts)
     let history = owner(catalog).history.acquire(path);
     let Some(bytes) = catalog.read(path).map_err(|error| ShapeSourceError::Read(error.to_string()))? else { return Ok(None); };
     counts.bytes += bytes.len();
-    let alias = super::standalone_hkx_alias(&bytes);
+    // 14008c9a0 reads the signed material count independently of the alias
+    // byte. A compact resource may therefore have a nonzero four-byte header;
+    // the model-triangle reader's narrower recognition is not this format.
+    let alias = if bytes.get(4).is_some_and(|flag| *flag != 0) {
+        if bytes.len() < 13 { return Err(ShapeSourceError::Parse("physics shape alias is truncated".into())); }
+        let scale = f32::from_le_bytes(bytes[5..9].try_into().unwrap());
+        if !scale.is_finite() { return Err(ShapeSourceError::Parse("physics shape alias scale is non-finite".into())); }
+        let length = u32::from_le_bytes(bytes[9..13].try_into().unwrap()) as usize;
+        let end = 13usize.checked_add(length).ok_or_else(|| ShapeSourceError::Parse("physics shape alias name length overflow".into()))?;
+        let name = bytes.get(13..end).ok_or_else(|| ShapeSourceError::Parse("physics shape alias name is truncated".into()))?;
+        let name = std::str::from_utf8(name).map_err(|error| ShapeSourceError::Parse(format!("physics shape alias name: {error}")))?;
+        Some((super::physics_shape_asset_path(name), scale))
+    } else { None };
     let physics = if alias.is_some() { empty_physics() } else { parse_hkx(&bytes).map_err(ShapeSourceError::Parse)? };
     Ok(Some(ShapeSource { bytes, physics, alias, session: false, _history: Some(history) }))
 }
@@ -227,6 +340,8 @@ pub(crate) struct ShapeSources {
     accepting: bool,
     trace: bool,
     sources: HashMap<String, Arc<ShapeSource>>,
+    standalone_sources: HashMap<StandaloneSourceKey, Vec<Weak<ShapeSource>>>,
+    alias_resources: HashMap<AliasKey, Weak<ShapeAlias>>,
     counts: [Counts; 4],
     source_capacity: usize,
     schema_capacity: usize,
@@ -251,11 +366,78 @@ impl ShapeSources {
         let trace = std::env::var("DH2_DEBUG_TRIGGER_SOURCES").as_deref() == Ok("1");
         Self {
             history: ShapeHistoryLease::acquire(&owner(catalog).history), enabled, accepting: enabled, trace,
-            sources: HashMap::new(), counts: Default::default(), source_capacity: 0, schema_capacity: 0, key_capacity: 0,
+            sources: HashMap::new(), standalone_sources: HashMap::new(), alias_resources: HashMap::new(), counts: Default::default(), source_capacity: 0, schema_capacity: 0, key_capacity: 0,
         }
     }
 
     pub(crate) fn history_lease(&self) -> Arc<ShapeHistoryLease> { self.history.clone() }
+
+
+    /// 14008c9a0 acquires one typed source generation, then wraps that same
+    /// resource rather than flattening its authored compound into triangles.
+    pub(crate) fn acquire_standalone(&mut self, catalog: &Catalog, path: &str, role: ShapeUse)
+        -> Result<Option<StandaloneShape>, String> {
+        let mut path = path.to_owned();
+        let mut visited = std::collections::HashSet::new();
+        let mut wrappers = Vec::new();
+        let mut inherited_session = false;
+        loop {
+            let key = source_key(&path).into_owned();
+            if !visited.insert(key.clone()) { return Err(format!("physics shape alias cycle at {path}")); }
+            self.counts[role as usize].requests += 1;
+            let identity = StandaloneSourceKey { catalog: catalog.identity(), path: key.clone() };
+            let retained = (!catalog.has_overlays()).then(|| {
+                self.sources.get(&key).cloned().or_else(|| self.standalone_sources.get(&identity)
+                    .and_then(|values| values.iter().find_map(Weak::upgrade)))
+            }).flatten();
+            let source = match retained {
+                Some(source) => { self.counts[role as usize].hits += 1; source },
+                None => {
+                    let Some(source) = acquire_source(catalog, &key, inherited_session, &mut self.counts[role as usize])
+                        .map_err(ShapeSourceError::message)? else { return Ok(None); };
+                    let source = source.into_shared();
+                    if !catalog.has_overlays() {
+                        let values = self.standalone_sources.entry(identity).or_default();
+                        values.retain(|value| value.strong_count() != 0);
+                        values.push(Arc::downgrade(&source));
+                    }
+                    source
+                },
+            };
+            if source.bytes.len() < 5 { return Err(format!("physics shape header is truncated: {key}")); }
+            let header = u32::from_le_bytes(source.bytes[..4].try_into().unwrap());
+            log_source(self.trace, role, &key, &source, false);
+            inherited_session |= source.session;
+            if let Some((target, scale)) = &source.alias {
+                if !scale.is_finite() { return Err(format!("physics shape alias scale is non-finite: {key}")); }
+                let target = target.clone();
+                wrappers.push((key, *scale, header, target.clone(), source));
+                path = target;
+                continue;
+            }
+            let root = source.physics.items.get(1).ok_or("standalone HKX has no root item")?;
+            let kind = source.physics.types.get(root.type_index).ok_or("standalone HKX root type is absent")?;
+            if !kind.name.ends_with("Shape") { return Err(format!("standalone HKX root is {}, not a shape", kind.name)); }
+            let mut child = AliasChild::Source(source.clone());
+            let mut leases = Vec::new();
+            leases.try_reserve_exact(wrappers.len()).map_err(|error| format!("physics alias leases: {error}"))?;
+            for (path, scale, header, target, alias_source) in wrappers.into_iter().rev() {
+                let key = AliasKey { catalog: catalog.identity(), path: path.clone(), header,
+                    scale_bits: scale.to_bits(), target: target.clone(), child_identity: child.identity() };
+                let lease = self.alias_resources.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
+                    let lease = Arc::new(ShapeAlias { path, scale, header, target, _child: child,
+                        _source: alias_source });
+                    self.alias_resources.insert(key, Arc::downgrade(&lease));
+                    lease
+                });
+                child = AliasChild::Alias(lease.clone());
+                leases.push(lease);
+            }
+            leases.reverse();
+            return Ok(Some(StandaloneShape { catalog_identity: catalog.identity(), shareable: !catalog.has_overlays(),
+                source, source_path: key, source_header: header, wrappers: leases }));
+        }
+    }
 
     pub(crate) fn finish_areas(&mut self) { self.accepting = false; }
 

@@ -8056,3 +8056,33 @@ production clear leaves all sole owners present; repeated completed clear is
 idempotent. This is lifecycle correctness, not a CPU-performance claim.
 Readable Pickable component recovery (2026-11-14): supported READ_NOTE declarations now retain a shared typed PickableDefinition, the original Interactable flags/UID, complete scheduling, and begin-pickup SoundEvent lease through the existing Catalog sound-event owner. Layer-prepared real readables acquire their inventory item through the same PickableSourceLease on the preparation worker, then enter the installed arkCpntPickable_Simple pool and existing ordered registry. Generic declaration trees remain preparation temporaries. Async read results retain EntityId plus ComponentHandle/generation and recheck the spawned/started owner before requesting player state or admitting inventory. The same deinitialize path drops item/reference/loot leases before unlinking and typed slot reuse. Prediction: no duplicate immutable item or sound-event decoder; one typed component per supported live readable; no frame-time or resident saving claimed. This completes read ownership/cancellation, not yet the portable rigid/hide/event callbacks, which depend on the separate canonical rigid resource and disabled-body creation slices. Source review only, no tests/build/run.
 Empty Loot factory recovery (2026-11-14): authored READ_NOTE entities now resolve actual cpntLoot declarations and share typed immutable tag/scheduling data by declaration identity. The real arkCpntLoot pool constructs +38=true, admits only the source's empty-list/null-map-owner branch (743af0/744b30/744f90), and runs common Stop then744ef0's zero-child deinitialize before releasing its typed slot. Nonempty authored lists remain an explicit error requiring child-spawn/attachment ownership, not a fabricated empty container. Temporary resolved Value trees drop after projection. Prediction: no child entity or extra body allocations for the admitted empty branch; two shared tag strings per declaration plus one common owner per actual Loot. No performance claim or tests/build/runtime exercise.
+
+
+### Rigid-body source leases and retireable geometry (2026-11-14)
+
+Prediction: admitted rigid components retain their actual primary/extra-HD
+shape, wrapper identities and resolved material table through body and callback
+retirement. The final lease releases the geometry slot without changing other
+body indices. Rejected/failed admissions release their unpublished resources.
+No steady-state decoding, additional GPU pass or CPU/FPS gain is predicted.
+
+Original808ea0 acquires primary through08c840/0607f0, optionally acquires
+extra-HD, resolves exactly the shape header's material count through807c80,
+then builds its ordered two-child compound.08c9a0 creates one scaled compound
+per compact alias;809bc0 unregisters listeners before destroying the body.
+Saved decomp: chunk_000024.c and chunk_000339.c. The current physics source
+owner supplies these direct installed HKX acquisitions and per-source history
+credits; this recovery preserves its demand-loaded bootstrap/map policy.
+
+Ported: rigid component resource/state owner, reflected rigid declaration
+projection, scaled alias and two-child query compound construction, shared
+material physics references, and stable retireable TriggerAssets slots.
+Host: Arc source/wrapper leases and Option/free-list slots replace native
+pointer ownership. Immutable trigger sources still retire after prepared query
+geometry/mass; admitted rigid sources retain their required identity/data until
+their final body lease ends. Main's probe uploads and renderer remain intact.
+Supported query roots remain Compound/Polytope; this slice does not import the
+checkpoint's unrelated compressed-mesh, deferred-convex or runtime-hull query
+algorithms. Unknown roots retain explicit admission errors. Source recovery
+awaits the coordinated complete-feature compilation and actual app factory
+integration; no tests, visual observations or measured savings are claimed.

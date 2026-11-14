@@ -38,9 +38,64 @@ pub(in crate::app) struct MaterialCache {
     source_crc: Option<flate2::Crc>,
     admission_crc: Option<flate2::Crc>,
     resolved_crc: Option<flate2::Crc>,
+    body_physics: HashMap<String, Option<std::sync::Arc<str>>>,
 }
 
 impl MaterialCache {
+    /// Borrow the physics declaration captured by the actual render-material
+    /// owner. A missing cache entry or rejected render material is an error;
+    /// only an admitted material with no authored reference yields `None`.
+    pub(in crate::app) fn physics_material(&self, path: &str) -> Result<Option<&str>, String> {
+        self.trace_dependency(path, MaterialGeometry::Model);
+        let entries = self.entries.get(path)
+            .ok_or_else(|| format!("render material was not resolved: {path}"))?;
+        // Route compatibility affects the GPU material, not the declaration
+        // identity. A world-first material supplies the same authored value.
+        let cached = entries.iter().rev().filter_map(Option::as_ref)
+            .find_map(Option::as_ref)
+            .ok_or_else(|| format!("render material was not admitted: {path}"))?;
+        if !cached.physics_material_source_present {
+            return Err(format!("render material declaration is missing: {path}"));
+        }
+        if cached.physics_material_preprocessing_required {
+            return Err(format!("render material physics reference requires unsupported lexer processing or scope: {path}"));
+        }
+        Ok(cached.physics_material.as_deref())
+    }
+
+    /// 140807c80 reads the material's physics declaration independently of
+    /// whether this renderer emitted a surface. Reuse the existing admitted
+    /// material when present; otherwise resolve its declaration through the
+    /// same catalog and material owner. The literal NULL fallback is not yet
+    /// established and must remain explicit.
+    pub(in crate::app) fn body_physics_material(&mut self, catalog: &crate::archive::Catalog,
+        path: &str) -> Result<Option<std::sync::Arc<str>>, String> {
+        if let Ok(value) = self.physics_material(path) {
+            return Ok(value.map(std::sync::Arc::from));
+        }
+        if crate::rendering::material::is_null_material(path) {
+            return Err("native default material for NULL model surface is not resolved".into());
+        }
+        if !catalog.has_overlays() {
+            if let Some(value) = self.body_physics.get(path) { return Ok(value.clone()); }
+        }
+        let resource = format!("generated/decls/material/{path}.decl");
+        let bytes = catalog.read(&resource).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("render material declaration is missing: {path}"))?;
+        let surface = crate::rendering::material_surface::Surface::parse(&bytes);
+        if surface.physics_material_preprocessing_required {
+            return Err(format!("render material physics reference requires unsupported lexer processing or scope: {path}"));
+        }
+        let value = surface.physics_material.as_deref().map(std::sync::Arc::from);
+        if !catalog.has_overlays() { self.body_physics.insert(path.to_owned(), value.clone()); }
+        Ok(value)
+    }
+
+    pub(in crate::app) fn finish_body_physics_preparation(&mut self) {
+        self.body_physics.clear();
+        self.body_physics.shrink_to_fit();
+    }
+
     // Transient handoff only: 1400607f0 reuses an acquired material identity.
     // Loose overlays keep independent reads because their contents can change.
     pub(in crate::app) fn stage_source(&mut self, path: &str, bytes: Vec<u8>, enabled: bool) {
@@ -211,6 +266,9 @@ mod tests {
 
     fn material(shared: bool, handle: MaterialHandle) -> CachedMaterial {
         CachedMaterial {
+            physics_material: None,
+            physics_material_source_present: true,
+            physics_material_preprocessing_required: false,
             handle,
             diffuse_image_slot: None,
             images: Vec::new(),

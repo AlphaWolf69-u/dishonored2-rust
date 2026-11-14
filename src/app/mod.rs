@@ -193,3 +193,5 @@ pub fn main() {
 mod tests;
 
 mod projected_decals;
+
+mod rigid_body;

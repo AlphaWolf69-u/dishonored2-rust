@@ -2,6 +2,7 @@
 //! Decoding is separate from body admission, transforms and hit collection.
 use super::{compound::CompoundShape, polytope::ConvexPolytope, shape::ShapeHeader, PhysWorld};
 use std::collections::BTreeMap;
+pub(crate) mod alias;
 
 #[derive(Debug)]
 pub enum QueryGeometry {
@@ -22,6 +23,11 @@ pub struct QueryShapes {
 }
 
 impl QueryShapes {
+    pub(crate) fn set_root_resource_identity(&mut self, identity: u64) -> Result<(), String> {
+        self.shapes.get_mut(&self.root).ok_or("root query shape is missing")?.header.user_data = identity;
+        Ok(())
+    }
+
     pub fn root(&self) -> usize {
         self.root
     }

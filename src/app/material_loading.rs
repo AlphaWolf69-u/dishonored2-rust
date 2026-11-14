@@ -694,6 +694,7 @@ impl MaterialResolver<'_> {
                 .ok()
                 .flatten()
         }));
+        let physics_material_source_present = bytes.is_some();
         let bytes = bytes.as_deref().unwrap_or(&[]);
         self.cache.record_source(path, bytes, None);
         if material::is_screen_gate_impostor(path, bytes) {
@@ -1527,6 +1528,9 @@ impl MaterialResolver<'_> {
         });
         self.shadow_materials.0.insert(handle.clone(), shadow);
         let cached = CachedMaterial {
+            physics_material: surface.physics_material.as_deref().map(Into::into),
+            physics_material_source_present,
+            physics_material_preprocessing_required: surface.physics_material_preprocessing_required,
             handle,
             diffuse_image_slot,
             images,

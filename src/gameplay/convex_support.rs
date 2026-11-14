@@ -15,6 +15,7 @@ pub mod penetration;
 pub mod point_distance;
 #[path = "convex_support/scaling.rs"]
 pub mod scaling;
+pub(crate) mod scaled_bounds;
 #[path = "convex_support/seed.rs"]
 pub mod seed;
 #[path = "convex_support/solver.rs"]
