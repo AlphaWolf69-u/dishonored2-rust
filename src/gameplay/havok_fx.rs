@@ -41,8 +41,12 @@ pub struct Pipeline {
     pub domain: [[f32; 4]; 2],
     /// +0x90: an optional plane the bodies are locked to (zero: none).
     pub plane: [f32; 4],
-    /// +0x30/+0x34: the constructor's body radius.
+    /// +0x34: the outer body radius (the constructor's radius; a convex
+    /// solver's hull outer radius, 140fbdc80).
     pub radius: f32,
+    /// +0x30: the inner body radius (the constructor's radius; a convex
+    /// solver's inscribed hull radius).
+    pub inner_radius: f32,
     /// +0x58: bodies allocated since the owner last took them.
     pub allocated_since: Vec<i32>,
     /// +0xd8: bodies queued for release at the next step (140ff2550).
@@ -64,6 +68,7 @@ impl Pipeline {
             domain: [[-extent; 4], [extent; 4]],
             plane: [0.; 4],
             radius,
+            inner_radius: radius,
             allocated_since: Vec::new(),
             trash: Vec::new(),
             steps: 0,

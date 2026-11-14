@@ -28,6 +28,41 @@ pub struct ConvexShape {
     pub outer: f32,
 }
 
+impl ConvexShape {
+    /// 140fbdea0 without m_boundingBox: at most 16 vertices of the stage's
+    /// collision hull, re-hulled; recentred on that hull's centroid (w 0);
+    /// the inscribed radius max(1e-5, the centroid's least face distance)
+    /// and the outer radius max(inner, the farthest vertex).
+    pub fn from_hull(vertices: &[[f32; 4]]) -> Result<Self, String> {
+        let vertices = &vertices[..vertices.len().min(16)];
+        if vertices.is_empty() {
+            return Ok(Self { vertices: Vec::new(), inner: 0., outer: 0. });
+        }
+        // The stage only admits three-dimensional hulls (1401df6a0), so the
+        // re-hull is three-dimensional too.
+        let hull = super::convex_hull::Hull::build(vertices)?;
+        let c = hull.centroid()?;
+        let vertices: Vec<[f32; 4]> = vertices.iter().map(|v| [subtract(v[0], c[0]), subtract(v[1], c[1]), subtract(v[2], c[2]), 0.]).collect();
+        let mut least = f32::from_bits(0x7f7f_ffee);
+        for face in &hull.faces {
+            let side = add(add(face[3], multiply(face[1], c[1])), add(multiply(face[2], c[2]), multiply(face[0], c[0])));
+            least = minps(least, subtract(0., side));
+        }
+        let mut farthest = 0f32;
+        for v in &vertices {
+            let squared = sum3(lanes(|l| multiply(v[l], v[l])));
+            let length = if squared <= 0. { 0. } else { squared.sqrt() };
+            if farthest <= length {
+                farthest = length;
+            }
+        }
+        let floor = f32::from_bits(0x3727_c5ac);
+        let inner = if floor <= least { least } else { floor };
+        let outer = if inner <= farthest { farthest } else { inner };
+        Ok(Self { vertices, inner, outer })
+    }
+}
+
 pub struct SolveConvexContacts {
     /// +0x28..+0x38, written each post-step by 1401e1d10.
     pub friction: f32,
