@@ -8244,3 +8244,28 @@ Readable item generation handoff: UI requests now borrow the admitted Pickable c
   body's callback error, earlier already-transitioned bodies are skipped before
   the retained body's listener cursor resumes. A new transition or direction
   cannot consume that suspended signal; deactivation preparation remains once.
+Faction scoped-lifetime correction: Catalog now owns the canonical registry
+via OnceLock; the temporary weak global lookup/extra launch guards are removed.
+Class entries keep Weak declarations. Existing resource_registry::Registry
+supplies header registration, inherited producer scope/bootstrap promotion and
+map/persistent marker purge (0607f0/0661e0/060b60/060180); selected manifest
+headers and Catalog release paths invoke these same owners. A live matrix pins
+its row namespace. After its consumers retire, dead class entries use0610d0's
+swap-removal rule; weak source/atomic-name metadata cannot pin parsed payloads.
+Editable declarations have a preparation-only lease until the matrix owns them,
+not an unconditional session payload pin. Source/parent leases contain no
+Catalog back-reference or Drop callback, so they cannot create a cycle or
+re-lock the owner during declaration destruction.
+Host: payload acquisition remains demand-driven, so opaque numeric faction
+ordinals need not equal original eager-parse ordinals. Current consumers bind
+canonical ResourceName: FactionComponent::initialize obtains index_of(name),
+Start verifies that same snapshot/name/index, manager entity queries use its
+own row map, and relationship targets are parsed as declaration names. There
+is no supported ABI/save/raw-original-faction-index input in this path;
+authored relationship enum0..3 remains unchanged. Numeric serialized faction
+IDs are not interpreted as these host ordinals. Purge/reload must rebuild and
+verify this same semantic namespace. No native ordinal replay or actual purge
+observation is claimed until the coordinated production acquisition run.
+Prediction: map-only parsed faction/source payloads release after matrix and
+component retirement, common/bootstrap identities survive map purge, and
+unchanged live requests reuse their exact leases without another archive read.

@@ -1,8 +1,8 @@
 //! Session-owned cpntFaction declaration-class identities (05fc00/0610d0).
-//! The real preload/declaration owner calls reserve before parsing, preserving
+//! The real preload/declaration owner registers headers before parsing, preserving
 //! registration order and sharing the same resolved declaration leases.
-use std::{borrow::Borrow, collections::HashMap, sync::{Arc, LazyLock, Mutex, Weak}};
-use crate::{assets::{archive::Catalog, map_resources::Resource}, gameplay::faction_manager::Definition};
+use std::{borrow::Borrow, collections::HashMap, sync::{Arc, Mutex, Weak}};
+use crate::{assets::archive::Catalog, gameplay::faction_manager::Definition};
 
 /// One canonical declaration resource name. This is session-owned and never
 /// points into PhysicsScene's level-owned class NamePool.
@@ -13,7 +13,8 @@ impl ResourceName {
     pub(crate) fn same_identity(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
 }
 impl Borrow<str> for ResourceName { fn borrow(&self) -> &str { &self.0 } }
-struct Entry { name: ResourceName, definition: Option<Arc<Definition>>, resolving: bool }
+fn resource_path(name: &str) -> String { format!("generated/decls/cpntfaction/{name}.decl") }
+struct Entry { name: ResourceName, definition: Option<Weak<Definition>>, prepared: Option<Arc<Definition>>, resolving: bool }
 
 pub(crate) enum Admission {
     /// Caller owns the new slot and finishes it after real source resolution.
@@ -31,13 +32,10 @@ struct FactionRegistry {
     entries: Vec<Entry>,
     indices: HashMap<ResourceName, usize>,
     active_snapshot: Option<Weak<SnapshotPin>>,
+    resources: crate::assets::resource_registry::Registry<Definition>,
+    names: HashMap<String, Weak<str>>,
     sources: HashMap<ResourceName, Weak<crate::assets::entities::spawn::ComponentDeclarationLease>>,
 }
-
-// Like the difficulty declaration owner, this lookup does not itself keep a
-// session alive. The launch owner and level consumers hold the strong leases.
-static SESSIONS: LazyLock<Mutex<HashMap<u64, Weak<Mutex<FactionRegistry>>>>> =
-    LazyLock::new(Default::default);
 
 /// One launch/session owner; clones are leases, not independent registries.
 /// Its names and declaration leases survive individual PhysicsScene teardown.
@@ -45,6 +43,7 @@ static SESSIONS: LazyLock<Mutex<HashMap<u64, Weak<Mutex<FactionRegistry>>>>> =
 #[derive(Clone)]
 pub(crate) struct SessionFactionRegistry {
     catalog: u64,
+    shared: bool,
     inner: Arc<Mutex<FactionRegistry>>,
 }
 
@@ -68,8 +67,11 @@ impl ActiveFactionManager {
 }
 impl Snapshot {
     pub(crate) fn definitions(&self) -> &[Arc<Definition>] { &self.definitions }
-    pub(crate) fn into_manager(self) -> Result<ActiveFactionManager, String> {
-        let manager = super::faction_manager::FactionManager::initialize(self.definitions.clone())?;
+    pub(crate) fn into_manager(mut self) -> Result<ActiveFactionManager, String> {
+        let manager = super::faction_manager::FactionManager::initialize(std::mem::take(&mut self.definitions))?;
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("FACTION_MATRIX_SEMANTICS rows={} signature={}", self._token.count, manager.semantic_signature());
+        }
         Ok(ActiveFactionManager { manager, _snapshot: self })
     }
 }
@@ -80,13 +82,14 @@ impl FactionRegistry {
         }
         Ok(())
     }
-    fn begin(&mut self, name: &str) -> Result<(ResourceName, Admission), String> {
+    fn begin(&mut self, name: &str) -> Result<(ResourceName, Admission), String> { self.begin_scoped(name, 0) }
+    fn begin_scoped(&mut self, name: &str, marker: u8) -> Result<(ResourceName, Admission), String> {
         let normalized = name.replace('\\', "/").to_ascii_lowercase();
         if normalized.is_empty() { return Err("unnamed faction declaration".into()); }
         if let Some(&index) = self.indices.get(normalized.as_str()) {
             let entry = &self.entries[index];
-            let admission = match &entry.definition {
-                Some(value) => Admission::Ready(value.clone()),
+            let admission = match entry.definition.as_ref().and_then(Weak::upgrade) {
+                Some(value) => Admission::Ready(value),
                 None if entry.resolving => Admission::Resolving,
                 None => Admission::Pending,
             };
@@ -95,24 +98,23 @@ impl FactionRegistry {
         // Appending later registrations does not renumber any live row.
         self.entries.try_reserve(1).map_err(|e| format!("faction declaration list: {e}"))?;
         self.indices.try_reserve(1).map_err(|e| format!("faction declaration lookup: {e}"))?;
-        let identity = ResourceName(Arc::from(normalized));
+        let text = self.names.get(&normalized).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let text: Arc<str> = Arc::from(normalized.as_str());
+            self.names.insert(normalized.clone(), Arc::downgrade(&text));
+            text
+        });
+        let identity = ResourceName(text);
+        self.resources.register(&resource_path(identity.as_str()), marker, false);
         let index = self.entries.len();
-        self.entries.push(Entry { name: identity.clone(), definition: None, resolving: false });
+        self.entries.push(Entry { name: identity.clone(), definition: None, prepared: None, resolving: false });
         self.indices.insert(identity.clone(), index);
         Ok((identity, Admission::New))
     }
 }
 impl SessionFactionRegistry {
     pub(crate) fn acquire(catalog: &Catalog) -> Result<Self, String> {
-        let id = catalog.identity();
-        let mut sessions = SESSIONS.lock().map_err(|_| "faction session lookup is poisoned")?;
-        if let Some(inner) = sessions.get(&id).and_then(Weak::upgrade) {
-            return Ok(Self { catalog: id, inner });
-        }
-        sessions.retain(|_, session| session.strong_count() != 0);
-        let inner = Arc::new(Mutex::new(FactionRegistry::default()));
-        sessions.insert(id, Arc::downgrade(&inner));
-        Ok(Self { catalog: id, inner })
+        Ok(catalog.faction_registry.get_or_init(|| Self { catalog: catalog.identity(), shared: !catalog.has_overlay_declaration("generated/decls/cpntfaction/"),
+            inner: Arc::new(Mutex::new(FactionRegistry::default())) }).clone())
     }
     /// Editable resource layers are a host feature. Reparse their generation
     /// at the real map-preparation boundary, after the outgoing matrix retires;
@@ -123,7 +125,7 @@ impl SessionFactionRegistry {
         let mut owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
         owner.can_change_order()?;
         if owner.entries.iter().any(|entry| entry.resolving) { return Err("faction preparation overlaps active declaration resolution".into()); }
-        for entry in &mut owner.entries { entry.definition = None; }
+        for entry in &mut owner.entries { entry.definition = None; entry.prepared = None; }
         owner.sources.clear();
         Ok(())
     }
@@ -133,10 +135,15 @@ impl SessionFactionRegistry {
     /// borrow these prepared leases and never read archives.
     pub(crate) fn acquire_definition(&self, catalog: &Catalog, name: &str) -> Result<Arc<Definition>, String> {
         use crate::assets::entities::{self, Value, event_graph::atom};
-        self.resolve(catalog, name, |registry, identity| {
-            let lease = registry.source_lease(catalog, identity.as_str(), &mut Vec::new())?;
+        let (identity, _) = self.begin(catalog, name)?;
+        let marker = self.inner.lock().map_err(|_| "faction registry is poisoned")?.resources.producer_scope(&resource_path(identity.as_str()));
+        let mut decoded = false;
+        let result = self.resolve(catalog, name, |registry, identity| {
+            decoded = true;
+            let _tag = crate::platform::allocation_tags::tag("Faction declarations");
+            let lease = registry.source_lease(catalog, identity.as_str(), marker, &mut Vec::new())?;
             let fields = lease.faction_fields()?;
-            let parent = lease.parent().map(|value| registry.begin(catalog, value.source_name()).map(|value| value.0)).transpose()?;
+            let parent = lease.parent().map(|value| registry.begin_dependency(catalog, value.source_name(), marker).map(|value| value.0)).transpose()?;
             fn relation(value: &str) -> Result<u32, String> {
                 match value.trim_matches('"') { "ALLY" => Ok(0), "NEUTRAL" => Ok(1), "ENEMY" => Ok(2), "UNDEFINED" => Ok(3), value => Err(format!("unknown faction relationship {value}")) }
             }
@@ -159,12 +166,19 @@ impl SessionFactionRegistry {
                     let Value::Scope(item) = value else { return Err("faction relationship entry is not a scope".into()); };
                     let target = atom(item, "m_faction").ok_or("faction relationship has no target")?;
                     let value = relation(atom(item, "m_relationship").ok_or("faction relationship has no value")?)?;
-                    relationships.push((registry.begin(catalog, target)?.0, value));
+                    relationships.push((registry.begin_dependency(catalog, target, marker)?.0, value));
                 }
             }
             Ok(Arc::new(Definition { faction_name: Arc::from(atom(&fields, "m_factionName").unwrap_or("")),
                 lease, name: identity.clone(), parent, default_relationship, relationships, propagate_overrides }))
-        })
+        });
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            if let Ok(value) = &result {
+                eprintln!("FACTION_RESOURCE_ACQUIRE name={} marker={marker} shared={} decoded={decoded} definition={:p} source={:p}",
+                    value.name.as_str(), self.shared, Arc::as_ptr(value), Arc::as_ptr(&value.lease));
+            }
+        }
+        result
     }
 
     /// References parsed above may append entries. Drain precisely that same
@@ -174,13 +188,23 @@ impl SessionFactionRegistry {
         Ok(())
     }
 
-    fn source_lease(&self, catalog: &Catalog, name: &str, active: &mut Vec<String>)
+    fn source_lease(&self, catalog: &Catalog, name: &str, inherited_marker: u8, active: &mut Vec<String>)
         -> Result<Arc<crate::assets::entities::spawn::ComponentDeclarationLease>, String> {
         use crate::assets::entities::{self, Value, event_graph::atom, spawn::ComponentDeclarationLease};
-        let (identity, _) = self.begin(catalog, name)?;
-        if let Some(source) = self.inner.lock().map_err(|_| "faction registry is poisoned")?
-            .sources.get(&identity).and_then(Weak::upgrade) { return Ok(source); }
-        let path = format!("generated/decls/cpntfaction/{}.decl", identity.as_str());
+        let (identity, _) = self.begin_dependency(catalog, name, inherited_marker)?;
+        let (source, marker) = {
+            let owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
+            (owner.sources.get(&identity).and_then(Weak::upgrade), owner.resources.producer_scope(&resource_path(identity.as_str())))
+        };
+        if let Some(source) = source {
+            let mut parent = source.parent();
+            while let Some(value) = parent {
+                self.begin_dependency(catalog, value.source_name(), marker)?;
+                parent = value.parent();
+            }
+            return Ok(source);
+        }
+        let path = resource_path(identity.as_str());
         if active.contains(&path) || active.len() > 16 { return Err(format!("faction declaration inheritance cycle or depth limit at {path}")); }
         active.push(path.clone());
         let result = (|| {
@@ -190,7 +214,7 @@ impl SessionFactionRegistry {
             let fields = entities::parse_declaration(&text).map_err(|error| format!("{path}: {error}"))?;
             let parent = match entities::field(&fields, "inherit") {
                 None => None,
-                Some(Value::Atom(name)) if !name.trim_matches('"').is_empty() => Some(self.source_lease(catalog, name.trim_matches('"'), active)?),
+                Some(Value::Atom(name)) if !name.trim_matches('"').is_empty() => Some(self.source_lease(catalog, name.trim_matches('"'), marker, active)?),
                 Some(_) => return Err(format!("{path}: invalid faction inheritance reference")),
             };
             let class = atom(&fields, "class").unwrap_or("").to_owned();
@@ -205,11 +229,36 @@ impl SessionFactionRegistry {
         result
     }
 
-    /// Remove only the lookup at catalog shutdown. Existing leases retain the
-    /// same registry until their own consumers have finished retiring.
-    pub(crate) fn release_catalog(id: u64) {
-        SESSIONS.lock().unwrap_or_else(|error| error.into_inner()).remove(&id);
+    fn begin_dependency(&self, catalog: &Catalog, name: &str, marker: u8) -> Result<(ResourceName, Admission), String> {
+        self.check_catalog(catalog)?;
+        let mut owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
+        let result = owner.begin_scoped(name, marker)?;
+        owner.resources.inherit_scope(&resource_path(result.0.as_str()), marker);
+        Ok(result)
     }
+
+    fn pin_ready(&self, catalog: &Catalog, definition: &Arc<Definition>) -> Result<(), String> {
+        self.check_catalog(catalog)?;
+        let mut owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
+        let path = resource_path(definition.name.as_str());
+        let marker = owner.resources.producer_scope(&path);
+        if self.shared { owner.resources.acquire(&path, marker, |_| Ok(definition.clone()))?; }
+        if marker != 2 { return Ok(()); }
+        // Deferred bootstrap parses inherit that original creation phase,
+        // including dependencies of a previously decoded declaration.
+        let mut pending = vec![definition.clone()];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(value) = pending.pop() {
+            if !seen.insert(value.name.clone()) { continue; }
+            for name in value.parent.iter().chain(value.relationships.iter().map(|entry| &entry.0)) {
+                let (identity, admission) = owner.begin_scoped(name.as_str(), marker)?;
+                owner.resources.inherit_scope(&resource_path(identity.as_str()), marker);
+                if let Admission::Ready(value) = admission { pending.push(value); }
+            }
+        }
+        Ok(())
+    }
+
     fn check_catalog(&self, catalog: &Catalog) -> Result<(), String> {
         if self.catalog != catalog.identity() { return Err("faction registry belongs to another catalog session".into()); }
         Ok(())
@@ -229,7 +278,10 @@ impl SessionFactionRegistry {
     where F: FnOnce(&Self, &ResourceName) -> Result<Arc<Definition>, String> {
         let (identity, admission) = self.begin(catalog, name)?;
         match admission {
-            Admission::Ready(definition) => return Ok(definition),
+            Admission::Ready(definition) => {
+                self.pin_ready(catalog, &definition)?;
+                return Ok(definition);
+            }
             Admission::Resolving => return Err(format!("faction declaration inheritance cycle at {}", identity.as_str())),
             Admission::New | Admission::Pending => {}
         }
@@ -241,29 +293,17 @@ impl SessionFactionRegistry {
                 return Err("faction declaration source returned a different resource identity".into());
             }
             self.finish(definition.clone())?;
+            self.pin_ready(catalog, &definition)?;
             Ok(definition)
         });
-        if result.is_err() { self.abandon_resolution(&identity)?; }
-        result
-    }
-    /// The 0661e0 manifest registration pass reserves eligible missing
-    /// resources before the later parse/preload pass. The caller invokes this
-    /// only for the actual session/map manifest being mounted, in file order.
-    /// It must still process all other resource types through the real loader,
-    /// whose recursive declaration acquisitions also call begin on this owner.
-    pub(crate) fn reserve_manifest<'a>(&self, catalog: &Catalog,
-        resources: impl IntoIterator<Item = &'a Resource>) -> Result<usize, String> {
-        self.check_catalog(catalog)?;
-        let mut owner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let mut added = 0;
-        for resource in resources {
-            if !resource.kind.eq_ignore_ascii_case("cpntfaction") || !catalog.preloads(&resource.path) { continue; }
-            let name = resource.path.strip_prefix("generated/decls/cpntfaction/")
-                .and_then(|value| value.strip_suffix(".decl"))
-                .ok_or("invalid faction manifest resource path")?;
-            if matches!(owner.begin(name)?.1, Admission::New) { added += 1; }
+        if result.is_err() {
+            let resolving = {
+                let owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
+                owner.indices.get(&identity).is_some_and(|&index| owner.entries[index].resolving)
+            };
+            if resolving { self.abandon_resolution(&identity)?; }
         }
-        Ok(added)
+        result
     }
     /// Pick the next registered resource in native array order. Resolution
     /// may append referenced declarations; the caller repeats until none are
@@ -273,7 +313,7 @@ impl SessionFactionRegistry {
         if owner.entries.iter().any(|entry| entry.resolving) {
             return Err("cannot finish faction preload during recursive resolution".into());
         }
-        Ok(owner.entries.iter().find(|entry| entry.definition.is_none()).map(|entry| entry.name.clone()))
+        Ok(owner.entries.iter().find(|entry| entry.definition.as_ref().and_then(Weak::upgrade).is_none()).map(|entry| entry.name.clone()))
     }
     /// Resolve only an already-parsed class entry. Component initialization
     /// must never turn a missing declaration into a manufactured faction.
@@ -281,7 +321,7 @@ impl SessionFactionRegistry {
         let owner = self.inner.lock().map_err(|_| "faction registry is poisoned")?;
         let normalized = name.replace('\\', "/").to_ascii_lowercase();
         let index = *owner.indices.get(normalized.as_str()).ok_or("faction declaration is not registered")?;
-        owner.entries[index].definition.clone().ok_or_else(|| "faction declaration is not parsed".into())
+        owner.entries[index].definition.as_ref().and_then(Weak::upgrade).ok_or_else(|| "faction declaration is not parsed".into())
     }
     /// 5bd9a0 captures the actual class-array index during Initialize.
     pub(crate) fn index_of(&self, name: &ResourceName) -> Result<u8, String> {
@@ -299,7 +339,7 @@ impl SessionFactionRegistry {
         let index = *owner.indices.get(name).ok_or("faction declaration was not registered")?;
         let entry = &mut owner.entries[index];
         if !entry.name.same_identity(name) { return Err("faction declaration belongs to another name namespace".into()); }
-        if entry.definition.is_some() || entry.resolving { return Ok(false); }
+        if entry.definition.as_ref().and_then(Weak::upgrade).is_some() || entry.resolving { return Ok(false); }
         entry.resolving = true;
         Ok(true)
     }
@@ -310,7 +350,7 @@ impl SessionFactionRegistry {
         let index = *owner.indices.get(name).ok_or("faction declaration was not registered")?;
         let entry = &mut owner.entries[index];
         if !entry.name.same_identity(name) { return Err("faction declaration belongs to another name namespace".into()); }
-        if entry.definition.is_some() || !entry.resolving { return Err("faction declaration is not resolving".into()); }
+        if entry.definition.as_ref().and_then(Weak::upgrade).is_some() || !entry.resolving { return Err("faction declaration is not resolving".into()); }
         entry.resolving = false;
         Ok(())
     }
@@ -320,40 +360,22 @@ impl SessionFactionRegistry {
     pub(crate) fn finish(&self, definition: Arc<Definition>) -> Result<(), String> {
         let mut owner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let index = *owner.indices.get(&definition.name).ok_or("faction declaration was not registered")?;
-        let entry = &mut owner.entries[index];
-        if !entry.name.same_identity(&definition.name) {
-            return Err("faction declaration belongs to another name namespace".into());
-        }
-        if let Some(existing) = &entry.definition {
-            if !Arc::ptr_eq(&existing.lease, &definition.lease) {
-                return Err("faction declaration identity changed without retirement".into());
-            }
+        let entry = &owner.entries[index];
+        if !entry.name.same_identity(&definition.name) { return Err("faction declaration belongs to another name namespace".into()); }
+        if let Some(existing) = entry.definition.as_ref().and_then(Weak::upgrade) {
+            if !Arc::ptr_eq(&existing.lease, &definition.lease) { return Err("faction declaration identity changed without retirement".into()); }
             return Ok(());
         }
         if !entry.resolving { return Err("faction declaration source was not acquired".into()); }
-        entry.definition = Some(definition);
+        let path = resource_path(definition.name.as_str());
+        let marker = owner.resources.producer_scope(&path);
+        let shared = self.shared;
+        let value = owner.resources.acquire_with_sharing(&path, marker, shared, |_| Ok(definition))?;
+        let entry = &mut owner.entries[index];
+        entry.definition = Some(Arc::downgrade(&value));
+        entry.prepared = (!shared).then_some(value);
         entry.resolving = false;
         Ok(())
-    }
-    /// 0610d0 swaps the final resource into the removed index. The caller
-    /// invokes this at the real declaration release, after dependent matrices.
-    pub(crate) fn retire(&self, name: &ResourceName) -> Result<bool, String> {
-        let mut owner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(&index) = owner.indices.get(name) else { return Ok(false) };
-        if !owner.entries[index].name.same_identity(name) {
-            return Err("faction declaration belongs to another name namespace".into());
-        }
-        if owner.active_snapshot.as_ref().and_then(Weak::upgrade)
-            .is_some_and(|snapshot| index < snapshot.count) {
-            return Err("cannot retire a faction identity used by a live matrix".into());
-        }
-        owner.sources.remove(name);
-        owner.indices.remove(name);
-        owner.entries.swap_remove(index);
-        if let Some(moved) = owner.entries.get(index).map(|entry| entry.name.clone()) {
-            owner.indices.insert(moved, index);
-        }
-        Ok(true)
     }
     /// 604f90 visits the live class array; unresolved entries stay explicit.
     pub(crate) fn snapshot(&self) -> Result<Snapshot, String> {
@@ -361,20 +383,59 @@ impl SessionFactionRegistry {
         owner.can_change_order()?;
         let mut definitions = Vec::with_capacity(owner.entries.len());
         for entry in &owner.entries {
-            definitions.push(entry.definition.as_ref().ok_or("registered faction declaration is still unresolved")?.clone());
+            definitions.push(entry.definition.as_ref().and_then(Weak::upgrade).ok_or("registered faction declaration is still unresolved")?);
         }
+        for entry in &mut owner.entries { entry.prepared = None; }
         let token = Arc::new(SnapshotPin { count: definitions.len() });
         owner.active_snapshot = Some(Arc::downgrade(&token));
         Ok(Snapshot { definitions, _token: token })
     }
-    /// Session shutdown, after all live matrix snapshots have retired.
-    pub(crate) fn clear(&self) -> Result<(), String> {
-        let mut owner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        owner.can_change_order()?;
-        owner.entries.clear();
-        owner.sources.clear();
-        owner.indices.clear();
-        owner.active_snapshot = None;
-        Ok(())
+
+}
+
+/// 0661e0's selected header callback is the only preload registration route.
+/// cpntFaction is not in its conditional heap-1 promotion list.
+pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8) -> Result<(), String> {
+    let path = path.replace('\\', "/").to_ascii_lowercase();
+    let name = path.strip_prefix("generated/decls/cpntfaction/").and_then(|path| path.strip_suffix(".decl"))
+        .ok_or("invalid faction declaration resource path")?;
+    let registry = SessionFactionRegistry::acquire(catalog)?;
+    registry.inner.lock().map_err(|_| "faction registry is poisoned")?.begin_scoped(name, marker)?;
+    Ok(())
+}
+
+pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
+    if let Some(registry) = catalog.faction_registry.get() {
+        registry.inner.lock().map_err(|_| "faction registry is poisoned")?.resources.promote_bootstrap();
+    }
+    Ok(())
+}
+
+pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
+    let Some(registry) = catalog.faction_registry.get() else { return; };
+    let mut owner = registry.inner.lock().unwrap_or_else(|error| error.into_inner());
+    // This scope boundary follows acquisition-worker and manager retirement.
+    // Editable generations had only a temporary admission pin, never a cache pin.
+    for entry in &mut owner.entries { entry.prepared = None; }
+    let kind = owner.entries.iter().find_map(|entry| catalog.kind(&resource_path(entry.name.as_str())))
+        .unwrap_or("cpntFaction").to_owned();
+    owner.resources.release(catalog.identity(), &kind, marker);
+    let pinned = owner.active_snapshot.as_ref().and_then(Weak::upgrade).map_or(0, |pin| pin.count);
+    let mut index = pinned;
+    while index < owner.entries.len() {
+        let name = owner.entries[index].name.clone();
+        if owner.resources.contains(&resource_path(name.as_str())) { index += 1; continue; }
+        // 0610d0 swaps the final class entry into this retired slot.
+        owner.indices.remove(&name);
+        owner.entries.swap_remove(index);
+        if let Some(moved) = owner.entries.get(index).map(|entry| entry.name.clone()) { owner.indices.insert(moved, index); }
+    }
+    owner.sources.retain(|_, source| source.strong_count() != 0);
+    owner.names.retain(|_, name| name.strong_count() != 0);
+    if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+        owner.resources.report(catalog.identity(), &kind, "scope-released", |value|
+            value.relationships.capacity() * std::mem::size_of::<(ResourceName, u32)>() + value.faction_name.len());
+        eprintln!("FACTION_RESOURCE_SCOPE catalog={} marker={marker} classes={} sources={} pinned_rows={pinned}",
+            catalog.identity(), owner.entries.len(), owner.sources.len());
     }
 }

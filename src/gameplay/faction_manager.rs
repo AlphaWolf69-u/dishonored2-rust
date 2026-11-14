@@ -48,6 +48,25 @@ pub(crate) struct FactionManager {
     entities: HashMap<EntityId, EntityRecord>,
 }
 impl FactionManager {
+    /// Observation excludes host ordinals: resource names and named-pair
+    /// relationships remain comparable across native swap/purge/reload order.
+    pub(crate) fn semantic_signature(&self) -> blake3::Hash {
+        let mut rows = self.rows.iter().collect::<Vec<_>>();
+        rows.sort_unstable_by(|a, b| a.declaration.name.as_str().cmp(b.declaration.name.as_str()));
+        let mut hash = blake3::Hasher::new();
+        for source in &rows {
+            hash.update(source.declaration.name.as_str().as_bytes()); hash.update(&[0]);
+            hash.update(source.declaration.faction_name.as_bytes()); hash.update(&[0]);
+            hash.update(&source.declaration.default_relationship.to_le_bytes());
+            hash.update(&[u8::from(source.declaration.propagate_overrides)]);
+            for target in &rows {
+                hash.update(target.declaration.name.as_str().as_bytes()); hash.update(&[0]);
+                hash.update(&source.current[self.indices[&target.declaration.name]].to_le_bytes());
+            }
+        }
+        hash.finalize()
+    }
+
     pub(crate) fn has_members(&self) -> bool { !self.entities.is_empty() }
     pub(crate) fn verify_index(&self, name: &ResourceName, index: u8) -> Result<(), String> {
         let (canonical, &actual) = self.indices.get_key_value(name).ok_or("faction is absent from manager")?;

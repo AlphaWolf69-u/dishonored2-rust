@@ -92,6 +92,7 @@ pub struct Catalog {
     pub(crate) skeleton_resources: std::sync::OnceLock<std::sync::Arc<crate::assets::edge_skeleton::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    pub(crate) faction_registry: std::sync::OnceLock<crate::gameplay::faction_registry::SessionFactionRegistry>,
     pub(crate) component_types: std::sync::Mutex<Option<std::sync::Arc<crate::gameplay::component_state::types::ComponentTypes>>>,
     pub(crate) material_constants: std::sync::Mutex<Option<std::sync::Arc<crate::assets::physics_material::MaterialConstants>>>,
     pub(crate) fx_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::definition::Definition>>>,
@@ -145,6 +146,7 @@ pub struct Catalog {
 
 impl Drop for Catalog {
     fn drop(&mut self) {
+        self.faction_registry.take();
         if let Some(owner) = self.pickable_sources.get() {
             owner.lock().unwrap_or_else(|error| error.into_inner()).release_session(self);
         }
@@ -257,6 +259,7 @@ impl Catalog {
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::difficulty::release_marker(self, 0);
+        crate::gameplay::faction_registry::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
         crate::assets::physworld::source::release_level(self);
         crate::assets::fx::declaration::release_marker(self, 0);
@@ -269,6 +272,7 @@ impl Catalog {
     }
 
     pub(crate) fn release_persistent_level_resources(&self) {
+        crate::gameplay::faction_registry::release_marker(self, 1);
         crate::assets::parm_block::release_marker(self, 1);
         crate::assets::fx::particle_resources::release_marker(self, 1);
         crate::assets::wwise::event_resources::release_marker(self, 1);
@@ -522,6 +526,7 @@ impl Catalog {
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
             shape_sources: Default::default(),
+            faction_registry: Default::default(),
             component_types: Default::default(),
             material_constants: Default::default(),
             physics_material_resources: Default::default(),

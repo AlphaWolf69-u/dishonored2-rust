@@ -356,6 +356,7 @@ impl LevelList {
             crate::assets::wwise::auxiliary_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
             crate::assets::difficulty::promote_bootstrap(catalog)?;
+            crate::gameplay::faction_registry::promote_bootstrap(catalog)?;
             crate::assets::physworld::mass::resources::promote_bootstrap(catalog)?;
             crate::assets::physworld::source::promote_bootstrap(catalog)?;
             crate::assets::fx::declaration::promote_bootstrap(catalog)?;
@@ -430,6 +431,9 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("animset") {
                 crate::assets::animation_rig::animset::register_lazy_preload(catalog, &resource.path,
                     context, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("cpntFaction") {
+                // cpntFaction is not in0661e0's heap-1 promotion table.
+                crate::gameplay::faction_registry::register_preload(catalog, &resource.path, context as u8)?;
             } else if resource.kind.eq_ignore_ascii_case("difficultyManager") || resource.kind.eq_ignore_ascii_case("difficultyPreset") {
                 crate::assets::difficulty::register_preload(catalog, &resource.kind, &resource.path, context as u8)?;
             } else if resource.kind.eq_ignore_ascii_case("massprops") {

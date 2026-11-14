@@ -29,6 +29,10 @@ impl<T: ?Sized, E> Default for Registry<T, E> {
     fn default() -> Self { Self { entries: HashMap::new(), separate: None } }
 }
 impl<T: ?Sized, E: Clone> Registry<T, E> {
+    pub(crate) fn contains(&self, path: &str) -> bool { self.entries.contains_key(path) }
+    /// Register a real dependency before its deferred payload is parsed,
+    /// preserving the same bootstrap/explicit-map phase rules as acquire.
+    pub(crate) fn inherit_scope(&mut self, path: &str, marker: u8) { self.admit(path, marker); }
     pub(crate) fn len(&self) -> usize { self.entries.len() }
     #[cfg(feature = "game")]
     pub(crate) fn registered_paths(&self) -> Vec<&str> {
