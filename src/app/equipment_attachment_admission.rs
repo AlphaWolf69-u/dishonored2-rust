@@ -138,7 +138,9 @@ pub(super) fn select(
         let Some(path) = path else {
             return Ok(());
         };
-        let tag = tag.ok_or("selected ammunition has no authored weapon bind tag")?;
+        // Gun44dae0/crossbow62b1b0 initialize both tag strings with
+        //131ae0: omitted properties are empty entity-frame bindings752900.
+        let tag = tag.unwrap_or("");
         // Validate while this immutable rig is borrowed, before any worker can
         // reserve/publish child draw entities. There is no fallback socket.
         let selection = Selection::read(&weapon.rig, tag)?;
