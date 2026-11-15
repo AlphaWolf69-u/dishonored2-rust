@@ -874,48 +874,63 @@ fn magazine_child(owner: &Attachments, weapon: EntityId) -> Option<Option<Entity
     Some(Some(child))
 }
 fn advance_magazine_final(world: &mut World, owner: &mut Attachments) -> Result<(), String> {
-    let Some(mut arms) = world.get_resource_mut::<super::player_arms::PlayerArms>() else {
+    if !world.contains_resource::<super::player_arms::PlayerArms>() {
         return Ok(());
-    };
-    // No temporary Vec in active Think. Deferred commands are authored events,
-    // not repeated requests allocated each frame.
-    let live = &owner.live;
-    let upgrades = &owner.upgrades;
-    owner.magazine_final.retain(|weapon, (ranged, magazine)| {
-        let Some(upgrades) = upgrades.get(weapon) else {
-            return true;
-        };
-        let Some(definitions) = upgrades.definitions.as_ref() else {
-            return true;
-        };
-        let Some(index) = definitions
-            .iter()
-            .position(|upgrade| upgrade.animation == Animation::Magazine)
-        else {
-            return false;
-        };
-        let Some(child) = live
-            .get(&Key {
-                weapon: *weapon,
-                slot: 1 + index * 2 + 1,
-            })
-            .and_then(|entry| entry.child)
-        else {
-            return true;
-        };
-        if !arms.attachments.animation_ready(child) {
-            return true;
-        }
-        if let Some((alias, mode)) = ranged.magazine_final_animation(*magazine) {
-            if arms.attachments.has_alias(child, alias) {
-                // Native44f240 ignores44e920's lookup result and clears the
-                // pending flag once the real animation component is ready.
-                let _ = arms.attachments.animate_alias(child, alias, mode);
+    }
+    world.resource_scope(|world, mut arms: Mut<super::player_arms::PlayerArms>| {
+        // No temporary Vec in active Think. Deferred commands are authored events,
+        // not repeated requests allocated each frame.
+        let live = &owner.live;
+        let upgrades = &owner.upgrades;
+        owner.magazine_final.retain(|weapon, (ranged, magazine)| {
+            let active = super::equipment_identity::item_identity(world, *weapon)
+                .and_then(|identity| {
+                    world
+                        .get_resource::<super::player::PlayerState>()
+                        .and_then(|state| state.player.as_ref())
+                        .and_then(|player| player.registered_ranged(identity))
+                })
+                .is_some_and(|runtime| runtime.is_active());
+            // 44f240 is a Think callback: initialized/holstered components keep
+            // their pending pose until actual61aed0 activation starts updates.
+            if !active {
+                return true;
             }
-        }
-        false
-    });
-    Ok(())
+            let Some(upgrades) = upgrades.get(weapon) else {
+                return true;
+            };
+            let Some(definitions) = upgrades.definitions.as_ref() else {
+                return true;
+            };
+            let Some(index) = definitions
+                .iter()
+                .position(|upgrade| upgrade.animation == Animation::Magazine)
+            else {
+                return false;
+            };
+            let Some(child) = live
+                .get(&Key {
+                    weapon: *weapon,
+                    slot: 1 + index * 2 + 1,
+                })
+                .and_then(|entry| entry.child)
+            else {
+                return true;
+            };
+            if !arms.attachments.animation_ready(child) {
+                return true;
+            }
+            if let Some((alias, mode)) = ranged.magazine_final_animation(*magazine) {
+                if arms.attachments.has_alias(child, alias) {
+                    // Native44f240 ignores44e920's lookup result and clears the
+                    // pending flag once the real animation component is ready.
+                    let _ = arms.attachments.animate_alias(child, alias, mode);
+                }
+            }
+            false
+        });
+        Ok(())
+    })
 }
 /// 44f3d0: the Fire animation callback changes only the real magazine child's
 /// pose. Round consumption remains the weapon Runtime's independent callback.

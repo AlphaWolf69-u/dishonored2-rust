@@ -487,6 +487,16 @@ fn retain_metadata(
         .equipment
         .metadata
         .insert(identity.to_owned(), metadata.clone());
+    // 619380 copies the spawning player's entity clock selector once. Keep
+    // that real generation in the canonical clock owner, so later managed
+    // overrides need not be guessed from the currently selected hand/player.
+    {
+        let mut clock = world
+            .get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+            .ok_or("equipment has no canonical entity clock")?;
+        let timespace = clock.player_timespace().map_err(str::to_owned)?;
+        clock.register_entity_time(entity, timespace)?;
+    }
     if metadata.sound_settings.is_some() {
         let part = match metadata.equipment.slot {
             1 => 8,
@@ -1081,23 +1091,12 @@ fn refresh_loading_pose(world: &mut World) {
 }
 
 /// Publish the actual equipment entity transform before its rig root offset.
-/// The spawn copies the player's entity clock flags (619380), so the shared
-/// player entity timespace supplies its component rate, including loading pause.
+/// Its managed entity clock retains the selector copied during619380 spawn,
+/// including any subsequent override applied through the canonical clock owner.
 fn publish_entity_frames(world: &mut World) -> Result<(), String> {
     use crate::gameplay::{
         entity_lifetime::LiveEntities, game_clock_runtime::ClockRuntime,
         reference_frame::ReferenceFrame,
-    };
-    let rate = {
-        let clock = world
-            .get_resource::<ClockRuntime>()
-            .ok_or("equipment clock owner absent")?;
-        let timespace = clock.player_timespace().map_err(str::to_owned)?;
-        clock
-            .clock()
-            .map_err(str::to_owned)?
-            .entity_rates(timespace)
-            .ok_or("equipment inherited entity timespace absent")?[1]
     };
     let Some(state) = world.remove_resource::<super::super::player::PlayerState>() else {
         return Ok(());
@@ -1113,6 +1112,17 @@ fn publish_entity_frames(world: &mut World) -> Result<(), String> {
             if !linked || failure.is_some() {
                 return;
             }
+            let rate = match world
+                .get_resource::<ClockRuntime>()
+                .ok_or("equipment clock owner absent")
+                .and_then(|clock| clock.entity_rates(id))
+            {
+                Ok(rates) => rates[1],
+                Err(error) => {
+                    failure = Some(error.to_owned());
+                    return;
+                }
+            };
             if let Err(error) = super::super::equipment_identity::publish_frame(
                 world,
                 id,

@@ -64,8 +64,17 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 actions.failed_targets.remove(&path);
                 actions.power_activations.remove(&path);
                 if let Some(reservation) = actions.power_reservations.remove(&path) {
-                    let id = actions.power_dependency_ids.remove(&path).expect("owned power reservation has an ID");
-                    actions.retiring_power_dependencies.push(PowerDependencyRetirement { id, reservation, sources_released: false });
+                    let id = actions
+                        .power_dependency_ids
+                        .remove(&path)
+                        .expect("owned power reservation has an ID");
+                    actions
+                        .retiring_power_dependencies
+                        .push(PowerDependencyRetirement {
+                            id,
+                            reservation,
+                            sources_released: false,
+                        });
                 }
                 if let Some(pending) = actions.owned_loading.get(&path) {
                     pending.cancelled.store(true, Ordering::Release);
@@ -108,7 +117,9 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
         if let Err(error) = retire_power_dependencies(&mut actions, player, world) {
             eprintln!("Power dependency retirement: {error}");
             actions.startup_error.get_or_insert(error);
-            world.insert_resource(state); world.insert_resource(inventory); world.insert_resource(actions);
+            world.insert_resource(state);
+            world.insert_resource(inventory);
+            world.insert_resource(actions);
             return;
         }
     }
@@ -117,7 +128,6 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
         .extend(inventory.take_shortcut_items());
     actions.finish_metadata(&mut inventory);
     actions.finish_owned(&inventory);
-    inventory.arbitrate_auto_equip(false);
     if let Some(player) = state.player.as_mut() {
         // Actual owned entities are prepared in source order, one live clip
         // bank transaction at a time. Selection then reuses these entities.
@@ -163,14 +173,18 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                         player,
                     )
                 } else {
-                    Err(format!("owned power {path} is absent from the player's declared power system"))
+                    Err(format!(
+                        "owned power {path} is absent from the player's declared power system"
+                    ))
                 }
             } else {
                 actions.request(item, player)
             };
             if let Err(error) = result {
                 eprintln!("Owned equipment actions {path}: {error}");
-                actions.startup_error.get_or_insert_with(|| format!("Owned equipment actions {path}: {error}"));
+                actions
+                    .startup_error
+                    .get_or_insert_with(|| format!("Owned equipment actions {path}: {error}"));
                 actions.failed_targets.insert(path);
             }
             break;
@@ -298,15 +312,20 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 continue;
             }
             match ready.publish_dependencies(world) {
-                Ok(true) => {},
-                Ok(false) => { actions.requeue_power(ready); continue; },
+                Ok(true) => {}
+                Ok(false) => {
+                    actions.requeue_power(ready);
+                    continue;
+                }
                 Err(error) => {
                     let path = ready.item.path.to_string();
                     eprintln!("Owned power dependencies {path}: {error}");
-                    actions.startup_error.get_or_insert_with(|| format!("Owned power dependencies {path}: {error}"));
+                    actions
+                        .startup_error
+                        .get_or_insert_with(|| format!("Owned power dependencies {path}: {error}"));
                     actions.failed_targets.insert(path);
                     continue;
-                },
+                }
             }
             let path = ready.item.path.to_string();
             match ready.stage(player) {
@@ -323,12 +342,30 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
     world.insert_resource(actions);
 }
 
-fn retire_power_dependencies(actions: &mut PlayerActions, player: &mut Player, world: &mut World) -> Result<(), String> {
-    if actions.retiring_power_dependencies.is_empty() { return Ok(()); }
-    let blink_active = actions.blink.as_ref().is_some_and(|blink| blink.has_activity())
-        || actions.active_blink.as_ref().is_some_and(|blink| blink.has_activity());
-    let far_reach_active = actions.far_reach.as_ref().is_some_and(|runtime| runtime.has_activity())
-        || actions.active_far_reach.as_ref().is_some_and(|runtime| runtime.has_activity());
+fn retire_power_dependencies(
+    actions: &mut PlayerActions,
+    player: &mut Player,
+    world: &mut World,
+) -> Result<(), String> {
+    if actions.retiring_power_dependencies.is_empty() {
+        return Ok(());
+    }
+    let blink_active = actions
+        .blink
+        .as_ref()
+        .is_some_and(|blink| blink.has_activity())
+        || actions
+            .active_blink
+            .as_ref()
+            .is_some_and(|blink| blink.has_activity());
+    let far_reach_active = actions
+        .far_reach
+        .as_ref()
+        .is_some_and(|runtime| runtime.has_activity())
+        || actions
+            .active_far_reach
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_activity());
     let mut failure = None;
     actions.retiring_power_dependencies.retain_mut(|retired| {
         if failure.is_some() { return true; }
@@ -355,6 +392,8 @@ fn retire_power_dependencies(actions: &mut PlayerActions, player: &mut Player, w
                     _ => {},
                 }
                 player.remove_power(retired.id);
+                actions.cached_blinks.remove(&retired.reservation);
+                actions.cached_far_reaches.remove(&retired.reservation);
                 retired.sources_released = true;
             }
             let pending = match retired.id {
@@ -430,8 +469,12 @@ pub(in crate::app) fn install_ranged(
     Ok(())
 }
 
-pub(in crate::app) fn register_ranged(player: &mut Player, identity: &str,
-    settings: Arc<player::weapons::Ranged>, inventory: &mut DiscoveredDocuments) -> Result<(), String> {
+pub(in crate::app) fn register_ranged(
+    player: &mut Player,
+    identity: &str,
+    settings: Arc<player::weapons::Ranged>,
+    inventory: &mut DiscoveredDocuments,
+) -> Result<(), String> {
     player.register_ranged(identity, settings, &Ammunition(inventory))
 }
 
@@ -471,39 +514,78 @@ pub(in crate::app) fn dispatch_potions(
     logic: Option<&crate::gameplay::game_logic::GameLogic>,
     sounds: &mut MessageWriter<super::super::audio::SoundEvent>,
 ) {
-    use player::consumables::{PotionKind, PotionSettings};
     for event in events {
         if event.flags & 3 != 1 {
             continue;
         }
         let kind = match event.action {
-            35 => PotionKind::Health,
-            36 => PotionKind::Mana,
+            35 => player::consumables::PotionKind::Health,
+            36 => player::consumables::PotionKind::Mana,
             _ => continue,
         };
-        let settings = PotionSettings {
-            health_sound: actions.potion_sounds[0].clone(),
-            mana_sound: actions.potion_sounds[1].clone(),
-            health_effect: difficulty.map_or(1.0, |manager| manager.health_potion_factor(preset)),
-            mana_effect: difficulty.map_or(1.0, |manager| manager.mana_potion_factor(preset)),
-            mana_speed: difficulty.map_or(1.0, |manager| manager.mana_heal_factor(preset)),
-            suppress_sound: logic.and_then(|logic| logic.current())
-                == Some(crate::gameplay::game_logic::StateId(8)),
-        };
-        match player.use_potion(kind, inventory, &settings) {
-            Ok(Some(mut result)) => {
-                if let Some(sound) = result.sound.take() {
-                    sounds.write(super::super::audio::SoundEvent(
-                        crate::gameplay::sound::Request::Post {
-                            event: sound.id,
-                            emitter: crate::gameplay::sound::Emitter::PlayerBody,
-                        },
-                    ));
-                }
-                actions.potion_results.push(result);
+        apply_potion(
+            player, kind, inventory, actions, difficulty, preset, logic, sounds,
+        );
+    }
+}
+
+/// 856160 requests the same 745b20 transaction after failed power admission.
+/// Consuming the request never retries or invents a successful cast.
+pub(in crate::app) fn dispatch_automatic_potion(
+    player: &mut Player,
+    inventory: &mut DiscoveredDocuments,
+    actions: &mut PlayerActions,
+    difficulty: Option<&crate::gameplay::options::DifficultyManager>,
+    preset: i32,
+    logic: Option<&crate::gameplay::game_logic::GameLogic>,
+    sounds: &mut MessageWriter<super::super::audio::SoundEvent>,
+) {
+    if player.take_power_mana_potion_request() {
+        apply_potion(
+            player,
+            player::consumables::PotionKind::Mana,
+            inventory,
+            actions,
+            difficulty,
+            preset,
+            logic,
+            sounds,
+        );
+    }
+}
+
+fn apply_potion(
+    player: &mut Player,
+    kind: player::consumables::PotionKind,
+    inventory: &mut DiscoveredDocuments,
+    actions: &mut PlayerActions,
+    difficulty: Option<&crate::gameplay::options::DifficultyManager>,
+    preset: i32,
+    logic: Option<&crate::gameplay::game_logic::GameLogic>,
+    sounds: &mut MessageWriter<super::super::audio::SoundEvent>,
+) {
+    let settings = player::consumables::PotionSettings {
+        health_sound: actions.potion_sounds[0].clone(),
+        mana_sound: actions.potion_sounds[1].clone(),
+        health_effect: difficulty.map_or(1.0, |manager| manager.health_potion_factor(preset)),
+        mana_effect: difficulty.map_or(1.0, |manager| manager.mana_potion_factor(preset)),
+        mana_speed: difficulty.map_or(1.0, |manager| manager.mana_heal_factor(preset)),
+        suppress_sound: logic.and_then(|logic| logic.current())
+            == Some(crate::gameplay::game_logic::StateId(8)),
+    };
+    match player.use_potion(kind, inventory, &settings) {
+        Ok(Some(mut result)) => {
+            if let Some(sound) = result.sound.take() {
+                sounds.write(super::super::audio::SoundEvent(
+                    crate::gameplay::sound::Request::Post {
+                        event: sound.id,
+                        emitter: crate::gameplay::sound::Emitter::PlayerBody,
+                    },
+                ));
             }
-            Ok(None) => {}
-            Err(error) => eprintln!("Potion action: {error}"),
+            actions.potion_results.push(result);
         }
+        Ok(None) => {}
+        Err(error) => eprintln!("Potion action: {error}"),
     }
 }

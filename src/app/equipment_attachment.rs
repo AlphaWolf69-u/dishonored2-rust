@@ -288,9 +288,9 @@ impl Models {
         inverse_bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
         joint_transforms: &mut Query<&mut GlobalTransform, Without<Mesh3d>>,
         identities: Option<&super::super::equipment_identity::Identities>,
-        delta: f32,
+        clock: Option<&crate::gameplay::game_clock_runtime::ClockRuntime>,
     ) -> Result<(), String> {
-        for model in self.live.values_mut() {
+        for (&id, model) in &mut self.live {
             let render = renders.iter().find(|render| {
                 render.managed_entity == Some(model.parent) && render.model == model.weapon.model
             });
@@ -356,10 +356,14 @@ impl Models {
                             .node
                             .as_mut()
                             .ok_or("animated attachment lost its actual AnimBasic state")?;
-                        let rate = identities
-                            .and_then(|ids| ids.published_frame(model.parent))
-                            .map_or(1., |(_, rate)| rate);
-                        node.update(delta * rate, model.command.take(), &rig.animations);
+                        let clock =
+                            clock.ok_or("animated attachment has no canonical clock owner")?;
+                        let delta = if clock.advanced() {
+                            clock.entity_delta(id).map_err(str::to_owned)?
+                        } else {
+                            0.
+                        };
+                        node.update(delta, model.command.take(), &rig.animations);
                         let pose = node.evaluate(&rig.animations, &rig.skeleton.rest)?;
                         // This validated tree's inactive pause leaves publish
                         // the model's initialized skeleton. Missing/unsupported

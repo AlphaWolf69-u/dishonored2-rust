@@ -15,7 +15,7 @@ use crate::gameplay::player::body::{Body, BodySkeleton};
 use crate::gameplay::player::camera::CameraDecl;
 use crate::gameplay::player::character_proxy::{PlayerWorld, RayHit, WorldHit};
 use crate::gameplay::player::controller::{ActionEvent, LookSettings, MOUSE_MOVE_KEY};
-use crate::gameplay::player::midnight::{prepare_sounds_owned, Midnight, PreparedScene};
+use crate::gameplay::player::midnight::{prepare_sounds_owned, PreparedScene};
 use crate::gameplay::player::states::{scene_paths, Scenes};
 use crate::gameplay::player::{decls, Player, PlayerSetup};
 use crate::gameplay::shape_cast;
@@ -290,10 +290,8 @@ fn load_body(
         let count = decl.scenes.len();
         let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
             equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
-        let mut next = Some(prepared.decl.first);
-        for _ in 0..16 {
-            let Some(element) = next.take() else { break };
-            let Some(index) = Midnight::resolve(&prepared, element, [body_model, &arm_models[0], &arm_models[1], "", ""]).map_err(|e| format!("{resource}: {e}"))? else { break };
+        for index in super::player_actions::scene_indices(&prepared, [body_model, &arm_models[0], &arm_models[1], "", ""])
+            .map_err(|e| format!("{resource}: {e}"))? {
             if let Some(g) = prepared.group_for_model(index, 0, body_model).map_err(|e| format!("{resource}: {e}"))? {
                 let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                 prepared.clips[index] = keys.iter().map(|k| clip(&k.anim)).collect::<Result<_, _>>()?;
@@ -304,7 +302,6 @@ fn load_body(
                     prepared.arm_clips[side][index] = keys.iter().map(|k| clips.clip(&k.anim)).collect::<Result<_, _>>()?;
                 }
             }
-            next = Some(prepared.decl.scenes[index].next).filter(|n| *n != crate::entities::midnight::Next::Final);
         }
         scenes.insert(path.clone(), std::sync::Arc::new(prepared));
     }
@@ -670,7 +667,7 @@ pub(super) fn update_player(
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
     inventory: Option<ResMut<super::interaction_focus::DiscoveredDocuments>>,
-    actions: Option<ResMut<super::player_actions::PlayerActions>>,
+    mut actions: Option<ResMut<super::player_actions::PlayerActions>>,
     logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
 ) {
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
@@ -744,7 +741,7 @@ pub(super) fn update_player(
                 .is_none_or(|manager| manager.mana_replenishes(current));
             let now = clock.player_time().unwrap_or(0.0);
             if let Some(mut inventory) = inventory {
-                if let Some(mut actions) = actions {
+                if let Some(mut actions) = actions.as_deref_mut() {
                     super::player_actions::dispatch_shortcuts(
                         player,
                         &events,
@@ -773,6 +770,10 @@ pub(super) fn update_player(
                     base,
                     &mut inventory,
                 );
+                if let Some(actions) = actions.as_deref_mut() {
+                    super::player_actions::dispatch_automatic_potion(player, &mut inventory, actions,
+                        difficulty.as_ref(), current, logic.as_deref(), &mut sound_events);
+                }
             } else {
                 player.frame(
                     &world,

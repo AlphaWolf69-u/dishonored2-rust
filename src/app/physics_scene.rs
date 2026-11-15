@@ -43,6 +43,7 @@ pub(super) mod document_hierarchy;
 pub(super) mod preparation;
 mod document_pickup;
 mod damage;
+mod entity_messages;
 pub(super) mod windblast;
 pub(super) mod rigid_actor;
 use interaction_components::UsableComponent;
@@ -949,8 +950,11 @@ impl ComponentLifecycleWorld for PhysicsScene {
             .clone();
         if handle.class_id == self.classes[10] {
             self.entities[entity_index].entity_flags_d7 |= 2;
+            let dead = self.entities[entity_index].entity_flags & 0x800 != 0;
             let component = self.health.get_mut(handle.slot).ok_or("health component absent")?;
-            if component.owner.flags & (1 << 30) == 0 { component.current = component.maximum; }
+            // 7181c0 preserves a previously dead owner's zero health when
+            // the real component restarts; Start is not a resurrection.
+            if component.owner.flags & (1 << 30) == 0 { component.current = if dead { 0.0 } else { component.maximum }; }
         }
         if handle.class_id == self.classes[0] {
             let declaration = self

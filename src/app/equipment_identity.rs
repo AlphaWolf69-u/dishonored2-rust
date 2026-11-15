@@ -128,7 +128,15 @@ pub(super) fn admit_attachment(
     {
         return Err("ammunition parent is not an admitted weapon generation".into());
     }
-    admit(
+    // 8ae9b0 receives no clock-source entity for ammo/upgrade children.
+    // Their idEntity874c50 selector +2ac starts at zero, independently of
+    // the weapon selector copied by619380. Validate before identity admission.
+    world
+        .get_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+        .ok_or("attachment has no canonical clock owner")?
+        .clock()
+        .map_err(str::to_owned)?;
+    let id = admit(
         world,
         identity,
         &descriptor.entity,
@@ -136,7 +144,11 @@ pub(super) fn admit_attachment(
         &descriptor.class,
         weapon,
         true,
-    )
+    )?;
+    world
+        .resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+        .register_entity_time(id, 0)?;
+    Ok(id)
 }
 
 fn admit(
@@ -237,6 +249,11 @@ fn admit(
         },
     );
     Ok(id)
+}
+
+pub(super) fn item_identity(world: &World, id: EntityId) -> Option<&str> {
+    let entry = world.get_resource::<Identities>()?.entries.get(&id)?;
+    (!entry.key.ammo && entry.linked).then_some(entry.key.identity.as_str())
 }
 
 pub(super) fn runtime_flags(world: &World, id: EntityId) -> Option<u8> {
@@ -393,6 +410,11 @@ pub(super) fn retire_acknowledged(world: &mut World, id: EntityId) -> Result<(),
         .get_mut(&id)
         .ok_or("equipment retirement record disappeared")?
         .identity_retired = true;
+    if let Some(mut clock) =
+        world.get_resource_mut::<crate::gameplay::game_clock_runtime::ClockRuntime>()
+    {
+        clock.unregister_entity_time(id);
+    }
     if let Some(emitter) = audio {
         super::audio::forget_retired_component_object(world, emitter)?;
     }

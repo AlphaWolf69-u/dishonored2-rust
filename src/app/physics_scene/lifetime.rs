@@ -166,12 +166,10 @@ impl ComponentUpdateWorld for Host<'_> {
 }
 
 impl ComponentReleaseWorld for Host<'_> {
-    fn pump_events(&mut self, _: &mut ComponentRegistry) -> Result<(), String> {
-        // No callback in the current five factories subscribes numeric entity
-        // messages. Preserve queued errors instead of fabricating dispatch for
-        // an unimplemented listener owner. This runs without a world lock.
-        let errors = self.events.pump(|listener, _, _| Err(format!("physics retirement has no callback for {listener:?}")));
-        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    fn pump_events(&mut self, registry: &mut ComponentRegistry) -> Result<(), String> {
+        // Retirement drains the same numeric registry and actual callback
+        // owner as normal gameplay, before retiring those component leases.
+        self.scene.pump_entity_messages_with_registry(self.live, self.events, registry)
     }
 
     fn stop(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
@@ -220,6 +218,12 @@ impl ComponentReleaseWorld for Host<'_> {
         } else if handle.class_id == scene.classes[9] {
             scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?
                 .stop(scene.faction_manager.as_mut().ok_or("Faction manager absent")?.manager_mut());
+        } else if handle.class_id == scene.classes[10] {
+            // Health Stop718240 clears the entity presence flag before
+            // base7e7750; deinitialization must not leave a stopped receiver
+            // advertised on its still-live entity in the meantime.
+            let index = scene.owner(handle)?.entity.ok_or("health entity absent")?;
+            scene.entities[index].entity_flags_d7 &= !2;
         }
         registry.stop_update_ownership(handle, self)
     }
@@ -252,10 +256,6 @@ impl ComponentReleaseWorld for Host<'_> {
         }
         if handle.class_id == self.scene.classes[9] {
             self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.deinitialize()?;
-        }
-        if handle.class_id == self.scene.classes[10] {
-            let index = self.owner(handle)?.entity.ok_or("health entity absent")?;
-            self.scene.entities[index].entity_flags_d7 &= !2;
         }
         if handle.class_id == self.scene.classes[0] {
             let scene = &mut self.scene;

@@ -1021,11 +1021,7 @@ pub(super) fn update_player_arms(
             &mut inverse_bindposes,
             &mut joint_transforms,
             identities.as_deref(),
-            clock
-                .as_ref()
-                .filter(|clock| clock.advanced())
-                .and_then(|clock| clock.clock().ok()?.delta(0))
-                .unwrap_or(0.0),
+            clock.as_deref(),
         )
         .err();
     let PlayerArms {

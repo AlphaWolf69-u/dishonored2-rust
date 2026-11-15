@@ -14,7 +14,7 @@ use crate::{
         self, Player,
         arms::{EquipmentDefinition, PreparedEquipment},
         equipment::EquipmentTree,
-        midnight::{Midnight, PreparedScene},
+        midnight::PreparedScene,
         states::Scenes,
     },
 };
@@ -31,6 +31,7 @@ use std::{
 };
 
 struct Snapshot {
+    managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     rig: Arc<Rig>,
     model: String,
     aliases: HashMap<String, usize>,
@@ -38,6 +39,7 @@ struct Snapshot {
 }
 
 struct Bank {
+    managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     model: String,
     base: usize,
     animations: Vec<crate::edge_animation::EdgeAnimation>,
@@ -81,6 +83,8 @@ pub(super) struct ReadyPower {
     effect_paths: Vec<String>,
     reservation_key: Arc<str>,
     reservation: Option<Arc<str>>,
+    grapple_feedback: Option<player::grapple_state::Feedback>,
+    grapple_body: Option<player::body::grapple::Prepared>,
 }
 
 enum PreparedFamily {
@@ -101,27 +105,60 @@ struct PowerDependencyRetirement {
     sources_released: bool,
 }
 
+/// One mutable component instance. Moving between selected, moving and idle
+/// slots never clones its sensor/FX state or rebuilds its physics shapes.
+pub(super) struct OwnedFamily<T> {
+    generation: Arc<str>,
+    runtime: T,
+    cleanup: bool,
+}
+impl<T> std::ops::Deref for OwnedFamily<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.runtime
+    }
+}
+impl<T> std::ops::DerefMut for OwnedFamily<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.runtime
+    }
+}
+type BlinkOwner = OwnedFamily<super::blink::Runtime>;
+type FarReachOwner = OwnedFamily<super::far_reach::Runtime>;
+
 impl ReadyPower {
     fn publish_dependencies(&mut self, world: &mut World) -> Result<bool, String> {
         if let Some(family) = self.family.take() {
             match family {
-                PreparedFamily::BendTime(sources) => world.get_resource_mut::<super::power_world::PowerWorld>()
-                    .ok_or("owned Bend Time has no canonical world owner")?.absorb(sources)?,
-                PreparedFamily::Windblast(sources) => world.get_resource_mut::<super::windblast::Windblasts>()
-                    .ok_or("owned Windblast has no canonical world owner")?.absorb(sources)?,
+                PreparedFamily::BendTime(sources) => world
+                    .get_resource_mut::<super::power_world::PowerWorld>()
+                    .ok_or("owned Bend Time has no canonical world owner")?
+                    .absorb(sources)?,
+                PreparedFamily::Windblast(sources) => world
+                    .get_resource_mut::<super::windblast::Windblasts>()
+                    .ok_or("owned Windblast has no canonical world owner")?
+                    .absorb(sources)?,
             }
         }
-        if self.effect_paths.is_empty() && self.reservation.is_none() { return Ok(true); }
+        if self.effect_paths.is_empty() && self.reservation.is_none() {
+            return Ok(true);
+        }
         if self.reservation.is_none() {
             // Host producer identity only. Canonical FX acquisition, material
             // preparation and actual playing instances remain in that owner.
             let key = self.reservation_key.clone();
-            world.get_resource_mut::<super::usable_effects::EffectRequests>()
+            world
+                .get_resource_mut::<super::usable_effects::EffectRequests>()
                 .ok_or("owned power has no canonical FX request owner")?
                 .reserve(key.clone(), std::mem::take(&mut self.effect_paths));
             self.reservation = Some(key);
         }
-        super::usable_effects::reservation_ready(world, self.reservation.as_deref().expect("power reservation identity"))
+        super::usable_effects::reservation_ready(
+            world,
+            self.reservation
+                .as_deref()
+                .expect("power reservation identity"),
+        )
     }
     pub fn side(&self) -> usize {
         self.side
@@ -142,7 +179,9 @@ impl ReadyPower {
                 3 | 4 => player.body.equipment[target - 3]
                     .as_ref()
                     .is_some_and(|tree| {
-                        tree.model == bank.model && tree.animations.len() == bank.base
+                        tree.managed_entity == bank.managed_entity
+                            && tree.model == bank.model
+                            && tree.animations.len() == bank.base
                     }),
                 _ => false,
             }
@@ -189,7 +228,15 @@ impl ReadyPower {
             arm.install_equipment(prepared);
         }
         player.install_animation_scenes(self.scenes.clone());
-        if self.id == 6 { player.register_grapple_scenes(self.scenes.clone()); }
+        if self.id == 6 {
+            player.register_grapple_scenes(self.scenes.clone());
+        }
+        if let Some(feedback) = self.grapple_feedback {
+            player.register_grapple_feedback(feedback);
+        }
+        if let Some(prepared) = self.grapple_body {
+            player.body.install_grapple(prepared)?;
+        }
         if !player.has_registered_power(self.id)
             && !player.register_power(
                 crate::gameplay::powers::Cast::new(self.settings),
@@ -254,7 +301,9 @@ impl ReadyEquipment {
                 3 | 4 => player.body.equipment[target - 3]
                     .as_ref()
                     .is_some_and(|tree| {
-                        tree.model == bank.model && tree.animations.len() == bank.base
+                        tree.managed_entity == bank.managed_entity
+                            && tree.model == bank.model
+                            && tree.animations.len() == bank.base
                     }),
                 _ => false,
             }
@@ -322,6 +371,8 @@ pub(super) struct PlayerActions {
     catalog: Arc<Catalog>,
     body: Arc<Rig>,
     arms: [Arc<Rig>; 2],
+    arm_trees: [Option<String>; 2],
+    grapple_body: Arc<player::body::grapple::Definition>,
     definitions: Arc<[HashMap<String, Arc<EquipmentDefinition>>; 2]>,
     sources: Arc<Mutex<Sources>>,
     cancelled: Arc<AtomicBool>,
@@ -346,13 +397,16 @@ pub(super) struct PlayerActions {
     wanted: [Option<String>; 16],
     source_flags: HashMap<String, u32>,
     pub selected_ammunition: HashMap<String, Option<String>>,
-    pub blink: Option<super::blink::Runtime>,
-    pub active_blink: Option<super::blink::Runtime>,
-    pub retiring_blinks: Vec<super::blink::Runtime>,
+    pub blink: Option<BlinkOwner>,
+    pub active_blink: Option<BlinkOwner>,
+    pub retiring_blinks: Vec<BlinkOwner>,
+    cached_blinks: HashMap<Arc<str>, BlinkOwner>,
     blink_player: Option<super::blink::PlayerSettings>,
     far_reach_player: Option<super::far_reach::PlayerSettings>,
-    pub far_reach: Option<super::far_reach::Runtime>,
-    pub active_far_reach: Option<super::far_reach::Runtime>,
+    pub far_reach: Option<FarReachOwner>,
+    pub active_far_reach: Option<FarReachOwner>,
+    retiring_far_reaches: Vec<FarReachOwner>,
+    cached_far_reaches: HashMap<Arc<str>, FarReachOwner>,
     slash_scene_paths: Arc<[String]>,
     power_activations: HashMap<String, PowerActivation>,
     power_reservations: HashMap<String, Arc<str>>,
@@ -361,6 +415,7 @@ pub(super) struct PlayerActions {
     next_power_reservation: u64,
     pub power_targets: Vec<player::equipment_states::Target>,
     active_power: Option<String>,
+    active_power_generation: Option<Arc<str>>,
     pub potion_sounds: [Option<Arc<SoundEventDeclaration>>; 2],
     pub potion_results: Vec<player::consumables::PotionResult>,
     pub selection_requests: Vec<ShortcutSelection>,
@@ -384,6 +439,7 @@ impl PlayerActions {
         let body = Rig::acquire(&catalog, &declarations.body_model)?;
         let parts = player::decls::arm_parts(&declarations.body)?;
         let mut rigs = Vec::with_capacity(2);
+        let mut arm_trees: [Option<String>; 2] = Default::default();
         let mut definitions: [HashMap<String, Arc<EquipmentDefinition>>; 2] = Default::default();
         for (side, (part, _, _)) in parts.iter().enumerate() {
             let entity = part.as_deref().ok_or("player arm has no entity")?;
@@ -399,6 +455,15 @@ impl PlayerActions {
             )
             .ok_or("player arm has no render model")?;
             rigs.push(Rig::acquire(&catalog, model)?);
+            arm_trees[side] =
+                crate::entities::player::entity_component(entity, "cpntanimevolved", |path| {
+                    crate::assets::declaration_texts::read_common_or_catalog(&catalog, path)
+                })?
+                .and_then(|fields| {
+                    crate::entities::scene_motion::atom(&fields, "m_animTree")
+                        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+                        .map(str::to_owned)
+                });
             // Metadata only. No unselected equipment animation, model,
             // material or GPU allocation is acquired by this projection.
             for name in player::decls::arm_equipment_names(&declarations.locomotion, side) {
@@ -418,6 +483,7 @@ impl PlayerActions {
             &declarations.health,
             &declarations.mana,
         )?;
+        let grapple_body = Arc::new(player::body::grapple::Definition::read(&declarations.body));
         let shortcuts = Arc::new(ShortcutSettings::read(&declarations.controller)?);
         let mut slash_scene_paths = player::combat::equipment_scene_paths(declarations);
         if let Some(definition) = declarations
@@ -443,16 +509,27 @@ impl PlayerActions {
                 super::blink::Prepared::player(state, &declarations.blink_mantle_sensor)
             })
             .transpose()?;
-        let far_reach_player = declarations.states.iter()
+        let far_reach_player = declarations
+            .states
+            .iter()
             .filter(|_| !declarations.grapple_sensor.is_empty())
             .find(|(kind, _)| kind == "playerstategrapple")
-            .map(|(_, state)| super::far_reach::Prepared::player(state, &declarations.grapple_sensor)).transpose()?;
+            .map(|(_, state)| {
+                super::far_reach::Prepared::player_with_mantle(
+                    state,
+                    &declarations.grapple_sensor,
+                    &declarations.grapple_to_mantle_sensor,
+                )
+            })
+            .transpose()?;
         Ok(Self {
             catalog,
             body,
             arms: rigs
                 .try_into()
                 .map_err(|_| "player requires two arm rigs")?,
+            arm_trees,
+            grapple_body,
             definitions: Arc::new(definitions),
             sources: Default::default(),
             cancelled: Default::default(),
@@ -482,10 +559,13 @@ impl PlayerActions {
             blink: None,
             active_blink: None,
             retiring_blinks: Vec::new(),
+            cached_blinks: Default::default(),
             blink_player,
             far_reach_player,
             far_reach: None,
             active_far_reach: None,
+            retiring_far_reaches: Vec::new(),
+            cached_far_reaches: Default::default(),
             slash_scene_paths,
             power_activations: Default::default(),
             power_reservations: Default::default(),
@@ -494,6 +574,7 @@ impl PlayerActions {
             next_power_reservation: 0,
             power_targets: Vec::new(),
             active_power: None,
+            active_power_generation: None,
             selection_requests: Vec::new(),
             removed_equipment: Vec::new(),
             shortcuts,
@@ -590,8 +671,18 @@ impl PlayerActions {
                 .iter()
                 .any(|ready| ready.item.path.as_ref() == path)
     }
-    pub fn startup_error(&self) -> Option<&str> { self.startup_error.as_deref() }
-    pub fn take_equipment_admission(&mut self, identity: &str) -> bool { self.equipment_admissions.remove(identity) }
+    pub fn startup_error(&self) -> Option<&str> {
+        self.startup_error.as_deref()
+    }
+    pub fn metadata_admissions_pending(&self) -> bool {
+        !self.rehydrated
+            || !self.metadata_loading.is_empty()
+            || !self.metadata_order.is_empty()
+            || !self.prepared_owned_metadata.is_empty()
+    }
+    pub fn take_equipment_admission(&mut self, identity: &str) -> bool {
+        self.equipment_admissions.remove(identity)
+    }
 
     pub fn active(&self, side: usize) -> Option<&Arc<Descriptor>> {
         self.active.get(side)?.as_ref()
@@ -616,23 +707,54 @@ impl PlayerActions {
         };
         let id = activation.id;
         let equipment = activation.equipment.clone();
+        let generation = self
+            .power_reservations
+            .get(identity)
+            .cloned()
+            .ok_or("owned power generation is absent")?;
+        if self.active_power.as_deref() == Some(identity)
+            && self.active_power_generation.as_ref() == Some(&generation)
+        {
+            return Ok(Some((id, equipment)));
+        }
         let blink = activation.blink.clone();
         let far_reach = activation.far_reach.clone();
         if !player.equip_registered_power(id) {
             return Err("native equipment activation could not install the selected power".into());
         }
         self.detach_blink();
-        self.detach_far_reach(player);
-        self.blink = blink.map(|prepared| super::blink::Runtime::new(prepared, &player.physics));
+        self.detach_far_reach();
+        if let Some(prepared) = blink {
+            self.blink = Some(match self.take_blink_owner(&generation) {
+                Some(owner) => owner,
+                None => {
+                    let mut runtime = super::blink::Runtime::new(prepared, &player.physics);
+                    runtime.set_owner_key(generation.clone())?;
+                    OwnedFamily {
+                        generation: generation.clone(),
+                        runtime,
+                        cleanup: false,
+                    }
+                }
+            });
+        }
+        if let Some(prepared) = far_reach {
+            self.far_reach = Some(match self.take_far_reach_owner(&generation) {
+                Some(owner) => owner,
+                None => OwnedFamily {
+                    generation: generation.clone(),
+                    runtime: super::far_reach::Runtime::new(prepared, &player.physics),
+                    cleanup: false,
+                },
+            });
+        }
         self.active_power = Some(identity.to_owned());
-        self.far_reach = far_reach.map(|prepared| super::far_reach::Runtime::new(prepared, &player.physics));
+        self.active_power_generation = Some(generation);
         Ok(Some((id, equipment)))
     }
 
-    pub fn cancel_power_selection(&mut self, identity: &str) {
-        // Cancelling a switch does not destroy the still-owned power entity.
-        // Its immutable prepared action inputs survive until quantity zero.
-        let _ = identity;
+    pub fn cancel_power_selection(&mut self, _identity: &str) {
+        // A cancelled switch leaves the owned component and prepared inputs.
     }
 
     pub fn deactivate_power(&mut self, identity: &str, player: &mut Player) -> bool {
@@ -641,35 +763,143 @@ impl PlayerActions {
         }
         player.unequip_power();
         self.detach_blink();
-        self.detach_far_reach(player);
+        self.detach_far_reach();
         self.active_power = None;
+        self.active_power_generation = None;
         true
     }
 
+    fn take_blink_owner(&mut self, generation: &Arc<str>) -> Option<BlinkOwner> {
+        if self
+            .active_blink
+            .as_ref()
+            .is_some_and(|owner| &owner.generation == generation)
+        {
+            return self.active_blink.take();
+        }
+        if let Some(owner) = self.cached_blinks.remove(generation) {
+            return Some(owner);
+        }
+        self.retiring_blinks
+            .iter()
+            .position(|owner| &owner.generation == generation)
+            .map(|index| self.retiring_blinks.remove(index))
+    }
+    fn take_far_reach_owner(&mut self, generation: &Arc<str>) -> Option<FarReachOwner> {
+        if self
+            .active_far_reach
+            .as_ref()
+            .is_some_and(|owner| &owner.generation == generation)
+        {
+            return self.active_far_reach.take();
+        }
+        if let Some(owner) = self.cached_far_reaches.remove(generation) {
+            return Some(owner);
+        }
+        self.retiring_far_reaches
+            .iter()
+            .position(|owner| &owner.generation == generation)
+            .map(|index| self.retiring_far_reaches.remove(index))
+    }
     fn detach_blink(&mut self) {
-        if let Some(blink) = self.blink.take() {
-            if blink.has_activity() {
-                // Only one actual Blinking state exists. Its motion, time
-                // lease and damage/FX payload outlive equipment selection.
+        if let Some(mut owner) = self.blink.take() {
+            if owner.has_motion() {
                 assert!(
                     self.active_blink.is_none(),
                     "two simultaneous Blink movement owners"
                 );
-                self.active_blink = Some(blink);
+                self.active_blink = Some(owner);
             } else {
-                // Even an idle target can own helper FX. The canonical
-                // dispatcher retires these with its real clock/FX owners.
-                self.retiring_blinks.push(blink);
+                owner.cleanup = true;
+                self.retiring_blinks.push(owner);
             }
         }
     }
-    fn detach_far_reach(&mut self, player: &mut Player) {
-        if let Some(mut runtime) = self.far_reach.take() {
-            if runtime.has_activity() {
-                assert!(self.active_far_reach.is_none(), "two simultaneous Grapple movement owners");
-                self.active_far_reach = Some(runtime);
-            } else { runtime.cancel(player); }
+    fn detach_far_reach(&mut self) {
+        if let Some(mut owner) = self.far_reach.take() {
+            if owner.has_activity() {
+                assert!(
+                    self.active_far_reach.is_none(),
+                    "two simultaneous Grapple movement owners"
+                );
+                self.active_far_reach = Some(owner);
+            } else {
+                owner.cleanup = true;
+                self.retiring_far_reaches.push(owner);
+            }
         }
+    }
+    pub fn finish_blink_activity(&mut self) {
+        if let Some(mut owner) = self.active_blink.take() {
+            owner.cleanup = true;
+            self.retiring_blinks.push(owner);
+        }
+    }
+    pub fn finish_far_reach_activity(&mut self) {
+        if let Some(mut owner) = self.active_far_reach.take() {
+            owner.cleanup = true;
+            self.retiring_far_reaches.push(owner);
+        }
+    }
+    pub fn has_family_work(&self) -> bool {
+        self.blink.is_some()
+            || self.active_blink.is_some()
+            || !self.retiring_blinks.is_empty()
+            || self.far_reach.is_some()
+            || self.active_far_reach.is_some()
+            || !self.retiring_far_reaches.is_empty()
+    }
+    pub fn needs_preparation(&self) -> bool {
+        self.blink.as_ref().is_some_and(|owner| owner.cleanup)
+            || self.far_reach.as_ref().is_some_and(|owner| owner.cleanup)
+            || !self.retiring_blinks.is_empty()
+            || !self.retiring_far_reaches.is_empty()
+    }
+    pub fn prepare_family_runtime(
+        &mut self,
+        player: &mut Player,
+        clock: &mut crate::gameplay::game_clock_runtime::ClockRuntime,
+        effects: &mut super::usable_effects::EffectRequests,
+    ) -> Result<(), String> {
+        if !self.needs_preparation() {
+            return Ok(());
+        }
+        if let Some(owner) = self.blink.as_mut().filter(|owner| owner.cleanup) {
+            owner.retire(player, clock, effects)?;
+            owner.cleanup = false;
+        }
+        if let Some(owner) = self.far_reach.as_mut().filter(|owner| owner.cleanup) {
+            owner.retire(player);
+            owner.cleanup = false;
+        }
+        for owner in &mut self.retiring_blinks {
+            owner.retire(player, clock, effects)?;
+            owner.cleanup = false;
+        }
+        for owner in &mut self.retiring_far_reaches {
+            owner.retire(player);
+            owner.cleanup = false;
+        }
+        for owner in self.retiring_blinks.drain(..) {
+            if self
+                .power_reservations
+                .values()
+                .any(|key| key == &owner.generation)
+            {
+                self.cached_blinks.insert(owner.generation.clone(), owner);
+            }
+        }
+        for owner in self.retiring_far_reaches.drain(..) {
+            if self
+                .power_reservations
+                .values()
+                .any(|key| key == &owner.generation)
+            {
+                self.cached_far_reaches
+                    .insert(owner.generation.clone(), owner);
+            }
+        }
+        Ok(())
     }
     pub fn wanted(&self, slot: u8, path: &str) -> bool {
         self.wanted.get(slot as usize).and_then(Option::as_deref) == Some(path)
@@ -771,7 +1001,8 @@ impl PlayerActions {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     eprintln!("Equipment metadata {path}: {error}");
-                    self.startup_error.get_or_insert_with(|| format!("Equipment metadata {path}: {error}"));
+                    self.startup_error
+                        .get_or_insert_with(|| format!("Equipment metadata {path}: {error}"));
                     self.metadata_failed.insert(path);
                     continue;
                 }
@@ -788,7 +1019,8 @@ impl PlayerActions {
                 self.equipment_admissions.insert(path.clone());
             }
             // Non-rendering powers are real managed entities too.
-            self.prepared_owned_metadata.push((path.clone(), metadata.clone()));
+            self.prepared_owned_metadata
+                .push((path.clone(), metadata.clone()));
             self.request_owned(&path, &metadata);
             self.owned_targets.push_back(path.clone());
             self.metadata.insert(path, metadata);
@@ -874,7 +1106,8 @@ impl PlayerActions {
                 Some(Err(error)) => {
                     if !pending.cancelled.load(Ordering::Acquire) {
                         eprintln!("Owned equipment {path}: {error}");
-                        self.startup_error.get_or_insert_with(|| format!("Owned equipment {path}: {error}"));
+                        self.startup_error
+                            .get_or_insert_with(|| format!("Owned equipment {path}: {error}"));
                     }
                     false
                 }
@@ -904,7 +1137,8 @@ impl PlayerActions {
                 Some(Err(error)) => {
                     if !pending.cancelled.load(Ordering::Acquire) {
                         eprintln!("Equipment {path}: {error}");
-                        self.startup_error.get_or_insert_with(|| format!("Equipment {path}: {error}"));
+                        self.startup_error
+                            .get_or_insert_with(|| format!("Equipment {path}: {error}"));
                         self.failed_targets.insert(path.clone());
                     }
                     false
@@ -937,7 +1171,8 @@ impl PlayerActions {
                 Some(Err(error)) => {
                     if !pending.cancelled.load(Ordering::Acquire) {
                         eprintln!("Power {path}: {error}");
-                        self.startup_error.get_or_insert_with(|| format!("Power {path}: {error}"));
+                        self.startup_error
+                            .get_or_insert_with(|| format!("Power {path}: {error}"));
                         self.failed_targets.insert(path.clone());
                     }
                     false
@@ -993,9 +1228,15 @@ impl PlayerActions {
             None
         };
         let far_reach = if id == 6 {
-            Some(super::far_reach::Prepared::with_power(&power.component, self.far_reach_player.as_ref()
-                .ok_or("Far Reach player movement/sensor declarations are absent")?)?)
-        } else { None };
+            Some(super::far_reach::Prepared::with_power(
+                &power.component,
+                self.far_reach_player
+                    .as_ref()
+                    .ok_or("Far Reach player movement/sensor declarations are absent")?,
+            )?)
+        } else {
+            None
+        };
         let name = equipment
             .loco_equip_state
             .as_deref()
@@ -1006,6 +1247,7 @@ impl PlayerActions {
             .ok_or_else(|| format!("arm {side} has no {name} equipment state"))?;
         let mut snapshots: [Option<Snapshot>; 5] = Default::default();
         snapshots[0] = Some(Snapshot {
+            managed_entity: None,
             rig: self.body.clone(),
             model: self.body.path.clone(),
             aliases: player.body.animation_aliases.clone(),
@@ -1013,6 +1255,7 @@ impl PlayerActions {
         });
         for (side, arm) in player.body.arms.iter().enumerate().take(2) {
             snapshots[side + 1] = Some(Snapshot {
+                managed_entity: None,
                 rig: self.arms[side].clone(),
                 model: arm.model.clone(),
                 aliases: arm.animation_aliases.clone(),
@@ -1025,6 +1268,7 @@ impl PlayerActions {
             }
             if let Some(tree) = tree {
                 snapshots[other + 3] = Some(Snapshot {
+                    managed_entity: tree.managed_entity,
                     rig: tree.rig.clone(),
                     model: tree.model.clone(),
                     aliases: tree.animation_aliases.clone(),
@@ -1040,6 +1284,8 @@ impl PlayerActions {
         let already_prepared = arm.has_equipment(name);
         let additives = arm.additives.items.clone();
         let catalog = self.catalog.clone();
+        let grapple_definition = self.grapple_body.clone();
+        let arm_trees = self.arm_trees.clone();
         let closed = self.cancelled.clone();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
@@ -1049,13 +1295,18 @@ impl PlayerActions {
             Some(key) => key.clone(),
             None => {
                 self.next_power_reservation = self.next_power_reservation.wrapping_add(1);
-                let key: Arc<str> = format!("inventory-power:{}:{}", self.next_power_reservation, path).into();
-                self.power_reservations.insert(path.clone(), key.clone()); key
+                let key: Arc<str> =
+                    format!("inventory-power:{}:{}", self.next_power_reservation, path).into();
+                self.power_reservations.insert(path.clone(), key.clone());
+                key
             }
         };
         let task = IoTaskPool::get().spawn(async move {
             // Retain the canonical metadata owner while acquiring its paths.
-            let power = definitions.0.get(index).ok_or("owned power definition is absent")?;
+            let power = definitions
+                .0
+                .get(index)
+                .ok_or("owned power definition is absent")?;
             let cancelled =
                 || closed.load(Ordering::Acquire) || worker_cancelled.load(Ordering::Acquire);
             if cancelled() {
@@ -1063,23 +1314,77 @@ impl PlayerActions {
             }
             if let Some(name) = &settings.cancel_sound {
                 settings.cancel_sound_event = crate::assets::fx::SoundEventAsset {
-                    delay: [0.0; 2], event: Some(name.clone()),
-                }.resolve(&catalog)?;
+                    delay: [0.0; 2],
+                    event: Some(name.clone()),
+                }
+                .resolve(&catalog)?;
             }
+            let grapple_feedback = far_reach
+                .as_ref()
+                .map(|prepared| {
+                    let acquire = |name: &Option<String>| -> Result<
+                                Option<Arc<SoundEventDeclaration>>,
+                                String,
+                            > {
+                                match name {
+                                    Some(name) => crate::assets::fx::SoundEventAsset {
+                                        delay: [0.0; 2],
+                                        event: Some(name.clone()),
+                                    }
+                                    .resolve(&catalog),
+                                    None => Ok(None),
+                                }
+                            };
+                    Ok::<_, String>(player::grapple_state::Feedback {
+                        stick: acquire(&prepared.player.motion.stick_sound_event)?,
+                        unstick: acquire(&prepared.player.motion.unstick_sound_event)?,
+                        leave_wall_fx: prepared
+                            .player
+                            .motion
+                            .leave_wall_fx
+                            .as_deref()
+                            .map(Arc::from),
+                    })
+                })
+                .transpose()?;
             let family = match id {
-                1 => Some(PreparedFamily::BendTime(super::power_world::PreparedSources::acquire_power(&catalog, power)?)),
-                10 => Some(PreparedFamily::Windblast(super::windblast::PreparedSources::acquire_power(&catalog, power)?)),
+                1 => Some(PreparedFamily::BendTime(
+                    super::power_world::PreparedSources::acquire_power(&catalog, power)?,
+                )),
+                10 => Some(PreparedFamily::Windblast(
+                    super::windblast::PreparedSources::acquire_power(&catalog, power)?,
+                )),
                 _ => None,
             };
-            let mut effect_paths = blink.as_ref().into_iter().flat_map(|prepared| prepared.effect_paths()).map(str::to_owned).collect::<Vec<_>>();
+            let mut effect_paths = blink
+                .as_ref()
+                .into_iter()
+                .flat_map(|prepared| prepared.effect_paths())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if let Some(prepared) = &far_reach {
+                effect_paths.extend(prepared.effect_paths().map(str::to_owned));
+            }
             if let Some(family) = &family {
                 match family {
-                    PreparedFamily::BendTime(sources) => effect_paths.extend(sources.effect_paths().map(str::to_owned)),
-                    PreparedFamily::Windblast(sources) => effect_paths.extend(sources.effect_paths().map(str::to_owned)),
+                    PreparedFamily::BendTime(sources) => {
+                        effect_paths.extend(sources.effect_paths().map(str::to_owned))
+                    }
+                    PreparedFamily::Windblast(sources) => {
+                        effect_paths.extend(sources.effect_paths().map(str::to_owned))
+                    }
                 }
             }
-            effect_paths.sort(); effect_paths.dedup();
-            if cancelled() { return Err("power dependency acquisition cancelled".into()); }
+            if id == 6 {
+                if let Some(path) = &grapple_definition.beam_fx {
+                    effect_paths.push(path.to_string());
+                }
+            }
+            effect_paths.sort();
+            effect_paths.dedup();
+            if cancelled() {
+                return Err("power dependency acquisition cancelled".into());
+            }
             let rigs: Vec<_> = snapshots
                 .iter()
                 .map(|snapshot| snapshot.as_ref().map(|snapshot| snapshot.rig.clone()))
@@ -1109,6 +1414,18 @@ impl PlayerActions {
                     Some(&cancelled),
                 )?)
             };
+            let grapple_body = if id == 6 {
+                Some(prepare_grapple_body(
+                    &catalog,
+                    grapple_definition,
+                    &arm_trees,
+                    &snapshots,
+                    &mut clips,
+                    &cancelled,
+                )?)
+            } else {
+                None
+            };
             let mut paths: Vec<_> = [
                 &settings.in_midnight,
                 &settings.loop_midnight,
@@ -1122,7 +1439,9 @@ impl PlayerActions {
             .flatten()
             .cloned()
             .collect();
-            if let Some(prepared) = &far_reach { paths.extend(prepared.scene_paths().map(str::to_owned)); }
+            if let Some(prepared) = &far_reach {
+                paths.extend(prepared.scene_paths().map(str::to_owned));
+            }
             paths.sort();
             paths.dedup();
             let scenes = prepare_scenes(&catalog, &paths, &snapshots, &mut clips, &cancelled)?;
@@ -1134,6 +1453,7 @@ impl PlayerActions {
                 .zip(snapshots)
                 .map(|(clips, snapshot)| {
                     clips.zip(snapshot).map(|(clips, snapshot)| Bank {
+                        managed_entity: snapshot.managed_entity,
                         model: snapshot.model,
                         base: snapshot.base,
                         animations: clips.animations,
@@ -1156,6 +1476,8 @@ impl PlayerActions {
                 effect_paths,
                 reservation_key,
                 reservation: None,
+                grapple_feedback,
+                grapple_body,
             })
         });
         self.power_loading.insert(
@@ -1181,6 +1503,7 @@ impl PlayerActions {
             .to_owned();
         let mut snapshots: [Option<Snapshot>; 5] = Default::default();
         snapshots[0] = Some(Snapshot {
+            managed_entity: None,
             rig: self.body.clone(),
             model: self.body.path.clone(),
             aliases: player.body.animation_aliases.clone(),
@@ -1189,6 +1512,7 @@ impl PlayerActions {
         let mut additive_items = Vec::with_capacity(2);
         for (side, arm) in player.body.arms.iter().enumerate().take(2) {
             snapshots[side + 1] = Some(Snapshot {
+                managed_entity: None,
                 rig: self.arms[side].clone(),
                 model: arm.model.clone(),
                 aliases: arm.animation_aliases.clone(),
@@ -1202,6 +1526,7 @@ impl PlayerActions {
         for (side, tree) in player.body.equipment.iter().enumerate() {
             if let Some(tree) = tree {
                 snapshots[side + 3] = Some(Snapshot {
+                    managed_entity: tree.managed_entity,
                     rig: tree.rig.clone(),
                     model: tree.model.clone(),
                     aliases: tree.animation_aliases.clone(),
@@ -1255,6 +1580,7 @@ impl PlayerActions {
             let body = snapshots[0].as_ref().expect("body snapshot").rig.clone();
             let tree = descriptor.instantiate(&body, &arm_rigs, true)?;
             snapshots[side + 3] = Some(Snapshot {
+                managed_entity: tree.managed_entity,
                 rig: tree.rig.clone(),
                 model: tree.model.clone(),
                 aliases: tree.animation_aliases.clone(),
@@ -1307,6 +1633,7 @@ impl PlayerActions {
                 .zip(snapshots)
                 .map(|(clips, snapshot)| {
                     clips.zip(snapshot).map(|(clips, snapshot)| Bank {
+                        managed_entity: snapshot.managed_entity,
                         model: snapshot.model,
                         base: snapshot.base,
                         animations: clips.animations,
@@ -1333,6 +1660,142 @@ impl PlayerActions {
         );
         Ok(())
     }
+}
+
+fn prepare_grapple_body(
+    catalog: &Catalog,
+    definition: Arc<player::body::grapple::Definition>,
+    arm_trees: &[Option<String>; 2],
+    snapshots: &[Option<Snapshot>; 5],
+    clips: &mut [Option<Clips<'_>>],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<player::body::grapple::Prepared, String> {
+    let mut body_clips = [None; 2];
+    let mut arm_clips = [[None; 2]; 2];
+    let mut alias = |target: usize, name: &str| -> Result<usize, String> {
+        if cancelled() {
+            return Err("grapple hand preparation cancelled".into());
+        }
+        let snapshot = snapshots[target]
+            .as_ref()
+            .ok_or("grapple cast has no rig snapshot")?;
+        if let Some(index) = snapshot.aliases.get(name) {
+            return Ok(*index);
+        }
+        clips[target]
+            .as_mut()
+            .ok_or("grapple cast has no clip bank")?
+            .clip_cancellable(name, Some(cancelled))
+            .map(|index| snapshot.base + index)
+    };
+    for (axis, name) in definition.aliases.iter().enumerate() {
+        if let Some(name) = name {
+            body_clips[axis] = Some(alias(0, name)?);
+        }
+    }
+    for side in 0..2 {
+        if cancelled() {
+            return Err("grapple arm tree preparation cancelled".into());
+        }
+        let tree = arm_trees[side]
+            .as_deref()
+            .ok_or("grapple arm has no authored animation tree")?;
+        let path = format!("generated/decls/animtree/{tree}.decl");
+        let source = crate::assets::declaration_texts::read_common_or_catalog(catalog, &path)?
+            .ok_or_else(|| format!("grapple arm tree is absent: {path}"))?;
+        let names = crate::assets::animation_rig::paused_leaf_aliases(
+            &source,
+            [
+                definition.frame_inputs[0].as_str(),
+                definition.frame_inputs[1].as_str(),
+            ],
+        )?;
+        for (axis, name) in names.into_iter().enumerate() {
+            if let Some(name) = name {
+                arm_clips[side][axis] = Some(alias(side + 1, &name)?);
+            }
+        }
+    }
+    let beam_tag = if definition.beam_fx.is_some() {
+        let tag = definition
+            .beam_tag
+            .as_deref()
+            .ok_or("grapple beam effect has no authored hand tag")?;
+        Some(
+            snapshots[1]
+                .as_ref()
+                .ok_or("grapple beam has no actual left arm")?
+                .rig
+                .tag(tag)?,
+        )
+    } else {
+        None
+    };
+    Ok(player::body::grapple::Prepared {
+        definition,
+        body_clips,
+        arm_clips,
+        beam_tag,
+    })
+}
+
+/// Host acquisition walks both dynamic boolean/loop outcomes, while keeping
+/// CONDMD6 restricted to this actual cast. Runtime graph state stays separate.
+pub(super) fn scene_indices(
+    scene: &PreparedScene,
+    models: [&str; 5],
+) -> Result<Vec<usize>, String> {
+    use crate::entities::midnight::Next;
+    let mut pending = VecDeque::from([scene.decl.first]);
+    let mut visited = HashSet::new();
+    let mut result = Vec::new();
+    while let Some(next) = pending.pop_front() {
+        match next {
+            Next::Final => {}
+            Next::Scene(uid) => {
+                if !visited.insert((0u8, uid)) {
+                    continue;
+                }
+                let index = scene
+                    .decl
+                    .scenes
+                    .iter()
+                    .position(|item| item.uid == uid)
+                    .ok_or_else(|| format!("missing midnight scene {uid}"))?;
+                result.push(index);
+                pending.push_back(scene.decl.scenes[index].next);
+            }
+            Next::Node(uid) => {
+                if !visited.insert((1u8, uid)) {
+                    continue;
+                }
+                if let Some(node) = scene.decl.bool_nodes.iter().find(|node| node.uid == uid) {
+                    pending.push_back(node.when_true);
+                    pending.push_back(node.when_false);
+                } else if let Some(node) = scene.decl.loops.iter().find(|node| node.uid == uid) {
+                    pending.push_back(node.looping);
+                    pending.push_back(node.end);
+                } else {
+                    let node = scene
+                        .decl
+                        .nodes
+                        .iter()
+                        .find(|node| node.uid == uid)
+                        .ok_or_else(|| format!("missing midnight node {uid}"))?;
+                    let target = player::midnight::cast_target(&node.group)
+                        .ok_or_else(|| format!("CONDMD6 on group {} is not decoded", node.group))?;
+                    let next = node
+                        .next
+                        .iter()
+                        .find(|(model, _)| model == models[target])
+                        .map(|(_, next)| *next)
+                        .ok_or_else(|| format!("no CONDMD6 match for {}", models[target]))?;
+                    pending.push_back(next);
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn prepare_scenes(
@@ -1379,12 +1842,7 @@ fn prepare_scenes(
             equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
             sounds,
         };
-        let mut next = scene.decl.first;
-        let mut visited = HashSet::new();
-        while let Some(index) = Midnight::resolve(&scene, next, models)? {
-            if !visited.insert(index) {
-                break;
-            }
+        for index in scene_indices(&scene, models)? {
             for target in 0..5 {
                 let Some(group) = scene.group_for_model(index, target, models[target])? else {
                     continue;
@@ -1413,7 +1871,6 @@ fn prepare_scenes(
                     _ => unreachable!(),
                 }
             }
-            next = scene.decl.scenes[index].next;
         }
         scenes.insert(path.clone(), Arc::new(scene));
     }
@@ -1432,16 +1889,24 @@ pub(super) fn retire_acquisitions(world: &mut World) -> bool {
 /// Both the selected component and a detached, still-moving Blink are real
 /// consumers; equipment selection alone is not their completion signal.
 pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
-    let Some(actions) = world.get_resource::<PlayerActions>() else { return Ok(()); };
-    let has_blinks = actions.blink.is_some() || actions.active_blink.is_some() || !actions.retiring_blinks.is_empty()
-        || actions.far_reach.is_some() || actions.active_far_reach.is_some();
-    let has_reservations = !actions.power_reservations.is_empty() || !actions.retiring_power_dependencies.is_empty();
-    if !has_blinks && !has_reservations { return Ok(()); }
+    let Some(actions) = world.get_resource::<PlayerActions>() else {
+        return Ok(());
+    };
+    let has_blinks = actions.has_family_work();
+    let has_reservations =
+        !actions.power_reservations.is_empty() || !actions.retiring_power_dependencies.is_empty();
+    if !has_blinks && !has_reservations {
+        return Ok(());
+    }
     if !world.contains_resource::<super::usable_effects::EffectRequests>() {
         return Err("player effects cannot retire after their FX request owner".into());
     }
     if has_blinks {
-        if world.get_resource::<super::player::PlayerState>().and_then(|state| state.player.as_ref()).is_none() {
+        if world
+            .get_resource::<super::player::PlayerState>()
+            .and_then(|state| state.player.as_ref())
+            .is_none()
+        {
             return Err("player effects cannot retire after their player owner".into());
         }
         if !world.contains_resource::<crate::gameplay::game_clock_runtime::ClockRuntime>() {
@@ -1449,31 +1914,58 @@ pub(super) fn retire_effects(world: &mut World) -> Result<(), String> {
         }
         world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
             world.resource_scope(|world, mut state: Mut<super::player::PlayerState>| {
-                world.resource_scope(|world, mut clock: Mut<crate::gameplay::game_clock_runtime::ClockRuntime>| {
-                    let mut effects = world.resource_mut::<super::usable_effects::EffectRequests>();
-                    let player = state.player.as_mut().expect("player retirement admission");
-                    if let Some(blink) = actions.blink.as_mut() { blink.retire(player, &mut clock, &mut effects)?; }
-                    if let Some(blink) = actions.active_blink.as_mut() { blink.retire(player, &mut clock, &mut effects)?; }
-                    for blink in &mut actions.retiring_blinks { blink.retire(player, &mut clock, &mut effects)?; }
-                    if let Some(runtime) = actions.far_reach.as_mut() { runtime.retire(player); }
-                    if let Some(runtime) = actions.active_far_reach.as_mut() { runtime.retire(player); }
-                    actions.retiring_blinks.clear(); actions.blink = None; actions.active_blink = None;
-                    actions.far_reach = None; actions.active_far_reach = None;
-                    Ok::<(), String>(())
-                })
+                world.resource_scope(
+                    |world, mut clock: Mut<crate::gameplay::game_clock_runtime::ClockRuntime>| {
+                        let mut effects =
+                            world.resource_mut::<super::usable_effects::EffectRequests>();
+                        let player = state.player.as_mut().expect("player retirement admission");
+                        if let Some(blink) = actions.blink.as_mut() {
+                            blink.retire(player, &mut clock, &mut effects)?;
+                        }
+                        if let Some(blink) = actions.active_blink.as_mut() {
+                            blink.retire(player, &mut clock, &mut effects)?;
+                        }
+                        for blink in &mut actions.retiring_blinks {
+                            blink.retire(player, &mut clock, &mut effects)?;
+                        }
+                        if let Some(runtime) = actions.far_reach.as_mut() {
+                            runtime.retire(player);
+                        }
+                        if let Some(runtime) = actions.active_far_reach.as_mut() {
+                            runtime.retire(player);
+                        }
+                        for runtime in &mut actions.retiring_far_reaches {
+                            runtime.retire(player);
+                        }
+                        actions.retiring_far_reaches.clear();
+                        actions.retiring_blinks.clear();
+                        actions.blink = None;
+                        actions.active_blink = None;
+                        actions.far_reach = None;
+                        actions.active_far_reach = None;
+                        Ok::<(), String>(())
+                    },
+                )
             })
         })?;
     }
     world.resource_scope(|world, mut actions: Mut<PlayerActions>| {
         let mut effects = world.resource_mut::<super::usable_effects::EffectRequests>();
-        for (_, key) in actions.power_reservations.drain() { effects.release_reservation(key); }
-        for retired in actions.retiring_power_dependencies.drain(..) { effects.release_reservation(retired.reservation); }
+        for (_, key) in actions.power_reservations.drain() {
+            effects.release_reservation(key);
+        }
+        for retired in actions.retiring_power_dependencies.drain(..) {
+            effects.release_reservation(retired.reservation);
+        }
         actions.power_dependency_ids.clear();
+        actions.cached_blinks.clear();
+        actions.cached_far_reaches.clear();
     });
     Ok(())
 }
 
 mod input;
 pub(super) use input::{
-    advance_selection, dispatch_potions, dispatch_shortcuts, install_ranged, register_ranged, player_frame,
+    advance_selection, dispatch_automatic_potion, dispatch_potions, dispatch_shortcuts,
+    install_ranged, player_frame, register_ranged,
 };

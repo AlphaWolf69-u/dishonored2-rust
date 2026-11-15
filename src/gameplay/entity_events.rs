@@ -75,6 +75,10 @@ pub enum Payload {
     Damaging { target: EntityId, params: super::damage::Parameters, result: super::damage::DamageResult },
     /// 8769f0/717950: A5 incapacitation or 1A6 damage after death.
     DamageParameters(super::damage::Parameters),
+    /// 6170b0, message1AD: the actual item declaration and quantity change.
+    InventoryQuantity { item: std::sync::Arc<crate::assets::inventory_item::PickableItem>, previous: u32, current: u32 },
+    /// 615840/6147f0, messages9B/9C: transferred count and resulting total.
+    InventoryTransfer { item: std::sync::Arc<crate::assets::inventory_item::PickableItem>, count: u32, total: u32 },
 }
 
 #[derive(Clone, Copy)]

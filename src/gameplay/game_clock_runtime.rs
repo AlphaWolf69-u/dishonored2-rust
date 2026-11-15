@@ -13,25 +13,44 @@ use crate::{
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 
-use crate::platform::performance_counter as platform;
 use crate::gameplay::entity_lifetime::EntityId;
-use std::collections::HashMap;
 use crate::gameplay::powers::world_effects::{TimeLease, TimeRequest, TimeRequests};
+use crate::platform::performance_counter as platform;
+use std::collections::HashMap;
 
-struct EntityClock { timespace: u32, offset: f64, remaining: Option<f32>, managed_override: bool }
+struct EntityClock {
+    timespace: u32,
+    offset: f64,
+    remaining: Option<f32>,
+    managed_override: bool,
+}
 impl EntityClock {
     fn advance(&mut self, clock: &GameClock, bent: bool, step: f32) {
-        if !self.managed_override { return; }
+        if !self.managed_override {
+            return;
+        }
         let unbent = if let Some(remaining) = self.remaining.as_mut() {
             let active = bent && step < *remaining;
-            if *remaining < f32::from_bits(0x7149_f2ca) { *remaining -= step; }
-            if !active { self.remaining = None; }
+            if *remaining < f32::from_bits(0x7149_f2ca) {
+                *remaining -= step;
+            }
+            if !active {
+                self.remaining = None;
+            }
             active
-        } else { false };
-        if self.timespace > 1 { return; }
+        } else {
+            false
+        };
+        if self.timespace > 1 {
+            return;
+        }
         let timespace = u32::from(unbent);
-        if self.remaining.is_none() { self.managed_override = false; }
-        if timespace == self.timespace { return; }
+        if self.remaining.is_none() {
+            self.managed_override = false;
+        }
+        if timespace == self.timespace {
+            return;
+        }
         let old = if self.timespace == 0 { 3 } else { 4 };
         let new = if timespace == 0 { 3 } else { 4 };
         let elapsed = (clock.previous_time(old).unwrap_or(0.0) - self.offset) as f32;
@@ -123,10 +142,16 @@ impl LoadedClock {
             let step = self.clock.delta(4).unwrap_or(0.0);
             let unbent = if let Some(remaining) = self.player_override.as_mut() {
                 let active = bent && step < *remaining;
-                if *remaining < f32::from_bits(0x7149_f2ca) { *remaining -= step; }
-                if !active { self.player_override = None; }
+                if *remaining < f32::from_bits(0x7149_f2ca) {
+                    *remaining -= step;
+                }
+                if !active {
+                    self.player_override = None;
+                }
                 active
-            } else { false };
+            } else {
+                false
+            };
             let timespace = u32::from(unbent);
             if timespace != self.player_timespace {
                 // 87d050 (and its 87ce70 counterpart): retain the entity's
@@ -141,7 +166,9 @@ impl LoadedClock {
             }
             let clocks = &mut self.entity_clocks;
             self.entity_overrides.retain(|id| {
-                let Some(entity) = clocks.get_mut(id) else { return false };
+                let Some(entity) = clocks.get_mut(id) else {
+                    return false;
+                };
                 entity.advance(&self.clock, bent, step);
                 entity.managed_override
             });
@@ -167,7 +194,11 @@ impl ClockRuntime {
     }
     /// 140059890 publication, using the existing byte-exact easing owner.
     pub fn set_rate_target(&mut self, group: usize, value: f32, ease: f32) -> Result<(), String> {
-        self.0.as_mut().map_err(|error| error.clone())?.clock.set_rate_target(group, value, ease)
+        self.0
+            .as_mut()
+            .map_err(|error| error.clone())?
+            .clock
+            .set_rate_target(group, value, ease)
     }
     pub fn acquire_time_request(&mut self, request: TimeRequest) -> Result<TimeLease, String> {
         let state = self.0.as_mut().map_err(|error| error.clone())?;
@@ -184,13 +215,19 @@ impl ClockRuntime {
         }
         Ok(())
     }
-    /// World retirement invalidates every source-owned request and entity
-    /// identity before another map can use this persistent clock session.
+    /// Stop power requests while actual entity roots remain registered until
+    /// their component, render and audio retirement acknowledges release.
     pub fn clear_power_time(&mut self) -> Result<(), String> {
         let state = self.0.as_mut().map_err(|error| error.clone())?;
         state.power_requests = TimeRequests::default();
-        state.entity_overrides.clear(); state.entity_clocks.clear();
-        state.player_override = None; state.player_timespace = 0; state.player_clock_offset = 0.0;
+        for id in state.entity_overrides.drain(..) {
+            if let Some(entity) = state.entity_clocks.get_mut(&id) {
+                entity.advance(&state.clock, false, 0.0);
+            }
+        }
+        state.player_override = None;
+        state.player_timespace = 0;
+        state.player_clock_offset = 0.0;
         state.clock.set_rate_target(3, 1.0, 0.0)?;
         state.clock.set_rate_target(4, 1.0, 0.0)
     }
@@ -198,52 +235,113 @@ impl ClockRuntime {
     /// request until the last world-time lease has restored normal time.
     pub fn set_player_time_override(&mut self, duration: f32) -> Result<(), String> {
         let state = self.0.as_mut().map_err(|error| error.clone())?;
-        if state.player_override != Some(f32::from_bits(0x7149_f2ca)) { state.player_override = Some(duration); }
+        if state.player_override != Some(f32::from_bits(0x7149_f2ca)) {
+            state.player_override = Some(duration);
+        }
         Ok(())
     }
     pub fn player_timespace(&self) -> Result<u32, &str> {
-        self.0.as_ref().map(|state| state.player_timespace).map_err(String::as_str)
+        self.0
+            .as_ref()
+            .map(|state| state.player_timespace)
+            .map_err(String::as_str)
     }
     pub fn player_delta(&self) -> Result<f32, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
-        state.clock.entity_delta(state.player_timespace).ok_or("player clock timespace is invalid")
+        state
+            .clock
+            .entity_delta(state.player_timespace)
+            .ok_or("player clock timespace is invalid")
     }
     pub fn player_time(&self) -> Result<f64, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
         let group = if state.player_timespace == 0 { 3 } else { 4 };
-        Ok(state.clock.time(group).ok_or("player clock group is absent")? - state.player_clock_offset)
+        Ok(state
+            .clock
+            .time(group)
+            .ok_or("player clock group is absent")?
+            - state.player_clock_offset)
     }
     /// Actual entity roots register once, then their component/model owners
     /// query this same timespace selection. No entity is fabricated here.
     pub fn register_entity_time(&mut self, entity: EntityId, timespace: u32) -> Result<(), String> {
-        if timespace > 3 { return Err("entity timespace is outside 0..4".into()); }
-        self.0.as_mut().map_err(|e| e.clone())?.entity_clocks.entry(entity)
-            .or_insert(EntityClock { timespace, offset: 0.0, remaining: None, managed_override: false });
+        if timespace > 3 {
+            return Err("entity timespace is outside 0..4".into());
+        }
+        self.0
+            .as_mut()
+            .map_err(|e| e.clone())?
+            .entity_clocks
+            .entry(entity)
+            .or_insert(EntityClock {
+                timespace,
+                offset: 0.0,
+                remaining: None,
+                managed_override: false,
+            });
         Ok(())
     }
     pub fn unregister_entity_time(&mut self, entity: EntityId) {
         if let Ok(state) = &mut self.0 {
-            state.entity_clocks.remove(&entity); state.entity_overrides.retain(|id| *id != entity);
+            state.entity_clocks.remove(&entity);
+            state.entity_overrides.retain(|id| *id != entity);
         }
     }
-    pub fn set_entity_time_override(&mut self, entity: EntityId, duration: f32) -> Result<(), String> {
+    pub fn set_entity_time_override(
+        &mut self,
+        entity: EntityId,
+        duration: f32,
+    ) -> Result<(), String> {
         let state = self.0.as_mut().map_err(|e| e.clone())?;
-        let record = state.entity_clocks.get_mut(&entity).ok_or("entity clock root is not registered")?;
-        if record.remaining != Some(f32::from_bits(0x7149_f2ca)) { record.remaining = Some(duration); }
+        let record = state
+            .entity_clocks
+            .get_mut(&entity)
+            .ok_or("entity clock root is not registered")?;
+        if record.remaining != Some(f32::from_bits(0x7149_f2ca)) {
+            record.remaining = Some(duration);
+        }
         record.managed_override = true;
-        if !state.entity_overrides.contains(&entity) { state.entity_overrides.push(entity); }
+        if !state.entity_overrides.contains(&entity) {
+            state.entity_overrides.push(entity);
+        }
         Ok(())
+    }
+    /// The same registered entity selector as877eb0; rates remain owned by
+    /// GameClock rather than inferred from a currently held item or audio pitch.
+    pub fn entity_rates(&self, entity: EntityId) -> Result<[f32; 2], &str> {
+        let state = self.0.as_ref().map_err(String::as_str)?;
+        let record = state
+            .entity_clocks
+            .get(&entity)
+            .ok_or("entity clock root is not registered")?;
+        state
+            .clock
+            .entity_rates(record.timespace)
+            .ok_or("entity timespace is invalid")
     }
     pub fn entity_delta(&self, entity: EntityId) -> Result<f32, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
-        let record = state.entity_clocks.get(&entity).ok_or("entity clock root is not registered")?;
-        state.clock.entity_delta(record.timespace).ok_or("entity timespace is invalid")
+        let record = state
+            .entity_clocks
+            .get(&entity)
+            .ok_or("entity clock root is not registered")?;
+        state
+            .clock
+            .entity_delta(record.timespace)
+            .ok_or("entity timespace is invalid")
     }
     pub fn entity_time(&self, entity: EntityId) -> Result<f64, &str> {
         let state = self.0.as_ref().map_err(String::as_str)?;
-        let record = state.entity_clocks.get(&entity).ok_or("entity clock root is not registered")?;
+        let record = state
+            .entity_clocks
+            .get(&entity)
+            .ok_or("entity clock root is not registered")?;
         let group = [3, 4, 2, 0][record.timespace as usize];
-        Ok(state.clock.time(group).ok_or("entity clock group is absent")? - record.offset)
+        Ok(state
+            .clock
+            .time(group)
+            .ok_or("entity clock group is absent")?
+            - record.offset)
     }
 }
 
@@ -350,7 +448,11 @@ pub struct GamePaused(pub bool);
 
 fn advance_clock(mut owner: ResMut<ClockRuntime>, paused: Res<GamePaused>) {
     if let Ok(state) = &mut owner.0 {
-        let result = if paused.0 { state.paused() } else { state.advance() };
+        let result = if paused.0 {
+            state.paused()
+        } else {
+            state.advance()
+        };
         if let Err(error) = result {
             error!("Game clock unavailable: {error}");
             owner.0 = Err(error);

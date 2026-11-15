@@ -425,6 +425,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 super::player::update_player,
                 super::runtime_materials::equipment_admission::publish_callbacks,
                 super::power_execution::after_frame,
+                super::entity_messages::update,
                 super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
