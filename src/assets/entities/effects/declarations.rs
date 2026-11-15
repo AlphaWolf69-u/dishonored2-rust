@@ -97,6 +97,12 @@ fn acquire_declaration(catalog: &Catalog, name: &str, inherited_scope: u8)
     value.map(|graph| (graph, scope))
 }
 
+/// Borrow the canonical map-scoped definition for acquisition-time projection;
+/// the same registry serves later runtime declaration instances.
+pub(crate) fn acquire_projection(catalog: &Catalog, name: &str) -> Result<Arc<FxGraph>, String> {
+    acquire_declaration(catalog, name, 0).map(|(graph, _)| graph)
+}
+
 pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8, persistent: bool) -> Result<(), String> {
     let path = path.replace('\\', "/").to_ascii_lowercase();
     catalog.kiscule_resources.get_or_init(Default::default).lock()

@@ -59,6 +59,25 @@ fn observe_decal_leases(
 
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-character-selection" => {
+            if args.is_empty() { return Err("inspect-character-selection requires installed level names".into()); }
+            for name in args {
+                let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+                let level = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, name)?;
+                let bytes = level.read_entities(&catalog)?.ok_or("level has no entity source")?;
+                let text = entities::declaration_text(&bytes);
+                for character in ["corvo", "emily"] {
+                    let mut document = entities::parse(&text)?;
+                    let before = document.definitions.iter().filter(|d| d.kind == "entity").count();
+                    let removed = entities::character_selection::prune(&catalog, &mut document, character)?;
+                    let placements = entities::render_placements(&document);
+                    let readables = entities::usable::readable_bindings(&catalog, &document)?;
+                    println!("CHARACTER_SELECTION level={name} character={character} entities_before={before} removed={} placements={} readables={}", removed.len(), placements.len(), readables.len());
+                    for entity in removed { println!("CHARACTER_REMOVED level={name} character={character} entity={entity}"); }
+                    for readable in readables { println!("CHARACTER_READABLE level={name} character={character} entity={} item={}", readable.entity, readable.item); }
+                }
+            }
+        }
         "inspect-runtime-lifecycles" => {
             #[cfg(feature = "game")]
             dishonored2_rust::app::inspect_runtime_lifecycles(base, args)?;

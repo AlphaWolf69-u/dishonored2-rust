@@ -105,7 +105,7 @@ fn run() -> Result<()> {
         | "inspect-fx-resources" | "inspect-fx-definitions" | "inspect-material-program"
         | "inspect-decal-materials" | "inspect-world-queries" | "inspect-cpu-preparation"
         | "inspect-scene-preparation" | "inspect-scene-publication" | "inspect-scene-gpu-resources"
-        | "inspect-runtime-lifecycles" => {
+        | "inspect-runtime-lifecycles" | "inspect-character-selection" => {
             return resource_audit::run(&args[1], base, &args[3..]);
         }
         _ => {}

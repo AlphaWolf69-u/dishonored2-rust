@@ -148,12 +148,17 @@ pub(super) fn prepare_level(
     if let Some(started) = world_started {
         println!("PERF world mesh read and parse: {:.3}s", started.elapsed().as_secs_f64());
     }
+    let character = super::player::character_name(super::pause_menu::debug_character());
     let (player_start, placed_models, entity_document) =
         match level.read_entities(catalog.as_ref().unwrap())? {
             Some(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                let document =
+                let mut document =
                     entities::parse(&text).map_err(|error| format!("entity parse: {error}"))?;
+                let removed = entities::character_selection::prune(catalog.as_ref().unwrap(), &mut document, character)?;
+                if !removed.is_empty() {
+                    println!("Character startup selection: character={character} removed={} entities={removed:?}", removed.len());
+                }
                 (
                     entities::player_start(&document),
                     entities::render_placements(&document),
@@ -162,7 +167,6 @@ pub(super) fn prepare_level(
             }
             None => (None, Vec::new(), None),
         };
-    let character = super::player::character_name(super::pause_menu::debug_character());
     let loadout = if !needs_initial_inventory { None } else { match crate::assets::inventory_item::default_loadout(catalog.as_ref().unwrap(), character) {
         Ok(loadout) => Some(loadout),
         Err(error) => { eprintln!("Initial inventory loadout unavailable: {error}"); None }

@@ -9213,3 +9213,34 @@ renderer errors and retain the predicted five luminance textures each.
 All rejected mesh/visibility hypotheses remain reverted; no forced readiness,
 new dummy buffer or invented tail lifetime was introduced. Current status is
 in the top matrix and resource-lifetimes.md; older pending prose is historical.
+
+
+### Character-dependent startup object selection (2026-11-15)
+
+Host: assets::entities::character_selection folds deterministic authored
+LoadingEnd/declaration/TestBool/Destroy paths before placements and component
+acquisition. It uses actual Player->EntityToEntityDef->CompareEntityDef inputs,
+not note names, suffixes, map exceptions or a presumed Corvo/Emily file pairing.
+Native79bc20 compares declaration identity (null operands yield false),
+792f40 performs Destroy including the authored attached-object policy,
+7bb9d0 routes declaration entries/exits and7c0e30 dispatches branch/paired
+outputs. Existing canonical Kiscule declarations supply shared parsed sources.
+The installed test_player declaration and EotW script explicitly destroy the
+other avatar's newspaper on LevelLoadedFirstTime.
+
+Deliberate host optimization: fold this pure, character-dependent removal
+before rendering, collision, interaction and FX consumers acquire an object,
+instead of preparing both copies and destroying one after LoadingEnd. Temporary
+node projections/leases drop at acquisition completion; shared declarations
+retain their existing Catalog marker/purge policy. General mutable/quest-driven
+script execution is not inferred. Unknown nodes/inputs, mutable constants,
+spawn-tag destruction and detach-with-children cannot be folded and remain for
+their runtime owner. This is not a general script-runtime replacement.
+
+Prediction: EotW Corvo omits pickups_news_kg_ontherun_emily and retains the
+Corvo entity; Emily does the reverse. No retained source/payload/placement/body
+for the pruned entity is admitted by the level's document consumers. No
+additional frame work, cache or GPU pass is introduced. The installed-level
+observation will enumerate both selected rosters across all36 variants and
+print actual readable bindings. No byte, CPU-time or FPS claim is made before
+those observations; no tests or visible launches are used.

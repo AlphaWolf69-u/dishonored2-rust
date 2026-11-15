@@ -6,6 +6,7 @@ use crate::render_light::ScatteringParameters;
 mod components;
 mod processed_decl;
 pub mod spawn;
+pub mod character_selection;
 pub use components::scheduling_bindings as component_scheduling;
 pub(crate) use components::overlay_owned;
 pub mod wind;
