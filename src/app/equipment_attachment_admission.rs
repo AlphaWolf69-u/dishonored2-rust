@@ -243,7 +243,8 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                     .and_then(|joint| {
                         world
                             .get_resource::<super::player::PlayerState>()
-                            .and_then(|state| state.player.equipment_joint_world(weapon, joint))
+                            .and_then(|state| state.player.as_ref())
+                            .and_then(|player| player.equipment_joint_world(weapon, joint))
                     })
                     .map(frame);
                 entry.binding =
@@ -446,8 +447,11 @@ pub(super) fn current_frame(
     if !visible(world, weapon) {
         return None;
     }
-    if let Some(state) = world.get_resource::<super::player::PlayerState>() {
-        return current_frame_for_player(world, weapon, &state.player);
+    if let Some(player) = world
+        .get_resource::<super::player::PlayerState>()
+        .and_then(|state| state.player.as_ref())
+    {
+        return current_frame_for_player(world, weapon, player);
     }
     let entry = world
         .get_resource::<Attachments>()?
