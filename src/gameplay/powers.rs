@@ -77,6 +77,10 @@ impl Cast {
     pub fn cost(&self, now: f64, factor: f32) -> f32 {
         if now < self.free_until { 0.0 } else { self.settings.mana_cost * factor }
     }
+    fn family_cost(&self, now: f64, factor: f32, attributes: &Attributes) -> f32 {
+        let cost = self.cost(now, factor);
+        if self.settings.windblast.is_some() { windblast::cost(cost, attributes) } else { cost }
+    }
     /// 14061c0e0 compares the last cast's game clock against m_cooldown.
     pub fn cooldown_ready(&self, now: f64, enabled: bool) -> bool {
         !enabled || self.last_cast.is_none_or(|last| now - last >= self.settings.cooldown as f64)
@@ -85,7 +89,7 @@ impl Cast {
     /// bypasses payment; no-regeneration permits a partial bar, but not zero.
     pub fn admission(&self, now: f64, mana: &Mana, attributes: &Attributes, replenish: bool, context: &AdmissionContext) -> Admission {
         if !context.owned || !context.family_available || mana.magic_suppressed(attributes) { return Admission::Unavailable; }
-        let cost = self.cost(now, context.cost_factor);
+        let cost = self.family_cost(now, context.cost_factor, attributes);
         let available = if context.check_recharge_target && mana.has_potion_target() { mana.regen_target(attributes, replenish) } else { mana.current() };
         if mana.lock_flags() & 1 != 0 { return Admission::Allowed; }
         if mana.lock_flags() & 2 != 0 {
@@ -109,7 +113,7 @@ impl Cast {
     pub fn commit(&mut self, now: f64, mana: &mut Mana, attributes: &Attributes,
         cost_factor: f32, random_cost_factor: f32, replenish: bool) -> Option<f32> {
         if self.phase != Phase::Aiming { return None; }
-        let cost = self.cost(now, cost_factor) * random_cost_factor;
+        let cost = self.family_cost(now, cost_factor, attributes) * random_cost_factor;
         let deficit = if cost > 0.0 { mana.consume_with_replenish(cost, attributes,
             replenish.then_some(self.settings.mana_replenish)) } else { 0.0 };
         self.phase = Phase::Cast; self.last_cast = Some(now);

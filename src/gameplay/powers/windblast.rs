@@ -33,3 +33,10 @@ impl Settings {
         self.entity(greater, shockwave).is_some_and(|entity| spawn(entity))
     }
 }
+
+/// 448690 calls base61c060, then applies the Windblast modifier and floorf.
+/// Keep that multiplication order and exact integer result before random rolls.
+pub fn cost(base_cost: f32, attributes: &crate::gameplay::player::states::Attributes) -> f32 {
+    let wind = attributes.0.get("ARK_ATTRIBUTE_WINDBLAST_MANA_COST_FACTOR").copied().unwrap_or(1.0);
+    (base_cost * wind).floor()
+}
