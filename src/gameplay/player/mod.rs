@@ -16,6 +16,7 @@ pub mod consumables;
 pub mod slash_rules;
 pub mod equipment_states;
 pub mod body;
+pub mod body_parts;
 pub mod camera;
 pub mod character_proxy;
 pub mod controller;
@@ -125,6 +126,8 @@ pub struct Player {
     pub health_heal_factor: f32,
     pub mana_replenishes: bool,
     pub camera: PlayerCamera,
+    camera_axis: Mat3,
+    body_parts: body_parts::BodyParts,
     pub stances: LocoStances,
     pub attributes: Attributes,
     active_modifiers: Vec<ActiveModifier>,
@@ -521,6 +524,9 @@ impl Player {
         let adrenaline = adrenaline::Adrenaline::new(setup.adrenaline, &setup.attributes);
         let mut machine = StateMachine::new(setup.states, &setup.rules, setup.default_state);
         if let Some(rules) = setup.slash_rules { machine.install_slash_rules(rules); }
+        let camera = PlayerCamera::new(setup.camera, base_fov);
+        let camera_controls = camera.controls(&pose, setup.body.follow_slope.yaw_offset);
+        let camera_axis = camera.view_axis(&pose, &physics, &camera_controls);
         Ok(Self {
             physics,
             controller,
@@ -537,7 +543,9 @@ impl Player {
             health_regen_factor: 1.0,
             health_heal_factor: 1.0,
             mana_replenishes: true,
-            camera: PlayerCamera::new(setup.camera, base_fov),
+            camera,
+            camera_axis,
+            body_parts: Default::default(),
             stances,
             attributes: setup.attributes,
             active_modifiers: Vec::new(),
@@ -677,6 +685,7 @@ impl Player {
         }
         let equipment_transitioning = std::array::from_fn(|side| self.equipment_changes.transitioning(side)
             || self.equipment_action_handles[side].is_some_and(|handle| !self.body.midnight.finished(handle)));
+        let camera_axis = self.camera_axis;
         macro_rules! frame {
             () => {
                 Frame {
@@ -689,6 +698,8 @@ impl Player {
                     footstep_clock: &mut self.body.footsteps,
                     body_speed: self.body.speed,
                     camera: &mut self.camera,
+                    camera_axis,
+                    body_parts: &mut self.body_parts,
                     follow_slope: &mut self.body.follow_slope,
                     requests: &mut self.requests,
                     autocrouch: &mut self.autocrouch,
@@ -985,6 +996,7 @@ impl Player {
         let body_controls = self.camera.controls(&self.pose, body_yaw);
         self.update_arms(body_yaw, &body_controls);
         let view = self.camera.view(&self.pose, &self.physics, allow, &body_controls);
+        self.camera_axis = view.axis;
         for (slot, id) in [StateId::MANTLE, StateId::CATFALL].into_iter().enumerate() {
             let active = self.machine.is_active(id);
             if active {

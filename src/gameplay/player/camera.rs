@@ -537,6 +537,10 @@ impl PlayerCamera {
     }
 
     /// FUN_1407f6a80: camera_jnt in world space, kept inside the capsule.
+    pub fn view_axis(&self, pose: &BodyPose, physics: &PlayerPhysics, controls: &[JointControl]) -> Mat3 {
+        physics.axis() * pose.joint_with_controls(pose.camera, controls).1
+    }
+
     pub fn view(&mut self, pose: &BodyPose, physics: &PlayerPhysics, allow_out_of_shape: bool, controls: &[JointControl]) -> View {
         let (local, local_rotation) = pose.joint_with_controls(pose.camera, controls);
         let axis = physics.axis();

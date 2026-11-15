@@ -10540,3 +10540,12 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   inactive visible actors require their existing tree's base-pose publication.
   No measured performance claim. Validation is source/whitespace review only;
   no builds, tests, visible launches or measurements.
+
+- FarReach frame integration retains the actual published camera matrix
+  (`1407f6a80`) for the next state update (`14083a510` / `1408067c0`),
+  matching the camera-entity update stage. Initialization uses the same
+  controlled camera joint and physics axis; the state does not resample
+  body/arms or rebuild a yaw/pitch approximation. Body-part lock counts have
+  one owning Player shared across main/swimming state machines. These hooks
+  add no per-frame allocation, clip acquisition or second pose evaluation;
+  validation remains source/whitespace review, without builds or tests.
