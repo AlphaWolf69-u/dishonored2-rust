@@ -498,8 +498,9 @@ impl Runtime {
             progress.set_status(node.name.clone(), status);
             if matches!(node.kind, Kind::Named(Domain::Task, _)) {
                 if let Some(notification) = progress.task_update(&node.name, status) {
-                    if notification.portrait.is_some() {
+                    if let Some(portrait) = &notification.portrait {
                         progress.mark_task_notified(node.id);
+                        progress.notify_target(portrait);
                     }
                     notifications.push(notification);
                 }

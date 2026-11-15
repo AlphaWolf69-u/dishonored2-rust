@@ -242,6 +242,7 @@ pub fn reachable_mission(
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub(super) portraits: Arc<HashMap<u32, Portrait>>,
+    target_states: Arc<HashMap<u32, i32>>,
     manager: Option<Arc<str>>,
     mission: Option<Arc<Mission>>,
     nodes: Arc<HashMap<String, i32>>,
@@ -363,6 +364,23 @@ pub struct ObjectiveUpdate {
     pub tasks: Vec<TaskUpdate>,
 }
 impl State {
+    /// Mission target records start at -1 (40e970) and change when the HUD
+    /// queues a target result (66f340), independently of its image residency.
+    pub fn target_status(&self, name: &str) -> i32 {
+        self.target_states
+            .get(&crate::assets::lang::key_id(name))
+            .copied()
+            .unwrap_or(-1)
+    }
+    pub(super) fn notify_target(&mut self, portrait: &Portrait) {
+        let state = match portrait.state.as_str() {
+            "GAMEFLOW_UI_PORTRAIT_STATE_ASSASSINATED" => 0,
+            "GAMEFLOW_UI_PORTRAIT_STATE_NEUTRALIZED" => 1,
+            "GAMEFLOW_UI_PORTRAIT_STATE_RESCUED" => 2,
+            _ => return,
+        };
+        Arc::make_mut(&mut self.target_states).insert(portrait.name, state);
+    }
     pub fn mark_task_notified(&mut self, id: u32) {
         let name = self
             .mission()

@@ -266,6 +266,16 @@ impl Movie {
                     .map_err(|e| player.describe(&e))?;
                 player.set_value("journalData.mission.description", strings.lookup(&mission.description).into())
                     .map_err(|e| player.describe(&e))?;
+                // 51e950 binds the real mission target label/image/status.
+                // These images are demanded only when this Journal opens and
+                // use its existing bitmap owner and per-open retirement.
+                player.set_value("journalData.mission.targets.length",(mission.targets.len() as u32).into()).map_err(|e|player.describe(&e))?;
+                for (index,target) in mission.targets.iter().enumerate(){
+                    let path=format!("journalData.mission.targets.data[{index}]");
+                    player.set_value(&format!("{path}.label"),strings.lookup(&target.name).into()).map_err(|e|player.describe(&e))?;
+                    player.set_value(&format!("{path}.image"),target.image.as_str().into()).map_err(|e|player.describe(&e))?;
+                    player.set_value(&format!("{path}.status"),gameflow.target_status(&target.name).into()).map_err(|e|player.describe(&e))?;
+                }
                 let objectives: Vec<_> = mission.objectives.iter().filter_map(|objective|
                     gameflow.journal_status(&objective.name).filter(|status| *status >= 0 && objective.show_in_journal).map(|status| (objective, status))
                 ).collect();

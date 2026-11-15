@@ -9568,3 +9568,9 @@ The compatibility explicit/static mission lookup APIs also use Program's one
 registry now; the old independent tree reader is removed. Live State selection
 retains the shared mission Arc. Only the legacy value-returning API copies a
 mission when an external caller explicitly requests an owned value.
+
+Mission Journal target cards are populated from the same immutable mission,
+not another declaration read:51e950 publishes label/image/status,40e970
+constructs the initial status at-1, and66f340 changes it when a target result
+is queued. Target images are acquired by the existing per-open Journal bitmap
+owner and retire with that movie; only changed status IDs remain level-owned.
