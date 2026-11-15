@@ -107,17 +107,18 @@ pub fn modifiers_fields(item: &str, fields: &[(String, Value)]) -> Result<ItemMo
 /// 140617930 applies the character inventory component's default loadout
 /// when there is no restored inventory, before any gameflow loadout.
 pub fn default_loadout(catalog: &Catalog, character: &str) -> Result<Vec<(String, u32)>, String> {
+    Ok(default_loadout_definition(catalog, character)?.map_or_else(Vec::new, |loadout|
+        loadout.assignments().map(|(name, quantity)| (name.to_owned(), quantity.max(0) as u32)).collect()))
+}
+
+pub fn default_loadout_definition(catalog: &Catalog, character: &str) -> Result<Option<InventoryLoadout>, String> {
     let entity = format!("models/characters/player/{character}/body.def");
     let component = entities::player::entity_component(&entity, "cpntinventory", |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
             .map(entities::owned_declaration_text))
     })?.ok_or_else(|| format!("{entity} has no inventory component"))?;
-    let Some(name) = atom(&component, "m_defaultLoadout").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")) else { return Ok(Vec::new()) };
-    let sources = PickableSourceLease::for_catalog(catalog)?;
-    let declaration = sources.0.lock().map_err(|_| "inventory declaration owner is poisoned")?.configurations.loadout(catalog, name)?;
-    // The existing initial-inventory host consumes quantities once. The
-    // class owner retains the selected declaration and its source flags.
-    Ok(declaration.assignments().map(|(name, quantity)| (name.to_owned(), quantity.max(0) as u32)).collect())
+    let Some(name) = atom(&component, "m_defaultLoadout").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")) else { return Ok(None) };
+    InventoryLoadout::load(catalog, name).map(Some)
 }
 
 /// Share the selected collection declaration with the actual consumer.

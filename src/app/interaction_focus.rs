@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 #[path = "inventory.rs"]
 mod inventory;
-pub(super) use inventory::{InventoryChange, InventoryRecord, InventoryPickupEffects, PickupAttributes};
+pub(super) use inventory::{InventoryChange, InventoryRecord, InventoryPickupEffects, PickupAttributes, PlayerPickupEffects, ShortcutSettings, ShortcutSelection};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct InteractionPrompt {
@@ -35,6 +35,13 @@ pub(super) struct RetiredPlacements(pub std::collections::HashSet<usize>);
 #[derive(Resource, Default)]
 pub(super) struct InitialInventory {
     pub items: Option<Vec<InitialItem>>,
+    pub declarations: Option<Vec<(std::sync::Arc<crate::assets::inventory_item::PickableItem>, u32)>>,
+    pub loadout: Option<crate::assets::inventory_item::InventoryLoadout>,
+}
+impl InitialInventory {
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        self.declarations.iter().flatten().map(|(item, _)| item.path.as_ref())
+    }
 }
 
 pub(super) struct InitialItem {
@@ -58,6 +65,15 @@ struct OwnedEnhancement {
 pub(super) fn initialize_inventory(mut inventory: bevy::prelude::ResMut<DiscoveredDocuments>,
     initial: Option<bevy::prelude::ResMut<InitialInventory>>) {
     if let Some(mut initial) = initial {
+        if let Some(entries) = initial.declarations.take() {
+            for (item, maximum) in entries { inventory.register_item(item, maximum); }
+        }
+        if let Some(loadout) = initial.loadout.take() {
+            if !inventory.initialized {
+                inventory.initialized = true;
+                inventory.apply_loadout(&loadout, false);
+            }
+        }
         if let Some(entries) = initial.items.take() { inventory.initialize(entries); }
     }
 }
@@ -129,6 +145,11 @@ pub(super) struct DiscoveredDocuments {
     coins: i32,
     consumed_coins: i32,
     allow_auto_equip: bool,
+    auto_equip_candidates: Vec<(String, u8)>,
+    shortcut_settings: Option<std::sync::Arc<inventory::ShortcutSettings>>,
+    shortcuts: [inventory::ShortcutSlot; 14],
+    selected_shortcut: Option<usize>,
+    ammunition_dependencies: Vec<(String, String)>,
 }
 #[derive(Clone, Debug)]
 pub(super) struct DocumentEntry {
@@ -177,9 +198,14 @@ impl DiscoveredDocuments {
 
     pub fn add_with_modifiers(&mut self, path: &str, quantity: u32, maximum: u32,
         modifiers: &crate::assets::inventory_item::ItemModifiers) -> u32 {
+        let previous = self.quantity(path);
         let admitted = self.add_item(path, quantity, maximum);
         if admitted != 0 {
             self.modifier_changes.push_back(ModifierChange::Quantity { path: path.to_owned(), modifiers: modifiers.clone(), added: true, count: admitted });
+            if previous == 0 { self.changes.push_back(InventoryChange::ShortcutItemAdded { path: inventory::key(path) }); }
+            if previous == 0 && self.record(path).is_some_and(|record| record.declaration.equipment.is_some()) {
+                self.changes.push_back(InventoryChange::EquipmentNeeded { path: inventory::key(path) });
+            }
         }
         admitted
     }
@@ -193,6 +219,12 @@ impl DiscoveredDocuments {
         else if removed != 0 { self.quantities.insert(key.clone(), current - removed); }
         if removed != 0 {
             if let Some(record) = self.records.get_mut(&key) { record.is_new &= current > removed; }
+            if removed == current {
+                self.auto_equip_candidates.retain(|(path, _)| path != &key);
+                if self.record(path).is_some_and(|record| record.declaration.equipment.is_some()) {
+                    self.changes.push_back(InventoryChange::EquipmentRemoved { path: key.clone() });
+                }
+            }
             self.modifier_changes.push_back(ModifierChange::Quantity { path: path.to_owned(), modifiers: modifiers.clone(), added: false, count: removed });
         }
         removed

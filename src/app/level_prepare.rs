@@ -167,10 +167,9 @@ pub(super) fn prepare_level(
             }
             None => (None, Vec::new(), None),
         };
-    let loadout = if !needs_initial_inventory { None } else { match crate::assets::inventory_item::default_loadout(catalog.as_ref().unwrap(), character) {
-        Ok(loadout) => Some(loadout),
-        Err(error) => { eprintln!("Initial inventory loadout unavailable: {error}"); None }
-    }};
+    let loadout = if !needs_initial_inventory { None } else {
+        crate::assets::inventory_item::default_loadout_definition(catalog.as_ref().unwrap(), character)?
+    };
     // The existing UI worker owns these concrete game-logic state backends;
     // register only those implementations, then use the authored transition matrix.
     if let Some(document) = entity_document.as_ref() {
@@ -204,14 +203,21 @@ pub(super) fn prepare_level(
             Err(error) => { eprintln!("Inventory collection unavailable: {error}"); None }
         }
     };
-    let initial_inventory = loadout.as_ref().zip(limits.as_ref()).map(|(loadout, limits)|
-        loadout.iter().map(|(path, quantity)| (path.clone(), *quantity, limits.maximum(path))).collect());
-    let initial_inventory = initial_inventory.map(|entries: Vec<(String, u32, u32)>| entries.into_iter()
-        .map(|(path, quantity, maximum)| {
-            let modifiers = crate::assets::inventory_item::modifiers(catalog.as_ref().unwrap(), &path)
-                .unwrap_or_else(|error| { eprintln!("Initial inventory modifiers {path}: {error}"); Default::default() });
-            super::interaction_focus::InitialItem { path, quantity, maximum, modifiers }
-        }).collect());
+    if needs_initial_inventory && limits.is_none() {
+        return Err("initial inventory requires the character's actual item collection".into());
+    }
+    let initial_inventory = if let Some(limits) = limits.as_ref().filter(|_| needs_initial_inventory) {
+        let catalog = catalog.as_ref().unwrap();
+        let mut declarations = limits.acquire_items(catalog)?;
+        let sources = crate::assets::inventory_item::PickableSourceLease::for_catalog(catalog)?;
+        for (path, _) in loadout.iter().flat_map(|loadout| loadout.assignments()) {
+            if !declarations.iter().any(|(item, _)| item.path.eq_ignore_ascii_case(path)) {
+                let item = sources.0.lock().map_err(|_| "inventory source owner is poisoned")?.acquire(catalog, path)?;
+                declarations.push((item, limits.maximum(path)));
+            }
+        }
+        super::interaction_focus::InitialInventory { items: Some(Vec::new()), declarations: Some(declarations), loadout }
+    } else { super::interaction_focus::InitialInventory::default() };
     if env::var("DH2_TRANSFORM_AUDIT").as_deref() == Ok("1") {
         let samples = [
             [0.0, 0.0, 0.0],
@@ -1055,7 +1061,7 @@ pub(super) fn prepare_level(
         app.insert_resource(interactions);
     }
     app.insert_resource(super::interaction_focus::FocusedInteraction::default());
-    app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory });
+    app.insert_resource(initial_inventory);
     app.insert_resource(super::interaction_focus::RetiredPlacements::default());
     app.insert_resource(usable_animations);
     app.insert_resource(super::usable_effects::EffectRequests::default());

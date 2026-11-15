@@ -4,6 +4,27 @@
 use super::DiscoveredDocuments;
 use crate::assets::inventory_item::PickableItem;
 use std::sync::Arc;
+use crate::gameplay::player::consumables::{PotionInventory, PotionKind};
+#[path = "inventory_shortcuts.rs"]
+mod shortcuts;
+pub(crate) use shortcuts::{ShortcutSettings, ShortcutSlot, ShortcutSelection};
+
+impl PotionInventory for DiscoveredDocuments {
+    fn potion_item(&self, kind: PotionKind) -> Result<Option<Arc<PickableItem>>, String> {
+        let mut candidates = self.records.values().filter(|record| {
+            record.declaration.type_number == 14 && match kind {
+                PotionKind::Health => record.declaration.consumable.health > 0,
+                PotionKind::Mana => record.declaration.consumable.mana > 0,
+            }
+        });
+        let item = candidates.next().map(|record| record.declaration.clone());
+        if candidates.next().is_some() {
+            return Err("multiple potion declarations require the executable's declaration registration order".into());
+        }
+        Ok(item)
+    }
+    fn consume_potion(&mut self, path: &str) -> bool { self.consume(path, 1) == 1 }
+}
 
 pub(super) fn key(path: &str) -> String { path.replace('\\', "/").to_ascii_lowercase() }
 
@@ -25,6 +46,13 @@ pub(crate) enum InventoryChange {
     Equipped { path: String, slot: u8, previous: Option<String> },
     Unequipped { path: String, slot: u8, destroy: bool },
     CoinsAdded { count: i32, total: i32 },
+    /// 6170b0 ->619380 must create or find this item's actual equipment
+    /// entity before the deferred equip arbitration can inspect its slot.
+    EquipmentNeeded { path: String },
+    EquipmentRemoved { path: String },
+    /// 619760's player request9d, not an already activated equipment slot.
+    AutoEquipRequested { path: String, instant: bool },
+    ShortcutItemAdded { path: String },
 }
 
 /// Values resolved from the player's actual attribute component and the
@@ -37,6 +65,40 @@ pub(crate) struct PickupAttributes {
     pub fewer_bolts: f32,
     pub more_bullets: f32,
     pub fewer_bullets: f32,
+}
+impl PickupAttributes {
+    /// Resolve the actual player's attributes once per pickup; the original
+    /// gameflow owner supplies 647ee0's ammo-pack quantity adjustment.
+    pub fn for_player(player: &crate::gameplay::player::Player, ammo_pack_bonus: i32) -> Self {
+        let get = |tag| player.attributes.get(tag);
+        Self { player: true, health_consumable_bonus: get("ARK_ATTRIBUTE_HEALTH_CONSUMABLE_BONUS"), ammo_pack_bonus,
+            more_bolts: get("ARK_ATTRIBUTE_FIND_MORE_BOLT_IN_PACK_CHANCE"),
+            fewer_bolts: get("ARK_ATTRIBUTE_FIND_LESS_BOLT_IN_PACK_CHANCE"),
+            more_bullets: get("ARK_ATTRIBUTE_FIND_MORE_BULLET_IN_PACK_CHANCE"),
+            fewer_bullets: get("ARK_ATTRIBUTE_FIND_LESS_BULLET_IN_PACK_CHANCE") }
+    }
+}
+
+/// Borrow the actual gameplay owners for one pickup transaction. In
+/// particular, health, mana, crafting and RNG are never stored by inventory.
+pub(crate) struct PlayerPickupEffects<'a> {
+    pub player: &'a mut crate::gameplay::player::Player,
+    pub duplicate_blueprint_value: i32,
+    pub raw_whale_bone: &'a mut dyn FnMut(u32),
+    /// Must dispatch built-in damage DAT_14231f390, not directly edit HP.
+    pub negative_health: &'a mut dyn FnMut(&mut crate::gameplay::player::Player, f32),
+}
+impl InventoryPickupEffects for PlayerPickupEffects<'_> {
+    fn apply_health(&mut self, amount: f32) -> bool {
+        if amount < 0.0 { (self.negative_health)(self.player, amount); }
+        else { self.player.inventory_health_gain(amount); }
+        true
+    }
+    fn mana(&self) -> Option<(f32, f32)> { Some((self.player.mana(), self.player.max_mana())) }
+    fn apply_mana(&mut self, amount: f32) { self.player.inventory_mana_gain(amount); }
+    fn random(&mut self) -> f32 { self.player.inventory_random() }
+    fn duplicate_blueprint_value(&self) -> i32 { self.duplicate_blueprint_value }
+    fn add_raw_whale_bone(&mut self, count: u32) { (self.raw_whale_bone)(count); }
 }
 
 pub(crate) trait InventoryPickupEffects {
@@ -56,6 +118,31 @@ pub(crate) trait InventoryPickupEffects {
 }
 
 impl DiscoveredDocuments {
+    /// Called by the equipment entity owner after 619380 admission. Only
+    /// actual component metadata is accepted; item UI/type cannot infer it.
+    pub fn equipment_available(&mut self, path: &str, equipment: &crate::gameplay::player::weapons::Equipment) -> bool {
+        let Some(record) = self.record(path) else { return false };
+        if equipment.slot >= 16 || equipment.archetype == 0 || record.declaration.equipment.is_none() { return false; }
+        if self.quantity(path) > 0 && (record.declaration.type_number != 4 || self.allow_auto_equip && equipment.auto_equip) {
+            let path = key(path);
+            if !self.auto_equip_candidates.iter().any(|(candidate, _)| *candidate == path) {
+                self.auto_equip_candidates.push((path, equipment.slot));
+            }
+        }
+        true
+    }
+
+    /// 619760 considers at most the first candidate for each native slot,
+    /// then clears the entire pending list even when autoequip is disabled.
+    pub fn arbitrate_auto_equip(&mut self, instant: bool) {
+        let mut slots = [false; 16];
+        for (path, slot) in std::mem::take(&mut self.auto_equip_candidates) {
+            if self.allow_auto_equip && !slots[slot as usize] {
+                self.changes.push_back(InventoryChange::AutoEquipRequested { path, instant });
+                slots[slot as usize] = true;
+            }
+        }
+    }
     /// 615840's player consumable and ammunition admission. Immediate food
     /// effects are performed once per pickup, independent of pack quantity,
     /// and return zero when consumed instead of entering inventory.
@@ -221,4 +308,28 @@ impl DiscoveredDocuments {
     }
 
     pub fn take_changes(&mut self) -> impl Iterator<Item = InventoryChange> + '_ { self.changes.drain(..) }
+    /// Equipment's observer removes only its message classes. Currency,
+    /// quantity and shortcuts retain their independent native consumers.
+    pub fn take_equipment_changes(&mut self) -> Vec<InventoryChange> {
+        let mut equipment = Vec::new();
+        let mut other = std::collections::VecDeque::new();
+        for change in self.changes.drain(..) {
+            match change {
+                InventoryChange::EquipmentNeeded { .. } | InventoryChange::EquipmentRemoved { .. }
+                | InventoryChange::AutoEquipRequested { .. } | InventoryChange::Equipped { .. }
+                | InventoryChange::Unequipped { .. } => equipment.push(change),
+                _ => other.push_back(change),
+            }
+        }
+        self.changes = other;
+        equipment
+    }
+    pub fn take_shortcut_items(&mut self) -> Vec<String> {
+        let mut items = Vec::new();
+        self.changes.retain(|change| match change {
+            InventoryChange::ShortcutItemAdded { path } => { items.push(path.clone()); false },
+            _ => true,
+        });
+        items
+    }
 }

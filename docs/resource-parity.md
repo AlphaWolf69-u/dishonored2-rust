@@ -9828,3 +9828,76 @@ other constructors/tree graphs fail explicitly. Serialized canLower,
 autoEquip and forceAttachment remain in the weapon declaration reader;
 startup selection remains inventory arbitration. No tests, builds, visible
 launches, visual checks or measured performance claims in this followup.
+Inventory gameplay followup (2026-11-15): expected behavior before integration:
+initial preparation acquires collection item identities once and retains the
+actual InventoryLoadout lease; first Update registers item records before any
+quantity/modifier changes. Initialization now applies clear/allow_auto_equip
+and assignments once, rather than discarding loadout flags or replaying pickups
+on every map. Source 617930/613ff0. InitialInventory::paths exposes these same
+prepared identities to Powers, without a second metadata owner. Missing initial
+collection/loadout/item data is a preparation error, not default modifiers.
+Subsequent maps leave the session inventory's quantities and leases intact.
+
+ported potion action algorithms: gameplay/player/consumables.rs rechecks
+718ce0/7459f0 admission, consumes one real inventory record, then applies
+7194a0/745b20 Health/Mana target gains. Authored quantities come from the same
+item declaration; difficulty effect/speed values come from the existing
+manager, and attribute names were checked against installed executable strings.
+Mana random empty/full rolls use the player's existing shared LCG seed and
+integer modulo101, including branch-dependent random draw counts; those two
+early-return branches omit ordinary potion statistics/consume sound. Native
+745c14..745c21 explicitly loads current mana into XMM1 and minimum mana into
+XMM2 for the empty roll's 746cf0 call. This adapter uses the existing powers
+consume_with_replenish API with constructor-default minimum0. Health and mana
+consume sounds are SoundEventDeclaration leases acquired through Wwise's one
+owner, not midnight scenes or separate inventory audio objects. 7194a0/745b20
+request message A9 with handle-1 after immediate consumption; sound interruption
+therefore does not refund quantity. The actual game-logic stack top787900 value8
+is POWERWHEEL and suppresses this sound request. 399620 is a literal return0
+in this executable: merged-health/mana potion branches are unreachable despite
+the difficulty declaration retaining that optional field. No artificial
+merged-resources action rejection remains.
+
+Mana owner additions: ported 745b20 first-potion target reset, repeated-potion
+accumulation, potion bits8/16, zero countdown, 7460b0 difficulty potion speed,
+and 746b60/746770 target-completion flag clearing/countdown reset. The owner
+remains gameplay/player/mana.rs; consumption still uses the existing powers
+method and health gain still uses damage's Health::gain/can_use_potion methods.
+PlayerPickupEffects borrows these actual owners and the same RNG per pickup.
+Negative food requires the real built-in damage declaration14231f390 dispatch
+callback; crafting and duplicate-blueprint valuation likewise require their
+actual owners, never inventory-local substitutes.
+
+ported inventory/equipment admission requests: 6170b0 first ownership emits
+EquipmentNeeded; zero ownership emits EquipmentRemoved. EquipmentAvailable
+accepts the equipment owner's typed Equipment metadata, then 6162b0/619760
+arbitration emits only the first autoequip request per actual slot, honoring
+loadout allow_auto_equip and ammo's m_autoEquip. These are requests for the
+player controller/entity owner; an emitted request does not claim activation.
+
+ported keyboard/controller shortcuts: app/inventory_shortcuts.rs reads actual
+controller m_shortcutsSettings enumItem entries, retains 14 slots and explicit
+player assignment flags, uses ranged-owner equipment/ammunition dependency
+pairs, and applies 4df4e0 eligibility by actual equipment archetype. 4de4d0's
+priority comparison is boolean nonzero, confirmed at4de5f9/4de600 SETNZ and
+4de607 CMP AL,CL; it is not an invented numeric priority sort. Enum registration
+1419f1d60 assigns keyboard slots0..9 and controller slots10..13. 4de920 maps
+input25..34 and37..40;4de730 cycles only keyboard slots with positive equipment
+quantity. Selection returns the concrete inventory pair and declared equipment
+entity for demand acquisition. No item-name or HUD-index-to-key mapping is
+invented. Installed base/controller.cpntplayercontroller.decl was inspected for
+its serialized enumItem settings; no game declaration data is committed.
+
+blocked integration/verification: parent must declare the new consumables
+player module, route input35/36 and shortcut selection, fan out inventory change
+requests, and dispatch returned real audio/messages/statistics; equipment owner
+must admit actual component/entity resources before equipment_available. Powers
+commit6a0fa70d supplies consume_with_replenish and damage supplies Health gain
+and admission. Shortcut autoassignment requires actual owned-equipment metadata
+and ranged dependency pairs, with geometry still acquired only on demand.
+Multiple matching health/mana potion declarations currently require the native
+registration order and produce an explicit error rather than random HashMap
+selection; ordinary collection candidates have not yet been measured in a live
+session. Savegame persistence, wheel presentation, game-message fanout and live
+capture comparisons remain integration work. No compilation, tests, visible
+launches, latency, byte-count or performance measurements were performed here.
