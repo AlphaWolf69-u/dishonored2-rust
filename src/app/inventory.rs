@@ -54,6 +54,20 @@ pub(crate) enum InventoryChange {
     QuantityChanged { path: String, previous: u32, current: u32 },
 }
 
+pub(crate) enum InventoryScriptEvent {
+    ItemRemoved { item: Arc<PickableItem> },
+    MoneyAdded { quantity: i32 },
+}
+pub(crate) trait InventoryScriptReceiver {
+    fn receive(&mut self, event: InventoryScriptEvent) -> Result<(), String>;
+}
+#[derive(Default)]
+pub(crate) struct InventoryPublication {
+    pub entity_messages: usize,
+    pub script_delivered: usize,
+    pub script_receiver_absent: usize,
+}
+
 /// Values resolved from the player's actual attribute component and the
 /// gameflow ammo-pack adjustment (647ee0); no substitute RNG lives here.
 pub(crate) struct PickupAttributes {
@@ -336,11 +350,43 @@ impl DiscoveredDocuments {
     /// pointer is encoded into an opaque byte payload.
     pub fn publish_gameplay_events(&mut self, player: crate::gameplay::entity_lifetime::EntityId,
         events: &mut crate::gameplay::entity_events::EntityEvents) -> Result<usize, String> {
+        // The current host has no script observer component. This is the
+        // actual unbound receiver state, not a substitute callback/VM.
+        self.publish_notifications(player, events, None).map(|result| result.entity_messages)
+    }
+
+    pub fn publish_notifications(&mut self, player: crate::gameplay::entity_lifetime::EntityId,
+        events: &mut crate::gameplay::entity_events::EntityEvents,
+        mut script_receiver: Option<&mut dyn InventoryScriptReceiver>) -> Result<InventoryPublication, String> {
         use crate::gameplay::entity_events::{Event, Payload};
-        let mut sent = 0;
+        let mut result = InventoryPublication::default();
         loop {
             let Some(index) = self.changes.iter().position(|change| matches!(change,
-                InventoryChange::QuantityChanged { .. } | InventoryChange::Added { .. } | InventoryChange::Removed { .. })) else { break };
+                InventoryChange::QuantityChanged { .. } | InventoryChange::Added { .. } | InventoryChange::Removed { .. }
+                | InventoryChange::Depleted { .. } | InventoryChange::CoinsAdded { .. })) else { break };
+            let script_event = match &self.changes[index] {
+                InventoryChange::Depleted { path } => Some(InventoryScriptEvent::ItemRemoved {
+                    item: self.declaration(path).cloned().ok_or_else(|| format!("itemRemoved has no retained declaration: {path}"))?,
+                }),
+                InventoryChange::CoinsAdded { count, .. } => Some(InventoryScriptEvent::MoneyAdded { quantity: *count }),
+                _ => None,
+            };
+            if let Some(event) = script_event {
+                if let Some(receiver) = script_receiver.as_deref_mut() {
+                    // Remove only after the actual bound observer accepts it.
+                    receiver.receive(event)?;
+                    result.script_delivered += 1;
+                } else {
+                    // Native player dispatcher8f2500 caseseb/ec calls
+                    // 7ac710, which only returns its second argument. The
+                    // subsequent883d10 notices require receiver+8 !=NULL;
+                    // 883740 initializes that observer list NULL. With no
+                    // actual observer, this is a completed native no-op.
+                    result.script_receiver_absent += 1;
+                }
+                self.changes.remove(index);
+                continue;
+            }
             let path = match &self.changes[index] {
                 InventoryChange::QuantityChanged { path, .. } | InventoryChange::Added { path, .. }
                 | InventoryChange::Removed { path, .. } => path,
@@ -355,14 +401,13 @@ impl DiscoveredDocuments {
                 _ => unreachable!(),
             };
             events.post(Event { id, target: Some(player), payload });
-            sent += 1;
+            result.entity_messages += 1;
         }
-        Ok(sent)
+        Ok(result)
     }
 
-    /// Source boundary:6147f0's itemRemoved and615620's moneyAdded are
-    /// script events registered by1413989c0/1413991f0, not entity-message
-    /// numbers. Preserve them until the actual script callback owner exists.
+    /// Undelivered script callbacks. Normal publication accepts an actually
+    /// unbound receiver as native no-op, so these do not accumulate forever.
     pub fn pending_script_events(&self) -> impl Iterator<Item = &InventoryChange> {
         self.changes.iter().filter(|change| matches!(change, InventoryChange::Depleted { .. } | InventoryChange::CoinsAdded { .. }))
     }

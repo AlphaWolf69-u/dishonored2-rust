@@ -2,7 +2,8 @@
 use bevy::prelude::Resource;
 #[path = "inventory.rs"]
 mod inventory;
-pub(super) use inventory::{InventoryChange, InventoryRecord, InventoryPickupEffects, PickupAttributes, PlayerPickupEffects, ShortcutSettings, ShortcutSelection};
+pub(super) use inventory::{InventoryChange, InventoryRecord, InventoryPickupEffects, PickupAttributes, PlayerPickupEffects, ShortcutSettings, ShortcutSelection,
+    InventoryScriptEvent, InventoryScriptReceiver, InventoryPublication};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct InteractionPrompt {

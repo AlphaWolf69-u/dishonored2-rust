@@ -10827,3 +10827,29 @@ audio acknowledgements. No independent clock state or wall-time fallback is
 introduced.
 
 Clock retirement integration: releasing Bend Time requests restores their managed entity overrides through the existing clock transition, but retains actual entity clock registrations until their managed-generation retirement acknowledgement. Equipment/child render and audio drains still consume those clocks. No new timer or clock owner is introduced; this fixes premature removal, with no measured performance claim.
+Script notice boundary closure (2026-11-15, supersedes the retained-pending
+boundary above): read-only PE CRT-initializer inspection reconstructed the
+native registered event order: itemRemoved235/0xeb (ctor1413989c0),
+moneyAdded236/0xec (ctor1413991f0). This is the script event table, not invented
+EntityEvents IDs. The actual arkPlayer vtable141c5e428 +10 resolves8f2500;
+its switch caseseb/ec (chunk402) call7ac710 for both notice handlers. That
+function (chunk323) returns only its second argument, with no gameplay work.
+The subsequent884980 notice forwarding invokes883d10 only through the declared
+notice descriptor;883d10 enters its observer callbacks only if receiver+8 is
+nonnull. Receiver constructor883740 initializes+8 NULL. Its destructor883760
+releases listener registrations and arrays. Consequently no observer is an
+accepted native no-op for these two events, not indefinitely pending work.
+
+The canonical inventory publisher now sends typed ItemRemoved/MoneyAdded through
+an explicit optional InventoryScriptReceiver view. A real bound receiver must
+accept delivery before the queue entry is removed; errors preserve it. The
+current host has no script observer component and supplies the actual unbound
+view. The native no-op handlers and null observer gate complete that delivery;
+InventoryPublication reports script_receiver_absent separately from actual
+script callbacks and entity messages. This drains money/depletion notifications
+without a fabricated VM, callback, numeric entity-message ID or unbounded
+pending queue. Script and ordinary message production order stays in the one
+inventory queue. Future actual observer integration passes its live receiver
+to publish_notifications; the default publisher uses the known unbound host.
+Only source and PE inspection plus whitespace validation were used; no builds,
+tests, visible launches, runtime measurements or performance claims.
