@@ -10571,6 +10571,19 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   attempts with its <=3-round fallback. Alias admission and child readiness
   remain with the canonical upgrade animation receiver; no replacement clip
   or fabricated successful lookup is supplied.
+- `MagazineCapacityRecomputed` is produced only for the actual gun
+  OnAmmoChanged boundary (`140639f00` initial `+100`, `14063a490` changed
+  record `+100`, `14044dd00` -> `14044e720`), including equal-valued capacity
+  recomputations. Round spending/reload notifications do not create it.
+  The typed source identity and declaration lease allow inactive owned
+  startup to queue the real pending flag. Consumption still requires actual
+  parent Think (`Runtime::is_active`) and a started type5 animation child;
+  later round changes only update an existing pending value.
+- Hidden inactive equipment publishes its own canonical base-pose world
+  palette with `visible=false`. This enables actual default ammo/upgrade
+  bone binding before selection without showing or GPU-skinning the hidden
+  actor, inventing a bind frame or posing through another owner. No clip is
+  acquired by this publication; stopped clip clocks remain stopped.
 
 ### FarReach body/hand leaves and traveling beam (2026-11-15)
 

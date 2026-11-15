@@ -223,6 +223,9 @@ pub enum WeaponEffect {
     /// Actual active component Think ->61a650/61b4c0. The source identity
     /// survives a same-frame selection change without a new path allocation.
     UpgradeAnimation { identity: std::sync::Arc<str>, mode: u8, play: bool },
+    /// 44dd00 ->44e720 marks the final magazine pose pending, separately
+    /// from round count changes. The child waits for actual parent Think.
+    MagazineCapacityRecomputed { identity: std::sync::Arc<str>, weapon: std::sync::Arc<Ranged>, magazine: i32 },
 }
 
 /// The selected ranged component's persistent state (637580, 639360, 63a2b0).
@@ -290,6 +293,11 @@ impl Runtime {
     /// 61aed0 ->7e7670 starts the selected component's update ownership;
     /// registered-but-holstered Start61ac10 only initializes it (7e7400).
     pub fn activate(&mut self) { self.active = true; }
+    pub fn is_active(&self) -> bool { self.active }
+    pub(super) fn capacity_recomputed(&self) -> Option<WeaponEffect> {
+        if self.settings.family != RangedFamily::Gun { return None; }
+        Some(WeaponEffect::MagazineCapacityRecomputed { identity: self.identity.clone()?, weapon: self.settings.clone(), magazine: self.magazine })
+    }
     pub fn deactivate(&mut self) {
         // Crossbow62bd20 stops charge upgrades before 63a1e0/61b010
         // removes this component's Think ownership through 7e7750.
@@ -361,6 +369,11 @@ impl Runtime {
         }
         self.total_ammo = inventory.quantity(item);
         self.reload_magazine();
+        // 63a490 invokes OnAmmoChanged100 only when the actual record changes;
+        // its gun override44dd00 performs44e720 even for an equal capacity.
+        if previous != index {
+            if let Some(effect) = self.capacity_recomputed() { self.effects.push(effect); }
+        }
         Ok(true)
     }
 

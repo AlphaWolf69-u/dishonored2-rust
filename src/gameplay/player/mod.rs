@@ -274,6 +274,9 @@ impl Player {
         let capacity = settings.capacity(0, &self.attributes);
         let mut runtime = weapons::Runtime::new(settings, capacity, total, 3)?;
         runtime.identity = Some(std::sync::Arc::from(identity));
+        // Actual owned-component Start639f00 always invokes OnAmmoChanged100;
+        // queue the gun's44e720 notification with its real actor identity.
+        if let Some(effect) = runtime.capacity_recomputed() { self.weapon_effects.push(effect); }
         self.holstered_weapons.insert(identity.to_owned(), runtime);
         Ok(())
     }
@@ -1143,14 +1146,12 @@ impl Player {
             // 61b010 hides only equipment whose declaration requests it.
             // The stopped entity keeps its own base pose; another item now
             // using Midnight target3/4 must not write into this skeleton.
-            if tree.visible {
-                let Ok(pose) = tree.pose_base() else { continue };
-                let joints = pose.into_iter().map(|(local_p, local_r)| {
-                    let (p, r) = (p + r * local_p, r * local_r);
-                    std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
-                }).collect();
-                render.push(ArmRender { model: tree.model.clone(), managed_entity: tree.managed_entity, joints, visible: true });
-            }
+            let Ok(pose) = tree.pose_base() else { continue };
+            let joints = pose.into_iter().map(|(local_p, local_r)| {
+                let (p, r) = (p + r * local_p, r * local_r);
+                std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
+            }).collect();
+            render.push(ArmRender { model: tree.model.clone(), managed_entity: tree.managed_entity, joints, visible: tree.visible });
         }
         // The body entity's own model: hidden-legs materials (nothing drawn)
         // unless the legs are visible (FUN_140776e60).
