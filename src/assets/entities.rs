@@ -4105,3 +4105,5 @@ mod line_break_tests {
 }
 
 pub(crate) mod rigid_body;
+
+pub mod damage;

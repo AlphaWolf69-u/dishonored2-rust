@@ -40,3 +40,5 @@ pub mod particle_model;
 pub mod difficulty;
 
 pub mod midnight_scene;
+
+pub mod damage;

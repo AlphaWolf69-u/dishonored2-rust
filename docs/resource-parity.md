@@ -9705,3 +9705,7 @@ visible launches, or visual verification were performed for this change, per
 the current user instructions. Existing body/arm shading and swimming/mantle
 publication continue through their original shared path; output equivalence
 has not been measured in this change.
+
+### Shared player system acquisition and casting integration (2026-11-15)
+
+Prediction before implementation: damage declarations use the existing catalog marker registry, and player power/mark fields reuse the resolved player bundle before its generic source is released. Equipment casting adds the actual two equipped model targets from 1408542b0, sharing canonical sound spatialization and render retirement; no separate archive, material, or audio cache is introduced. These are behavior/lifetime additions, not measured optimization claims. Damage header registration/promotion/purge follows 1400607f0 and the existing 142280ee0 promotion table. Status: ported hooks; gameplay integration and compilation pending in this feature branch. No runtime equivalence or timing measurements claimed.

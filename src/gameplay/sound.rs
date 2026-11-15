@@ -51,6 +51,8 @@ pub enum Emitter {
     PlayerBody,
     PlayerLeftArm,
     PlayerRightArm,
+    PlayerLeftEquipment,
+    PlayerRightEquipment,
     Effect(u64),
     Component { handle: u64, generation: u32 },
 }
@@ -63,6 +65,8 @@ impl Emitter {
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,
+            Self::PlayerLeftEquipment => 8,
+            Self::PlayerRightEquipment => 16,
         }
     }
 }

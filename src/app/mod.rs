@@ -186,6 +186,8 @@ mod objective_markers;
 pub use audio::audiographs::inspect_audiograph_resources;
 mod engine_keys;
 mod player;
+mod player_actions;
+mod powers;
 mod player_arm_capture;
 mod player_arms;
 mod hud_movie;

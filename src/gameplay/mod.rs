@@ -96,3 +96,5 @@ pub(crate) mod faction_manager;
 pub(crate) mod faction_registry;
 pub mod midnight_timing;
 pub mod scene_animation;
+
+pub mod damage;

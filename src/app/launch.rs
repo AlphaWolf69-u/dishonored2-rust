@@ -339,6 +339,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
+    super::player_arms::install_equipment_retirement(&mut app);
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
     app.init_resource::<super::readable_movie::ReadableRequests>();
     app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin);

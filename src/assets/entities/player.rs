@@ -22,6 +22,10 @@ pub struct PlayerDeclarations {
     pub mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
+    /// Shared power-system and mark inputs, resolved with the player's other
+    /// components; consumers project typed runtime data before source release.
+    pub powers: Vec<(String, Value)>,
+    pub outsider_mark: Vec<(String, Value)>,
     pub adrenaline: Vec<(String, Value)>,
     pub breath: Vec<(String, Value)>,
     pub body: Vec<(String, Value)>,
@@ -171,7 +175,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 15] = [
+const PLAYER_COMPONENTS: [&str; 17] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -187,6 +191,8 @@ const PLAYER_COMPONENTS: [&str; 15] = [
     "cpntadrenaline",
     "cpntplayerbreath",
     "cpntplayerfxmanager",
+    "cpntplayerpowersystem",
+    "cpntplayeroutsidermark",
 ];
 
 fn kind_of(name: &str) -> Option<&str> {
@@ -198,7 +204,7 @@ fn component_key(key: &str) -> Option<&str> {
 }
 
 /// The entity def chain from the root ancestor to `name`.
-fn entity_chain(name: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<Fields>, String> {
+pub(crate) fn entity_chain(name: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<Fields>, String> {
     let mut chain = Vec::new();
     let mut active = std::collections::HashSet::new();
     let mut next = Some(name.to_owned());
@@ -294,6 +300,8 @@ fn player_declarations_with_listener(
     let mantle_sensor = take("cpntplayersensormantle")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
+    let powers = take("cpntplayerpowersystem")?;
+    let outsider_mark = take("cpntplayeroutsidermark")?;
     let adrenaline = take("cpntadrenaline")?;
     let breath = take("cpntplayerbreath")?;
     let body = take("cpntplayerbody")?;
@@ -336,7 +344,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

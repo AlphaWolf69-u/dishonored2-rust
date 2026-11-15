@@ -110,6 +110,7 @@ pub struct Catalog {
     pub(crate) beam_noise: std::sync::OnceLock<std::result::Result<std::sync::Arc<crate::gameplay::particles::beam_noise::SimplexTable>, String>>,
     pub(crate) difficulty_definitions: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Definition>>>,
     pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
+    pub(crate) damage_declarations: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::damage::Declaration>>>,
     pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
     pub(crate) sound_auxiliary_buses: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<u32>>>,
     pub(crate) gameflow_programs: std::sync::OnceLock<std::sync::Mutex<crate::gameplay::gameflow::program::ProgramRegistry>>,
@@ -186,6 +187,7 @@ impl Drop for Catalog {
         crate::assets::difficulty::report_retirement(self);
         self.difficulty_definitions.take();
         self.difficulty_presets.take();
+        self.damage_declarations.take();
         self.sound_rtpcs.take();
         self.sound_auxiliary_buses.take();
         self.gameflow_programs.take();
@@ -267,6 +269,7 @@ impl Catalog {
         crate::assets::fx::particle_resources::release_marker(self, 0);
         crate::gameplay::gameflow::program::release_marker(self, 0);
         crate::assets::speech::release_marker(self, 0);
+        crate::assets::damage::release_marker(self, 0);
         crate::assets::wwise::event_resources::release_marker(self, 0);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
@@ -290,6 +293,7 @@ impl Catalog {
         crate::assets::fx::particle_resources::release_marker(self, 1);
         crate::gameplay::gameflow::program::release_marker(self, 1);
         crate::assets::speech::release_marker(self, 1);
+        crate::assets::damage::release_marker(self, 1);
         crate::assets::wwise::event_resources::release_marker(self, 1);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
         crate::assets::wwise::rtpc_resources::release_marker(self, 1);
@@ -556,6 +560,7 @@ impl Catalog {
             beam_noise: Default::default(),
             difficulty_definitions: Default::default(),
             difficulty_presets: Default::default(),
+            damage_declarations: Default::default(),
             sound_rtpcs: Default::default(),
             sound_auxiliary_buses: Default::default(),
             gameflow_programs: Default::default(),

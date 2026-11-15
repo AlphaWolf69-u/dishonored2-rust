@@ -114,7 +114,8 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
             scene.reflection = settings.swap_back_to_front;
             scene.collects_environment = settings.collects_environment;
         }
-        for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm] {
+        for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm,
+            Emitter::PlayerLeftEquipment, Emitter::PlayerRightEquipment] {
             if let Some((position, axis)) = player.sound_transform(emitter) {
                 scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
                 if let Some(rate) = rate {
