@@ -9999,3 +9999,29 @@ rule handler through the Catalog class registry and one sequence cursor per rule
 on each actual player state machine. A rule evaluation borrows its condition and
 outcome records; it performs no source I/O, declaration parsing, allocation or
 string lookup. No measured memory or CPU improvement is claimed.
+
+- `ported`: player Slash rule-handler projection (`m_type` 10) and immutable
+  `arkRuleAction_SlashOutcome` fields/defaults `140892fd0`/`1408930c0`,
+  reflected at `141674f60`; condition value classes bool/float/SlashType/
+  PlayerPosture and their six registered comparison operators. The installed
+  selected handler contains 18 rules, all with `RULE_EXEC_SEQUENCE`.
+- `ported`: handler admission/removal `140893e30`, source-order preservation
+  (`140696cc0` sorts only bark families 6..8), first admitted rule selection
+  `140895820`/`1408963f0`, sequence cursor/advancement `1408920c0`/`140892390`,
+  and once-only exhaustion through the native `140696c40` policy table.
+  Evaluation refreshes source conditions; it does not reset selector cursors.
+- `ported`: separate immutable declaration leases and per-machine mutable
+  instances (`1408947f0`/`1408952a0`/`140895660`), Catalog registration,
+  bootstrap promotion and scoped retirement through the existing class owner
+  registry (`1400607f0`/`14005feb0`/`1400661e0`/`140060180`). The original
+  conditional map-heap promotion list does not contain `ruleHandler`; map
+  header registration therefore does not promote this class to marker 1.
+- `blocked: non-Slash rule families and shuffle policies`: their actual
+  NPC/bark/choke/other outcome/provider owners are not substituted by Slash
+  outcomes. Unsupported demanded kinds/policies fail explicitly; metadata-only
+  preload headers remain admissible. Next step: connect each family's own
+  source-defined action/provider runtime when it is implemented.
+- Validation: inspected installed handler through the existing windowless
+  archive tool and compared all rule/provider/action families with the
+  decompiled runtime and read-only Ghidra metadata/vtables. No tests, builds,
+  visible launches, visual inspection, or measured performance claim.
