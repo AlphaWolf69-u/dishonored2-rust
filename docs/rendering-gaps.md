@@ -787,6 +787,26 @@ loses w. Remaining, in order:
   the installed models by examples/hull_oracle.rs). The 4x4 inverse was
   generated from 140adf2d0's instructions by a symbolic SSE evaluator;
   both hull inverses match the installed functions on 800 probe cases.
+- Connected 2026-11-15: m_fxEvents (arkFXEventInstance, `gameplay::particles::fx_event`,
+  poses 1500/1500 against the installed code) and Havok birth / collision /
+  stop / death / life events; world-material sprites (glass shards) as
+  instanced particle surfaces over the shared sprite grid; Havok
+  attractors (1401ce600), accelerations (1401ccb30) and vector fields
+  (1402165f0) with their per-frame preparation (1401e7650); spawn
+  collision queries (1401db2c0 sphere, 1401db350 ray) against the level
+  map. The per-body seed these effects read (+0x340) is never written by
+  the stage (approximate_: 0). FX census 765 -> 135.
+- Remaining refusals: enabled m_physicsShapesSpawn (58: 1401dce70 picks a
+  random owner physics shape, 14067a050 samples a polytope face point and
+  normal; needs the owning entity's shape list, FX group
+  m_usePhysicsShapes), opaque pixel-lit particles (46, see particle/blood),
+  SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
+  140fd5250, prune, create from the SpatialPartition's closest
+  neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/
+  140fd5d00), ocean collisions (1), spawn vector fields (1). Moving world
+  bodies: dynamic CD (140fc1370 1353-3320, per-body cache in the hit
+  body's space over the begin pass's neighbour lists +0x80/+0x90/+0xa0,
+  closest points 140cada50, point velocity 1412b7990) is not ported.
 - Convex contacts ported (`havok_fx::solve_convex_contacts`):
   SolveConvexContacts 140fbb350 matches the installed solver on 720/720
   bodies of synthetic chunks (tests/fixtures/convex_contact_cases.txt,
