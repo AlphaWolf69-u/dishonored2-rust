@@ -30,6 +30,11 @@ pub(super) struct WaterScene {
     swimming_contacts:crate::rendering::environment_contacts::EnvironmentViewContacts,
 }
 impl WaterScene {
+    /// 140806a40 consumes the first ordinary profile in 88d060's ordered
+    /// camera query. Rendering and ambiance share this completed query.
+    pub(super) fn ambiance_environment(&self) -> Option<usize> {
+        self.contacts.selection.areas.first().copied()
+    }
     pub(super) fn swimming_current(&self) -> Option<[f32; 3]> {
         self.swimming_contacts.head_water_current
     }

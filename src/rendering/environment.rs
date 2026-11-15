@@ -178,11 +178,11 @@ pub(crate) fn prepare_volume_owners(
                 if let Some(area) = area_from_volume(volume.placement.clone(), volume.parameters.clone(), false, catalog, sources)? { areas.push(area); }
             }
             live.push(RuntimeEnvironmentVolume { id: volume.placement.id.clone(), position: volume.placement.position,
-                is_water_volume: volume.is_water_volume, surface_material: volume.surface_material.clone(), _retained: Some(Box::new(volume)) });
+                is_water_volume: volume.is_water_volume, surface_material: volume.surface_material.clone(), ambiance: volume.ambiance.clone(), _retained: Some(Box::new(volume)) });
         } else {
-            let EnvironmentVolume { placement, parameters, is_water_volume, surface_material } = volume;
+            let EnvironmentVolume { placement, parameters, is_water_volume, surface_material, ambiance } = volume;
             live.push(RuntimeEnvironmentVolume { id: placement.id.clone(), position: placement.position,
-                is_water_volume, surface_material, _retained: None });
+                is_water_volume, surface_material, ambiance, _retained: None });
             if make_areas {
                 if let Some(area) = area_from_volume(placement, parameters, is_water_volume, catalog, sources)? { areas.push(area); }
             }

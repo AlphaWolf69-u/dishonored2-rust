@@ -18,6 +18,8 @@ pub mod auxiliary_resources;
 pub mod rtpc_resources;
 pub mod engine_controls;
 mod playback;
+mod music_playback;
+pub use music_playback::{MusicGraph, MusicActor, MusicKind, MusicMedia, MusicAutomation, MusicRule};
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;
 pub(crate) use property_chains::retire_diagnostics as retire_property_diagnostics;
@@ -717,6 +719,7 @@ pub fn event_commands_with(
 pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec<EventCommand>> {
     fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
         match node {
+            PlaybackNode::Music(_) => Err(invalid("music actors require sample-clock playback")),
             PlaybackNode::Unsupported { node, reason } => Err(invalid_owned(format!("Wwise actor {node:#010x}: {reason}"))),
             PlaybackNode::Switch(switch) => Err(invalid_owned(format!(
                 "Wwise switch actor {:#010x} requires live selection and controller playback", switch.node))),
@@ -790,6 +793,7 @@ pub enum PlaybackCommand {
 
 #[derive(Clone, Debug)]
 pub enum PlaybackNode {
+    Music(std::sync::Arc<MusicGraph>),
     /// Preserve a known actor whose processor has not been hosted. This is
     /// distinct from a missing global actor and must not alter selection weights.
     Unsupported { node: u32, reason: String },
@@ -1106,23 +1110,33 @@ fn media_from_sound(
 ) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
     if sound.len() < 13 { return Ok(None); }
     let media_id = read_u32_slice(sound, 9)?;
+    media_from_descriptor(media_id, sound[8], media_index, media_data, package_media, hold_bank)
+}
+
+/// Both Sound (141122400) and music-track (141159840) sources use the
+/// standard source descriptor and the same bank/prefetch/package ownership.
+fn media_from_descriptor(media_id: u32, stream_type: u8,
+    media_index: Option<BankMediaIndex<'_>>, media_data: Option<&[u8]>,
+    package_media: &mut impl FnMut(u32, u8) -> io::Result<Option<MediaBytes>>,
+    hold_bank: impl Fn(&[u8]) -> MediaBytes,
+) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
     // Streamed and prefetched sources use the full package file. DIDX may
     // contain only a prefetch prefix, which must not replace the full media.
-    if sound[8] != 0 {
-        if let Some(mut media) = package_media(media_id, sound[8])? {
+    if stream_type != 0 {
+        if let Some(mut media) = package_media(media_id, stream_type)? {
             let (track, metrics) = stream_diagnostic_mode();
-            let prefetched = sound[8] == 1 && media.is_stream_header();
+            let prefetched = stream_type == 1 && media.is_stream_header();
             let entry = if track || prefetched { media_index.and_then(|index| index.entry(media_id)) } else { None };
             if metrics {
                 use std::sync::atomic::Ordering::Relaxed;
                 STREAM_DIAGNOSTIC_REQUESTS.fetch_add(1, Relaxed);
                 let signature = (u64::from(media_id) << 32) ^ (media.source_size() as u64)
-                    ^ (u64::from(sound[8]) << 56);
+                    ^ (u64::from(stream_type) << 56);
                 STREAM_DIAGNOSTIC_SIGNATURE.fetch_add(signature, Relaxed);
             }
             if track {
                 let prefix = entry.and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize));
-                STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
+                STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (stream_type, media.source_size(), prefix));
                 if metrics { STREAM_DIAGNOSTIC_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
             }
             if prefetched {
@@ -1137,7 +1151,7 @@ fn media_from_sound(
                     None => package_media(media_id, 2)?.ok_or_else(|| invalid("prefetch source has no package continuation"))?,
                 };
             }
-            return Ok(Some((media, (sound[8] == 2 || prefetched).then_some(media_id))));
+            return Ok(Some((media, (stream_type == 2 || prefetched).then_some(media_id))));
         }
     }
     if let (Some(index), Some(data)) = (media_index, media_data) {
@@ -1148,7 +1162,7 @@ fn media_from_sound(
             return Ok(Some((hold_bank(data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?), None)));
         }
     }
-    Ok(package_media(media_id, sound[8])?.map(|media| (media, None)))
+    Ok(package_media(media_id, stream_type)?.map(|media| (media, None)))
 }
 
 /// List event object IDs in the HIRC chunk for building an installed-bank index.

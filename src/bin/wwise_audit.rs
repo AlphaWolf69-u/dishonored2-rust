@@ -719,6 +719,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     let id = match node {
+        PlaybackNode::Music(graph) => graph.root,
         PlaybackNode::Unsupported { node, .. } | PlaybackNode::Missing { node } |
         PlaybackNode::Sound { node, .. } | PlaybackNode::Generator { node, .. } |
         PlaybackNode::Layer { node, .. } | PlaybackNode::NoSource { node, .. } => *node,
@@ -732,6 +733,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         return Ok(());
     }
     match node {
+        PlaybackNode::Music(graph) => println!("{indent}Music actor {:#010x}: {} actors, {} sources", graph.root, graph.actors.len(), graph.media.len()),
         PlaybackNode::Unsupported { node, reason } => println!("{indent}Unsupported actor {node:#010x}: {reason}"),
         PlaybackNode::Switch(switch) => {
             println!("{indent}Switch {:#010x}: group_kind={}, group={:#010x}, default={:#010x}, continuous={}",

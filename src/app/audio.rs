@@ -16,6 +16,7 @@ mod spatial;
 mod session;
 pub(super) use session::{close_admission as close_session_admission, work as acquire_audio_work, Session as AudioSession};
 pub(super) mod level;
+pub(super) mod music;
 pub(super) use contacts::ContactSound;
 
 #[derive(Message, Clone, Copy)]
@@ -197,7 +198,7 @@ impl WwiseRegistry {
         locators: &mut HashMap<(usize, u32), graph::StreamLocator>,
     ) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
         let mut files = HashMap::<usize, std::fs::File>::new();
-        self.library.event_playback_shared(event, |owner, media_id, stream_type| {
+        let actions = self.library.event_playback_shared(event, |owner, media_id, stream_type| {
             let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
@@ -238,7 +239,23 @@ impl WwiseRegistry {
                 return Ok(Some(acquired));
             }
             bank.package.read_resident_entry(file, media).map(Some)
-        })?.ok_or_else(|| "event has no supported Wwise actions".into())
+        })?.ok_or("event has no supported Wwise actions")?;
+        // A second event may reuse the bank owner's immutable music graph.
+        // Its source callback then does not run again: derive package extents
+        // from the source's owning bank, without rereading encoded headers.
+        if !resident_streams {
+            for action in &actions {
+                let crate::assets::wwise::PlaybackCommand::Play { node: crate::assets::wwise::PlaybackNode::Music(graph), .. } = action else { continue; };
+                for (owner, media_id) in graph.media.iter().filter_map(|source| source.variant.streamed) {
+                    if locators.contains_key(&(owner, media_id)) { continue; }
+                    let bank = self.banks.get(owner).ok_or("music source bank ownership is absent")?;
+                    let media = bank.package.media_file(u64::from(media_id), bank.entry.language_id).ok_or("music package extent is absent")?;
+                    locators.insert((owner, media_id), graph::StreamLocator { path: bank.path.clone(), offset: media.offset,
+                        size: usize::try_from(media.size)?, pool: self.stream_io.clone(), source_jobs: self.source_jobs.clone() });
+                }
+            }
+        }
+        Ok(actions)
     }
     fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
         if self.sources.contains_key(&event) { return Ok(()); }
@@ -485,6 +502,7 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
+    music::stop(world)?;
     world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
     world.run_system_cached(play_events).map_err(|error| error.to_string())?;
     let mut emitters = world.resource::<bevy_backend::Engine>().level_emitters();
@@ -577,6 +595,7 @@ pub(super) fn initialize_resources(app: &mut App) {
     crate::loading::gate(LISTED_SOUNDS_GATE);
     crate::loading::gate(LEVEL_SOUNDS_GATE);
     app.add_message::<SoundEvent>()
+        .add_message::<music::MusicEvent>()
         .add_message::<ContactSound>()
         .init_resource::<contacts::ContactSounds>()
         .init_resource::<objects::EffectObjects>()
@@ -605,7 +624,7 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events, reap_retiring_objects)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update, effects::update, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -928,11 +947,15 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
 /// the map load, once both exist and before they are first evaluated.
 fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
     sources: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectSources>>,
+    music: Option<Res<music::Music>>,
+    environments: Option<Res<super::state::EnvironmentVolumes>>,
     mut registry: ResMut<WwiseRegistry>)
 {
     if registry.level_prepared { return; }
     let (Some(mut physics), Some(sources)) = (physics, sources) else { return };
     let mut events: Vec<u32> = sources.0.sound_events().collect();
+    if let Some(music) = music { events.extend(music.events()); }
+    if let Some(environments) = environments { events.extend(environments.0.iter().filter_map(|volume| volume.ambiance.as_ref().map(|event| event.id))); }
     let visited = physics.visit_audio(|_, binding, _| {
         events.extend(binding.events.iter().flatten().map(|event| event.id));
         Ok(())

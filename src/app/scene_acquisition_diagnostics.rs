@@ -158,6 +158,9 @@ pub fn inspect_scene_publication(
         if flag == "--audio-bank-inventory" {
             return super::audio::observe_bank_inventory(base).map_err(Into::into);
         }
+        if flag == "--music-resources" {
+            return super::audio::music::observe_resources(base).map_err(Into::into);
+        }
         if flag == "--physics-material-inventory" {
             return crate::assets::entities::physics_material::resources::observe_inventory(base).map_err(Into::into);
         }

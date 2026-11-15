@@ -408,7 +408,7 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 | `md6Def` | `assets::animation_rig::declaration`, `assets::bmd6` | host: Catalog-owned ordered resource headers, shared immutable declaration generations and retained parent/model references. Creating lookup and existing-only lookup remain distinct; failed/absent loads stay attached to their actual header. Preload registers lazy identities from the actual primary/reuse manifests; bootstrap promotion and map-marker retirement follow060b60/0661e0/0410f0, with dead read history removed after all generations release. Unused declaration payloads remain demand-loaded. The working-host owner compiled in release4e7683a2 and completed the recorded EotW/Dust/EotW CPU-preparation acquisition and purge route; all 51 common MD6 headers remained unloaded while the three requested Corvo declarations loaded per batch. The earlier ad376ca0 three-map GPU acceptance covers AnimSet ownership and must not be used as MD6 acceptance. Full MD6 render-transition and nonloading-query coverage remains separate from this CPU-worker scope evidence. Joint-helper/pose consumers still have explicit admission limits; no unimplemented consumer is reported as active |
 | `midnightScene` | `assets::midnight_scene`, `assets::entities::{midnight,scene_motion}`, `gameplay::scene_motion`, `app::player` | host: supported autonomous machinery clips share immutable map-owned definitions across graphs/playback, with separate clocks and bindings (1405329c0 / 140533460 / 1407d6040); temporary source syntax and lookup cache retire after preparation, final leases retire with machinery. Canonical declaration identities now have demand-only player/motion/animated views, preload/bootstrap/map/persistent/session scope hooks and production cancellation propagation; generic cinematic runtime remains partial. Verified at200df5cf: independent scene scopes, read cancellation and Catalog-history checks passed; paired windowless EotW/Dust/EotW acquisition and retirement completed with matching source content, and sharing reduced projection decodes65 to39. These observations exclude gameplay frames, playback and GPU upload. Verified at371c6435: game/tools compilation, default-library check, scope/cancellation/history observations and paired acquisition/retirement pass. Source021c7586 additionally passes all36 publication/retirement and initial GPU acquisition/removal paths. Earlier four-load source identity/initial pose and retirement observations remain separate; see scope below |
 | `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); packed meshes retain both authored half-float UV sets; rigid and skinned model shadow programs keep the game-space position they consume, and vegetation uses additional wind inputs; sheared baked instances keep float vertices. Map acquisition and release use temporary model preparation data and Bevy mesh handles. Windowless EotW and Dust uploads followed by map clear return to the four preexisting host mesh IDs. Pre-level host slabs are sealed before map allocation so map buffers retire after their last level lease. Demand-decoded immutable init/common BML1 sources now share Catalog ownership across levels; Device-scoped immutable common meshes now have transactional publication and separate vertex/index allocation domains; actual GPU ranges, immutable contents, cancelled nonpublication and final release passed at2d666eb6. Persistent free-space lookup reuse passed at02200717, keeping two common buffers across Edge/Dust/Edge. Original static-model loader and retirement are `14026a5a0`, `140259d50`, `140278df0` and `14026a240`, with lookup/purge `1400607f0`/`140060180` |
-| `musicManager` | `gameplay::music` | ported: compact inherited definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger update (1406647d0, 1406649b0, 1406634c0), startup/shutdown including request reset (1406637e0, 1406641e0, 14054ced0); blocked: connect this owner to the integrated shared entity dispatcher and the actual worldspawn audio component, and resolve the alloc-game feature 0x20 gate before activation. No banks, media or GPU resources are duplicated by this owner; sound acquisition/playback stays with the sound class. Source compiled in f25c019; runtime activation remains blocked. Wwise music actors (HIRC 10/12) also require their actual scheduler, so wiring the manager alone will not produce music. |
+| `musicManager` | `gameplay::music`, `app::audio::music` | ported: inherited compact definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger decisions (1406647d0, 1406649b0, 1406634c0), start/stop/reset (1406637e0, 1406641e0, 14054ced0). Live admission uses the authored worldspawn audio component and actual entity timespace; stop precedes its output/stream/bank retirement. Host: this client admits a normal gameplay world (AllocGame feature 0x20 also gates difficulty and Kiscule); player callbacks use the app message adapter while request notifications use the shared entity queue, with its native two-word inline payload. NPC perception/combat callbacks require the corresponding NPC producers; this owner does not fabricate them from camera distance or movement. Music scheduling and encoded media remain in the sound owner; see the music playback section below. |
 | `navigation` | none | none: no owner yet |
 | `Navmesh` | none | none: no owner yet |
 | `navmeshLayerSettings` | none | none: no owner yet |
@@ -9262,3 +9262,71 @@ placement/component admission. Other common readable bindings remain.
 These are installed ownership/admission observations, not tests, appearance
 checks, original-game live timing comparisons or measured RAM/CPU savings.
 Original source provenance is character-selection-source-evidence-20261115.json.
+
+
+## Music playback and gameplay owner (2026-11-15)
+
+`assets::wwise::PlaybackBanks` resolves music through its existing global
+actor namespace. Borrowed version-113 readers cover tracks, segments, switch
+containers and playlists (141159840, 141154620/141155700, 1411583d0,
+1411576a0). Prepared graph references are weak in the bank index; event
+preparations and active timelines retain the actual definitions. Mutable
+playlist cursors are per play; native step-selection history belongs to the
+bank actor and retires with that actor. Truncation clears map graph indices
+and removes history for unloaded actors.
+
+The installed census covers 176 banks in 82 packages, every language: 6,271
+segments, 7,767 tracks, 34 switches and 300 playlists. Every installed track
+has one source, one clip and normal playback; every segment has two markers.
+Every switch uses state groups, best-match mode and 100-percent tree
+probabilities. Track random/sequence/switch processors and object-scoped
+switch bindings remain explicit unsupported formats outside this installed
+census, rather than silently becoming ordinary layers.
+
+The sound owner schedules clips on its existing 48 kHz sample clock. Clip
+conversion preserves 1411588a0; meter inheritance/conversion and marker sync
+follow 141153f60, 141154250 and 141154e10. Decision traversal follows
+1410ee9a0; the native uninitialized-group None identity is retained
+(14115def0). Playlist traversal/loop counters follow 14115b650, 14115ba60,
+14115b4e0 and 14115c270. Source and destination transition offsets, relative
+position and pre/post-entry behavior follow 141152ee0, 14115caa0 and
+14115e910/14115f8b0. Automation uses engine-frame key positions
+(141159600) and per-clip PBI gain/filter values (14114e0e0).
+
+Music descriptors use the same bank/prefetch/package source acquisition as
+ordinary sounds. Encoded/prepared caches key music by track and source ID,
+including media extent, and retain only actors still owned by loaded banks.
+No additional output device, media conversion cache or music clock exists.
+Only admitted clip voices acquire packet readers; dormant branches retain
+shared bank metadata and encoded source/prefetch leases. Music Stop and
+worldspawn retirement cancel pending contexts, drop active readers and drain
+the same output and object-retirement owners before map-bank truncation.
+Preparation cancellation uses the existing audio session and bank-generation
+fences; an old worker cannot repopulate the next map's source cache.
+
+Host optimization prediction: caching unchanged nonspatial music controls
+should remove over 90 percent of `graph::Playing::update` CPU work on a stable
+music graph, with the same published gains, panning, filters and routes. It
+removes per-frame all-track route reconstruction/allocation; any parameter,
+threshold or propagated-send change invalidates the snapshot. Ordinary sound
+source rendering is unchanged. `DH2_DEBUG_MUSIC=1` records actual transitions,
+clip admission and scoped update CPU cycles;
+`DH2_DEBUG_REBUILD_MUSIC_CONTROLS=1` selects the uncached same-build path.
+Runtime/resource observations and measured results will be recorded before
+this feature change is merged into main.
+
+Environment ambiance uses the existing completed camera-area collision query,
+not a second proximity test: 140806a40 consumes its first ordered ordinary
+profile and forwards idDeclEnv+90 (140017d10) to 1406640a0. The environment
+owner acquires compact `audioParms.soundEvent` identities during its existing
+preparation (140017f90); inheritance copies render parameters, not this field.
+No selected profile leaves the previous ambiance alone. These event identities
+and prepared playback routes retire with the same environment/map owners.
+The manager's compact references intentionally discard unused event metadata;
+encoded media and bank lifetime remain with the canonical sound owner.
+
+Music context fades use the shared 21-ms transition owner and speaker-product
+ramp (14114d880/14114daf0 ->1410efda0 ->141130c50; 14114d650/14114e0e0
+->14113ef50). Music playlist selection preserves its explicit use-weights bit
+(14115c270), including the two 15-bit draws for equal weighted entries;
+ordinary sound-container inference and selection remain unchanged.

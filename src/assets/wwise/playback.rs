@@ -5,6 +5,7 @@ use super::{bank, bank_chunks, bank_feedback, bank_objects, invalid, invalid_own
     PlaybackContainer, PlaybackNode, PlaybackSwitch, MediaBytes};
 use std::{borrow::Cow, collections::{HashMap, HashSet}, io, ops::Range,
     sync::{Arc, Mutex, OnceLock, Weak, atomic::{AtomicU64, Ordering}}};
+mod music;
 
 #[derive(Clone)]
 struct LoadedBank<'a> {
@@ -109,6 +110,8 @@ pub struct PlaybackBanks<'a> {
     events: HashMap<u32, Object>,
     custom_effects: HashMap<u32, Object>,
     property_chains: Mutex<HashMap<u32, Weak<[super::NodeProperties]>>>,
+    music_graphs: Mutex<HashMap<u32, Weak<super::MusicGraph>>>,
+    music_history: crate::gameplay::sound::music::playlist::History,
 }
 
 impl Clone for PlaybackBanks<'_> {
@@ -117,6 +120,8 @@ impl Clone for PlaybackBanks<'_> {
             banks: self.banks.clone(), actors: self.actors.clone(), actions: self.actions.clone(),
             events: self.events.clone(), custom_effects: self.custom_effects.clone(),
             property_chains: Mutex::new(self.property_chains.lock().unwrap_or_else(|error| error.into_inner()).clone()),
+            music_graphs: Mutex::new(self.music_graphs.lock().unwrap_or_else(|error| error.into_inner()).clone()),
+            music_history: self.music_history.clone(),
         }
     }
 }
@@ -132,6 +137,10 @@ impl<'a> PlaybackBanks<'a> {
         self.actions.retain(|_, object| object.bank < count);
         self.events.retain(|_, object| object.bank < count);
         self.custom_effects.retain(|_, object| object.bank < count);
+        // Existing instances retain their own source/bank leases until their
+        // output voices drain; no outgoing graph may be reused by a new map.
+        self.music_graphs.get_mut().unwrap().clear();
+        self.music_history.lock().unwrap().retain(|(actor, _), _| self.actors.contains_key(actor));
         self.property_chains.get_mut().unwrap().retain(|id, weak| {
             self.actors.contains_key(id) && weak.upgrade().is_some_and(|chain|
                 chain.iter().all(|node| self.actors.contains_key(&node.id)))
@@ -237,7 +246,7 @@ impl<'a> PlaybackBanks<'a> {
     }
     /// Sources still owned by the banks after a map-bank unload.
     pub fn sound_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        self.actors.iter().filter_map(|(&id, object)| (object.kind == 2).then_some(id))
+        self.actors.iter().filter_map(|(&id, object)| matches!(object.kind, 2 | 11).then_some(id))
     }
     /// Allocation identities shared with the prepared encoded sources.
     pub fn resident_allocations(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -414,11 +423,6 @@ impl<'a> PlaybackBanks<'a> {
 
     fn media_properties(&self, id: u32) -> io::Result<MediaProperties> {
         let nodes = self.node_hierarchy(id)?;
-        for node in nodes.iter() {
-            if self.actors.get(&node.id).is_some_and(|object| matches!(object.kind, 10..=13)) {
-                return Err(invalid_owned(format!("Wwise music parent {:#010x} requires music properties", node.id)));
-            }
-        }
         let bus = nodes.iter().find(|node| node.bus != 0).map_or(0, |node| node.bus);
         Ok(MediaProperties { nodes, bus })
     }
@@ -431,8 +435,7 @@ impl<'a> PlaybackBanks<'a> {
         let feedback = self.banks[object.bank].feedback;
         if matches!(object.kind, 10..=13) {
             visited.remove(&id);
-            return Ok(Some(PlaybackNode::Unsupported { node: id,
-                reason: format!("music actor (HIRC {}) requires music scheduling", object.kind) }));
+            return self.resolve_music(id, media).map(|graph| Some(PlaybackNode::Music(graph)));
         }
         if object.kind == 6 {
             let playback = bank::switch_playback(bytes, feedback)?;

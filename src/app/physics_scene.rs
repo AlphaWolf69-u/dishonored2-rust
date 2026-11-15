@@ -134,6 +134,14 @@ impl PhysicsScene {
             .is_some_and(|audio| audio.started && audio.owner.entity.is_some() && audio.owner.generation == generation)
     }
 
+    pub(super) fn audio_owner_timespace(&self, packed: u64, generation: u32) -> Option<u32> {
+        let handle = ComponentHandle::from_packed(packed).ok()?;
+        if handle.class_id != self.classes[4] { return None; }
+        let audio = self.audios.get(handle.slot)?;
+        if !audio.started || audio.owner.generation != generation { return None; }
+        self.entities.get(audio.owner.entity?).map(|entity| entity.timespace)
+    }
+
     pub(super) fn visit_audio(&mut self, mut visit: impl FnMut(ComponentHandle,
         &entities::audio::AudioBinding, &mut crate::gameplay::sound::component::AudioComponent) -> Result<(), String>) -> Result<(), String>
     {

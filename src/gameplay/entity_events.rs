@@ -66,6 +66,8 @@ pub enum Payload {
     Use { instigator: Option<EntityId> },
     Bytes(Vec<u8>),
     Entity(EntityId),
+    /// Inline request-owner notification (1406645e0), event 16's two words.
+    MusicRequest { handle: i32, operation: i32 },
 }
 
 #[derive(Clone, Copy)]

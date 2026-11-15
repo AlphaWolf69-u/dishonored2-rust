@@ -1024,6 +1024,9 @@ pub(super) fn prepare_level(
         app.insert_resource(live);
         app.insert_resource(entity_events);
         app.insert_resource(physics);
+        if let Some(music) = super::audio::music::Music::load(catalog, document).map_err(std::io::Error::other)? {
+            app.insert_resource(music);
+        }
         app.insert_resource(
             super::audio::level::LevelAudio::load(
                 catalog,

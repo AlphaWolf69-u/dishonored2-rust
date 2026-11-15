@@ -1,6 +1,7 @@
 //! Event controls issued to an audio component (PostEvent / StopEvent).
 pub mod mix;
 pub mod music_clip;
+pub mod music;
 pub mod containers;
 pub mod states;
 pub mod switches;

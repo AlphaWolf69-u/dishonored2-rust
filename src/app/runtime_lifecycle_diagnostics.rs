@@ -77,6 +77,7 @@ pub fn inspect_runtime_lifecycles(
             | "streaming"
             | "fx"
             | "audio"
+            | "music"
             | "ui-exit"
             | "ui-transition"
             | "read-exit"
@@ -134,7 +135,7 @@ pub fn inspect_runtime_lifecycles(
     );
     let stream_seconds = args
         .get(2)
-        .filter(|_| mode == "streaming")
+        .filter(|_| matches!(mode.as_str(), "streaming" | "music"))
         .map(|value| value.parse::<f64>())
         .transpose()?
         .unwrap_or(26.0);
@@ -261,6 +262,12 @@ pub fn inspect_runtime_lifecycles(
                             runtime.app.world_mut(),
                             audio.as_mut().unwrap(),
                         )?;
+                    }
+                    "music" if playing => {
+                        // Observe the actual level manager and output clock;
+                        // no synthetic state groups, callbacks or PCM/EOF.
+                        complete = playing_since.is_some_and(|time| time.elapsed().as_secs_f64() >= stream_seconds);
+                        if complete { super::audio::music::observe_live_owner(runtime.app.world())?; }
                     }
                     "read-exit" if playing => {
                         if readable.is_none() {

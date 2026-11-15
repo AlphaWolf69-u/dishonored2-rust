@@ -23,7 +23,7 @@ pub struct Clip {
     pub source_offset: i32,
 }
 
-fn rounded_sample(value: f64) -> i32 {
+pub(crate) fn rounded_sample(value: f64) -> i32 {
     let rounded = (if value > 0.0 { 0.5 } else { -0.5 }) + value;
     // CVTTSD2SI returns integer-indefinite on invalid input; Rust saturates.
     if rounded >= -2147483648.0 && rounded < 2147483648.0 {

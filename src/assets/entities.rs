@@ -868,6 +868,17 @@ pub fn environment_blend_duration(source: &str) -> Result<f32, String> {
     environment_blend_duration_decoded(&decode_environment_source(source))
 }
 
+/// idDeclEnv::Parse 140017f90 stores audioParms.soundEvent at +90.
+/// `inherit` copies renderParms only; it does not inherit this nullable event.
+pub fn environment_sound_event(source: &str) -> Result<Option<String>, String> {
+    let source = decode_environment_source(source);
+    let tokens = declaration_lexemes(&source)?;
+    Ok(tokens.windows(2).rev().find(|pair| pair[0].eq_ignore_ascii_case("soundEvent"))
+        .map(|pair| pair[1].trim_matches('"'))
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+        .map(str::to_owned))
+}
+
 fn environment_blend_duration_decoded(source: &str) -> Result<f32, String> {
     for line in source.lines() {
         let Some(value) = line.trim().strip_prefix("blendDuration") else {

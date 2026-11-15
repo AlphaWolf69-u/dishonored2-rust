@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// worldspawn generation, with the live player/sensor dependencies verified.
 pub trait Host<E> {
     fn post(&mut self, event: &Event) -> bool;
-    /// Request event 15 targets the actual worldspawn, not the player.
+    /// Event 15 observes the actual worldspawn's lifetime, not the player.
     fn request_receiver(&mut self, enabled: bool);
     /// Player events 10e/10f/110/111/144/145/4e, in that registration order.
     fn player_receivers(&mut self, enabled: bool);
@@ -101,6 +101,9 @@ impl<E: Copy + Eq> Manager<E> {
 
     pub fn add_request(&mut self, stage: i32, duration: f32, lifetime: i32, notify: bool) -> i32 {
         self.requests.insert(stage, duration, lifetime, notify, false)
+    }
+    pub fn references_entity(&self, entity: E) -> bool {
+        self.tracked.contains(&entity) || self.combatants.contains(&entity)
     }
     pub fn remove_request(&mut self, handle: i32, host: &mut impl Host<E>) {
         self.requests.remove(handle, &mut |notification| host.notify(notification));

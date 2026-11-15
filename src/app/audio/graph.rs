@@ -10,6 +10,7 @@ use std::{io, sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}}, time::Duration}
 
 mod sequence;
 mod flow;
+mod music;
 use sequence::Sequence;
 
 pub(super) type Selections = Arc<Mutex<HashMap<(u32, Option<Emitter>), Selection>>>;
@@ -281,10 +282,10 @@ pub(super) fn preload_event_streams() -> bool {
 /// resident once however many events play it (1410f1910 / 141122400 share
 /// a loaded Sound's source), across events as within one.
 type PreparedMedia = (Samples, ChannelCount, SampleRate, usize, Option<[u32; 2]>);
-static MEDIA: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>> = std::sync::LazyLock::new(Default::default);
+static MEDIA: std::sync::LazyLock<Mutex<HashMap<((u32, u32), usize), PreparedMedia>>> = std::sync::LazyLock::new(Default::default);
 /// Streamed sources by (Wwise sound id, media size): one per sound, so all
 /// events playing it share its resident media.
-static STREAMED: std::sync::LazyLock<Mutex<HashMap<(u32, usize), PreparedMedia>>> = std::sync::LazyLock::new(Default::default);
+static STREAMED: std::sync::LazyLock<Mutex<HashMap<((u32, u32), usize), PreparedMedia>>> = std::sync::LazyLock::new(Default::default);
 
 /// Bank unload releases only its sound sources; common/init sources keep
 /// their existing encoded/PCM identity (1410f1910 / 141122400).
@@ -298,8 +299,8 @@ fn check_generation(generation: u64) -> io::Result<()> {
 }
 pub(super) fn retain_media(sounds: &std::collections::HashSet<u32>) -> u64 {
     let generation = MEDIA_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-    MEDIA.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
-    STREAMED.lock().unwrap_or_else(|e| e.into_inner()).retain(|(sound, _), _| sounds.contains(sound));
+    MEDIA.lock().unwrap_or_else(|e| e.into_inner()).retain(|((sound, _), _), _| sounds.contains(sound));
+    STREAMED.lock().unwrap_or_else(|e| e.into_inner()).retain(|((sound, _), _), _| sounds.contains(sound));
     crate::assets::wwise::release_unused_headers();
     generation
 }
@@ -315,7 +316,7 @@ pub(super) fn retire_session_media() -> (usize, usize) {
 
 /// A streamed source's format, read once at load; its media is not kept.
 /// Media that decode to PCM stay resident (`prepare_media`).
-fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locator: StreamLocator, generation: u64) -> io::Result<PreparedMedia> {
+fn prepare_streamed(sound: (u32, u32), media: &crate::assets::wwise::MediaBytes, locator: StreamLocator, generation: u64) -> io::Result<PreparedMedia> {
     {
         let cache = STREAMED.lock().unwrap_or_else(|e| e.into_inner());
         check_generation(generation)?;
@@ -345,7 +346,7 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
             locator.pool.clone(), Arc::new(locator.path.clone()), locator.offset, locator.size, prefix.clone()))
             .transpose()?.flatten().map(|media| Arc::new(Samples::File(Arc::new(media), None)))
     } else { None };
-    let source = StreamedSource { sound, session: super::session::handle().map_err(io::Error::other)?,
+    let source = StreamedSource { sound: sound.0, session: super::session::handle().map_err(io::Error::other)?,
         locator, prefix, prefetched, resident: Mutex::new(std::sync::Weak::new()), loading: Mutex::new(std::sync::Weak::new()) };
     let prepared = (Samples::Streamed(Arc::new(source)), channels, rate, frames, points);
     // Parallel event preparation can reach the same source concurrently.
@@ -355,7 +356,7 @@ fn prepare_streamed(sound: u32, media: &crate::assets::wwise::MediaBytes, locato
     Ok(cache.entry((sound, media.source_size())).or_insert(prepared).clone())
 }
 
-fn prepare_media(sound: u32, media: &crate::assets::wwise::MediaBytes, generation: u64) -> io::Result<PreparedMedia> {
+fn prepare_media(sound: (u32, u32), media: &crate::assets::wwise::MediaBytes, generation: u64) -> io::Result<PreparedMedia> {
     {
         let cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
         check_generation(generation)?;
@@ -426,13 +427,13 @@ pub(super) fn resident_allocations() -> Vec<(usize, usize)> {
 pub(super) fn capture_media_signatures() {
     use std::hash::{Hash, Hasher};
     if std::env::var("DH2_DEBUG_STREAM_FORMATS").as_deref() == Ok("1") {
-        for (&(sound, size), (_, channels, rate, frames, points)) in STREAMED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        for (&((sound, _media), size), (_, channels, rate, frames, points)) in STREAMED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             println!("STREAM source={sound:08x} size={size} channels={} rate={} frames={frames} loops={points:?}", channels.get(), rate.get());
         }
     }
     if std::env::var("DH2_DEBUG_SOUND_HASHES").as_deref() != Ok("1") { return; }
     let cache = MEDIA.lock().unwrap_or_else(|e| e.into_inner());
-    for (&(sound, size), (samples, channels, rate, frames, points)) in cache.iter() {
+    for (&((sound, _media), size), (samples, channels, rate, frames, points)) in cache.iter() {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         match samples {
             Samples::Vorbis(media) => media.ogg.as_ref().hash(&mut hash),
@@ -493,6 +494,7 @@ pub(super) struct Definition {
     properties: Arc<MediaProperties>,
     channels: ChannelCount,
     rate: SampleRate,
+    music: Option<music::Prepared>,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message.into()) }
@@ -518,10 +520,14 @@ impl Definition {
     /// `locate` gives the package location for a streamed bank/media pair.
     pub fn decode(root: PlaybackNode, attenuations: &HashMap<u32, Arc<crate::assets::wwise::Attenuation>>,
         locate: &dyn Fn((usize, u32)) -> Option<StreamLocator>, generation: u64) -> io::Result<Self> {
+        if let PlaybackNode::Music(graph) = &root {
+            return music::Prepared::decode(graph.clone(), attenuations, locate, generation);
+        }
         // The Play target owns its properties even when no source is selected
         // (14111b7b0 / 1410ddd30). A descendant's output-bus override does not
         // belong to the target, and empty graphs have no descendant to borrow.
         let properties = Arc::new(match &root {
+            PlaybackNode::Music(_) => return Err(invalid("music actor nested in ordinary playback")),
             PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
             PlaybackNode::Missing { .. } => return Err(invalid("missing Wwise Play target")),
             PlaybackNode::Generator { properties, .. } => properties.clone(),
@@ -554,7 +560,8 @@ impl Definition {
                 return Ok(index);
             }
             let (id, kind) = match source {
-                PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
+                PlaybackNode::Music(_) => return Err(invalid("music actor nested in ordinary playback")),
+            PlaybackNode::Unsupported { node, reason } => return Err(invalid(format!("Wwise actor {node:#010x}: {reason}"))),
                 PlaybackNode::Switch(switch) => {
                     if switch.playback.group_kind != 1 {
                         return Err(invalid("per-emitter switch-group updates require their game-parameter bindings"));
@@ -572,8 +579,8 @@ impl Definition {
                 PlaybackNode::NoSource { node, .. } => (node, Kind::NoSource),
                 PlaybackNode::Sound { node, variant } => {
                     let (samples, channels, sample_rate, frames, loop_points) = match variant.streamed.and_then(locate) {
-                        Some(locator) => prepare_streamed(node, &variant.media, locator, generation)?,
-                        None => prepare_media(node, &variant.media, generation)?,
+                        Some(locator) => prepare_streamed((node, 0), &variant.media, locator, generation)?,
+                        None => prepare_media((node, 0), &variant.media, generation)?,
                     };
                     if frames == 0 { return Err(invalid("scheduled Wwise sound contains no samples")); }
                     let sound = sounds.len();
@@ -652,11 +659,14 @@ impl Definition {
         if !stereo && sounds.iter().any(|sound| sound.spatial.is_some() || sound.channels != channels) {
             return Err(invalid("scheduled Wwise graph requires channel format conversion"));
         }
-        Ok(Self { nodes, sounds, root, properties, channels, rate })
+        Ok(Self { nodes, sounds, root, properties, channels, rate, music: None })
     }
 
     pub fn root_properties(&self) -> Arc<MediaProperties> {
         self.properties.clone()
+    }
+    pub(super) fn music_inventory(&self) -> Option<(u32, usize, usize)> {
+        self.music.as_ref().map(|music| music.inventory())
     }
 
     pub fn prepare(self: &Arc<Self>, selections: Selections, emitter: Emitter, mixer: &Mixer,
@@ -671,6 +681,8 @@ impl Definition {
             pitches: (0..self.sounds.len()).map(|_| AtomicU32::new(0)).collect(),
             filters: (0..self.sounds.len()).map(|_| [AtomicU32::new(0), AtomicU32::new(0)]).collect(),
             source_ready: AtomicU32::new(0), threshold_db: AtomicU32::new(mixer.volume_threshold_db.to_bits()), stops: Mutex::new(Vec::new()),
+            music_update: Mutex::new(None),
+            music_cost: self.music.as_ref().and_then(|_| music::UpdateCosts::new(self.nodes[self.root].id, self.sounds.len())),
             routes: Mutex::new(Arc::new(Vec::new())), switch_count: AtomicU32::new(0), activity: mixer.activity.clone(),
             registrations: self.sounds.iter().map(|sound| mixer.activity.as_ref()
                 .map(|activity| activity.registration(sound.properties.bus)).transpose()).collect::<Result<Vec<_>, String>>()? });
@@ -681,11 +693,44 @@ impl Definition {
     }
 }
 
+struct MusicUpdate {
+    parameters: Vec<(u32, u32)>,
+    object_parameters: Vec<(u32, u32)>,
+    threshold: u32,
+}
 struct Control { source_ready: AtomicU32, spatial: Vec<[AtomicU32; 16]>, rays: Vec<[AtomicU32; 3]>, volumes_db: Vec<AtomicU32>, pitches: Vec<AtomicU32>, filters: Vec<[AtomicU32; 2]>,
+    music_update: Mutex<Option<MusicUpdate>>,
+    music_cost: Option<music::UpdateCosts>,
     transitions: Vec<AtomicU32>,
     threshold_db: AtomicU32, stops: Mutex<Vec<(Option<u32>, i32, u8)>>, routes: Mutex<Arc<Vec<VoiceRoute>>>,
     switch_count: AtomicU32, activity: Option<Arc<crate::gameplay::sound::activity::Activity>>,
     registrations: Vec<Option<crate::gameplay::sound::activity::Registration>> }
+
+impl Drop for Control {
+    fn drop(&mut self) {
+        let Some(cost) = &self.music_cost else { return; };
+        // Diagnostic only, outside update/render timing: compare the actual
+        // published control products in cached and forced-rebuild runs.
+        let mut crc = flate2::Crc::new();
+        for word in self.spatial.iter().flatten().chain(self.rays.iter().flatten())
+            .chain(self.volumes_db.iter()).chain(self.pitches.iter())
+            .chain(self.filters.iter().flatten()).chain(std::iter::once(&self.threshold_db)) {
+            crc.update(&word.load(Ordering::Relaxed).to_le_bytes());
+        }
+        let routes = self.routes.lock().unwrap_or_else(|error| error.into_inner());
+        for route in routes.iter() {
+            crc.update(&route.routing.bus.to_le_bytes());
+            for value in [route.routing.volume_db, route.routing.makeup_db, route.routing.dry_db,
+                route.routing.output_filters[0], route.routing.output_filters[1]] { crc.update(&value.to_bits().to_le_bytes()); }
+            crc.update(&[u8::from(route.auxiliary_enabled)]);
+            for send in &route.sends {
+                crc.update(&send.bus.to_le_bytes()); crc.update(&send.gain.to_bits().to_le_bytes());
+                crc.update(&[u8::from(send.kind == crate::gameplay::sound::auxiliary::SendKind::User)]);
+            }
+        }
+        eprintln!("MUSIC_CONTROL_SIGNATURE root={:08x} signature={:08x}", cost.root, crc.sum());
+    }
+}
 
 struct VoiceRoute {
     routing: crate::gameplay::sound::mix::VoiceRouting,
@@ -734,7 +779,26 @@ impl Playing {
         self.control.stops.lock().unwrap_or_else(|error| error.into_inner()).push((None, milliseconds, curve));
     }
     pub fn update(&self, mixer: &Mixer, scene: &super::spatial::Scene) -> Result<(), String> {
+        let mut cost = self.control.music_cost.as_ref().map(music::UpdateCosts::sample);
         let parameters = scene.parameters(self.emitter, self.parameter);
+        // Host: immutable 2D music controls stand in for Wwise's RTPC
+        // subscriptions. Dormant tracks need no per-frame routing rebuild.
+        // Spatial graphs and propagated sends retain their existing path.
+        let cache_music = self.definition.music.as_ref().is_some_and(|music| music.controls_static)
+            && scene.propagated(self.emitter).is_none_or(|scene| scene.auxiliary.is_empty());
+        if self.definition.music.is_some() && !cache_music {
+            *self.control.music_update.lock().unwrap_or_else(|error| error.into_inner()) = None;
+        }
+        let mut music_update = cache_music.then(|| self.control.music_update.lock().unwrap_or_else(|error| error.into_inner()));
+        if let Some(cache) = music_update.as_deref().and_then(|cache| cache.as_ref()) {
+            let unchanged = cache.threshold == mixer.volume_threshold_db.to_bits()
+                && cache.parameters.len() == mixer.parameters.len()
+                && cache.parameters.iter().all(|&(id, value)| mixer.parameters.get(&id).is_some_and(|current| current.to_bits() == value))
+                && cache.object_parameters.len() == parameters.len()
+                && cache.object_parameters.iter().zip(&parameters).all(|(&(id, value), &(current_id, current))| id == current_id && current.to_bits() == value);
+            if unchanged && !music::rebuild_controls() { return Ok(()); }
+        }
+        if let Some(cost) = &mut cost { cost.rebuild = true; }
         for (node, target) in self.definition.nodes.iter().zip(&self.control.transitions) {
             if let Kind::Container(container) = &node.kind {
                 target.store(mixer.transition_seconds(&container.properties, &parameters)?.to_bits(), Ordering::Relaxed);
@@ -798,6 +862,14 @@ impl Playing {
         }
         self.control.threshold_db.store(mixer.volume_threshold_db.to_bits(), Ordering::Relaxed);
         if let Some(routes) = routes { *self.control.routes.lock().unwrap_or_else(|error| error.into_inner()) = routes; }
+        if let Some(cache) = music_update.as_deref_mut() {
+            let snapshot = cache.get_or_insert_with(|| MusicUpdate { parameters: Vec::new(), object_parameters: Vec::new(), threshold: 0 });
+            snapshot.parameters.clear();
+            snapshot.parameters.extend(mixer.parameters.iter().map(|(&id, &value)| (id, value.to_bits())));
+            snapshot.object_parameters.clear();
+            snapshot.object_parameters.extend(parameters.iter().map(|&(id, value)| (id, value.to_bits())));
+            snapshot.threshold = mixer.volume_threshold_db.to_bits();
+        }
         Ok(())
     }
 }
@@ -1341,6 +1413,7 @@ struct Playback {
     audio: ScheduledAudio,
     root: Option<Runtime>,
     flow: Option<flow::Flow>,
+    music: Option<music::Playback>,
     prepared: bool,
     external_delay: bool,
     frame: u64,
@@ -1350,8 +1423,9 @@ impl Playback {
     fn new(audio: ScheduledAudio) -> Self {
         // Sample-accurate VPL handoff retains its existing path while its
         // decoder-buffer transfer is integrated into source continuations.
-        let flow = (!audio.definition.sample_accurate()).then(flow::Flow::default);
-        let mut playback = Self { audio, root: None, flow, prepared: false, external_delay: false, frame: 0, stopped: false };
+        let flow = (audio.definition.music.is_none() && !audio.definition.sample_accurate()).then(flow::Flow::default);
+        let music = music::Playback::new(&audio);
+        let mut playback = Self { audio, root: None, flow, music, prepared: false, external_delay: false, frame: 0, stopped: false };
         playback.prepare();
         playback
     }
@@ -1366,6 +1440,11 @@ impl Playback {
         if !self.audio.settings.admits(random15) { self.stopped = true; return; }
         let milliseconds = self.audio.settings.transition.sample_ms(random15);
         self.prepared = true;
+        if let Some(music) = &mut self.music {
+            music.fade_in(self.frame, milliseconds, self.audio.settings.transition.curve);
+            music.begin(self.frame, deadline, &self.audio);
+            return;
+        }
         if let Some(flow) = &mut self.flow {
             let fade = (milliseconds != 0).then_some(flow::Fade { start: self.frame, milliseconds,
                 curve: self.audio.settings.transition.curve });
@@ -1383,7 +1462,9 @@ impl Playback {
 
     fn flush_stops(&mut self) {
         for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
-            if let Some(flow) = &mut self.flow {
+            if let Some(music) = &mut self.music {
+                music.stop(target, milliseconds, curve, self.frame, &self.audio);
+            } else if let Some(flow) = &mut self.flow {
                 if self.prepared {
                     if let Some(target) = target { flow.stop(target, milliseconds, curve, self.frame, &self.audio, false); }
                     else { flow.stop_all(milliseconds, curve, self.frame, &self.audio, false); }
@@ -1401,6 +1482,7 @@ impl Playback {
         self.flush_stops();
         if paused { return; }
         self.prepare();
+        if let Some(music) = &mut self.music { music.begin(self.frame, u64::from(self.audio.delay_frames), &self.audio); }
         if let Some(flow) = &mut self.flow { flow.begin(self.frame, &self.audio); }
         self.publish_source_ready();
     }
@@ -1419,7 +1501,8 @@ impl Playback {
         let now = self.frame;
         self.frame += 1;
         if now < u64::from(self.audio.delay_frames) { return true; }
-        let alive = if let Some(flow) = &mut self.flow { flow.frame(now, &self.audio, output, routing) }
+        let alive = if let Some(music) = &mut self.music { music.frame(now, &self.audio, output, routing) }
+        else if let Some(flow) = &mut self.flow { flow.frame(now, &self.audio, output, routing) }
         else { self.root.as_mut().is_some_and(|root| root.frame(now, &self.audio, output, routing)) };
         self.publish_source_ready();
         alive
@@ -1444,7 +1527,7 @@ pub(super) struct Routed {
 impl Routed {
     pub fn new(audio: ScheduledAudio) -> Result<Self, String> {
         if !audio.can_route() { return Err("shared audio graph requires its multichannel format conversion path".into()); }
-        if audio.definition.has_switch() && audio.switches.is_none() { return Err("switch playback has no shared controller registry".into()); }
+        if (audio.definition.has_switch() || audio.definition.music.is_some()) && audio.switches.is_none() { return Err("scheduled control playback has no shared controller registry".into()); }
         if audio.control.routes.lock().unwrap_or_else(|error| error.into_inner()).len() != audio.definition.sounds.len() {
             return Err("shared audio graph has no validated voice routes".into());
         }
@@ -1484,6 +1567,8 @@ impl Routed {
         let playback = &mut self.playback;
         if !playback.prepared {
             if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
+        } else if let Some(music) = &mut playback.music {
+            music.stop(Some(target), milliseconds, curve, playback.frame, &playback.audio);
         } else if let Some(flow) = &mut playback.flow {
             flow.stop(target, milliseconds, curve, playback.frame, &playback.audio, paused);
             if flow.finished(&playback.audio) { playback.stopped = true; }
@@ -1494,7 +1579,9 @@ impl Routed {
     pub fn stop_all(&mut self, milliseconds: i32, curve: u8, paused: bool) {
         let playback = &mut self.playback;
         if !playback.prepared { playback.stopped = true; }
-        else if let Some(flow) = &mut playback.flow {
+        else if let Some(music) = &mut playback.music {
+            music.stop(None, milliseconds, curve, playback.frame, &playback.audio);
+        } else if let Some(flow) = &mut playback.flow {
             flow.stop_all(milliseconds, curve, playback.frame, &playback.audio, paused);
             if flow.finished(&playback.audio) { playback.stopped = true; }
         } else if let Some(root) = &mut playback.root {

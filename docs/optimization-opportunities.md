@@ -2322,3 +2322,24 @@ An isolated affected-function/allocation observation must preserve clustering
 output, resizing, asynchronous readback ordering and final retirement before
 this separate optimization is accepted. Do not duplicate the cluster pipeline
 or introduce another resource cache to reduce this count.
+
+## Music output batching (2026-11-15)
+
+Host: the canonical output engine currently pulls one frame at a time;
+Wwise walks music contexts and automation once per 1024-frame quantum.
+The new scheduler uses that existing engine rather than allocating another
+mixer/output device. Context-fade targets are constant within each quantum,
+but their inexpensive evaluation and segment/clip admission checks currently
+run through the frame pull. At most eight overlapping ordinary music clips
+would produce 384,000 such checks per second at 48 kHz. Expected benefit of
+batching: reduce scheduler-only checks by up to 1024 times; no prediction is
+made for total audio CPU, which includes decoding, filtering and bus effects.
+This waits for a separate scoped output-render observation and a shared
+block-pull API preserving sample-offset actions, starvation, pause, ramps,
+bus activity and stream retirement. It is not a reason to add another player.
+
+The unchanged shared spatial adapter also returns a small parameter Vec per
+Playing::update. The music cache avoids hundreds of route/product rebuilds
+but still uses that one small canonical input list. A borrowed/small-buffer
+API would affect ordinary sounds too; its remaining allocation benefit must
+be measured across those callers before changing their common interface.
