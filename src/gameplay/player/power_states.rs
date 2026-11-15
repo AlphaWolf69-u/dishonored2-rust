@@ -79,6 +79,7 @@ struct PreparedScenes<'a, 'b> {
     animations: super::midnight::Cast<'b>,
     sounds: &'a mut Vec<u32>,
     wind_loop: Option<bool>,
+    cancel_event: Option<u32>,
 }
 impl SceneHost for PreparedScenes<'_, '_> {
     type Error = String;
@@ -92,8 +93,8 @@ impl SceneHost for PreparedScenes<'_, '_> {
     }
     fn stop(&mut self, handle: u32) { self.midnight.stop(handle); }
     fn finished(&self, handle: u32) -> bool { self.midnight.finished(handle) }
-    fn cancel_sound(&mut self, path: &str) {
-        if let Some(name) = path.rsplit('/').next() { self.sounds.push(crate::assets::wwise::event_id(name)); }
+    fn cancel_sound(&mut self, _path: &str) {
+        if let Some(event) = self.cancel_event { self.sounds.push(event); }
     }
 }
 
@@ -107,7 +108,7 @@ pub fn can_use(frame: &Frame<'_>, decl: &UsePowerDecl) -> bool {
 pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> bool {
     let runtime = &mut *frame.powers;
     let Some(cast) = runtime.selected.as_mut() else { return false };
-    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")) };
+    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
     let admission = cast.admission(runtime.now, frame.mana, frame.attributes, frame.mana_replenishes,
         &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
             check_recharge_target: false, cost_factor: runtime.cost_factor,
@@ -146,15 +147,16 @@ pub fn update_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> 
         &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
             check_recharge_target: false, cost_factor: runtime.cost_factor,
             health_overcast: runtime.health_overcast, health: frame.health }) != Admission::Allowed { return false; }
-    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")) };
+    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
     let step = runtime.action_state.update(frame.dt, &decl.action, frame.controller.down(runtime.action_button),
         scenes.finished(runtime.action_state.scene), false);
     match step { ActionStep::Execute if cast.phase() == Phase::Aiming => runtime.execution_requested = true,
         ActionStep::Quit => return false, _ => {} }
+    let previous_scene = runtime.action.scene_handle();
     match runtime.action.update(cast, sliding, &mut scenes) {
         Ok(()) => {
             let handle = runtime.action.scene_handle();
-            if handle != 0 { runtime.action_state.scene = handle; }
+            if handle != 0 && handle != previous_scene { runtime.action_state.after_scene(handle, &decl.action); }
             // 6924f0: actual released latch controls the authored loop.
             if decl.windblast && !runtime.wind_released
                 && attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")
@@ -176,7 +178,7 @@ pub fn deactivate_use(frame: &mut Frame<'_>, sliding: bool) {
     let runtime = &mut *frame.powers;
     if let Some(cast) = runtime.selected.as_mut() {
         if runtime.active { runtime.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
-        let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: None };
+        let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: None, cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
         if let Err(error) = runtime.action.finish(cast, sliding, &mut scenes) {
             scenes.midnight.last_start_error = Some(error);
             runtime.action.stop(&mut scenes); cast.finish();
@@ -257,7 +259,7 @@ impl Player {
             if self.powers.active { self.powers.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
             let mut scenes = PreparedScenes { scenes: &self.powers.scenes, fallback: &self.scenes,
                 midnight: &mut self.body.midnight, md6: super::body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment),
-                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events, wind_loop: None };
+                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events, wind_loop: None, cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
             self.powers.action.stop(&mut scenes); cast.finish();
         }
         self.powers.active = false; self.powers.cancel = false;
@@ -284,6 +286,7 @@ impl Player {
     pub fn power_cast_active(&self, id: i32) -> bool {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id && cast.phase() != Phase::Idle)
     }
+    pub fn take_power_sound_events(&mut self) -> Vec<u32> { std::mem::take(&mut self.powers.sound_events) }
     pub fn take_power_lifecycle_events(&mut self) -> Vec<PowerLifecycle> { std::mem::take(&mut self.powers.lifecycle) }
     /// The existing attribute owner calls this once for each actual d6
     /// notification; inventory retains its separate attached callback.
