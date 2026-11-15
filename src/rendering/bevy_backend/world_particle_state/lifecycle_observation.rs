@@ -28,6 +28,31 @@ fn sub_chains(sub: &super::super::world_sub_effects::SubEffect, sample: &mut Own
     for child in &sub.children { sub_chains(child, sample); }
 }
 impl WorldParticleState {
+    /// One-shot candidates from actual started chains, never declaration-only
+    /// admission guesses. The returned text owns no source or material lease.
+    pub(crate) fn observe_started_fx(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        for (slot, instance) in self.slots.iter().enumerate().filter_map(|(slot, instance)| instance.as_ref().map(|instance| (slot, instance))) {
+            if self.pending_starts.contains(&(slot as u16)) { continue; }
+            let mut chains = OwnerSnapshot::default();
+            chains.particles = usize::from(instance.head != u16::MAX);
+            chains.sounds = usize::from(instance.sound_head != u16::MAX);
+            chains.decals = usize::from(instance.decal_head != u16::MAX);
+            for sub in &instance.sub_effects { sub_chains(sub, &mut chains); }
+            if chains.particles == 0 && chains.sounds == 0 && chains.decals == 0 { continue; }
+            let owner = self.entities.get(&instance.entity).map(|entity| match &entity.owner {
+                FxEntityOwner::Actor { name, .. } => format!("actor:{name}"),
+                FxEntityOwner::Node { graph, node } => format!("graph:{} node:{node}", self.graphs.owner(*graph)),
+                FxEntityOwner::Detached => "detached".to_owned(),
+            });
+            result.push(format!("effect={:?} owner={owner:?} entity={} handle={} particle_heads={} sound_heads={} decal_heads={} sub_effects={}",
+                instance.parameters.effect, instance.entity, instance.id,
+                chains.particles, chains.sounds, chains.decals, chains.sub_effects));
+        }
+        result.sort();
+        result
+    }
+
     /// Family counts are actual nonempty chain heads (including nested FX),
     /// not fabricated particle counts or inferred declaration activity.
     pub(crate) fn observe_owner(&self, owner: &str) -> OwnerSnapshot {

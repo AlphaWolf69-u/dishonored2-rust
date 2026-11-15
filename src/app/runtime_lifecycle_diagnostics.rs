@@ -252,16 +252,9 @@ pub fn inspect_runtime_lifecycles(
                     }
                     "audio" if playing => {
                         if audio.is_none() {
-                            let mut options = super::audio::observation::ScenarioOptions::default();
-                            if std::env::var("DH2_DEBUG_AUDIO_COLD_PLAYER").as_deref() == Ok("1") {
-                                let (event, binding) = super::audio::observation::select_cold_player_event(runtime.app.world())?;
-                                eprintln!("AUDIO_ACTIVE_LIFETIME cold_player_binding={binding} id={event:#x}");
-                                options.ordinary_event = Some(event);
-                                options.same_step_stop = true;
-                            }
                             audio = Some(super::audio::observation::begin_scenario(
                                 runtime.app.world_mut(),
-                                options,
+                                Default::default(),
                             )?);
                         }
                         complete = super::audio::observation::poll_scenario(

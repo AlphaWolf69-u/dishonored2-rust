@@ -409,7 +409,7 @@ struct PendingSound {
 }
 
 fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut SoundCompletions,
-    emitter: Emitter, event: Option<u32>, observer: Option<&observation::Observation>, reason: &'static str) {
+    emitter: Emitter, event: Option<u32>) {
     pending.retain(|queued| {
         let id = match queued.request {
             Request::Post { event, .. } | Request::PostWithParameter { event, .. }
@@ -417,9 +417,6 @@ fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut Sound
             _ => return true,
         };
         if request_emitter(&queued.request) != emitter || event.is_some_and(|event| event != id) { return true; }
-        if let Some(observer) = observer {
-            observer.record_queue(queued.message_id, queued.ticket.as_ref().map(|ticket| ticket.id().value()), id, reason);
-        }
         completions.failed_watch(id, emitter, queued.watched);
         false
     });
@@ -1052,7 +1049,7 @@ fn play_events(
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
             Request::Retire { emitter } => {
-                cancel_pending_posts(&mut pending.0, &mut completions, emitter, None, observer.as_deref(), "retire-cancel-pending");
+                cancel_pending_posts(&mut pending.0, &mut completions, emitter, None);
                 waiting.retain(|object| *object != emitter);
                 match engine.release_object(emitter) {
                     Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
@@ -1062,7 +1059,7 @@ fn play_events(
             }
             Request::Stop { event, emitter } => {
                 // 141127000 stops voices AND cancels pending actions (1410e9950).
-                cancel_pending_posts(&mut pending.0, &mut completions, emitter, Some(event), observer.as_deref(), "stop-cancel-pending");
+                cancel_pending_posts(&mut pending.0, &mut completions, emitter, Some(event));
                 if !pending.0.iter().any(|post| request_emitter(&post.request) == emitter) {
                     waiting.retain(|object| *object != emitter);
                 }
@@ -1100,9 +1097,6 @@ fn play_events(
                 continue;
             }
             decodes.request(event, DecodeClient::Watched, &registry);
-            if let Some(observer) = &observer {
-                observer.record_queue(queued.message_id, queued.ticket.as_ref().map(|ticket| ticket.id().value()), event, "event-decode-pending");
-            }
             waiting.push(emitter);
             pending.0.push(queued);
             continue;

@@ -9072,3 +9072,33 @@ scene publication and SceneAnimation palette generation now use it; short
 banks still fail explicitly. Prediction: the permanent palette-length failures
 disappear with no extra allocation or duplicate evaluation. Previously stopped
 animations resume their required work; no speed or memory saving is claimed.
+
+
+2026-11-15 focused follow-up (supersedes pending predictions above):
+
+- Actual ebad812b windowless quality/resize observations completed all seven
+  fenced states on EotW and Dust District. Evidence:
+  artifacts/active-resource-runtime-20261115T010155Z-08c70159/result.json and
+  artifacts/luminance-and-skin-runtime-comparison-20261115.json.
+  Quality-route luminance creations fell485→5 on both maps, exactly initial
+  plus four actual quality changes; resize stays7→7. Palette-length errors
+  fell33→0 and3→0 respectively. No whole-frame performance claim is made.
+- The proposed cold PlayerBody observation is inapplicable: current ordinary
+  production Posts are unwatched, while the asynchronous graph-preparation
+  branch requires a watched request. All watch producers are the observation
+  adapter. The selected current player bindings were already prepared. Remove
+  that diagnostic selector rather than evicting a real source or manufacturing
+  a producer. Native pending-ticket cancellation remains source-ported API
+  correctness; actual ordinary capacity/watch/End and FX decode/output coverage
+  is distinct. The earlier unsuccessful cold run remains preserved, not passed.
+- Actual FX admission acquired source/images/audio and CPU prewarm, but its
+  real world proxy never acquired a material pipeline. Host material, prepass
+  and shadow specialization retained other asynchronous prerequisites in their
+  existing pending queues, but silently discarded missing GPU meshes. Preserve
+  the same real entity in those queues until mesh preparation completes.
+  This host adapter stands in for native1fbad0/31ad30 prepared renderer surface
+  publication and PMODEL232220 acquisition; it does not invent readiness.
+  Prediction: the actual proxy obtains a real cached pipeline, existing GPU
+  prewarm completes, and Start/overlap/Stop/tails complete without forced ack.
+  Retry performs no additional steady-state work once resources are ready.
+  Runtime confirmation of this final source batch is still pending.

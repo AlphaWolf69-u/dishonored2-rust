@@ -32,6 +32,11 @@ impl Observation {
             || !world.contains_resource::<UsableEffects>() {
             return Err("active FX observation requires the published normal gameplay owners".into());
         }
+        // Capture supported authored candidates once, before these diagnostic
+        // requests add their own instances to the existing production manager.
+        let candidates = world.resource::<FxSimulation>().observe_started_fx();
+        eprintln!("FX_ACTIVE_CANDIDATES count={}", candidates.len());
+        for candidate in candidates { eprintln!("FX_ACTIVE_CANDIDATE {candidate}"); }
         let scenarios = paths.iter().enumerate().map(|(index, path)| Scenario {
             path: path.clone(), first: format!("lifecycle-{index}-a"), second: format!("lifecycle-{index}-b"),
             source: None, gap_handles: Vec::new(), gap_frame: None, phase: Phase::Start,

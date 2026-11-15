@@ -74,6 +74,9 @@ impl FxSimulation {
     }
     /// Diagnostic snapshots borrow the actual manager without starting or
     /// advancing another simulation. No ordinary-frame observer is installed.
+    pub(crate) fn observe_started_fx(&self) -> Vec<String> {
+        self.world_particles.observe_started_fx()
+    }
     pub(crate) fn observe_fx_owner(&self, owner: &str) -> super::world_particle_state::OwnerSnapshot {
         self.world_particles.observe_owner(owner)
     }
