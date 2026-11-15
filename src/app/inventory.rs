@@ -11,17 +11,13 @@ pub(crate) use shortcuts::{ShortcutSettings, ShortcutSlot, ShortcutSelection};
 
 impl PotionInventory for DiscoveredDocuments {
     fn potion_item(&self, kind: PotionKind) -> Result<Option<Arc<PickableItem>>, String> {
-        let mut candidates = self.records.values().filter(|record| {
+        let mut candidates = self.record_order.iter().filter_map(|path| self.records.get(path)).filter(|record| {
             record.declaration.type_number == 14 && match kind {
                 PotionKind::Health => record.declaration.consumable.health > 0,
                 PotionKind::Mana => record.declaration.consumable.mana > 0,
             }
         });
-        let item = candidates.next().map(|record| record.declaration.clone());
-        if candidates.next().is_some() {
-            return Err("multiple potion declarations require the executable's declaration registration order".into());
-        }
-        Ok(item)
+        Ok(candidates.next().map(|record| record.declaration.clone()))
     }
     fn consume_potion(&mut self, path: &str) -> bool { self.consume(path, 1) == 1 }
 }
@@ -118,6 +114,14 @@ pub(crate) trait InventoryPickupEffects {
 }
 
 impl DiscoveredDocuments {
+    /// A new world requests only the session's actually owned equipment.
+    /// This borrows retained declarations without cloning a quantity map or
+    /// replaying acquisitions/modifiers during map transitions.
+    pub fn owned_equipment_items(&self) -> impl Iterator<Item = &Arc<PickableItem>> {
+        self.record_order.iter().filter_map(|path| self.records.get(path))
+            .filter(|record| record.declaration.equipment.is_some() && self.quantity(&record.declaration.path) > 0)
+            .map(|record| &record.declaration)
+    }
     /// Called by the equipment entity owner after 619380 admission. Only
     /// actual component metadata is accepted; item UI/type cannot infer it.
     pub fn equipment_available(&mut self, path: &str, equipment: &crate::gameplay::player::weapons::Equipment) -> bool {
@@ -206,9 +210,10 @@ impl DiscoveredDocuments {
     /// 63c630 creates a record for a collection entry before it owns any
     /// quantity. A zero quantity keeps the record and its declaration alive.
     pub fn register_item(&mut self, declaration: Arc<PickableItem>, maximum: u32) {
-        self.records.entry(key(&declaration.path)).or_insert(InventoryRecord {
-            declaration, maximum, is_new: false,
-        });
+        let path = key(&declaration.path);
+        if self.records.contains_key(&path) { return; }
+        self.record_order.push(path.clone());
+        self.records.insert(path, InventoryRecord { declaration, maximum, is_new: false });
     }
 
     pub fn record(&self, path: &str) -> Option<&InventoryRecord> { self.records.get(&key(path)) }

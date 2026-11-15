@@ -139,6 +139,7 @@ pub(super) struct DiscoveredDocuments {
     /// Metadata for the same quantity records, retaining the declaration
     /// identity across level retirement (63c630). No quantities live here.
     records: std::collections::HashMap<String, InventoryRecord>,
+    record_order: Vec<String>,
     equipped: [Option<String>; 16],
     changes: std::collections::VecDeque<InventoryChange>,
     ammo_consumption_locks: i32,

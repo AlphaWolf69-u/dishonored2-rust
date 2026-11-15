@@ -10028,3 +10028,58 @@ string lookup. No measured memory or CPU improvement is claimed.
 - Selected Slash outcomes retain an `Arc` declaration lease plus two indices;
   cancellation/recoil/hit scenes borrow the same immutable outcome. There is
   no second owned copy of its path strings in each active action.
+
+Potion statistic completion (2026-11-15): expected lifetime before implementation:
+a single session statistics resource must accept each successful ordinary health
+or mana potion once, update source-backed chapter/playthrough/profile counters,
+and retain cumulative profile values across level retirement. No CPU/memory/
+loading-time improvement is predicted or claimed. The typed array core performs
+no archive, declaration, disk or rendering access when incrementing a counter.
+
+ported ordinary potion count kernel: gameplay/player_statistics.rs implements
+67ac70's zeroed 46-count arrays and pending chapter-1 record, 67bce0 chapter
+record lookup/creation, 67d240/67d1e0 pending-chapter transfer, 67aea0's signed
+wrapping increment of chapter +4, playthrough +44 and cumulative profile +100,
+67c730 scopes1/2/3, 67bc00 current-chapter reset/subtraction, and 67d850's additive
+map-transition restore versus ordinary replacement restore. SavedCounts is
+explicitly the understood counter projection of67dc10; profile totals are not
+saved there, because67cc50 reloads them with67d3f0. Ordinary native increment
+requires both the live platform-stat interface and actual nonnegative chapter;
+the core retains that gate. Typed potion IDs22/23 (hex16/17) and exact profile
+keys come from141a14790. Death-profile campaign keys, derived ratio/favorite
+statistics, deeds, timers, achievement evaluation and full save serialization
+are outside this ordinary potion-counter implementation.
+
+host: app/player_statistics.rs supplies the rewrite's actual session profile
+interface/dictionary instead of pretending the Steam platform pointer exists.
+The adapter reads initial cumulative values once through the existing rewrite
+profile reader; missing native enum keys are zero. It receives both the platform
+increment callback and67e330's dictionary set, retaining one profile dictionary.
+It persists as a session resource across maps and exposes the dictionary to the
+real future save owner; it never creates another disk format or modifies the
+installed game's profile. Counter saves/restores are explicit owner methods,
+not a second telemetry cache. Resource destruction ends this host interface.
+
+Actual chapter publication: PreparedStatisticsChapter uses the existing map-info
+owner's loadingInfo.m_missionIndex (+20c), matching67bec0's noncampaign fallback.
+The root publishes this once per prepared level with bind_prepared_chapter;
+Journal mission changes may use bind_chapter when its actual67d240 producer
+fires. Unknown chapter remains unknown and increments are rejected, without
+inventing a chapter from a map-name substring. Accepted increments enqueue the
+native StatisticUpdated1ca with its four-byte statistic ID; publish_updates
+requires the actual player EntityId. Native health-use15c itself has NO payload:
+7194a0 calls8103f0(15c,playerID), so root's Payload::None is correct. The two
+random mana-potion early returns still omit statistics, matching745b20.
+
+Inventory session rehydration now borrows owned_equipment_items in retained
+record-registration order. A record-order vector supplies deterministic source
+registration ordinals beside the existing record lookup, and retains no second
+quantity or declaration owner. Potion lookup uses the first matching registered
+record, matching the original first-record scan; the former unordered/multiple
+candidate rejection is removed. No quantities/modifiers are replayed on a new
+world. Physical equipment instance/metadata admission remains its existing owner.
+
+Validation for this change: source inspection and git diff whitespace validation
+only; no compilation, tests, visual launches, gameplay captures or measured cost
+comparisons. Root owns module export, initial publication, update ordering and
+the potion-result drain into this actual statistics owner.
