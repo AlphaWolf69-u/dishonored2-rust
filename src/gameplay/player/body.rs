@@ -353,6 +353,8 @@ pub struct Body {
     pub tags: std::collections::HashMap<String, (usize, Vec3, Mat3)>,
     pub skeleton: BodySkeleton,
     pub animations: Vec<EdgeAnimation>,
+    /// Stable model alias indices for later demanded action scenes.
+    pub animation_aliases: std::collections::HashMap<String, usize>,
     pub decl: BodyDecl,
     pub body_node: LocoNode,
     pub bob_node: LocoNode,
@@ -461,6 +463,7 @@ impl Body {
             tags: Default::default(),
             skeleton,
             animations,
+            animation_aliases: Default::default(),
             decl,
             body_node,
             bob_node,

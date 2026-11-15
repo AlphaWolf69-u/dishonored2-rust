@@ -141,9 +141,20 @@ impl PreparedScene {
 
     /// The scene's group cast to tree `target`.
     pub fn group(&self, scene: usize, target: usize) -> Result<Option<usize>, String> {
+        self.select_group(scene, target, None)
+    }
+
+    /// Apply the same authored model applicability as the shared SFX owner.
+    /// Mutually exclusive model groups may share the same cast target.
+    pub fn group_for_model(&self, scene: usize, target: usize, model: &str) -> Result<Option<usize>, String> {
+        self.select_group(scene, target, Some(model))
+    }
+
+    fn select_group(&self, scene: usize, target: usize, model: Option<&str>) -> Result<Option<usize>, String> {
         let s = &self.decl.scenes[scene];
         let mut found = None;
         for (i, g) in s.groups.iter().enumerate() {
+            if model.is_some_and(|model| !g.specific_models.is_empty() && !g.specific_models.iter().any(|value| value == model)) { continue; }
             if self.decl.group_name(g.group).and_then(cast_target) == Some(target) {
                 if found.is_some() {
                     return Err("a midnight scene with two groups on one player tree is not decoded".into());
@@ -293,6 +304,7 @@ pub struct PointEvent {
 
 impl Midnight {
     pub fn take_point_events(&mut self) -> Vec<PointEvent> { std::mem::take(&mut self.point_events) }
+    pub fn drain_point_events(&mut self) -> std::vec::Drain<'_, PointEvent> { self.point_events.drain(..) }
 
     pub fn take_sound_requests(&mut self) -> Vec<SoundRequest> {
         std::mem::take(&mut self.sound_requests)
@@ -394,14 +406,14 @@ impl Midnight {
     }
 
     /// The clip schedule of every cast tree and the body group's events.
-    fn enter(&self, prepared: &Arc<PreparedScene>, index: usize, cast: Cast, parts: u8) -> Result<([Vec<Clip>; TARGETS], Vec<(crate::entities::midnight::EventKey, usize)>), String> {
+    fn enter(&self, prepared: &Arc<PreparedScene>, index: usize, cast: Cast, parts: u8, md6: [&str; TARGETS]) -> Result<([Vec<Clip>; TARGETS], Vec<(crate::entities::midnight::EventKey, usize)>), String> {
         let mut schedules: [Vec<Clip>; TARGETS] = Default::default();
         let mut events = Vec::new();
         for (target, clips) in schedules.iter_mut().enumerate() {
             if parts & (1 << target) == 0 {
                 continue;
             }
-            let Some(g) = prepared.group(index, target)? else { continue };
+            let Some(g) = prepared.group_for_model(index, target, md6[target])? else { continue };
             let animations = cast[target];
             let group = &prepared.decl.scenes[index].groups[g];
             let prepared_clips = prepared.target_clips(index, target);
@@ -444,7 +456,7 @@ impl Midnight {
     /// `parts` is the cast mask (1 body, 2 left arm, 4 right arm).
     pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8) -> Result<u32, String> {
         let Some(index) = Self::resolve(prepared, prepared.decl.first, md6)? else { return Ok(0) };
-        let (clips, events) = self.enter(prepared, index, cast, parts)?;
+        let (clips, events) = self.enter(prepared, index, cast, parts, md6)?;
         // A scene on a tree another instance plays interrupts it there.
         let handles: Vec<u32> = self.instances.iter().filter(|i| i.parts & parts != 0).map(|i| i.handle).collect();
         for handle in handles {
@@ -537,7 +549,7 @@ impl Midnight {
                     self.instances.remove(i);
                 }
                 Some(index) => {
-                    let (clips, events) = self.enter(&prepared, index, cast, parts)?;
+                    let (clips, events) = self.enter(&prepared, index, cast, parts, md6.each_ref().map(String::as_str))?;
                     let inst = &mut self.instances[i];
                     (inst.current, inst.time, inst.clips, inst.events) = (index, 0, clips, events);
                     inst.abs = 0;

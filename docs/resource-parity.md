@@ -41,6 +41,29 @@ clips, add no per-frame archive reads, and keep one posed model per cast tree.
 No performance number or visual parity is claimed: compilation, tests, visible
 diagnostics and visual checks were not run under the current user constraints.
 
+Ranged component followup: `player::weapons::Runtime` ports the magazine
+admission/count paths `638290`, `6382a0`, `639360`, `63a2b0`, `63bfa0`, and
+`63bfc0`; inventory total includes loaded ammunition. Reload fills from that
+total and does not spend it. Gun `44e0c0` and crossbow `62b560` consume one
+round through `639360` when their FIRE callback arrives, preserving inventory
+locks. Gun `44f3d0`'s misleadingly named CONSUME_AMMO_FROM_MAGAZINE callback
+only animates the upgrade magazine and never spends a second round. Gun
+RELOAD (`44f440`) only shows the loaded bullet attachment; RELOAD_MAGAZINE
+(`44f470`) fills it. Crossbow RELOAD (`62bfe0`) fills its magazine directly.
+`frame_with_inventory` flushes these callbacks before state updates, through
+the actual inventory owner, rather than applying them after a final-frame
+state exit. Fire/reload/out-of-ammo pointers use `63bc00`/`63bd40`/`63bd90`'s
+non-null slide fallback; charge uses `63bbf0`. `44e720` supplies gun capacity
+from its selected ammo's fit-in-magazine bit and rounded capacity attribute;
+capacity is refreshed from the canonical player attributes by the component
+owner (the tag binding is `14137b1c0`). Fire event
+properties are forwarded to the projectile owner as typed effects. Upgrade
+animation and target sensor enable/disable also remain typed component
+effects, not invented target lists. Status: `ported` magazine/event state;
+`blocked: projectile entity lifecycle, muzzle/equipment-upgrade children,
+recoil and lock-on sensor consumers require their corresponding owners`.
+Their output must be connected before claiming firing/damage visual parity.
+
 What the rewrite loads of each resource class the original loads, and how
 far each class's lifecycle is ported. Rules: `AGENTS.md`, "Resource parity".
 Status words: `ported`, `verified` (against a capture or the original's
@@ -9901,3 +9924,45 @@ selection; ordinary collection candidates have not yet been measured in a live
 session. Savegame persistence, wheel presentation, game-message fanout and live
 capture comparisons remain integration work. No compilation, tests, visible
 launches, latency, byte-count or performance measurements were performed here.
+### Player ranged state admission and action lifetime (2026-11-15)
+
+- Owner: `gameplay/player/combat.rs` and the existing player state machine.
+  Expected cost: one compact phase/action record per state; immutable ranged
+  state definitions are shared with `Arc`, so state updates do not clone
+  declaration strings or reacquire scenes, clips, models, or sound banks.
+  This is a feature/lifecycle prediction, not a measured performance claim.
+- `ported`: shared action declaration defaults `140854dc0`, reflection
+  `14177b680`, cooldown `140855300`, scene-dependent wait flags `140855360`,
+  held/released/message execution decisions `1408555a0`/`140855750`, and
+  deactivation scene-identity release `1408550d0`.
+- `ported`: Fire/Cancel/RequestReload/Reload IDs and constructor masks
+  `140866440`/`1408663d0`/`1408456e0`/`140845660`; state retention now keeps
+  these installed declarations. Admission uses the selected ranged component,
+  its inventory-backed magazine, authored controller mappings and actual
+  equipment-action handles, rather than guessed keyboard keys or loco blends.
+- `ported`: Fire activation `140866fe0`, charge/release/empty-ammo/update
+  branches `140867330`, authored charge/fire/OOA scenes `140866d30`/
+  `140866dc0`/`140867100`, interruption `140866a20`, cancel held-button
+  consumption `140866370`, and request/reload lifecycle `140845600`/
+  `1408454f0`/`1408459d0`. Real Midnight handles and events own completion;
+  no fixed animation duration substitutes for them. Reload/fire scene rates
+  come from the selected component's authored attribute tags.
+- `blocked: target-lock upgrade discovery`: target phase requests preserve
+  `140867330`'s sensor16 activation/retirement, but actual NPC target sensor,
+  marker FX and target-list validation remain with the not-yet-hosted combat
+  target owner; no fabricated target list is supplied. Next step: connect
+  the real sensor and existing entity/FX ownership when that owner is present.
+- `blocked: wall-crouch uncrouch transition`: the shared action helper ports
+  its deferral decision, but the current player mode has no wall-crouch owner
+  to supply an active transition. No simulated uncrouch delay is introduced.
+- Validation: source/declaration/vtable audit and whitespace/diff check only.
+  No compilation, tests, visible launch or output-equivalence claim in this
+  agent batch; the parent owns the combined integration build.
+
+### Player slash rule-handler source and instance owner (2026-11-15)
+
+Prediction before implementation: demand acquisition retains one immutable typed
+rule handler through the Catalog class registry and one sequence cursor per rule
+on each actual player state machine. A rule evaluation borrows its condition and
+outcome records; it performs no source I/O, declaration parsing, allocation or
+string lookup. No measured memory or CPU improvement is claimed.

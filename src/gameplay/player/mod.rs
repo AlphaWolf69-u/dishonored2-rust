@@ -8,6 +8,10 @@ pub mod adrenaline;
 pub mod arms;
 pub mod equipment;
 pub mod weapons;
+pub mod power_states;
+pub mod combat;
+pub mod consumables;
+pub mod slash_rules;
 pub mod body;
 pub mod camera;
 pub mod character_proxy;
@@ -80,8 +84,10 @@ struct ActiveModifier {
 /// Entity notifications published to attached component owners. The original
 /// incapacitation message carries damage parameters; this records the damage
 /// type needed by the connected drowning consumer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntityEvent { Incapacitated { damage_type: u64 } }
+#[derive(Clone, Copy, Debug)]
+pub enum EntityEvent {
+    Damage { params: crate::gameplay::damage::Parameters, result: crate::gameplay::damage::DamageResult, was_dead: bool },
+}
 
 pub struct Player {
     pub physics: PlayerPhysics,
@@ -106,6 +112,7 @@ pub struct Player {
     next_modifier_expiration: Option<f64>,
     attribute_modifier_events: Vec<(String, bool)>,
     entity_events: Vec<EntityEvent>,
+    managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     pub body: Body,
     /// The last body pose sampled for the view.
     pub pose: BodyPose,
@@ -126,6 +133,11 @@ pub struct Player {
     fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     drowning_damage_enabled: bool,
     mana: mana::Mana,
+    powers: power_states::Runtime,
+    pub weapon: Option<weapons::Runtime>,
+    weapon_identity: Option<String>,
+    holstered_weapons: std::collections::HashMap<String, weapons::Runtime>,
+    weapon_effects: Vec<weapons::WeaponEffect>,
     pub adrenaline: adrenaline::Adrenaline,
     /// Populated by the combat and bloodthirsty owners when they exist.
     pub adrenaline_in_combat: bool,
@@ -146,6 +158,9 @@ pub struct Player {
     arm_action_history: [Option<ArmActionDiagnostic>; 2],
     arm_action_active: [bool; 2],
     animation_events: Vec<AnimationEvent>,
+    equipment_action_handles: [Option<u32>; 2],
+    equipment_frames: [Option<(Vec3, Mat3)>; 2],
+    equipment_archetypes: [Option<u32>; 2],
 }
 
 /// Everything `Player::new` reads from the installed declarations.
@@ -170,6 +185,7 @@ pub struct PlayerSetup {
     pub health: health::Settings,
     pub damage_receiver: crate::gameplay::damage::Receiver,
     pub fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
+    pub slash_rules: Option<std::sync::Arc<crate::assets::slash_rules::Definition>>,
     pub mana: mana::Settings,
     pub adrenaline: adrenaline::Settings,
     pub swimming_settings: swimming::SwimmingSettings,
@@ -203,6 +219,53 @@ impl Player {
     pub fn animation_scene_finished(&self, handle: u32) -> bool { self.body.midnight.finished(handle) }
 
     pub fn take_animation_events(&mut self) -> Vec<AnimationEvent> { std::mem::take(&mut self.animation_events) }
+    pub fn drain_animation_events(&mut self) -> std::vec::Drain<'_, AnimationEvent> { self.animation_events.drain(..) }
+
+    pub fn install_animation_scenes(&mut self, scenes: Scenes) { self.scenes.extend(scenes); }
+    pub fn equip_ranged(&mut self, identity: &str, settings: std::sync::Arc<weapons::Ranged>, inventory: &dyn weapons::AmmunitionInventory) -> Result<(), String> {
+        if self.weapon_identity.as_deref() == Some(identity) { return Ok(()); }
+        let mut runtime = match self.holstered_weapons.remove(identity) {
+            Some(runtime) => runtime,
+            None => {
+                let total = inventory.quantity(&settings.ammunition.first().ok_or("ranged equipment has no ammunition")?.item);
+                let capacity = settings.capacity(0, &self.attributes);
+                weapons::Runtime::new(settings, capacity, total, 3)?
+            }
+        };
+        runtime.refresh_attributes(&self.attributes);
+        runtime.update_inventory(inventory.quantity(&runtime.ammunition().item));
+        self.unequip_ranged();
+        self.weapon = Some(runtime);
+        self.weapon_identity = Some(identity.to_owned());
+        Ok(())
+    }
+    pub fn unequip_ranged(&mut self) {
+        if let Some(mut weapon) = self.weapon.take() {
+            let handle = weapon.scene_handle();
+            if handle != 0 { self.body.midnight.stop(handle); }
+            weapon.deactivate();
+            self.weapon_effects.extend(weapon.drain_effects());
+            if let Some(identity) = self.weapon_identity.take() { self.holstered_weapons.insert(identity, weapon); }
+        }
+    }
+    /// The inventory's actual destruction notification retires the component.
+    pub fn retire_ranged(&mut self, identity: &str) {
+        if self.weapon_identity.as_deref() == Some(identity) { self.unequip_ranged(); }
+        self.holstered_weapons.remove(identity);
+    }
+    pub fn drain_weapon_effects(&mut self) -> std::vec::Drain<'_, weapons::WeaponEffect> {
+        if let Some(weapon) = &mut self.weapon { self.weapon_effects.extend(weapon.drain_effects()); }
+        self.weapon_effects.drain(..)
+    }
+    /// 855230 queries the active equipment action component, rather than a
+    /// locomotion blend. The equipment switch owner registers its real scene.
+    pub fn set_equipment_action_handle(&mut self, side: usize, handle: Option<u32>) {
+        if let Some(slot) = self.equipment_action_handles.get_mut(side) { *slot = handle; }
+    }
+    /// Side order is the actual player cast: left(slot1), right(slot0).
+    pub fn set_equipped_archetype(&mut self, side: usize, archetype: Option<u32>) {
+        if let Some(value) = self.equipment_archetypes.get_mut(side) { *value = archetype; }
+    }
 
     /// Change only prepared hands. This does not alter visibility requests
     /// belonging to swimming, mantle or a full-body scene.
@@ -216,7 +279,12 @@ impl Player {
     /// consumes its mana split and publishes the existing incapacitation path.
     pub fn receive_damage(&mut self, parameters: &crate::gameplay::damage::Parameters) -> crate::gameplay::damage::DamageResult {
         use crate::gameplay::damage::Context;
-        if self.health.is_dead() { return Default::default(); }
+        let was_dead = self.health.is_dead();
+        if was_dead {
+            let result = Default::default();
+            self.entity_events.push(EntityEvent::Damage { params: *parameters, result, was_dead });
+            return result;
+        }
         let attribute = |name: &str| self.attributes.0.get(name).copied().unwrap_or(1.0);
         let forward = self.physics.axis().x_axis;
         let difficulty_factor = if forward.dot(parameters.hit_direction) <= 0.0 { self.incoming_damage_factor } else { self.incoming_damage_back_factor };
@@ -226,7 +294,6 @@ impl Player {
         let result = self.health.receive_damage(&self.damage_receiver, parameters, context, &self.attributes);
         if result.mana_damage > 0.0 { self.mana.consume(result.mana_damage, &self.attributes, self.mana_replenishes); }
         if result.incapacitated {
-            self.entity_events.push(EntityEvent::Incapacitated { damage_type: parameters.damage_type.0 });
             self.adrenaline.stop();
             self.controller.input_move = Vec3::ZERO;
             self.controller.input_look = Vec3::ZERO;
@@ -234,6 +301,7 @@ impl Player {
             self.machine.request(StateId::DEAD);
             self.swimming_machine.request(StateId::DEAD);
         }
+        self.entity_events.push(EntityEvent::Damage { params: *parameters, result, was_dead });
         result
     }
 
@@ -281,6 +349,10 @@ impl Player {
     /// Attribute modifier lifecycle notification (0xd6). The adrenaline
     /// component remains attached when stopped, so it can receive this event.
     pub fn attribute_modifier_changed(&mut self, tag: &str, added: bool) {
+        if tag == "ARK_ATTRIBUTE_GUN_AMMO_CAPACITY" {
+            if let Some(weapon) = &mut self.weapon { weapon.refresh_attributes(&self.attributes); }
+            for weapon in self.holstered_weapons.values_mut() { weapon.refresh_attributes(&self.attributes); }
+        }
         self.health.attribute_changed(tag, added, &self.attributes, self.health_regen_factor);
         if tag == "ARK_ATTRIBUTE_MANA_MAX" { self.mana.maximum_changed(added, &self.attributes); }
         if tag == "ARK_ATTRIBUTE_BLOODTHIRSTY_ENABLED" {
@@ -293,6 +365,9 @@ impl Player {
         std::mem::take(&mut self.attribute_modifier_events)
     }
     pub fn take_entity_events(&mut self) -> Vec<EntityEvent> { std::mem::take(&mut self.entity_events) }
+    pub fn drain_entity_events(&mut self) -> std::vec::Drain<'_, EntityEvent> { self.entity_events.drain(..) }
+    pub fn set_managed_entity(&mut self, entity: Option<crate::gameplay::entity_lifetime::EntityId>) { self.managed_entity = entity; }
+    pub fn managed_entity(&self) -> Option<crate::gameplay::entity_lifetime::EntityId> { self.managed_entity }
     pub fn attribute_differs_from_base(&self, tag: &str) -> bool {
         self.attributes.1.get(tag).is_some_and(|value| self.attributes.get(tag) != value.base)
     }
@@ -406,10 +481,12 @@ impl Player {
         let health = health::Health::new(setup.health, setup.accepts_water_damage, &setup.attributes);
         let mana = mana::Mana::new(setup.mana, &setup.attributes);
         let adrenaline = adrenaline::Adrenaline::new(setup.adrenaline, &setup.attributes);
+        let mut machine = StateMachine::new(setup.states, &setup.rules, setup.default_state);
+        if let Some(rules) = setup.slash_rules { machine.install_slash_rules(rules); }
         Ok(Self {
             physics,
             controller,
-            machine: StateMachine::new(setup.states, &setup.rules, setup.default_state),
+            machine,
             swimming_machine: StateMachine::new(swimming_decls, &setup.swimming_rules, setup.swimming_default_state),
             swimming_active: false,
             swimming_eye_height,
@@ -429,6 +506,7 @@ impl Player {
             next_modifier_expiration: None,
             attribute_modifier_events: Vec::new(),
             entity_events: Vec::new(),
+            managed_entity: None,
             body: setup.body,
             pose,
             autocrouch,
@@ -447,6 +525,11 @@ impl Player {
             fall_damage: setup.fall_damage,
             drowning_damage_enabled: setup.drowning_damage_enabled,
             mana,
+            powers: Default::default(),
+            weapon: None,
+            weapon_identity: None,
+            holstered_weapons: Default::default(),
+            weapon_effects: Vec::new(),
             adrenaline,
             adrenaline_in_combat: false,
             bloodthirsty_active: false,
@@ -460,6 +543,9 @@ impl Player {
             arm_action_history: [None, None],
             arm_action_active: [false; 2],
             animation_events: Vec::new(),
+            equipment_action_handles: [None; 2],
+            equipment_frames: [None; 2],
+            equipment_archetypes: [None; 2],
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -469,6 +555,16 @@ impl Player {
     /// since the last simulated frame; `dt` is the player's clock-group delta
     /// and `frame_delta` clock group 0's.
     pub fn frame(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32) {
+        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, None);
+    }
+
+    pub fn frame_with_inventory(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
+        inventory: &mut dyn weapons::AmmunitionInventory) {
+        self.frame_impl(world, events, settings, dt, frame_delta, now, base_fov, Some(inventory));
+    }
+
+    fn frame_impl(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
+        mut inventory: Option<&mut dyn weapons::AmmunitionInventory>) {
         while self.next_modifier_expiration.is_some_and(|deadline| deadline <= now) {
             let next = self.active_modifiers.iter().enumerate().filter_map(|(index, value)| {
                 value.expires_at.filter(|deadline| *deadline <= now).map(|deadline| (index, deadline))
@@ -492,7 +588,17 @@ impl Player {
             }
             Err(error) => eprintln!("Midnight playback: {error}"),
         }
-        self.animation_events.extend(self.body.midnight.take_point_events());
+        if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
+            weapon.update_inventory(inventory.quantity(&weapon.ammunition().item));
+        }
+        // 8ad260 flushes Midnight messages before component/state updates.
+        // Spending a final-frame key after state exit would lose the hit.
+        for event in self.body.midnight.drain_point_events() {
+            if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
+                if let Err(error) = weapon.handle_event(&event, inventory) { eprintln!("Weapon animation event: {error}"); }
+            }
+            self.animation_events.push(event);
+        }
         if !self.health.is_dead() { self.controller.process_input(events, settings); }
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
         // before the controller (it depends on both), then the states.
@@ -522,6 +628,7 @@ impl Player {
             self.swimming_waves = swimming::WaveFilters::default();
             self.swimming_wave_pose = (0.0, Vec3::Z);
         }
+        let equipment_transitioning = self.equipment_action_handles.map(|handle| handle.is_some_and(|handle| !self.body.midnight.finished(handle)));
         macro_rules! frame {
             () => {
                 Frame {
@@ -541,6 +648,13 @@ impl Player {
                     axis,
                     velocity,
                     attributes: &self.attributes,
+                    powers: &mut self.powers,
+                    mana: &mut self.mana,
+                    mana_replenishes: self.mana_replenishes,
+                    weapon: &mut self.weapon,
+                    equipment_transitioning,
+                    equipment_archetypes: self.equipment_archetypes,
+                    action_time: self.entity_event_time,
                     sprint_toggle: settings.sprint_toggle,
                     look_stick_sensitivity: settings.look_stick_sensitivity,
                     lean: &mut self.body.lean,
@@ -625,6 +739,10 @@ impl Player {
         }
         if !self.health.is_dead() { self.controller.apply_mapping(&mut self.machine); }
         self.machine.think(&mut frame!());
+        if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
+            weapon.flush_pending_fire(inventory);
+        }
+        self.update_power_camera_modifier();
         // 1407f8e70 posts the player's forceGameOver event after 7 seconds.
         // Its handler 140784590 requests game-over when the player is dead.
         if self.health.is_dead()
@@ -680,7 +798,8 @@ impl Player {
         if let Some(amount) = self.machine.take_fall_damage() {
             if let Some(declaration) = &self.fall_damage {
                 let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
-                parameters.amount = amount;
+                parameters.set_amount(declaration, amount, true);
+                parameters.attacker = self.managed_entity;
                 if amount == f32::MAX {
                     // 8658c0 calls 780ae0: preserve authored FALL and add
                     // INSTANTKILL for the fatal-height sentinel.
@@ -901,6 +1020,7 @@ impl Player {
         // Equipment binds to the final controlled owner pose. In particular,
         // arm shoulder controls have already carried the hand's attachment tag;
         // applying those controls again would rotate a held weapon twice.
+        self.equipment_frames = [None; 2];
         let equipment_poses: [_; 2] = {
             let Body { equipment, midnight, .. } = &mut self.body;
             std::array::from_fn(|side| equipment[side].as_ref().map(|tree| tree.pose(midnight, side + 3)))
@@ -922,6 +1042,7 @@ impl Player {
             };
             let Some((p, r)) = frame else { continue };
             let (p, r) = (p + r * tree.bind.0, r * tree.bind.1);
+            self.equipment_frames[side] = Some((p, r));
             let joints = pose.into_iter().map(|(local_p, local_r)| {
                 let (p, r) = (p + r * local_p, r * local_r);
                 std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
@@ -985,6 +1106,8 @@ impl Player {
             Emitter::PlayerBody => self.body.sound_settings,
             Emitter::PlayerLeftArm => self.body.arms.first()?.sound_settings?,
             Emitter::PlayerRightArm => self.body.arms.get(1)?.sound_settings?,
+            Emitter::PlayerLeftEquipment => self.body.equipment[0].as_ref()?.sound_settings?,
+            Emitter::PlayerRightEquipment => self.body.equipment[1].as_ref()?.sound_settings?,
             Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         Some(settings.rate(clock_rate))
@@ -1001,6 +1124,8 @@ impl Player {
             Emitter::PlayerBody => return Some((origin, axis)),
             Emitter::PlayerLeftArm => 0,
             Emitter::PlayerRightArm => 1,
+            Emitter::PlayerLeftEquipment => return self.equipment_frames[0],
+            Emitter::PlayerRightEquipment => return self.equipment_frames[1],
             Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
