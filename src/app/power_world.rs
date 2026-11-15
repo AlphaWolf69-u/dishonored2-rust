@@ -59,6 +59,7 @@ impl PowerWorld {
         !self.retired && self.bend_time.is_some() && self.state.player.is_some() && clock.clock().is_ok()
     }
     pub fn bend_time_active(&self) -> bool { self.state.active }
+    pub fn bend_time_must_cancel(&self) -> bool { self.bend_time.as_ref().is_some_and(BendTime::must_cancel) }
     pub fn bend_time_cost(&self, normal: f32) -> f32 { self.bend_time.as_ref().map_or(normal, |power| power.mana_cost(normal)) }
     pub fn begin_bend_time_cast(&mut self) { if let Some(power) = &mut self.bend_time { power.begin_cast(); } }
     pub fn cast_bend_time(&mut self, attributes: BendTimeAttributes, held: bool, pay: impl FnMut(),
