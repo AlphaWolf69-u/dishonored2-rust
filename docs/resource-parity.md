@@ -10509,3 +10509,34 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   does not claim to replace that readiness/pose operation.
 - Validation: decompilation, existing scheduler-owner review and whitespace
   checks only. No builds, tests, visible launches or measurements.
+
+### Equipment entity instances and admitted attachment changes (2026-11-15)
+
+- Owners: existing equipment declaration/tree owner, equipment state callback
+  owner and shared first-person renderer. `ported`: render publication carries
+  the actual managed equipment identity independently of the geometry resource
+  name. Socket lookup also matches that entity identity; two owned actors may
+  share one model resource without sharing transforms or visibility.
+- `ported`: registered/incoming and detached equipment selects its prepared
+  unequipped body attachment; actual attach selects the prepared arm binding
+  (`14061ac10`, `14061aed0`, `14061b010`). Named tags are validated once by
+  canonical rig preparation. Callback selection is infallible and preserves
+  the entity's animation state and resource leases.
+- `ported`: `m_hideWhenNotEquipped` controls inactive visibility. A retained
+  visible inactive actor publishes its own canonical base-tree pose without
+  borrowing the newly selected actor's Midnight target. Stopped equipment
+  does not receive selected-component Think or invented clock advancement.
+- Root-frame publication includes owned actors without a sound component;
+  audio publication filters the actual sound settings from that same retained
+  frame bank. No extra pose owner, geometry upload or audio-query allocation.
+- `blocked: initial empty-tag entity binding`: `140752900` retains a child
+  relative to its real parent entity when no tag is supplied. Explicit
+  BodyEntity/ArmEntity frame support exists, but preparation still rejects
+  empty tags until admission supplies the actual initial child world frame.
+  The next step is that source entity-frame handoff and existing
+  `reference_frame::relative_binding`; no root-joint or identity-offset
+  fallback is admitted.
+- Prediction: independent actor transforms with shared geometry residency;
+  inactive visible actors require their existing tree's base-pose publication.
+  No measured performance claim. Validation is source/whitespace review only;
+  no builds, tests, visible launches or measurements.

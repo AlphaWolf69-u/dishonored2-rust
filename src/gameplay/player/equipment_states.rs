@@ -233,10 +233,14 @@ impl Player {
     }
     /// 619380 creates one runtime per admitted inventory equipment entity.
     /// Registration alone neither selects nor advances an equipment action.
-    pub fn register_equipment_target(&mut self, target: Target) -> Result<(), String> {
+    pub fn register_equipment_target(&mut self, mut target: Target) -> Result<(), String> {
         if target.equipment.slot > 1 { return Err("equipment target has no first-person arm".into()); }
         if self.equipment_changes.slots.iter().any(|slot| slot.current.as_ref()
             .into_iter().chain(slot.incoming.as_ref()).any(|known| known.identity == target.identity)) { return Ok(()); }
+        if let Some(tree) = &mut target.tree {
+            tree.bind_equipped(false);
+            tree.visible = !target.equipment.hide_unequipped;
+        }
         self.equipment_changes.owned.entry(target.identity.clone()).or_insert(target);
         Ok(())
     }
@@ -257,10 +261,14 @@ impl Player {
         self.machine.request(if side == 0 { StateId::EQUIP_LEFT } else { StateId::EQUIP_RIGHT });
         Ok(slot.uid)
     }
-    pub fn request_equipment_change(&mut self, target: Target, flags: u32, source: StateId) -> Result<u32, String> {
+    pub fn request_equipment_change(&mut self, mut target: Target, flags: u32, source: StateId) -> Result<u32, String> {
         let id = match target.equipment.slot { 1 => StateId::EQUIP_LEFT, 0 => StateId::EQUIP_RIGHT,
             slot => return Err(format!("equipment slot {slot} is not an arm")) };
         if self.machine.state(id).is_none() { return Err(format!("player mode lacks equipment state {}", id.0)); }
+        if let Some(tree) = &mut target.tree {
+            tree.bind_equipped(false);
+            tree.visible = !target.equipment.hide_unequipped;
+        }
         let uid = self.equipment_changes.request(target, flags, source)?;
         self.machine.request(id);
         Ok(uid)
@@ -317,6 +325,10 @@ impl Player {
             if slot.phase == Phase::Detach && (slot.handle == 0 || self.body.midnight.finished(slot.handle)) {
                 if let Some(current) = slot.current.as_mut() {
                     current.tree = self.body.replace_equipment_tree(side, None);
+                    if let Some(tree) = &mut current.tree {
+                        tree.bind_equipped(false);
+                        tree.visible = !current.equipment.hide_unequipped;
+                    }
                     self.equipment_changes.callbacks.push_back(Callback::Unequipped { identity: current.identity.clone(), side });
                 }
                 slot.equipped = false;
@@ -334,6 +346,10 @@ impl Player {
                     }
                 }
                 let Some(target) = slot.current.as_mut() else { slot.phase = Phase::Idle; continue };
+                if let Some(tree) = &mut target.tree {
+                    tree.bind_equipped(true);
+                    tree.visible = true;
+                }
                 self.body.replace_equipment_tree(side, target.tree.take());
                 if let Some(name) = target.equipment.loco_equip_state.as_deref() {
                     if let Some(arm) = self.body.arms.get_mut(side) { arm.request_equipment(name); }
