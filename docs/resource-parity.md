@@ -10335,7 +10335,10 @@ Projectile flight entity frames remain in the existing Z-up gameplay/WorldStorag
   remain metadata; this does not acquire projectile or upgrade models.
 - `host`: a projectile-family admission flag defaults false until the real
   birth/contact consumer is installed. Shots cannot spend ammunition while
-  that dependency is missing. `blocked`: dormant throwable/body admission,
+  that dependency is missing. Loaded-weapon action admission rejects the
+  unavailable factory rather than selecting a false empty-ammo animation;
+  genuine empty-ammo and reload animations retain their existing paths.
+  `blocked`: dormant throwable/body admission,
   real hit normals, target/joint attachment and visibility timers still need
   their canonical physics/entity owners; no substitute hitscan is emitted.
 - `ported`: drowning `1404c0cf0` uses the authored damage declaration and

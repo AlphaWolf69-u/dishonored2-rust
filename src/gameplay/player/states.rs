@@ -1410,8 +1410,12 @@ impl StateMachine {
                 let transitioning = state.decl.flags.body_parts & 2 != 0 && frame.equipment_transitioning[0]
                     || state.decl.flags.body_parts & 4 != 0 && frame.equipment_transitioning[1];
                 !transitioning && state.fire.action.can_activate(frame.action_time, &decl.action)
-                    && frame.weapon.as_ref().is_some_and(|weapon| weapon.can_fire()
-                        || frame.controller.pressed(action) && (state.midnight == 0 || frame.midnight.finished(state.midnight)))
+                    // bevy_backend: reject unavailable projectile births at
+                    // admission. A loaded gun must not take the empty-ammo
+                    // animation merely because the host factory is missing.
+                    && frame.weapon.as_ref().is_some_and(|weapon| (weapon.magazine <= 0 || weapon.bevy_backend_projectile_ready)
+                        && (weapon.can_fire() || frame.controller.pressed(action)
+                            && (state.midnight == 0 || frame.midnight.finished(state.midnight))))
             }
             Kind::CancelFireWeapon => self.state(StateId::FIRE_WEAPON).is_some_and(|fire| fire.active
                 && matches!(fire.fire.phase, super::combat::FirePhase::TargetDelay | super::combat::FirePhase::Targeting
