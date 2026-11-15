@@ -9435,7 +9435,7 @@ observations pending. This does not implement generic NPC speech, dialogue
 choice, facial animation, or the speech Scene scheduler.
 
 
-### Executable mission objective ownership (2026-11-15, in progress)
+### Executable mission objective ownership (2026-11-15)
 
 Expected costs before implementation: the selected worldspawn gameflow manager
 acquires its reachable tree definitions once behind loading. Its executable
@@ -9466,7 +9466,6 @@ one typed request mailbox replace the native polymorphic task pools. All
 runtime slots/mailboxes release with the level after graph receivers stop;
 Catalog marker purge releases program/declaration residency.
 
-Implementation and installed-resource observations are still in progress;
 HUD task notifications, actual movie completion callbacks, graph conditions and
 scripted marker add/remove/replace requests are connected. Notifications use
 the authored delays and Iggy vectors; marker slots stay owned by the HUD movie.
@@ -9592,3 +9591,14 @@ objectives remain inactive. blocked: story-scene/global-custom-event producer;
 next step is port that producer and its real completion, never activate an
 objective merely because loading finished. This does not prevent native
 m_autoActivate objectives or requests from already connected producers.
+
+Native-load-context limit of this observation: fresh direct-map loads currently
+publish LevelLoadedFirstTime, as used by the existing scene-motion and
+character-selection owners. Institute's mission does not activate in that
+context; its authored entry depends on other loading/story inputs. The
+windowless Institute run acquired ten base marker targets/four devices and
+retired cleanly, but correctly failed the diagnostic requirement for an active
+mission. Consequently HUD task/portrait appearance remains unverified in
+actual gameplay. Changing load flags or producing story events needs the
+corresponding campaign/cinematic implementation and original-code evidence;
+this batch does not fabricate those inputs to make a check succeed.
