@@ -27,6 +27,10 @@ impl UsePowerDecl {
 #[derive(Default)]
 pub struct Runtime {
     pub selected: Option<Cast>,
+    /// 140619640/14061c1a0: an owned power entity survives unequip. Move
+    /// its one mutable Cast between this table and selected, preserving
+    /// native cooldown/free-window timestamps until actual item depletion.
+    owned_casts: std::collections::HashMap<i32, (Cast, Scenes)>,
     scenes: Scenes,
     action: Action,
     pub now: f64,
@@ -200,6 +204,20 @@ impl Player {
     /// prepared scenes retain their existing resource owner leases.
     pub fn equip_power(&mut self, cast: Cast, scenes: Scenes) -> bool {
         if self.powers.active { return false; }
+        let id = cast.settings.id;
+        if let Some(selected) = &self.powers.selected { return selected.settings.id == id; }
+        self.register_power(cast, scenes);
+        self.equip_registered_power(id)
+    }
+    pub fn register_power(&mut self, cast: Cast, scenes: Scenes) -> bool {
+        let id = cast.settings.id;
+        if self.powers.selected.as_ref().is_some_and(|selected| selected.settings.id == id) || self.powers.owned_casts.contains_key(&id) { return false; }
+        self.powers.owned_casts.insert(id, (cast, scenes)); true
+    }
+    pub fn equip_registered_power(&mut self, id: i32) -> bool {
+        if self.powers.active { return false; }
+        if let Some(selected) = &self.powers.selected { return selected.settings.id == id; }
+        let Some((cast, scenes)) = self.powers.owned_casts.remove(&id) else { return false };
         self.powers.selected = Some(cast); self.powers.scenes = scenes;
         self.powers.action_button = self.controller.mapping.iter().find(|mapping| mapping.state == StateId::USE_POWER).map_or(0, |mapping| mapping.action);
         true
@@ -219,7 +237,19 @@ impl Player {
         self.powers.action_state.deactivate(self.powers.now);
         self.machine.quit(StateId::USE_POWER);
         self.update_power_camera_modifier();
-        self.powers.selected = None; self.powers.scenes.clear();
+        if let Some(cast) = self.powers.selected.take() {
+            let scenes = std::mem::take(&mut self.powers.scenes);
+            self.powers.owned_casts.insert(cast.settings.id, (cast, scenes));
+        }
+    }
+    /// Call only for the actual inventory record's quantity-to-zero/removal
+    /// callback, after the family world owner retires any live components.
+    pub fn remove_power(&mut self, id: i32) {
+        if self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id) { self.unequip_power(); }
+        self.powers.owned_casts.remove(&id);
+    }
+    pub fn has_registered_power(&self, id: i32) -> bool {
+        self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id) || self.powers.owned_casts.contains_key(&id)
     }
     pub fn selected_power(&self) -> Option<&Cast> { self.powers.selected.as_ref() }
     pub fn selected_power_mut(&mut self) -> Option<&mut Cast> { self.powers.selected.as_mut() }
