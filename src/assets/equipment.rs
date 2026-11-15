@@ -8,7 +8,7 @@ use super::{
     bmd6, entities,
 };
 use crate::gameplay::player::{
-    equipment::{EquipmentBinding, EquipmentInput, EquipmentTree},
+    equipment::{AttachmentBinding, EquipmentBinding, EquipmentInput, EquipmentTree},
     weapons::{Equipment, Ranged, RangedFamily},
 };
 use std::{
@@ -16,6 +16,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+pub(crate) mod attachment;
 mod tree;
 
 /// Immutable selected-entity projection. No live playback state or independent
@@ -24,6 +25,8 @@ mod tree;
 pub struct Metadata {
     pub entity: String,
     pub class_name: String,
+    pub model: Option<String>,
+    pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     pub component_kind: String,
     pub equipment: Equipment,
     pub ranged: Option<Ranged>,
@@ -94,7 +97,27 @@ impl Descriptor {
         equipped: bool,
     ) -> Result<EquipmentTree, String> {
         let (binding, bind_joint, bind) = self.binding(body, arms, equipped)?;
+        let (owner, joint, offset) = self.binding(body, arms, true)?;
+        let equipped_attachment = AttachmentBinding {
+            owner,
+            joint,
+            offset,
+        };
+        let unequipped_attachment = self
+            .equipment
+            .unequipped_bind_tag
+            .as_ref()
+            .map(|_| {
+                self.binding(body, arms, false)
+                    .map(|(owner, joint, offset)| AttachmentBinding {
+                        owner,
+                        joint,
+                        offset,
+                    })
+            })
+            .transpose()?;
         Ok(EquipmentTree {
+            managed_entity: None,
             sound_settings: self.sound_settings,
             rig: self.rig.clone(),
             model: self.model.clone(),
@@ -105,6 +128,8 @@ impl Descriptor {
                 time: 0.0,
             },
             binding,
+            equipped_attachment,
+            unequipped_attachment,
             bind_joint,
             bind,
             visible: equipped || !self.equipment.hide_unequipped,
@@ -137,9 +162,36 @@ pub struct Sources {
     catalog: Option<u64>,
     entities: HashMap<String, Weak<Descriptor>>,
     metadata: HashMap<String, Weak<Metadata>>,
+    attachments: attachment::Sources,
 }
 
 impl Sources {
+    /// 6170b0 ->619380 constructs every actual quantity-positive equipment
+    /// entity. A truly model-less entity has no renderer payload; its typed
+    /// equipment/component ownership still belongs to the inventory runtime.
+    pub fn acquire_owned(
+        &mut self,
+        catalog: &Catalog,
+        entity: &str,
+        mut enumeration: impl FnMut(&str, &str) -> Option<i32>,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Option<Arc<Descriptor>>, String> {
+        let metadata = self.metadata(catalog, entity, &mut enumeration, cancelled)?;
+        if metadata.model.is_none() {
+            return Ok(None);
+        }
+        self.acquire(catalog, entity, enumeration, cancelled)
+            .map(Some)
+    }
+    pub(crate) fn acquire_attachment(
+        &mut self,
+        catalog: &Catalog,
+        entity: &str,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Arc<attachment::Descriptor>, String> {
+        self.attachments.acquire(catalog, entity, cancelled)
+    }
+
     /// Metadata-only ownership for shortcuts/autoequip arbitration. No model,
     /// rig, tree, animation, material, texture or GPU surface is acquired.
     pub fn metadata(
@@ -167,9 +219,17 @@ impl Sources {
             texts: HashMap::new(),
         };
         let mut class_name = None;
+        let mut entity_model = None;
         for layer in entities::player::entity_chain(&key, &mut |path| sources.read(path))? {
             if let Some(class) = entities::scene_motion::atom(&layer, "class") {
                 class_name = Some(class.to_owned());
+            }
+            let render = entities::scene_motion::child(
+                entities::scene_motion::child(&layer, "edit"),
+                "renderModelInfo",
+            );
+            if let Some(model) = entities::scene_motion::atom(render, "model") {
+                entity_model = (!model.is_empty() && model != "NULL").then(|| model.to_owned());
             }
         }
         let class_name =
@@ -238,9 +298,15 @@ impl Sources {
             .transpose()?;
 
         check_active(cancelled)?;
+        let sound_settings =
+            entities::player::entity_component(&key, "cpntaudio", |path| sources.read(path))?
+                .map(|fields| crate::gameplay::sound::component::Settings::read(&fields))
+                .transpose()?;
         let metadata = Arc::new(Metadata {
             entity: key.clone(),
             class_name,
+            model: entity_model,
+            sound_settings,
             component_kind: kind.clone(),
             equipment,
             ranged,
@@ -310,10 +376,7 @@ impl Sources {
             .default_alias
             .as_deref()
             .ok_or_else(|| format!("{entity}: equipment has no default animation alias"))?;
-        let sound_settings =
-            entities::player::entity_component(&key, "cpntaudio", |path| sources.read(path))?
-                .map(|fields| crate::gameplay::sound::component::Settings::read(&fields))
-                .transpose()?;
+        let sound_settings = metadata.sound_settings;
         check_active(cancelled)?;
         let rig = Rig::acquire(catalog, &model)?;
         check_active(cancelled)?;

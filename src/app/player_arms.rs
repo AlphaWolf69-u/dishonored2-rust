@@ -18,21 +18,23 @@
 //! weights; the GPU blends them (DH2_SKIN8, the installed skin VS order)
 //! with the palette joint × inverse bind from `Player::arms()`, published
 //! each frame as the model's joint transforms.
-use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
-use super::view_geometry::{source_mesh_from_uvs, MeshUvs};
+use super::view_geometry::{MeshUvs, source_mesh_from_uvs};
 use super::{
-    archive, bmd6, edge_skeleton, entities, material, model_motion,
-    player::PlayerState, render_model, shadow_preparation, view_to_game, MaterialHandle,
-    MaterialResolver, MeshTag, SceneData, ShaderBuffer,
+    MaterialHandle, MaterialResolver, MeshTag, SceneData, ShaderBuffer, archive, bmd6,
+    edge_skeleton, entities, material, model_motion, player::PlayerState, render_model,
+    shadow_preparation, view_to_game,
 };
 use crate::gameplay::player::ArmRender;
-use bevy::prelude::*;
+use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 use bevy::camera::CameraProjection;
+use bevy::prelude::*;
 use std::borrow::Cow;
+#[path = "equipment_attachment.rs"]
+pub(super) mod attachment;
 #[path = "player_equipment.rs"]
 mod equipment;
 
-pub(super) use equipment::install_equipment_retirement;
+pub(super) use equipment::{RetiredModel, install_equipment_retirement};
 
 struct ArmSurface {
     entity: Entity,
@@ -96,6 +98,7 @@ pub(super) struct PlayerArms {
     pub(super) player_depth_hack: f32,
     arms: Vec<ArmModel>,
     body_models: usize,
+    pub(super) attachments: attachment::Models,
     retiring_equipment: Vec<equipment::RetiredModel>,
     /// `DH2_DEBUG_REST_ARMS=1`: draw the arm skeletons' rest pose 0.5 m in
     /// front of the camera instead of `Player::arms()`; another number sets
@@ -111,16 +114,46 @@ pub(super) struct PlayerArms {
 
 pub(super) struct PreparedEquipmentModel(ArmModel);
 
+impl PreparedEquipmentModel {
+    pub(super) fn descriptor(&self) -> &std::sync::Arc<crate::assets::equipment::Descriptor> {
+        self.0
+            ._equipment
+            .as_ref()
+            .expect("prepared equipment retains its actual descriptor")
+    }
+}
+
+impl PlayerArms {
+    pub(super) fn retire_completed_models(&mut self) {
+        self.retiring_equipment.retain(|entry| !entry.complete());
+    }
+}
+
 pub(super) fn prepare_equipment_model(
     descriptor: std::sync::Arc<crate::assets::equipment::Descriptor>,
-    player_depth_hack: f32, resolver: &mut MaterialResolver,
-    meshes: &mut dyn AssetWrite<Mesh>, commands: &mut super::setup_commands::SetupCommands,
+    player_depth_hack: f32,
+    resolver: &mut MaterialResolver,
+    meshes: &mut dyn AssetWrite<Mesh>,
+    commands: &mut super::setup_commands::SetupCommands,
 ) -> Result<PreparedEquipmentModel, String> {
     let (hack, parameter) = arm_model_depth_hack(player_depth_hack);
-    let mut model = prepare_model(descriptor.model.clone(), descriptor.geometry.clone(),
-        descriptor.rig.skeleton.clone(), hack, parameter, &[], true, resolver, meshes, commands)?;
+    let mut model = prepare_model(
+        descriptor.model.clone(),
+        descriptor.geometry.clone(),
+        descriptor.rig.skeleton.clone(),
+        hack,
+        parameter,
+        &[],
+        true,
+        resolver,
+        meshes,
+        commands,
+    )?;
     if model.surfaces.is_empty() {
-        return Err(format!("{} has no drawable equipment surfaces", descriptor.model));
+        return Err(format!(
+            "{} has no drawable equipment surfaces",
+            descriptor.model
+        ));
     }
     model._equipment = Some(descriptor);
     Ok(PreparedEquipmentModel(model))
@@ -131,37 +164,70 @@ pub(super) fn prepare_equipment_model(
 /// not invent a skeleton for an entity whose source model is rigid.
 #[allow(clippy::too_many_arguments)]
 fn prepare_rigid_surface(
-    source: &crate::bmodel::Surface, source_index: usize, material_override: Option<&str>,
-    player_depth_hack: f32, cast_shadows: bool, resolver: &mut MaterialResolver,
-    meshes: &mut dyn AssetWrite<Mesh>, commands: &mut super::setup_commands::SetupCommands,
+    source: &crate::bmodel::Surface,
+    source_index: usize,
+    material_override: Option<&str>,
+    player_depth_hack: f32,
+    cast_shadows: bool,
+    resolver: &mut MaterialResolver,
+    meshes: &mut dyn AssetWrite<Mesh>,
+    commands: &mut super::setup_commands::SetupCommands,
 ) -> Result<Option<ArmSurface>, String> {
     let path = material_override.unwrap_or(&source.material_path);
-    if material::is_null_material(path) || source.positions.is_empty() || source.indices.is_empty() { return Ok(None); }
-    let resolved = resolver.get(path, 0, [0.0; 3])
+    if material::is_null_material(path) || source.positions.is_empty() || source.indices.is_empty()
+    {
+        return Ok(None);
+    }
+    let resolved = resolver
+        .get(path, 0, [0.0; 3])
         .ok_or_else(|| format!("equipment child material unresolved: {path}"))?;
     let MaterialHandle::Probe(handle) = &resolved.handle else {
-        return Err(format!("equipment child material is not an ordinary model material: {path}"));
+        return Err(format!(
+            "equipment child material is not an ordinary model material: {path}"
+        ));
     };
-    let mut mesh = source_mesh_from_uvs(&source.positions, MeshUvs::Packed(&source.uvs),
-        &source.indices, &source.packed_channels, false);
+    let mut mesh = source_mesh_from_uvs(
+        &source.positions,
+        MeshUvs::Packed(&source.uvs),
+        &source.indices,
+        &source.packed_channels,
+        false,
+    );
     let (hack, parameter) = arm_model_depth_hack(player_depth_hack);
     if hack > 0.0 {
-        mesh.insert_attribute(super::materials::DH2_MODEL_DEPTH_HACK,
-            vec![parameter.unwrap_or(1.0); source.positions.len()]);
+        mesh.insert_attribute(
+            super::materials::DH2_MODEL_DEPTH_HACK,
+            vec![parameter.unwrap_or(1.0); source.positions.len()],
+        );
     }
     mesh.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
     let mesh = meshes.add(mesh);
-    let mut entity = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(handle.clone()),
-        Transform::IDENTITY, GlobalTransform::IDENTITY, Visibility::Hidden,
-        MeshTag(resolved.probe_index), bevy::camera::visibility::NoFrustumCulling));
-    if !cast_shadows { entity.insert(bevy::light::NotShadowCaster); }
-    Ok(Some(ArmSurface { entity: entity.id(), _mesh: mesh, source_index,
-        probe_index: resolved.probe_index, material: resolved.handle.clone() }))
+    let mut entity = commands.spawn((
+        Mesh3d(mesh.clone()),
+        MeshMaterial3d(handle.clone()),
+        Transform::IDENTITY,
+        GlobalTransform::IDENTITY,
+        Visibility::Hidden,
+        MeshTag(resolved.probe_index),
+        bevy::camera::visibility::NoFrustumCulling,
+    ));
+    if !cast_shadows {
+        entity.insert(bevy::light::NotShadowCaster);
+    }
+    Ok(Some(ArmSurface {
+        entity: entity.id(),
+        _mesh: mesh,
+        source_index,
+        probe_index: resolved.probe_index,
+        material: resolved.handle.clone(),
+    }))
 }
 
 fn publish_model_lighting(
-    bounds: [[f32; 3]; 2], query: &mut crate::probe_lighting::ProbeQuery,
-    surfaces: &[ArmSurface], probes: Option<&crate::probe_lighting::ProbeLightingSet>,
+    bounds: [[f32; 3]; 2],
+    query: &mut crate::probe_lighting::ProbeQuery,
+    surfaces: &[ArmSurface],
+    probes: Option<&crate::probe_lighting::ProbeLightingSet>,
     buffer: Option<&mut model_motion::ModelProbeLighting>,
     patches: &mut crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches,
     buffers: &mut Assets<ShaderBuffer>,
@@ -180,35 +246,62 @@ fn publish_model_lighting(
 }
 
 impl PlayerArms {
-    pub(super) fn publish_equipment_model(&mut self, model: PreparedEquipmentModel) -> Result<(), String> {
+    pub(super) fn publish_equipment_model(
+        &mut self,
+        model: PreparedEquipmentModel,
+    ) -> Result<(), String> {
         if self.arms.iter().any(|entry| entry.model == model.0.model) {
-            return Err(format!("equipment model already published: {}", model.0.model));
+            return Err(format!(
+                "equipment model already published: {}",
+                model.0.model
+            ));
         }
         self.arms.push(model.0);
         Ok(())
     }
 
     pub(super) fn has_equipment_model(&self, entity: &str) -> bool {
-        self.arms.iter().skip(self.body_models).any(|model|
-            model._equipment.as_ref().is_some_and(|descriptor| descriptor.entity == entity))
+        self.arms.iter().skip(self.body_models).any(|model| {
+            model
+                ._equipment
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.entity == entity)
+        })
     }
 
     pub(super) fn equipment_entities(&self) -> impl Iterator<Item = Entity> + '_ {
-        self.arms.iter().skip(self.body_models).flat_map(|model| model.surfaces.iter().map(|part| part.entity))
+        self.arms
+            .iter()
+            .skip(self.body_models)
+            .flat_map(|model| model.surfaces.iter().map(|part| part.entity))
     }
     /// Admit only the inventory-selected model, using its canonical rig and
     /// BMD6 owners. World poses arrive through the ordinary ArmRender list.
     pub(super) fn add_equipment_model(
-        &mut self, model: String, info: std::sync::Arc<bmd6::ModelInfo>,
-        rig: &crate::assets::animation_rig::Rig, resolver: &mut MaterialResolver,
-        meshes: &mut dyn AssetWrite<Mesh>, commands: &mut super::setup_commands::SetupCommands,
+        &mut self,
+        model: String,
+        info: std::sync::Arc<bmd6::ModelInfo>,
+        rig: &crate::assets::animation_rig::Rig,
+        resolver: &mut MaterialResolver,
+        meshes: &mut dyn AssetWrite<Mesh>,
+        commands: &mut super::setup_commands::SetupCommands,
     ) -> Result<(), String> {
         if self.arms.iter().any(|entry| entry.model == model) {
             return Err(format!("first-person model already admitted: {model}"));
         }
         let (hack, parameter) = arm_model_depth_hack(self.player_depth_hack);
-        let entry = prepare_model(model, info, rig.skeleton.clone(), hack, parameter,
-            &[], true, resolver, meshes, commands)?;
+        let entry = prepare_model(
+            model,
+            info,
+            rig.skeleton.clone(),
+            hack,
+            parameter,
+            &[],
+            true,
+            resolver,
+            meshes,
+            commands,
+        )?;
         self.arms.push(entry);
         Ok(())
     }
@@ -216,50 +309,112 @@ impl PlayerArms {
     /// Remove draw/joint entities immediately; retain the resource leases
     /// until the render queue acknowledges their final submitted work.
     pub(super) fn remove_equipment_model(
-        &mut self, model: &str, commands: &mut super::setup_commands::SetupCommands,
-    ) {
-        let Some(index) = self.arms.iter().enumerate().skip(self.body_models)
-            .find_map(|(index, entry)| (entry.model == model).then_some(index)) else { return };
+        &mut self,
+        model: &str,
+        commands: &mut super::setup_commands::SetupCommands,
+    ) -> Option<RetiredModel> {
+        let Some(index) = self
+            .arms
+            .iter()
+            .enumerate()
+            .skip(self.body_models)
+            .find_map(|(index, entry)| (entry.model == model).then_some(index))
+        else {
+            return None;
+        };
         let entry = self.arms.remove(index);
-        let entities: Vec<_> = entry.surfaces.iter().map(|part| part.entity)
-            .chain(entry.joints.iter().copied()).collect();
+        let entities: Vec<_> = entry
+            .surfaces
+            .iter()
+            .map(|part| part.entity)
+            .chain(entry.joints.iter().copied())
+            .collect();
         commands.queue(move |world: &mut World| {
-            for entity in entities { if world.entities().contains(entity) { world.despawn(entity); } }
+            for entity in entities {
+                if world.entities().contains(entity) {
+                    world.despawn(entity);
+                }
+            }
         });
-        self.retiring_equipment.push(equipment::RetiredModel::new(entry));
+        let receipt = equipment::RetiredModel::new(entry);
+        self.retiring_equipment.push(receipt.clone());
+        Some(receipt)
     }
 
+    pub(super) fn remove_attachment_model(
+        &mut self,
+        id: crate::gameplay::entity_lifetime::EntityId,
+        commands: &mut super::setup_commands::SetupCommands,
+    ) -> Option<RetiredModel> {
+        let receipt = self.attachments.remove(id, commands)?;
+        self.retiring_equipment.push(receipt.clone());
+        Some(receipt)
+    }
 
     /// F8-only snapshot of the render owner's published arm state.
-    pub(super) fn diagnostic(&self, probes: Option<&crate::probe_lighting::ProbeLightingSet>,
-        published: Option<&model_motion::ModelProbeLighting>, buffers: &Assets<ShaderBuffer>) -> String {
-        let mut report: String = self.arms.iter().map(|arm| format!(
-            "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
-            arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
-        )).collect();
+    pub(super) fn diagnostic(
+        &self,
+        probes: Option<&crate::probe_lighting::ProbeLightingSet>,
+        published: Option<&model_motion::ModelProbeLighting>,
+        buffers: &Assets<ShaderBuffer>,
+    ) -> String {
+        let mut report: String = self
+            .arms
+            .iter()
+            .map(|arm| {
+                format!(
+                    "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
+                    arm.model,
+                    arm.shown,
+                    arm.surfaces.len(),
+                    arm.joints.len(),
+                    arm.world_bounds
+                )
+            })
+            .collect();
         // F8 only: replay the published model-bounds query, without changing
         // its cache or adding work to skinning/lighting on ordinary frames.
         for arm in &self.arms {
-            let sample = arm.world_bounds.map(|bounds| std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5));
+            let sample = arm
+                .world_bounds
+                .map(|bounds| std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5));
             let mut query = arm.lighting;
-            let lighting = probes.zip(sample).and_then(|(probes, sample)| probes.interpolate_query_sh(sample, &mut query));
+            let lighting = probes
+                .zip(sample)
+                .and_then(|(probes, sample)| probes.interpolate_query_sh(sample, &mut query));
             report.push_str(&format!("  lighting model={} depth_hack={} query={:?} sample={sample:?} resolved={lighting:?}\n", arm.model, arm.depth_hack, arm.lighting));
             for part in &arm.surfaces {
-                let record = published.and_then(|published| published.diagnostic_record(buffers, part.probe_index));
+                let record = published
+                    .and_then(|published| published.diagnostic_record(buffers, part.probe_index));
                 report.push_str(&format!("    surface={} probe_index={} source_material={} published_cpu_record={record:?}\n", part.source_index, part.probe_index, arm.info.surfaces[part.source_index].material_path));
             }
         }
-        report.push_str(&format!("  renderer action history [mantle, catfall, swimming]={:?}\n", self.action_history));
+        report.push_str(&format!(
+            "  renderer action history [mantle, catfall, swimming]={:?}\n",
+            self.action_history
+        ));
         if self.capture_geometry {
-            for (action, capture) in ["mantle", "catfall", "swimming"].into_iter().zip(&self.action_capture) {
+            for (action, capture) in ["mantle", "catfall", "swimming"]
+                .into_iter()
+                .zip(&self.action_capture)
+            {
                 for (index, arm) in self.arms.iter().enumerate() {
-                    let surfaces: Vec<_> = arm.surfaces.iter().map(|surface| surface.source_index).collect();
-                    report.push_str(&format!("  {action} geometry {}: {}\n", arm.model,
-                        capture.describe(index, &arm.info, &surfaces, arm.depth_hack)));
+                    let surfaces: Vec<_> = arm
+                        .surfaces
+                        .iter()
+                        .map(|surface| surface.source_index)
+                        .collect();
+                    report.push_str(&format!(
+                        "  {action} geometry {}: {}\n",
+                        arm.model,
+                        capture.describe(index, &arm.info, &surfaces, arm.depth_hack)
+                    ));
                 }
             }
         } else {
-            report.push_str("  hand geometry history disabled (DH2_DEBUG_HAND_GEOMETRY=1 enables it)\n");
+            report.push_str(
+                "  hand geometry history disabled (DH2_DEBUG_HAND_GEOMETRY=1 enables it)\n",
+            );
         }
         report
     }
@@ -270,6 +425,7 @@ impl PlayerArms {
             .iter()
             .filter(|arm| arm.shown)
             .flat_map(|arm| arm.surfaces.iter().map(|part| &part.material))
+            .chain(self.attachments.shown_materials())
     }
 }
 
@@ -286,7 +442,9 @@ impl PlayerArms {
         demands: &[crate::texture::ProjectedAreaDemand],
     ) -> Result<(), String> {
         for arm in self.arms.iter().filter(|arm| arm.shown) {
-            let Some(bounds) = arm.world_bounds else { continue };
+            let Some(bounds) = arm.world_bounds else {
+                continue;
+            };
             let (_, area) =
                 crate::visibility::tome::render_query_aabb_visibility_without_depth(state, bounds)?;
             let area = area.unwrap_or(1.0);
@@ -299,7 +457,8 @@ impl PlayerArms {
                 }
             }
         }
-        Ok(())
+        self.attachments
+            .submit_texture_demands(state, bindings, demands)
     }
 }
 
@@ -368,7 +527,10 @@ pub(super) fn load_player_arms(
         .into_iter()
         .flatten()
         .map(|model| (model, arm_hack))
-        .chain(std::iter::once((declarations.body_model.clone(), body_model_depth_hack(view.depth_hack))));
+        .chain(std::iter::once((
+            declarations.body_model.clone(),
+            body_model_depth_hack(view.depth_hack),
+        )));
     let mut arms = Vec::new();
     let mut model_sources = bmd6::ModelSources::new(catalog);
     for (model, (model_depth_hack, parameter)) in models {
@@ -387,13 +549,27 @@ pub(super) fn load_player_arms(
             .ok_or_else(|| format!("{model} has no skeleton binding"))?;
         let skeleton = shadow_preparation::read_skeleton(catalog, skeleton_name)?;
         if skeleton.inverse_bind.len() < skeleton.rest.len() {
-            return Err(format!("{skeleton_name} has fewer inverse binds than joints"));
+            return Err(format!(
+                "{skeleton_name} has fewer inverse binds than joints"
+            ));
         }
         let material_overrides = if model == declarations.body_model {
             view.visible_legs_materials.as_slice()
-        } else { &[] };
-        arms.push(prepare_model(model, info, skeleton, model_depth_hack, parameter,
-            material_overrides, false, resolver, meshes, commands)?);
+        } else {
+            &[]
+        };
+        arms.push(prepare_model(
+            model,
+            info,
+            skeleton,
+            model_depth_hack,
+            parameter,
+            material_overrides,
+            false,
+            resolver,
+            meshes,
+            commands,
+        )?);
     }
     let capture_geometry = std::env::var("DH2_DEBUG_HAND_GEOMETRY").as_deref() == Ok("1");
     crate::platform::client_diagnostics::record(&format!(
@@ -402,10 +578,15 @@ pub(super) fn load_player_arms(
     Ok(PlayerArms {
         player_depth_hack: view.depth_hack,
         body_models: arms.len(),
+        attachments: Default::default(),
         arms,
         retiring_equipment: Vec::new(),
         debug_rest: std::env::var("DH2_DEBUG_REST_ARMS").ok().and_then(|value| {
-            if value == "1" { Some(0.5) } else { value.parse().ok() }
+            if value == "1" {
+                Some(0.5)
+            } else {
+                value.parse().ok()
+            }
         }),
         action_active: [false; 3],
         action_history: [None; 3],
@@ -418,14 +599,21 @@ pub(super) fn load_player_arms(
 /// supplies its actual rig/model acquisitions; it never creates another cache.
 #[allow(clippy::too_many_arguments)]
 fn prepare_model(
-    model: String, info: std::sync::Arc<bmd6::ModelInfo>,
+    model: String,
+    info: std::sync::Arc<bmd6::ModelInfo>,
     skeleton: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
-    model_depth_hack: f32, parameter: Option<f32>, material_overrides: &[String], require_materials: bool,
-    resolver: &mut MaterialResolver, meshes: &mut dyn AssetWrite<Mesh>,
+    model_depth_hack: f32,
+    parameter: Option<f32>,
+    material_overrides: &[String],
+    require_materials: bool,
+    resolver: &mut MaterialResolver,
+    meshes: &mut dyn AssetWrite<Mesh>,
     commands: &mut super::setup_commands::SetupCommands,
 ) -> Result<ArmModel, String> {
     if skeleton.inverse_bind.len() < skeleton.rest.len() || skeleton.rest.is_empty() {
-        return Err(format!("{model} has an invalid skeleton/inverse-bind pairing"));
+        return Err(format!(
+            "{model} has an invalid skeleton/inverse-bind pairing"
+        ));
     }
     let rest = edge_skeleton::pose_matrices(
         &skeleton.rest,
@@ -436,10 +624,13 @@ fn prepare_model(
             scale: [1.0; 3],
         },
     )?;
-    let palette =
-        edge_skeleton::skin_palette(&rest, &skeleton.inverse_bind[..rest.len()])?;
+    let palette = edge_skeleton::skin_palette(&rest, &skeleton.inverse_bind[..rest.len()])?;
     if palette.len() > bevy::pbr::MAX_JOINTS {
-        return Err(format!("{model} has {} joints, beyond a GPU skin's {}", palette.len(), bevy::pbr::MAX_JOINTS));
+        return Err(format!(
+            "{model} has {} joints, beyond a GPU skin's {}",
+            palette.len(),
+            bevy::pbr::MAX_JOINTS
+        ));
     }
     let mut prepared = Vec::new();
     for (index, surface) in info.surfaces.iter().enumerate() {
@@ -449,10 +640,16 @@ fn prepare_model(
         {
             continue;
         }
-        let material_path = material_overrides.get(index).map(String::as_str)
+        let material_path = material_overrides
+            .get(index)
+            .map(String::as_str)
             .unwrap_or(&surface.material_path);
         let Some(resolved) = resolver.get(material_path, 0, [0.0; 3]) else {
-            if require_materials { return Err(format!("equipment material unresolved: {model} {material_path}")); }
+            if require_materials {
+                return Err(format!(
+                    "equipment material unresolved: {model} {material_path}"
+                ));
+            }
             eprintln!("Arm material unresolved {model} {material_path}");
             continue;
         };
@@ -465,8 +662,13 @@ fn prepare_model(
         // The surface's vertex declaration fixes its weights per vertex
         // (decl 9: four, else eight), the stream the skinning reads.
         let influences = surface.skin_influences;
-        let mut mesh =
-            source_mesh_from_uvs(&surface.positions, MeshUvs::Packed(&surface.uvs), &surface.indices, &surface.packed_channels, false);
+        let mut mesh = source_mesh_from_uvs(
+            &surface.positions,
+            MeshUvs::Packed(&surface.uvs),
+            &surface.indices,
+            &surface.packed_channels,
+            false,
+        );
         bind_pose_skin(&mut mesh, surface, influences, palette.len())
             .map_err(|error| format!("{model} surface {index}: {error}"))?;
         if model_depth_hack > 0.0 {
@@ -480,20 +682,38 @@ fn prepare_model(
         }
         // Skinned on the GPU: the vertices never change after upload.
         mesh.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
-        prepared.push((index, mesh, resolved.probe_index, resolved.handle.clone(), handle.clone()));
+        prepared.push((
+            index,
+            mesh,
+            resolved.probe_index,
+            resolved.handle.clone(),
+            handle.clone(),
+        ));
     }
     // Validate every surface before reserving/spawning anything. A failed
     // equipment admission cannot leave a half-created render entity.
     let mut surfaces = Vec::with_capacity(prepared.len());
     for (index, mesh, probe_index, material, handle) in prepared {
         let mesh = meshes.add(mesh);
-        let entity = commands.spawn((
-            Mesh3d(mesh.clone()), MeshMaterial3d(handle),
-            Transform::IDENTITY, GlobalTransform::IDENTITY, Visibility::Hidden,
-            MeshTag(probe_index), bevy::camera::visibility::NoFrustumCulling,
-            bevy::light::NotShadowCaster,
-        )).id();
-        surfaces.push(ArmSurface { entity, _mesh: mesh, source_index: index, probe_index, material });
+        let entity = commands
+            .spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(handle),
+                Transform::IDENTITY,
+                GlobalTransform::IDENTITY,
+                Visibility::Hidden,
+                MeshTag(probe_index),
+                bevy::camera::visibility::NoFrustumCulling,
+                bevy::light::NotShadowCaster,
+            ))
+            .id();
+        surfaces.push(ArmSurface {
+            entity,
+            _mesh: mesh,
+            source_index: index,
+            probe_index,
+            material,
+        });
     }
     Ok(ArmModel {
         model,
@@ -506,7 +726,11 @@ fn prepare_model(
         lighting: Default::default(),
         shown: false,
         world_bounds: None,
-        depth_hack: if model_depth_hack > 0.0 { parameter.unwrap_or(1.0) } else { 1.0 },
+        depth_hack: if model_depth_hack > 0.0 {
+            parameter.unwrap_or(1.0)
+        } else {
+            1.0
+        },
     })
 }
 
@@ -518,7 +742,8 @@ fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<
     let forward = direction(*camera.forward());
     let up = direction(*camera.up());
     let left = -direction(*camera.right());
-    let origin = Vec3::from_array(view_to_game(camera.translation)) + forward * distance - up * 0.15;
+    let origin =
+        Vec3::from_array(view_to_game(camera.translation)) + forward * distance - up * 0.15;
     let rotation = Quat::from_mat3(&Mat3::from_cols(left, up, forward));
     let root = edge_skeleton::JointRestPose {
         rotation: rotation.to_array(),
@@ -531,7 +756,11 @@ fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<
             let joints =
                 edge_skeleton::pose_matrices(&arm.skeleton.rest, &arm.skeleton.hierarchy, &root)
                     .ok()?;
-            Some(ArmRender { model: arm.model.clone(), joints, visible: true })
+            Some(ArmRender {
+                model: arm.model.clone(),
+                joints,
+                visible: true,
+            })
         })
         .collect()
 }
@@ -552,7 +781,10 @@ fn bind_pose_skin(
         return Err("skin input must have four or eight weights".into());
     }
     let count = surface.positions.len();
-    if surface.skin_indices.len() != count || surface.skin_weights.len() != count || surface.packed_channels.len() != count {
+    if surface.skin_indices.len() != count
+        || surface.skin_weights.len() != count
+        || surface.packed_channels.len() != count
+    {
         return Err("skin vertex streams have different lengths".into());
     }
     let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
@@ -574,18 +806,26 @@ fn bind_pose_skin(
         let mut index = [0u32; 8];
         let mut weight = [0.0f32; 8];
         for k in 0..usize::from(influences) {
-            let joint = surface.matrix_offset
+            let joint = surface
+                .matrix_offset
                 .checked_add(u32::from(surface.skin_indices[i][k]))
                 .ok_or("skin joint index overflow")?;
             let w = surface.skin_weights[i][k];
             if (joint as usize) < joints {
                 index[k] = joint;
             } else if w != 0 {
-                return Err(format!("skin joint {joint} exceeds {joints} actual palette entries"));
+                return Err(format!(
+                    "skin joint {joint} exceeds {joints} actual palette entries"
+                ));
             }
             weight[k] = f32::from(w) / 255.0;
         }
-        first.push([index[0] as u16, index[1] as u16, index[2] as u16, index[3] as u16]);
+        first.push([
+            index[0] as u16,
+            index[1] as u16,
+            index[2] as u16,
+            index[3] as u16,
+        ]);
         first_weights.push([weight[0], weight[1], weight[2], weight[3]]);
         second.push([index[4], index[5], index[6], index[7]]);
         second_weights.push([weight[4], weight[5], weight[6], weight[7]]);
@@ -594,9 +834,15 @@ fn bind_pose_skin(
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     mesh.insert_attribute(super::materials::DH2_BITANGENT, bitangents);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, bevy::mesh::VertexAttributeValues::Uint16x4(first));
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_JOINT_INDEX,
+        bevy::mesh::VertexAttributeValues::Uint16x4(first),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, first_weights);
-    mesh.insert_attribute(super::materials::DH2_JOINT_INDEX_B, bevy::mesh::VertexAttributeValues::Uint32x4(second));
+    mesh.insert_attribute(
+        super::materials::DH2_JOINT_INDEX_B,
+        bevy::mesh::VertexAttributeValues::Uint32x4(second),
+    );
     mesh.insert_attribute(super::materials::DH2_JOINT_WEIGHT_B, second_weights);
     Ok(())
 }
@@ -613,6 +859,55 @@ fn joint_transform(matrix: &[[f32; 4]; 3]) -> GlobalTransform {
     })
 }
 
+/// One palette/joint publication path for the body, arms, equipment and
+/// authored animated equipment children. The caller supplies the actual
+/// entity tree's complete world joint pose, never a rigid substitute.
+fn publish_model_skin(
+    arm: &mut ArmModel,
+    render: &ArmRender,
+    commands: &mut Commands,
+    inverse_bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
+    joint_transforms: &mut Query<&mut GlobalTransform, Without<Mesh3d>>,
+) -> Result<Vec<[[f32; 4]; 3]>, String> {
+    let count = arm.skeleton.rest.len();
+    if render.joints.len() != count {
+        return Err(format!(
+            "{} pose has {} joints, skeleton {count}",
+            arm.model,
+            render.joints.len()
+        ));
+    }
+    let palette = edge_skeleton::skin_palette(&render.joints, &arm.skeleton.inverse_bind[..count])?;
+    if arm.joints.is_empty() {
+        // Bevy's joint matrices are joint transform x inverse bind;
+        // the palette already includes the inverse bind.
+        arm.joints = palette
+            .iter()
+            .map(|matrix| commands.spawn(joint_transform(matrix)).id())
+            .collect();
+        let identity =
+            inverse_bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(
+                vec![Mat4::IDENTITY; palette.len()],
+            ));
+        for part in &arm.surfaces {
+            commands
+                .entity(part.entity)
+                .insert(bevy::mesh::skinning::SkinnedMesh {
+                    inverse_bindposes: identity.clone(),
+                    joints: arm.joints.clone(),
+                });
+        }
+        arm.inverse_bindposes = Some(identity);
+    } else {
+        for (&joint, matrix) in arm.joints.iter().zip(&palette) {
+            if let Ok(mut transform) = joint_transforms.get_mut(joint) {
+                *transform = joint_transform(matrix);
+            }
+        }
+    }
+    Ok(palette)
+}
+
 /// Skin and show the arms `Player::arms()` names (left, then right); hide
 /// arm models it omits or marks invisible.
 pub(super) fn update_player_arms(
@@ -624,6 +919,10 @@ pub(super) fn update_player_arms(
     mut commands: Commands,
     mut inverse_bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     mut joint_transforms: Query<&mut GlobalTransform, Without<Mesh3d>>,
+    mut surface_transforms: Query<
+        (&mut Transform, &mut GlobalTransform),
+        (With<Mesh3d>, Without<Camera3d>),
+    >,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     mut visibility: Query<&mut Visibility>,
@@ -645,11 +944,21 @@ pub(super) fn update_player_arms(
             None => Cow::Borrowed(&[]),
         }
     };
-    let probes = scene.as_ref().and_then(|scene| scene.environment_probes.as_deref());
+    let probes = scene
+        .as_ref()
+        .and_then(|scene| scene.environment_probes.as_deref());
     let player = state.as_deref().and_then(|state| state.player.as_ref());
     let actions = [
-        player.is_some_and(|player| player.machine.is_active(crate::gameplay::player::states::StateId::MANTLE)),
-        player.is_some_and(|player| player.machine.is_active(crate::gameplay::player::states::StateId::CATFALL)),
+        player.is_some_and(|player| {
+            player
+                .machine
+                .is_active(crate::gameplay::player::states::StateId::MANTLE)
+        }),
+        player.is_some_and(|player| {
+            player
+                .machine
+                .is_active(crate::gameplay::player::states::StateId::CATFALL)
+        }),
         player.is_some_and(|player| player.is_swimming()),
     ];
     let record_swim_detail = arms.capture_geometry;
@@ -663,25 +972,39 @@ pub(super) fn update_player_arms(
                 history.frames = history.frames.saturating_add(1);
                 if index == 2 {
                     if let Some(player) = player {
-                        if player.is_underwater() { history.swim_underwater_frames = history.swim_underwater_frames.saturating_add(1); }
-                        else { history.swim_surface_frames = history.swim_surface_frames.saturating_add(1); }
-                        if record_swim_detail {
-                        for (side, arm) in player.body.arms.iter().take(2).enumerate() {
-                            let snapshot = arm.loco.swimming_snapshot();
-                            if history.swim_first[side].is_none() { history.swim_first[side] = Some(snapshot); }
-                            if player.is_underwater() && history.swim_first_underwater[side].is_none() {
-                                history.swim_first_underwater[side] = Some(snapshot);
-                            }
-                            if player.body.speed > 0.001 && history.swim_first_moving[side].is_none() {
-                                history.swim_first_moving[side] = Some(snapshot);
-                            }
-                            if let Some(previous) = history.swim_last[side] {
-                                history.swim_phase_advanced[side] |= previous.progress != snapshot.progress;
-                                history.swim_idle_advanced[side] |= previous.idle == snapshot.idle
-                                    && snapshot.idle.is_some() && previous.idle_elapsed != snapshot.idle_elapsed;
-                            }
-                            history.swim_last[side] = Some(snapshot);
+                        if player.is_underwater() {
+                            history.swim_underwater_frames =
+                                history.swim_underwater_frames.saturating_add(1);
+                        } else {
+                            history.swim_surface_frames =
+                                history.swim_surface_frames.saturating_add(1);
                         }
+                        if record_swim_detail {
+                            for (side, arm) in player.body.arms.iter().take(2).enumerate() {
+                                let snapshot = arm.loco.swimming_snapshot();
+                                if history.swim_first[side].is_none() {
+                                    history.swim_first[side] = Some(snapshot);
+                                }
+                                if player.is_underwater()
+                                    && history.swim_first_underwater[side].is_none()
+                                {
+                                    history.swim_first_underwater[side] = Some(snapshot);
+                                }
+                                if player.body.speed > 0.001
+                                    && history.swim_first_moving[side].is_none()
+                                {
+                                    history.swim_first_moving[side] = Some(snapshot);
+                                }
+                                if let Some(previous) = history.swim_last[side] {
+                                    history.swim_phase_advanced[side] |=
+                                        previous.progress != snapshot.progress;
+                                    history.swim_idle_advanced[side] |= previous.idle
+                                        == snapshot.idle
+                                        && snapshot.idle.is_some()
+                                        && previous.idle_elapsed != snapshot.idle_elapsed;
+                                }
+                                history.swim_last[side] = Some(snapshot);
+                            }
                         }
                     }
                 }
@@ -691,47 +1014,45 @@ pub(super) fn update_player_arms(
     }
     let capture_geometry = arms.capture_geometry;
     let clip_from_world = if capture_geometry && actions.iter().any(|active| *active) {
-        cameras.single().ok().map(|(camera, projection)|
-            projection.get_clip_from_view() * camera.to_matrix().inverse())
-    } else { None };
-    let mut error = None;
-    let PlayerArms { arms: models, action_history, action_capture, .. } = &mut *arms;
+        cameras.single().ok().map(|(camera, projection)| {
+            projection.get_clip_from_view() * camera.to_matrix().inverse()
+        })
+    } else {
+        None
+    };
+    let mut error = arms
+        .attachments
+        .update(
+            &renders,
+            &mut visibility,
+            &mut surface_transforms,
+            probes,
+            probe_buffer.as_deref_mut(),
+            &mut patches,
+            &mut buffers,
+        )
+        .err();
+    let PlayerArms {
+        arms: models,
+        action_history,
+        action_capture,
+        ..
+    } = &mut *arms;
     for (model_index, arm) in models.iter_mut().enumerate() {
         let render = renders
             .iter()
             .find(|render| render.model == arm.model && render.visible);
         let skinned = render.map(|render| -> Result<(), String> {
-            let count = arm.skeleton.rest.len();
-            if render.joints.len() != count {
-                return Err(format!(
-                    "{} pose has {} joints, skeleton {count}",
-                    arm.model,
-                    render.joints.len()
-                ));
-            }
-            let palette =
-                edge_skeleton::skin_palette(&render.joints, &arm.skeleton.inverse_bind[..count])?;
+            let palette = publish_model_skin(
+                arm,
+                render,
+                &mut commands,
+                &mut inverse_bindposes,
+                &mut joint_transforms,
+            )?;
             for (index, active) in actions.into_iter().enumerate() {
-                if active && capture_geometry { action_capture[index].push(model_index, clip_from_world, &palette); }
-            }
-            if arm.joints.is_empty() {
-                // Bevy's joint matrices are joint transform x inverse bind;
-                // the palette already includes the inverse bind.
-                arm.joints = palette.iter().map(|matrix| commands.spawn(joint_transform(matrix)).id()).collect();
-                let identity = inverse_bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(
-                    vec![Mat4::IDENTITY; palette.len()]));
-                for part in &arm.surfaces {
-                    commands.entity(part.entity).insert(bevy::mesh::skinning::SkinnedMesh {
-                        inverse_bindposes: identity.clone(),
-                        joints: arm.joints.clone(),
-                    });
-                }
-                arm.inverse_bindposes = Some(identity);
-            } else {
-                for (&joint, matrix) in arm.joints.iter().zip(&palette) {
-                    if let Ok(mut transform) = joint_transforms.get_mut(joint) {
-                        *transform = joint_transform(matrix);
-                    }
+                if active && capture_geometry {
+                    action_capture[index].push(model_index, clip_from_world, &palette);
                 }
             }
             // Model vtable+88: the probe position is the centre of the
@@ -745,8 +1066,15 @@ pub(super) fn update_player_arms(
                 [1.0; 3],
             );
             arm.world_bounds = Some(bounds);
-            publish_model_lighting(bounds, &mut arm.lighting, &arm.surfaces, probes,
-                probe_buffer.as_deref_mut(), &mut patches, &mut buffers);
+            publish_model_lighting(
+                bounds,
+                &mut arm.lighting,
+                &arm.surfaces,
+                probes,
+                probe_buffer.as_deref_mut(),
+                &mut patches,
+                &mut buffers,
+            );
             Ok(())
         });
         if !matches!(skinned, Some(Ok(()))) {
@@ -763,7 +1091,9 @@ pub(super) fn update_player_arms(
         let skin_error = render.is_some() && !show;
         if trace {
             let player = state.as_deref().and_then(|state| state.player.as_ref());
-            let states = player.map(|player| player.machine.active_states()).unwrap_or_default();
+            let states = player
+                .map(|player| player.machine.active_states())
+                .unwrap_or_default();
             let animated = states.iter().any(|id| matches!(id.0, 4 | 7 | 8));
             if show != arm.shown || (animated && *trace_frame % 12 == 0) {
                 let published = renders.iter().find(|render| render.model == arm.model);
@@ -782,31 +1112,57 @@ pub(super) fn update_player_arms(
         if show != arm.shown {
             for part in &arm.surfaces {
                 if let Ok(mut visibility) = visibility.get_mut(part.entity) {
-                    *visibility = if show { Visibility::Visible } else { Visibility::Hidden };
+                    *visibility = if show {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
                 }
             }
             arm.shown = show;
         }
         if actions.iter().any(|active| *active) {
-            let visible_surfaces = arm.surfaces.iter().filter(|surface|
-                visibility.get(surface.entity).is_ok_and(|value| *value == Visibility::Visible))
+            let visible_surfaces = arm
+                .surfaces
+                .iter()
+                .filter(|surface| {
+                    visibility
+                        .get(surface.entity)
+                        .is_ok_and(|value| *value == Visibility::Visible)
+                })
                 .count() as u32;
             for (index, active) in actions.into_iter().enumerate() {
-                if !active { continue; }
-                let Some(history) = action_history[index].as_mut()
-                    .and_then(|history| history.models.get_mut(model_index)) else { continue };
+                if !active {
+                    continue;
+                }
+                let Some(history) = action_history[index]
+                    .as_mut()
+                    .and_then(|history| history.models.get_mut(model_index))
+                else {
+                    continue;
+                };
                 history.published_frames = history.published_frames.saturating_add(u32::from(
-                    renders.iter().any(|render| render.model == arm.model)));
-                history.requested_frames = history.requested_frames.saturating_add(u32::from(render.is_some()));
+                    renders.iter().any(|render| render.model == arm.model),
+                ));
+                history.requested_frames = history
+                    .requested_frames
+                    .saturating_add(u32::from(render.is_some()));
                 history.skinned_frames = history.skinned_frames.saturating_add(u32::from(show));
-                history.skin_error_frames = history.skin_error_frames.saturating_add(u32::from(skin_error));
-                history.visible_surface_frames = history.visible_surface_frames.saturating_add(u32::from(visible_surfaces != 0));
-                history.maximum_visible_surfaces = history.maximum_visible_surfaces.max(visible_surfaces);
+                history.skin_error_frames = history
+                    .skin_error_frames
+                    .saturating_add(u32::from(skin_error));
+                history.visible_surface_frames = history
+                    .visible_surface_frames
+                    .saturating_add(u32::from(visible_surfaces != 0));
+                history.maximum_visible_surfaces =
+                    history.maximum_visible_surfaces.max(visible_surfaces);
                 if index == 2 && visible_surfaces != 0 {
                     if player.is_some_and(|player| player.is_underwater()) {
-                        history.swim_underwater_visible_frames = history.swim_underwater_visible_frames.saturating_add(1);
+                        history.swim_underwater_visible_frames =
+                            history.swim_underwater_visible_frames.saturating_add(1);
                     } else {
-                        history.swim_surface_visible_frames = history.swim_surface_visible_frames.saturating_add(1);
+                        history.swim_surface_visible_frames =
+                            history.swim_surface_visible_frames.saturating_add(1);
                     }
                 }
             }

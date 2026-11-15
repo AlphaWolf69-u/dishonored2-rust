@@ -10424,6 +10424,8 @@ measurement or output-equivalence claim; final combined compilation pending.
 
 The equipment owner reserves once per owned power and releases its reservation at actual quantity zero. Unequipping does not retire owned definitions. Already-started effects independently retain their source leases through real particle/sound tails after a reservation releases; canceled acquisitions use the existing retirement worker. Blink exposes the exact three authored helper FX and screen FX paths through its prepared typed projection. Prediction: casts of an already-owned, prepared power find the canonical retained dependency sources instead of reopening archives. No latency, memory or performance measurement is claimed; no compilation, tests or launches were run for this change.
 
+`host`: `EffectRequests::start_entity_once` uses that same acquisition/publication and FX entity/instance owner for naturally completing calls such as Far Reach's leave-wall FX (`14083b4a0`). Its lifetime acknowledgement is set only when the actual instance's particle/sound/decal/sub-effect chains finish and `WorldParticleState::retire` completes family clear and pool release (existing `1404b1b70` Finished/component-handle disposal path). The canonical request owner then releases that exact Wanted generation; render snapshots and source/tail leases retain their ordinary independent lifetimes. No estimated duration, immediate Stop, duplicate FX factory or substitute graph target participates. Persistent dynamic helpers retain their dormant/restart behavior. A looping authored FX remains alive until its actual Stop, rather than being assigned an invented one-shot duration.
+
 ### Prepared host entity reservation lifetime (2026-11-15)
 
 Prediction before implementation: only canceled, unpublished Bevy entity IDs
@@ -10584,3 +10586,54 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
 - Validation: executable decompilation, reflection, constructor/vtable review
   and source diff check only; no tests, builds, launches or measured timings.
   Parent owns the combined integration build.
+
+Equipment owned-entity lifecycle correction (2026-11-15): this supersedes
+above references to selected-only heavy acquisition or retirement on ordinary
+unequip. Native6170b0 (decompiled chunk253) calls619380 for each actual
+inventory quantity transition from zero to positive, before selection/autoequip.
+619380 spawns/registers that item's authored equipment entity and retains its
+handle. 619640/619740 destroy through87cd60 only after quantity becomes zero;
+ordinary owned unequip deactivates through7e7c00 and retains the actor. The
+host therefore warms only actual owned admitted declarations, including their
+real hand/action banks, model, default tree and material/image bindings during
+loading, and retains these through holster/cancel. It never enumerates the
+unowned arsenal. Metadata exposes actual inherited entity class and optional
+renderModelInfo independently of heavy preparation; nonvisual power equipment
+still receives its actual managed entity without a fabricated model or rig.
+
+Ranged Start639f00 calls61ac10, selects the first authored ammunition entry,
+and invokes virtual+100. Read-only installed PE vtable inspection confirms
+gun141b53f58+100=44dd00 and crossbow141b9cbf8+100=62b240. These spawn exactly
+the default selected ammunition's m_attachmentDef, register it before setting
+runtime bit0x10, then bind the actual authored projectile_attachment_tag.
+Both vtables+148 point to63a2b0, the shared empty-activation reload reached by
+63a090. Child visibility follows the source callbacks, not a guessed continuous
+magazine comparison. Child IO, material/image publication and cancellation use
+the same source/worker/renderer owners; no first-draw child load is introduced.
+
+The owned adapter registers real managed generations before inventory admission,
+sets each prepared tree's managed_entity, and publishes native callbacks in a
+narrow post-Player::frame hook before firing/power execution. Declared audio
+components use that stable entity, never a hand alias that migrates on switch.
+Root and rigid child rendering share ordinary material/probe lighting/depth
+handling; the skin palette/joint publisher is factored for authored animated
+children rather than reproduced. Source binding is the actual equipment entity
+frame before its rig root animation. Unknown graph operations and missing
+nonempty authored tags remain explicit preparation failures.
+
+Depletion/level Stop cancels and drains the existing shared worker, withdraws
+children before parent draws, and passes each exact RetiredModel receipt to
+the managed-identity owner. CPU descriptor/material leases remain with the
+retired payload through the renderer submitted-work acknowledgement; declared
+audio waits on the existing audio consumer acknowledgement as well. Failed
+Stop callbacks retain their identity/receipt cursor for retry. Player generation
+retirement follows equipment_identity shutdown. Loading readiness includes
+actual owned source/material/image publication and excludes queued native
+animation, which resumes on continue with unchanged source flags.
+
+Prediction: resource residency now follows the actual owned entity set rather
+than the selected hand; still-owned switches reuse admitted resources. No byte,
+frame-time, upload-cost or latency measurements were made, and no performance
+improvement is asserted. No compilation, tests, visible launch or visual
+validation was performed under the current user restrictions. Integration and
+runtime output equivalence remain pending the parent's authorized batch.

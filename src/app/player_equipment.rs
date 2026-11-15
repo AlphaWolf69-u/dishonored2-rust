@@ -19,7 +19,7 @@ struct Lease {
 }
 
 #[derive(Clone)]
-pub(super) struct RetiredModel(Arc<Lease>);
+pub(in crate::app) struct RetiredModel(Arc<Lease>);
 
 impl RetiredModel {
     pub(super) fn new(model: impl Send + Sync + 'static) -> Self {
@@ -28,7 +28,7 @@ impl RetiredModel {
             state: AtomicU8::new(0),
         }))
     }
-    pub(super) fn complete(&self) -> bool {
+    pub(in crate::app) fn complete(&self) -> bool {
         self.0.state.load(Ordering::Acquire) == 2
     }
 }

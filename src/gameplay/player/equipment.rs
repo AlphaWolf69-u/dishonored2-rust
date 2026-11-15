@@ -26,7 +26,15 @@ pub enum EquipmentBinding {
     Arm(usize),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AttachmentBinding {
+    pub owner: EquipmentBinding,
+    pub joint: usize,
+    pub offset: (Vec3, Mat3),
+}
+
 pub struct EquipmentTree {
+    pub managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     pub rig: Arc<Rig>,
     pub model: String,
@@ -34,6 +42,8 @@ pub struct EquipmentTree {
     pub animation_aliases: std::collections::HashMap<String, usize>,
     pub input: EquipmentInput,
     pub binding: EquipmentBinding,
+    pub equipped_attachment: AttachmentBinding,
+    pub unequipped_attachment: Option<AttachmentBinding>,
     /// Attachment joint in the parent arm rig, resolved from its actual tag.
     pub bind_joint: usize,
     pub bind: (Vec3, Mat3),
@@ -41,6 +51,21 @@ pub struct EquipmentTree {
 }
 
 impl EquipmentTree {
+    /// 61aed0 binds to the actual arm tag; 61b010 rebinds the retained owned
+    /// entity to the actual body tag. These are entity frames before MD6 root
+    /// offsets, and remain available for holstered audio/effect ownership.
+    pub fn bind_equipped(&mut self, equipped: bool) -> Result<(), String> {
+        let attachment = if equipped {
+            Some(self.equipped_attachment)
+        } else {
+            self.unequipped_attachment
+        }
+        .ok_or("equipment has no resolved unequipped attachment")?;
+        self.binding = attachment.owner;
+        self.bind_joint = attachment.joint;
+        self.bind = attachment.offset;
+        Ok(())
+    }
     /// The same animBasic command executor as the body and arms (1406e4af0).
     /// The caller provides the declaration's initial/default command; there
     /// is deliberately no implicit idle alias or playback mode here.
