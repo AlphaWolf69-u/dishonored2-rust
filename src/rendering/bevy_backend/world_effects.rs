@@ -78,6 +78,7 @@ struct FrameBinding {
 pub struct WorldEffectFrames {
     entities: Arc<HashMap<String, EntityFrame>>,
     published: HashMap<String, ReferenceFrame>,
+    ephemeral: HashMap<String, ReferenceFrame>,
     pub clock: Option<WorldFxClock>,
     player: Option<(ReferenceFrame, Arc<HashMap<String, ReferenceFrame>>)>,
 }
@@ -89,6 +90,7 @@ impl Clone for WorldEffectFrames {
         let copy = Self {
             entities: self.entities.clone(),
             published: self.published.clone(),
+            ephemeral: self.ephemeral.clone(),
             clock: self.clock,
             player: self.player.clone(),
         };
@@ -158,6 +160,7 @@ impl WorldEffectFrames {
         Ok(Self {
             entities: Arc::new(entities),
             published: HashMap::new(),
+            ephemeral: HashMap::new(),
             clock: None,
             player: None,
         })
@@ -165,6 +168,20 @@ impl WorldEffectFrames {
 
     pub fn publish_player(&mut self, frame: Option<(ReferenceFrame, HashMap<String, ReferenceFrame>)>) {
         self.player = frame.map(|(root,tags)|(root,Arc::new(tags)));
+    }
+
+    /// Component-owned temporary entities publish their actual live poses.
+    /// Reuse names and storage while active; the component's retirement
+    /// removes its publication without altering installed entity frames.
+    pub fn publish_ephemeral<'a>(&mut self, frames: impl Clone + Iterator<Item = (&'a str, ReferenceFrame)>) {
+        self.ephemeral.retain(|name, pose| {
+            if let Some((_, frame)) = frames.clone().find(|(candidate, _)| *candidate == name.as_str()) {
+                *pose = frame; true
+            } else { false }
+        });
+        for (name, frame) in frames {
+            if !self.ephemeral.contains_key(name) { self.ephemeral.insert(name.to_owned(), frame); }
+        }
     }
 
     pub fn resolve(&self, entity: &crate::gameplay::event_graph::EntityReference, tag: &str) -> Result<Option<ReferenceFrame>, String> {
@@ -204,11 +221,13 @@ impl WorldEffectFrames {
     /// traversal. Bound entities still use the one existing resolver below.
     pub fn published_frame(&self, entity:&str)->Result<Option<ReferenceFrame>,String>{
         if let Some(frame)=self.published.get(entity){return Ok(Some(*frame));}
+        if let Some(frame)=self.ephemeral.get(entity){return Ok(Some(*frame));}
         let Some(entry)=self.entities.get(entity) else{return Ok(None);};
         if entry.parent.is_none(){return Ok(Some(entry.spawn));}
         self.frame(entity)
     }
     pub fn frame(&self, entity: &str) -> Result<Option<ReferenceFrame>, String> {
+        if !self.entities.contains_key(entity) { return Ok(self.ephemeral.get(entity).copied()); }
         let mut current = entity;
         let mut visited = HashSet::new();
         let mut chain = Vec::new();

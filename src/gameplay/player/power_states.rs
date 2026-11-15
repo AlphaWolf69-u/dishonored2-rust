@@ -275,6 +275,7 @@ impl Player {
                 else if self.powers.input_analog { event.value[0] } else { 1.0 };
         }
     }
+    pub fn clear_power_inputs(&mut self) { self.powers.input_pressure = 0.0; self.powers.input_analog = false; }
     pub fn power_inputs(&self) -> PowerInputs {
         let held = self.controller.down(self.powers.action_button);
         PowerInputs { held, pressure: if self.powers.input_analog { self.powers.input_pressure } else if held { 1.0 } else { 0.0 }, analog: self.powers.input_analog }
