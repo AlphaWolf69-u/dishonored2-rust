@@ -36,11 +36,26 @@ pub struct DynamicEffect {
     pub tag: String,
     pub local: ReferenceFrame,
     pub attached: bool,
+    /// Detached explicit-world starts retain their supplied pose through
+    /// asynchronous preparation, without resolving a moving parent later.
+    pub initial_world: Option<ReferenceFrame>,
+    pub explicit_target: Option<crate::gameplay::particles::beam::BeamTarget>,
     /// Keeps sub-effect dependencies alive through stopped particle tails.
     pub sources: Arc<WorldFxSources>,
     /// The component's acknowledgement remains live through real render,
     /// particle and sound tails; source caches never retain this lease.
-    pub retirement: Arc<()>,
+    pub retirement: Arc<DynamicEffectLifetime>,
+}
+
+/// A one-shot acknowledges completion only after the real instance releases
+/// all particle, sound, decal and sub-effect chains. Persistent actors keep
+/// their existing dormant/restart semantics.
+pub struct DynamicEffectLifetime {
+    pub once: bool,
+    pub completed: std::sync::atomic::AtomicBool,
+}
+impl DynamicEffectLifetime {
+    pub fn new(once: bool) -> Self { Self { once, completed: std::sync::atomic::AtomicBool::new(false) } }
 }
 
 /// Request-scoped GPU material preparation. A completion acknowledges only

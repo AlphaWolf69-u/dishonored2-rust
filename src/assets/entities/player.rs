@@ -22,6 +22,7 @@ pub struct PlayerDeclarations {
     pub mantle_sensor: Vec<(String, Value)>,
     pub blink_mantle_sensor: Vec<(String, Value)>,
     pub grapple_sensor: Vec<(String, Value)>,
+    pub grapple_to_mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
     /// Shared power-system and mark inputs, resolved with the player's other
@@ -185,7 +186,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 19] = [
+const PLAYER_COMPONENTS: [&str; 20] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -198,6 +199,7 @@ const PLAYER_COMPONENTS: [&str; 19] = [
     "cpntplayersensormantle",
     "cpntplayersensorblinktomantle",
     "cpntplayersensorgrapple",
+    "cpntplayersensorgrappletomantle",
     "cpnthealthevolved",
     "cpntmana",
     "cpntadrenaline",
@@ -323,6 +325,7 @@ fn player_declarations_with_listener(
     // the actual owned power requires its own sensor before admission.
     let blink_mantle_sensor = resolved.remove("cpntplayersensorblinktomantle").unwrap_or_default();
     let grapple_sensor = resolved.remove("cpntplayersensorgrapple").unwrap_or_default();
+    let grapple_to_mantle_sensor = resolved.remove("cpntplayersensorgrappletomantle").unwrap_or_default();
     let startup = atom(&machine, "m_startupModeId").unwrap_or("PLAYER_MODE_DEFAULT").to_owned();
     let mut mode = None;
     let mut swimming_mode = None;
@@ -361,7 +364,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, blink_mantle_sensor, grapple_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

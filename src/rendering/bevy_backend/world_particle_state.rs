@@ -24,6 +24,7 @@ mod lifecycle_observation;
 pub(crate) use lifecycle_observation::OwnerSnapshot;
 
 struct FxEntity {
+    explicit_target: Option<crate::gameplay::particles::beam::BeamTarget>,
     owner: FxEntityOwner,
     parameters: FxRuntimeParameters,
     component: WorldFxComponent,
@@ -31,7 +32,7 @@ struct FxEntity {
     pose: ReferenceFrame,
     local: Option<ReferenceFrame>,
     dynamic_sources: Option<Arc<WorldFxSources>>,
-    dynamic_retirement: Option<Arc<()>>,
+    dynamic_retirement: Option<Arc<super::world_effects::DynamicEffectLifetime>>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
 }
 enum FxEntityOwner {
@@ -56,7 +57,7 @@ struct Instance {
     pose: ReferenceFrame,
     local: Option<ReferenceFrame>,
     dynamic_sources: Option<Arc<WorldFxSources>>,
-    dynamic_retirement: Option<Arc<()>>,
+    dynamic_retirement: Option<Arc<super::world_effects::DynamicEffectLifetime>>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
@@ -702,6 +703,7 @@ impl WorldParticleState {
                     local: None,
                     dynamic_sources: None,
                     dynamic_retirement: None,
+                explicit_target: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -818,6 +820,7 @@ impl WorldParticleState {
         // resource-family clear can now discard a still-owned chain.
         let instance = self.slots[usize::from(slot)].take()
             .expect("cleared FX instance remains owned until retirement");
+        let one_shot = instance.dynamic_retirement.as_ref().filter(|lifetime| lifetime.once).cloned();
         self.handles.remove(&instance.id);
         if let Some(index) = self
             .pending_starts
@@ -844,7 +847,7 @@ impl WorldParticleState {
                     }
                     if self.dynamic_retiring.remove(&instance.entity) {
                         self.dynamic_retired = self.dynamic_retired.wrapping_add(1);
-                    } else {
+                    } else if one_shot.is_none() {
                         self.entities.insert(instance.entity, entity);
                     }
                 }
@@ -852,6 +855,9 @@ impl WorldParticleState {
         }
         let mut head = slot;
         self.pool.release_head(&mut head)?;
+        if let Some(lifetime) = one_shot {
+            lifetime.completed.store(true, std::sync::atomic::Ordering::Release);
+        }
         Ok(())
     }
 
@@ -966,20 +972,26 @@ impl WorldParticleState {
             }
         }
         for entry in snapshot.0.iter() {
-            let parent = frames.resolve(&entry.target, &entry.tag)?.ok_or("dynamic FX target pose is unavailable")?;
-            let pose = crate::gameplay::reference_frame::compose(parent, entry.local);
+            let pose = if let Some(world) = entry.initial_world { world } else {
+                let parent = frames.resolve(&entry.target, &entry.tag)?.ok_or("dynamic FX target pose is unavailable")?;
+                crate::gameplay::reference_frame::compose(parent, entry.local)
+            };
+            let location = entry.initial_world.is_none().then(|| entry.target.clone());
+            let local = entry.initial_world.is_none().then_some(entry.local);
             if let Some(&(id, _)) = self.dynamic.get(&entry.owner) {
                 // 87dc10 changes an existing effect's placement without a
                 // new Start. Keep its age, source lease and active handle.
                 if let Some(entity) = self.entities.get_mut(&id) {
-                    entity.pose = pose; entity.local = Some(entry.local);
-                    entity.parameters.location = Some(entry.target.clone());
+                    entity.explicit_target = entry.explicit_target;
+                    entity.pose = pose; entity.local = local;
+                    entity.parameters.location = location.clone();
                     entity.parameters.tag.clone_from(&entry.tag);
                     entity.parameters.update_position = entry.attached;
                 }
                 for instance in self.slots.iter_mut().flatten().filter(|instance| instance.entity == id) {
-                    instance.pose = pose; instance.local = Some(entry.local);
-                    instance.parameters.location = Some(entry.target.clone());
+                    if let Some(target) = entry.explicit_target { instance.target = target; }
+                    instance.pose = pose; instance.local = local;
+                    instance.parameters.location = location.clone();
                     instance.parameters.tag.clone_from(&entry.tag);
                     instance.parameters.update_position = entry.attached;
                 }
@@ -991,15 +1003,16 @@ impl WorldParticleState {
                 owner: FxEntityOwner::Actor { name: entry.owner.clone(), active: None, remove_on_end: false },
                 parameters: FxRuntimeParameters {
                     effect: Some(entry.effect.clone()),
-                    location: Some(entry.target.clone()),
+                    location,
                     tag: entry.tag.clone(),
                     update_position: entry.attached,
                     stop_on_parent_removal: false,
                     ..Default::default()
                 },
-                component: Default::default(), suspended: false, pose, local: Some(entry.local),
+                component: Default::default(), suspended: false, pose, local,
                 dynamic_sources: Some(entry.sources.clone()),
                 dynamic_retirement: Some(entry.retirement.clone()),
+                explicit_target: entry.explicit_target,
                 motion: crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() },
             });
             self.entity_order.push(id);
@@ -1050,6 +1063,7 @@ impl WorldParticleState {
                 local: None,
                 dynamic_sources: None,
                 dynamic_retirement: None,
+                explicit_target: None,
                 motion,
             },
         );
@@ -1186,6 +1200,7 @@ impl WorldParticleState {
                     local: None,
                     dynamic_sources: None,
                     dynamic_retirement: None,
+                explicit_target: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -1675,6 +1690,7 @@ impl FxGraphWorld for GraphHost<'_> {
                 local: None,
                 dynamic_sources: None,
                 dynamic_retirement: None,
+                explicit_target: None,
                 motion: crate::gameplay::particles::spawn::SpawnVelocity {
                     center: pose.position,
                     ..Default::default()
@@ -1711,6 +1727,7 @@ impl InstanceHost<'_> {
     /// 1404b1880: the target entity's world pose, or the pose of its target
     /// tag or joint (1404b19b0); None while the target entity is absent.
     fn target_pose(&self) -> Result<Option<crate::gameplay::particles::beam::BeamTarget>, String> {
+        if let Some(target) = self.entity.explicit_target { return Ok(Some(target)); }
         let parameters = &self.entity.parameters;
         let Some(target) = parameters.target.as_ref() else { return Ok(None) };
         Ok(self.frames.resolve(target, &parameters.target_tag)?.map(|pose| {
@@ -1768,14 +1785,20 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             &self.state.decal_programs,
             &mut HashSet::new(),
         )?;
-        let pose = self
+        let pose = if parameters.location.is_none() && self.entity.dynamic_retirement.is_some() {
+            // Explicit-world dynamic starts already carry the actual source
+            // frame. No later parent movement or retirement can change it.
+            self.entity.pose
+        } else {
+            let pose = self
             .frames
             .resolve(
                 parameters.location.as_ref().ok_or("FX location absent")?,
                 &parameters.tag,
             )?
             .ok_or("FX location was removed")?;
-        let pose = self.entity.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local));
+            self.entity.local.map_or(pose, |local| crate::gameplay::reference_frame::compose(pose, local))
+        };
         let mut slot = u16::MAX;
         if !self.state.pool.acquire(&mut slot)? {
             if std::env::var_os("DH2_TRACE_WORLD_FX").is_some() {

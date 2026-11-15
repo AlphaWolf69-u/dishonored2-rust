@@ -10430,6 +10430,8 @@ The equipment owner reserves once per owned power and releases its reservation a
 
 `host`: `usable_effects::begin_retirement` explicitly closes the whole-level desired owner after gameplay producers retire and before actual FX simulation shutdown (`140199df0`/`1407c0f30` ordering). It discards queued starts, desired/reserved generations and their placement headers, cancels acquisitions through the existing retirement FIFO, and publishes an empty DynamicEffects snapshot even when ScenePublished already gates the ordinary schedule. No effect starts during close. Render entities/instances, old render snapshots and audio objects retain their real lifetime/source acknowledgements until their own shutdown completes; only then may Windblast release its actual temporary identity. The existing level-acquisition drain remains authoritative for cancelled worker completion.
 
+`ported` parameter path: `start_beam`/`update_beam` copy the actual hand origin and advancing tip from body `140774d90`/`140776490` into the canonical FX instance's independent origin (+0x38) and target position (+0x80). Constructor identity axes remain unchanged, as those functions do not overwrite them. The explicit target flows through the existing `Instance.target`/BeamTarget and particle FX publication (`140227b90`) into the existing beam system; no replacement geometry, basis stretching or fabricated endpoint entity is created. `StopEntity` retains the ordinary source and sound/particle-tail acknowledgements. Changed endpoint/origin publication updates the same instance without source reacquisition or restart. Runtime/visual parity remains unmeasured; no builds, tests or launches were run.
+
 ### Prepared host entity reservation lifetime (2026-11-15)
 
 Prediction before implementation: only canceled, unpublished Bevy entity IDs
@@ -10762,3 +10764,11 @@ projectile socket consumers. Withdrawn generations in a previous view cache are
 excluded through the canonical live hierarchy. This closes resource loading
 without waiting for a queued native draw animation. Syntax/format and diff
 review only; no compilation, tests, launches or visual verification performed.
+
+Initial automatic selection now waits for the entire current metadata admission
+batch before619760 arbitration. The inventory owner preserves its constructor's
+instant-first-frame flag and authored record order; the host passes no instant
+boolean. This supersedes earlier host assumptions that every initial selection
+uses a normal draw. Later physical scene/resource readiness remains separate
+from this exact inventory callback flag and cannot consume the first-frame flag
+for a partial asynchronous metadata prefix.

@@ -66,6 +66,7 @@ pub(super) struct Runtime {
     helper_started: [bool;3],
     screen: Option<String>,
     screen_started: bool,
+    screen_key: String,
     pending: bool,
     was_active: bool,
     time: Option<TimeLease>,
@@ -75,7 +76,17 @@ impl Runtime {
         Self { blink: Blink::new(prepared.settings), motion: prepared.motion,
             mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: Vec::new(), contacts: Vec::new(),
             helpers: prepared.helpers, helper_keys: [Arc::from("blink:top"),Arc::from("blink:bottom"),Arc::from("blink:mantle")],
-            helper_started:[false;3], screen:prepared.screen,screen_started:false,pending:false,was_active:false,time:None }
+            helper_started:[false;3], screen:prepared.screen,screen_started:false,screen_key:"blink:screen".into(),pending:false,was_active:false,time:None }
+    }
+    /// The actual owned-component admission generation identifies its FX
+    /// producer. Set once before publication; equipment reselection reuses it.
+    pub fn set_owner_key(&mut self, owner: Arc<str>) -> Result<(), String> {
+        if self.has_activity() || self.screen_started || self.helper_started.iter().any(|started| *started) {
+            return Err("cannot replace a live Blink component's FX producer identity".into());
+        }
+        self.helper_keys = [Arc::from(format!("{owner}:top")), Arc::from(format!("{owner}:bottom")), Arc::from(format!("{owner}:mantle"))];
+        self.screen_key = format!("{owner}:screen");
+        Ok(())
     }
     /// Run after the real player view exists, while UsePower is aiming.
     /// The returned target is consumed by the established FX owner; it does
@@ -108,6 +119,7 @@ impl Runtime {
         if self.mantle.is_none() { self.mantle = player.take_blink_mantle(); }
     }
     pub fn has_activity(&self) -> bool { self.pending || self.was_active || self.time.is_some() }
+    pub fn has_motion(&self) -> bool { self.pending || self.was_active }
     pub fn breakable_damage_path(&self) -> Option<&str> { self.motion.breakable_damage.as_deref() }
     /// The real state owns its previous proxy contacts. Body0 is the
     /// canonical GameCollision level-static body; placed bodies resolve their
@@ -154,7 +166,7 @@ impl Runtime {
     }
     pub fn stop_helpers(&mut self,effects:&mut EffectRequests){
         for index in 0..3 {if self.helper_started[index]{effects.stop_entity(self.helper_keys[index].clone());self.helper_started[index]=false;}}
-        if self.screen_started{effects.stop_player("blink:screen");self.screen_started=false;}
+        if self.screen_started{effects.stop_player(&self.screen_key);self.screen_started=false;}
     }
     /// Explicit87dc10 placement updates on the same canonical FX instances.
     /// The parent is the real player frame; local transforms resolve to the
@@ -174,7 +186,7 @@ impl Runtime {
             if self.helper_started[index]{effects.update_entity(self.helper_keys[index].clone(),placement);}
             else{effects.start_entity(self.helper_keys[index].clone(),path,placement);self.helper_started[index]=true;}
         }
-        if !self.screen_started{if let Some(path)=&self.screen{effects.start_player("blink:screen",path);self.screen_started=true;}}
+        if !self.screen_started{if let Some(path)=&self.screen{effects.start_player(&self.screen_key,path);self.screen_started=true;}}
     }
     pub fn visit_breakable_hits(&self,player:&Player,dt:f32,mut visit:impl FnMut(EntityId,Vec3,&str)){
         if !self.was_active{return;}

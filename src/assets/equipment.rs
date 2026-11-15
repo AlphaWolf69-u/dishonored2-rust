@@ -185,6 +185,16 @@ impl Sources {
         self.attachments.acquire(catalog, entity, cancelled)
     }
 
+    pub(crate) fn acquire_upgrade(
+        &mut self,
+        catalog: &Catalog,
+        declaration: &str,
+        cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<Arc<attachment::Upgrade>, String> {
+        self.attachments
+            .acquire_upgrade(catalog, declaration, cancelled)
+    }
+
     /// Metadata-only ownership for shortcuts/autoequip arbitration. No model,
     /// rig, tree, animation, material, texture or GPU surface is acquired.
     pub fn metadata(

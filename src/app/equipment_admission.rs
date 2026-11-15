@@ -32,6 +32,9 @@ pub(super) struct EquipmentAdmissions {
     metadata: HashMap<String, Arc<crate::assets::equipment::Metadata>>,
     stopping: HashMap<String, EntityId>,
     load_error: Option<String>,
+    pose_dirty: bool,
+    auto_admissions: bool,
+    upgrade_starts: Vec<(EntityId, Arc<Descriptor>)>,
     ammo_starts: Vec<(
         EntityId,
         Arc<Descriptor>,
@@ -235,6 +238,7 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<(), String> {
         owner.equipment.stopping.remove(identity);
         if let Some(id) = id {
             owner.equipment.ammo_starts.retain(|entry| entry.0 != id);
+            owner.equipment.upgrade_starts.retain(|entry| entry.0 != id);
         }
     }
     Ok(())
@@ -290,6 +294,7 @@ pub(in crate::app) fn shutdown(world: &mut World) -> Result<bool, String> {
     }
     if let Some(mut owner) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
         owner.equipment.ammo_starts.clear();
+        owner.equipment.upgrade_starts.clear();
         owner.equipment.selected.clear();
     }
     super::super::equipment_identity::shutdown(world)
@@ -519,6 +524,11 @@ fn retain_owned(
         .insert(identity.to_owned(), descriptor.clone());
     request(world, entity, descriptor.clone())?;
     if !existed {
+        world
+            .resource_mut::<RuntimeMaterialCoordinator>()
+            .equipment
+            .upgrade_starts
+            .push((entity, descriptor.clone()));
         if let Some(settings) = &descriptor.ranged {
             super::super::player_actions::register_ranged(
                 player,
@@ -578,7 +588,12 @@ pub(in crate::app) fn advance(world: &mut World) {
             match retain_metadata(world, &identity, metadata.clone()) {
                 Ok(_) => {
                     if actions.take_equipment_admission(&identity) {
-                        inventory.equipment_available(&identity, &metadata.equipment);
+                        if inventory.equipment_available(&identity, &metadata.equipment) {
+                            world
+                                .resource_mut::<RuntimeMaterialCoordinator>()
+                                .equipment
+                                .auto_admissions = true;
+                        }
                     }
                 }
                 Err(error) => {
@@ -590,6 +605,21 @@ pub(in crate::app) fn advance(world: &mut World) {
                     bevy::log::warn!("Equipment {identity} identity admission failed: {error}");
                 }
             }
+        }
+
+        // 619760 owns the constructor's first-frame instant flag; the host
+        // supplies no guessed flag while arbitrating actual admitted actors.
+        let arbitrate = world
+            .resource::<RuntimeMaterialCoordinator>()
+            .equipment
+            .auto_admissions
+            && !actions.metadata_admissions_pending();
+        if arbitrate {
+            inventory.arbitrate_auto_equip();
+            world
+                .resource_mut::<RuntimeMaterialCoordinator>()
+                .equipment
+                .auto_admissions = false;
         }
 
         for path in std::mem::take(&mut actions.removed_equipment) {
@@ -629,8 +659,15 @@ pub(in crate::app) fn advance(world: &mut World) {
                 actions.cancel_power_selection(&identity);
                 continue;
             }
+            let changed_pose = target.tree.is_some();
             match player.register_equipment_target(target) {
                 Ok(_) => {
+                    if changed_pose {
+                        world
+                            .resource_mut::<RuntimeMaterialCoordinator>()
+                            .equipment
+                            .pose_dirty = true;
+                    }
                     if actions.wanted(slot, &identity) {
                         if let Some(flags) = actions.request_flags(&identity) {
                             if let Err(error) =
@@ -744,6 +781,10 @@ pub(in crate::app) fn advance(world: &mut World) {
                     }
                     match player.register_equipment_target(target) {
                         Ok(_) => {
+                            world
+                                .resource_mut::<RuntimeMaterialCoordinator>()
+                                .equipment
+                                .pose_dirty = true;
                             if actions.wanted(slot, &identity) {
                                 if let Some(flags) = actions.request_flags(&identity) {
                                     match player
@@ -787,6 +828,27 @@ pub(in crate::app) fn advance(world: &mut World) {
     world.insert_resource(inventory);
     world.insert_resource(state);
     world.insert_resource(actions);
+    refresh_loading_pose(world);
+    if let Err(error) = publish_entity_frames(world) {
+        record_error(world, error);
+    }
+    let upgrades = std::mem::take(
+        &mut world
+            .resource_mut::<RuntimeMaterialCoordinator>()
+            .equipment
+            .upgrade_starts,
+    );
+    for (entity, descriptor) in upgrades {
+        let result = super::super::equipment_attachment_admission::default_upgrades(
+            world,
+            entity,
+            descriptor.clone(),
+            &descriptor.equipment.default_upgrades,
+        );
+        if let Err(error) = result {
+            record_error(world, error);
+        }
+    }
     let starts = std::mem::take(
         &mut world
             .resource_mut::<RuntimeMaterialCoordinator>()
@@ -976,4 +1038,94 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
     world.insert_resource(inventory);
     world.insert_resource(state);
     world.insert_resource(actions);
+    refresh_loading_pose(world);
+    if let Err(error) = publish_entity_frames(world) {
+        record_error(world, error);
+    }
+}
+
+fn record_error(world: &mut World, error: String) {
+    if let Some(mut owner) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
+        owner.equipment.load_error.get_or_insert(error.clone());
+    }
+    bevy::log::warn!("Equipment publication failed: {error}");
+}
+
+/// Loading pauses gameplay Think, but newly registered owned trees still need
+/// their actual body/arm binding pose before child source admission can finish.
+/// Sample only after an admitted target changed; never advance physics/time.
+fn refresh_loading_pose(world: &mut World) {
+    let dirty = world
+        .get_resource::<RuntimeMaterialCoordinator>()
+        .is_some_and(|owner| owner.equipment.pose_dirty);
+    let paused = world
+        .get_resource::<crate::gameplay::game_clock_runtime::GamePaused>()
+        .is_some_and(|paused| paused.0);
+    if !dirty || !paused {
+        return;
+    }
+    let refreshed = world
+        .get_resource_mut::<super::super::player::PlayerState>()
+        .and_then(|mut state| {
+            state.player.as_mut().map(|player| {
+                player.view();
+            })
+        })
+        .is_some();
+    if refreshed {
+        world
+            .resource_mut::<RuntimeMaterialCoordinator>()
+            .equipment
+            .pose_dirty = false;
+    }
+}
+
+/// Publish the actual equipment entity transform before its rig root offset.
+/// The spawn copies the player's entity clock flags (619380), so the shared
+/// player entity timespace supplies its component rate, including loading pause.
+fn publish_entity_frames(world: &mut World) -> Result<(), String> {
+    use crate::gameplay::{
+        entity_lifetime::LiveEntities, game_clock_runtime::ClockRuntime,
+        reference_frame::ReferenceFrame,
+    };
+    let rate = {
+        let clock = world
+            .get_resource::<ClockRuntime>()
+            .ok_or("equipment clock owner absent")?;
+        let timespace = clock.player_timespace().map_err(str::to_owned)?;
+        clock
+            .clock()
+            .map_err(str::to_owned)?
+            .entity_rates(timespace)
+            .ok_or("equipment inherited entity timespace absent")?[1]
+    };
+    let Some(state) = world.remove_resource::<super::super::player::PlayerState>() else {
+        return Ok(());
+    };
+    let mut failure = None;
+    if let Some(player) = state.player.as_ref() {
+        player.visit_equipment_entity_frames(|id, position, basis| {
+            // A withdrawn generation may remain in the previous render cache
+            // until the next view sample. It must not receive fresh publication.
+            let linked = world
+                .get_resource::<LiveEntities>()
+                .is_some_and(|live| live.parent(id).ok().flatten().is_some());
+            if !linked || failure.is_some() {
+                return;
+            }
+            if let Err(error) = super::super::equipment_identity::publish_frame(
+                world,
+                id,
+                ReferenceFrame {
+                    position: position.to_array(),
+                    basis: basis.to_cols_array_2d(),
+                },
+                rate,
+            ) {
+                failure = Some(error);
+            }
+        });
+    }
+    world.insert_resource(state);
+    failure.map_or(Ok(()), Err)
 }

@@ -10,8 +10,61 @@ use crate::gameplay::{
     player::power_states::PowerLifecycle,
 };
 
-use crate::gameplay::{entity_lifetime::EntityId, reference_frame::{ReferenceFrame, relative_binding, invert_basis, basis_product}, event_graph::EntityReference};
+use crate::gameplay::{entity_lifetime::EntityId, reference_frame::ReferenceFrame, event_graph::EntityReference};
 use std::{collections::HashMap, sync::Arc};
+
+#[derive(Resource, Default)]
+struct WorldEffectSequence(u64);
+fn post_world_effect(world: &mut World, path: &str, frame: ReferenceFrame) -> Result<(), String> {
+    world.init_resource::<WorldEffectSequence>();
+    let key = {
+        let mut serial = world.resource_mut::<WorldEffectSequence>();
+        serial.0 = serial.0.wrapping_add(1);
+        Arc::<str>::from(format!("power-world-{}", serial.0))
+    };
+    let mut effects = world.get_resource_mut::<super::usable_effects::EffectRequests>()
+        .ok_or("power world FX request owner is absent")?;
+    // Native87cb90 explicit world matrix has no parent reference. The
+    // canonical FX owner releases this producer on actual instance completion.
+    effects.start_world_once(key, path, frame);
+    Ok(())
+}
+
+#[derive(Resource, Default)]
+struct GrappleBeamEffect { owner: Option<Arc<str>> }
+fn publish_grapple_beam(world: &mut World, player: &mut crate::gameplay::player::Player) -> Result<(), String> {
+    use crate::gameplay::player::body::grapple::BeamRequest;
+    let mut pending = player.drain_grapple_beam_requests();
+    let Some(first) = pending.next() else { return Ok(()) };
+    let mut producer = world.remove_resource::<GrappleBeamEffect>().unwrap_or_default();
+    let Some(mut effects) = world.remove_resource::<super::usable_effects::EffectRequests>() else {
+        world.insert_resource(producer); return Err("grapple beam FX request owner is absent".into());
+    };
+    world.init_resource::<WorldEffectSequence>();
+    let mut result = Ok(());
+    for request in std::iter::once(first).chain(pending) {
+        match request {
+            BeamRequest::Start { effect, origin, endpoint } => {
+                if let Some(old) = producer.owner.take() { effects.stop_entity(old); }
+                let owner = {
+                    let mut serial = world.resource_mut::<WorldEffectSequence>();
+                    serial.0 = serial.0.wrapping_add(1);
+                    Arc::<str>::from(format!("player-grapple-beam-{}", serial.0))
+                };
+                effects.start_beam(owner.clone(), &effect, origin, endpoint);
+                producer.owner = Some(owner);
+            }
+            BeamRequest::Update { origin, endpoint } => {
+                if let Some(owner) = &producer.owner { effects.update_beam(owner.clone(), origin, endpoint); }
+                else { result = Err("grapple beam endpoint update has no started FX producer".into()); }
+            }
+            BeamRequest::Stop => {
+                if let Some(owner) = producer.owner.take() { effects.stop_entity(owner); }
+            }
+        }
+    }
+    world.insert_resource(effects); world.insert_resource(producer); result
+}
 
 #[derive(Default)]
 struct WindEffectEntry {
@@ -40,6 +93,13 @@ struct WindEffectHost<'a> {
     player: Option<(EntityId, ReferenceFrame)>,
 }
 impl WindEffectHost<'_> {
+    fn start_world_at(&mut self, entity: EntityId, path: &str, frame: ReferenceFrame) {
+        let entry = self.handles.0.entry(entity).or_default();
+        entry.next = entry.next.wrapping_add(1);
+        let owner: Arc<str> = format!("power-windblast-{entity:?}-{}", entry.next).into();
+        let ticket = self.requests.start_world(owner.clone(), path, frame);
+        entry.handles.push((owner, ticket)); entry.retired = false;
+    }
     fn start_at(&mut self, entity: EntityId, path: &str, placement: super::usable_effects::EntityPlacement) {
         let entry = self.handles.0.entry(entity).or_default();
         entry.next = entry.next.wrapping_add(1);
@@ -52,35 +112,28 @@ fn named(live: &LiveEntities, entity: EntityId) -> Result<EntityReference, Strin
     live.get(entity).map(|(name, _)| EntityReference::Named(name.to_owned()))
         .ok_or_else(|| "power FX target generation is stale".to_owned())
 }
-fn unbound(parent: ReferenceFrame, world: ReferenceFrame) -> ReferenceFrame {
-    let (position, _) = relative_binding(parent, world);
-    let mut inverse = parent.basis; invert_basis(&mut inverse);
-    ReferenceFrame { position, basis: basis_product(world.basis, inverse) }
-}
 impl super::windblast::Effects for WindEffectHost<'_> {
     fn start(&mut self, live: &LiveEntities, entity: EntityId, path: &str,
         frame: ReferenceFrame, spawner: Option<EntityId>) -> Result<(), String> {
-        let placement = if let Some(spawner) = spawner {
-            // 87cb90 explicit spawner matrix clears the inherited bound bit.
-            let (_, parent) = self.player.filter(|(id, _)| *id == spawner)
+        if let Some(spawner) = spawner {
+            let (_, frame) = self.player.filter(|(id, _)| *id == spawner)
                 .ok_or("Windblast spawner frame is absent")?;
-            super::usable_effects::EntityPlacement { target: named(live, spawner)?, tag: String::new(),
-                local: unbound(parent, parent), attached: false }
-        } else {
-            // The managed blast's authored camera frame is published through
-            // particle_view's ordinary named-frame resolver.
-            let _ = frame;
-            super::usable_effects::EntityPlacement { target: named(live, entity)?, tag: String::new(),
-                local: ReferenceFrame::default(), attached: true }
-        };
+            self.start_world_at(entity, path, frame);
+            return Ok(());
+        }
+        let _ = frame;
+        let placement = super::usable_effects::EntityPlacement { target: named(live, entity)?, tag: String::new(),
+            local: ReferenceFrame::default(), attached: true };
         self.start_at(entity, path, placement); Ok(())
     }
     fn impact(&mut self, live: &LiveEntities, entity: EntityId, target: EntityId,
         path: &str, tag: Option<&str>, parent: ReferenceFrame, frame: ReferenceFrame) -> Result<(), String> {
         let attached = tag.is_some_and(|tag| !tag.is_empty());
+        if !attached { self.start_world_at(entity, path, frame); return Ok(()); }
+        let _ = parent;
         self.start_at(entity, path, super::usable_effects::EntityPlacement {
-            target: named(live, target)?, tag: tag.unwrap_or("").to_owned(), attached,
-            local: if attached { ReferenceFrame::default() } else { unbound(parent, frame) },
+            target: named(live, target)?, tag: tag.unwrap_or("").to_owned(), attached: true,
+            local: ReferenceFrame::default(),
         }); Ok(())
     }
     fn stop(&mut self, entity: EntityId) -> Result<(), String> {
@@ -103,7 +156,15 @@ pub(super) fn poll_wind_retirement(world: &mut World) -> Result<bool, String> {
     wind_retirement(world, true)
 }
 fn wind_retirement(world: &mut World, poll: bool) -> Result<bool, String> {
-    let Some(mut blasts) = world.remove_resource::<super::windblast::Windblasts>() else { return Ok(true) };
+    let Some(mut blasts) = world.remove_resource::<super::windblast::Windblasts>() else {
+        if poll {
+            // Called only after canonical FX/audio shutdown acknowledgement.
+            world.remove_resource::<WindEffects>();
+            world.remove_resource::<WorldEffectSequence>();
+            world.remove_resource::<GrappleBeamEffect>();
+        }
+        return Ok(true);
+    };
     let mut handles = world.remove_resource::<WindEffects>().unwrap_or_default(); handles.refresh(world);
     let result = if poll {
         match (world.remove_resource::<LiveEntities>(), world.remove_resource::<ClockRuntime>()) {
@@ -121,7 +182,14 @@ fn wind_retirement(world: &mut World, poll: bool) -> Result<bool, String> {
         let mut host = WindEffectHost { handles: &mut handles, requests: &mut requests, player: None };
         let result = blasts.begin_retirement(&mut host).map(|_| false); world.insert_resource(requests); result
     } else { Err("Windblast retirement lost FX request owner".into()) };
-    world.insert_resource(handles); world.insert_resource(blasts); result
+    if poll && matches!(&result, Ok(true)) {
+        // These lazy producer resources were created after the level's
+        // baseline capture. Actual FX tickets have acknowledged retirement;
+        // release their generation keys and source-path references now.
+        world.remove_resource::<WorldEffectSequence>();
+        world.remove_resource::<GrappleBeamEffect>();
+    } else { world.insert_resource(handles); }
+    world.insert_resource(blasts); result
 }
 
 fn service_wind(world: &mut World, mut player: Option<(&mut crate::gameplay::player::Player, EntityId)>,
@@ -181,18 +249,20 @@ fn service_wind(world: &mut World, mut player: Option<(&mut crate::gameplay::pla
 fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Player,
     clock: &mut ClockRuntime, aim: bool) -> Result<(), String> {
     let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return Ok(()) };
-    if actions.blink.is_none() && actions.active_blink.is_none() { world.insert_resource(actions); return Ok(()); }
+    if !actions.has_family_work() { world.insert_resource(actions); return Ok(()); }
     let Some(mut effects) = world.remove_resource::<super::usable_effects::EffectRequests>() else {
         world.insert_resource(actions); return Err("Blink FX request owner is absent".into());
     };
     let result = (|| {
+        actions.prepare_family_runtime(player, clock, &mut effects)?;
+        if actions.blink.is_none() && actions.active_blink.is_none() { return Ok(()); }
         let collision = world.get_resource::<super::NavigationWorld>().ok_or("Blink collision world is absent")?;
         let live = world.get_resource::<LiveEntities>().ok_or("Blink entity owner is absent")?;
         let scene = world.get_resource::<super::physics_scene::PhysicsScene>();
         if let Some(blink) = actions.active_blink.as_mut() {
             blink.stop_helpers(&mut effects);
             let retained = if blink.has_activity() { blink.service(player, clock, &mut effects, &collision.0, scene, live)? } else { false };
-            if !retained { blink.cancel(player); actions.active_blink = None; }
+            if !retained { blink.cancel(player); actions.finish_blink_activity(); }
         }
         if let Some(blink) = actions.blink.as_mut() {
             if blink.has_activity() { blink.service(player, clock, &mut effects, &collision.0, scene, live)?; }
@@ -222,24 +292,37 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
 /// whichever power is currently selected.
 fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Player, aim: bool) {
     let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return };
-    if let Some(active) = actions.active_far_reach.as_mut() {
-        if !active.service(player) { actions.active_far_reach = None; }
-    }
-    if let Some(far) = actions.far_reach.as_mut() {
-        if far.has_activity() { far.service(player); }
-        if aim {
-            let aiming = player.power_cast_active(6) && player.selected_power().is_some_and(|cast| cast.phase() == Phase::Aiming);
-            if aiming && !far.has_activity() {
-                if let Some(collision) = world.get_resource::<super::NavigationWorld>() {
-                    let view = player.view();
-                    let snapping = crate::platform::console::shared().read().cvars
-                        .int("ark_shadow_grapple_snapping_enabled").unwrap_or(1) != 0;
-                    far.aim(player, &view, &super::player::GameCollision(&collision.0), snapping);
-                }
-            } else if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
+    let mut impacts = [None, None];
+    let result = (|| {
+        if let Some(active) = actions.active_far_reach.as_mut() {
+            let retained = active.service(player)?;
+            impacts[0] = active.take_world_impact();
+            if !retained { actions.finish_far_reach_activity(); }
+        }
+        if let Some(far) = actions.far_reach.as_mut() {
+            if far.has_activity() { far.service(player)?; }
+            impacts[1] = far.take_world_impact();
+            if aim {
+                let aiming = player.power_cast_active(6) && player.selected_power().is_some_and(|cast| cast.phase() == Phase::Aiming);
+                if aiming && !far.has_activity() {
+                    if let Some(collision) = world.get_resource::<super::NavigationWorld>() {
+                        let view = player.view();
+                        let snapping = crate::platform::console::shared().read().cvars
+                            .int("ark_shadow_grapple_snapping_enabled").unwrap_or(1) != 0;
+                        far.aim(player, &view, &super::player::GameCollision(&collision.0), snapping);
+                    }
+                } else if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
+            }
+        }
+        Ok::<(), String>(())
+    })();
+    world.insert_resource(actions);
+    if let Err(error) = result { power_error(world, &error); }
+    for (path, position, axis) in impacts.into_iter().flatten() {
+        if let Err(error) = post_world_effect(world, &path, ReferenceFrame {position: position.to_array(),basis: axis.to_cols_array_2d()}) {
+            power_error(world, &error);
         }
     }
-    world.insert_resource(actions);
 }
 
 /// Map retirement releases both selected and detached consumers before the
@@ -256,13 +339,9 @@ fn power_error(world: &mut World, error: &str) {
 
 fn cast_factor(player: &crate::gameplay::player::Player, id: i32, active_bend: bool) -> f32 {
     if id == 1 && active_bend { return 0.0; }
-    let factor = powers::cost_factor(&player.attributes);
-    if id != 10 { return factor; }
-    // 140448690 -> 1411ad95c (floorf), before 61bea0's random rolls.
-    let Some(base) = player.selected_power().map(|cast| cast.settings.mana_cost) else { return factor };
-    if base == 0.0 { return 0.0; }
-    let wind = player.attributes.0.get("ARK_ATTRIBUTE_WINDBLAST_MANA_COST_FACTOR").copied().unwrap_or(1.0);
-    (base * factor * wind).floor() / base
+    // Family cost overrides (including Windblast's exact floorf result)
+    // belong to Cast, before the shared random cost rolls.
+    powers::cost_factor(&player.attributes)
 }
 
 /// Runs after selection publication, before the shared player state machine.
@@ -273,6 +352,7 @@ pub(super) fn before_frame(world: &mut World) {
     let player_id = super::player_lifetime::id(world);
     let Some(mut state) = world.remove_resource::<super::player::PlayerState>() else { return };
     if let Some(player) = state.player.as_mut() {
+        player.set_power_time(now);
         service_far_reach(world, player, false);
         if let Some(mut clock) = world.remove_resource::<ClockRuntime>() {
             let result = service_blinks(world, player, &mut clock, false);
@@ -338,10 +418,13 @@ pub(super) fn after_frame(world: &mut World) {
                 event, emitter: crate::gameplay::sound::Emitter::PlayerBody,
             }));
         }
+        for effect in player.take_grapple_effects() {
+            if let Err(error) = post_world_effect(world, &effect.path, effect.frame) { power_error(world, &error); }
+        }
         let lifecycle = player.take_power_lifecycle_events();
         let attribute_messages = player.take_power_attribute_change_count();
         if let Some(mut owner) = world.get_resource_mut::<super::power_world::PowerWorld>() {
-            for event in lifecycle {
+            for event in lifecycle.iter().copied() {
                 match event {
                     PowerLifecycle::Began(1) => owner.begin_bend_time_cast(),
                     PowerLifecycle::Finished { id: 1, .. } =>
@@ -358,6 +441,28 @@ pub(super) fn after_frame(world: &mut World) {
             owner.update_bend_time_hold(attributes, input.held, input.pressure,
                 player.controller.trigger_threshold, player.power_cast_active(1), committed,
                 || { player.commit_power_cast(now, factor); }, &mut clock, &mut events, position);
+        }
+        let far_delta = match clock.player_delta() {
+            Ok(delta) => Some(delta),
+            Err(error) => { power_error(world, error); None },
+        };
+        if let Some(mut actions) = world.get_resource_mut::<super::player_actions::PlayerActions>() {
+            // These are the same power component's real Begin/Finish
+            // callbacks; its hold state is never inferred from frame changes.
+            let actions = &mut *actions;
+            let far = actions.far_reach.as_mut().or(actions.active_far_reach.as_mut());
+            if let Some(far) = far {
+                for event in lifecycle {
+                    match event {
+                        PowerLifecycle::Began(6) => far.begin_cast(),
+                        PowerLifecycle::Finished { id: 6, .. } => far.finish_cast(),
+                        _ => {},
+                    }
+                }
+                let mode = crate::platform::console::shared().read().cvars
+                    .int("ark_shadow_grapple_cast_mode").unwrap_or(0);
+                if let Some(delta) = far_delta { far.update_cast(player, delta, mode); }
+            }
         }
         service_far_reach(world, player, true);
         if let Err(error) = service_blinks(world, player, &mut clock, true) { power_error(world, &error); }
@@ -383,9 +488,11 @@ pub(super) fn after_frame(world: &mut World) {
                 Some(6) => {
                     let view = player.view();
                     let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
-                        .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(false);
-                    if accepted { player.commit_power_cast(now, factor); }
-                    accepted
+                        .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(Ok(false));
+                    match accepted {
+                        Ok(accepted) => { if accepted { player.commit_power_cast(now, factor); } accepted },
+                        Err(error) => { power_error(world, &error); false },
+                    }
                 },
                 Some(10) => match service_wind(world, player_id.map(|id| (&mut *player, id)), &mut clock, &mut events, true) {
                     Ok(accepted) => { if accepted { player.commit_power_cast(now, factor); } accepted },
@@ -393,8 +500,11 @@ pub(super) fn after_frame(world: &mut World) {
                 },
                 _ => false,
             };
-            if !accepted { player.cancel_power_use(); }
+            if accepted { player.finish_power_execution(); } else { player.cancel_power_use(); }
         }
+        // Body owner has already advanced its actual hand-tag endpoint;
+        // family Start/Stop callbacks above are in this same ordered queue.
+        if let Err(error) = publish_grapple_beam(world, player) { power_error(world, &error); }
     }
     if let Err(error) = service_wind(world, state.player.as_mut().zip(player_id), &mut clock, &mut events, false) {
         power_error(world, &error);

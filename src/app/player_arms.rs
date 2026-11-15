@@ -911,6 +911,8 @@ pub(super) fn update_player_arms(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut patches: ResMut<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>,
     mut visibility: Query<&mut Visibility>,
+    identities: Option<Res<super::equipment_identity::Identities>>,
+    clock: Option<Res<crate::gameplay::game_clock_runtime::ClockRuntime>>,
     mut last_error: Local<Option<String>>,
     mut trace_frame: Local<u64>,
 ) {
@@ -1015,6 +1017,15 @@ pub(super) fn update_player_arms(
             probe_buffer.as_deref_mut(),
             &mut patches,
             &mut buffers,
+            &mut commands,
+            &mut inverse_bindposes,
+            &mut joint_transforms,
+            identities.as_deref(),
+            clock
+                .as_ref()
+                .filter(|clock| clock.advanced())
+                .and_then(|clock| clock.clock().ok()?.delta(0))
+                .unwrap_or(0.0),
         )
         .err();
     let PlayerArms {
