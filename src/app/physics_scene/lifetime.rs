@@ -67,7 +67,7 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
     }
     let mut registry = scene.registry.take().ok_or("physics lifecycle registry absent")?;
     let result = (|| {
-        let mut host = Host { world, scene: &mut *scene, events: &mut *events };
+        let mut host = Host { world, scene: &mut *scene, events: &mut *events, live: &mut *live };
         loop {
             let state = host.scene.retirement.as_ref().ok_or("physics retirement progress absent")?;
             let Some(&(handle, generation)) = state.components.get(state.requested) else { break; };
@@ -94,9 +94,9 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
             let index = host.scene.retirement.as_ref().unwrap().retire_next;
             let entity = &host.scene.entities[index];
             if let Some(world) = host.world.as_deref_mut() { super::super::entity_graphs::retire(world, entity.shared)?; }
-            host.scene.destroy_document_attachments(live, index)?;
+            host.scene.destroy_document_attachments(host.live, index)?;
             let entity = &host.scene.entities[index];
-            if live.retire_for_world_shutdown(entity.shared).is_none() {
+            if host.live.retire_for_world_shutdown(entity.shared).is_none() {
                 return Err("physics managed entity remains attached during retirement".into());
             }
             host.scene.retirement.as_mut().unwrap().retire_next += 1;
@@ -130,6 +130,8 @@ struct Host<'a> {
     world: Option<&'a mut bevy::prelude::World>,
     scene: &'a mut PhysicsScene,
     events: &'a mut EntityEvents,
+    /// Same identity owner supplied to published and preparation rollback.
+    live: &'a mut LiveEntities,
 }
 
 impl ComponentLifecycleWorld for Host<'_> {

@@ -601,7 +601,7 @@ impl StateDecl {
                     exclusive_body_parts: 2, breakable: true, ..flags };
                 (StateId::RELOAD_WEAPON, 0.0)
             }
-            Kind::UsePower(power) => {
+            Kind::UsePower(ref power) => {
                 // 1408560c0: action state owns the left hand.
                 flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
                     exclusive_body_parts: 2, ..flags };
@@ -2595,7 +2595,7 @@ impl StateMachine {
             },
             Kind::Grapple(grapple) => {
                 self.land_falling_if_contact(frame);
-                super::grapple_state::deactivate(frame, grapple); return;
+                super::grapple_state::deactivate(frame, &grapple); return;
             },
             Kind::SwimMantle => return,
             Kind::Mantle(_) => {

@@ -2001,14 +2001,14 @@ pub(crate) fn fields_storage_bytes(fields: &Vec<(String, Value)>) -> usize {
         }).sum::<usize>()
 }
 
-fn field<'a>(fields: &'a [(String, Value)], wanted: &str) -> Option<&'a Value> {
+pub(crate) fn field<'a>(fields: &'a [(String, Value)], wanted: &str) -> Option<&'a Value> {
     fields
         .iter()
         .find(|(key, _)| key == wanted)
         .map(|(_, value)| value)
 }
 
-fn scope(value: Option<&Value>) -> Option<&[(String, Value)]> {
+pub(crate) fn scope(value: Option<&Value>) -> Option<&[(String, Value)]> {
     match value? {
         Value::Scope(fields) => Some(fields),
         _ => None,

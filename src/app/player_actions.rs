@@ -422,6 +422,8 @@ pub(super) struct PlayerActions {
     pub removed_equipment: Vec<String>,
     shortcuts: Arc<ShortcutSettings>,
     shortcuts_configured: bool,
+    trigger_threshold: f32,
+    controller_configured: bool,
     rehydrated: bool,
 }
 
@@ -579,6 +581,8 @@ impl PlayerActions {
             removed_equipment: Vec::new(),
             shortcuts,
             shortcuts_configured: false,
+            trigger_threshold: player::decls::trigger_threshold(&declarations.controller)?,
+            controller_configured: false,
             rehydrated: false,
         })
     }
@@ -679,6 +683,14 @@ impl PlayerActions {
             || !self.metadata_loading.is_empty()
             || !self.metadata_order.is_empty()
             || !self.prepared_owned_metadata.is_empty()
+    }
+    pub fn configure_controller(&mut self, player: &mut Player) {
+        if !self.controller_configured {
+            // 7f7a60/14173e090 initialize the real controller from its decl.
+            // The host admission runs before any family/input processing.
+            player.controller.trigger_threshold = self.trigger_threshold;
+            self.controller_configured = true;
+        }
     }
     pub fn take_equipment_admission(&mut self, identity: &str) -> bool {
         self.equipment_admissions.remove(identity)
@@ -1832,7 +1844,8 @@ fn prepare_scenes(
         if cancelled() {
             return Err("equipment scene acquisition cancelled".into());
         }
-        let decl = crate::assets::midnight_scene::acquire_player(catalog, path, Some(cancelled))?;
+        let decl = crate::assets::midnight_scene::acquire_player(catalog, path, Some(cancelled))
+            .map_err(|error| error.to_string())?;
         let count = decl.scenes.len();
         let sounds = player::midnight::prepare_sounds_owned(catalog, &decl, &casting)?;
         let mut scene = PreparedScene {

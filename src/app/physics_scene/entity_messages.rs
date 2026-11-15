@@ -61,7 +61,7 @@ impl PhysicsScene {
                     world.storage.apply_body_impulse(&mut world.geometry, &mut publication, body, impulse, point)?;
                 } else {
                     //80bbe0 ->807bc0 uses zero velocities, not a body impulse.
-                    world.storage.set_body_velocity(&mut world.geometry, &mut publication, body, [0.;4], [0.;4], false)?;
+                    world.storage.set_body_velocity(&mut world.geometry, &mut publication, body, [0.;4], [0.;4], 0)?;
                 }
                 Ok(())
             },
@@ -114,7 +114,10 @@ impl PhysicsScene {
             scene_publication_events!(self, registry, publication);
             let mut guard = shared.write().map_err(|_| "entity-message physics world is poisoned")?;
             let world = &mut *guard;
-            world.storage.set_body_velocity(&mut world.geometry, &mut publication, body, linear, angular, wake)?;
+            //18d2b0 explicitly wakes a zero-timespace body before c85dc0;
+            // this is independent of that setter's source mode argument0.
+            if wake { world.storage.activate_body(&mut world.geometry, &mut publication, body)?; }
+            world.storage.set_body_velocity(&mut world.geometry, &mut publication, body, linear, angular, 0)?;
         }
         let component = self.rigid_bodies.get_mut(handle.slot).ok_or("timespace component disappeared")?;
         component.velocities.scaled_linear = linear;

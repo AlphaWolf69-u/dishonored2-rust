@@ -93,16 +93,6 @@ struct DestructionProgress {
 const TIMESPACE_PROFILE_REMOVED: usize = 0;
 
 impl WorldStorage {
-    /// c85dc0 through the canonical mutation/activation/transform scope.
-    pub(crate) fn set_body_velocity<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(
-        &mut self, geometry: &mut G, events: &mut E, id: u32,
-        linear: [f32; 4], angular: [f32; 4], activate: bool) -> Result<bool, String> {
-        if !self.publication_idle() { return Err("body publication must finish before velocity publication".into()); }
-        self.edit_bodies(geometry, events, |creation| {
-            if activate { creation.world.set_activation(id, false, creation.callbacks)?; }
-            creation.world.set_velocity(id, linear, angular, 0, creation.callbacks)
-        })
-    }
     ///091270/090fc0 reach the existing body-publication owner. Keep the
     /// world mutation fence and its real geometry/activation callbacks.
     pub(crate) fn apply_body_impulse<G: BodyCreationGeometry, E: PublicationEvents + BodyCreationCallbacks>(

@@ -103,7 +103,6 @@ pub struct BlinkRequest {
     /// posture-adjusted movement destination (+0x60).
     pub final_position: Vec3,
     pub position: Vec3,
-    pub final_position: Vec3,
     pub camera_source: Vec3,
     pub exit_state: i32,
     pub posture: usize,
@@ -132,7 +131,6 @@ impl Blink {
     pub fn cast_request(&self, input: &BlinkInput<'_>) -> Option<BlinkRequest> {
         let target = self.target.as_ref()?;
         Some(BlinkRequest {
-            final_position: target.position,
             position: target.position + Vec3::Z * (input.shapes[target.shape].height
                 - input.shapes[target.shape].margin - input.shapes[4].height),
             final_position: target.position,

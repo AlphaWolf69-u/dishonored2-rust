@@ -18,6 +18,9 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
         return;
     };
     actions.configure_shortcuts(&mut inventory);
+    if let Some(player) = state.player.as_mut() {
+        actions.configure_controller(player);
+    }
     if !actions.rehydrated && inventory.is_initialized() {
         // Inventory belongs to the session, while its actual spawned entity
         // and model belong to this loaded world. Reacquire those leases

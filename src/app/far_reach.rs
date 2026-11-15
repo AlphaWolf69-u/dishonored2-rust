@@ -407,8 +407,8 @@ impl Prepared {
                 None => 20,
                 Some(name) => crate::platform::bindings::ACTIONS
                     .iter()
-                    .find(|(_, tag)| *tag == name.trim_start_matches("ACTION_"))
-                    .map(|(id, _)| *id)
+                    .find(|(_, tag, _)| *tag == name.trim_start_matches("ACTION_"))
+                    .map(|(id, _, _)| *id)
                     .ok_or_else(|| format!("unknown m_snapAction {name}"))?,
             },
             beam_speed: crate::gameplay::options::decl::float(

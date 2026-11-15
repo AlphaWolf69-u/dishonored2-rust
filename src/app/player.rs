@@ -379,7 +379,6 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         physics: decls::physics(&declarations.physics)?,
         camera,
         mapping: decls::states_mapping(&declarations.controller)?,
-        trigger_threshold: decls::trigger_threshold(&declarations.controller)?,
         states,
         rules: decls::rules(&declarations.mode)?,
         default_state: decls::default_state(&declarations.mode),
