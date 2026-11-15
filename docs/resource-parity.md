@@ -10772,3 +10772,37 @@ boolean. This supersedes earlier host assumptions that every initial selection
 uses a normal draw. Later physical scene/resource readiness remains separate
 from this exact inventory callback flag and cannot consume the first-frame flag
 for a partial asynchronous metadata prefix.
+Inventory final admission/message correction (2026-11-15): 613440 initializes
+inventory+190 with |=6, so instantEquipFirstFrame starts true. 619760 derives
+request9d flags from this owned bit and clears BOTH allowAutoEquip and instant
+bits with &fc after the first allowed batch arbitration. The core now owns
+those flags; arbitrate_auto_equip takes no caller-supplied guess and orders
+candidates by retained registration ordinal. The entity owner waits until the
+whole metadata admission batch is ready, preserving native first-per-slot
+selection. The 9d receiver LAB7fbe10 jumps7f8d60: normal flags20, msgbit1->30,
+msgbit2->OR100, sourceState5b; inventory auto therefore120/130. Shortcut7fb350
+uses20 or30 depending on controller+2d0 in1..3, source5b, state40. Slot4 is a
+direct614b20 path, otherwise automatic requests choose slot1 state40/other35.
+
+ported entity notification publication:6170b0 emits1ad (NOT9a), retaining the
+actual item declaration plus previous/current counts. 615840 Added9b and
+6147f0 Removed9c retain declaration plus amount/total. publish_gameplay_events
+moves these queued messages into the canonical EntityEvents owner using typed
+InventoryQuantity/InventoryTransfer payloads supplied by that owner, never
+invented executable pointer bytes. Modifier/loadout/purchase changes now also
+emit the correct generic quantity message; readable admissions/purchases emit
+native add/remove notifications. Published events are removed from the source
+queue after successful identity resolution. Parent publishes with the actual
+live player EntityId before the normal event pump.
+
+blocked exact script boundary:6147f0's depleted callback is itemRemoved,
+registered1413989c0 (DAT1439ab8a0), typed arkDeclInventoryItem pointer argument.
+615620's currency callback is moneyAdded, registered1413991f0
+(DAT1439ab8f0), signed quantity argument. These are884920 script callbacks,
+not entity-message numbers. No script subsystem or guessed IDs are created;
+pending_script_events exposes the undelivered callbacks for the actual owner.
+Those events remain explicitly pending while that native script owner is absent;
+they are not reported delivered or silently cleared by the equipment, shortcuts
+or normal entity-message observers. Lifetime closure of this script boundary
+requires that owner; it is not claimed complete by normal message publication.
+No builds/tests/launches or performance measurements were run.

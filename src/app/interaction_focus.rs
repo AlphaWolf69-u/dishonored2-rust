@@ -127,7 +127,7 @@ pub(super) fn apply_inventory_modifiers(
 
 /// Session-owned document declaration identities for the journal. Saving is
 /// a separate owner.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub(super) struct DiscoveredDocuments {
     items: Vec<DocumentEntry>,
     maps: Vec<JournalItem>,
@@ -146,11 +146,25 @@ pub(super) struct DiscoveredDocuments {
     coins: i32,
     consumed_coins: i32,
     allow_auto_equip: bool,
+    instant_equip_first_frame: bool,
     auto_equip_candidates: Vec<(String, u8)>,
     shortcut_settings: Option<std::sync::Arc<inventory::ShortcutSettings>>,
     shortcuts: [inventory::ShortcutSlot; 14],
     selected_shortcut: Option<usize>,
     ammunition_dependencies: Vec<(String, String)>,
+}
+impl Default for DiscoveredDocuments {
+    fn default() -> Self {
+        Self { items: Vec::new(), maps: Vec::new(), audiographs: Vec::new(), quantities: Default::default(),
+            initialized: false, modifier_changes: Default::default(), enhancements: Vec::new(), records: Default::default(),
+            record_order: Vec::new(), equipped: Default::default(), changes: Default::default(), ammo_consumption_locks: 0,
+            coins: 0, consumed_coins: 0, allow_auto_equip: false,
+            // 613440 sets inventory +190 |=6: bit1 is true until the
+            // first allowed 619760 arbitration clears bits0/1 with &fc.
+            instant_equip_first_frame: true,
+            auto_equip_candidates: Vec::new(), shortcut_settings: None, shortcuts: Default::default(),
+            selected_shortcut: None, ammunition_dependencies: Vec::new() }
+    }
 }
 #[derive(Clone, Debug)]
 pub(super) struct DocumentEntry {
@@ -202,6 +216,7 @@ impl DiscoveredDocuments {
         let previous = self.quantity(path);
         let admitted = self.add_item(path, quantity, maximum);
         if admitted != 0 {
+            self.changes.push_back(InventoryChange::QuantityChanged { path: inventory::key(path), previous, current: previous + admitted });
             self.modifier_changes.push_back(ModifierChange::Quantity { path: path.to_owned(), modifiers: modifiers.clone(), added: true, count: admitted });
             if previous == 0 { self.changes.push_back(InventoryChange::ShortcutItemAdded { path: inventory::key(path) }); }
             if previous == 0 && self.record(path).is_some_and(|record| record.declaration.equipment.is_some()) {
@@ -219,6 +234,7 @@ impl DiscoveredDocuments {
         if removed == current { self.quantities.remove(&key); }
         else if removed != 0 { self.quantities.insert(key.clone(), current - removed); }
         if removed != 0 {
+            self.changes.push_back(InventoryChange::QuantityChanged { path: key.clone(), previous: current, current: current - removed });
             if let Some(record) = self.records.get_mut(&key) { record.is_new &= current > removed; }
             if removed == current {
                 self.auto_equip_candidates.retain(|(path, _)| path != &key);
@@ -239,7 +255,9 @@ impl DiscoveredDocuments {
         rune_item: &str, rune_cost: u32,
         rune_modifiers: &crate::assets::inventory_item::ItemModifiers) -> bool {
         if self.add_with_modifiers(item, 1, maximum, item_modifiers) != 1 { return false; }
-        self.remove_with_modifiers(rune_item, rune_cost, rune_modifiers);
+        self.addition_notification(item, 1);
+        let removed = self.remove_with_modifiers(rune_item, rune_cost, rune_modifiers);
+        self.removal_notifications(rune_item, removed, self.quantity(rune_item));
         true
     }
 
@@ -272,7 +290,7 @@ impl DiscoveredDocuments {
     pub fn admit(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind,
         maximum: u32, declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
         self.register_item(declaration.clone(), maximum);
-        if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
+        if self.add_registered(&path, 1) == 0 { return false; }
         if self.items.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) { return true; }
         self.items.push(DocumentEntry { declaration, path, item_id, kind, is_new: true });
         true
@@ -281,7 +299,7 @@ impl DiscoveredDocuments {
     pub fn admit_map(&mut self, path: String, item_id: u32, maximum: u32,
         declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
         self.register_item(declaration.clone(), maximum);
-        if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
+        if self.add_registered(&path, 1) == 0 { return false; }
         if !self.maps.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) {
             self.maps.push(JournalItem { declaration, path, item_id, is_new: true });
         }
@@ -291,7 +309,7 @@ impl DiscoveredDocuments {
     pub fn admit_audiograph(&mut self, path: String, item_id: u32, maximum: u32,
         declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
         self.register_item(declaration.clone(), maximum);
-        if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
+        if self.add_registered(&path, 1) == 0 { return false; }
         if !self.audiographs.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) {
             self.audiographs.push(JournalItem { declaration, path, item_id, is_new: true });
         }

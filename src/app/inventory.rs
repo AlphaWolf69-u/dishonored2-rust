@@ -49,6 +49,9 @@ pub(crate) enum InventoryChange {
     /// 619760's player request9d, not an already activated equipment slot.
     AutoEquipRequested { path: String, instant: bool },
     ShortcutItemAdded { path: String },
+    /// 6170b0's ARK_MSG_INVENTORY_ITEM_QUANTITY_CHANGED1ad precedes the
+    /// quantity's modifier/equipment consequences, including loadouts.
+    QuantityChanged { path: String, previous: u32, current: u32 },
 }
 
 /// Values resolved from the player's actual attribute component and the
@@ -138,15 +141,24 @@ impl DiscoveredDocuments {
 
     /// 619760 considers at most the first candidate for each native slot,
     /// then clears the entire pending list even when autoequip is disabled.
-    pub fn arbitrate_auto_equip(&mut self, instant: bool) {
+    pub fn arbitrate_auto_equip(&mut self) {
+        let instant = self.instant_equip_first_frame;
         let mut slots = [false; 16];
-        for (path, slot) in std::mem::take(&mut self.auto_equip_candidates) {
+        let mut candidates = std::mem::take(&mut self.auto_equip_candidates);
+        candidates.sort_by_key(|(path, _)| self.record_order.iter().position(|record| record == path).unwrap_or(usize::MAX));
+        for (path, slot) in candidates {
             if self.allow_auto_equip && !slots[slot as usize] {
                 self.changes.push_back(InventoryChange::AutoEquipRequested { path, instant });
                 slots[slot as usize] = true;
             }
         }
+        if self.allow_auto_equip {
+            self.allow_auto_equip = false;
+            self.instant_equip_first_frame = false;
+        }
     }
+    pub fn set_instant_equip_first_frame(&mut self, instant: bool) { self.instant_equip_first_frame = instant; }
+    pub fn request_auto_equip(&mut self) { self.allow_auto_equip = true; }
     /// 615840's player consumable and ammunition admission. Immediate food
     /// effects are performed once per pickup, independent of pack quantity,
     /// and return zero when consumed instead of entering inventory.
@@ -242,11 +254,17 @@ impl DiscoveredDocuments {
         let item = record.declaration.clone();
         let removed = self.remove_with_modifiers(path, count, &item.modifiers);
         let total = self.quantity(path);
-        // 6147f0 broadcasts empty inventory even when the removal request
-        // found an already empty record.
-        if total == 0 { self.changes.push_back(InventoryChange::Depleted { path: key(path) }); }
-        self.changes.push_back(InventoryChange::Removed { path: key(path), count: removed, total });
+        self.removal_notifications(path, removed, total);
         removed
+    }
+    pub(super) fn removal_notifications(&mut self, path: &str, count: u32, total: u32) {
+        // 6147f0 emits itemRemoved even when a removal request found an
+        // already empty record, before sending Removed9c.
+        if total == 0 { self.changes.push_back(InventoryChange::Depleted { path: key(path) }); }
+        self.changes.push_back(InventoryChange::Removed { path: key(path), count, total });
+    }
+    pub(super) fn addition_notification(&mut self, path: &str, count: u32) {
+        if count > 0 { self.changes.push_back(InventoryChange::Added { path: key(path), count, total: self.quantity(path) }); }
     }
 
     /// The host supplies the actual nested lock counter maintained by
@@ -313,6 +331,41 @@ impl DiscoveredDocuments {
     }
 
     pub fn take_changes(&mut self) -> impl Iterator<Item = InventoryChange> + '_ { self.changes.drain(..) }
+    /// Transfer only real entity messages to the one live normal event
+    /// owner. Item identity stays an Arc lease; no fabricated executable
+    /// pointer is encoded into an opaque byte payload.
+    pub fn publish_gameplay_events(&mut self, player: crate::gameplay::entity_lifetime::EntityId,
+        events: &mut crate::gameplay::entity_events::EntityEvents) -> Result<usize, String> {
+        use crate::gameplay::entity_events::{Event, Payload};
+        let mut sent = 0;
+        loop {
+            let Some(index) = self.changes.iter().position(|change| matches!(change,
+                InventoryChange::QuantityChanged { .. } | InventoryChange::Added { .. } | InventoryChange::Removed { .. })) else { break };
+            let path = match &self.changes[index] {
+                InventoryChange::QuantityChanged { path, .. } | InventoryChange::Added { path, .. }
+                | InventoryChange::Removed { path, .. } => path,
+                _ => unreachable!(),
+            };
+            let item = self.declaration(path).cloned().ok_or_else(|| format!("inventory notification has no retained declaration: {path}"))?;
+            let change = self.changes.remove(index).expect("retained notification index");
+            let (id, payload) = match change {
+                InventoryChange::QuantityChanged { previous, current, .. } => (0x1ad, Payload::InventoryQuantity { item, previous, current }),
+                InventoryChange::Added { count, total, .. } => (0x9b, Payload::InventoryTransfer { item, count, total }),
+                InventoryChange::Removed { count, total, .. } => (0x9c, Payload::InventoryTransfer { item, count, total }),
+                _ => unreachable!(),
+            };
+            events.post(Event { id, target: Some(player), payload });
+            sent += 1;
+        }
+        Ok(sent)
+    }
+
+    /// Source boundary:6147f0's itemRemoved and615620's moneyAdded are
+    /// script events registered by1413989c0/1413991f0, not entity-message
+    /// numbers. Preserve them until the actual script callback owner exists.
+    pub fn pending_script_events(&self) -> impl Iterator<Item = &InventoryChange> {
+        self.changes.iter().filter(|change| matches!(change, InventoryChange::Depleted { .. } | InventoryChange::CoinsAdded { .. }))
+    }
     /// Equipment's observer removes only its message classes. Currency,
     /// quantity and shortcuts retain their independent native consumers.
     pub fn take_equipment_changes(&mut self) -> Vec<InventoryChange> {
