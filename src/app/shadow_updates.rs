@@ -78,7 +78,16 @@ pub(super) struct ParticleShadowCaster {
     pub bounds: [[f32; 3]; 2],
     pub flags: u8,
     pub sort_distance: f32,
+    /// The system bounds' camera clip byte, as model casters publish it.
+    pub camera_clip_mask: u8,
     pub surfaces: Vec<ParticleShadowSurface>,
+}
+
+/// Local-light caster lists address particle systems above the model
+/// source range: entry `usize::MAX - index` is system `index`.
+pub(super) fn particle_caster_index(source: usize, count: usize) -> Option<usize> {
+    let index = usize::MAX - source;
+    (index < count).then_some(index)
 }
 
 #[derive(Resource, Default)]
@@ -114,7 +123,7 @@ pub(super) fn collect_particle_casters(
     let Some((frame, draws)) = publication.world_meshes() else { return };
     let result = (|| -> Result<Vec<ParticleShadowCaster>, String> {
         if draws.is_empty() { return Ok(Vec::new()); }
-        let (transform, _) = cameras.single().map_err(|error| error.to_string())?;
+        let (transform, projection) = cameras.single().map_err(|error| error.to_string())?;
         let camera_view = tome::render_query_base_rows(
             Mat4::IDENTITY.to_cols_array_2d(),
             game_pose_from_view_transform(transform),
@@ -123,6 +132,14 @@ pub(super) fn collect_particle_casters(
         if !render_shadow::invert_rows(&camera_view, &mut inverse_view) {
             return Err("particle caster camera view is singular".into());
         }
+        let Projection::Custom(custom) = projection else {
+            return Err("particle caster camera is unavailable".into());
+        };
+        let projection = custom
+            .get::<camera_projection::GameProjection>()
+            .ok_or("particle caster projection type is unavailable")?;
+        let camera_clip = render_shadow::multiply_rows(projection.rows(), camera_view);
+        let camera_clip: [f32; 16] = std::array::from_fn(|i| camera_clip[i / 4][i % 4]);
         let cull_distance = scene.shadow_quality.as_ref().ok_or("caster quality is unavailable")?.cull_distance;
         let mut systems: Vec<(usize, [[f32; 3]; 2], Vec<ParticleShadowSurface>)> = Vec::new();
         for draw in draws {
@@ -175,7 +192,8 @@ pub(super) fn collect_particle_casters(
             let Some(sphere) = info.sphere else { continue };
             let Some(sort_distance) = render_model::model_caster_sort_distance(info.flags, sphere, &inverse_view, cull_distance)
                 else { continue };
-            casters.push(ParticleShadowCaster { bounds, flags: info.flags, sort_distance, surfaces });
+            let camera_clip_mask = render_model::transformed_aabb_clip_cull(&camera_clip, bounds[0], bounds[1]).output_byte;
+            casters.push(ParticleShadowCaster { bounds, flags: info.flags, sort_distance, camera_clip_mask, surfaces });
         }
         Ok(casters)
     })();

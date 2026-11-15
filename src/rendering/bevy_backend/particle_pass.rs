@@ -452,7 +452,7 @@ pub struct ParticleViewInputs<'a> {
     pub white_level: f32,
     pub resolve_state: crate::render_state::RenderState,
 }
-struct GeometryGpu {
+pub(super) struct GeometryGpu {
     vertices: Buffer,
     indices: Buffer,
     count: u32,
@@ -657,7 +657,8 @@ pub struct ParticlePass {
     reported_mesh_submission: bool,
     max_instances: usize,
     max_draws: usize,
-    grids: Vec<GeometryGpu>,
+    /// The six shared sprite grids (1dc5b0), one owner for every pass instance.
+    grids: Arc<Vec<GeometryGpu>>,
     meshes: HashMap<String, (GeometryGpu, Option<(BufferId, BindGroup)>)>,
     programs: Arc<ParticlePrograms>,
     wrap: Sampler,
@@ -850,9 +851,18 @@ impl ParticlePass {
         Self::new_with_programs(device, queue, max_instances, max_draws, colour_format, depth_format, None)
     }
     pub(super) fn reusable_programs(&self) -> Arc<ParticlePrograms> { self.programs.clone() }
+    /// The sprite grids, shared with another pass instance of the same device.
+    pub(super) fn shared_grids(&self) -> Arc<Vec<GeometryGpu>> { self.grids.clone() }
     pub(super) fn new_with_programs(
         device: &RenderDevice, queue: &RenderQueue, max_instances: usize, max_draws: usize,
         colour_format: TextureFormat, depth_format: TextureFormat, cached: Option<Arc<ParticlePrograms>>,
+    ) -> Result<Self, String> {
+        Self::new_with_shared(device, queue, max_instances, max_draws, colour_format, depth_format, cached, None)
+    }
+    pub(super) fn new_with_shared(
+        device: &RenderDevice, queue: &RenderQueue, max_instances: usize, max_draws: usize,
+        colour_format: TextureFormat, depth_format: TextureFormat, cached: Option<Arc<ParticlePrograms>>,
+        grids: Option<Arc<Vec<GeometryGpu>>>,
     ) -> Result<Self, String> {
         if max_instances == 0 || max_draws == 0 {
             return Err("particle GPU capacity must be nonzero".into());
@@ -879,46 +889,7 @@ impl ParticlePass {
         );
         let transparency_parameters =
             storage("particle transparency parameters", (max_draws * 48) as u64);
-        let mut grids = Vec::new();
-        for level in 0..6 {
-            let grid = SpriteGrid::new(level);
-            let vertices = grid
-                .vertices
-                .iter()
-                .flat_map(|v| {
-                    v.position
-                        .into_iter()
-                        .chain([0.])
-                        .chain(v.uv)
-                        .chain([0., 0.])
-                        .chain([1., 0., 0., 0.])
-                        .chain([0., 1., 0., 0.])
-                        .chain([0., 0., 1., 0.])
-                        .chain([1.; 4])
-                })
-                .flat_map(f32::to_le_bytes)
-                .collect::<Vec<_>>();
-            let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("particle grid vertices"),
-                contents: &vertices,
-                usage: BufferUsages::STORAGE,
-            });
-            let bytes = grid
-                .indices
-                .iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect::<Vec<_>>();
-            let indices = device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("particle grid indices"),
-                contents: &bytes,
-                usage: BufferUsages::INDEX,
-            });
-            grids.push(GeometryGpu {
-                vertices,
-                indices,
-                count: grid.indices.len() as u32,
-            });
-        }
+        let grids = grids.unwrap_or_else(|| Arc::new(sprite_grids(device)));
         let sampler = |mode, mipmap| {
             device.create_sampler(&SamplerDescriptor {
                 address_mode_u: mode,
@@ -2364,6 +2335,51 @@ impl ParticlePass {
         }
         Ok(())
     }
+}
+
+/// The shared sprite grid levels 0-5 as instanced draw geometry.
+fn sprite_grids(device: &RenderDevice) -> Vec<GeometryGpu> {
+    let mut grids = Vec::new();
+    for level in 0..6 {
+        let grid = SpriteGrid::new(level);
+        let vertices = grid
+            .vertices
+            .iter()
+            .flat_map(|v| {
+                v.position
+                    .into_iter()
+                    .chain([0.])
+                    .chain(v.uv)
+                    .chain([0., 0.])
+                    .chain([1., 0., 0., 0.])
+                    .chain([0., 1., 0., 0.])
+                    .chain([0., 0., 1., 0.])
+                    .chain([1.; 4])
+            })
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let vertices = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("particle grid vertices"),
+            contents: &vertices,
+            usage: BufferUsages::STORAGE,
+        });
+        let bytes = grid
+            .indices
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>();
+        let indices = device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("particle grid indices"),
+            contents: &bytes,
+            usage: BufferUsages::INDEX,
+        });
+        grids.push(GeometryGpu {
+            vertices,
+            indices,
+            count: grid.indices.len() as u32,
+        });
+    }
+    grids
 }
 
 /// 232480 uploads PMODEL draw vertices; 2320b0 supplies its shared quad indices.

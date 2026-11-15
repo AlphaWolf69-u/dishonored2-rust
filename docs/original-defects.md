@@ -66,6 +66,20 @@ would change, so it can be made opt-in without guessing.
   `src/rendering/bevy_backend/camera_scene.rs` uses the fog's opaque-depth
   snapshot, recorded after the particle zPrePass, as the original does.
 
+### Moving FX systems keep stale shadows in cached local-light faces
+- Source: FX particle systems are static-bucket model casters (201480;
+  no FX path sets +0x18bc bit1). Local-light faces cache their static
+  layer keyed only by the light pose (2cd500 tolerance), and the cache is
+  invalidated only on dynamic-caster transitions (523af0, StartEntity /
+  StopEntity).
+- Defect: a moving particle system (stink bugs, falling leaves) is drawn
+  into a cached face once, when the entry is built, and its local-light
+  shadow stays there while the particles move on.
+- Fix: mark FX systems as dynamic casters, or invalidate model entries when
+  a static owner's caster record changes.
+- Rewrite: `LocalStaticInputs::particles` in
+  `src/app/local_shadow_updates.rs` snapshots the surfaces with the entry.
+
 ## Engine
 
 ### Image format normalization reads an uninitialized local

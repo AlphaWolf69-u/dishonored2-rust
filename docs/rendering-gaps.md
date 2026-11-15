@@ -107,17 +107,21 @@ slot and system bounds. `collect_particle_casters` builds one caster per
 system (`prepare_model_caster_info(bounds, 1, 8, 0, rigid, surfaces)`,
 then FUN_140330020's sort/cull distance); the parallel collector merges
 their surfaces into the static model bucket (partial-update cutoff, cascade
-cull by system bounds, radial sort with the models). Local-light faces draw
-admitted systems culled by their bounds with the per-frame layer.
+cull by system bounds, radial sort with the models). Local lights select
+systems with the static model bucket (collect_local_light_models over
+their bounds and camera clip byte); a cached face snapshots their surfaces
+when the entry is built and keeps them until it is rebuilt, since the
+original's cache key is only the light pose (2cd500) and its invalidation
+(523af0) follows dynamic-caster transitions, not movement.
 bevy_backend: one draw per instance where the original issues one
 direct-instanced draw per renderer surface, and instances outside a cascade
 or face are skipped (same depth). Measured at the eotw fly cluster:
 particle shadow draws 3.4/13.1/9.7/1.2 per frame with the instance cull
 versus 4.2/16.0/13.9/2.0 without (DH2_DEBUG_PARTICLE_SHADOWS).
 
-Open: the original's local-light cache handling of moving static-bucket
-owners is not traced; the rewrite's static local cache has no invalidation
-for them, so particle systems stay on the per-frame local layer. The
+Moving systems therefore keep a stale shadow in cached local faces, as in
+the original (see original-defects.md). With local faces cached, particle
+shadow draws at the fly cluster fell to 4.0/2.7/0.4 per frame. The
 vegetation particle shadow path (Dust District leaves) is wired but not yet
 exercised at runtime.
 

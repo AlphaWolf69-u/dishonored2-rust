@@ -568,6 +568,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             local_shadow_updates::prepare_local_shadow_cpu
                 .after(cull_small_local_lights)
                 .after(shadow_updates::collect_model_casters)
+                .after(shadow_updates::collect_particle_casters)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(
