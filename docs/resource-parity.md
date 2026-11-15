@@ -9937,7 +9937,7 @@ player assignment flags, uses ranged-owner equipment/ammunition dependency
 pairs, and applies 4df4e0 eligibility by actual equipment archetype. 4de4d0's
 priority comparison is boolean nonzero, confirmed at4de5f9/4de600 SETNZ and
 4de607 CMP AL,CL; it is not an invented numeric priority sort. Enum registration
-1419f1d60 assigns keyboard slots0..9 and controller slots10..13. 4de920 maps
+1419f1c60 assigns keyboard slots0..9 and controller slots10..13. 4de920 maps
 input25..34 and37..40;4de730 cycles only keyboard slots with positive equipment
 quantity. Selection returns the concrete inventory pair and declared equipment
 entity for demand acquisition. No item-name or HUD-index-to-key mapping is
