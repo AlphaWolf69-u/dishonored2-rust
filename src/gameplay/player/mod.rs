@@ -248,6 +248,9 @@ impl Player {
         let mut runtime = self.holstered_weapons.remove(identity).ok_or("registered ranged component is absent")?;
         runtime.refresh_attributes(&self.attributes);
         runtime.update_inventory(inventory.quantity(&runtime.ammunition().item));
+        // 63a090 invokes shared virtual148=63a2b0 only for an empty
+        // magazine; subclass virtual108 owns the resulting attachment update.
+        if runtime.magazine == 0 { runtime.reload_magazine(); }
         self.unequip_ranged();
         self.weapon = Some(runtime);
         self.weapon_identity = Some(identity.to_owned());

@@ -10371,3 +10371,34 @@ Projectile flight entity frames remain in the existing Z-up gameplay/WorldStorag
   rate. No synthetic component handle or first-joint root frame is created.
 - Validation: source review and whitespace checking only; no builds, tests,
   visible launches or visual/performance measurements.
+
+### Midnight local conditions and named graph loops (2026-11-15)
+
+- Owners: canonical `assets/entities/midnight.rs` projection and
+  `assets/midnight_scene.rs` declaration lease; the existing player Midnight
+  manager owns only per-instance bool values and loop counters. Typed-view
+  residency accounting includes the additional compact node metadata.
+- `ported`: static `EMNT_CONDBOOL` node names/defaults/true-false outputs
+  (`1401b9130`, `1415babc0`, `1415bad90`), default instance initialization
+  (`1407cd3e0`) and existing-variable bool updates (`1407d9050` ->
+  `1407d1770`). Start-time values apply before the initial graph walk, matching
+  `1408549c0`'s OnSceneStarted-before-Start order. No undeclared variable is
+  created by a setter.
+- `ported`: `EMNT_LOOP` count, looping/end outputs and deferred/instant break
+  settings (`1401b9fc0`, `1415bbb70`, `1407cd040`). Loop activation follows
+  the traversed looping output (`140195b50`, `1407cc8e0`, `1407cd1c0`),
+  including messages received before first entry. Named messages preserve
+  the actual force-bool argument, break markers, initial-scene events and
+  authored immediate-break snapshot blend (`1407d4cb0`, `1407cb9e0`).
+- Installed Windblast cast currently has one authored fire scene and no
+  condition/loop nodes. Its ShoudLoop/Loop requests therefore report no such
+  variable/message; no replacement loop or cast timer is synthesized.
+- `blocked`: external Kiscule/parameter/random condition providers, integer
+  condition nodes and flow-control-track message keys require their source
+  callback/track owners. The parser rejects unsupported conditional kinds;
+  named graph-loop support does not claim those separate message tracks.
+- Expected resource effect: one compact per-instance value bank, no new
+  clips, rigs or generic retained declaration trees. Loop path scratch is
+  allocated only for graphs declaring loops. No measured speedup claim.
+- Validation: source/declaration review and whitespace checking only; no
+  tests, builds, visible launches, visual or performance measurements.

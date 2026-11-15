@@ -226,6 +226,18 @@ struct Instance {
     parts: u8,
     /// The cast trees' md6s (body, left arm, right arm) for CONDMD6.
     md6: [String; TARGETS],
+    graph: GraphState,
+}
+
+struct GraphState { booleans: Vec<bool>, loops: Vec<i32> }
+impl GraphState {
+    fn new(scene: &PreparedScene) -> Self {
+        Self { booleans: scene.decl.bool_nodes.iter().map(|node|
+            scene.decl.bool_nodes.iter().find(|first| first.name == node.name).unwrap().default).collect(), loops: vec![-1; scene.decl.loops.len()] }
+    }
+    fn loop_slot(scene: &PreparedScene, index: usize) -> usize {
+        scene.decl.loops.iter().position(|node| node.name == scene.decl.loops[index].name).unwrap()
+    }
 }
 
 /// One tree's midnight node: its anim track's data and snapshot blender.
@@ -304,6 +316,52 @@ pub struct PointEvent {
 }
 
 impl Midnight {
+    /// 7d9050 -> 7d1770 only updates an existing named instance variable.
+    /// It neither adds undeclared variables nor advances the graph.
+    pub fn set_bool(&mut self, handle: u32, name: &str, value: bool) -> bool {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.handle == handle) else { return false };
+        let mut found = false;
+        for (index, node) in instance.scene.decl.bool_nodes.iter().enumerate() {
+            if node.name == name { instance.graph.booleans[index] = value; found = true; }
+        }
+        found
+    }
+
+    /// 7d4cb0 -> 7cb9e0: the last argument forces an active loop's immediate
+    /// break; it is not a message payload. Deferred breaks take the authored
+    /// end output on the next visit to the named graph loop.
+    pub fn send_message(&mut self, handle: u32, name: &str, force: bool, cast: Cast) -> Result<bool, String> {
+        let Some(i) = self.instances.iter().position(|instance| instance.handle == handle) else { return Ok(false) };
+        let instance = &mut self.instances[i];
+        let Some((index, node)) = instance.scene.decl.loops.iter().enumerate().find(|(_, node)| node.name == name) else { return Ok(false) };
+        let active = instance.graph.loops[index] >= 0;
+        instance.graph.loops[index] = if active { -2 } else { -3 };
+        if !active || !(force || node.break_instantly) { return Ok(true); }
+        let blend = node.break_blend;
+        let prepared = instance.scene.clone();
+        let parts = instance.parts;
+        let md6 = instance.md6.clone();
+        let next = Self::resolve_graph(&prepared, prepared.decl.scenes[instance.current].next,
+            md6.each_ref().map(String::as_str), &mut instance.graph)?;
+        let entered = next.map(|index| self.enter(&prepared, index, cast, parts, md6.each_ref().map(String::as_str))
+            .map(|(clips, events)| (index, clips, events))).transpose()?;
+        Self::interrupt_sounds(&self.instances[i], &mut self.sound_requests);
+        if let Some((index, clips, events)) = entered {
+            let instance = &mut self.instances[i];
+            (instance.current, instance.time, instance.abs, instance.carry) = (index, 0, 0, 0.0);
+            (instance.clips, instance.events) = (clips, events);
+            instance.playing_sounds.clear();
+            instance.sounds = Self::schedule_sounds(&prepared, index, parts, instance.equipment_emitters);
+            Self::initial_sounds(instance, &mut self.sound_requests);
+            Self::initial_events(instance, &mut self.point_events);
+        } else { self.instances.remove(i); }
+        for (target, node) in self.nodes.iter_mut().enumerate() {
+            if parts & (1 << target) != 0 { node.pending_snapshot = Some(blend); }
+        }
+        self.write(cast);
+        Ok(true)
+    }
+
     /// 8542b0 casts the actual inventory entity. A scene keeps that binding
     /// even when a later equipment change reuses the same hand slot.
     pub fn set_equipment_entity(&mut self, side: usize, entity: Option<crate::gameplay::entity_lifetime::EntityId>) {
@@ -425,19 +483,57 @@ impl Midnight {
     /// FUN_1407cc650: resolve a graph element; CONDMD6 (FUN_1407ccdc0)
     /// reads the md6 of the entity its node's group is cast to (`md6`:
     /// body, left arm, right arm).
-    pub fn resolve(scene: &PreparedScene, mut next: Next, md6: [&str; TARGETS]) -> Result<Option<usize>, String> {
+    pub fn resolve(scene: &PreparedScene, next: Next, md6: [&str; TARGETS]) -> Result<Option<usize>, String> {
+        Self::resolve_graph(scene, next, md6, &mut GraphState::new(scene))
+    }
+
+    fn resolve_graph(scene: &PreparedScene, mut next: Next, md6: [&str; TARGETS], graph: &mut GraphState) -> Result<Option<usize>, String> {
         // The native walker has no fixed graph-depth limit. A host validation
         // rejects a repeated pure CONDMD6 node instead of truncating valid
         // declaration chains at an arbitrary number of elements.
         let mut visited = std::collections::HashSet::new();
+        let mut path = Vec::new();
         loop {
+            if !scene.decl.loops.is_empty() { path.push(next); }
             match next {
                 Next::Final => return Ok(None),
                 Next::Scene(uid) => {
+                    // 195b50/7cc8e0/7cd1c0 associate loops with their
+                    // looping output in the traversed path. A message before
+                    // first entry takes the loop's end output instead; an
+                    // entered loop is active already during its first scene.
+                    if let Some((index, node)) = scene.decl.loops.iter().enumerate()
+                        .find(|(index, node)| graph.loops[GraphState::loop_slot(scene, *index)] == -3 && path.contains(&node.looping)) {
+                        graph.loops[GraphState::loop_slot(scene, index)] = -2;
+                        next = Next::Node(node.uid);
+                        path.clear();
+                        visited.clear();
+                        continue;
+                    }
+                    for (index, node) in scene.decl.loops.iter().enumerate() {
+                        let slot = GraphState::loop_slot(scene, index);
+                        if path.contains(&node.looping) && graph.loops[slot] < 0 { graph.loops[slot] = 0; }
+                    }
                     return scene.decl.scenes.iter().position(|s| s.uid == uid).map(Some).ok_or_else(|| format!("missing midnight scene {uid}"));
                 }
                 Next::Node(uid) => {
                     if !visited.insert(uid) { return Err("midnight graph does not reach a scene".into()); }
+                    if let Some((index, node)) = scene.decl.bool_nodes.iter().enumerate().find(|(_, node)| node.uid == uid) {
+                        next = if graph.booleans[index] { node.when_true } else { node.when_false };
+                        continue;
+                    }
+                    if let Some((index, node)) = scene.decl.loops.iter().enumerate().find(|(_, node)| node.uid == uid) {
+                        // 7cd040 /813280: break markers -3/-2 leave the
+                        // loop; ordinary visits increment before count test.
+                        let state = &mut graph.loops[GraphState::loop_slot(scene, index)];
+                        let broken = matches!(*state, -3 | -2);
+                        if !broken { *state = state.saturating_add(1); }
+                        if broken || (node.count >= 0 && *state >= node.count) {
+                            *state = -1;
+                            next = node.end;
+                        } else { next = node.looping; }
+                        continue;
+                    }
                     let node = scene.decl.nodes.iter().find(|n| n.uid == uid).ok_or_else(|| format!("missing midnight node {uid}"))?;
                     let target = cast_target(&node.group).ok_or_else(|| format!("CONDMD6 on group {} is not decoded", node.group))?;
                     let md6 = md6[target];
@@ -505,7 +601,17 @@ impl Midnight {
     /// scene offset. Keys before that time are not replayed; points exactly
     /// at the offset and clips containing it initialize there (7dfbd0).
     pub fn start_with_parts_at_seconds(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32) -> Result<u32, String> {
-        let Some(index) = Self::resolve(prepared, prepared.decl.first, md6)? else { return Ok(0) };
+        self.start_with_bools(prepared, md6, rate, cast, parts, seconds, &[])
+    }
+
+    /// 8549c0 invokes OnSceneStarted before Start resolves its first node.
+    /// These named values therefore apply before the initial graph walk.
+    pub fn start_with_bools(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32, booleans: &[(&str, bool)]) -> Result<u32, String> {
+        let mut graph = GraphState::new(prepared);
+        for (index, node) in prepared.decl.bool_nodes.iter().enumerate() {
+            if let Some((_, value)) = booleans.iter().rev().find(|(name, _)| *name == node.name) { graph.booleans[index] = *value; }
+        }
+        let Some(index) = Self::resolve_graph(prepared, prepared.decl.first, md6, &mut graph)? else { return Ok(0) };
         let time = (seconds * 1000.0) as i32;
         if time > prepared.decl.scenes[index].length_ms { return Err("Midnight StartTime is superior to first scene length".into()); }
         let (clips, events) = self.enter(prepared, index, cast, parts, md6)?;
@@ -520,6 +626,7 @@ impl Midnight {
             handle: self.next_handle, scene: prepared.clone(), current: index, time, abs: 0, carry: 0.0, rate,
             clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.map(str::to_owned),
             equipment_emitters: self.equipment_emitters,
+            graph,
         };
         Self::initial_sounds(&mut inst, &mut self.sound_requests);
         Self::initial_events(&inst, &mut self.point_events);
@@ -595,9 +702,9 @@ impl Midnight {
         // snapshot (the ended instance writes no further frame).
         for handle in ended_instances {
             let i = self.instances.iter().position(|inst| inst.handle == handle).unwrap();
-            let inst = &self.instances[i];
+            let inst = &mut self.instances[i];
             let (prepared, md6, parts) = (inst.scene.clone(), inst.md6.clone(), inst.parts);
-            match Self::resolve(&prepared, prepared.decl.scenes[inst.current].next, md6.each_ref().map(String::as_str))? {
+            match Self::resolve_graph(&prepared, prepared.decl.scenes[inst.current].next, md6.each_ref().map(String::as_str), &mut inst.graph)? {
                 None => {
                     self.instances.remove(i);
                 }

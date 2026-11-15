@@ -94,6 +94,26 @@ pub struct CondMd6 {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct CondBool {
+    pub uid: u32,
+    pub name: String,
+    pub default: bool,
+    pub when_true: Next,
+    pub when_false: Next,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loop {
+    pub uid: u32,
+    pub name: String,
+    pub count: i32,
+    pub break_instantly: bool,
+    pub break_blend: f32,
+    pub looping: Next,
+    pub end: Next,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct MidnightScene {
     /// m_settings (ctor FUN_140193e90): m_blendOutTime 0.3, m_blendInOverrideTime -1.
     pub blend_out_time: f32,
@@ -102,6 +122,8 @@ pub struct MidnightScene {
     pub groups: Vec<(u32, String)>,
     pub scenes: Vec<Scene>,
     pub nodes: Vec<CondMd6>,
+    pub bool_nodes: Vec<CondBool>,
+    pub loops: Vec<Loop>,
     pub first: Next,
 }
 
@@ -268,8 +290,34 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
         });
     }
     let mut nodes = Vec::new();
+    let mut bool_nodes = Vec::new();
+    let mut loops = Vec::new();
     for wrapper in items(child(edit, "m_nodes")) {
         let node = object(wrapper);
+        let properties = object(child(node, "m_properties"));
+        let id = uid(child(node, "m_uid"), "m_objUID")?;
+        match atom(node, "m_nodeType") {
+            Some("EMNT_CONDBOOL") => {
+                // 1b9130 defaults STATIC and true; 7cd3e0 initializes the
+                // per-instance value by the inherited node name.
+                if atom(properties, "m_conditionType").is_some_and(|kind| kind != "EMNCT_STATIC") {
+                    return Err("Midnight external bool condition provider is not admitted".into());
+                }
+                bool_nodes.push(CondBool { uid: id, name: atom(properties, "m_nodeName").unwrap_or("").to_owned(),
+                    default: atom(properties, "m_defaultPath").map_or(true, |value| value == "true"),
+                    when_true: next(child(node, "m_nextTrue"))?, when_false: next(child(node, "m_nextFalse"))? });
+                continue;
+            }
+            Some("EMNT_LOOP") => {
+                // 1b9fc0: infinite count, deferred break, .3s break blend.
+                loops.push(Loop { uid: id, name: atom(properties, "m_nodeName").unwrap_or("").to_owned(),
+                    count: int(properties, "m_nbLoop", -1)?, break_instantly: boolean(properties, "m_breakInstantly"),
+                    break_blend: float(properties, "m_breakInstantBlendTime", 0.3).unwrap_or(0.3),
+                    looping: next(child(node, "m_nextLooping"))?, end: next(child(node, "m_nextEndLoop"))? });
+                continue;
+            }
+            _ => {}
+        }
         if atom(node, "m_nodeType") != Some("EMNT_CONDMD6") {
             return Err(format!("midnight node {:?} is not decoded", atom(node, "m_nodeType")));
         }
@@ -278,7 +326,7 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
             choices.push((atom(choice, "m_md6").unwrap_or("").to_owned(), next(child(choice, "m_nextInfo"))?));
         }
         nodes.push(CondMd6 {
-            uid: uid(child(node, "m_uid"), "m_objUID")?,
+            uid: id,
             group: atom(object(child(node, "m_properties")), "m_groupName").unwrap_or("").to_owned(),
             next: choices,
         });
@@ -289,6 +337,8 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
         groups,
         scenes,
         nodes,
+        bool_nodes,
+        loops,
         first: next(child(edit, "m_firstElement"))?,
     })
 }
