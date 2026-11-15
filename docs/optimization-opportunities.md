@@ -2359,3 +2359,21 @@ Audiograph/objective integration sweep (2026-11-15):
   pair per update, with no resident-memory saving. This is intentionally left
   as an interface cleanup until it can be measured in that function; no CPU
   performance claim is attached to this feature batch.
+
+## Particle surface shadows (2026-11-15)
+
+- The original draws each admitted FX renderer surface into a shadow view
+  with one direct-instanced draw of its model shadow program. The rewrite
+  issues one ShadowInstance per particle instance (after skipping instances
+  outside the view, which does not change depth). The shadow pass's only
+  instanced family (World) is the world shader class, not the model rigid
+  program FX surfaces use, so it cannot stand in. Expected gain of a rigid
+  direct-instanced shadow variant: draw count per renderer surface drops
+  from its visible instance count to one, in the parallel collector and in
+  local static-cache builds; CPU time in prepare_particle_shadow_instances
+  and shadow encoding falls proportionally. Measured today at the eotw fly
+  cluster: 4.0/2.7/0.4 particle shadow draws per frame
+  (DH2_DEBUG_PARTICLE_SHADOWS), so the gain there is a few draws. It waits
+  for a measurement in a view with many world-material instances (Dust
+  District leaves, `red_leaves_falling`, once that emitter publishes
+  surfaces) to size it against the shader/pipeline work.
