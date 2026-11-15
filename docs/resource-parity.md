@@ -10405,3 +10405,15 @@ Projectile flight entity frames remain in the existing Z-up gameplay/WorldStorag
   allocated only for graphs declaring loops. No measured speedup claim.
 - Validation: source/declaration review and whitespace checking only; no
   tests, builds, visible launches, visual or performance measurements.
+
+Player-bound audio identity followup (2026-11-15): host Wwise object keys now
+retain the actual managed equipment generation and its 8542b0 casting bit.
+Prepared scene schedules preserve that key through continuations and stops;
+retirement acknowledgements remain retained until the gear owner releases the
+same generation, as for component-owned objects (708620/0c7a20). Delayed posts
+cannot resurrect a retired equipment generation. Native entity timespaces use
+DAT1422952d8 [3,4,2,0] for rates as well as delta; player-bound audio follows
+the real player timespace during Bend Time rather than assuming world group3.
+Prediction: no extra source/model/voice owner, no per-frame pose evaluation or
+allocation for publishing the already-computed equipment frames. No performance
+measurement or output-equivalence claim; final combined compilation pending.

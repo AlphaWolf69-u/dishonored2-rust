@@ -1550,8 +1550,10 @@ pub(super) fn prepare(
         let powers = super::powers::Powers::prepare(catalog,
             &declarations.powers, &declarations.outsider_mark, character,
             limits.assignments().map(|(path, _)| path))?;
-        commands.insert_resource(super::power_world::PowerWorld::prepare(catalog,
-            &powers.definitions.0)?);
+        // Actual owned power entities prepare their family dependencies in
+        // the owned-target worker; Journal metadata alone does not load them.
+        commands.insert_resource(super::power_world::PowerWorld::prepare(catalog, &[])?);
+        commands.insert_resource(super::windblast::Windblasts::prepare(catalog, std::iter::empty::<&str>())?);
         commands.insert_resource(powers);
         commands.insert_resource(super::player_actions::PlayerActions::prepare(
             catalog.clone(), &declarations)?);
@@ -1681,6 +1683,16 @@ pub(super) fn prepare(
             error!("Player entity publication failed: {error}");
             crate::platform::client_diagnostics::record(&format!("Player entity publication failed: {error}"));
             world.write_message(AppExit::error());
+            return;
+        }
+        if super::player_lifetime::id(world).is_some() {
+            if let Err(error) = super::equipment_identity::initialize(world) {
+                error!("Equipment identity publication failed: {error}");
+                crate::platform::client_diagnostics::record(&format!("Equipment identity publication failed: {error}"));
+                world.write_message(AppExit::error());
+                return;
+            }
+            super::equipment_attachment_admission::initialize(world);
         }
     });
     if lit {
