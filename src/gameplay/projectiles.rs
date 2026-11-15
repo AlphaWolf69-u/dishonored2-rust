@@ -34,7 +34,9 @@ impl Projectile {
 
     /// Predict the finite segment for this entity's actual time-space delta.
     /// The caller resolves that segment against canonical body/shape owners
-    /// before publishing the accepted frame. World coordinates are Y-up here.
+    /// before publishing the accepted frame. Entity coordinates are Z-up,
+    /// matching player/equipment frames and canonical WorldStorage; a Bevy
+    /// collision adapter performs its ordinary conversion at the boundary.
     pub fn flight(&self, dt: f32, world_gravity: Vec3) -> Option<Flight> {
         if !self.movement_enabled || dt == 0. { return None; }
         let mut velocity = self.velocity;
@@ -45,7 +47,7 @@ impl Projectile {
         else if self.maximum_speed * self.maximum_speed < speed_squared {
             velocity *= self.maximum_speed / speed_squared.sqrt();
         }
-        let gravity = Vec3::Y * (world_gravity.y * self.gravity_multiplier);
+        let gravity = Vec3::Z * (world_gravity.z * self.gravity_multiplier);
         let end = self.position + velocity * dt + gravity * (dt * dt * 0.5);
         Some(Flight { start: self.position, end, velocity: self.velocity + gravity * dt,
             out_of_range: self.declaration.maximum_range > 0.
