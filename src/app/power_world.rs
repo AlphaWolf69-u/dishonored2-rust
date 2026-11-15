@@ -55,13 +55,16 @@ struct State {
     /// placements are never admitted as invented targets.
     npcs: Vec<EntityId>,
     sounds: Vec<(String, Arc<SoundEventDeclaration>)>,
+    /// A depleted component's accepted stop request may still be queued or
+    /// playing. Retain the canonical declarations until audio acknowledges it.
+    retired_sounds: Vec<Arc<SoundEventDeclaration>>,
     pending_sounds: Vec<Request>,
     active: bool,
 }
 impl PowerWorld {
     pub fn empty(catalog:&Catalog)->Self {
         Self { catalog:catalog.identity(),bend_time:None,state:State { player:None,timer:None,
-            npcs:Vec::new(),sounds:Vec::new(),pending_sounds:Vec::new(),active:false },retired:false }
+            npcs:Vec::new(),sounds:Vec::new(),retired_sounds:Vec::new(),pending_sounds:Vec::new(),active:false },retired:false }
     }
     /// Existing live state always wins: reacquisition never swaps out its
     /// active clock lease, original timer slot, cancellation flag or sounds.
@@ -81,7 +84,35 @@ impl PowerWorld {
             ||!self.state.pending_sounds.is_empty()||self.bend_time.as_ref().is_some_and(BendTime::active) { return false; }
         self.bend_time=None;
         self.state.sounds.clear();
+        self.state.retired_sounds.clear();
         true
+    }
+    /// Actual inventory-driven component destruction: virtual110 at
+    ///141b9b748 dispatches61c4a0, which deactivates61cd60 before61bcc0's
+    ///cast cancellation. This is not an ordinary equip-selection callback.
+    /// Preserve this reusable world owner, real player/NPC bindings and every
+    ///queued stop sound; acquisition may install a fresh component later.
+    pub fn release_owned_sources(&mut self,clock:&mut ClockRuntime,events:&mut EntityEvents,
+        position:Vec3)->Result<(),String> {
+        if self.bend_time.as_ref().is_some_and(BendTime::active) {
+            clock.clock().map_err(str::to_owned)?;
+            if self.state.player.is_none() { return Err("Bend Time destruction has no actual player owner".into()); }
+        }
+        if let Some(power)=&mut self.bend_time {
+            power.stop(&mut Host { state:&mut self.state,clock,events,position });
+        }
+        self.bend_time=None;
+        self.state.timer=None;
+        self.state.active=false;
+        for (_,source) in self.state.sounds.drain(..) {
+            if !self.state.retired_sounds.iter().any(|old|Arc::ptr_eq(old,&source)) { self.state.retired_sounds.push(source); }
+        }
+        Ok(())
+    }
+    /// Only a real canonical audio completion may release these tails. Map
+    /// teardown already retains the whole resource until that same drain.
+    pub fn retire_released_sounds(&mut self,audio_retired:bool) {
+        if audio_retired&&self.state.pending_sounds.is_empty() { self.state.retired_sounds.clear(); }
     }
     /// Compatibility for an already ownership-filtered subset. Ordinary map
     /// setup uses empty(); the owned source worker supplies absorb() later.

@@ -58,10 +58,8 @@ struct Prepared {
     path: String,
     definition: Definition,
     damage: Option<Arc<DamageDeclaration>>,
-    // Keep actual acquired entity descriptors/component projection with all
-    // active instances and pending query/FX callbacks, rather than rereading.
-    _entity_chain: Vec<Vec<(String, Value)>>,
-    _component: Vec<(String, Value)>,
+    // The typed projection and canonical damage lease survive every active
+    // instance/query/FX callback. Generic parser staging is not a resource.
     class: usize,
     fx: Vec<WindFx>,
 }
@@ -157,6 +155,12 @@ pub(super) struct Windblasts {
 impl Windblasts {
     pub fn has_active(&self) -> bool {
         !self.active.is_empty()
+    }
+    /// True inventory depletion releases future spawn prototypes. Already
+    /// spawned entities keep their same source Arc through queries/FX tails.
+    /// Ordinary selection changes must not call this method.
+    pub fn release_owned_sources(&mut self) {
+        self.prepared.clear();
     }
     pub fn prepare_power(
         catalog: &Catalog,
@@ -305,8 +309,6 @@ impl Windblasts {
                 path: path.to_owned(),
                 definition,
                 damage,
-                _entity_chain: chain,
-                _component: fields,
                 class,
                 fx,
             }));
