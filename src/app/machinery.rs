@@ -15,8 +15,14 @@ pub(super) struct AmbientMachinery {
     /// Render +0x1c31 keeps the main view's visibility for two frame parities.
     visible_previous: Vec<bool>,
     skins: Vec<super::physics_skinning::SystemSkin>,
+    /// The dynamic bodies the Havok particles collide with, after the last
+    /// step; None without any.
+    moving: Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>>,
 }
 impl AmbientMachinery {
+    pub(super) fn moving_world(&self) -> Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>> {
+        self.moving.clone()
+    }
     /// Placements whose MD6 vertices are re-posed from simulated bodies.
     pub(super) fn deformed_placements(&self) -> std::collections::HashSet<usize> {
         self.skins.iter().map(|s| s.placement()).collect()
@@ -86,6 +92,7 @@ impl AmbientMachinery {
             sources: None,
             visible_previous,
             skins,
+            moving: None,
         })
     }
 }
@@ -249,6 +256,8 @@ pub(super) fn update_machinery(
         clock.delta(3).expect("five clock groups"),
         |placement, delta| pending.0.push(ModelPose { placement, delta }),
     );
+    let moving = machinery.physics.moving_world();
+    machinery.moving = moving.bodies.iter().any(Option::is_some).then(|| std::sync::Arc::new(moving));
 }
 
 /// After update_machinery: skin simulated physics-system placements.

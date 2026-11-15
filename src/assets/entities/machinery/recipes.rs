@@ -18,6 +18,17 @@ pub struct BodyRecipe {
     pub start_asleep: bool,
     /// Bound to this assembly body (`bindInfo`): shares its motion.
     pub attached_to: Option<usize>,
+    /// A dynamic body's collision, for the Havok particles' moving-body
+    /// collisions.
+    pub collision: Option<std::sync::Arc<BodyCollision>>,
+}
+
+/// An hknp body's collision as PhysicsCollide queries it: the cooked
+/// shape's query geometry, the body material (+0x6a) and filter (+0x6c).
+pub struct BodyCollision {
+    pub shapes: std::sync::Arc<physworld::query_geometry::QueryShapes>,
+    pub material: Option<crate::assets::entities::physics_material::PhysicsMaterial>,
+    pub filter: u32,
 }
 
 /// A body registered with the wind manager (positive `m_windSpeedFactor`):
@@ -323,6 +334,7 @@ pub(crate) fn load_with_sources(
                 let basis = physworld::rigid_body_basis(p.rotation.map(|v| [v[0], v[1], v[2], 0.]));
                 let orientation = physworld::rotation_quaternion(basis);
                 let mut wind = None;
+                let mut collision = None;
                 let mass = match body.physics_behavior.as_deref() {
                     Some("BEHAVIOR_STATIC") => None,
                     Some("BEHAVIOR_DYNAMIC") => {
@@ -365,6 +377,37 @@ pub(crate) fn load_with_sources(
                             ))?
                         };
                         mass.set_mass(target);
+                        // The cooked shape the hknp body is created with.
+                        let mut path = physworld::physics_shape_asset_path(&key);
+                        let mut factor = 1.;
+                        if let Ok(Some(bytes)) = catalog.read(&path) {
+                            if let Some((target, scale)) = physworld::standalone_hkx_alias(&bytes) {
+                                (path, factor) = (target, scale);
+                            }
+                        }
+                        let shapes = shape_sources
+                            .acquire(catalog, &path, physworld::source::ShapeUse::Machinery)
+                            .map_err(|error| error.message())
+                            .and_then(|source| source.ok_or_else(|| format!("missing {path}")))
+                            .and_then(|source| source.physics.query_shapes(&source.bytes, 1))
+                            .map(|shapes| if factor == 1. { shapes } else { shapes.scaled(factor) })
+                            .map_err(|error| format!("{path}: {error}"));
+                        let material = body.material.as_deref().map(|name| {
+                            entities::physics_material::physics_material(name, |path| {
+                                texts.read(catalog, path, crate::assets::declaration_texts::PhysicsUse::Machinery)
+                            })
+                        });
+                        match (shapes, material.transpose(), body.collision_filter()) {
+                            (Ok(shapes), Ok(material), Some(filter)) => {
+                                collision = Some(std::sync::Arc::new(BodyCollision {
+                                    shapes: std::sync::Arc::new(shapes),
+                                    material,
+                                    filter,
+                                }));
+                            }
+                            (Err(error), ..) | (_, Err(error), _) => eprintln!("{id}: no particle collision: {error}"),
+                            (.., None) => eprintln!("{id}: no particle collision: unknown collision filter"),
+                        }
                         // 140808ea0: a locked axis (decl +0xc4 bits 3..5)
                         // replaces the major-axis space with identity and
                         // zeroes that inertia lane; set-zero reciprocals then
@@ -433,6 +476,7 @@ pub(crate) fn load_with_sources(
                         .start_asleep
                         .ok_or_else(|| format!("{id}: invalid m_startAsleep"))?,
                     attached_to: None,
+                    collision,
                 })
             };
             for id in ids.into_iter().filter(|id| !is_system(id)) {

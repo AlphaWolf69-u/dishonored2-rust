@@ -777,6 +777,7 @@ pub(crate) fn simulate_effects(
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
         particle_systems.collision = inputs.collision.clone();
+        particle_systems.moving = inputs.moving.clone();
         match world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
             particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater, &inputs.world) {
             Ok(()) => *world_error = None,

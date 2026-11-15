@@ -327,3 +327,112 @@ impl CompoundQueryVisitor for InstanceVisitor<'_, '_> {
         }
     }
 }
+
+/// One leaf of a closest-point query (cada50's convex dispatch, d10960):
+/// the closest point on the leaf and its normal in world axes, the signed
+/// distance, the leaf's shape key, and whether the leaf polytope keeps face
+/// connectivity (shape flag 2 with connectivity, +0x20/+0x60).
+#[derive(Clone, Copy, Debug)]
+pub struct LeafClosestPoint {
+    pub position: [f32; 4],
+    pub normal: [f32; 4],
+    pub distance: f32,
+    pub shape_key: u32,
+    pub connectivity: bool,
+}
+
+impl ShapePointQuery {
+    /// Each convex leaf of `shapes` placed at `transform` within `threshold`
+    /// of `point`; `submit` returns the collector's new early-out distance.
+    /// approximate_: compound children are visited in instance order rather
+    /// than through the compound tree; the nearest and second nearest leaves
+    /// the collector keeps do not depend on that order.
+    pub fn closest_leaves(
+        &mut self,
+        shapes: &QueryShapes,
+        transform: ShapeMatrix,
+        point: [f32; 3],
+        threshold: &mut f32,
+        submit: &mut dyn FnMut(LeafClosestPoint) -> f32,
+    ) -> Result<(), String> {
+        let state = CompoundShapeState {
+            transform: ScaledShapeTransform { world_from_local: transform, scale: [1.; 4], offset: [0.; 4] },
+            scaled: false,
+            keep_radius: false,
+            radius: 0.,
+        };
+        let relative = super::shape_transform::relative_rigid(IDENTITY, transform);
+        let point = PointSphere::new([point[0], point[1], point[2], 1.], 0.).vertex;
+        self.closest_leaf(shapes, shapes.root(), state, relative, ShapeKey { value: u32::MAX, bits: 0 }, point, threshold, submit, 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn closest_leaf(
+        &mut self,
+        shapes: &QueryShapes,
+        item: usize,
+        state: CompoundShapeState,
+        relative: ShapeMatrix,
+        key: ShapeKey,
+        point: [f32; 4],
+        threshold: &mut f32,
+        submit: &mut dyn FnMut(LeafClosestPoint) -> f32,
+        depth: usize,
+    ) -> Result<(), String> {
+        if depth > 8 {
+            return Err("compound query geometry nests too deeply".into());
+        }
+        let shape = shapes.get(item)?;
+        match &shape.geometry {
+            QueryGeometry::Polytope(polytope) => {
+                let prepared = self.support.prepare(ConvexSupportInput {
+                    shape_type: shape.header.shape_type,
+                    vertices: &polytope.vertices,
+                    radius: polytope.radius,
+                    scaled: state.scaled.then_some(ConvexSupportScale {
+                        scale: [state.transform.scale[0], state.transform.scale[1], state.transform.scale[2]],
+                        offset: [state.transform.offset[0], state.transform.offset[1], state.transform.offset[2]],
+                        radius: state.radius,
+                    }),
+                })?;
+                if let Some(hit) = query_point(point, prepared.vertices, relative, 0., prepared.radius, *threshold)? {
+                    let world = state.transform.world_from_local;
+                    *threshold = submit(LeafClosestPoint {
+                        position: transform_point(world, hit.point),
+                        normal: super::shape_transform::rotate_vector(world, hit.normal),
+                        distance: hit.distance[0],
+                        shape_key: key.value,
+                        connectivity: shape.header.flags & 2 != 0 && polytope.connectivity.is_some(),
+                    });
+                }
+                Ok(())
+            }
+            QueryGeometry::Compound(compound) => {
+                for (index, instance) in compound.instances.iter().enumerate() {
+                    if instance.flags & 64 == 0 {
+                        continue;
+                    }
+                    let child = shapes.get(instance.shape)?;
+                    let vertices = match &child.geometry {
+                        QueryGeometry::Polytope(p) => p.vertices.as_slice(),
+                        _ => &[],
+                    };
+                    let prepared = prepare_instance(
+                        instance,
+                        state,
+                        relative,
+                        CompoundChildGeometry {
+                            convex: child.header.flags & 1 != 0,
+                            shape_type: child.header.shape_type,
+                            vertices,
+                            radius: child.header.radius,
+                        },
+                    )?;
+                    let child_key = key.compound_child(index as u16, compound.key_bits)?;
+                    self.closest_leaf(shapes, instance.shape, prepared.state, prepared.relative, child_key, point, threshold, submit, depth + 1)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}

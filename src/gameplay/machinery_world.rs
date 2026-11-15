@@ -58,6 +58,8 @@ pub struct MachineryBody {
     angular: [f32; 3],
     integrated_linear: [f32; 3],
     pub wind: Option<BodyWindState>,
+    /// The body's collision, which the Havok particles collide with.
+    pub collision: Option<std::sync::Arc<crate::entities::machinery::recipes::BodyCollision>>,
     /// Owner entity placement: its LOD level, static owners included. Only
     /// the first body of an entity group carries it.
     pub entity_placement: Option<usize>,
@@ -100,6 +102,7 @@ impl MachineryBody {
             angular: [0.; 3],
             integrated_linear: [0.; 3],
             wind: None,
+            collision: None,
             entity_placement: placement,
             group: 0,
             mass_frame: ([0., 0., 0., 1.], [0.; 4]),
@@ -262,6 +265,17 @@ impl MachineryBody {
     }
 
     /// The body motion center (77edf0 sample point).
+    /// The hknpMotion record PhysicsCollide reads: centre of mass,
+    /// orientation, linear velocity, angular velocity in motion space.
+    pub fn motion_record(&self) -> crate::gameplay::havok_fx::dynamic_collide::MotionRecord {
+        crate::gameplay::havok_fx::dynamic_collide::MotionRecord {
+            centre: self.motion.pose.center,
+            orientation: self.motion.pose.orientation,
+            linear: [self.linear[0], self.linear[1], self.linear[2], 0.],
+            angular: [self.angular[0], self.angular[1], self.angular[2], 0.],
+        }
+    }
+
     pub fn mass_center(&self) -> [f32; 3] {
         xyz(self.motion.pose.center)
     }
@@ -495,6 +509,7 @@ impl MachineryWorld {
                     MotionDeactivation::new(world.bodies.len() as u32, MODE_DEACTIVATE);
                 // 809d80 -> 140c8e930: m_startAsleep adds the body inactive.
                 created.active = !body.start_asleep || world.deactivation_disabled;
+                created.collision = body.collision.clone();
                 if let (Some(wind), Some(mass)) = (&body.wind, body.mass) {
                     created.wind = Some(BodyWindState {
                         speed_factor: wind.speed_factor,
@@ -696,6 +711,41 @@ impl MachineryWorld {
             })
             .fold(0., f32::max)
     }
+    /// The dynamic bodies with collision as the Havok particles' moving
+    /// world, indexed like `bodies`. approximate_: each AABB is the shape's
+    /// calcAabb at the body transform; hknp's packed broadphase AABB
+    /// (1280e20, decoded by c85490) also grows by the body's motion and
+    /// contact distance, which the machinery solver does not track.
+    pub fn moving_world(&self) -> crate::gameplay::havok_fx::dynamic_collide::MovingWorld {
+        use crate::gameplay::havok_fx::{dynamic_collide::MovingBody, world_collide::SurfaceMaterial};
+        let mut materials = Vec::new();
+        let bodies = self
+            .bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                let collision = body.collision.as_ref().filter(|_| body.dynamic())?;
+                let transform = body.body_transform();
+                let bounds = collision.shapes.bounds(collision.shapes.root(), transform).ok()?;
+                let material = collision.material.as_ref().map_or(0xffff, |material| {
+                    materials.push(SurfaceMaterial::from_physics(material));
+                    (materials.len() - 1) as u16
+                });
+                Some(MovingBody {
+                    id: index as u32,
+                    active: body.active(),
+                    transform,
+                    motion: body.motion_record(),
+                    bounds,
+                    shapes: collision.shapes.clone(),
+                    material,
+                    filter: collision.filter,
+                })
+            })
+            .collect();
+        crate::gameplay::havok_fx::dynamic_collide::MovingWorld { bodies, materials }
+    }
+
     pub fn joint_count(&self) -> usize {
         self.joints.len()
     }

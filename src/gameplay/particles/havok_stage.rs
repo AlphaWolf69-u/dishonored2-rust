@@ -22,10 +22,12 @@ use crate::{
     float::{add, divide, multiply, subtract},
     gameplay::{
         havok_fx::{
+            dynamic_collide::{DynamicCollide, DynamicStep, MovingWorld},
             integrate::Integrate,
             physics_collide::{self, CollideScratch, CollideTuning, CollideWorld, StaticCache},
             solve_contacts::{BodyState, SolveContacts},
             solve_convex_contacts::SolveConvexContacts,
+            spatial_partition::SpatialPartition,
             world_collide::WorldCollide,
             Pipeline,
         },
@@ -72,6 +74,29 @@ impl ContactSolver {
         }
     }
 
+    /// The body states, and SolveConvexContacts' shape records with the
+    /// per-body index when it has at least two (140fc1370 bVar85), with
+    /// +0x28 friction, +0x2c restitution and +0x38 friction threshold.
+    #[allow(clippy::type_complexity)]
+    fn split_convex(
+        &mut self,
+    ) -> (
+        &mut [BodyState],
+        (Option<(&[crate::gameplay::havok_fx::solve_convex_contacts::ConvexShape], &[i32])>, [f32; 3]),
+    ) {
+        match self {
+            Self::Sphere(solver) => {
+                let material = [solver.friction, solver.restitution, solver.friction_threshold];
+                (&mut solver.bodies, (None, material))
+            }
+            Self::Convex(solver) => {
+                let material = [solver.friction, solver.restitution, solver.friction_threshold];
+                let shapes = (solver.shapes.len() >= 2).then_some((&solver.shapes[..], &solver.shape_index[..]));
+                (&mut solver.bodies, (shapes, material))
+            }
+        }
+    }
+
     /// +0x28 friction, +0x2c restitution.
     pub fn own_material(&self) -> [f32; 2] {
         match self {
@@ -115,6 +140,10 @@ pub struct Collisions {
     scratch: CollideScratch,
     /// 14081a5d0 of m_layer, masked 0xf7dfffff.
     pub filter: u32,
+    /// The hkfxEffects::SpatialPartition PhysicsCollide requires (140fbefb0
+    /// looks it up or adds it) and its moving-body part.
+    partition: SpatialPartition,
+    dynamic: DynamicCollide,
 }
 
 impl Collisions {
@@ -124,6 +153,14 @@ impl Collisions {
         for &body in bodies {
             self.cache[body as usize] = StaticCache::default();
         }
+        self.partition.allocate(bodies);
+        self.dynamic.allocate(bodies);
+    }
+
+    /// Slot 9 of the partition (140fd7180) and PhysicsCollide (140fbf580).
+    fn release(&mut self, bodies: &[i32]) {
+        self.partition.release(bodies);
+        self.dynamic.release(bodies);
     }
 }
 
@@ -178,6 +215,9 @@ pub struct HavokStageSimulation {
     fields: [Vec<super::field::FieldState>; 3],
     /// The level collision for the spawn queries (+0x400, 1401db580).
     pub spawn_world: Option<(Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
+    /// The dynamic world bodies PhysicsCollide's moving-body part collides
+    /// with; none is an empty world.
+    pub moving: Option<Arc<MovingWorld>>,
     /// Events for the system's ordinary stages and FX event instances,
     /// delivered by the owning system after each frame and step.
     pub deliveries: Vec<super::events::Delivery>,
@@ -334,6 +374,7 @@ impl HavokStageSimulation {
             attractors: Vec::new(),
             fields: [Vec::new(), Vec::new(), Vec::new()],
             spawn_world: None,
+            moving: None,
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
                 solver: match shape {
@@ -348,6 +389,8 @@ impl HavokStageSimulation {
                 cache: vec![StaticCache::default(); capacity],
                 scratch: CollideScratch::default(),
                 filter: crate::gameplay::collision_filter::filter_info(definition.collisions.layer) & 0xf7df_ffff,
+                partition: SpatialPartition::new(capacity),
+                dynamic: DynamicCollide::new(capacity, u32::MAX).expect("the closest-point dispatch enables every shape type"),
             }),
         };
         {
@@ -568,11 +611,32 @@ impl HavokStageSimulation {
                 if let Some(collisions) = collisions.as_deref_mut() {
                     collisions.allocate(bodies);
                 }
+            } else if let Some(collisions) = collisions.as_deref_mut() {
+                collisions.release(bodies);
             }
         });
         self.pipeline.allocator.update_allocated();
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
         let dt = if 0. <= dt { dt } else { 0. };
+        // The collide mode (1401df5a0): LOW -> 2, MEDIUM/HIGH -> 1,
+        // GROUND_TRUTH -> 4.
+        let mode = match self.declaration.havok_stages[self.index].collisions.accuracy {
+            0 => 2,
+            1 | 2 => 1,
+            3 => 4,
+            accuracy => return Err(format!("unknown Havok particle collision accuracy {accuracy}")),
+        };
+        let empty = MovingWorld::default();
+        let moving = self.moving.as_deref().unwrap_or(&empty);
+        // The effects' begin passes: PhysicsCollide gathers the dynamic
+        // bodies near each body (140fbf850).
+        if let Some(collisions) = self.collisions.as_mut() {
+            let Collisions { solver, tuning, filter, partition, dynamic, cache, .. } = collisions;
+            let (_, convex) = solver.split_convex();
+            let step = Self::dynamic_step(dt, mode, &self.pipeline, *tuning, *filter, convex.1, moving, convex.0);
+            let allocator = &self.pipeline.allocator;
+            dynamic.begin(&step, partition, &|body| allocator.is_allocated(body), &self.pipeline.linear, cache);
+        }
         // arkVectorFieldsHavokEffect (1402165f0): active vector fields set
         // the velocity, active acceleration fields add dt times theirs.
         let stage = &self.declaration.havok_stages[self.index].stage;
@@ -655,13 +719,13 @@ impl HavokStageSimulation {
         // solve, then Integrate.
         if let Some(collisions) = self.collisions.as_mut() {
             let level = level.as_ref().ok_or("Havok particle collisions need the level collision map")?;
-            // 1401df5a0: LOW -> collide mode 2, MEDIUM/HIGH -> 1, GROUND_TRUTH -> 4.
-            let mode = match self.declaration.havok_stages[self.index].collisions.accuracy {
-                0 => 2,
-                1 | 2 => 1,
-                3 => 4,
-                accuracy => return Err(format!("unknown Havok particle collision accuracy {accuracy}")),
-            };
+            // "Dynamic CD" before "Static CD" (140fc1370).
+            {
+                let Collisions { solver, tuning, filter, partition, dynamic, cache, world, .. } = &mut *collisions;
+                let (states, convex) = solver.split_convex();
+                let step = Self::dynamic_step(dt, mode, &self.pipeline, *tuning, *filter, convex.1, moving, convex.0);
+                dynamic.collide(&step, partition, &bodies, &self.pipeline.linear, states, cache, world)?;
+            }
             if mode == 4 {
                 let states = collisions.solver.bodies().to_vec();
                 physics_collide::static_ground_truth(
@@ -717,9 +781,16 @@ impl HavokStageSimulation {
             self.pipeline.angular.as_deref_mut(),
         );
         self.pipeline.trash(&trash);
-        // Stage 1: PhysicsCollide's CCD pass.
+        // Stage 1: PhysicsCollide's CCD pass, dynamic part first.
         if let Some(collisions) = self.collisions.as_mut() {
             let states = collisions.solver.bodies();
+            collisions.dynamic.ccd(
+                self.pipeline.inner_radius,
+                &bodies,
+                &|body| states[body as usize].state,
+                moving,
+                &mut self.pipeline.linear,
+            );
             physics_collide::static_ccd(
                 self.pipeline.inner_radius,
                 &bodies,
@@ -728,9 +799,41 @@ impl HavokStageSimulation {
                 &mut self.pipeline.linear,
             );
         }
+        // The effects' end passes: the partition's spheres and order
+        // (140fd75f0) and PhysicsCollide's "Remove dynamic hits" (140fc01d0).
+        if let Some(collisions) = self.collisions.as_mut() {
+            collisions.partition.end(dt, self.pipeline.radius, &bodies, &self.pipeline.linear);
+            collisions.dynamic.end(&bodies);
+        }
         self.pipeline.steps += 1;
         self.pipeline.time = add(dt, self.pipeline.time);
         self.post_step(world_gravity)
+    }
+
+    /// The inputs of PhysicsCollide's moving-body passes.
+    #[allow(clippy::too_many_arguments)]
+    fn dynamic_step<'a>(
+        dt: f32,
+        mode: i32,
+        pipeline: &Pipeline,
+        tuning: CollideTuning,
+        filter: u32,
+        [friction, restitution, friction_threshold]: [f32; 3],
+        world: &'a MovingWorld,
+        convex: Option<(&'a [crate::gameplay::havok_fx::solve_convex_contacts::ConvexShape], &'a [i32])>,
+    ) -> DynamicStep<'a> {
+        DynamicStep {
+            dt,
+            tuning,
+            radii: [pipeline.inner_radius, pipeline.radius],
+            own: [friction, restitution],
+            friction_threshold,
+            plane: pipeline.plane,
+            mode,
+            world,
+            filter,
+            convex,
+        }
     }
 
     /// 1401e7d40.
@@ -933,6 +1036,8 @@ impl HavokStageSimulation {
                 if let Some(collisions) = collisions.as_deref_mut() {
                     collisions.allocate(bodies);
                 }
+            } else if let Some(collisions) = collisions.as_deref_mut() {
+                collisions.release(bodies);
             }
         });
         let definition = &self.declaration.havok_stages[self.index].stage;

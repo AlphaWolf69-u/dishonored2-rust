@@ -10,6 +10,8 @@
 pub mod allocator;
 #[path = "havok_fx/convex_hull.rs"]
 pub mod convex_hull;
+#[path = "havok_fx/dynamic_collide.rs"]
+pub mod dynamic_collide;
 #[path = "havok_fx/integrate.rs"]
 pub mod integrate;
 #[path = "havok_fx/packed.rs"]

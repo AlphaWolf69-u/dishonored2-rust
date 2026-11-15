@@ -11,6 +11,8 @@ pub struct PhysicsQueryPublication {
     /// particle collisions (bevy_backend: the original queries the hknp
     /// world's compressed meshes).
     pub collision: Option<(Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
+    /// The dynamic machinery bodies, for their moving-body collisions.
+    pub moving: Option<Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>>,
 }
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct PhysicsQueryFrame(pub Option<Arc<PhysicsQueryPublication>>);

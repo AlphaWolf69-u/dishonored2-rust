@@ -158,6 +158,49 @@ impl SpatialPartition {
         }
     }
 
+    /// +0x58: a body's bounding sphere from the last end pass.
+    pub fn sphere(&self, body: usize) -> [f32; 4] {
+        self.spheres[body]
+    }
+
+    fn members(&self) -> impl Iterator<Item = usize> + '_ {
+        let tree = self.in_tree.iter().enumerate().filter(|(_, &in_tree)| in_tree).map(|(body, _)| body);
+        tree.chain(self.list.iter().map(leaf_body))
+    }
+
+    /// 140fd8390 -> 140fd9850 over the static tree (+0x50 +0x8), then the
+    /// list's tree (+0x50 +0x20): the bodies whose sphere box overlaps
+    /// [low, high]. approximate_: the tree bodies come in index order and
+    /// the list bodies in list order, not in each tree's traversal order.
+    pub fn query(&self, low: [f32; 3], high: [f32; 3], out: &mut Vec<i32>) {
+        out.clear();
+        for body in self.members() {
+            let s = self.spheres[body];
+            if (0..3).all(|i| subtract(s[i], s[3]) <= high[i] && low[i] <= add(s[3], s[i])) {
+                out.push(body as i32);
+            }
+        }
+    }
+
+    /// Both trees' root bounds (140fbf850's min/max over the root nodes):
+    /// the union of the members' sphere boxes; None without members.
+    pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        let mut result = None::<([f32; 3], [f32; 3])>;
+        for body in self.members() {
+            let s = self.spheres[body];
+            let (low, high): ([f32; 3], [f32; 3]) =
+                (std::array::from_fn(|i| subtract(s[i], s[3])), std::array::from_fn(|i| add(s[3], s[i])));
+            result = Some(match result {
+                None => (low, high),
+                Some((l, h)) => (
+                    std::array::from_fn(|i| if l[i] < low[i] { l[i] } else { low[i] }),
+                    std::array::from_fn(|i| if h[i] > high[i] { h[i] } else { high[i] }),
+                ),
+            });
+        }
+        result
+    }
+
     /// Slot 8 (140fd7020): new bodies join the end of the list.
     pub fn allocate(&mut self, bodies: &[i32]) {
         for &body in bodies {

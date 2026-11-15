@@ -25,6 +25,10 @@ pub struct CollideTuning {
     /// +0x8c / +0x84: bodies younger than this use the smaller maximum.
     pub young_age: f32,
     pub young_maximum: f32,
+    /// +0xa8: dynamic re-evaluations per body and pass (20).
+    pub reevaluation_factor: f32,
+    /// +0xac: faster dynamic bodies gather no neighbours (FLT_MAX).
+    pub maximum_body_speed: f32,
 }
 
 impl Default for CollideTuning {
@@ -36,6 +40,8 @@ impl Default for CollideTuning {
             displacement_factor: 10.,
             young_age: f32::from_bits(0x3c23_d70a),
             young_maximum: f32::from_bits(0x7f7f_ffee),
+            reevaluation_factor: 20.,
+            maximum_body_speed: f32::from_bits(0x7f7f_ffee),
         }
     }
 }
@@ -211,7 +217,7 @@ pub fn static_ccd(
 }
 
 /// RSQRTPS without refinement, as 140fc1370 uses it for speeds.
-fn rsqrt_estimate(value: f32) -> f32 {
+pub(super) fn rsqrt_estimate(value: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
@@ -224,7 +230,7 @@ fn rsqrt_estimate(value: f32) -> f32 {
 }
 
 /// RCPPS without refinement (the edge-line distances).
-fn rcp_estimate(value: f32) -> f32 {
+pub(super) fn rcp_estimate(value: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         use std::arch::x86_64::{_mm_cvtss_f32, _mm_rcp_ss, _mm_set_ss};
@@ -243,7 +249,7 @@ fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// sqrt through RSQRTPS + Newton, masked to 0 at or below zero (14007ef60).
-fn length(squared: f32) -> f32 {
+pub(super) fn length(squared: f32) -> f32 {
     multiply(crate::gameplay::constraint_solver::inverse_length(squared), squared)
 }
 

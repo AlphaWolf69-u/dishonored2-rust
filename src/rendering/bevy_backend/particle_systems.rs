@@ -41,6 +41,9 @@ pub(crate) struct ParticleSystems {
     /// The level collision map and its active owners for this frame's
     /// Havok particle collisions; None outside a level.
     pub collision: Option<(std::sync::Arc<crate::gameplay::navigation::CollisionMap>, std::sync::Arc<[bool]>)>,
+    /// The dynamic world bodies for the Havok particles' moving-body
+    /// collisions this frame.
+    pub moving: Option<std::sync::Arc<crate::gameplay::havok_fx::dynamic_collide::MovingWorld>>,
 }
 impl Default for ParticleSystems {
     fn default() -> Self {
@@ -51,6 +54,7 @@ impl Default for ParticleSystems {
             links,
             workers: Vec::new(),
             collision: None,
+            moving: None,
         }
     }
 }
@@ -121,11 +125,13 @@ impl ParticleSystems {
         let seed = &mut self.seed;
         let collision = self.collision.as_ref().map(|(map, owners)| (&**map, &**owners));
         let spawn_world = &self.collision;
+        let moving = &self.moving;
         self.links.update_chain(head, |index| {
             let slot = &mut slots[usize::from(index)];
             let system = slot.as_mut().ok_or("particle pool slot absent")?;
             if system.effect.active {
                 for stage in &mut system.havok_stages {
+                    stage.moving = moving.clone();
                     let queries = &stage.definition().spawn_collisions;
                     if queries.position_sphere_query || queries.velocity_ray_cast {
                         stage.spawn_world = spawn_world.clone();

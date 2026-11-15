@@ -803,10 +803,36 @@ loses w. Remaining, in order:
   SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
   140fd5250, prune, create from the SpatialPartition's closest
   neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/
-  140fd5d00), ocean collisions (1), spawn vector fields (1). Moving world
-  bodies: dynamic CD (140fc1370 1353-3320, per-body cache in the hit
-  body's space over the begin pass's neighbour lists +0x80/+0x90/+0xa0,
-  closest points 140cada50, point velocity 1412b7990) is not ported.
+  140fd5d00), ocean collisions (1), spawn vector fields (1).
+- Moving world bodies connected (`havok_fx::dynamic_collide`): the
+  PhysicsCollide begin pass (140fbf850: active dynamic bodies near the
+  system join the lists of the bodies whose swept box, grown by twice the
+  radius, overlaps their AABB; five entries per body), the CD pass's
+  dynamic section (140fc1370 1350-3315: early out, cached body
+  validation against its sphere/plane in the body's space, query distance,
+  neighbour loop with conservative distances shrunk by the relative point
+  velocity, 1/3 s re-evaluation timers, re-evaluation budget 20 per body,
+  wake-ups, sleeping bodies dropped and limiting the sphere, cache store
+  with the plane and sphere in the hit body's space, DynamicContact
+  plane/velocities/COM with the plane lock and material), the CCD's
+  dynamic part (9569-9680) and the end pass (140fc01d0). The
+  SpatialPartition is now maintained per stage. 1412b7990 (point velocity,
+  world angular velocity, track bound) matches the installed function on
+  3000/3000 cases (tests/fixtures/motion_track_cases.txt). The bodies are
+  the machinery world's dynamic assembly bodies with their cooked shape
+  (`BodyRecipe::collision`, `MachineryWorld::moving_world`); closest points
+  use the convex point query (d10960) over the shape's query geometry.
+  approximate_/bevy_backend: body AABBs are the shape's calcAabb at the
+  body transform (hknp grows them by motion and contact distance,
+  1280e20); world bodies are visited in index order, partition members in
+  tree-then-list order; compound children in instance order. Not covered:
+  physics-system (ragdoll/cable) bodies and bodies attached to an assembly
+  body (no published shape), mesh-shaped dynamic bodies (the
+  nearest-mesh-point cache, 140fe2ab0/140fe51e0), the moved-body set
+  (teleports; the machinery never teleports). As in the original, the
+  static CD queries only static bodies and sleeping dynamic bodies join no
+  lists, so unsimulated loose props stay non-colliding. Not yet compared
+  against a capture of the running original.
 - Convex contacts ported (`havok_fx::solve_convex_contacts`):
   SolveConvexContacts 140fbb350 matches the installed solver on 720/720
   bodies of synthetic chunks (tests/fixtures/convex_contact_cases.txt,
