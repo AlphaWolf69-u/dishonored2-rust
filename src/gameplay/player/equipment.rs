@@ -27,6 +27,7 @@ pub enum EquipmentBinding {
 }
 
 pub struct EquipmentTree {
+    pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
     pub rig: Arc<Rig>,
     pub model: String,
     pub animations: Vec<EdgeAnimation>,

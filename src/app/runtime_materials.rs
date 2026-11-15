@@ -13,6 +13,9 @@ use crate::rendering::particles::{definition::ParticleResources, image_resources
 use bevy::platform::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 
+#[path = "equipment_admission.rs"]
+pub(super) mod equipment_admission;
+
 /// Temporary worker view of requested existing assets plus newly reserved
 /// assets. Snapshots are never published back over the live asset identity.
 pub(super) struct MaterialBatch<A: Asset> {
@@ -180,6 +183,8 @@ impl MaterialAssets {
 /// scene image owner and render-world readiness gate are separate consumers.
 pub(super) struct PreparedBatch {
     pub assets: MaterialAssets,
+    pub equipment: Vec<super::player_arms::PreparedEquipmentModel>,
+    pub equipment_commands: Option<super::setup_commands::SetupCommands<'static, 'static>>,
     pub surfaces: Vec<super::particle_surface::PreparedSurface>,
     pub surface_images: HashMap<String, RuntimeImages>,
     pub decals: Vec<PreparedDecal>,
@@ -199,6 +204,9 @@ pub(super) struct MaterialWork {
     pub sources: Arc<crate::rendering::particles::world_sources::WorldFxSources>,
     pub decal_requests: Vec<(String, bool)>,
     pub mesh_requests: HashSet<(String, String)>,
+    pub equipment: Vec<Arc<crate::assets::equipment::Descriptor>>,
+    pub equipment_allocator: Option<bevy::ecs::entity::RemoteAllocator>,
+    pub player_depth_hack: f32,
     pub snapshot: MaterialSnapshot,
     pub assets: MaterialAssets,
     pub cancelled: Arc<AtomicBool>,
@@ -263,14 +271,44 @@ impl MaterialWork {
             misses: 0, suppressed_transparent: 0, cutout: 0, blended: 0,
             probe_samples: 0, probe_sample_misses: 0, lit: bindings.lit,
         };
+        let mut equipment = Vec::new();
+        let mut equipment_commands = self.equipment_allocator.take().map(|allocator| {
+            super::setup_commands::SetupCommands::Prepared {
+                allocator,
+                queue: Default::default(),
+            }
+        });
+        let mut equipment_dependencies = HashMap::new();
+        for descriptor in &self.equipment {
+            check_active()?;
+            resolver.cache.take_dependencies();
+            equipment.push(super::player_arms::prepare_equipment_model(
+                descriptor.clone(),
+                self.player_depth_hack,
+                &mut resolver,
+                &mut self.assets.meshes,
+                equipment_commands
+                    .as_mut()
+                    .ok_or("equipment allocator is absent")?,
+            )?);
+            for key in resolver.cache.take_dependencies() {
+                equipment_dependencies
+                    .entry(key)
+                    .or_insert_with(HashSet::new)
+                    .insert(MaterialConsumer::Equipment(descriptor.entity.clone()));
+            }
+        }
         let world_meshes: Vec<_> = self.sources.world_meshes().into_iter()
-            .filter(|(source, material, _)| self.mesh_requests.contains(&(source.clone(), material.clone())))
+            .filter(|(source, material, _)| {
+                self.mesh_requests.contains(&(source.clone(), material.clone()))
+            })
             .collect();
         let expected = world_meshes.len();
         let mut surfaces = Vec::new();
         let mut world_images = std::collections::HashMap::new();
         let mut dynamic_materials = HashSet::new();
-        let mut dependencies: HashMap<MaterialKey, HashSet<MaterialConsumer>> = HashMap::new();
+        let mut dependencies: HashMap<MaterialKey, HashSet<MaterialConsumer>> =
+            equipment_dependencies;
         for (source, material, model) in world_meshes {
             check_active()?;
             let consumer = MaterialConsumer::Mesh((source.clone(), material.clone()));
@@ -331,7 +369,10 @@ impl MaterialWork {
         check_active()?;
         drop(particles);
         drop(programs);
-        Ok(PreparedBatch { assets: self.assets, surfaces, surface_images, decals, cache, image_paths, all_images, dependencies })
+        Ok(PreparedBatch { assets: self.assets,
+            equipment,
+            equipment_commands,
+            surfaces, surface_images, decals, cache, image_paths, all_images, dependencies })
     }
 }
 
@@ -388,7 +429,9 @@ type MeshKey = (String, String);
 type DecalKey = (String, bool);
 type MaterialKey = (String, MaterialGeometry);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum MaterialConsumer { Mesh(MeshKey), Decal(DecalKey) }
+enum MaterialConsumer { Mesh(MeshKey), Decal(DecalKey),
+    Equipment(String),
+}
 
 struct SurfaceLease {
     entity: Entity,
@@ -400,6 +443,7 @@ struct CacheLease {
     images: Vec<Arc<ParticleImage>>,
     leases: Vec<SourceLease>,
     consumers: HashSet<MaterialConsumer>,
+    equipment: Vec<std::sync::Weak<crate::assets::equipment::Descriptor>>,
 }
 struct PendingMaterialWork {
     generation: u64,
@@ -428,6 +472,7 @@ pub(super) struct RuntimeMaterialCoordinator {
     waiting: Option<WaitingMaterialBatch>,
     published_generation: Option<u64>,
     handled_image_failure: Option<u64>,
+    equipment: equipment_admission::EquipmentAdmissions,
 }
 impl Drop for RuntimeMaterialCoordinator {
     fn drop(&mut self) {
@@ -447,7 +492,8 @@ impl RuntimeMaterialCoordinator {
     pub(super) fn retire_acquisition(&mut self) -> bool {
         self.waiting = None;
         self.cancel_acquisition();
-        let Some(work) = &mut self.task else { return true };
+        let Some(work) = &mut self.task else { return true;
+        };
         let task = work.task.get_mut().unwrap_or_else(|error| error.into_inner());
         if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none() {
             return false;
@@ -487,7 +533,9 @@ impl MaterialBinding {
             }
             queue.diffuse_image_handles.get(slot).and_then(Option::as_ref).cloned()
                 .map(|image| (slot, role, image))
-                .ok_or_else(|| format!("runtime material image slot {slot} has no resident handle"))
+                .ok_or_else(|| {
+                        format!("runtime material image slot {slot} has no resident handle")
+                    })
         }).collect::<Result<_, _>>()?;
         Ok(Self { handle, resident, sort })
     }
@@ -576,7 +624,8 @@ pub(super) fn needs_update(
     images: Option<Res<super::runtime_fx_images::RuntimeFxImages>>,
     prewarm: Res<crate::rendering::bevy_backend::world_effects::DynamicMaterialPrewarm>,
 ) -> bool {
-    let (Some(state), Some(request), Some(decal)) = (state, request, decal) else { return false };
+    let (Some(state), Some(request), Some(decal)) = (state, request, decal) else { return false;
+    };
     let generation = request.generation;
     if generation != decal.generation { return false; }
     if images.as_deref().and_then(|images| images.failure.as_ref()).is_some_and(|(failed, _)| *failed == generation)
@@ -584,6 +633,7 @@ pub(super) fn needs_update(
     if !state.initialized || state.revision != Some(generation)
         || state.seen_retired != prewarm.retired_signal.load(Ordering::Acquire)
         || (state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0))
+        || equipment_admission::needs_update(&state)
         || state.task.is_some() || state.waiting.is_some() || state.published_generation != Some(generation) { return true; }
     if request.images_ready != request.image_revision { return false; }
     (request.completed.load(Ordering::Acquire) != generation && request.gpu_completed.load(Ordering::Acquire) == generation)
@@ -593,9 +643,11 @@ pub(super) fn needs_update(
 /// Advance a single level-owned material preparation batch. All archive and
 /// program decoding is on IO workers; only asset/slot publication runs here.
 pub(super) fn coordinate(world: &mut World) {
-    let Some(mut state) = world.remove_resource::<RuntimeMaterialCoordinator>() else { return };
+    let Some(mut state) = world.remove_resource::<RuntimeMaterialCoordinator>() else { return;
+    };
     let result = coordinate_inner(world, &mut state);
     if let Err(error) = result {
+        equipment_admission::failed(world, &mut state, &error);
         let generation = world.get_resource::<super::usable_effects::DynamicWorldMaterials>().map_or(0, |request| request.generation);
         if generation != 0 {
             bevy::log::warn!("Runtime FX material preparation failed: {error}");
@@ -615,10 +667,12 @@ pub(super) fn coordinate(world: &mut World) {
 }
 
 fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -> Result<(), String> {
-    use crate::rendering::bevy_backend::{particle_meshes::ParticleMeshProxy, projected_decals::{ProjectedDecalProxy, DynamicProxyReadiness, ProxyReadinessBatch}, world_effects::DynamicMaterialPrewarm};
-    let Some(request) = world.get_resource::<super::usable_effects::DynamicWorldMaterials>() else { return Ok(()) };
+    use crate::rendering::bevy_backend::{particle_meshes::ParticleMeshProxy, projected_decals::{DynamicProxyReadiness, ProjectedDecalProxy, ProxyReadinessBatch}, world_effects::DynamicMaterialPrewarm};
+    let Some(request) = world.get_resource::<super::usable_effects::DynamicWorldMaterials>() else { return Ok(());
+    };
     let generation = request.generation;
-    let Some(decal_request) = world.get_resource::<super::usable_effects::DynamicDecalMaterials>() else { return Ok(()) };
+    let Some(decal_request) = world.get_resource::<super::usable_effects::DynamicDecalMaterials>() else { return Ok(());
+    };
     if generation != decal_request.generation { return Ok(()); }
     if state.handled_image_failure != Some(generation) {
         if let Some((_, error)) = world.get_resource::<super::runtime_fx_images::RuntimeFxImages>()
@@ -627,6 +681,7 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         }
     }
     let retired = world.resource::<DynamicMaterialPrewarm>().retired_signal.load(Ordering::Acquire);
+    equipment_admission::retire_expired(state);
     let expired = state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0);
     if state.initialized && state.revision == Some(generation) && state.seen_retired == retired
         && !expired && state.task.is_none() && state.waiting.is_none() && state.published_generation == Some(generation) {
@@ -661,11 +716,14 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         state.published_generation = None;
         for lease in leases.iter() { add_lease(&mut state.leases, lease); }
         state.leases.retain(|lease| lease.strong_count() != 0);
-        state.pending_prune = state.leases.iter().any(|old| !leases.iter().any(|active| std::sync::Weak::ptr_eq(old, active)));
+        state.pending_prune = state.leases.iter().any(|old| {
+            !leases.iter().any(|active| std::sync::Weak::ptr_eq(old, active))
+        });
         let mut mesh_leases: HashMap<MeshKey, Vec<SourceLease>> = HashMap::new();
         let mut decal_leases: HashMap<DecalKey, Vec<SourceLease>> = HashMap::new();
         for lease in &state.leases {
-            let Some(source) = lease.upgrade() else { continue };
+            let Some(source) = lease.upgrade() else { continue;
+            };
             for (mesh, material, _) in source.world_meshes() { add_lease(mesh_leases.entry((mesh, material)).or_default(), lease); }
             for key in source.decal_materials() { add_lease(decal_leases.entry(key).or_default(), lease); }
         }
@@ -693,13 +751,16 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         }
         for cached in state.cache.values_mut() {
             cached.leases.retain(|lease| lease.strong_count() != 0);
+            cached.equipment.retain(|lease| lease.strong_count() != 0);
             for consumer in &cached.consumers {
                 let owners = match consumer { MaterialConsumer::Mesh(key) => mesh_leases.get(key),
-                    MaterialConsumer::Decal(key) => decal_leases.get(key) };
+                    MaterialConsumer::Decal(key) => decal_leases.get(key),
+                    MaterialConsumer::Equipment(_) => None,
+                };
                 if let Some(owners) = owners { for lease in owners { add_lease(&mut cached.leases, lease); } }
             }
         }
-        let old_cache: Vec<_> = state.cache.iter().filter(|(_, cached)| cached.leases.is_empty()).map(|(key, _)| key.clone()).collect();
+        let old_cache: Vec<_> = state.cache.iter().filter(|(_, cached)| cached.leases.is_empty() && cached.equipment.is_empty()).map(|(key, _)| key.clone()).collect();
         for (name, geometry) in old_cache {
             world.resource_mut::<RuntimeMaterialOwner>().cache.remove_dynamic(&name, geometry);
             state.cache.remove(&(name, geometry));
@@ -729,7 +790,11 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
             let mapping = {
                 let images = world.resource::<super::runtime_fx_images::RuntimeFxImages>();
                 state.waiting.as_ref().unwrap().batch.image_paths.iter()
-                    .map(|path| images.slot(path).ok_or_else(|| format!("runtime image {path} has no registered scene slot")))
+                    .map(|path| {
+                        images.slot(path).ok_or_else(|| {
+                            format!("runtime image {path} has no registered scene slot")
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?
             };
             let waiting = state.waiting.take().unwrap();
@@ -753,9 +818,19 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         .filter(|key| !state.static_meshes.contains_key(key) && !state.surfaces.contains_key(key)).collect();
     let decals: Vec<_> = sources.decal_materials().into_iter()
         .filter(|key| !state.static_decals.contains(key) && !state.decals.contains_key(key)).collect();
-    if !meshes.is_empty() || !decals.is_empty() {
+    let equipment = equipment_admission::requested(world, state);
+    if !meshes.is_empty() || !decals.is_empty() || !equipment.is_empty() {
         let mut requests: Vec<_> = meshes.iter().map(|(_, material)| (material.clone(), MaterialGeometry::Model)).collect();
-        requests.extend(decals.iter().map(|(name, world)| (name.clone(), if *world { MaterialGeometry::World } else { MaterialGeometry::Model })));
+        requests.extend(
+            equipment
+                .iter()
+                .flat_map(|descriptor| descriptor.geometry.surfaces.iter())
+                .filter(|surface| !crate::material::is_null_material(&surface.material_path))
+                .map(|surface| (surface.material_path.clone(), MaterialGeometry::Model)),
+        );
+        requests.extend(decals.iter().map(|(name, world)| {
+            (name.clone(), if *world { MaterialGeometry::World } else { MaterialGeometry::Model })
+        }));
         let mut snapshot = MaterialSnapshot::capture(world.resource::<RuntimeMaterialOwner>(), world.resource::<super::SceneRenderQueue>(),
             &requests, world.resource::<Assets<super::ProbeMaterial>>(), world.resource::<Assets<super::DecalMaterial>>())?;
         let assets = MaterialAssets::new(world, &mut snapshot);
@@ -769,7 +844,15 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         let superseded = Arc::new(AtomicBool::new(false));
         let work = MaterialWork { bindings: world.resource::<RuntimeMaterialOwner>().bindings.clone(), catalog, environment,
             probes, programs, particles, sources, decal_requests: decals, mesh_requests: meshes, snapshot, assets,
-            cancelled, superseded: superseded.clone() };
+            cancelled, superseded: superseded.clone(),
+            equipment_allocator: (!equipment.is_empty())
+                .then(|| world.entity_allocator().build_remote_allocator()),
+            player_depth_hack: if equipment.is_empty() { 0.0 } else {
+                world.get_resource::<super::player_arms::PlayerArms>()
+                    .ok_or("equipment render owner is absent")?.player_depth_hack
+            },
+            equipment,
+        };
         let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
         state.task = Some(PendingMaterialWork { generation, superseded, task: Mutex::new(
             bevy::tasks::IoTaskPool::get().spawn(async move {
@@ -816,7 +899,10 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
 
 fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     batch: PreparedBatch, slots: &[usize]) -> Result<(), String> {
-    let PreparedBatch { assets, surfaces, surface_images, decals, cache, image_paths: _, all_images, dependencies } = batch;
+    let PreparedBatch { assets,
+        equipment,
+        equipment_commands,
+        surfaces, surface_images, decals, cache, image_paths: _, all_images, dependencies } = batch;
     if all_images.len() != slots.len() { return Err("runtime material slot mapping has the wrong length".into()); }
     let images_by_slot: HashMap<_, _> = slots.iter().copied().zip(all_images.iter().cloned()).collect();
     let mapped = world.resource::<RuntimeMaterialOwner>().cache.map_dynamic(cache, slots)?;
@@ -828,8 +914,10 @@ fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
         Ok((key, material, binding))
     }).collect::<Result<Vec<_>, String>>()?;
     let surfaces = surfaces.into_iter().map(|surface| {
-        let roles = surface.images.iter().map(|(slot, role)| slots.get(*slot).copied()
-            .map(|slot| (slot, *role)).ok_or("runtime surface image mapping is incomplete"))
+        let roles = surface.images.iter().map(|(slot, role)| {
+                    slots.get(*slot).copied()
+            .map(|slot| (slot, *role)).ok_or("runtime surface image mapping is incomplete")
+                })
             .collect::<Result<Vec<_>, _>>()?;
         let binding = MaterialBinding::prepare(world, &assets, super::MaterialHandle::Probe(surface.handle.clone()),
             &roles, None)?;
@@ -837,8 +925,12 @@ fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     }).collect::<Result<Vec<_>, String>>()?;
     let image_owner = world.resource::<super::runtime_fx_images::RuntimeFxImages>();
     let decals = decals.into_iter().map(|decal| {
-        let roles = decal.images.iter().map(|(role, image)| image_owner.slot(&image.path)
-            .map(|slot| (slot, *role)).ok_or_else(|| format!("runtime decal image {} is not registered", image.path)))
+        let roles = decal.images.iter().map(|(role, image)| {
+                    image_owner.slot(&image.path)
+            .map(|slot| (slot, *role)).ok_or_else(|| {
+                            format!("runtime decal image {} is not registered", image.path)
+                        })
+                })
             .collect::<Result<Vec<_>, _>>()?;
         let binding = MaterialBinding::prepare(world, &assets, super::MaterialHandle::Decal(decal.handle.clone()),
             &roles, None)?;
@@ -850,10 +942,16 @@ fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     let lease_for = |consumer: &MaterialConsumer, source: &FxSources| match consumer {
         MaterialConsumer::Mesh(key) => source.world_meshes().iter().any(|(mesh, material, _)| mesh == &key.0 && material == &key.1),
         MaterialConsumer::Decal(key) => source.decal_materials().contains(key),
+        MaterialConsumer::Equipment(_) => false,
     };
     for (key, consumers) in &dependencies {
         if let Some(cached) = state.cache.get_mut(key) {
             cached.consumers.extend(consumers.iter().cloned());
+            equipment_admission::add_material_leases(
+                &state.equipment,
+                consumers,
+                &mut cached.equipment,
+            );
             for lease in &state.leases {
                 if let Some(source) = lease.upgrade() {
                     if consumers.iter().any(|consumer| lease_for(consumer, &source)) { add_lease(&mut cached.leases, lease); }
@@ -874,7 +972,25 @@ fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
                 if consumers.iter().any(|consumer| lease_for(consumer, &source)) { add_lease(&mut leases, lease); }
             }
         }
-        state.cache.insert(key, CacheLease { handle: material.handle, images, leases, consumers: consumers.clone() });
+        let mut equipment_leases = Vec::new();
+        equipment_admission::add_material_leases(
+            &state.equipment,
+            consumers,
+            &mut equipment_leases,
+        );
+        state.cache.insert(key, CacheLease { handle: material.handle, images, leases, consumers: consumers.clone(),
+                equipment: equipment_leases,
+            },
+        );
+    }
+    if let Some(commands) = equipment_commands {
+        commands.publish(world);
+    }
+    if !equipment.is_empty() {
+        let mut arms = world.resource_mut::<super::player_arms::PlayerArms>();
+        for model in equipment {
+            arms.publish_equipment_model(model)?;
+        }
     }
     for (surface, binding) in surfaces {
         let key = (surface.source.clone(), surface.material.clone());

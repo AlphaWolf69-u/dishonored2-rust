@@ -10099,3 +10099,60 @@ Validation for this change: source inspection and git diff whitespace validation
 only; no compilation, tests, visual launches, gameplay captures or measured cost
 comparisons. Root owns module export, initial publication, update ordering and
 the potion-result drain into this actual statistics owner.
+
+
+Equipment material/mesh host admission followup (2026-11-15):
+`app/runtime_materials.rs` now includes the focused `equipment_admission.rs`
+child. The existing MaterialWork resolver, cache snapshot, AssetBatch writers,
+particle image identities and RuntimeFxImages registration/image-readiness
+boundary prepare the actual demanded equipment surfaces on the IO worker.
+The child does not reconstruct a parallel resolver or maintain another
+material/mesh cache. Reserved entity identities use the existing remote
+command allocator. Publication transfers those same reserved assets and
+commands into PlayerArms only after actual image bindings are available.
+Unresolved equipment materials and empty drawable geometry reject admission;
+the established body/arm path retains its previous behavior.
+
+The canonical dynamic cache tracks actual equipment descriptor weak leases
+alongside FX source leases. PlayerArms retains the descriptor, exact mesh and
+inverse-bind handles through its submitted-work acknowledgement on unequip.
+Only after the final real descriptor lease expires can the shared coordinator
+remove equipment-only cache entries/bindings and image demand. A simultaneous
+FX consumer keeps the same cached material alive. Cancellation/supersession
+uses the existing single MaterialWork slot and worker retirement; discarded
+batches never publish their reserved surfaces or replace the live player.
+Level shutdown still waits on that worker and the established outgoing
+render-world acknowledgement before Catalog purge. `admitted` means CPU
+asset and image-binding publication, not a fabricated first-draw/GPU-ready
+measurement; normal Bevy render readiness remains the existing consumer.
+
+The exclusive physical completion adapter consumes PlayerActions completed
+requests/removal notices. It rejects obsolete wanted-slot generations, stale
+clip banks and exhausted inventory; native equipment states own action locks and
+scene timing. Actual source callbacks commit only the
+actual selected slot; and binds the ranged runtime to the same inventory
+identity/quantity owner. Power takeover does not get overwritten by a delayed
+physical removal. Selection/shortcut/autoequip arbitration and power workers
+remain with PlayerActions/inventory; no second event drain is added here.
+
+`assets/equipment::Sources::metadata` separately projects immutable
+Equipment/Ranged metadata without any model, rig, tree, animation, material,
+image or GPU acquisition. Descriptor retains this same Arc via Deref. Actual
+source constructors extend metadata to placeable450ad0->6376c0(3),
+throwable632bf0->6376c0(4), Heart611800->619ea0(7,1),
+TimeShiftDevice44bbe0->619ea0(9,1), and the verified concrete powers through
+61ba50->619ea0(5,1). This makes metadata-only shortcut/startup arbitration
+possible without acquiring the arsenal. Other unported constructors still
+fail explicitly. Entity cpntaudio Settings use the established component
+projection and travel with the equipment tree; sound-bank ownership is
+unchanged. Runtime action/physics behavior of these additional metadata
+families is not certified by reading their metadata.
+
+Prediction: equipment adds only selected surface meshes/joints, its actual
+image leases and weak material dependency records to existing owners; there
+are no ordinary-frame archive reads or repeated material/mesh construction.
+No measured performance/residency savings are claimed. Status: source-backed
+implementation plus host worker/asset/GPU lifecycle integration, awaiting the
+parent's single integrated compilation batch and eventual explicitly
+requested runtime/visual validation. No tests, builds, visible launches or
+visual checks were run for this change.

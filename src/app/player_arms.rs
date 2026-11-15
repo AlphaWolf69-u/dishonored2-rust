@@ -50,6 +50,7 @@ struct ArmModel {
     /// surfaces' SkinnedMesh reads them (created on first use).
     joints: Vec<Entity>,
     inverse_bindposes: Option<Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
+    _equipment: Option<std::sync::Arc<crate::assets::equipment::Descriptor>>,
     skeleton: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
     info: std::sync::Arc<bmd6::ModelInfo>,
     surfaces: Vec<ArmSurface>,
@@ -108,7 +109,93 @@ pub(super) struct PlayerArms {
     action_capture: [super::player_arm_capture::ActionCapture; 3],
 }
 
+pub(super) struct PreparedEquipmentModel(ArmModel);
+
+pub(super) fn prepare_equipment_model(
+    descriptor: std::sync::Arc<crate::assets::equipment::Descriptor>,
+    player_depth_hack: f32, resolver: &mut MaterialResolver,
+    meshes: &mut dyn AssetWrite<Mesh>, commands: &mut super::setup_commands::SetupCommands,
+) -> Result<PreparedEquipmentModel, String> {
+    let (hack, parameter) = arm_model_depth_hack(player_depth_hack);
+    let mut model = prepare_model(descriptor.model.clone(), descriptor.geometry.clone(),
+        descriptor.rig.skeleton.clone(), hack, parameter, &[], true, resolver, meshes, commands)?;
+    if model.surfaces.is_empty() {
+        return Err(format!("{} has no drawable equipment surfaces", descriptor.model));
+    }
+    model._equipment = Some(descriptor);
+    Ok(PreparedEquipmentModel(model))
+}
+
+/// Ordinary rigid BML1 surface admission for authored equipment children.
+/// This is the same geometry/material owner as the skinned parent; it does
+/// not invent a skeleton for an entity whose source model is rigid.
+#[allow(clippy::too_many_arguments)]
+fn prepare_rigid_surface(
+    source: &crate::bmodel::Surface, source_index: usize, material_override: Option<&str>,
+    player_depth_hack: f32, cast_shadows: bool, resolver: &mut MaterialResolver,
+    meshes: &mut dyn AssetWrite<Mesh>, commands: &mut super::setup_commands::SetupCommands,
+) -> Result<Option<ArmSurface>, String> {
+    let path = material_override.unwrap_or(&source.material_path);
+    if material::is_null_material(path) || source.positions.is_empty() || source.indices.is_empty() { return Ok(None); }
+    let resolved = resolver.get(path, 0, [0.0; 3])
+        .ok_or_else(|| format!("equipment child material unresolved: {path}"))?;
+    let MaterialHandle::Probe(handle) = &resolved.handle else {
+        return Err(format!("equipment child material is not an ordinary model material: {path}"));
+    };
+    let mut mesh = source_mesh_from_uvs(&source.positions, MeshUvs::Packed(&source.uvs),
+        &source.indices, &source.packed_channels, false);
+    let (hack, parameter) = arm_model_depth_hack(player_depth_hack);
+    if hack > 0.0 {
+        mesh.insert_attribute(super::materials::DH2_MODEL_DEPTH_HACK,
+            vec![parameter.unwrap_or(1.0); source.positions.len()]);
+    }
+    mesh.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
+    let mesh = meshes.add(mesh);
+    let mut entity = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(handle.clone()),
+        Transform::IDENTITY, GlobalTransform::IDENTITY, Visibility::Hidden,
+        MeshTag(resolved.probe_index), bevy::camera::visibility::NoFrustumCulling));
+    if !cast_shadows { entity.insert(bevy::light::NotShadowCaster); }
+    Ok(Some(ArmSurface { entity: entity.id(), _mesh: mesh, source_index,
+        probe_index: resolved.probe_index, material: resolved.handle.clone() }))
+}
+
+fn publish_model_lighting(
+    bounds: [[f32; 3]; 2], query: &mut crate::probe_lighting::ProbeQuery,
+    surfaces: &[ArmSurface], probes: Option<&crate::probe_lighting::ProbeLightingSet>,
+    buffer: Option<&mut model_motion::ModelProbeLighting>,
+    patches: &mut crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches,
+    buffers: &mut Assets<ShaderBuffer>,
+) {
+    let center = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
+    if let (Some(probes), Some(buffer)) = (probes, buffer) {
+        if let Some(lighting) = probes.interpolate_query_sh(center, query) {
+            let record = model_motion::probe_record_bytes(lighting.object_shader_record());
+            for part in surfaces {
+                if part.probe_index & 0x8000_0000 == 0 {
+                    buffer.write(patches, buffers, part.probe_index, &record);
+                }
+            }
+        }
+    }
+}
+
 impl PlayerArms {
+    pub(super) fn publish_equipment_model(&mut self, model: PreparedEquipmentModel) -> Result<(), String> {
+        if self.arms.iter().any(|entry| entry.model == model.0.model) {
+            return Err(format!("equipment model already published: {}", model.0.model));
+        }
+        self.arms.push(model.0);
+        Ok(())
+    }
+
+    pub(super) fn has_equipment_model(&self, entity: &str) -> bool {
+        self.arms.iter().skip(self.body_models).any(|model|
+            model._equipment.as_ref().is_some_and(|descriptor| descriptor.entity == entity))
+    }
+
+    pub(super) fn equipment_entities(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.arms.iter().skip(self.body_models).flat_map(|model| model.surfaces.iter().map(|part| part.entity))
+    }
     /// Admit only the inventory-selected model, using its canonical rig and
     /// BMD6 owners. World poses arrive through the ordinary ArmRender list.
     pub(super) fn add_equipment_model(
@@ -121,7 +208,7 @@ impl PlayerArms {
         }
         let (hack, parameter) = arm_model_depth_hack(self.player_depth_hack);
         let entry = prepare_model(model, info, rig.skeleton.clone(), hack, parameter,
-            &[], resolver, meshes, commands)?;
+            &[], true, resolver, meshes, commands)?;
         self.arms.push(entry);
         Ok(())
     }
@@ -306,7 +393,7 @@ pub(super) fn load_player_arms(
             view.visible_legs_materials.as_slice()
         } else { &[] };
         arms.push(prepare_model(model, info, skeleton, model_depth_hack, parameter,
-            material_overrides, resolver, meshes, commands)?);
+            material_overrides, false, resolver, meshes, commands)?);
     }
     let capture_geometry = std::env::var("DH2_DEBUG_HAND_GEOMETRY").as_deref() == Ok("1");
     crate::platform::client_diagnostics::record(&format!(
@@ -333,7 +420,7 @@ pub(super) fn load_player_arms(
 fn prepare_model(
     model: String, info: std::sync::Arc<bmd6::ModelInfo>,
     skeleton: std::sync::Arc<edge_skeleton::EdgeSkeleton>,
-    model_depth_hack: f32, parameter: Option<f32>, material_overrides: &[String],
+    model_depth_hack: f32, parameter: Option<f32>, material_overrides: &[String], require_materials: bool,
     resolver: &mut MaterialResolver, meshes: &mut dyn AssetWrite<Mesh>,
     commands: &mut super::setup_commands::SetupCommands,
 ) -> Result<ArmModel, String> {
@@ -365,6 +452,7 @@ fn prepare_model(
         let material_path = material_overrides.get(index).map(String::as_str)
             .unwrap_or(&surface.material_path);
         let Some(resolved) = resolver.get(material_path, 0, [0.0; 3]) else {
+            if require_materials { return Err(format!("equipment material unresolved: {model} {material_path}")); }
             eprintln!("Arm material unresolved {model} {material_path}");
             continue;
         };
@@ -411,6 +499,7 @@ fn prepare_model(
         model,
         joints: Vec::new(),
         inverse_bindposes: None,
+        _equipment: None,
         skeleton,
         info,
         surfaces,
@@ -656,17 +745,8 @@ pub(super) fn update_player_arms(
                 [1.0; 3],
             );
             arm.world_bounds = Some(bounds);
-            let center = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
-            if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_mut()) {
-                if let Some(lighting) = probes.interpolate_query_sh(center, &mut arm.lighting) {
-                    let record = model_motion::probe_record_bytes(lighting.object_shader_record());
-                    for part in &arm.surfaces {
-                        if part.probe_index & 0x8000_0000 == 0 {
-                            handle.write(&mut patches, &mut buffers, part.probe_index, &record);
-                        }
-                    }
-                }
-            }
+            publish_model_lighting(bounds, &mut arm.lighting, &arm.surfaces, probes,
+                probe_buffer.as_deref_mut(), &mut patches, &mut buffers);
             Ok(())
         });
         if !matches!(skinned, Some(Ok(()))) {

@@ -1,7 +1,7 @@
 //! bevy_backend: unequipped first-person models use the existing render
 //! queue's submission acknowledgement before their resource leases retire.
 //! Geometry, materials, probe queries and skinning remain in PlayerArms.
-use super::{ArmModel, PlayerArms};
+use super::PlayerArms;
 use bevy::{
     prelude::*,
     render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems, renderer::RenderQueue},
@@ -14,7 +14,7 @@ use std::sync::{
 struct Lease {
     // Own the exact model, material, mesh and inverse-bind handles while the
     // preceding render world can still reference them.
-    _model: ArmModel,
+    _model: Box<dyn Send + Sync>,
     state: AtomicU8,
 }
 
@@ -22,9 +22,9 @@ struct Lease {
 pub(super) struct RetiredModel(Arc<Lease>);
 
 impl RetiredModel {
-    pub(super) fn new(model: ArmModel) -> Self {
+    pub(super) fn new(model: impl Send + Sync + 'static) -> Self {
         Self(Arc::new(Lease {
-            _model: model,
+            _model: Box::new(model),
             state: AtomicU8::new(0),
         }))
     }
