@@ -30,6 +30,7 @@ use std::{collections::HashSet, sync::Arc};
 pub(super) trait Effects {
     fn start(
         &mut self,
+        live: &LiveEntities,
         entity: EntityId,
         path: &str,
         frame: ReferenceFrame,
@@ -37,10 +38,12 @@ pub(super) trait Effects {
     ) -> Result<(), String>;
     fn impact(
         &mut self,
+        live: &LiveEntities,
         entity: EntityId,
         target: EntityId,
         path: &str,
         tag: Option<&str>,
+        parent_frame: ReferenceFrame,
         frame: ReferenceFrame,
     ) -> Result<(), String>;
     fn stop(&mut self, entity: EntityId) -> Result<(), String>;
@@ -93,6 +96,18 @@ pub(super) struct Windblasts {
     targets: Vec<Target>,
 }
 impl Windblasts {
+    /// The actual temporary entity remains owned here until its FX tails
+    /// acknowledge retirement. Publish these same frames to the shared FX
+    /// resolver rather than making render-only substitute entities.
+    pub fn frames<'a>(
+        &'a self,
+        live: &'a LiveEntities,
+    ) -> impl Clone + Iterator<Item = (&'a str, ReferenceFrame)> + 'a {
+        self.active.iter().filter_map(move |instance| {
+            let (name, class) = live.get(instance.entity)?;
+            (class == instance.prepared.class).then_some((name, instance.frame))
+        })
+    }
     /// Actual published ephemeral entity pose for the common named-frame
     /// resolver. Its identity and source remain alive through FX tail release.
     pub fn frame(&self, live: &LiveEntities, entity: EntityId) -> Option<ReferenceFrame> {
@@ -258,6 +273,7 @@ impl Windblasts {
             live.publish_spawn_tag(entity, "MAIN")?;
             for fx in &instance.prepared.fx {
                 effects.start(
+                    live,
                     entity,
                     &fx.path,
                     frame,
@@ -388,6 +404,7 @@ impl Windblasts {
                         let mut frame = scene
                             .entity_frame(live, target.entity)?
                             .ok_or("Windblast target frame disappeared")?;
+                        let parent_frame = frame;
                         let forward = bevy_math::Vec3::from_array(frame.position)
                             - bevy_math::Vec3::from_array(instance.frame.position);
                         let forward = forward.normalize_or_zero();
@@ -400,10 +417,12 @@ impl Windblasts {
                             up.to_array(),
                         ];
                         effects.impact(
+                            live,
                             instance.entity,
                             target.entity,
                             path,
                             definition.physics.impact_tag.as_deref(),
+                            parent_frame,
                             frame,
                         )?;
                     }
