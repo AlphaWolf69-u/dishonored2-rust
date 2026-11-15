@@ -10637,3 +10637,19 @@ frame-time, upload-cost or latency measurements were made, and no performance
 improvement is asserted. No compilation, tests, visible launch or visual
 validation was performed under the current user restrictions. Integration and
 runtime output equivalence remain pending the parent's authorized batch.
+
+Equipment instance/binding followup (2026-11-15): worker requests, ordinary
+root renderer admissions, material consumers, pose lookup and retirement now
+carry the actual full managed EntityId. A model resource path remains geometry
+identity and cannot merge two actual actors that share it. Body/arms retain
+None as their pre-existing owner key. Preparation resolves both nonempty
+authored equip/unequip tags before any state transition, making the switch
+infallible. Generic empty-tag source752900 is identified as parent-entity
+binding with preserved child relative frame; it is represented explicitly in
+the binding enum, while acquisition remains an explicit error until the real
+initial entity frame is supplied. No skeleton joint is invented for it.
+Inactive owned trees share the same input sampler and matrix builder via
+pose_base rather than applying the currently held equipment's Midnight target.
+Actual power Unequipped clears the app power selection only when the input
+owner confirms that exact active identity deactivated. Validation remains
+format/syntax and diff review only; no build, test or runtime validation.

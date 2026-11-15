@@ -24,6 +24,9 @@ pub enum EquipmentInput {
 pub enum EquipmentBinding {
     Body,
     Arm(usize),
+    /// Generic empty-tag binding addresses the parent entity frame, not a joint.
+    BodyEntity,
+    ArmEntity(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,7 +46,7 @@ pub struct EquipmentTree {
     pub input: EquipmentInput,
     pub binding: EquipmentBinding,
     pub equipped_attachment: AttachmentBinding,
-    pub unequipped_attachment: Option<AttachmentBinding>,
+    pub unequipped_attachment: AttachmentBinding,
     /// Attachment joint in the parent arm rig, resolved from its actual tag.
     pub bind_joint: usize,
     pub bind: (Vec3, Mat3),
@@ -54,17 +57,15 @@ impl EquipmentTree {
     /// 61aed0 binds to the actual arm tag; 61b010 rebinds the retained owned
     /// entity to the actual body tag. These are entity frames before MD6 root
     /// offsets, and remain available for holstered audio/effect ownership.
-    pub fn bind_equipped(&mut self, equipped: bool) -> Result<(), String> {
+    pub fn bind_equipped(&mut self, equipped: bool) {
         let attachment = if equipped {
-            Some(self.equipped_attachment)
+            self.equipped_attachment
         } else {
             self.unequipped_attachment
-        }
-        .ok_or("equipment has no resolved unequipped attachment")?;
+        };
         self.binding = attachment.owner;
         self.bind_joint = attachment.joint;
         self.bind = attachment.offset;
-        Ok(())
     }
     /// The same animBasic command executor as the body and arms (1406e4af0).
     /// The caller provides the declaration's initial/default command; there
@@ -90,7 +91,20 @@ impl EquipmentTree {
         target: usize,
     ) -> Result<Vec<(Vec3, Mat3)>, String> {
         let skeleton = &self.rig.skeleton;
-        let input = match &self.input {
+        let input = self.input_pose()?;
+        let pose = midnight.evaluate_node(target, input, &self.animations, &skeleton.rest)?;
+        self.pose_matrices(&pose)
+    }
+
+    /// Retained inactive entities advance their own authored input. They do
+    /// not borrow the currently held entity's Midnight casting target.
+    pub fn pose_base(&self) -> Result<Vec<(Vec3, Mat3)>, String> {
+        self.pose_matrices(&self.input_pose()?)
+    }
+
+    fn input_pose(&self) -> Result<Pose, String> {
+        let skeleton = &self.rig.skeleton;
+        Ok(match &self.input {
             EquipmentInput::DefaultAnimation { clip, time } => {
                 super::animation::sample(&self.animations[*clip], &skeleton.rest, *time)?
             }
@@ -100,8 +114,11 @@ impl EquipmentTree {
                     joints: skeleton.rest.clone(),
                     weights: vec![255; skeleton.rest.len()],
                 }),
-        };
-        let pose = midnight.evaluate_node(target, input, &self.animations, &skeleton.rest)?;
+        })
+    }
+
+    fn pose_matrices(&self, pose: &Pose) -> Result<Vec<(Vec3, Mat3)>, String> {
+        let skeleton = &self.rig.skeleton;
         let matrices =
             edge_skeleton::pose_matrices(&pose.joints, &skeleton.hierarchy, &self.rig.root)?;
         Ok(matrices

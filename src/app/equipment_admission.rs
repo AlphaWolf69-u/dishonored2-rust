@@ -6,6 +6,11 @@ use crate::assets::equipment::Descriptor;
 use crate::assets::equipment::attachment::Descriptor as AttachmentDescriptor;
 use crate::gameplay::entity_lifetime::EntityId;
 
+pub(in crate::app) struct EquipmentRequest {
+    pub entity: EntityId,
+    pub descriptor: Arc<Descriptor>,
+}
+
 pub(in crate::app) struct AttachmentRequest {
     pub entity: EntityId,
     pub descriptor: Arc<AttachmentDescriptor>,
@@ -18,10 +23,11 @@ pub(in crate::app) struct PreparedAttachment {
 
 #[derive(Default)]
 pub(super) struct EquipmentAdmissions {
-    requested: HashMap<String, std::sync::Weak<Descriptor>>,
+    requested: HashMap<EntityId, std::sync::Weak<Descriptor>>,
     live: Vec<std::sync::Weak<Descriptor>>,
-    failed: HashMap<String, String>,
+    failed: HashMap<EntityId, String>,
     staged: HashMap<String, Arc<Descriptor>>,
+    selected: HashMap<usize, String>,
     owned: HashMap<String, Arc<Descriptor>>,
     metadata: HashMap<String, Arc<crate::assets::equipment::Metadata>>,
     stopping: HashMap<String, EntityId>,
@@ -136,12 +142,13 @@ pub(super) fn add_attachment_leases(
 /// its gameplay tree. No archive/program/mesh decoding occurs on this thread.
 pub(in crate::app) fn request(
     world: &mut World,
+    entity: EntityId,
     descriptor: Arc<Descriptor>,
 ) -> Result<(), String> {
     let mut coordinator = world
         .get_resource_mut::<RuntimeMaterialCoordinator>()
         .ok_or("runtime material coordinator is absent")?;
-    let key = descriptor.entity.clone();
+    let key = entity;
     if let Some(error) = coordinator.equipment.failed.get(&key) {
         return Err(error.clone());
     }
@@ -163,32 +170,32 @@ pub(in crate::app) fn request(
 
 /// CPU asset publication and the shared image binding gate completed. The
 /// existing Bevy renderer still performs its ordinary GPU readiness checks.
-pub(in crate::app) fn admitted(world: &World, entity: &str) -> bool {
+pub(in crate::app) fn admitted(world: &World, entity: EntityId) -> bool {
     world
         .get_resource::<super::super::player_arms::PlayerArms>()
         .is_some_and(|arms| arms.has_equipment_model(entity))
 }
 
-pub(in crate::app) fn failure(world: &World, entity: &str) -> Option<String> {
+pub(in crate::app) fn failure(world: &World, entity: EntityId) -> Option<String> {
     world
         .get_resource::<RuntimeMaterialCoordinator>()
-        .and_then(|owner| owner.equipment.failed.get(entity))
+        .and_then(|owner| owner.equipment.failed.get(&entity))
         .cloned()
 }
 
 fn withdraw_model(
     world: &mut World,
-    descriptor: &Descriptor,
+    entity: EntityId,
 ) -> Option<super::super::player_arms::RetiredModel> {
     if let Some(mut owner) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
-        owner.equipment.requested.remove(&descriptor.entity);
-        owner.equipment.failed.remove(&descriptor.entity);
+        owner.equipment.requested.remove(&entity);
+        owner.equipment.failed.remove(&entity);
         owner.revision = None;
         owner.published_generation = None;
     }
     let mut arms = world.remove_resource::<super::super::player_arms::PlayerArms>()?;
     let mut commands = super::super::setup_commands::SetupCommands::prepared(world);
-    let receipt = arms.remove_equipment_model(&descriptor.model, &mut commands);
+    let receipt = arms.remove_equipment_model(entity, &mut commands);
     commands.publish(world);
     world.insert_resource(arms);
     receipt
@@ -212,19 +219,7 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<(), String> {
     if let Some(id) = id {
         super::super::equipment_attachment_admission::remove(world, id)?;
     }
-    let descriptor = world
-        .get_resource::<RuntimeMaterialCoordinator>()
-        .and_then(|owner| {
-            owner
-                .equipment
-                .owned
-                .get(identity)
-                .or_else(|| owner.equipment.staged.get(identity))
-        })
-        .cloned();
-    let receipt = descriptor
-        .as_deref()
-        .and_then(|descriptor| withdraw_model(world, descriptor));
+    let receipt = id.and_then(|entity| withdraw_model(world, entity));
     if let Some(id) = id {
         match receipt {
             Some(receipt) => {
@@ -245,29 +240,15 @@ fn retire_owned(world: &mut World, identity: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Cancel a stale unowned completion without retiring another still-owned
-/// instance of the same declaration. Actual owners retire by inventory identity.
-fn withdraw(world: &mut World, descriptor: &Descriptor) {
-    let identities = world
-        .get_resource::<RuntimeMaterialCoordinator>()
-        .map(|owner| {
-            owner
-                .equipment
-                .owned
-                .iter()
-                .filter(|(_, owned)| owned.entity == descriptor.entity)
-                .map(|(identity, _)| identity.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for identity in identities {
-        if let Err(error) = retire_owned(world, &identity) {
-            world
-                .resource_mut::<RuntimeMaterialCoordinator>()
-                .equipment
-                .load_error
-                .get_or_insert(error);
-        }
+/// Withdraw only the actual inventory actor; declarations/models may be shared
+/// by other admitted generations and are never used as instance identities.
+fn withdraw(world: &mut World, identity: &str) {
+    if let Err(error) = retire_owned(world, identity) {
+        world
+            .resource_mut::<RuntimeMaterialCoordinator>()
+            .equipment
+            .load_error
+            .get_or_insert(error);
     }
 }
 
@@ -309,6 +290,7 @@ pub(in crate::app) fn shutdown(world: &mut World) -> Result<bool, String> {
     }
     if let Some(mut owner) = world.get_resource_mut::<RuntimeMaterialCoordinator>() {
         owner.equipment.ammo_starts.clear();
+        owner.equipment.selected.clear();
     }
     super::super::equipment_identity::shutdown(world)
 }
@@ -352,13 +334,21 @@ pub(super) fn retire_expired(state: &mut RuntimeMaterialCoordinator) {
     }
 }
 
-pub(super) fn requested(world: &World, state: &RuntimeMaterialCoordinator) -> Vec<Arc<Descriptor>> {
+pub(super) fn requested(
+    world: &World,
+    state: &RuntimeMaterialCoordinator,
+) -> Vec<EquipmentRequest> {
     state
         .equipment
         .requested
         .iter()
-        .filter(|(key, _)| !state.equipment.failed.contains_key(*key) && !admitted(world, key))
-        .filter_map(|(_, lease)| lease.upgrade())
+        .filter(|(key, _)| !state.equipment.failed.contains_key(*key) && !admitted(world, **key))
+        .filter_map(|(entity, lease)| {
+            lease.upgrade().map(|descriptor| EquipmentRequest {
+                entity: *entity,
+                descriptor,
+            })
+        })
         .collect()
 }
 
@@ -367,24 +357,27 @@ pub(super) fn model_entities(
     state: &EquipmentAdmissions,
     models: &[super::super::player_arms::PreparedEquipmentModel],
 ) -> Result<Vec<EntityId>, String> {
-    let mut entities = Vec::new();
-    for model in models {
-        let identities = state
-            .owned
-            .iter()
-            .filter(|(_, descriptor)| Arc::ptr_eq(descriptor, model.descriptor()));
-        let before = entities.len();
-        for (identity, _) in identities {
-            entities.push(
-                super::super::equipment_identity::id(world, identity)
-                    .ok_or("prepared equipment managed generation is absent")?,
-            );
-        }
-        if entities.len() == before {
-            return Err("prepared equipment has no actual owned inventory actor".into());
-        }
-    }
-    Ok(entities)
+    models
+        .iter()
+        .map(|model| {
+            let id = model.entity();
+            if !state
+                .requested
+                .get(&id)
+                .is_some_and(|lease| lease.ptr_eq(&Arc::downgrade(model.descriptor())))
+            {
+                return Err("prepared equipment request generation changed".into());
+            }
+            let retained = state.owned.iter().any(|(identity, descriptor)| {
+                Arc::ptr_eq(descriptor, model.descriptor())
+                    && super::super::equipment_identity::id(world, identity) == Some(id)
+            });
+            if !retained {
+                return Err("prepared equipment has no actual owned inventory actor".into());
+            }
+            Ok(id)
+        })
+        .collect()
 }
 
 pub(super) fn add_material_leases(
@@ -419,15 +412,12 @@ pub(super) fn failed(world: &World, state: &mut RuntimeMaterialCoordinator, erro
         }
     }
     for name in state.equipment.requested.keys() {
-        if !admitted(world, name) {
+        if !admitted(world, *name) {
             state
                 .equipment
                 .load_error
                 .get_or_insert_with(|| error.to_owned());
-            state
-                .equipment
-                .failed
-                .insert(name.clone(), error.to_owned());
+            state.equipment.failed.insert(*name, error.to_owned());
         }
     }
 }
@@ -442,7 +432,7 @@ pub(in crate::app) fn startup_pending(world: &World) -> bool {
                 owner.equipment.requested.iter().any(|(entity, lease)| {
                     lease.strong_count() != 0
                         && !owner.equipment.failed.contains_key(entity)
-                        && !admitted(world, entity)
+                        && !admitted(world, *entity)
                 }) || owner.equipment.attachments.iter().any(|(id, lease)| {
                     lease.strong_count() != 0
                         && !owner.equipment.attachment_failed.contains_key(id)
@@ -527,7 +517,7 @@ fn retain_owned(
         .equipment
         .owned
         .insert(identity.to_owned(), descriptor.clone());
-    request(world, descriptor.clone())?;
+    request(world, entity, descriptor.clone())?;
     if !existed {
         if let Some(settings) = &descriptor.ranged {
             super::super::player_actions::register_ranged(
@@ -606,16 +596,19 @@ pub(in crate::app) fn advance(world: &mut World) {
             player.retire_equipment(&path);
             player.retire_ranged(&path);
             for side in 0..2 {
-                let removed = actions.active(side).is_some_and(|active| {
-                    world
-                        .resource::<RuntimeMaterialCoordinator>()
-                        .equipment
-                        .owned
-                        .get(&path)
-                        .is_some_and(|owned| Arc::ptr_eq(active, owned))
-                });
+                let removed = world
+                    .resource::<RuntimeMaterialCoordinator>()
+                    .equipment
+                    .selected
+                    .get(&side)
+                    .is_some_and(|selected| selected == &path);
                 if removed {
                     actions.remove_active(side);
+                    world
+                        .resource_mut::<RuntimeMaterialCoordinator>()
+                        .equipment
+                        .selected
+                        .remove(&side);
                 }
             }
             if let Err(error) = retire_owned(world, &path) {
@@ -700,7 +693,7 @@ pub(in crate::app) fn advance(world: &mut World) {
                     .is_some_and(|active| Arc::ptr_eq(active, &ready.descriptor))
                 {
                     if inventory.quantity(&ready.item.path) == 0 {
-                        withdraw(world, &ready.descriptor);
+                        withdraw(world, &ready.item.path);
                     }
                 }
                 if let Err(error) = actions.request(ready.item, player) {
@@ -715,16 +708,20 @@ pub(in crate::app) fn advance(world: &mut World) {
             }
             let identity = ready.item.path.to_string();
             if inventory.quantity(&identity) == 0 {
-                withdraw(world, &ready.descriptor);
+                withdraw(world, &ready.item.path);
                 continue;
             }
-            if let Some(error) = failure(world, &ready.descriptor.entity) {
+            let Some(entity) = super::super::equipment_identity::id(world, &identity) else {
+                actions.requeue(ready);
+                continue;
+            };
+            if let Some(error) = failure(world, entity) {
                 bevy::log::warn!("Equipment {identity} material admission failed: {error}");
-                withdraw(world, &ready.descriptor);
+                withdraw(world, &ready.item.path);
                 continue;
             }
-            if !admitted(world, &ready.descriptor.entity) {
-                match request(world, ready.descriptor.clone()) {
+            if !admitted(world, entity) {
+                match request(world, entity, ready.descriptor.clone()) {
                     Ok(()) => actions.requeue(ready),
                     Err(error) => {
                         world
@@ -859,6 +856,11 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
         for callback in player.take_equipment_callbacks() {
             match callback {
                 Callback::Equipped { identity, side } => {
+                    world
+                        .resource_mut::<RuntimeMaterialCoordinator>()
+                        .equipment
+                        .selected
+                        .insert(side, identity.clone());
                     if let Some(descriptor) = take_staged(world, &identity) {
                         if side == 0 {
                             if let Some(settings) = &descriptor.ranged {
@@ -902,7 +904,22 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
                     }
                 }
                 Callback::Unequipped { identity, side } => {
-                    if let Some(descriptor) = actions.remove_active(side) {
+                    let selected = world
+                        .resource::<RuntimeMaterialCoordinator>()
+                        .equipment
+                        .selected
+                        .get(&side)
+                        .is_some_and(|selected| selected == &identity);
+                    if selected {
+                        world
+                            .resource_mut::<RuntimeMaterialCoordinator>()
+                            .equipment
+                            .selected
+                            .remove(&side);
+                    }
+                    if let Some(descriptor) =
+                        selected.then(|| actions.remove_active(side)).flatten()
+                    {
                         if descriptor.ranged.is_some() {
                             if inventory.quantity(&identity) == 0 {
                                 player.retire_ranged(&identity);
@@ -915,7 +932,7 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
                             inventory.unequip(descriptor.equipment.slot);
                         }
                         if inventory.quantity(&identity) == 0 {
-                            withdraw(world, &descriptor);
+                            withdraw(world, &identity);
                         }
                     }
                     let slot = match side {
@@ -928,8 +945,14 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
                             inventory.unequip(slot);
                         }
                     }
-                    actions.deactivate_power(&identity, player);
-                    player.set_equipped_archetype(side, None);
+                    if actions.deactivate_power(&identity, player) {
+                        if let Some(powers) = powers.as_mut() {
+                            powers.clear_selected();
+                        }
+                    }
+                    if selected {
+                        player.set_equipped_archetype(side, None);
+                    }
                 }
                 Callback::Cancelled { identity, side } => {
                     if let Some(descriptor) = take_staged(world, &identity) {
@@ -938,7 +961,7 @@ pub(in crate::app) fn publish_callbacks(world: &mut World) {
                             .is_some_and(|active| Arc::ptr_eq(active, &descriptor))
                         {
                             if inventory.quantity(&identity) == 0 {
-                                withdraw(world, &descriptor);
+                                withdraw(world, &identity);
                             }
                         }
                     }

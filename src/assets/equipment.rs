@@ -103,19 +103,12 @@ impl Descriptor {
             joint,
             offset,
         };
-        let unequipped_attachment = self
-            .equipment
-            .unequipped_bind_tag
-            .as_ref()
-            .map(|_| {
-                self.binding(body, arms, false)
-                    .map(|(owner, joint, offset)| AttachmentBinding {
-                        owner,
-                        joint,
-                        offset,
-                    })
-            })
-            .transpose()?;
+        let (owner, joint, offset) = self.binding(body, arms, false)?;
+        let unequipped_attachment = AttachmentBinding {
+            owner,
+            joint,
+            offset,
+        };
         Ok(EquipmentTree {
             managed_entity: None,
             sound_settings: self.sound_settings,

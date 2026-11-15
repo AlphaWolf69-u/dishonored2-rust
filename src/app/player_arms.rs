@@ -46,6 +46,7 @@ struct ArmSurface {
 }
 
 struct ArmModel {
+    managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     /// The md6 decl path, as `ArmRender::model` names it.
     model: String,
     /// One entity per palette entry whose transform is that entry; its
@@ -115,6 +116,11 @@ pub(super) struct PlayerArms {
 pub(super) struct PreparedEquipmentModel(ArmModel);
 
 impl PreparedEquipmentModel {
+    pub(super) fn entity(&self) -> crate::gameplay::entity_lifetime::EntityId {
+        self.0
+            .managed_entity
+            .expect("prepared equipment retains its managed generation")
+    }
     pub(super) fn descriptor(&self) -> &std::sync::Arc<crate::assets::equipment::Descriptor> {
         self.0
             ._equipment
@@ -130,6 +136,7 @@ impl PlayerArms {
 }
 
 pub(super) fn prepare_equipment_model(
+    entity: crate::gameplay::entity_lifetime::EntityId,
     descriptor: std::sync::Arc<crate::assets::equipment::Descriptor>,
     player_depth_hack: f32,
     resolver: &mut MaterialResolver,
@@ -155,6 +162,7 @@ pub(super) fn prepare_equipment_model(
             descriptor.model
         ));
     }
+    model.managed_entity = Some(entity);
     model._equipment = Some(descriptor);
     Ok(PreparedEquipmentModel(model))
 }
@@ -250,7 +258,11 @@ impl PlayerArms {
         &mut self,
         model: PreparedEquipmentModel,
     ) -> Result<(), String> {
-        if self.arms.iter().any(|entry| entry.model == model.0.model) {
+        if self
+            .arms
+            .iter()
+            .any(|entry| entry.managed_entity == model.0.managed_entity)
+        {
             return Err(format!(
                 "equipment model already published: {}",
                 model.0.model
@@ -260,13 +272,14 @@ impl PlayerArms {
         Ok(())
     }
 
-    pub(super) fn has_equipment_model(&self, entity: &str) -> bool {
-        self.arms.iter().skip(self.body_models).any(|model| {
-            model
-                ._equipment
-                .as_ref()
-                .is_some_and(|descriptor| descriptor.entity == entity)
-        })
+    pub(super) fn has_equipment_model(
+        &self,
+        entity: crate::gameplay::entity_lifetime::EntityId,
+    ) -> bool {
+        self.arms
+            .iter()
+            .skip(self.body_models)
+            .any(|model| model.managed_entity == Some(entity))
     }
 
     pub(super) fn equipment_entities(&self) -> impl Iterator<Item = Entity> + '_ {
@@ -275,42 +288,11 @@ impl PlayerArms {
             .skip(self.body_models)
             .flat_map(|model| model.surfaces.iter().map(|part| part.entity))
     }
-    /// Admit only the inventory-selected model, using its canonical rig and
-    /// BMD6 owners. World poses arrive through the ordinary ArmRender list.
-    pub(super) fn add_equipment_model(
-        &mut self,
-        model: String,
-        info: std::sync::Arc<bmd6::ModelInfo>,
-        rig: &crate::assets::animation_rig::Rig,
-        resolver: &mut MaterialResolver,
-        meshes: &mut dyn AssetWrite<Mesh>,
-        commands: &mut super::setup_commands::SetupCommands,
-    ) -> Result<(), String> {
-        if self.arms.iter().any(|entry| entry.model == model) {
-            return Err(format!("first-person model already admitted: {model}"));
-        }
-        let (hack, parameter) = arm_model_depth_hack(self.player_depth_hack);
-        let entry = prepare_model(
-            model,
-            info,
-            rig.skeleton.clone(),
-            hack,
-            parameter,
-            &[],
-            true,
-            resolver,
-            meshes,
-            commands,
-        )?;
-        self.arms.push(entry);
-        Ok(())
-    }
-
     /// Remove draw/joint entities immediately; retain the resource leases
     /// until the render queue acknowledges their final submitted work.
     pub(super) fn remove_equipment_model(
         &mut self,
-        model: &str,
+        model: crate::gameplay::entity_lifetime::EntityId,
         commands: &mut super::setup_commands::SetupCommands,
     ) -> Option<RetiredModel> {
         let Some(index) = self
@@ -318,7 +300,7 @@ impl PlayerArms {
             .iter()
             .enumerate()
             .skip(self.body_models)
-            .find_map(|(index, entry)| (entry.model == model).then_some(index))
+            .find_map(|(index, entry)| (entry.managed_entity == Some(model)).then_some(index))
         else {
             return None;
         };
@@ -716,6 +698,7 @@ fn prepare_model(
         });
     }
     Ok(ArmModel {
+        managed_entity: None,
         model,
         joints: Vec::new(),
         inverse_bindposes: None,
@@ -752,11 +735,13 @@ fn debug_rest_arms(arms: &PlayerArms, camera: &Transform, distance: f32) -> Vec<
     };
     arms.arms
         .iter()
+        .take(arms.body_models)
         .filter_map(|arm| {
             let joints =
                 edge_skeleton::pose_matrices(&arm.skeleton.rest, &arm.skeleton.hierarchy, &root)
                     .ok()?;
             Some(ArmRender {
+                managed_entity: None,
                 model: arm.model.clone(),
                 joints,
                 visible: true,
@@ -1039,9 +1024,11 @@ pub(super) fn update_player_arms(
         ..
     } = &mut *arms;
     for (model_index, arm) in models.iter_mut().enumerate() {
-        let render = renders
-            .iter()
-            .find(|render| render.model == arm.model && render.visible);
+        let render = renders.iter().find(|render| {
+            render.model == arm.model
+                && render.managed_entity == arm.managed_entity
+                && render.visible
+        });
         let skinned = render.map(|render| -> Result<(), String> {
             let palette = publish_model_skin(
                 arm,
@@ -1096,7 +1083,9 @@ pub(super) fn update_player_arms(
                 .unwrap_or_default();
             let animated = states.iter().any(|id| matches!(id.0, 4 | 7 | 8));
             if show != arm.shown || (animated && *trace_frame % 12 == 0) {
-                let published = renders.iter().find(|render| render.model == arm.model);
+                let published = renders.iter().find(|render| {
+                    render.model == arm.model && render.managed_entity == arm.managed_entity
+                });
                 eprintln!(
                     "PLAYER VISIBILITY states={states:?} model={} published={:?} joints={} skinned={} shown={} legs={:?}/{}",
                     arm.model,
@@ -1141,9 +1130,12 @@ pub(super) fn update_player_arms(
                 else {
                     continue;
                 };
-                history.published_frames = history.published_frames.saturating_add(u32::from(
-                    renders.iter().any(|render| render.model == arm.model),
-                ));
+                history.published_frames =
+                    history
+                        .published_frames
+                        .saturating_add(u32::from(renders.iter().any(|render| {
+                            render.model == arm.model && render.managed_entity == arm.managed_entity
+                        })));
                 history.requested_frames = history
                     .requested_frames
                     .saturating_add(u32::from(render.is_some()));

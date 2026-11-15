@@ -250,7 +250,7 @@ pub(super) struct MaterialWork {
     pub sources: Arc<crate::rendering::particles::world_sources::WorldFxSources>,
     pub decal_requests: Vec<(String, bool)>,
     pub mesh_requests: HashSet<(String, String)>,
-    pub equipment: Vec<Arc<crate::assets::equipment::Descriptor>>,
+    pub equipment: Vec<equipment_admission::EquipmentRequest>,
     pub equipment_reservations: Option<crate::rendering::bevy_backend::entity_preparation::Reservations>,
     pub attachments: Vec<equipment_admission::AttachmentRequest>,
     pub player_depth_hack: f32,
@@ -333,10 +333,12 @@ impl MaterialWork {
         let mut equipment_commands = self.equipment_reservations.take()
             .map(super::setup_commands::SetupCommands::reserved);
         let mut equipment_dependencies = HashMap::new();
-        for descriptor in &self.equipment {
+        for request in &self.equipment {
+            let descriptor = &request.descriptor;
             check_active()?;
             resolver.cache.take_dependencies();
             equipment.push(super::player_arms::prepare_equipment_model(
+                request.entity,
                 descriptor.clone(),
                 self.player_depth_hack,
                 &mut resolver,
@@ -349,7 +351,7 @@ impl MaterialWork {
                 equipment_dependencies
                     .entry(key)
                     .or_insert_with(HashSet::new)
-                    .insert(MaterialConsumer::Equipment(descriptor.entity.clone()));
+                    .insert(MaterialConsumer::Equipment(request.entity));
             }
         }
         let mut attachments = Vec::new();
@@ -576,7 +578,7 @@ type MaterialKey = (String, MaterialGeometry);
 enum MaterialConsumer {
     Mesh(MeshKey),
     Decal(DecalKey),
-    Equipment(String),
+    Equipment(crate::gameplay::entity_lifetime::EntityId),
     Attachment(crate::gameplay::entity_lifetime::EntityId),
 }
 
@@ -1198,7 +1200,7 @@ fn coordinate_inner(
         requests.extend(
             equipment
                 .iter()
-                .flat_map(|descriptor| descriptor.geometry.surfaces.iter())
+                .flat_map(|request| request.descriptor.geometry.surfaces.iter())
                 .filter(|surface| !crate::material::is_null_material(&surface.material_path))
                 .map(|surface| (surface.material_path.clone(), MaterialGeometry::Model)),
         );
