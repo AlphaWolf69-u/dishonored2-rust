@@ -160,6 +160,7 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[7] { membership!(scene.loots) }
         else if handle.class_id == scene.classes[8] { membership!(scene.rigid_bodies) }
         else if handle.class_id == scene.classes[9] { membership!(scene.factions) }
+        else if handle.class_id == scene.classes[10] { membership!(scene.health) }
         else { Err("physics update roster class is unsupported".into()) }
     }
 }
@@ -252,6 +253,10 @@ impl ComponentReleaseWorld for Host<'_> {
         if handle.class_id == self.scene.classes[9] {
             self.scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?.deinitialize()?;
         }
+        if handle.class_id == self.scene.classes[10] {
+            let index = self.owner(handle)?.entity.ok_or("health entity absent")?;
+            self.scene.entities[index].entity_flags_d7 &= !2;
+        }
         if handle.class_id == self.scene.classes[0] {
             let scene = &mut self.scene;
             let shared = scene.world.clone();
@@ -307,6 +312,7 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle, component)
         }
         else if handle.class_id == scene.classes[9] { entity.components.release(handle, scene.factions.get_mut(handle.slot).ok_or("Faction absent")?) }
+        else if handle.class_id == scene.classes[10] { entity.components.release(handle, scene.health.get_mut(handle.slot).ok_or("health absent")?) }
         else { Err("physics shutdown class is unsupported".into()) }
     }
 
@@ -353,6 +359,7 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.rigid_bodies.release(handle.slot)?;
         }
         else if handle.class_id == scene.classes[9] { scene.factions.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[10] { scene.health.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
         if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world.as_deref_mut().ok_or("published audio owner absent")?, emitter)?; }

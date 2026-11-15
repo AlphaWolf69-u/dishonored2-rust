@@ -27,6 +27,11 @@ pub struct Definition {
     pub slots: Arc<[Slot]>,
     pub limited_lean_factors: [f32; 2],
     pub incoming_damage_factors: [f32; 3],
+    pub incoming_damage_back_factors: [f32; 3],
+    pub health_heal_factors: [f32; 3],
+    pub health_potion_factors: [f32; 3],
+    pub mana_potion_factors: [f32; 3],
+    pub mana_heal_factors: [f32; 3],
     pub health_regen_amount_scale: f32,
     // Host: keep declaration generation leases while direct contiguous
     // runtime preset tables avoid an extra pointer lookup per value read.

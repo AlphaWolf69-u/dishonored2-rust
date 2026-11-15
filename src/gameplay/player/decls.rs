@@ -142,6 +142,7 @@ pub fn health(fields: &Fields) -> Result<super::health::Settings, String> {
         regen_amount: number(fields, "m_regenAmount", 0.0)?,
         regen_delay: number(fields, "m_regenDelay", 0.0)?,
         regen_rate: number(fields, "m_regenRate", 0.0)?,
+        heal_rate: number(fields, "m_healRate", 30.0)?,
     })
 }
 
@@ -503,6 +504,11 @@ pub fn breath(fields: &Fields) -> Result<super::swimming::Breath, String> {
 pub fn drowning_damage_decl(fields: &Fields) -> Option<&str> {
     atom(fields, "m_drowningDamage").filter(|value| !value.is_empty())
 }
+pub fn fall_damage_decl(declarations: &PlayerDeclarations) -> Option<&str> {
+    declarations.states.iter().find(|(kind, _)| kind == "playerstatefalling")
+        .and_then(|(_, fields)| atom(fields, "m_fallDamageDecl"))
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+}
 
 /// Base health filters (140717800/140717dc0) for the downward-origin water
 /// damage dispatched by 1404c0cf0. An allowed mask takes precedence.
@@ -596,6 +602,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     cat_fall_height: number(fields, "m_catFallHeight", d.cat_fall_height)?,
                     damage_height: number(fields, "m_damageHeight", d.damage_height)?,
                     death_height: number(fields, "m_deathHeight", d.death_height)?,
+                    enhanced_damage_height: number(fields, "m_enhancedDamageHeight", d.enhanced_damage_height)?,
+                    enhanced_death_height: number(fields, "m_enhancedDeathHeight", d.enhanced_death_height)?,
                     fall_damage: atom(fields, "m_fallDamageDecl").is_some_and(|v| !v.is_empty()),
 
                 })

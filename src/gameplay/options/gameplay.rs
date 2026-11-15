@@ -158,6 +158,11 @@ pub struct Manager {
     pub limited_lean_factors: [f32; 2],
     /// m_damageAmountFront (140647ff0), indexed by enemy-damage level.
     pub incoming_damage_factors: [f32; 3],
+    pub incoming_damage_back_factors: [f32; 3],
+    pub health_heal_factors: [f32; 3],
+    pub health_potion_factors: [f32; 3],
+    pub mana_potion_factors: [f32; 3],
+    pub mana_heal_factors: [f32; 3],
     pub health_regen_amount_scale: f32,
     /// Retain the exact declaration generation independently of registry purge.
     _definition: Arc<crate::assets::difficulty::Definition>,
@@ -221,6 +226,11 @@ impl Manager {
             stepper: definition.stepper.clone(), slots: definition.slots.clone(),
             limited_lean_factors: definition.limited_lean_factors,
             incoming_damage_factors: definition.incoming_damage_factors,
+            incoming_damage_back_factors: definition.incoming_damage_back_factors,
+            health_heal_factors: definition.health_heal_factors,
+            health_potion_factors: definition.health_potion_factors,
+            mana_potion_factors: definition.mana_potion_factors,
+            mana_heal_factors: definition.mana_heal_factors,
             health_regen_amount_scale: definition.health_regen_amount_scale,
             custom: PRESET_DEFAULTS, current: 0, _definition: definition }
     }
@@ -253,6 +263,19 @@ impl Manager {
             decl::float(damage, "m_multiplierLvl2", 1.0),
             decl::float(damage, "m_multiplierLvl3", 1.5),
         ];
+        // 6472a0 constructor, parameter reflection141802090. The back
+        // low-level multiplier differs from the frontal one (0.25 vs0.75).
+        let factors = |key, defaults: [f32; 3]| {
+            let fields = decl::scope(parameters, key).unwrap_or(&[]);
+            [decl::float(fields, "m_multiplierLvl1", defaults[0]),
+                decl::float(fields, "m_multiplierLvl2", defaults[1]),
+                decl::float(fields, "m_multiplierLvl3", defaults[2])]
+        };
+        let incoming_damage_back_factors = factors("m_damageAmountBack", [0.25, 1.0, 1.5]);
+        let health_heal_factors = factors("m_healPotionSpeed", [3.0, 1.0, 0.1]);
+        let health_potion_factors = factors("m_healthPotionEffect", [0.75, 1.0, 1.5]);
+        let mana_potion_factors = factors("m_manaPotionEffect", [0.75, 1.0, 1.5]);
+        let mana_heal_factors = factors("m_manaPotionSpeed", [3.0, 1.0, 0.1]);
         let ui = decl::scope(&edit, "m_uiInformation").unwrap_or(&[]);
         let slots: Vec<Slot> = SLOT_FIELDS[..ROWS + 1]
             .iter()
@@ -265,6 +288,8 @@ impl Manager {
             slots: slots.into(),
             limited_lean_factors,
             incoming_damage_factors,
+            incoming_damage_back_factors, health_heal_factors, health_potion_factors,
+            mana_potion_factors, mana_heal_factors,
             health_regen_amount_scale: decl::float(parameters, "m_healthRegenAmountScale", 1.0),
             preset_leases,
         })
@@ -336,6 +361,25 @@ impl Manager {
     pub fn incoming_damage_factor(&self, difficulty: i32) -> f32 {
         let level = self.preset(difficulty)[0];
         self.incoming_damage_factors.get(level as usize).copied().unwrap_or(1.0)
+    }
+    /// 717800 selects FRONT for forward dot incoming <=0, BACK otherwise.
+    pub fn incoming_damage_factor_for_hit(&self, difficulty: i32, forward_dot_hit: f32) -> f32 {
+        let table = if forward_dot_hit <= 0.0 { &self.incoming_damage_factors } else { &self.incoming_damage_back_factors };
+        table.get(self.preset(difficulty)[0] as usize).copied().unwrap_or(1.0)
+    }
+    /// 648020 indexes m_healPotionSpeed using preset m_potionSpeed (+78).
+    pub fn health_heal_factor(&self, difficulty: i32) -> f32 {
+        self.health_heal_factors.get(self.preset(difficulty)[4] as usize).copied().unwrap_or(1.0)
+    }
+    pub fn mana_heal_factor(&self, difficulty: i32) -> f32 {
+        self.mana_heal_factors.get(self.preset(difficulty)[4] as usize).copied().unwrap_or(1.0)
+    }
+    /// 648050 /6481a0 use preset m_potionEffect (+74).
+    pub fn health_potion_factor(&self, difficulty: i32) -> f32 {
+        self.health_potion_factors.get(self.preset(difficulty)[3] as usize).copied().unwrap_or(1.0)
+    }
+    pub fn mana_potion_factor(&self, difficulty: i32) -> f32 {
+        self.mana_potion_factors.get(self.preset(difficulty)[3] as usize).copied().unwrap_or(1.0)
     }
 
     pub fn health_regen_factor(&self, difficulty: i32) -> f32 {

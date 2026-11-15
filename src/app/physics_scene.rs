@@ -41,6 +41,7 @@ mod document_rigid;
 pub(super) mod document_hierarchy;
 pub(super) mod preparation;
 mod document_pickup;
+mod damage;
 pub(super) mod rigid_actor;
 use interaction_components::UsableComponent;
 pub(super) mod lifetime;
@@ -69,8 +70,8 @@ pub(super) struct PhysicsScene {
     body_activation_events: crate::gameplay::physics_world::body_activation_events::BodyActivationEvents,
     world: Arc<RwLock<LevelPointQueries>>,
     types: Arc<ComponentTypes>,
-    factories: [u32; 10],
-    classes: [i32; 10],
+    factories: [u32; 11],
+    classes: [i32; 11],
     entities: Vec<PhysicsEntity>,
     shared_indices: HashMap<crate::gameplay::entity_lifetime::EntityId, usize>,
     declarations: HashMap<u64, ComponentDeclaration>,
@@ -92,6 +93,7 @@ pub(super) struct PhysicsScene {
     initial_rigid_frames: HashMap<usize, crate::gameplay::reference_frame::ReferenceFrame>,
     document_hierarchy: document_hierarchy::DocumentHierarchy,
     factions: ComponentPool<super::faction_component::FactionComponent>,
+    health: ComponentPool<damage::HealthComponent>,
     faction_session: crate::gameplay::faction_registry::SessionFactionRegistry,
     faction_manager: Option<crate::gameplay::faction_registry::ActiveFactionManager>,
     audio_bindings: Vec<entities::audio::AudioBinding>,
@@ -258,6 +260,7 @@ impl PhysicsScene {
             factory(b"arkCpntLoot")?,
             factory(b"arkCpntRigidBody")?,
             factory(b"arkCpntFaction")?,
+            factory(b"arkCpntHealth")?,
         ];
         let names = types.classes().hierarchy().registration_order().iter().map(|&index| {
             let class = types.classes().metadata(index).ok_or("physics class metadata absent")?;
@@ -270,8 +273,8 @@ impl PhysicsScene {
         };
         let trigger_range = entity_range(b"arkTrigger")?;
         let area_range = entity_range(b"arkAreaVolume")?;
-        let mut classes = [0; 10];
-        for i in 0..10 {
+        let mut classes = [0; 11];
+        for i in 0..11 {
             classes[i] = hierarchy.type_id(types.factory(factories[i])?.class)?;
         }
         let dependency_ranges = [
@@ -355,6 +358,7 @@ impl PhysicsScene {
             initial_rigid_frames: HashMap::new(),
             document_hierarchy: Default::default(),
             factions: types.create_pool(factories[9], &cvars.cvars)?,
+            health: types.create_pool(factories[10], &cvars.cvars)?,
             faction_session,
             faction_manager,
             audio_bindings,
@@ -558,6 +562,7 @@ impl PhysicsScene {
                 scene.prepare_document_hierarchy(document, interactions, models, live, &mut registry, constructor_tag, joint_frames)?;
                 scene.prepare_document_rigids(catalog, document, interactions, models, texts, shape_sources, &mut registry)?;
             }
+            scene.admit_health_components(catalog, document, &mut registry)?;
             // 8aa107/8aa152 finish the entity reflection/Spawn pass before the
             // later game-local shared component initialization/Start drain.
             for (index, entity) in scene.entities.iter().enumerate() {
@@ -817,6 +822,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.rigid_bodies.get(handle.slot).map(|v| &v.owner)
         } else if handle.class_id == self.classes[9] {
             self.factions.get(handle.slot).map(|v| &v.owner)
+        } else if handle.class_id == self.classes[10] {
+            self.health.get(handle.slot).map(|v| &v.owner)
         } else {
             None
         };
@@ -846,6 +853,8 @@ impl ComponentLifecycleWorld for PhysicsScene {
             self.rigid_bodies.get_mut(handle.slot).map(|v| &mut v.owner)
         } else if handle.class_id == self.classes[9] {
             self.factions.get_mut(handle.slot).map(|v| &mut v.owner)
+        } else if handle.class_id == self.classes[10] {
+            self.health.get_mut(handle.slot).map(|v| &mut v.owner)
         } else {
             None
         };
@@ -936,6 +945,11 @@ impl ComponentLifecycleWorld for PhysicsScene {
             .ok_or("physics component scheduling absent")?
             .scheduling
             .clone();
+        if handle.class_id == self.classes[10] {
+            self.entities[entity_index].entity_flags_d7 |= 2;
+            let component = self.health.get_mut(handle.slot).ok_or("health component absent")?;
+            if component.owner.flags & (1 << 30) == 0 { component.current = component.maximum; }
+        }
         if handle.class_id == self.classes[0] {
             let declaration = self
                 .owner(handle)?
@@ -1021,6 +1035,7 @@ impl ComponentLifecycleWorld for PhysicsScene {
                 else if handle.class_id == self.classes[7] { self.loots.schedule(handle.slot)?; }
                 else if handle.class_id == self.classes[8] { self.rigid_bodies.schedule(handle.slot)?; }
                 else if handle.class_id == self.classes[9] { self.factions.schedule(handle.slot)?; }
+                else if handle.class_id == self.classes[10] { self.health.schedule(handle.slot)?; }
                 else { return Err("scheduled physics component class is unsupported".into()); }
             }
             Ok(())

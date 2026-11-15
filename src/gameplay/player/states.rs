@@ -182,6 +182,8 @@ pub struct FallingDecl {
     pub cat_fall_height: f32,
     pub damage_height: f32,
     pub death_height: f32,
+    pub enhanced_damage_height: f32,
+    pub enhanced_death_height: f32,
     /// m_fallDamageDecl is set.
     pub fall_damage: bool,
 }
@@ -195,6 +197,8 @@ impl Default for FallingDecl {
             cat_fall_height: 6.0,
             damage_height: f32::from_bits(0x4107_0a3d),
             death_height: f32::from_bits(0x4160_7ae1),
+            enhanced_damage_height: f32::from_bits(0x412d_47ae),
+            enhanced_death_height: f32::from_bits(0x41a4_0000),
             fall_damage: false,
         }
     }
@@ -652,8 +656,8 @@ pub struct Frame<'a> {
     pub mantle_sensor: &'a mut MantleSensor,
     pub vault_sensor: &'a mut VaultSensor,
     pub retargeting: &'a mut Option<Retargeting>,
-    /// The player's health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX);
-    /// the rewrite has no damage, so it stays full.
+    /// Maximum health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX),
+    /// used by 8657c0's fall-damage calculation.
     pub health: f32,
     pub underwater: bool,
     pub swim_mantle_exit: &'a mut bool,
@@ -952,6 +956,7 @@ pub struct StateMachine {
     rules: HashMap<(StateId, StateId), Rule>,
     default_state: StateId,
     pending_sounds: Vec<u32>,
+    pending_fall_damage: Option<f32>,
     read_note: super::read_note::Runtime,
 }
 
@@ -982,7 +987,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), read_note: Default::default() }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default() }
     }
 
     /// The mode: its state decls, `m_rules` and default state.
@@ -1049,7 +1054,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), read_note: Default::default() }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default() }
     }
 
     pub fn active_states(&self) -> &[StateId] {
@@ -1068,11 +1073,15 @@ impl StateMachine {
         }
         self.active.clear();
         self.queue.clear();
+        self.pending_fall_damage = None;
     }
 
     pub fn take_sound_events(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pending_sounds)
     }
+    /// Host dispatches to the player's existing health owner after this
+    /// state update, before physics/input advances to another frame.
+    pub fn take_fall_damage(&mut self) -> Option<f32> { self.pending_fall_damage.take() }
 
     pub fn is_active(&self, id: StateId) -> bool {
         self.active.contains(&id)
@@ -2732,8 +2741,9 @@ impl StateMachine {
             return;
         }
         // Land() FUN_1408658c0: fall damage, then CATFALL above
-        // m_catFallHeight. Health and death are not ported: no fall kills.
+        // m_catFallHeight. The same player's health owner consumes the damage.
         let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
+        if damage > 0.0 { self.pending_fall_damage = Some(damage); }
         self.states[index].fall.accumulated_height = 0.0;
         if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
             self.states[index].fall.catfall_taken = true;
@@ -2766,10 +2776,12 @@ impl StateMachine {
     }
 }
 
-/// FUN_1408657c0 (no enhanced heights: the reduction attribute keeps its
-/// base value without modifiers).
+/// FUN_1408657c0, with 8651c0 defaults and maximum health.
 fn fall_damage(decl: &FallingDecl, height: f32, frame: &Frame) -> f32 {
-    let (d, death) = (decl.damage_height, decl.death_height);
+    let enhanced = frame.attributes.1.get("ARK_ATTRIBUTE_FALL_DAMAGE_REDUCTION")
+        .is_some_and(|attribute| frame.attributes.get("ARK_ATTRIBUTE_FALL_DAMAGE_REDUCTION") != attribute.base);
+    let (d, death) = if enhanced { (decl.enhanced_damage_height, decl.enhanced_death_height) }
+        else { (decl.damage_height, decl.death_height) };
     if height - d < death {
         let factor = frame.attributes.0.get("ARK_ATTRIBUTE_FALL_DAMAGE_FACTOR").copied().unwrap_or(1.0);
         factor * frame.health * ((height - d) / (death - d))
