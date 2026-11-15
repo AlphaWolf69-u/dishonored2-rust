@@ -9244,3 +9244,21 @@ additional frame work, cache or GPU pass is introduced. The installed-level
 observation will enumerate both selected rosters across all36 variants and
 print actual readable bindings. No byte, CPU-time or FPS claim is made before
 those observations; no tests or visible launches are used.
+
+
+Character-selection acceptance atfc80b475:
+artifacts/active-resource-build-20261115T035859Z-fd7d4e62/result.json passes
+tools/default-library/normal-game compilation and pending UI exit.
+artifacts/character-selection-20261115T041128Z-742442b8/result.json records
+all72 character/installed-level profiles without acquisition errors, plus
+both Corvo and Emily full-App EotW publication/exit with canonical closure.
+Its selection-summary.json records20 authored removals across16 profiles
+(eight variants); this includes non-readable objects selected by the same
+original character scripts, not a reading-material name exception.
+EotW Corvo retains only pickups_news_kg_ontherun_corvo with
+news_kg_ontherun_c.inventoryitem; Emily retains only the Emily entity and
+news_kg_ontherun_e.inventoryitem. Each excludes the opposite entity before
+placement/component admission. Other common readable bindings remain.
+These are installed ownership/admission observations, not tests, appearance
+checks, original-game live timing comparisons or measured RAM/CPU savings.
+Original source provenance is character-selection-source-evidence-20261115.json.
