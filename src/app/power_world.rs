@@ -12,9 +12,41 @@ use crate::{assets::{archive::Catalog, power_journal::Power, wwise::SoundEventDe
 
 #[derive(Resource)]
 pub(super) struct PowerWorld {
+    catalog: u64,
     bend_time: Option<BendTime>,
     state: State,
     retired: bool,
+}
+/// Actual owned Bend Time acquisition; no live clock request, timer or player
+/// binding exists on the source worker. Sounds retain their canonical leases.
+pub(super) struct PreparedSources {
+    catalog: u64,
+    settings: BendTimeSettings,
+    sounds: Vec<(String, Arc<SoundEventDeclaration>)>,
+}
+impl PreparedSources {
+    pub fn acquire_power(catalog:&Catalog,power:&Power)->Result<Self,String> {
+        if crate::assets::power_journal::power_id(&power.power_id)!=Some(1) {
+            return Err("Bend Time acquisition requires actual power id1".into());
+        }
+        let settings=BendTimeSettings::read(&power.component)?;
+        let mut sounds=Vec::new();
+        for name in [&settings.start_sound,&settings.stop_sound].into_iter().flatten() {
+            if sounds.iter().any(|(path,_)|path==name) { continue; }
+            let source=crate::assets::fx::SoundEventAsset { delay:[0.;2],event:Some(name.clone()) }
+                .resolve(catalog)?.ok_or_else(||format!("Bend Time sound {name} has no declaration"))?;
+            sounds.push((name.clone(),source));
+        }
+        Ok(Self { catalog:catalog.identity(),settings,sounds })
+    }
+    /// The inventory predicate runs before any family sound acquisition.
+    pub fn acquire_owned<'a>(catalog:&Catalog,powers:impl IntoIterator<Item=&'a Power>,
+        mut owns_item:impl FnMut(&str)->bool)->Result<Option<Self>,String> {
+        let Some(power)=powers.into_iter().find(|power|
+            crate::assets::power_journal::power_id(&power.power_id)==Some(1)&&owns_item(&power.item)) else { return Ok(None) };
+        Self::acquire_power(catalog,power).map(Some)
+    }
+    pub fn effect_paths(&self)->impl Iterator<Item=&str> { std::iter::empty() }
 }
 struct State {
     player: Option<EntityId>,
@@ -27,21 +59,38 @@ struct State {
     active: bool,
 }
 impl PowerWorld {
-    pub fn prepare(catalog: &Catalog, powers: &[Power]) -> Result<Self, String> {
-        let settings = powers.iter().find(|power| crate::assets::power_journal::power_id(&power.power_id) == Some(1))
-            .map(|power| BendTimeSettings::read(&power.component)).transpose()?;
-        let mut sounds = Vec::new();
-        if let Some(settings) = &settings {
-            for name in [&settings.start_sound, &settings.stop_sound].into_iter().flatten() {
-                if sounds.iter().any(|(path, _)| path == name) { continue; }
-                let source = crate::assets::fx::SoundEventAsset { delay: [0.0; 2], event: Some(name.clone()) }
-                    .resolve(catalog)?.ok_or_else(|| format!("Bend Time sound {name} has no declaration"))?;
-                sounds.push((name.clone(), source));
-            }
+    pub fn empty(catalog:&Catalog)->Self {
+        Self { catalog:catalog.identity(),bend_time:None,state:State { player:None,timer:None,
+            npcs:Vec::new(),sounds:Vec::new(),pending_sounds:Vec::new(),active:false },retired:false }
+    }
+    /// Existing live state always wins: reacquisition never swaps out its
+    /// active clock lease, original timer slot, cancellation flag or sounds.
+    pub fn absorb(&mut self,sources:PreparedSources)->Result<(),String> {
+        if self.retired||self.catalog!=sources.catalog { return Err("Bend Time sources belong to a retired world".into()); }
+        if self.bend_time.is_none() {
+            self.bend_time=Some(BendTime::new(sources.settings));
+            self.state.sounds=sources.sounds;
         }
-        Ok(Self { bend_time: settings.map(BendTime::new), state: State { player: None,
-            timer: None, npcs: Vec::new(), sounds,
-            pending_sounds: Vec::new(), active: false }, retired: false })
+        Ok(())
+    }
+    /// Quantity loss does not invent an effect cancellation. The caller may
+    /// release these idle sources only after the canonical audio consumer has
+    /// acknowledged the actual requests/tails (never after a frame timeout).
+    pub fn release_unowned(&mut self,actual_quantity:u32,audio_retired:bool)->bool {
+        if actual_quantity!=0||!audio_retired||self.state.active||self.state.timer.is_some()
+            ||!self.state.pending_sounds.is_empty()||self.bend_time.as_ref().is_some_and(BendTime::active) { return false; }
+        self.bend_time=None;
+        self.state.sounds.clear();
+        true
+    }
+    /// Compatibility for an already ownership-filtered subset. Ordinary map
+    /// setup uses empty(); the owned source worker supplies absorb() later.
+    pub fn prepare(catalog: &Catalog, powers: &[Power]) -> Result<Self, String> {
+        let mut owner=Self::empty(catalog);
+        if let Some(power)=powers.iter().find(|power|crate::assets::power_journal::power_id(&power.power_id)==Some(1)) {
+            owner.absorb(PreparedSources::acquire_power(catalog,power)?)?;
+        }
+        Ok(owner)
     }
     /// Bind only the registered player identity from the real entity owner.
     pub fn bind_player(&mut self, entity: EntityId) {
