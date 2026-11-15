@@ -14,6 +14,7 @@ mod sort;
 mod world;
 #[path = "broadphase/overlap.rs"]
 mod overlap;
+pub use overlap::OverlapWorkspace;
 pub use world::{body_layer, BroadphaseBody, BroadphaseLayerSettings, HybridBroadphase};
 #[path = "broadphase/quantization.rs"]
 mod quantization;

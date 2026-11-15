@@ -498,8 +498,10 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
         if let Some(sounds) = &sounds { sounds.lock().objects.remove(&emitter); }
         *state = ObjectRetirement::Complete;
     }
-    // Components retain acknowledgement until their pool slot is released.
-    retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete || matches!(emitter, Emitter::Component { .. }));
+    // Actual component/equipment generations retain acknowledgement until
+    // their owner releases them; a later request must not restart retirement.
+    retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete
+        || matches!(emitter, Emitter::Component { .. } | Emitter::Equipment { .. }));
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
@@ -975,7 +977,8 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
 
 fn play_events(
     mut commands: Commands,
-    physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    (physics, live): (Option<Res<super::physics_scene::PhysicsScene>>,
+        Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>),
     events: Res<Messages<SoundEvent>>,
     mut event_cursor: ResMut<SoundEventCursor>,
     mut registry: ResMut<WwiseRegistry>,
@@ -1060,7 +1063,12 @@ fn play_events(
         let stale_component = matches!(emitter, Emitter::Component { handle, generation }
             if state != Some(ObjectRetirement::Queued)
                 && !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)));
-        if !is_retire && (stale_component || matches!(state, Some(ObjectRetirement::Submitted | ObjectRetirement::Complete))) {
+        let stale_equipment = matches!(emitter, Emitter::Equipment { entity, .. }
+            if state != Some(ObjectRetirement::Queued)
+                && !live.as_ref().is_some_and(|live| live.stage(entity)
+                    == Some(crate::gameplay::entity_lifetime::Stage::Spawned)));
+        if !is_retire && (stale_component || stale_equipment
+            || matches!(state, Some(ObjectRetirement::Submitted | ObjectRetirement::Complete))) {
             if queued.watched.is_some() {
                 match queued.request {
                     Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed_watch(event, emitter, queued.watched),

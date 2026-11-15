@@ -13,9 +13,16 @@ pub(super) fn publish(
     mut output: ResMut<ParticleQueryFrame>,
     world_wind: Res<super::fog_scene::WorldWind>,
     wind: Option<Res<super::vegetation_wind::VegetationWind>>,
+    windblasts: Option<Res<super::windblast::Windblasts>>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     mut error: Local<Option<String>>,
 ) {
     effect_frames.publish_player(player.player.as_ref().map(|player| player.reference_frames()));
+    if let (Some(windblasts), Some(live)) = (windblasts.as_ref(), live.as_ref()) {
+        effect_frames.publish_ephemeral(windblasts.frames(live));
+    } else {
+        effect_frames.publish_ephemeral(std::iter::empty());
+    }
     let snapshot = crate::gameplay::wind::WindSnapshot::capture(
         world_wind.0.as_ref(),
         wind.as_ref().map(|wind| wind.manager()),

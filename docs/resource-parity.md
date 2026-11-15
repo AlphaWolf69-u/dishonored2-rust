@@ -1,5 +1,93 @@
 # Resource parity ledger
 
+## Equipment animation integration (2026-11-15)
+
+The player arm owner now accepts demanded equipment locomotion definitions.
+`arms::EquipmentDefinition` copies only the selected hand's authored aliases,
+speeds, idle leaves and transitions while setup declarations are borrowed.
+`prepare_equipment` resolves these through the existing `animation_rig::Clips`
+and `Rig` owners. Its immutable alias/index snapshot lets the live arm continue
+playing while a worker loads only missing clips. New clips are appended by the
+host after checking the captured bank generation; cancellation discards the
+worker additions. Existing scene indices remain stable. Arm and equipment
+resources retire with their canonical player/level owner; this does not add an
+archive, skeleton, model or GPU resource cache.
+
+Original basis: `7021d0` builds arm stance/equipment records and per-stance
+equipment changes; `701690` initializes equipment transition blend defaults to
+0.25 seconds; `14166d520`/`14166d3d0` register their fields. `6f9b90` supplies the
+idle leaf and `6fcf90`/`6fd5b0`/`6fd760`/`6fd400` the existing transition manager.
+Status: `ported` declaration extraction and demanded clip resolution; `host:`
+the backend keys original stance/equipment index pairs with immutable strings
+inside the existing locomotion node. This is not a full port of its separate
+move-state arbitration, layered idle variation or equipment-lowering rotation.
+
+`Midnight` now carries the five player cast targets from `8542b0`: body, both
+arms and both equipment entities. Equipment poses use that same owner and
+attach to the final controlled body/arm joints. `PreparedScene` records each
+equipment tree's own clip indices. `7dfbd0` initializes point events at zero;
+`7dfdd0` advances them. Events retain receiving target, scene handle, exact
+event/class names and shared authored property fields. Installed gun fire
+places FIRE/CONSUME_AMMO_FROM_MAGAZINE events on PlayerLeftEquipment, so
+body-only event collection discarded the actual weapon callbacks. No fixed
+timer substitutes for these keys. Status: `ported` cast/event routing; equipment
+tree acquisition and renderer admission are owned by their corresponding
+resource modules. Weapon family execution, player combat-state admission,
+projectile/hit owners, recoil and family-specific event handlers must be
+connected before this is described as complete weapon gameplay.
+
+Prediction: worker equipment preparation will decode zero already-resident
+clips, add no per-frame archive reads, and keep one posed model per cast tree.
+No performance number or visual parity is claimed: compilation, tests, visible
+diagnostics and visual checks were not run under the current user constraints.
+
+Ranged component followup: `player::weapons::Runtime` ports the magazine
+admission/count paths `638290`, `6382a0`, `639360`, `63a2b0`, `63bfa0`, and
+`63bfc0`; inventory total includes loaded ammunition. Reload fills from that
+total and does not spend it. Gun `44e0c0` and crossbow `62b560` consume one
+round through `639360` when their FIRE callback arrives, preserving inventory
+locks. Gun `44f3d0`'s misleadingly named CONSUME_AMMO_FROM_MAGAZINE callback
+only animates the upgrade magazine and never spends a second round. Gun
+RELOAD (`44f440`) only shows the loaded bullet attachment; RELOAD_MAGAZINE
+(`44f470`) fills it. Crossbow RELOAD (`62bfe0`) fills its magazine directly.
+`frame_with_inventory` flushes these callbacks before state updates, through
+the actual inventory owner, rather than applying them after a final-frame
+state exit. Fire/reload/out-of-ammo pointers use `63bc00`/`63bd40`/`63bd90`'s
+non-null slide fallback; charge uses `63bbf0`. `44e720` supplies gun capacity
+from its selected ammo's fit-in-magazine bit and rounded capacity attribute;
+capacity is refreshed from the canonical player attributes by the component
+owner (the tag binding is `14137b1c0`). Fire event
+properties are forwarded to the projectile owner as typed effects. Upgrade
+animation and target sensor enable/disable also remain typed component
+effects, not invented target lists. Status: `ported` magazine/event state;
+`blocked: projectile entity lifecycle, muzzle/equipment-upgrade children,
+recoil and lock-on sensor consumers require their corresponding owners`.
+Their output must be connected before claiming firing/damage visual parity.
+
+Chained melee scene starts use the same Midnight owner at an authored offset
+(`86c6a0 -> 7d91c0 -> 7d2160`). Milliseconds are truncated from seconds; an
+offset beyond the first scene's length is rejected as the original does.
+Initial point/SFX selection uses that offset (`7dfbd0`), earlier point keys
+are not replayed, and the first update does not repeat an initialized point.
+Status: `ported` demanded chained-offset playback; no separate pose/clock or
+duplicated clip bank was introduced. Visual checks remain unperformed.
+
+The host's equipment cast slot is retired before replacing its entity rig:
+`Body::replace_equipment_tree` clears only that outgoing target's schedules,
+point keys, stopped-on-interruption sounds and snapshot. The original
+`8542b0` binds each equipment entity's own tree, so retaining the previous
+slot snapshot would incorrectly blend a different skeleton and reuse obsolete
+clip indices. Body/arm tracks remain owned by their existing entities. This
+is `host:` adaptation of actual-entity tree identity to the five-slot player
+cast interface, not an extra model/pose owner.
+
+Weapon-lowering remains a concrete dependency: `775b50` checks the actual
+focused actor, its AI attention flag, declared horizontal distance and each
+equipment's `m_canLower`, then writes each arm's target bind angles before
+`775760` interpolates the binding. A locomotion transition is not that test.
+The focused NPC/AI-attention producer must be connected before this path can
+be driven; no guessed proximity test or idle hand rotation stands in for it.
+
 What the rewrite loads of each resource class the original loads, and how
 far each class's lifecycle is ported. Rules: `AGENTS.md`, "Resource parity".
 Status words: `ported`, `verified` (against a capture or the original's
@@ -40,6 +128,77 @@ were implemented, nor do they reopen already accepted current-owner lifetimes.
 
 
 ## Classes
+
+### Bend Time world clocks and retained sound consumers (2026-11-15)
+
+`app/power_world.rs` consumes the existing clock and sound declaration owners;
+it creates no archive or resource cache. `game_clock_runtime::ClockRuntime`
+owns the shared time-request leases and native five-group clock publication.
+
+| Boundary | Original basis | Status |
+|---|---|---|
+| World/unbent request arbitration and removal | `14080eb40`, `14080ede0` | `ported`: independent minimum targets feed channels3/4 of the existing clock. |
+| Clock target easing | `140059890`, `140059990` | `ported`: uses existing `GameClock::set_rate_target`; no extra interpolation or wall-clock timer. |
+| Player and registered entity root unbent requests | `14080d8c0`, `14080f040`, `14087d050` | `host`: identity-keyed roots retain local clock offsets while selecting native timespaces. Actual NPC/hierarchy producers must register their roots; absent NPCs are not fabricated. |
+| Bend Time expiry and cancellation | `140778f40`, `140779010`, `140778a00`, `14061d350`, `14061cd60` | `ported` for this consumer's slot0/mode2: its real spawner delta drives expiry; pause/unsimulated frames do not advance it. |
+| Sound acquisition, use and retirement | `14061cd60`, `14061cbd0`; shared sound-event class lifecycle below | `host`: prepare retains the existing typed sound-event leases. Explicit power retirement publishes the stop event before canonical audio retirement; leases remain in the retired level resource until audio acknowledgement. |
+| Dark Vision effect and script callbacks | `14049e9d0`, `14049ed20`, `14049eff0`, `14049f250`; `1408848a0` | `blocked`: actual dark-vision trigger/proxy/outline/sound-pulse and script callback consumers remain absent. The power protocol does not substitute a screen tint or pretend those callbacks ran. |
+
+Prediction before these integrations: no per-frame archive reads or resource
+uploads; hold changes replace the existing clock lease and touch clock targets.
+The entity override update traverses only requested live roots, matching the
+native pending list. Performance and allocation measurements remain unverified;
+no build, tests, game launch or visual comparison was run for this change.
+
+### Power-system projections and cast lifecycle (2026-11-15)
+
+Expected ownership result: resolving the power-system projection during
+level acquisition should leave **zero archive reads on power selection,
+casting, and Journal purchase callbacks**. This is an ownership expectation,
+not a measured startup, memory, or frame-time improvement. Builds, tests,
+captures and visible launches were intentionally not run for this batch.
+
+| Boundary | Owner / original functions | Status and limits |
+|---|---|---|
+| Power/upgrade topology and equipment component projection | `assets::power_journal`, shared `app::powers::Powers`; `140455000`, `1404563a0`, `140456590`, component constructors `14061d660` / `14043d2d0` | **ported projection**: consume the setup's borrowed power-system fields; one `Arc` definition set shared with Journal; no per-open reacquisition. Actual inventory declaration leases and modifiers remain with the Catalog/item owner and session inventory. Projection drops with the level resource/worker snapshot. |
+| Mark/owned-power admission and purchase | Same `Powers` + session inventory; `1404c1f20`, `140455850`, `140455ab0`, `140521580` | **ported** starting-item mark predicate, character/ownership eligibility, upgrade ancestry and rune affordability checks, item admission then rune removal, successful movie cost/rune refresh. New-game-plus is explicit state, pending saved-game manager restoration; never inferred from map. |
+| Base power action and mana payment | `gameplay::powers::{Cast,action::Action}`, player mana; `14061bce0`, `14061bc20`, `14061be50`, `14061bea0`, `14061c060`, `14061c0e0`, `14061c350`, `140746cf0`, `140856160`, `1408564e0`, `1408566f0`, `140856c50` | **ported shared protocol**, host callback integration required: numeric authored replenish amount, locks/suppression, cooldown/free-window deadlines, conditional double/free native random-roll order; real in/loop/out/slide/cancel scene handles. Family callbacks (frequently release) must accept actual effects before committing payment. No input-triggered fake effect or timer-driven cast. Health-overcast deficit is returned to health owner. |
+| Windblast power dispatch | `gameplay::powers::{windblast,blast}`, `app::windblast`; `140448780`, `140448590`, vtable `141b53488 + 0x120` | **ported selection/spawn and real rigid-body component runtime**: inherited descriptors prepare once; `idEntity` constructor `140874c50` supplies flags0/MAIN; canonical managed auto-name `140657ae0`/`14087b780` registers the actual live component instance. Entity/source/clock leases remain until real FX callbacks acknowledge retirement. Host integration requires the canonical FX adapter and static-body damage callback. Living actor/AI/projectile branches remain blocked on their actual component owners; no targets or receivers are fabricated. |
+| Blink collision targeting, mantle lock and state12 motion | `gameplay::powers::traversal::{Blink,BlinkSettings,BlinkWorld,BlinkMotion}`; `14061e230`, `14061ede0`, `14061f9e0`, `14061fd20`, `1406205e0`, `14061ec20`, `140857300`, `140857df0`, `140858010`, `140858950` | **ported query and velocity-request algorithms / host bridge required**: actual 20 posture shape slots, all-hit breakable filtering, two clearance sweeps, native backwards search, ground/ceiling posture fit, mantle sensor overrides and angular hysteresis; state12 velocity request, shortened final step and next-update completion, contact abort and breakable anticipation. Scratch hit/breakable vectors persist with the equipped family; they do not own shape resources. Host state entry/exit must own camera, collision/proxy restoration, shared time leases and real breakable damage; a transform-only teleport cannot substitute. |
+| Far Reach object pull | `gameplay::powers::traversal::PullSettings`; `14043f9b0` | **partial**: actual movable/grenade/ragdoll distance-dependent linear/angular impulse equations and installed settings. **blocked: full cpntPlayerStateGrapple/B-spline traversal, target component classification and pickup/weapon/NPC catch dispatch** (`14043f7c0`, `1404426f0`). No synthetic target or arbitrary pull velocity is admitted. |
+| Bend Time component and shared clock requests | `gameplay::powers::world_effects::{BendTime,TimeRequests}`; `14061c670`, `14061cd60`, `14061d1c0`, `14061d350`, `14061c5f0`, `14061cbd0`, arbitration `14080eb40` / `14080ede0` | **ported component protocol and min-scale lease reducer**: actual timer-owner expiry, relativity changes, hold-pressure lowering, stop and per-owner release. **host/blocked integration**: clock channels3/4 publication/easing, timer/message callbacks, per-entity clocks and stopped-NPC release. No local effect-duration countdown substitutes for the engine timer. |
+| Dark Vision power protocol | `gameplay::powers::world_effects::DarkVision`; `14043d3c0`, `14043d490`, `14043d300` | **ported component lifecycle requests / mana-cost protocol**. **blocked: real cpntDarkVision broadphase trigger/proxy lifecycle** (`14049e9d0`, `14049ed20`, `14049eff0`, `14049f250`), outline rendering, sound pulses and reveal filters. An absent effect component is failed admission; no timed screen tint substitutes. |
+
+The shared protocol is not a claim that possession, swarm, doppelganger,
+mesmerize, shadow-walk or domino effects exist. Those families require their
+actual actor/mode/link/roster components, entity spawning, targeting and
+retirement. Missing owners remain failed admission; no synthetic targets or
+unrelated temporary attribute modifiers stand in for them.
+
+Player-state integration now owns the selected mutable `Cast` and real
+prepared action scene leases (`player::power_states::Runtime`); the app
+power resource retains metadata/Journal eligibility only. `Kind::UsePower`
+reads the shared native action declaration and dispatches only an actual
+`ActionRuntime` execution request (`140854dc0`, `1408555a0`, `140856c50`),
+including real out-of-mana scenes. The family dispatcher accepts an actual
+effect before payment. The retail health-overcast gate `140399620` is a
+constant false, not a missing attribute to guess. `14061bc20` applies the
+camera rotation percentage only for gamepad input (`141b9b5d0=-100`).
+
+Blink state12 integration requests actual velocity through the existing
+physics owner, disables/re-enables Jump with native counted eAction masks
+(`1407f86f0`/`1407f87e0`, 47 signed byte counts), selects posture4, owns a
+counted gravity disable and restores only native falling/sprint/slide/vault
+velocity branches. The final navigation posture and dedicated sensor2
+Mantle handoff retain their real owners (`140857300`, `140858010`,
+`140868e60`, `1403a52a0`). The Bevy host republishes retained angular-zero
+and instant motion-limit values because its request projection rebuilds
+each frame; this is `host:` representation, not another movement algorithm.
+Contact cancellation still requires the actual proxy manifold; an empty
+fabricated contact list is not verification. BlinkAttack assassination
+selection and full breakable chunk/FX owners remain unsupported; target
+bypass is limited to actual admitted breakable receivers and native
+material flags. No performance measurements or gameplay captures were run.
 
 ### GPU heap occupancy attribution (2026-11-09)
 
@@ -369,7 +528,7 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 | `contactSystem` | none | none: no owner yet |
 | `ContactSystemDB` | `assets::entities::contacts`, `app::audio::contacts` | host: the common parsed database is shared by catalog identity; level-specific contact chains and sound state stay independent. Four-map clients reduced reads/parses 4 -> 1 with matching 7,407-entry fingerprints; a three-load release acquisition comparison measured 26,196,065 -> 9,042,530 thread cycles. Editable overlays retain separate reads. Original common acquisition is 1400661e0 / 1400607f0. The Catalog owns this intentional session metadata until session destruction; no current producer requests native class-wide forced purge. Active contact sound/FX playback remains a separate runtime scope |
 | `curvefloat` | `app::fog_scene`, `app::resident_images` | host: registered fog curves use installed compiled R16F images, shared through the image owner and purged by image scope; `1402edb60`/`1402ade20`/`1402add00`/`1402adf20` generate and upload the original lookup. All 16 indexed curve declarations have matching 4096x1 R16F compiled image names. An original EotW GPU capture matches its installed image in all 4,096 samples; other curves have descriptor/index coverage, not original-output comparisons. Scripted curve producers remain separate |
-| `damage` | `app::player`, `gameplay::player::decls` | host: the supported drowning path resolves inherited source only during player preparation, consumes the water damage/health filters into typed player settings and drops the generic fields; no runtime source reads or retained generic damage tree. Original dispatch/filter consumers are 1404c0cf0 / 140717800 / 140717dc0; other damage consumers are not claimed implemented |
+| `damage` | `assets::damage`, `gameplay::damage`, `gameplay::player::health`, `app::physics_scene::damage` | ported: typed damage amounts/masks, constructor defaults and parameter amount selection (14138c810/140780490/140780260/140780a80); Catalog registry registration, bootstrap promotion and marker purge use 1400607f0/14005feb0/1400661e0/140060b60/140060180. Host: immutable typed payload leases; no GPU upload/streaming exists for these declarations. Ported calculation: allowed/ignored masks and facing (140717800/140717dc0/140717e40), evolved additive resistance/attributes and mana split (140718fe0/140719d20), health threshold (140717950), actual numeric A2/A3/A5/1A6 message bridge (140876660/1408767a0/1408769f0), player food/potion heal target/rate (140719fe0/14071b7c0) and falling request production (1408657c0/1408658c0). Actual base world health attaches to existing admitted entity/component owners, starts/stops/releases through their registry and requests live DEAD/asleep contexts (1407181c0/140718240/140878d20/140879410). HealthDoor calculation39edc0/39eed0/39ef50 is implemented as a typed kernel, with actual greater-strength and NPC reaction inputs. Blocked: no live arkDoor/arkBreakable owner exists to perform hidden render/body transitions, pre-spawn/release chunk entities, break FX or sound-occlusion updates (1407ed430/1407ed000/1407ee0e0/1407ee610); neither authored breakable tags nor colliders imply such ownership. NPC/AI/armor producers and arbitrary script receivers remain dependencies. Player notifications use app::player_damage plus the actual player_lifetime identity. No measured performance/memory saving claimed. |
 | `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Catalog-scoped decal references now use selected lazy headers, bootstrap promotion and map/persistent purge, with immutable failure reuse and editable bypass; all25 installed declarations and controlled owner scopes passed, and actual header selections match all36 primary/reuse maps. Renderer residency/unload evidence is recorded below. |
 | `DevGui_Menu` | none | none: no owner yet |
 | `difficultyManager` | `assets::difficulty`, `gameplay::options::gameplay` | host: scoped immutable definition identities coalesce player/options acquisition; runtime managers retain a generation lease, shared direct preset/slot arrays and independent custom/current values. Selected headers/bootstrap promotion/map purge/Catalog release follow the common registry; no heap-1 promotion is invented for this class. Native141387290/1406472a0/140648590. Four-map CPU acquisition comparison verified (015e50e8); see acceptance below |
@@ -9602,3 +9761,1104 @@ mission. Consequently HUD task/portrait appearance remains unverified in
 actual gameplay. Changing load flags or producing story events needs the
 corresponding campaign/cinematic implementation and original-code evidence;
 this batch does not fabricate those inputs to make a check succeed.
+
+Inventory gameplay owner extension (2026-11-15): prediction before implementation:
+retain each collection item through the existing PickableSources owner and keep
+quantity, modifier events, equipment selection and currency in the existing
+DiscoveredDocuments session owner. Preparation should acquire a collection once;
+quantity/equip/use operations should perform no catalog reads or declaration
+parsing. This is a behavior/lifetime prediction, not a measured performance claim.
+No build, tests, visible launch or performance measurement was run in this change.
+
+`inventoryitem`: assets/inventory_item.rs and its existing sources.rs remain the
+only item declaration owner. ported: 1419fe7e0's 28 item type values, 1415a7730's
+m_equipment (+80), m_consumable (+78), m_uiIndex (+c0), and 141705ee0's signed
+m_healthQuantity/m_manaQuantity fields. Consumable constructor defaults are zero
+(63c510). Existing acquisition, inherited read-generation leases, preload markers
+and release paths remain in sources.rs; collection and session records retain
+Arc leases, including zero-quantity records (63c630). No renderer or upload path
+was added. host: Arc leases implement identity lifetime across the backend's map
+retirement. blocked: original memory-tag byte/cost comparison requires matched
+original/rewrite captures; no memory, startup-time or frame-time gain is claimed.
+
+Inventory gameplay: src/app/inventory.rs extends DiscoveredDocuments rather than
+adding another resource/quantity cache. ported algorithm: 63c9f0 addition,
+63c800/6147f0 removal with signed +168 ammo lock; 63cbe0 maximum/clamp and
+63cc00/618de0 assignment; 613ff0 retained loadout clear and allow-auto-equip flags;
+615620/614670/614d40 currency counters; 6156e0 coin/painting value, duplicate
+blueprint conversion and raw-whale-bone callback; 615840 player consumable
+health/mana branches and random bolt/bullet pack adjustments. Pickup callback
+contracts require the actual health/mana/crafting components, black-market
+conversion value and shared game-local random stream. Health callback applies
+71a140; mana applies 7467d0, including target accumulation. These effects are not
+reimplemented as an inventory-local health/mana cache. Consumption and pickup
+results preserve native zero-return immediate consumables and currency return
+quantities. Source: canonical analysis/decompiled/chunk_000252.c,
+chunk_000253.c, chunk_000258.c, chunk_000294.c, chunk_000301.c,
+chunk_001021.c, chunk_001045.c and chunk_001132.c.
+
+ported selection bookkeeping: 614b20's 16 slots, same-selection equip message,
+replacement callback payload and 619640/619740 unequip destroy-vs-deactivate
+choice. blocked integration: caller must create m_equipment entity using 619380,
+resolve its actual cpntEquipment declaration (nonzero archetype +11c, slot +68
+below 16), dispatch activation/deactivation/entity retirement and game messages.
+Equipment slot is never guessed from inventory type. The shared declaration
+exposes equipment path; equipment/render owners own component/entity resources.
+The change queue is a host adapter to native message delivery, not a claim that
+an equipment activation or animation has executed.
+
+blocked app/input integration: prepare ReadableLimits::acquire_items once,
+register each retained item with its first-entry collection maximum, then connect
+actual world pickup eligibility/retirement, equipment input and use-state events
+to pickup/equip/consume. Dedicated potion drinking state, autoequip arbitration,
+all-registered collection discovery, save-game serialization, crafting callbacks
+and HUD inventory movie are not completed by these owner APIs. Existing reading,
+character eligibility, Journal history and timed/suppressed modifiers are kept.
+Next step is wire each gameplay producer to these methods and validate against
+original runtime captures when user-authorized gameplay is available.
+
+### Inventory-demanded first-person equipment model lifetime (2026-11-15)
+
+Owners: `app/player_arms.rs` remains the sole first-person surface/material,
+probe-query, depth-hack and GPU skinning owner. Its focused
+`app/player_equipment.rs` child retains removed equipment model leases until
+the existing render queue acknowledges submitted GPU work. Gameplay equipment
+poses live in `gameplay/player/equipment.rs`, using the existing canonical
+`assets/animation_rig` and `edge_animation` owners and the same animBasic and
+Midnight executors as the arms.
+
+Evidence: `1408542b0` casts the inventory equipment entities (+70/+68) with
+masks 8/16 only when the actual entity has a tree (+f0). It does not cast an
+arm skeleton in place of that equipment. `1406fea90`/`1406fe490` layer Midnight
+on that entity tree; `1406e4af0` supplies the existing animBasic executor.
+Attachment depth inheritance remains `14087e0a0`/`14087b760`; ordinary model
+material/lighting and bounds texture demand remain `14031ad30`, `14031a510`,
+`14031a410`, `140a764c0`. Component construction/destruction is separately
+`140619e30`, `14061a120`/`14061a1d0`; inventory admission remains the inventory
+owner's responsibility, not a renderer-created inventory.
+
+Prediction: one surface mesh per actually admitted equipment surface, one
+joint entity per actual rig palette entry once first posed, one retained
+inverse-bind handle per model. Equipment appends world poses to the same
+ArmRender list and contributes visible material demands through the existing
+owner. No arsenal enumeration, second geometry/material/probe cache, or
+per-frame archive reads are introduced. Whole surface validation precedes
+entity publication, so invalid skin streams cannot leave a partly spawned
+model. Unequip removes actual surfaces and joints, stops render demand, and
+retains their exact mesh/material/model/skeleton/inverse-bind leases until
+extraction and submitted-work completion. Level exit continues to use the
+existing outgoing render-world acknowledgement before dropping PlayerArms.
+No resident-byte, CPU-time, GPU-time or frame-rate improvement is claimed.
+
+Status: **source-backed implementation + host GPU retirement**, pending
+parent integration and integrated compilation. Parent must call
+`install_equipment_retirement`, acquire only the admitted entity's actual rig
+and BMD6 model via their existing owners, publish with
+`PlayerArms::add_equipment_model`, cancel any superseded acquisition before
+publication, and remove with `remove_equipment_model`. The sampler accepts
+an authored animBasic input plus Midnight and explicit Body/Arm binding; it
+does not invent an idle alias/playback mode or replace a required tree with a
+rigid pose. Tree nodes beyond the configured animBasic/Midnight projection
+need their source-backed implementation before admission. No tests, builds,
+visible launches, or visual verification were performed for this change, per
+the current user instructions. Existing body/arm shading and swimming/mantle
+publication continue through their original shared path; output equivalence
+has not been measured in this change.
+
+### Shared player system acquisition and casting integration (2026-11-15)
+
+Prediction before implementation: damage declarations use the existing catalog marker registry, and player power/mark fields reuse the resolved player bundle before its generic source is released. Equipment casting adds the actual two equipped model targets from 1408542b0, sharing canonical sound spatialization and render retirement; no separate archive, material, or audio cache is introduced. These are behavior/lifetime additions, not measured optimization claims. Damage header registration/promotion/purge follows 1400607f0 and the existing 142280ee0 promotion table. Status: ported hooks; gameplay integration and compilation pending in this feature branch. No runtime equivalence or timing measurements claimed.
+
+Equipment acquisition followup (2026-11-15): `assets/equipment.rs` owns the
+level-scoped weak typed projection of only the inventory-demanded entity.
+It reuses inherited entity/component resolution and canonical rig, model and
+clip owners. Concrete cpntweaponmeleeplayer construction633c70 supplies (1,0);
+gun44dae0 and crossbow62b1b0 feed ranged6376c0's (2,1). Serialized slot and
+archetype overrides use1419fb190/1419fb470's exact enum registrations. The
+actual cpntAnimEvolved m_animTree, model, component fields, scene pointers,
+default animation alias and bind tags determine all preparation. Installed
+player sword/gun entities use the real common Midnight-only tree: seven
+pause leaves and one WRAP_REPEAT animleaf under Midnight and snapshot LERP.
+`equipment/tree.rs` validates those operations/connections without matching
+resource names. The equipment leaf directly repeats at Edge animation
+duration, avoiding animBasic's separate END_MARGIN loop semantics.
+
+`Descriptor::instantiate` and `Descriptor::bind` resolve actual Rig tags:
+61aed0 maps slot1 to the left arm (+370), slot0 to the right (+680), while
+61ac10/61b010 bind unequipped animated equipment to the body tag. The helper
+returns an actual tree and its clip/alias bank; it does not require the host
+to fabricate either. Generic source text handoffs drop after projection;
+weak source entries do not retain an unequipped arsenal. Cancellation checks
+surround source/rig/clip/model acquisition and reject withdrawn publication.
+Canonical rig/model/animation owners retain their established registry/purge
+scope; source read history retires at the existing catalog level boundary.
+
+Status: source-backed implementation, pending integrated compilation and
+host admission. The projection currently admits exact player melee, gun and
+crossbow component constructors and the validated default-leaf/Midnight tree;
+other constructors/tree graphs fail explicitly. Serialized canLower,
+autoEquip and forceAttachment remain in the weapon declaration reader;
+startup selection remains inventory arbitration. No tests, builds, visible
+launches, visual checks or measured performance claims in this followup.
+Inventory gameplay followup (2026-11-15): expected behavior before integration:
+initial preparation acquires collection item identities once and retains the
+actual InventoryLoadout lease; first Update registers item records before any
+quantity/modifier changes. Initialization now applies clear/allow_auto_equip
+and assignments once, rather than discarding loadout flags or replaying pickups
+on every map. Source 617930/613ff0. InitialInventory::paths exposes these same
+prepared identities to Powers, without a second metadata owner. Missing initial
+collection/loadout/item data is a preparation error, not default modifiers.
+Subsequent maps leave the session inventory's quantities and leases intact.
+
+ported potion action algorithms: gameplay/player/consumables.rs rechecks
+718ce0/7459f0 admission, consumes one real inventory record, then applies
+7194a0/745b20 Health/Mana target gains. Authored quantities come from the same
+item declaration; difficulty effect/speed values come from the existing
+manager, and attribute names were checked against installed executable strings.
+Mana random empty/full rolls use the player's existing shared LCG seed and
+integer modulo101, including branch-dependent random draw counts; those two
+early-return branches omit ordinary potion statistics/consume sound. Native
+745c14..745c21 explicitly loads current mana into XMM1 and minimum mana into
+XMM2 for the empty roll's 746cf0 call. This adapter uses the existing powers
+consume_with_replenish API with constructor-default minimum0. Health and mana
+consume sounds are SoundEventDeclaration leases acquired through Wwise's one
+owner, not midnight scenes or separate inventory audio objects. 7194a0/745b20
+request message A9 with handle-1 after immediate consumption; sound interruption
+therefore does not refund quantity. The actual game-logic stack top787900 value8
+is POWERWHEEL and suppresses this sound request. 399620 is a literal return0
+in this executable: merged-health/mana potion branches are unreachable despite
+the difficulty declaration retaining that optional field. No artificial
+merged-resources action rejection remains.
+
+Mana owner additions: ported 745b20 first-potion target reset, repeated-potion
+accumulation, potion bits8/16, zero countdown, 7460b0 difficulty potion speed,
+and 746b60/746770 target-completion flag clearing/countdown reset. The owner
+remains gameplay/player/mana.rs; consumption still uses the existing powers
+method and health gain still uses damage's Health::gain/can_use_potion methods.
+PlayerPickupEffects borrows these actual owners and the same RNG per pickup.
+Negative food requires the real built-in damage declaration14231f390 dispatch
+callback; crafting and duplicate-blueprint valuation likewise require their
+actual owners, never inventory-local substitutes.
+
+ported inventory/equipment admission requests: 6170b0 first ownership emits
+EquipmentNeeded; zero ownership emits EquipmentRemoved. EquipmentAvailable
+accepts the equipment owner's typed Equipment metadata, then 6162b0/619760
+arbitration emits only the first autoequip request per actual slot, honoring
+loadout allow_auto_equip and ammo's m_autoEquip. These are requests for the
+player controller/entity owner; an emitted request does not claim activation.
+
+ported keyboard/controller shortcuts: app/inventory_shortcuts.rs reads actual
+controller m_shortcutsSettings enumItem entries, retains 14 slots and explicit
+player assignment flags, uses ranged-owner equipment/ammunition dependency
+pairs, and applies 4df4e0 eligibility by actual equipment archetype. 4de4d0's
+priority comparison is boolean nonzero, confirmed at4de5f9/4de600 SETNZ and
+4de607 CMP AL,CL; it is not an invented numeric priority sort. Enum registration
+1419f1c60 assigns keyboard slots0..9 and controller slots10..13. 4de920 maps
+input25..34 and37..40;4de730 cycles only keyboard slots with positive equipment
+quantity. Selection returns the concrete inventory pair and declared equipment
+entity for demand acquisition. No item-name or HUD-index-to-key mapping is
+invented. Installed base/controller.cpntplayercontroller.decl was inspected for
+its serialized enumItem settings; no game declaration data is committed.
+
+blocked integration/verification: parent must declare the new consumables
+player module, route input35/36 and shortcut selection, fan out inventory change
+requests, and dispatch returned real audio/messages/statistics; equipment owner
+must admit actual component/entity resources before equipment_available. Powers
+commit6a0fa70d supplies consume_with_replenish and damage supplies Health gain
+and admission. Shortcut autoassignment requires actual owned-equipment metadata
+and ranged dependency pairs, with geometry still acquired only on demand.
+Multiple matching health/mana potion declarations currently require the native
+registration order and produce an explicit error rather than random HashMap
+selection; ordinary collection candidates have not yet been measured in a live
+session. Savegame persistence, wheel presentation, game-message fanout and live
+capture comparisons remain integration work. No compilation, tests, visible
+launches, latency, byte-count or performance measurements were performed here.
+### Player ranged state admission and action lifetime (2026-11-15)
+
+- Owner: `gameplay/player/combat.rs` and the existing player state machine.
+  Expected cost: one compact phase/action record per state; immutable ranged
+  state definitions are shared with `Arc`, so state updates do not clone
+  declaration strings or reacquire scenes, clips, models, or sound banks.
+  This is a feature/lifecycle prediction, not a measured performance claim.
+- `ported`: shared action declaration defaults `140854dc0`, reflection
+  `14177b680`, cooldown `140855300`, scene-dependent wait flags `140855360`,
+  held/released/message execution decisions `1408555a0`/`140855750`, and
+  deactivation scene-identity release `1408550d0`.
+- `ported`: Fire/Cancel/RequestReload/Reload IDs and constructor masks
+  `140866440`/`1408663d0`/`1408456e0`/`140845660`; state retention now keeps
+  these installed declarations. Admission uses the selected ranged component,
+  its inventory-backed magazine, authored controller mappings and actual
+  equipment-action handles, rather than guessed keyboard keys or loco blends.
+- `ported`: Fire activation `140866fe0`, charge/release/empty-ammo/update
+  branches `140867330`, authored charge/fire/OOA scenes `140866d30`/
+  `140866dc0`/`140867100`, interruption `140866a20`, cancel held-button
+  consumption `140866370`, and request/reload lifecycle `140845600`/
+  `1408454f0`/`1408459d0`. Real Midnight handles and events own completion;
+  no fixed animation duration substitutes for them. Reload/fire scene rates
+  come from the selected component's authored attribute tags.
+- `blocked: target-lock upgrade discovery`: target phase requests preserve
+  `140867330`'s sensor16 activation/retirement, but actual NPC target sensor,
+  marker FX and target-list validation remain with the not-yet-hosted combat
+  target owner; no fabricated target list is supplied. Next step: connect
+  the real sensor and existing entity/FX ownership when that owner is present.
+- `blocked: wall-crouch uncrouch transition`: the shared action helper ports
+  its deferral decision, but the current player mode has no wall-crouch owner
+  to supply an active transition. No simulated uncrouch delay is introduced.
+- Validation: source/declaration/vtable audit and whitespace/diff check only.
+  No compilation, tests, visible launch or output-equivalence claim in this
+  agent batch; the parent owns the combined integration build.
+
+### Player slash rule-handler source and instance owner (2026-11-15)
+
+Prediction before implementation: demand acquisition retains one immutable typed
+rule handler through the Catalog class registry and one sequence cursor per rule
+on each actual player state machine. A rule evaluation borrows its condition and
+outcome records; it performs no source I/O, declaration parsing, allocation or
+string lookup. No measured memory or CPU improvement is claimed.
+
+- `ported`: player Slash rule-handler projection (`m_type` 10) and immutable
+  `arkRuleAction_SlashOutcome` fields/defaults `140892fd0`/`1408930c0`,
+  reflected at `141674f60`; condition value classes bool/float/SlashType/
+  PlayerPosture and their six registered comparison operators. The installed
+  selected handler contains 18 rules, all with `RULE_EXEC_SEQUENCE`.
+- `ported`: handler admission/removal `140893e30`, source-order preservation
+  (`140696cc0` sorts only bark families 6..8), first admitted rule selection
+  `140895820`/`1408963f0`, sequence cursor/advancement `1408920c0`/`140892390`,
+  and once-only exhaustion through the native `140696c40` policy table.
+  Evaluation refreshes source conditions; it does not reset selector cursors.
+- `ported`: separate immutable declaration leases and per-machine mutable
+  instances (`1408947f0`/`1408952a0`/`140895660`), Catalog registration,
+  bootstrap promotion and scoped retirement through the existing class owner
+  registry (`1400607f0`/`14005feb0`/`1400661e0`/`140060180`). The original
+  conditional map-heap promotion list does not contain `ruleHandler`; map
+  header registration therefore does not promote this class to marker 1.
+- `blocked: non-Slash rule families and shuffle policies`: their actual
+  NPC/bark/choke/other outcome/provider owners are not substituted by Slash
+  outcomes. Unsupported demanded kinds/policies fail explicitly; metadata-only
+  preload headers remain admissible. Next step: connect each family's own
+  source-defined action/provider runtime when it is implemented.
+- Validation: inspected installed handler through the existing windowless
+  archive tool and compared all rule/provider/action families with the
+  decompiled runtime and read-only Ghidra metadata/vtables. No tests, builds,
+  visible launches, visual inspection, or measured performance claim.
+- Selected Slash outcomes retain an `Arc` declaration lease plus two indices;
+  cancellation/recoil/hit scenes borrow the same immutable outcome. There is
+  no second owned copy of its path strings in each active action.
+
+Potion statistic completion (2026-11-15): expected lifetime before implementation:
+a single session statistics resource must accept each successful ordinary health
+or mana potion once, update source-backed chapter/playthrough/profile counters,
+and retain cumulative profile values across level retirement. No CPU/memory/
+loading-time improvement is predicted or claimed. The typed array core performs
+no archive, declaration, disk or rendering access when incrementing a counter.
+
+ported ordinary potion count kernel: gameplay/player_statistics.rs implements
+67ac70's zeroed 46-count arrays and pending chapter-1 record, 67bce0 chapter
+record lookup/creation, 67d240/67d1e0 pending-chapter transfer, 67aea0's signed
+wrapping increment of chapter +4, playthrough +44 and cumulative profile +100,
+67c730 scopes1/2/3, 67bc00 current-chapter reset/subtraction, and 67d850's additive
+map-transition restore versus ordinary replacement restore. SavedCounts is
+explicitly the understood counter projection of67dc10; profile totals are not
+saved there, because67cc50 reloads them with67d3f0. Ordinary native increment
+requires both the live platform-stat interface and actual nonnegative chapter;
+the core retains that gate. Typed potion IDs22/23 (hex16/17) and exact profile
+keys come from141a14790. Death-profile campaign keys, derived ratio/favorite
+statistics, deeds, timers, achievement evaluation and full save serialization
+are outside this ordinary potion-counter implementation.
+
+host: app/player_statistics.rs supplies the rewrite's actual session profile
+interface/dictionary instead of pretending the Steam platform pointer exists.
+The adapter reads initial cumulative values once through the existing rewrite
+profile reader; missing native enum keys are zero. It receives both the platform
+increment callback and67e330's dictionary set, retaining one profile dictionary.
+It persists as a session resource across maps and exposes the dictionary to the
+real future save owner; it never creates another disk format or modifies the
+installed game's profile. Counter saves/restores are explicit owner methods,
+not a second telemetry cache. Resource destruction ends this host interface.
+
+Actual chapter publication: PreparedStatisticsChapter uses the existing map-info
+owner's loadingInfo.m_missionIndex (+20c), matching67bec0's noncampaign fallback.
+The root publishes this once per prepared level with bind_prepared_chapter;
+Journal mission changes may use bind_chapter when its actual67d240 producer
+fires. Unknown chapter remains unknown and increments are rejected, without
+inventing a chapter from a map-name substring. Accepted increments enqueue the
+native StatisticUpdated1ca with its four-byte statistic ID; publish_updates
+requires the actual player EntityId. Native health-use15c itself has NO payload:
+7194a0 calls8103f0(15c,playerID), so root's Payload::None is correct. The two
+random mana-potion early returns still omit statistics, matching745b20.
+
+Inventory session rehydration now borrows owned_equipment_items in retained
+record-registration order. A record-order vector supplies deterministic source
+registration ordinals beside the existing record lookup, and retains no second
+quantity or declaration owner. Potion lookup uses the first matching registered
+record, matching the original first-record scan; the former unordered/multiple
+candidate rejection is removed. No quantities/modifiers are replayed on a new
+world. Physical equipment instance/metadata admission remains its existing owner.
+
+Validation for this change: source inspection and git diff whitespace validation
+only; no compilation, tests, visual launches, gameplay captures or measured cost
+comparisons. Root owns module export, initial publication, update ordering and
+the potion-result drain into this actual statistics owner.
+
+
+Equipment material/mesh host admission followup (2026-11-15):
+`app/runtime_materials.rs` now includes the focused `equipment_admission.rs`
+child. The existing MaterialWork resolver, cache snapshot, AssetBatch writers,
+particle image identities and RuntimeFxImages registration/image-readiness
+boundary prepare the actual demanded equipment surfaces on the IO worker.
+The child does not reconstruct a parallel resolver or maintain another
+material/mesh cache. Reserved entity identities use the existing remote
+command allocator. Publication transfers those same reserved assets and
+commands into PlayerArms only after actual image bindings are available.
+Unresolved equipment materials and empty drawable geometry reject admission;
+the established body/arm path retains its previous behavior.
+
+The canonical dynamic cache tracks actual equipment descriptor weak leases
+alongside FX source leases. PlayerArms retains the descriptor, exact mesh and
+inverse-bind handles through its submitted-work acknowledgement on unequip.
+Only after the final real descriptor lease expires can the shared coordinator
+remove equipment-only cache entries/bindings and image demand. A simultaneous
+FX consumer keeps the same cached material alive. Cancellation/supersession
+uses the existing single MaterialWork slot and worker retirement; discarded
+batches never publish their reserved surfaces or replace the live player.
+Level shutdown still waits on that worker and the established outgoing
+render-world acknowledgement before Catalog purge. `admitted` means CPU
+asset and image-binding publication, not a fabricated first-draw/GPU-ready
+measurement; normal Bevy render readiness remains the existing consumer.
+
+The exclusive physical completion adapter consumes PlayerActions completed
+requests/removal notices. It rejects obsolete wanted-slot generations, stale
+clip banks and exhausted inventory; native equipment states own action locks and
+scene timing. Actual source callbacks commit only the
+actual selected slot; and binds the ranged runtime to the same inventory
+identity/quantity owner. Power takeover does not get overwritten by a delayed
+physical removal. Selection/shortcut/autoequip arbitration and power workers
+remain with PlayerActions/inventory; no second event drain is added here.
+
+`assets/equipment::Sources::metadata` separately projects immutable
+Equipment/Ranged metadata without any model, rig, tree, animation, material,
+image or GPU acquisition. Descriptor retains this same Arc via Deref. Actual
+source constructors extend metadata to placeable450ad0->6376c0(3),
+throwable632bf0->6376c0(4), Heart611800->619ea0(7,1),
+TimeShiftDevice44bbe0->619ea0(9,1), and the verified concrete powers through
+61ba50->619ea0(5,1). This makes metadata-only shortcut/startup arbitration
+possible without acquiring the arsenal. Other unported constructors still
+fail explicitly. Entity cpntaudio Settings use the established component
+projection and travel with the equipment tree; sound-bank ownership is
+unchanged. Runtime action/physics behavior of these additional metadata
+families is not certified by reading their metadata.
+
+Prediction: equipment adds only selected surface meshes/joints, its actual
+image leases and weak material dependency records to existing owners; there
+are no ordinary-frame archive reads or repeated material/mesh construction.
+No measured performance/residency savings are claimed. Status: source-backed
+implementation plus host worker/asset/GPU lifecycle integration, awaiting the
+parent's single integrated compilation batch and eventual explicitly
+requested runtime/visual validation. No tests, builds, visible launches or
+visual checks were run for this change.
+
+Equipment loading gate clarification (2026-11-15): startup_pending observes
+only selected model/material/image publication, including hidden model
+preparation before a source target is activated. Staged native equipment
+animation/callbacks are excluded because loading pauses the game clock. The
+normal source flags remain unchanged; native draw animation advances after
+continue. startup_error exposes actual resource admission failures. This is
+a host resource-readiness boundary, not a synthesized instant equip.
+
+### Player system composition and managed lifetime (2026-11-15)
+
+Prediction before implementation: source preparation runs behind the loading
+screen and retains the canonical declaration/rig/model/clip/sound owners. Only
+actual quantity-positive equipment is admitted (6170b0 ->619380), retaining its
+resources across holster/deactivation (619640/619740); this avoids adding first
+selection I/O compared with the executable. This is a lifecycle/behavior change,
+not a measured CPU, GPU, memory, or performance improvement claim.
+
+- `app/player_lifetime.rs`: ported client-zero `player1` naming/slot from
+  1408ad9c0/1408aeb10/1408aecc0, actual arkPlayer class registration 1413c6010,
+  constructor 140784450/140874c50 MAIN tag, canonical LiveEntities admission
+  only after actual Player construction; no duplicate player or health pool.
+- `assets/entities/player.rs`: power/mark and BlinkToMantle inputs resolve in
+  the existing player bundle, then typed consumers project before its generic
+  setup trees retire. Sensor2 uses 1403a52a0, not a fabricated ordinary sensor.
+- `assets/archive.rs`/`assets/map_resources.rs`: damage and ruleHandler headers
+  share the Catalog registry marker lifecycle. RuleHandler does not occur in
+  0661e0's conditional promotion table (142280ee0..142280ff8; string141c70768),
+  so map registration never fabricates its heap-1 promotion. Non-Slash headers
+  remain lazy; only an actual Slash consumer requests the typed definition.
+- `app/setup.rs`/`app/launch.rs`: host composition of source-backed inventory,
+  action states, typed damage notifications, and actual power family owners.
+  Chapter/statistic binding uses the existing level-info owner, not map-name
+  inference. Initial player resource work joins loading readiness; gameplay
+  animation callbacks themselves do not require an invented loading timeout.
+- `app/level_lifetime.rs`: host acquisition cancellation/drain precedes Catalog
+  purge. Power clock requests stop while physics/events/audio and the actual
+  player generation still exist; player identity retires after typed scene
+  Stop and before shared managed-owner removal. Existing render/audio queues
+  retain their submitted consumers until acknowledgement.
+
+Validation in this batch: original decompilation/installed metadata and static
+integration review. No performance/output-equivalence claim: tests and visible
+launches were not run, per the user's instructions. Combined compilation is
+reserved for the completed coherent feature batch.
+### Equipment switch state and owned animation lifetime (2026-11-15)
+
+Prediction: source equipment requests retain each actual still-owned animation
+entity once and swap the selected tree only at admitted state callbacks. No
+compressed clip payloads, model geometry, material identities, or sound sources
+are re-decoded by this state owner. There is no measured optimization claim.
+
+- `ported`: `gameplay/player/equipment_states.rs` implements request identity,
+  source-state counted restrictions, remembered equipment, separate outgoing
+  unequip/incoming equip phases, and native scene-finished callbacks from
+  140835520/590, 140835e00, 140835cf0, 1408363f0, 140836920/b40,
+  140836ad0, 140836f60, and callback140837240. The callback was recovered
+  read-only from instructions: only the matching nonzero scene handle finishes.
+- `ported`: state53/64 EquipChange, Draw54/65 (140831670/1408319e0),
+  and Undraw81 hold/admission (1408469a0/140846c00) use authored data and
+  controller bindings. Equip/unequip scene choice uses the shared equipment
+  declaration reader; no synthesized animation-duration timer is used.
+- `ported`: inventory619380 creates actual still-owned runtimes; 619640
+  destroys them on depletion. Inactive tree playback and compressed clip
+  leases survive hand switches; renderer geometry retires through its shared
+  descriptor and submission acknowledgement owner. No unowned arsenal is
+  created by this registry.
+- `host`: loading presentation pauses the gameplay clock. Only requests that
+  explicitly carry the original skip-equip and skip-unequip flags0x30 run
+  their zero-duration equipment callbacks during loading. No unrelated player
+  state, physics, input or animation clock is simulated. Source inventory
+  auto-event619760→7f8d60 supplies flags0x120/0x130, requesterNULL91;
+  keyboard7fb350 uses0x20/0x30 from the actual swimming-controller state.
+- `blocked: non-arm equipment and unattached default-item producers`: head
+  slot4's separate direct-inventory path and a defaultEquipment requiring a
+  not-yet-admitted inventory entity are not replaced by arm entities or fake
+  quantities. Their actual producer must register the source entity first.
+- Validation: source inspection and Rust syntax parsing only; no compilation,
+  tests, gameplay launches, visual comparisons or performance measurements.
+- Equipment projections use the same borrowed state-declaration reader in
+  every authored player mode. The swimming setup admits only actual retained
+  EquipChange/Draw/Undraw declarations; no default-mode copies are created.
+
+### Melee player-action animation and equipment lifetime (2026-11-15)
+
+- Owners: `gameplay/player/combat.rs`, existing state machine, and canonical
+  `assets/slash_rules.rs` / `gameplay/player/slash_rules.rs`. Prediction:
+  retained typed declarations and one rule instance; no action-time archive
+  reads, generic declaration-tree retention, per-frame string cloning or
+  duplicate animation/model caches. Scene payloads are demanded only when
+  actual melee equipment is selected. This is not a measured speedup claim.
+- `ported`: Slash39/Block44 constructor masks/defaults `14086a710` /
+  `140858d50`, actual right-hand melee admission `14086c3e0` / `140859870`,
+  ordinary no-NPC-target slash selection/playback `14086cbf0`, action-held
+  focus admission from real Midnight message154 `14086d3d0` / `14086d060`,
+  focus-in/release/finish `14086cf10` / `14086bec0` / `1408551c0`, and
+  authored scene start offsets through the existing Midnight owner.
+- `ported`: the installed rule-handler's original order and persistent
+  sequence cursors; selected outcomes retain their shared declaration lease
+  and indices, not deep copies of seven resource path strings per swing.
+  Optional speed attribute `ARK_ATTRIBUTE_SLASH_SPEED_FACTOR` keeps the
+  native missing-index default while preserving an actual stored zero.
+- `ported`: ranged-dispersion modifier acquisition/removal `14086c6a0` /
+  `14086cf10` / `14086bc60` via the existing player attribute owner. The
+  constructor's `+d0=1` is increase, not percent (`14060b580`).
+- `ported`: Block in/idle/out, sneak variants, release and left-hand
+  restriction/restore `140859d10` / `140859710` / `14085a160` /
+  `140859640`. Dynamic body-part code locks retain one counted request per
+  actual state/part (`140854050/090`, `1408029f0/2a10`); they do not replace
+  the authored mode rules or hide unrelated arms.
+- `ported`: actual equipped-sword CatFall variant selection `14085a910`,
+  equipment restrictions/fast restores `14085b490` / `14085b1e0`, and
+  non-low Mantle's used-hand equipment holds/restores `14085eaf0` /
+  `14085fd40`. Bare-hand sensor selection, movement, retargeting and collision
+  remain in their existing owners. Sword-only clip payloads remain deferred
+  until a sword is acquired; no extra payloads enter unarmed startup.
+- `blocked: NPC target-dependent melee`: fatality, throw-hit, blink-assault,
+  recoil/parry/hit reactions, target-facing and focus LOS/speed restrictions
+  need the real combat-target/throw-hit/LOS and NPC attack owners. The current
+  free-swing branch supplies no fabricated target or substitute damage ray.
+  Next step: connect those owners to the existing typed rule context/events.
+- `blocked: carried-object CatFall restore reasons`: medium/large carry and
+  grapple owners add restore reasons in `14085b490`; no such carried entity
+  is invented in the equipment-only path.
+- Validation: original decompilation/reflection/vtable and source review,
+  with a whitespace/diff check. No tests, builds, visible launches, gameplay
+  comparison or measured performance claims in this agent batch. Parent
+  owns the combined feature build and final validation.
+
+### Projectile declaration and flight boundary (2026-11-15)
+
+`assets::projectiles::Sources` projects the inherited concrete `arkProjectile` and `cpntprojectile` declarations through the existing entity/component resolver. It retains weak entity projections; active consumers retain the typed lease, while damage declarations remain in the Catalog damage owner. Editable Catalog generations do not share projections. No projectile runtime performs archive reads. Constructor defaults are from `140623800`, class constructor `140784db0`, startup `140626eb0`; source gun and crossbow entity definitions both select actual finite projectile components rather than hitscan. `gameplay::projectiles` contains the unparented, unhomed finite-flight segment and speed limiting (`140629590`/`140628d40`), range outcome, exact damage falloff parameter construction (`140624610`), actual surface response decision (`140624300`) and incidence calculation (`1406262d0`, `1411b7eec` is `asinf`). Contact inputs explicitly require real actor/component facts and the existing RNG; they never infer an NPC, armor state or target from a render name. These kernels are ported, with no claim of a published projectile factory or playable ranged impacts.
+
+The physics-material owner now retains the independent projectile contact byte at +0x78: `m_canStick` and `m_canBreak` both default true in `14008b640` and are read by `1406262d0`. They are not the traversal flags at +0x80. This projection covers the material class and inherited overrides rather than individual bullet/bolt names.
+
+`blocked: actual awake throwable component and projectile factory`. `140627ef0` requires an attached `arkCpntRigidBodyThrowable` for interaction and bouncing; `140626eb0` resolves that actual dependency, and the authored projectile rigid declaration starts its body disabled. Existing document rigid admission supports its established asleep-body paths and explicitly rejects awake dynamic simulation. A base component header, dummy body, triangle-derived collider or fabricated managed identity cannot replace this dependency. `140627620`/`140627780` also schedule the real visibility-aware removal timer (authored lifespanAfterHit plus lifespanIfStillVisible), rather than deleting after an arbitrary frame delay. Projectile renderer preparation/publication must reuse the shared rigid LWO/material/GPU-ack owners, with world depth state; an arm depth hack is not a world-projectile default. Canonical world ray queries currently provide fraction and identity but do not publish the impact normal needed by this contact path. These are actual prerequisites before admitting/spawning and consuming a Fire effect. No incomplete app consumer drains the existing accepted weapon effects, and no projectile entity/header is published by this change.
+
+Resource prediction: one typed entity projection per distinct demanded projectile definition per Catalog generation; active entities share its damage declaration leases. A weak projection alone pins no declaration or model. Models, physical shapes, materials, trails and sound sources are not acquired by these kernels; their future actual factory must request canonical owner leases during preparation and hold them through component/GPU retirement. Flight, hit-parameter construction and surface selection allocate no scratch vectors or private caches. These are structural predictions, not measured memory/time savings. No tests, compilation or visible game launches were run for this batch.
+
+Narrow dormant-body audit: launcher `140639970` calls `1404c94e0`, which sets the checked real player-inventory dependency and throwable flag byte +0x438 bits 0x48 without activating the body. Break callbacks themselves can leave that body dormant. This does not by itself constitute a complete ordinary-bullet admission: `140624300` still permits sticking/bouncing when the actual contacted material disallows breaking, including declarations whose authored break chances are 100. Static sticking `140627f60` calls the subtype callback `1404c6b70`, which sets the real projectile frame, binds it to the hit entity/joint through `140875e80`, emits message 0x184, and sets throwable +0x438 bit0x80; `1404c8f00(0)` may additionally change the existing body collision/filter mode. The narrower source-supported path therefore still requires the actual dormant subtype/body initialization, shared binding and visibility-timer owners; a fabricated base header or unconditional impact destruction would change behavior.
+
+Projectile contact field names follow recovered reflection: ContactInfo+0x33 is `m_hasHitWorld` (not a generic rigid-body flag), +0x5d is `m_absorbedByArmor`; runtime +0xa5 bit1/bit3 are `m_alwaysBreakOnHit`/`m_alwaysStickToNPCs`. The surface kernel exposes these exact meanings to its eventual actual component host.
+### Windblast rigid receivers and shape query ownership (2026-11-15)
+
+`app::windblast` retains each resolved entity descriptor and cpntWindblast projection once through actual instance/query/effect retirement. Acquisition reuses `declaration_texts::read_common_or_catalog` and the existing inherited entity/component resolver; casting and updating perform no archive reads. `effect_paths()` and `damage_paths()` hand dependencies to their canonical owners before publication. No secondary FX, sound, physical geometry or damage declaration cache is created.
+
+`ported`: expanding tube/wave coordinates and front admission (`1404e05e0`, `1404e06d0`, `1404e0ae0`, `1404e0bd0`), seven interior entity-bound samples (`1404e0440`, factor0.35), sensor max-intensity deduplication (`1404d6f90`), and three actual shape obstruction rays with material `CAN_WINDBLAST_THROUGH` (`1404e10d0`). Real rigid-body movable admission is vtable `141c745c8 +178 ->140808e10`, comparing component behavior+fe with2. `1404d8380` applies damage only to nonmovable receivers and impulses to movable receivers, with native minimum impulse default0.2 (`14137cac0` / string `141ac9bb4`). Expanding-front thickness defaults2 (`14137cc20` / `141ac1264`).
+
+`host`: the native capsule zero sweep (`1404e08e0`, `1404e09a0`, `1404e1ad0`) uses an equivalent capsule/convex Minkowski hull through the existing verified GSK point/penetration kernel. Scaled leaves and nested compounds borrow canonical retained query geometry. The capsule AABB only admits candidates through the canonical broadphase's `12871a0` overlap traversal; exact convex distance makes the contact decision. Scratch vertices, candidate IDs, traversal stacks, hit lists and rays persist across updates. The native phase order retains completed query packets for the next UpdateResults phase; no fabricated countdown determines query completion.
+
+`ported`: rigid impulse receiver `140809c90 ->140851940/1408519d0 ->140091270/140090fc0`: actual packed inverse mass/inertia, point torque, current velocities and orientation publish through existing `BodyPublication::set_velocity`, activation, bounds, and reference-actor callbacks. There is no independent force simulation.
+
+`blocked`: living actor/NPC ragdoll/severing (`1404d7f50`/`1404d9090`), projectile reflection (`1404d8610`), guided bottle/cage throws (`1404d9410`), and slam/ground-material impact consumers require their corresponding actual component/event owners. The rigid path covers ordinary real movable and static rigid components; it does not claim those absent families. Pulsing component reactivation and non-idEntity constructors also need their actual owner before admission. No visible launch, compilation or tests were run in this agent batch, per user instruction. Prediction: startup alone acquires descriptors; repeated casts reuse them and query buffers. Runtime costs and parity remain unmeasured; no performance gain is claimed.
+
+### Blink runtime and movable FX placement (2026-11-15)
+
+`app::blink` retains the selected typed Blink, Blinking-state and BlinkToMantle declarations. Target acquisition (`14061ede0`) borrows the player's twenty actual posture shapes and canonical collision queries; sensor2 uses the existing MantleSensor owner. State12 owns movement (`140857300`, `140858950`, `140858010`, `140857a30`), while this host acquires/releases its actual clock lease and supplies borrowed proxy manifold contacts with real placed-body flags. Its active lifetime remains independent of selected equipment. Declaration reads happen during selection acquisition, never during aiming or stepping. `blocked`: Blink assassination targets require the actual assassination/NPC owner; breakable traversal remains blocking because native 14061e1a0 requires material bit0x04 plus an actual started arkCpntBreakable returned by 140877720. PhysicsScene has no Breakable factory/pool or start/destruction lifecycle. Authored breakable metadata and a base Health receiver cannot satisfy that admission; no bypass or substitute destruction is performed. The existing targeting algorithm and Breakable result API remain ready for that actual component owner, including its chunk, FX and occlusion lifecycle.
+
+`host`: Blink helper positioning (`1406205e0 ->14087dc10`) and generic power FX use the existing `app::usable_effects` acquisition/publication owner. StartEntity, UpdateEntity and StopEntity retain actual entity/tag references and frames. A same-revision placement change updates the existing renderer entity and instance without restarting its effect, changing its age or reacquiring sources. The ordinary worker, GPU/material acknowledgement, source leases and particle/sound retirement continue to own resources. An EffectTicket acknowledges actual render entity/instance tail release and cancelled acquisition completion; it does not synthesize an expiry timer or a target entity. Blink helper keys are scoped to the player-owned component.
+
+`host`: the existing particle-view frame publisher also borrows actual temporary Windblast entity names and poses from the Windblasts component owner. The canonical WorldEffectFrames resolver can resolve these Named references when no installed entity frame exists. Entries disappear only when the actual component releases its live identity after FX retirement; no render-only target or substitute player/worldspawn binding is created. This supplies the real frame for explicit world-placement calls (`14087cb90`) while retaining the original entity reference for FX/audio/event ownership. Tagged NPC impacts remain blocked on actual animated tag publication.
+
+Prediction: placement-only updates reuse acquired sources and existing active instances, and empty/static-only contact manifolds need no canonical dynamic-world read lock. Runtime costs and visual parity remain unmeasured; no performance improvement is claimed. No compilation, tests or visible launches were run in this batch, as instructed.
+
+Projectile flight entity frames remain in the existing Z-up gameplay/WorldStorage coordinate space, matching the captured weapon socket. The Bevy triangle-query boundary, when hosted, must perform the existing conversion rather than changing the projectile source equations.
+### Player weapon admission and retained source frames (2026-11-15)
+
+- Owners: existing `gameplay/player/{mod,weapons,midnight}.rs` and the
+  canonical equipment rig/pose owner. Expected effect: socket queries reuse
+  the published animation palette (`14053dac0` -> `14053d800` -> `14053d3f0`),
+  without another model acquisition or animation evaluation. No measured
+  performance claim; no new clip residency.
+- `ported`: ranged fire effects retain their actual component declaration,
+  ammunition index and source frame across queued equipment changes. Typed
+  ammunition gravity, damage, immunity and sleep attributes, gun spread
+  declaration pointers, and ordered equipment `m_defaultUpgrades` pointers
+  remain metadata; this does not acquire projectile or upgrade models.
+- `host`: a projectile-family admission flag defaults false until the real
+  birth/contact consumer is installed. Shots cannot spend ammunition while
+  that dependency is missing. Loaded-weapon action admission rejects the
+  unavailable factory rather than selecting a false empty-ammo animation;
+  genuine empty-ammo and reload animations retain their existing paths.
+  `blocked`: dormant throwable/body admission,
+  real hit normals, target/joint attachment and visibility timers still need
+  their canonical physics/entity owners; no substitute hitscan is emitted.
+- `ported`: drowning `1404c0cf0` uses the authored damage declaration and
+  `140780a80` bounds, actual player attacker/inflictor identity, hit origin,
+  downward direction and affected-region mask zero. Swimming admits its own
+  declared equipment states. State attribute changes drain through the one
+  player modifier owner, preserving notifications and queue capacity.
+- Midnight graph walking no longer truncates valid chains at an arbitrary
+  sixteen nodes; host validation rejects a repeated conditional node.
+- Validation: source and installed declaration inspection plus whitespace
+  checking only. No builds, tests, visible launches or visual measurements.
+
+### Actual equipment audio casting (2026-11-15)
+
+- Owners: existing player Midnight, equipment tree/entity binding and sound
+  component owners. `ported`: cast `1408542b0` records the actual equipment
+  managed identity; scheduled sound posts, graph continuation and flagged
+  interruption stops (`1408279c0`) retain that identity instead of resolving a
+  reusable hand slot after a switch. The stable emitter preserves its source
+  cast bit for target retirement.
+- `ported`: `visit_equipment_audio_frames` exposes the actual sound settings
+  and pre-model entity binding frame of active and body-bound inactive owned
+  actors. The frame is computed beside the existing arm/equipment render
+  publication, before the equipment's local joint pose. Prediction: no extra
+  pose evaluation, model acquisition or camera-control vector per audio
+  query; one retained frame vector reuses capacity. Not a measured speedup.
+- `ported`: ranged component registration starts default ammunition for every
+  actual owned component before selection (`140639f00`, subclass `+100`);
+  selection reuses the existing component magazine and attachment owner.
+- Dependencies: equipment acquisition sets the real managed identity and
+  resolves equipped/unequipped attachment bindings from canonical rigs;
+  host sound spatial publication consumes the callback with the actual clock
+  rate. No synthetic component handle or first-joint root frame is created.
+- Validation: source review and whitespace checking only; no builds, tests,
+  visible launches or visual/performance measurements.
+
+### Midnight local conditions and named graph loops (2026-11-15)
+
+- Owners: canonical `assets/entities/midnight.rs` projection and
+  `assets/midnight_scene.rs` declaration lease; the existing player Midnight
+  manager owns only per-instance bool values and loop counters. Typed-view
+  residency accounting includes the additional compact node metadata.
+- `ported`: static `EMNT_CONDBOOL` node names/defaults/true-false outputs
+  (`1401b9130`, `1415babc0`, `1415bad90`), default instance initialization
+  (`1407cd3e0`) and existing-variable bool updates (`1407d9050` ->
+  `1407d1770`). Start-time values apply before the initial graph walk, matching
+  `1408549c0`'s OnSceneStarted-before-Start order. No undeclared variable is
+  created by a setter.
+- `ported`: `EMNT_LOOP` count, looping/end outputs and deferred/instant break
+  settings (`1401b9fc0`, `1415bbb70`, `1407cd040`). Loop activation follows
+  the traversed looping output (`140195b50`, `1407cc8e0`, `1407cd1c0`),
+  including messages received before first entry. Named messages preserve
+  the actual force-bool argument, break markers, initial-scene events and
+  authored immediate-break snapshot blend (`1407d4cb0`, `1407cb9e0`).
+- Installed Windblast cast currently has one authored fire scene and no
+  condition/loop nodes. Its ShoudLoop/Loop requests therefore report no such
+  variable/message; no replacement loop or cast timer is synthesized.
+- `blocked`: external Kiscule/parameter/random condition providers, integer
+  condition nodes and flow-control-track message keys require their source
+  callback/track owners. The parser rejects unsupported conditional kinds;
+  named graph-loop support does not claim those separate message tracks.
+- Expected resource effect: one compact per-instance value bank, no new
+  clips, rigs or generic retained declaration trees. Loop path scratch is
+  allocated only for graphs declaring loops. No measured speedup claim.
+- Validation: source/declaration review and whitespace checking only; no
+  tests, builds, visible launches, visual or performance measurements.
+
+Player-bound audio identity followup (2026-11-15): host Wwise object keys now
+retain the actual managed equipment generation and its 8542b0 casting bit.
+Prepared scene schedules preserve that key through continuations and stops;
+retirement acknowledgements remain retained until the gear owner releases the
+same generation, as for component-owned objects (708620/0c7a20). Delayed posts
+cannot resurrect a retired equipment generation. Native entity timespaces use
+DAT1422952d8 [3,4,2,0] for rates as well as delta; player-bound audio follows
+the real player timespace during Bend Time rather than assuming world group3.
+Prediction: no extra source/model/voice owner, no per-frame pose evaluation or
+allocation for publishing the already-computed equipment frames. No performance
+measurement or output-equivalence claim; final combined compilation pending.
+
+### Power-owned FX dependency reservations (2026-11-15)
+
+`host`: the canonical `app::usable_effects` owner now admits reserve-only dependency requests alongside playing owners. Owned power construction retains its authored helper/effect dependencies before input (Blink constructor `14061d390`, authored declaration `14061d660`); actual helper Start/placement/Stop remain `14061dc90`/`1406205e0`/`14061e980`. Reservations reuse the existing weak source registry, cancellable IO acquisition, shared particle definitions and image/world-model/decal/audio preparation. They never publish a DynamicEffect, create an FX actor or synthesize a particle instance. Readiness reports actual dependency acknowledgements; failed source or material publication returns an explicit error instead of indefinite loading.
+
+The equipment owner reserves once per owned power and releases its reservation at actual quantity zero. Unequipping does not retire owned definitions. Already-started effects independently retain their source leases through real particle/sound tails after a reservation releases; canceled acquisitions use the existing retirement worker. Blink exposes the exact three authored helper FX and screen FX paths through its prepared typed projection. Prediction: casts of an already-owned, prepared power find the canonical retained dependency sources instead of reopening archives. No latency, memory or performance measurement is claimed; no compilation, tests or launches were run for this change.
+
+`host`: `EffectRequests::start_entity_once` uses that same acquisition/publication and FX entity/instance owner for naturally completing calls such as Far Reach's leave-wall FX (`14083b4a0`). Its lifetime acknowledgement is set only when the actual instance's particle/sound/decal/sub-effect chains finish and `WorldParticleState::retire` completes family clear and pool release (existing `1404b1b70` Finished/component-handle disposal path). The canonical request owner then releases that exact Wanted generation; render snapshots and source/tail leases retain their ordinary independent lifetimes. No estimated duration, immediate Stop, duplicate FX factory or substitute graph target participates. Persistent dynamic helpers retain their dormant/restart behavior. A looping authored FX remains alive until its actual Stop, rather than being assigned an invented one-shot duration.
+
+`host`: explicit-world starts (`EffectRequests::start_world`/`start_world_once`, native `14087cb90`) retain the caller's actual world frame through asynchronous acquisition and GPU/audio preparation. Their dynamic FX entity starts from that supplied frame without later resolving a player, worldspawn or target-parent pose. They use the same FX factory, source registry, instance completion and tail acknowledgements as entity-bound starts. This prevents delayed Far Reach surface impacts or Windblast spawner-origin effects from following a moved/retired parent. Blink helper producer keys can be bound once to the actual owned power admission generation; reselecting that same component preserves its identity and a depleted/re-added generation does not replace old active handles.
+
+`host`: `usable_effects::begin_retirement` explicitly closes the whole-level desired owner after gameplay producers retire and before actual FX simulation shutdown (`140199df0`/`1407c0f30` ordering). It discards queued starts, desired/reserved generations and their placement headers, cancels acquisitions through the existing retirement FIFO, and publishes an empty DynamicEffects snapshot even when ScenePublished already gates the ordinary schedule. No effect starts during close. Render entities/instances, old render snapshots and audio objects retain their real lifetime/source acknowledgements until their own shutdown completes; only then may Windblast release its actual temporary identity. The existing level-acquisition drain remains authoritative for cancelled worker completion.
+
+`ported` parameter path: `start_beam`/`update_beam` copy the actual hand origin and advancing tip from body `140774d90`/`140776490` into the canonical FX instance's independent origin (+0x38) and target position (+0x80). Constructor identity axes remain unchanged, as those functions do not overwrite them. The explicit target flows through the existing `Instance.target`/BeamTarget and particle FX publication (`140227b90`) into the existing beam system; no replacement geometry, basis stretching or fabricated endpoint entity is created. `StopEntity` retains the ordinary source and sound/particle-tail acknowledgements. Changed endpoint/origin publication updates the same instance without source reacquisition or restart. Runtime/visual parity remains unmeasured; no builds, tests or launches were run.
+
+### Prepared host entity reservation lifetime (2026-11-15)
+
+Prediction before implementation: only canceled, unpublished Bevy entity IDs
+return to their actual world's allocator. Normal publication, rendered output,
+live gameplay entity generations and installed resource lifetimes are unchanged.
+No CPU, resident-memory or load-time improvement is claimed without measurement.
+
+- Owner: rendering/bevy_backend/entity_preparation.rs; shared commands in
+  app/setup_commands.rs. Status host: Bevy ECS IDs are host rendering/application
+  identities, separate from original managed entity registration657ae0/8aecc0.
+- Host evidence: Bevy0.19.1 entity/remote_allocator.rs RemoteAllocator::alloc
+  reserves an ID and has no return-on-drop path; entity/mod.rs
+  EntityAllocator::free returns a never-published reservation. WorldId and
+  EntityAllocator::has_remote_allocator establish the actual owner/epoch.
+  Entities::contains includes unspawned IDs and cannot prove publication.
+- Implemented host ownership: scene, equipment, attachment, and runtime material
+  preparation reserve through one per-world return service. A FIFO publication
+  receipt acknowledges each actual successful spawn. Canceled queue destruction
+  returns only the unacknowledged suffix; an already spawned and subsequently
+  despawned prefix cannot be returned twice. Workers enqueue ID returns without
+  borrowing World. Normal publication transfers ownership through World::spawn_at.
+- Host return: actual World drains pending batches during Last and after source
+  workers finish before world purge. Batches from a reset allocator cannot enter
+  its replacement. Occupied indices or advanced generations after an exceptional
+  bundle-hook unwind are never freed as unpublished reservations. The return
+  queue contains no Catalog/game-source lease and has no global world-independent
+  storage. Windowless production acquisition hosts initialize the same owner.
+- Cost review: the empty drain only reads one atomic flag; cancellation takes a
+  single batch mutex and moves its ID vector. Publication uses one shared cursor
+  per batch, not a mutex or separately allocated receipt object per entity.
+  Existing Direct Commands continue using Bevy's own command ownership.
+- Validation: inspected the actual Bevy allocation, spawn, command-queue unwind
+  and drop paths, plus all production prepared-command constructors. Rust syntax
+  parsing passed. No tests, compilation, gameplay launches or measurements run.
+- Power action scenes: `power_states`/shared Midnight owns actual base scene handle published by 1408549c0 before scene Start (same handle mirrored to UsePower in/loop slots). Windblast player state71 constructor140692260/1406922d0, admission1406923f0, OnSceneStarted140692470 and released-loop1406924f0 are ported; typed component settings are acquired once with owned power. The authored ShoudLoop boolean is installed before initial graph resolution; Loop message uses the canonical scene graph owner, never a replacement hold timer. Generic graph support retains its separately documented Kiscule/flow-track dependencies. No runtime tests/builds run at user instruction.
+
+### Blink exit and retained Falling damage debt (2026-11-15)
+
+`ported`: `140858760` snapshots the actual active Falling instance before Blink activation. `140857a30` resolves that saved instance through Land`1408658c0` before clearing its pointer, only when the original contact predicate succeeds. `1407fdaa0` returns `physics+0x48` (the actual character proxy) plus0x20; the support state read by Blink is the proxy result, independently of the controller support latch. `StateMachine::land_falling_if_contact` therefore uses the existing `Physics::ground.state` and original `ground_distance >= f32::MAX` predicate, with no replacement threshold or ground clamp. The helper uses the mode's existing typed Falling state even after deactivation. It consumes its retained accumulated height through the already authored damage/max-health/attribute path and CatFall admission, then clears only that consumed height. It does not add the Blink endpoint delta or run FallingUpdate's ordinary navigation/landing-camera branches. The same helper is available to the real Grapple exit`140838600`.
+
+`host`: this rewrite batches state request hooks before deactivation. A simultaneous Blink exit and new Falling request could otherwise run `865b90`'s new-fall reset before the saved fall's Land callback. The shared exit bridge resolves that one saved callback before those request hooks, and consumes the saved-pointer flag once; the normal Blink deactivation path also calls the bridge for exits outside that batch. Airborne exits do not land or clear the stored height. Existing Blink movement, prior-velocity restoration`140858010`, clock leases, locomotion, swimming and mantle owners are unchanged. The native Land calculation and damage-declaration delivery remain with their existing owners; there is no new resource/cache or per-frame source read. Prediction: no additional retained resource leases, only a conditional stored-state lookup at actual exit. No memory/CPU savings or runtime parity measurement is claimed; no tests, compilation or visible launches were run.
+
+
+### Player physics authored impulses (2026-11-15)
+
+`ported`: `PlayerPhysics::add_impulse(direction,strength,duration)` follows `1407fcb80` and `1401b30f0`: only positive authored strength/duration are admitted, direction remains unchanged, elapsed starts at zero. `arkPlayerPhysicsImpulseSettings` reflection has strength+0 and duration+4. The original `1401b2290` constructor initializes the embedded +0x220 list with flags0x440 (capacity4); fifth admission evicts the oldest slot3, then `1401b4460` inserts at slot0. `gameplay/player/impulses.rs` uses four inline records with that exact order and no heap allocation or private resource cache. The immutable authored two-scalar projection lives with its actual impulse rather than a raw declaration pointer; source declarations stay in their existing owners.
+
+`ported`: PRE_PHYSICS `1401b4760` sums records oldest-to-newest using `strength * (1 - (elapsed/duration)^3)`, before advancing elapsed by the actual physics-step entity delta; it removes records whose new elapsed is at least duration with ordered `1401b5be0` removal. An expiring step still contributes the value evaluated at its beginning. There is no separate countdown, launch-speed substitution, additional force integrator or inferred body. The resulting +0x70 velocity enters after ordinary input smoothing and before support-plane projection, gravity composition, speed scaling and the existing character-proxy solver. `1400868d0` compares the proxy's current collides-with layers with the original +0x214 layers: masking required layers suppresses the contribution while records continue aging, matching source order. `1407fdb50` input-velocity queries subtract the real evaluated impulse contribution and existing water-current contribution; moving-ground and one-frame external contributors remain with their explicitly absent owners.
+
+`ported`: construction clears all records and the evaluated sum; expiry/oldest eviction retire actual records, and the actual PlayerPhysics lifetime releases inline storage as `1401b2db0` releases the native list. State deactivation, ordinary instant-motion requests and temporary layer suppression do not invent a list clear. The existing game-clock delta passed to `PlayerPhysics::step` owns duration progression, including its actual paused/scaled value. CeilingJump `1408389e0` can submit its actual camera direction and authored impulse pair through this class-wide API. Ground/ceiling missing-query sentinels in this checkout already use `f32::MAX`; the separate motion-limit UNSET1e30 is retained.
+
+Resource prediction: four inline scalar/vector records per actual player physics object, no additional model, physical-body, declaration, archive, render or GPU lease; at most four source-envelope evaluations per actual physics step. No per-step allocation, new clock, timers or archive reads. These are structural lifecycle predictions; no memory/CPU improvement or measured parity is claimed. No tests, compilation or visible launches were run.
+### Far Reach state27 motion (2026-11-15)
+
+Prediction before implementation: parse the installed state declaration once and retain only typed values; state motion performs vector arithmetic without allocating world entities, physics bodies, resources, or a second query world. `player::grapple` ports the executable's remaining-distance speed blend and inertia cap (140838d90), using reflected declaration names (141782d70) and constructor defaults (140837390). The source's max-inertia blend duration is an authored movement blend, not a fabricated cast/completion timer. Target sensor clearance, grounded jump, wall/ceiling sticking, hand scene callbacks, and integration remain pending while their source paths are traced; partial algorithms are not admitted as a cast and cannot consume mana. No performance or visual parity claim; no builds, tests or visible launches.
+
+Implemented source projection: `gameplay::player::grapple` retains state27 typed movement/turn/jump/scene/feedback settings (140837390, 141782d70), sensor27 settings (1403b1c80, 1417b9e20), the six authored box hulls and jump cylinder (1403b3d10/1400efc60), quantized cardinal sample directions, actual hull casts and material through/vision checks (1403b2810/1403b4610), geometry hole/posture queries, and canonical forward/reverse safe-position intervals (1403b3450, 1403b26d0). Read-only instruction inspection resolved the collector callback1403b77a0: crossing signs are fixed by cast direction, independent of contact normals. State safe-position selection (14083b910) uses the three actual navigation shapes, source 0.1m distance hysteresis, source 5cm retry, and monotonically retained horizontal progress. Source motion140838d90 is velocity/inertia integration through the existing player physics owner; the grapple beam's animation is a separate body responsibility, not a B-spline player teleport.
+
+`app::far_reach` retains only typed selected acquisition and a sensor Arc shared with the actual player state. Queries borrow `PlayerWorld` and its resolved physics material; no second collision world, material parser/cache, fake actor or collision body is allocated. Target acceptance requests actual state27 before the shared dispatcher can commit mana. Active traversal can survive selection changes and retires through the state owner. Midnight scene paths and sound/FX declaration paths remain requests to their canonical owners. The general `PlayerWorld::physics_material` bridge is supplied by the integrated parent change. Runtime source formatting was checked; compilation, tests, launches and visual comparison were not run at user instruction.
+
+Remaining source dependencies: actor/NPC/object catch requires its real component/lifecycle owner; GrappleToMantle requires its separate authored sensor and live mantle handoff. The world-target snapshot/hold snapping protocol and native arm grapple-beam animation/FX publication still need their source owner integration. Ordinary direct geometry and cardinal snap queries have implementation source coverage but remain unverified against executable output; do not describe these dependencies or visual parity as verified. No performance gain is claimed.
+### Selected weapon Think and upgrade animation dispatch (2026-11-15)
+
+- Owners: existing player weapon component runtime and canonical upgrade
+  child animation owner. `ported`: initial owned-component Start
+  `14061ac10` -> `1407e7400` initializes without starting Think. Actual equip
+  activation `14061aed0` -> `1407e7670` admits updates; unequip
+  `14061b010` -> `1407e7750` removes them. The host player adapter invokes
+  Think only for that active selected component, never the holstered map;
+  it does not create synthetic component-registry handles.
+- `ported`: gun `14044f240` forwards mode1 to `14061a650` each active Think.
+  Crossbow `14062bf40` forwards mode2 only with the real charge upgrade flag
+  and actual active FireWeapon phase4. Leaving that phase or deactivating
+  (`14062bd20`) sends one matching `14061b4c0` stop. The child owner retains
+  the original already-playing check (`14053e770`) rather than restarting
+  or blindly coalescing these repeated requests.
+- Typed effects retain the actual inventory identity in one shared path
+  lease. Prediction: no new path allocation on repeated Think; the existing
+  effect vector reuses capacity. No measured performance claim.
+- Dependency: the gun's separate pending final-magazine pose (`14044e720`,
+  `14044f240` -> `14044e920`) belongs to the admitted type5 child callback
+  and must wait for its actual animation component to start. Mode1 dispatch
+  does not claim to replace that readiness/pose operation.
+- Validation: decompilation, existing scheduler-owner review and whitespace
+  checks only. No builds, tests, visible launches or measurements.
+
+### Equipment entity instances and admitted attachment changes (2026-11-15)
+
+- Owners: existing equipment declaration/tree owner, equipment state callback
+  owner and shared first-person renderer. `ported`: render publication carries
+  the actual managed equipment identity independently of the geometry resource
+  name. Socket lookup also matches that entity identity; two owned actors may
+  share one model resource without sharing transforms or visibility.
+- `ported`: registered/incoming and detached equipment selects its prepared
+  unequipped body attachment; actual attach selects the prepared arm binding
+  (`14061ac10`, `14061aed0`, `14061b010`). Named tags are validated once by
+  canonical rig preparation. Callback selection is infallible and preserves
+  the entity's animation state and resource leases.
+- `ported`: `m_hideWhenNotEquipped` controls inactive visibility. A retained
+  visible inactive actor publishes its own canonical base-tree pose without
+  borrowing the newly selected actor's Midnight target. Stopped equipment
+  does not receive selected-component Think or invented clock advancement.
+- Root-frame publication includes owned actors without a sound component;
+  audio publication filters the actual sound settings from that same retained
+  frame bank. No extra pose owner, geometry upload or audio-query allocation.
+- `blocked: initial empty-tag entity binding`: `140752900` retains a child
+  relative to its real parent entity when no tag is supplied. Explicit
+  BodyEntity/ArmEntity frame support exists, but preparation still rejects
+  empty tags until admission supplies the actual initial child world frame.
+  The next step is that source entity-frame handoff and existing
+  `reference_frame::relative_binding`; no root-joint or identity-offset
+  fallback is admitted.
+- Prediction: independent actor transforms with shared geometry residency;
+  inactive visible actors require their existing tree's base-pose publication.
+  No measured performance claim. Validation is source/whitespace review only;
+  no builds, tests, visible launches or measurements.
+
+- FarReach frame integration retains the actual published camera matrix
+  (`1407f6a80`) for the next state update (`14083a510` / `1408067c0`),
+  matching the camera-entity update stage. Initialization uses the same
+  controlled camera joint and physics axis; the state does not resample
+  body/arms or rebuild a yaw/pitch approximation. Body-part lock counts have
+  one owning Player shared across main/swimming state machines. These hooks
+  add no per-frame allocation, clip acquisition or second pose evaluation;
+  validation remains source/whitespace review, without builds or tests.
+- Bone-only equipment attachment queries (`140752900` after the tag-info
+  lookup) read the actual entity's retained rendered world palette through
+  `equipment_joint_world`; they do not pose or acquire a second rig.
+- FarReach's owned-equipment Hide/Show fanout (`140839a10` -> `1406145f0`,
+  weapon entity `1408784b0` / `14087c590`) changes each retained actual actor's
+  own visibility. It does not enqueue an equip transition, stop its weapon
+  component or overwrite an ammunition child's independent own-visible bit.
+  Show is unconditional, matching the entity callback rather than restoring
+  an invented prior visibility snapshot.
+- Gun type5 upgrade metadata retains the actual `m_magFireAnimNames` and
+  `m_magReloadAnimNames` arrays (`1416feab0`, declaration offsets260/278).
+  Shared typed selectors preserve fire `14044df30` (AndStay), pending final
+  pose `14044e920` (StayOnLastFrame), and reload `14044e7b0`'s ordered alias
+  attempts with its <=3-round fallback. Alias admission and child readiness
+  remain with the canonical upgrade animation receiver; no replacement clip
+  or fabricated successful lookup is supplied.
+- `MagazineCapacityRecomputed` is produced only for the actual gun
+  OnAmmoChanged boundary (`140639f00` initial `+100`, `14063a490` changed
+  record `+100`, `14044dd00` -> `14044e720`), including equal-valued capacity
+  recomputations. Round spending/reload notifications do not create it.
+  The typed source identity and declaration lease allow inactive owned
+  startup to queue the real pending flag. Consumption still requires actual
+  parent Think (`Runtime::is_active`) and a started type5 animation child;
+  later round changes only update an existing pending value.
+- Hidden inactive equipment publishes its own canonical base-pose world
+  palette with `visible=false`. This enables actual default ammo/upgrade
+  bone binding before selection without showing or GPU-skinning the hidden
+  actor, inventing a bind frame or posing through another owner. No clip is
+  acquired by this publication; stopped clip clocks remain stopped.
+- State27's actual UpdateEnter beam destination (`14083a510`) is applied
+  before `140776490` advances the tip. The state owner supplies its source
+  surface/steering/posture adjustment; the body bridge does not duplicate
+  geometry or continue retargeting in the Stick phase.
+
+### FarReach body/hand leaves and traveling beam (2026-11-15)
+
+- Owners: canonical Rig/Clips demand acquisition; existing body/arm pose
+  owners; `gameplay/player/body/grapple.rs` owns compact input/beam state.
+  Definition fields follow `1417396d0` (+1c0/+1c8/+1e0/+1e8), with input
+  entry defaults from `14076f960`. The paused-leaf alias projection reads
+  supplied canonical tree text and retains only aliases, not another tree
+  resource/cache or copied clip bank.
+- `ported`: Camera mode8 steering `1407f5d50`, Set/EndGrapple `140774680` /
+  `140775260`, ApplyGrapple `140776840`. Shared frame indices use the BODY
+  clips' frame counts and are passed unchanged to both arms. Installed body
+  and arm roots apply Left then Up after Midnight; body lean remains above
+  that layer. Zero blend does not sample or demand these clips.
+- `ported`: `140774d90` starts the beam at its actual left-arm rig tag,
+  initially with tip and origin coincident. `140776490` advances the tip
+  from the actual entity delta and supplied cast speed. `1407766b0` returns
+  the real remaining distance while retargeting preserves it. Normalization
+  uses `f32::MIN_POSITIVE` (verified `141ae3c60`), without a fabricated
+  target/hand position or cast timer.
+- `host`: typed Start/Update/Stop requests bridge those exact body operations
+  to the canonical EntityFX/reserve owner. Stop `140775210` requires callback
+  detachment and tail retirement there; the body does not create a second FX
+  instance/lease owner. Queue drains preserve capacity. Stick/Unstick's actual
+  owned-entity visibility events are applied before render publication in
+  the same player frame, without another body/arm pose evaluation.
+- Integration dependencies: the owned FarReach loader must append actual
+  body/arm paused clips through their existing alias snapshots, resolve the
+  beam tag with the actual left-arm Rig, install Prepared only after atomic
+  bank checks, and acquire the declared beam FX through the existing scope.
+  The family app owner starts on actual accepted cast, queries remaining
+  distance before state27 admission, and uses source cancel/exit lifetime;
+  no permanently visible beam is substituted. NPC catch/tentacle physics is
+  outside this body/hand path.
+- Prediction: extra paused sampling only while its authored layer is active;
+  shared rigs/clip banks, no new per-frame string/resource acquisition and no
+  duplicate posing owner. No measured performance claim. Validation: source,
+  installed tree text and whitespace review only; no tests/builds/launches.
+
+### Player-wide hard and code body-part requests (2026-11-15)
+
+- Owner: `gameplay/player/body_parts.rs`, stored once in `Player` and borrowed
+  through `Frame` by both main and swimming state machines. Prediction before
+  implementation: fixed ten counter bytes, at most five part checks per state
+  admission, no archive reads, heap allocations, locks, atomics or GPU work.
+  This is an ownership/correctness change, not a measured performance claim.
+- `ported`: constructor initialization `1407fc6e0`; hard request acquire /
+  release `1408029e0` / `140802a00`; code request acquire / release
+  `1408029f0` / `140802a10`. Byte wrapping and independently counted callers
+  follow the executable. These counters are not reconstructed from a mode's
+  m_lockedBodyParts or reset when switching modes.
+- `ported`: admission `1408035c0`, `140803600`, `140854890`: any matching
+  hard request rejects activation; matching code-only requests may be
+  overridden only by the reflected m_unlocksCodeLockedBodyParts byte at+68
+  (`14178d5a0`). m_allowSelf is a separate property and no longer incorrectly
+  overrides code occupancy. Authored mode rules still own state-to-state
+  declaration conflicts.
+- `ported`: state-owned code request idempotence `140854050` / `140854090`
+  retains one held bit per state/part and updates the sole player's counts;
+  Block releases its left-arm request on deactivation and mode retirement.
+  Far Reach's sticking runtime can own the right-arm request through the same
+  owner and its real enter/exit callbacks, without disabling unrelated inputs.
+- Source audit confirms normal Navigation, CatFall and Mantle constructors
+  leave +68 false; typed declaration overrides are applied. Dead's actual
+  vtable slot6 is also 140854890 (table141c82478), so its base admission is
+  preserved rather than adding a special bypass.
+- Hard-request callers belonging to other actor families remain with those
+  actors (`14043f7c0`, `14061dc90/dfc0`, `140622810/2c10`, `14088b000`).
+  This owner exposes their exact counted operations; it does not synthesize
+  unimplemented actors or confuse their requests with declaration masks.
+- Validation: executable decompilation, reflection, constructor/vtable review
+  and source diff check only; no tests, builds, launches or measured timings.
+  Parent owns the combined integration build.
+
+Equipment owned-entity lifecycle correction (2026-11-15): this supersedes
+above references to selected-only heavy acquisition or retirement on ordinary
+unequip. Native6170b0 (decompiled chunk253) calls619380 for each actual
+inventory quantity transition from zero to positive, before selection/autoequip.
+619380 spawns/registers that item's authored equipment entity and retains its
+handle. 619640/619740 destroy through87cd60 only after quantity becomes zero;
+ordinary owned unequip deactivates through7e7c00 and retains the actor. The
+host therefore warms only actual owned admitted declarations, including their
+real hand/action banks, model, default tree and material/image bindings during
+loading, and retains these through holster/cancel. It never enumerates the
+unowned arsenal. Metadata exposes actual inherited entity class and optional
+renderModelInfo independently of heavy preparation; nonvisual power equipment
+still receives its actual managed entity without a fabricated model or rig.
+
+Ranged Start639f00 calls61ac10, selects the first authored ammunition entry,
+and invokes virtual+100. Read-only installed PE vtable inspection confirms
+gun141b53f58+100=44dd00 and crossbow141b9cbf8+100=62b240. These spawn exactly
+the default selected ammunition's m_attachmentDef, register it before setting
+runtime bit0x10, then bind the actual authored projectile_attachment_tag.
+Both vtables+148 point to63a2b0, the shared empty-activation reload reached by
+63a090. Child visibility follows the source callbacks, not a guessed continuous
+magazine comparison. Child IO, material/image publication and cancellation use
+the same source/worker/renderer owners; no first-draw child load is introduced.
+
+The owned adapter registers real managed generations before inventory admission,
+sets each prepared tree's managed_entity, and publishes native callbacks in a
+narrow post-Player::frame hook before firing/power execution. Declared audio
+components use that stable entity, never a hand alias that migrates on switch.
+Root and rigid child rendering share ordinary material/probe lighting/depth
+handling; the skin palette/joint publisher is factored for authored animated
+children rather than reproduced. Source binding is the actual equipment entity
+frame before its rig root animation. Unknown graph operations and missing
+nonempty authored tags remain explicit preparation failures.
+
+Depletion/level Stop cancels and drains the existing shared worker, withdraws
+children before parent draws, and passes each exact RetiredModel receipt to
+the managed-identity owner. CPU descriptor/material leases remain with the
+retired payload through the renderer submitted-work acknowledgement; declared
+audio waits on the existing audio consumer acknowledgement as well. Failed
+Stop callbacks retain their identity/receipt cursor for retry. Player generation
+retirement follows equipment_identity shutdown. Loading readiness includes
+actual owned source/material/image publication and excludes queued native
+animation, which resumes on continue with unchanged source flags.
+
+Prediction: resource residency now follows the actual owned entity set rather
+than the selected hand; still-owned switches reuse admitted resources. No byte,
+frame-time, upload-cost or latency measurements were made, and no performance
+improvement is asserted. No compilation, tests, visible launch or visual
+validation was performed under the current user restrictions. Integration and
+runtime output equivalence remain pending the parent's authorized batch.
+
+Equipment instance/binding followup (2026-11-15): worker requests, ordinary
+root renderer admissions, material consumers, pose lookup and retirement now
+carry the actual full managed EntityId. A model resource path remains geometry
+identity and cannot merge two actual actors that share it. Body/arms retain
+None as their pre-existing owner key. Preparation resolves both nonempty
+authored equip/unequip tags before any state transition, making the switch
+infallible. Generic empty-tag source752900 is identified as parent-entity
+binding with preserved child relative frame; it is represented explicitly in
+the binding enum, while acquisition remains an explicit error until the real
+initial entity frame is supplied. No skeleton joint is invented for it.
+Inactive owned trees share the same input sampler and matrix builder via
+pose_base rather than applying the currently held equipment's Midnight target.
+Actual power Unequipped clears the app power selection only when the input
+owner confirms that exact active identity deactivated. Validation remains
+format/syntax and diff review only; no build, test or runtime validation.
+
+- State27 callbacks (`player/grapple_state`): 837a40 entry, 838600 cleanup, 8389e0 navigation, 838d90 physical velocity projection, 839b80 vertical setup, 83a2c0 real first-update flag, 83a330 steering, 83b910 safe requery, and 83b4a0 stick input use canonical player physics, camera, Midnight and sensor owners. State27 retains one Arc of prepared sensor shapes/scenes/sound metadata through movement independent of selected equipment. Native soft body-part2 lock uses actual Player body-part owner; ceiling jump uses canonical impulse queue. Native equipment Stick/Unstick callbacks are queued for that owner. Source leave-wall FX queues its exact surface-release matrix through the canonical FX natural-completion owner; family beam callbacks use the body beam owner and native remaining-distance / UsePower-exit boundary. No synthetic actor, body teleport substitute, guessed timer or sound hash is used. Native NPC catching / shove affected-region dispatch remain blocked by absent concrete actor owners. Optional debug cast-mode2 mid-flight reinitialization remains blocked on the repeated counted-gravity-disable sequence: the static source contains no matching extra enable, and no unsupported cleanup is fabricated. Source predictions are unmeasured; no builds/tests/launches were run by this owner.
+
+### Far Reach static-world cast, held ledges and beam boundary (2026-11-15)
+
+The prior foundation's snapshot/ledge dependencies are now implemented: power component4439f0 retains an accepted world ledge only inside the actual snapping cone/range and after a fresh sensor27 clearance check. Component442cc0 supplies the separate sensor3 pose and ceiling override. Its constructor1403b7830 changes only the base Mantle declaration's sensor ID; runtime vtable141b400e8 shares the base query implementations with141b40cc8. The existing MantleSensor owns these real hulls/results; update_at_with_ceiling now consumes the source override and retains the actual destination shape identity. The actual sensor3 instance transfers through the accepted Request and returns on state completion; it is never cloned into a substitute sensor. Source4439f0 uses destination+0.01*forward and the sensor's final navigation state; 8389e0 arrives there and restores that navigation state directly. No unsupported state8 transition is fabricated.
+
+Default cast mode0 requests active Ground travel while preserving the initial surface target for its normal/offset calculations (4421c0/837a40). Source snapHoldDuration and snapAction are acquired once, durationTime_t scopes included. The real power lifecycle owns the source target-stability accumulator; it does not substitute for cast admission or animation completion. Mode2's counted-gravity reinitialization remains a source audit item:83a510 can invoke839b80 a second time with no explicit ec guard, and7fcbe0 does not reset the gravity counter. No unsourced guard/reset was added to conceal that ambiguity.
+
+The actual accepted power callback starts the canonical body's beam774d90. Component441150/441220/442710 defer state27 until the real beam7766b0 reports distance <= authored m_startPullDistance (default3m), and UsePower63 has finished. This is actual geometry/animation state, with no replacement arrival timer. Mana remains a shared dispatcher commit after the family accepts the real beam start. Source worldImpactFX queues only at that boundary; its path and actual placement pass to the canonical effect owner. State termination stops the same body beam775210. Callback errors propagate; a rejected state gate returns its actual Request so the retained MantleSensor can recover.
+
+Geometry admission is explicitly limited to actual level-static WorldHit.body0 with resolved physics material metadata. HOST unresolved navigation/placed material metadata is blocked, never described as an original null material pointer. Placed/dynamic/NPC/object targets wait for actual body/attachment/component classification. No performance result, executable parity, compilation, tests, launch or visual verification is claimed.
+
+
+Equipment default-upgrade host completion (2026-11-15): the actual owned
+actor Start now queues its authored defaultUpgrades in source order alongside
+its selected ammunition child. Sources delegates to the same attachment source
+owner, and the existing MaterialWork/AssetBatch/material/image admission path
+prepares both rigid LWO and authored BasicRig/MD6 children. The single root
+renderer supplies its existing commands, inverse-bind assets, joint query and
+probe/material owners to the child updater. Component animation receives the
+clock owner's advanced common delta and the published actual entity rate;
+loading pause supplies no animation time.
+
+New target admission marks its pose dirty. During loading pause, only that
+change triggers the existing Player.view pose publisher; gameplay Frame,
+physics and source animation time do not advance. Actual controlled equipment
+entity frames (before model root offsets), including silent and hidden actors,
+then reach the managed identity owner before child binding admission. The
+normal post-player hook republishes current frames for animation, audio and
+projectile socket consumers. Withdrawn generations in a previous view cache are
+excluded through the canonical live hierarchy. This closes resource loading
+without waiting for a queued native draw animation. Syntax/format and diff
+review only; no compilation, tests, launches or visual verification performed.
+
+Initial automatic selection now waits for the entire current metadata admission
+batch before619760 arbitration. The inventory owner preserves its constructor's
+instant-first-frame flag and authored record order; the host passes no instant
+boolean. This supersedes earlier host assumptions that every initial selection
+uses a normal draw. Later physical scene/resource readiness remains separate
+from this exact inventory callback flag and cannot consume the first-frame flag
+for a partial asynchronous metadata prefix.
+Inventory final admission/message correction (2026-11-15): 613440 initializes
+inventory+190 with |=6, so instantEquipFirstFrame starts true. 619760 derives
+request9d flags from this owned bit and clears BOTH allowAutoEquip and instant
+bits with &fc after the first allowed batch arbitration. The core now owns
+those flags; arbitrate_auto_equip takes no caller-supplied guess and orders
+candidates by retained registration ordinal. The entity owner waits until the
+whole metadata admission batch is ready, preserving native first-per-slot
+selection. The 9d receiver LAB7fbe10 jumps7f8d60: normal flags20, msgbit1->30,
+msgbit2->OR100, sourceState5b; inventory auto therefore120/130. Shortcut7fb350
+uses20 or30 depending on controller+2d0 in1..3, source5b, state40. Slot4 is a
+direct614b20 path, otherwise automatic requests choose slot1 state40/other35.
+
+ported entity notification publication:6170b0 emits1ad (NOT9a), retaining the
+actual item declaration plus previous/current counts. 615840 Added9b and
+6147f0 Removed9c retain declaration plus amount/total. publish_gameplay_events
+moves these queued messages into the canonical EntityEvents owner using typed
+InventoryQuantity/InventoryTransfer payloads supplied by that owner, never
+invented executable pointer bytes. Modifier/loadout/purchase changes now also
+emit the correct generic quantity message; readable admissions/purchases emit
+native add/remove notifications. Published events are removed from the source
+queue after successful identity resolution. Parent publishes with the actual
+live player EntityId before the normal event pump.
+
+blocked exact script boundary:6147f0's depleted callback is itemRemoved,
+registered1413989c0 (DAT1439ab8a0), typed arkDeclInventoryItem pointer argument.
+615620's currency callback is moneyAdded, registered1413991f0
+(DAT1439ab8f0), signed quantity argument. These are884920 script callbacks,
+not entity-message numbers. No script subsystem or guessed IDs are created;
+pending_script_events exposes the undelivered callbacks for the actual owner.
+Those events remain explicitly pending while that native script owner is absent;
+they are not reported delivered or silently cleared by the equipment, shortcuts
+or normal entity-message observers. Lifetime closure of this script boundary
+requires that owner; it is not claimed complete by normal message publication.
+No builds/tests/launches or performance measurements were run.
+
+
+### Integrated damage publication and normal entity-message host (2026-11-15)
+
+Static integration review: the actual player-frame producer runs before `power_execution::after_frame`, which flushes damage notifications after returning its live PlayerState/Clock/EntityEvents resources. `app::entity_messages` then pumps the same canonical normal registry (`1408101f0`/`140810000`) before subsequent publication. Unsubscribed messages are consumed by the original registry algorithm; no recipient, graph, HUD, achievement or statistics subscription is fabricated. Inventory1AD/9B/9C messages retain typed item declaration leases rather than pointer-shaped byte payloads. The same component dispatcher now serves physics retirement event drains, replacing the obsolete blanket callback rejection. Registered handlers validate the actual world owner, component generation, live entity and event target before mutation.
+
+`ported`: rigid registered thunk80bc00(AD)/80bc30(AC) calls851a70 with spaces0->1/1->0. The host checks the actual body's dynamic flag and current derived profile bit, uses canonical MotionTimespaces reverse/forward mapping092c30, changes the same MotionStorage profile (`c870c0`), and follows18d2b0 requested/scaled velocity, frozen-zero flag and wake semantics through the existing mutation/activation/bounds/transform callback scope. No body-property-changed subscriber has been admitted here; the host does not fabricate one for c961c0. Actual motion-profile-added subscribers remain an explicit error unless their dispatch host exists. RegisteredFA80bbf0->809c90 reaches the existing central/point impulse publication. Registered14880bbe0->807bc0 publishes zero velocity through that same actual body owner. Registered14980bc50->727100 retains/coalesces the existing source pending-motion request; its deferred80b680/18d020 command publication and optional853220 notification still require the actual rigid update/command host and are not claimed as executed by the numeric-message bridge. Optional D4 wind callbacks remain an explicit error on absent wind-vector owners; the ordinary positive-wind rigid classes are already rejected by preparation. Other registered listener families without their actual live callback owner also fail explicitly instead of acknowledging a no-op.
+
+Damage delivery corrections: fall8658c0 now supplies its original UP hit direction at params+0x3c, while drowning4c0cf0 supplies its original DOWN direction, actual position and attacker/inflictor. Fatal-height FALL retains the authored declaration and INSTANT_KILL sentinel. Base Health Start7181c0 preserves zero health on an already dead owner; Stop718240 clears entity+d7 bit2 before base Stop rather than waiting for Deinitialize. Native base Health Initialize717e70/Start7181c0 do not install numeric EntityEvents subscriptions: their actual ingress remains the typed Health/damage collision/entity dispatch, and876660/8767a0/8769f0 produce A2/A3/A5 notifications through the shared registry. Door/NPC/evolved-world derived component lifecycles, breakable chunk/destruction owners and physical projectile admission remain explicit boundaries; no collider is promoted into a receiver.
+
+Prediction: the normal pump releases delivered/unsubscribed notification payload leases each frame rather than retaining an unbounded queue. It creates no second registry, timer, body, geometry/cache or per-frame archive reader. Existing canonical queue buffers retain capacity. No measured CPU/memory/performance improvement is claimed. This batch received static source/API/whitespace review only; no tests, compilation or visible launches were run by the damage agent.
+
+Equipment generation admission registers the selector copied from the spawning
+player in the existing ClockRuntime entity table (619380). Publication reads
+that actual generation's retained/overridden selector through entity_rates;
+it does not follow whichever player timespace is current later. Managed
+retirement unregisters that clock generation only after graph, renderer and
+audio acknowledgements. No independent clock state or wall-time fallback is
+introduced.
+
+Clock retirement integration: releasing Bend Time requests restores their managed entity overrides through the existing clock transition, but retains actual entity clock registrations until their managed-generation retirement acknowledgement. Equipment/child render and audio drains still consume those clocks. No new timer or clock owner is introduced; this fixes premature removal, with no measured performance claim.
+Script notice boundary closure (2026-11-15, supersedes the retained-pending
+boundary above): read-only PE CRT-initializer inspection reconstructed the
+native registered event order: itemRemoved235/0xeb (ctor1413989c0),
+moneyAdded236/0xec (ctor1413991f0). This is the script event table, not invented
+EntityEvents IDs. The actual arkPlayer vtable141c5e428 +10 resolves8f2500;
+its switch caseseb/ec (chunk402) call7ac710 for both notice handlers. That
+function (chunk323) returns only its second argument, with no gameplay work.
+The subsequent884980 notice forwarding invokes883d10 only through the declared
+notice descriptor;883d10 enters its observer callbacks only if receiver+8 is
+nonnull. Receiver constructor883740 initializes+8 NULL. Its destructor883760
+releases listener registrations and arrays. Consequently no observer is an
+accepted native no-op for these two events, not indefinitely pending work.
+
+The canonical inventory publisher now sends typed ItemRemoved/MoneyAdded through
+an explicit optional InventoryScriptReceiver view. A real bound receiver must
+accept delivery before the queue entry is removed; errors preserve it. The
+current host has no script observer component and supplies the actual unbound
+view. The native no-op handlers and null observer gate complete that delivery;
+InventoryPublication reports script_receiver_absent separately from actual
+script callbacks and entity messages. This drains money/depletion notifications
+without a fabricated VM, callback, numeric entity-message ID or unbounded
+pending queue. Script and ordinary message production order stays in the one
+inventory queue. Future actual observer integration passes its live receiver
+to publish_notifications; the default publisher uses the known unbound host.
+Only source and PE inspection plus whitespace validation were used; no builds,
+tests, visible launches, runtime measurements or performance claims.
+
+Player feature integration validation (2026-11-15): the combined inventory,
+damage, equipment/weapon animation, Blink/Far Reach/Bend Time/Windblast and
+resource-owner batch passed `cargo check --features game --bin dishonored2-rust
+--jobs 1` at commit 70da806d. This establishes type/interface integration only.
+No tests, visible launches, screenshot comparisons or performance measurements
+were run. Runtime/visual parity is not promoted to verified. The final main
+sync also retains the concurrent particle-rendering changes; the normal main
+release build is a separate background operation.

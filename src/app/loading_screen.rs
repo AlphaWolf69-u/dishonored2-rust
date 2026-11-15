@@ -283,6 +283,7 @@ pub(super) fn install(
     crate::loading::gate(GPU_GATE);
     crate::loading::gate("initial view texture residency");
     crate::loading::gate("initial forward and shadow submissions");
+    crate::loading::gate("initial player resources");
     let gpu = GpuReadiness::default();
     if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
         render.insert_resource(gpu.clone()).add_systems(
@@ -567,6 +568,18 @@ fn acquire(world: &mut World) {
         super::load_timing::mark("outgoing world released");
     }
     if state.published {
+        if let Some(error) = super::runtime_materials::equipment_admission::startup_error(world) {
+            fail_initial_images(world, &error);
+            world.insert_resource(state);
+            return;
+        }
+        let has_player = world.get_resource::<super::player::PlayerState>()
+            .is_some_and(|state| state.player.is_some());
+        let player_pending = has_player && (
+            world.get_resource::<super::player_actions::PlayerActions>()
+                .is_some_and(|actions| actions.startup_pending())
+            || super::runtime_materials::equipment_admission::startup_pending(world));
+        if !player_pending { crate::loading::complete("initial player resources"); }
         match advance_initial_images(world, &state.catalog, &state.gpu) {
             Ok(true) => {
                 let cameras: Vec<_> = world

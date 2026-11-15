@@ -19,6 +19,11 @@ use std::collections::HashMap;
 
 type Fields = [(String, Value)];
 
+/// arkDeclCpntPlayerController +0x68; ctor 7f7a60, metadata 14173e090.
+pub fn trigger_threshold(fields: &Fields) -> Result<f32, String> {
+    number(fields, "m_triggerThreshold", 0.1)
+}
+
 fn get<'a>(fields: &'a Fields, key: &str) -> Option<&'a Value> {
     fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
@@ -112,7 +117,7 @@ fn items_atoms(list: &Fields) -> Vec<String> {
 
 /// An arkCollisionLayerMask_t scope: each `m_<LAYER>` member sets or
 /// clears its bit of the constructor default.
-fn layer_mask(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
+pub(crate) fn layer_mask(fields: &Fields, key: &str, default: u32) -> Result<u32, String> {
     let Some(members) = scope(fields, key) else { return Ok(default) };
     let mut mask = default;
     for (member, value) in members {
@@ -142,6 +147,7 @@ pub fn health(fields: &Fields) -> Result<super::health::Settings, String> {
         regen_amount: number(fields, "m_regenAmount", 0.0)?,
         regen_delay: number(fields, "m_regenDelay", 0.0)?,
         regen_rate: number(fields, "m_regenRate", 0.0)?,
+        heal_rate: number(fields, "m_healRate", 30.0)?,
     })
 }
 
@@ -235,6 +241,15 @@ pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Resul
 pub fn state_id(name: &str) -> Option<StateId> {
     let value = match name.strip_prefix("PLAYER_STATE_")? {
         "READ_NOTE" => 52,
+        "EQUIP_CHANGE_RIGHT_HAND" => 53,
+        "DRAW_RIGHT_HAND" => 54,
+        "EQUIP_CHANGE_LEFT_HAND" => 64,
+        "DRAW_LEFT_HAND" => 65,
+        "UNDRAW" => 81,
+        "FIRE_WEAPON" => 56,
+        "CANCEL_FIRE_WEAPON" => 57,
+        "REQUEST_RELOAD_WEAPON" => 58,
+        "RELOAD_WEAPON" => 59,
         "RUNNING" => 0,
         "SPRINTING" => 1,
         "JUMPING" => 2,
@@ -255,6 +270,7 @@ pub fn state_id(name: &str) -> Option<StateId> {
         "PEEKING" => 24,
         "GRAPPLE" => 27,
         "SLASH" => 39,
+        "BLOCK" => 44,
         "NULL" => 91,
         "ANY" => 92,
         _ => return None,
@@ -503,6 +519,11 @@ pub fn breath(fields: &Fields) -> Result<super::swimming::Breath, String> {
 pub fn drowning_damage_decl(fields: &Fields) -> Option<&str> {
     atom(fields, "m_drowningDamage").filter(|value| !value.is_empty())
 }
+pub fn fall_damage_decl(declarations: &PlayerDeclarations) -> Option<&str> {
+    declarations.states.iter().find(|(kind, _)| kind == "playerstatefalling")
+        .and_then(|(_, fields)| atom(fields, "m_fallDamageDecl"))
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+}
 
 /// Base health filters (140717800/140717dc0) for the downward-origin water
 /// damage dispatched by 1404c0cf0. An allowed mask takes precedence.
@@ -526,14 +547,29 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
 
 #[derive(Clone, Copy)]
 enum SupportedDefaultState {
-    Dead, ReadNote, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
+    Dead, ReadNote, UsePower, UseWindblast, Blinking, Grapple, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
+    FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Block,
+    EquipChange, DrawEquipment, Undraw,
 }
 
 fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
     Some(match kind {
         "playerstatedead" => SupportedDefaultState::Dead,
         "playerstatereadnote" => SupportedDefaultState::ReadNote,
+        "playerstateequipchange" => SupportedDefaultState::EquipChange,
+        "playerstatedraw" => SupportedDefaultState::DrawEquipment,
+        "playerstateundraw" => SupportedDefaultState::Undraw,
+        "playerstatefireweapon" => SupportedDefaultState::FireWeapon,
+        "playerstateslash" => SupportedDefaultState::Slash,
+        "playerstateblock" => SupportedDefaultState::Block,
+        "playerstatecancelfireweapon" => SupportedDefaultState::CancelFireWeapon,
+        "playerstaterequestreloadweapon" => SupportedDefaultState::RequestReloadWeapon,
+        "playerstatereloadweapon" => SupportedDefaultState::ReloadWeapon,
+        "playerstateusepower" => SupportedDefaultState::UsePower,
+        "playerstateusewindblast" => SupportedDefaultState::UseWindblast,
+        "playerstateblinking" => SupportedDefaultState::Blinking,
+        "playerstategrapple" => SupportedDefaultState::Grapple,
         "playerstaterunning" => SupportedDefaultState::Running,
         "playerstatesneaking" => SupportedDefaultState::Sneaking,
         "playerstatesprinting" => SupportedDefaultState::Sprinting,
@@ -557,12 +593,49 @@ pub(crate) fn retains_default_state(kind: &str) -> bool {
 
 /// The mode's locomotion state decls; other state kinds are not ported.
 pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
+    states_in(&declarations.states)
+}
+
+/// Equipment states retain the same authored class/slot rules in each mode.
+/// Never synthesize default-mode states that are absent from the swim mode.
+pub fn swimming_equipment_states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
+    Ok(states_in(&declarations.swimming_states)?.into_iter().filter(|state|
+        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_))).collect())
+}
+
+fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl>, String> {
     let mut result = Vec::new();
-    for (kind, fields) in &declarations.states {
+    for (kind, fields) in entries {
         let Some(supported) = supported_default_state(kind) else { continue };
         let kind = match supported {
             SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
+            SupportedDefaultState::EquipChange => {
+                let definition = super::equipment_states::Declaration::read(fields)?;
+                if result.iter().any(|state: &StateDecl| state.id == definition.state()) { continue; }
+                Kind::EquipChange(std::sync::Arc::new(definition))
+            }
+            SupportedDefaultState::DrawEquipment => {
+                let id = atom(fields, "m_id").and_then(state_id).unwrap_or(StateId::DRAW_LEFT);
+                if result.iter().any(|state: &StateDecl| state.id == id) { continue; }
+                Kind::DrawEquipment(id == StateId::DRAW_LEFT)
+            }
+            SupportedDefaultState::Undraw => Kind::Undraw(number(fields, "m_holdDuration", 1.0)?),
+            SupportedDefaultState::FireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::FireWeapon(_))) =>
+                Kind::FireWeapon(std::sync::Arc::new(super::combat::FireDecl::read(fields)?)),
+            SupportedDefaultState::Slash if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slash(_))) =>
+                Kind::Slash(std::sync::Arc::new(super::combat::SlashDecl::read(fields)?)),
+            SupportedDefaultState::Block if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Block(_))) =>
+                Kind::Block(std::sync::Arc::new(super::combat::BlockDecl::read(fields)?)),
+            SupportedDefaultState::CancelFireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CancelFireWeapon)) => Kind::CancelFireWeapon,
+            SupportedDefaultState::RequestReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::RequestReloadWeapon)) => Kind::RequestReloadWeapon,
+            SupportedDefaultState::ReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReloadWeapon)) => Kind::ReloadWeapon,
+            SupportedDefaultState::UsePower if !result.iter().any(|s: &StateDecl| matches!(&s.kind, Kind::UsePower(decl) if !decl.windblast)) => Kind::UsePower(std::sync::Arc::new(super::power_states::UsePowerDecl::read(fields)?)),
+            SupportedDefaultState::UseWindblast if !result.iter().any(|s: &StateDecl| matches!(&s.kind, Kind::UsePower(decl) if decl.windblast)) => {
+                let mut decl = super::power_states::UsePowerDecl::read(fields)?; decl.windblast = true; Kind::UsePower(std::sync::Arc::new(decl))
+            }
+            SupportedDefaultState::Grapple if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Grapple(_))) => Kind::Grapple(std::sync::Arc::new(super::grapple::Decl::read(fields)?)),
+            SupportedDefaultState::Blinking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Blinking)) => Kind::Blinking,
             SupportedDefaultState::Running if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             SupportedDefaultState::Sneaking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
             SupportedDefaultState::Sprinting if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
@@ -596,6 +669,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     cat_fall_height: number(fields, "m_catFallHeight", d.cat_fall_height)?,
                     damage_height: number(fields, "m_damageHeight", d.damage_height)?,
                     death_height: number(fields, "m_deathHeight", d.death_height)?,
+                    enhanced_damage_height: number(fields, "m_enhancedDamageHeight", d.enhanced_damage_height)?,
+                    enhanced_death_height: number(fields, "m_enhancedDeathHeight", d.enhanced_death_height)?,
                     fall_damage: atom(fields, "m_fallDamageDecl").is_some_and(|v| !v.is_empty()),
 
                 })
@@ -627,6 +702,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     high_damage_midnight: atom(fields, "m_highDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
                     low_damage_arm_midnights: ["m_lowDamageMidnightLeftArm", "m_lowDamageMidnightRightArm"]
                         .map(|k| atom(fields, k).filter(|v| !v.is_empty()).map(str::to_owned)),
+                    low_damage_sword_midnights: ["m_lowDamageMidnightRightArmWithSword", "m_lowDamageMidnightRightArmWithSwordSneaking"]
+                        .map(|key| atom(fields, key).filter(|value| !value.is_empty()).map(str::to_owned)),
                     high_damage_arm_midnights: ["m_highDamageMidnightLeftArm", "m_highDamageMidnightRightArm"]
                         .map(|k| atom(fields, k).filter(|v| !v.is_empty()).map(str::to_owned)),
                     damage_threshold: number(fields, "m_damageThreshold", d.damage_threshold)?,
@@ -708,6 +785,7 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
         decl.flags.body_parts = body_parts(fields, "m_bodyParts", decl.flags.body_parts)?;
         decl.flags.locked_body_parts = body_parts(fields, "m_lockedBodyParts", decl.flags.locked_body_parts)?;
         decl.flags.exclusive_body_parts = body_parts(fields, "m_exclusiveBodyParts", decl.flags.exclusive_body_parts)?;
+        decl.flags.unlocks_code_locked_body_parts = boolean(fields, "m_unlocksCodeLockedBodyParts", decl.flags.unlocks_code_locked_body_parts)?;
         decl.flags.allow_camera_out_of_shape = boolean(fields, "m_allowCameraOutOfShape", decl.flags.allow_camera_out_of_shape)?;
         decl.navigation = navigation(fields, decl.navigation.clone())?;
         decl.air_friction = number(fields, "m_airFriction", decl.air_friction)?;
@@ -948,6 +1026,44 @@ pub fn loco_arm_transitions(locomotion: &Fields, side: usize, equip: &str) -> Re
     Ok(result)
 }
 
+/// Equipment indices belong to this arm's authored declaration list.
+pub fn arm_equipment_names(locomotion: &Fields, side: usize) -> Vec<String> {
+    let key = if side == 0 { "m_leftArmEquipStateList" } else { "m_rightArmEquipStateList" };
+    let mut entries: Vec<_> = scope(locomotion, key).unwrap_or(&[]).iter().filter_map(|(key, value)| {
+        let index: usize = key.strip_prefix("item[")?.strip_suffix(']')?.parse().ok()?;
+        let Value::Atom(value) = value else { return None };
+        Some((index, value.trim_matches('"').to_owned()))
+    }).collect();
+    entries.sort_by_key(|(index, _)| *index);
+    entries.into_iter().map(|(_, name)| name).collect()
+}
+
+/// Equipment changes keep the current stance; 7021d0 builds one transition
+/// record for every authored stance (metadata 14166d520 / 14166d3d0).
+#[derive(Clone, Debug)]
+pub struct ArmEquipTransition {
+    pub from: String,
+    pub to: String,
+    pub stance: String,
+    pub alias: String,
+    pub blend_in: f32,
+    pub blend_out: f32,
+}
+
+pub fn arm_equip_transitions(locomotion: &Fields, side: usize) -> Result<Vec<ArmEquipTransition>, String> {
+    let key = if side == 0 { "m_leftArmEquipStatesTransitions" } else { "m_rightArmEquipStatesTransitions" };
+    let mut result = Vec::new();
+    for item in items(locomotion, key) {
+        let (Some(from), Some(to)) = (atom(item, "m_fromEquipState"), atom(item, "m_toEquipState")) else { continue };
+        for stance in items(item, "m_stances") {
+            let (Some(name), Some(alias)) = (atom(stance, "m_stance"), atom(stance, "m_anim").filter(|a| !a.is_empty())) else { continue };
+            result.push(ArmEquipTransition { from: from.to_owned(), to: to.to_owned(), stance: name.to_owned(), alias: alias.to_owned(),
+                blend_in: number(item, "m_blendIn", 0.25)?, blend_out: number(item, "m_blendOut", 0.25)? });
+        }
+    }
+    Ok(result)
+}
+
 /// The body decl's `m_leftArmAnims` / `m_rightArmAnims` jump additive
 /// aliases of an equip state, in FUN_1407730c0's kind order.
 pub fn arm_jump_aliases(body: &Fields, side: usize, equip: &str) -> [Option<String>; 6] {
@@ -1004,5 +1120,6 @@ pub fn swimming_read_note(declarations: &PlayerDeclarations) -> Result<Option<St
     decl.flags.body_parts = body_parts(fields, "m_bodyParts", decl.flags.body_parts)?;
     decl.flags.locked_body_parts = body_parts(fields, "m_lockedBodyParts", decl.flags.locked_body_parts)?;
     decl.flags.exclusive_body_parts = body_parts(fields, "m_exclusiveBodyParts", decl.flags.exclusive_body_parts)?;
+    decl.flags.unlocks_code_locked_body_parts = boolean(fields, "m_unlocksCodeLockedBodyParts", decl.flags.unlocks_code_locked_body_parts)?;
     Ok(Some(decl))
 }

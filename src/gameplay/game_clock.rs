@@ -257,6 +257,13 @@ impl GameClock {
         self.delta(*GROUPS.get(timespace as usize)?)
     }
 
+    /// Rates of that same entity timespace (DAT_1422952d8), rather than
+    /// assuming every player-bound audio object belongs to world group 3.
+    pub fn entity_rates(&self, timespace: u32) -> Option<[f32; 2]> {
+        const GROUPS: [usize; 4] = [3, 4, 2, 0];
+        self.rates(*GROUPS.get(timespace as usize)?)
+    }
+
     /// FUN_1400596e0.
     pub fn previous_time(&self, group: usize) -> Option<f64> {
         (group < GROUP_COUNT).then(|| self.f64(group * GROUP_STRIDE + 0x08))

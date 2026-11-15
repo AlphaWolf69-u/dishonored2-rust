@@ -609,7 +609,13 @@ pub struct MantleSensor {
     pub destination_axis: Mat3,
     /// The body the destination ray hit (0: the level, as idWorldspawn).
     pub destination_body: u32,
+    /// Actual shape result for clients needing resolved material/owner
+    /// metadata; this is a borrowed-query identity, not another resource.
+    pub destination_surface:Option<WorldHit>,
     query_origin: Vec3,
+    query_axis: Mat3,
+    /// Mantle sensor+0x2c0, set by GrappleToMantle140442cc0.
+    query_ceil_distance:Option<f32>,
     surface_swimming: bool,
     /// m_forwardCollisionResults (+0x6c): a missed ray clears only its
     /// collision flag, keeping the rest from earlier frames.
@@ -642,7 +648,10 @@ impl MantleSensor {
             destination: Vec3::ZERO,
             destination_axis: Mat3::IDENTITY,
             destination_body: 0,
+            destination_surface:None,
             query_origin: physics.position(),
+            query_axis: physics.axis(),
+            query_ceil_distance:None,
             surface_swimming: false,
             forward_results: [ForwardRay::default(); 13],
             pending: None,
@@ -666,6 +675,8 @@ impl MantleSensor {
     pub fn update(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, surface: Option<f32>) {
         if !self.enabled { return; }
         self.query_origin = physics.position();
+        self.query_axis = physics.axis();
+        self.query_ceil_distance=None;
         self.surface_swimming = surface.is_some();
         if let Some(surface) = surface {
             self.query_origin.z = surface - physics.posture_settings(POSTURE_STANDING).step_height;
@@ -675,10 +686,31 @@ impl MantleSensor {
         self.results(world, physics, q);
     }
 
+    /// BlinkToMantle is the same sensor class with sensor ID2
+    /// (1403a52a0). 1406205e0 supplies its query position/axis overrides;
+    /// keep the ordinary sensor's deferred-result sequencing and hull owner.
+    pub fn update_at(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, origin: Vec3, axis: Mat3) {
+        self.update_at_with_ceiling(world,physics,origin,axis,None);
+    }
+
+    /// GrappleToMantle has the same query implementation (vtable141b400e8)
+    /// and an explicit ceiling override from140442cc0. Native3bcb20 and
+    ///3bc210 fall back to player physics only for the UNSET sentinel.
+    pub fn update_at_with_ceiling(&mut self,world:&dyn PlayerWorld,physics:&PlayerPhysics,origin:Vec3,axis:Mat3,ceiling:Option<f32>){
+        if !self.enabled { return; }
+        self.query_origin = origin;
+        self.query_axis = axis;
+        self.query_ceil_distance=ceiling.filter(|value|*value!=super::physics::UNSET);
+        self.surface_swimming = false;
+        self.issue(world, physics);
+        let queries = self.pending.take().unwrap_or_default();
+        self.results(world, physics, queries);
+    }
+
     fn results(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics, q: MantleQueries) {
         let d = self.decl;
         let origin = self.query_origin;
-        let forward = physics.axis().x_axis;
+        let forward = self.query_axis.x_axis;
         if let Some([left, right]) = q.hands {
             self.use_left_hand = left;
             self.use_right_hand = right;
@@ -691,10 +723,11 @@ impl MantleSensor {
             };
         }
         self.destination = Vec3::ZERO;
+        self.destination_surface=None;
         let step = self.step();
         if let Some(rays) = q.rays {
             let h0 = self.minimum_height();
-            let ceil = physics.ceil_distance;
+            let ceil = self.query_ceil_distance.unwrap_or(physics.ceil_distance);
             for (i, (r, hit)) in self.forward_results.iter_mut().zip(rays).enumerate() {
                 let z = origin.z + h0 + i as f32 * step;
                 match hit {
@@ -725,6 +758,7 @@ impl MantleSensor {
                         // static collision bodies (GameCollision), hence zero.
                         self.destination = Vec3::new(hit.position.x, hit.position.y, hit.position.z + 0.01);
                         self.destination_body = hit.body;
+                        self.destination_surface=Some(surface);
                     }
                 }
             }
@@ -782,7 +816,7 @@ impl MantleSensor {
     fn issue(&mut self, world: &dyn PlayerWorld, physics: &PlayerPhysics) {
         let d = self.decl;
         let origin = self.query_origin;
-        let forward = physics.axis().x_axis;
+        let forward = self.query_axis.x_axis;
         let mask = QueryFilter::layers(d.collision_mask, PLAYER_FLAG);
         // ShapeCastForward_Deferred FUN_1403bbf00 adds INTERACTABLE.
         let posture_mask = QueryFilter::layers(d.collision_mask | 1 << layer::INTERACTABLE, PLAYER_FLAG);
@@ -797,7 +831,7 @@ impl MantleSensor {
             !hits.is_empty() || start.iter().any(|h| h.value <= 0.001)
         };
         let mut q = MantleQueries::default();
-        let shape = if physics.ceil_distance <= self.standing_height { &self.sneaking_no_height } else { &self.standing_no_height };
+        let shape = if self.query_ceil_distance.unwrap_or(physics.ceil_distance) <= self.standing_height { &self.sneaking_no_height } else { &self.standing_no_height };
         q.forward = Some(first(shape, Mat3::IDENTITY, origin, forward * d.max_distance_from_wall));
         let up_length = d.forward_cast_height_max;
         q.up = Some(first(physics.posture_body(POSTURE_AUTOCROUCHING), Mat3::IDENTITY, origin, Vec3::Z * up_length).map(|h| h.value * up_length));

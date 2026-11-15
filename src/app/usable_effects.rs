@@ -64,6 +64,7 @@ impl ParticleResourceOwner {
 
 type Sources = crate::rendering::particles::world_sources::WorldFxSources;
 type Acquisition = Task<Result<Arc<Sources>, String>>;
+type Lifetime = crate::rendering::bevy_backend::world_effects::DynamicEffectLifetime;
 
 struct PendingSource {
     task: Mutex<Acquisition>,
@@ -73,17 +74,36 @@ struct PendingSource {
 struct Wanted {
     path: String,
     revision: u64,
+    retirement: Arc<Lifetime>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) enum EffectOwner {
     Usable(usize),
     Player(String),
+    Entity(Arc<str>),
+    Reservation(Arc<str>, String),
 }
+
+#[derive(Clone)]
+pub(super) struct EntityPlacement {
+    pub target: crate::gameplay::event_graph::EntityReference,
+    pub tag: String,
+    pub local: crate::gameplay::reference_frame::ReferenceFrame,
+    pub attached: bool,
+}
+#[derive(Clone)]
+pub(super) struct EffectTicket { lifetime: Weak<Lifetime>, path: Arc<str> }
 
 pub(super) enum EffectRequest {
     StartPlayer { owner: String, path: String },
     StopPlayer { owner: String },
+    StartEntity { owner: Arc<str>, path: String, placement: EntityPlacement, initial_world: Option<crate::gameplay::reference_frame::ReferenceFrame>, retirement: Arc<Lifetime> },
+    UpdateEntity { owner: Arc<str>, placement: EntityPlacement },
+    UpdateBeam { owner: Arc<str>, origin: [f32; 3], endpoint: [f32; 3] },
+    StopEntity { owner: Arc<str> },
+    Reserve { owner: Arc<str>, paths: Vec<String> },
+    ReleaseReservation { owner: Arc<str> },
 }
 
 /// Level-owned requests from gameplay. An owner identifies one active effect;
@@ -92,6 +112,51 @@ pub(super) enum EffectRequest {
 pub(super) struct EffectRequests(pub(super) std::collections::VecDeque<EffectRequest>);
 
 impl EffectRequests {
+    /// 774d90/776490 write the FX origin and target position independently;
+    /// the constructor's identity axes remain unchanged.
+    pub(super) fn start_beam(&mut self, owner: Arc<str>, path: &str, origin: bevy_math::Vec3, endpoint: bevy_math::Vec3) -> EffectTicket {
+        let frame = crate::gameplay::reference_frame::ReferenceFrame { position: origin.to_array(), ..Default::default() };
+        let ticket = self.start_world(owner.clone(), path, frame);
+        self.update_beam(owner, origin, endpoint); ticket
+    }
+    pub(super) fn update_beam(&mut self, owner: Arc<str>, origin: bevy_math::Vec3, endpoint: bevy_math::Vec3) {
+        self.0.push_back(EffectRequest::UpdateBeam { owner, origin: origin.to_array(), endpoint: endpoint.to_array() });
+    }
+    /// Acquire immutable dependencies only. This never creates an FX actor
+    /// or submits a Start to the renderer.
+    pub(super) fn reserve(&mut self, owner: Arc<str>, paths: Vec<String>) {
+        self.0.push_back(EffectRequest::Reserve { owner, paths });
+    }
+    pub(super) fn release_reservation(&mut self, owner: Arc<str>) {
+        self.0.push_back(EffectRequest::ReleaseReservation { owner });
+    }
+    pub(super) fn start_entity(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement) -> EffectTicket {
+        self.start_entity_mode(owner, path, placement, None, false)
+    }
+    pub(super) fn start_entity_once(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement) -> EffectTicket {
+        self.start_entity_mode(owner, path, placement, None, true)
+    }
+    pub(super) fn start_world(&mut self, owner: Arc<str>, path: &str, frame: crate::gameplay::reference_frame::ReferenceFrame) -> EffectTicket {
+        self.start_world_mode(owner, path, frame, false)
+    }
+    pub(super) fn start_world_once(&mut self, owner: Arc<str>, path: &str, frame: crate::gameplay::reference_frame::ReferenceFrame) -> EffectTicket {
+        self.start_world_mode(owner, path, frame, true)
+    }
+    fn start_world_mode(&mut self, owner: Arc<str>, path: &str, frame: crate::gameplay::reference_frame::ReferenceFrame, once: bool) -> EffectTicket {
+        let placement = EntityPlacement { target: crate::gameplay::event_graph::EntityReference::Invalid, tag: String::new(),
+            local: crate::gameplay::reference_frame::ReferenceFrame::default(), attached: false };
+        self.start_entity_mode(owner, path, placement, Some(frame), once)
+    }
+    fn start_entity_mode(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement, initial_world: Option<crate::gameplay::reference_frame::ReferenceFrame>, once: bool) -> EffectTicket {
+        let retirement = Arc::new(Lifetime::new(once));
+        let ticket = EffectTicket { lifetime: Arc::downgrade(&retirement), path: Arc::from(path) };
+        self.0.push_back(EffectRequest::StartEntity { owner, path: path.to_owned(), placement, initial_world, retirement });
+        ticket
+    }
+    pub(super) fn update_entity(&mut self, owner: Arc<str>, placement: EntityPlacement) {
+        self.0.push_back(EffectRequest::UpdateEntity { owner, placement });
+    }
+    pub(super) fn stop_entity(&mut self, owner: Arc<str>) { self.0.push_back(EffectRequest::StopEntity { owner }); }
     pub(super) fn start_player(&mut self, owner: &str, path: &str) {
         self.0.push_back(EffectRequest::StartPlayer { owner: owner.to_owned(), path: path.to_owned() });
     }
@@ -100,13 +165,68 @@ impl EffectRequests {
     }
 }
 
+/// Acknowledges actual retirement, including the render snapshot and all
+/// instance particle/sound tails. A cancelled acquisition must also return
+/// before the gameplay entity can release its source owner.
+pub(super) fn entity_retired(world: &bevy::prelude::World, ticket: &EffectTicket) -> bool {
+    if ticket.lifetime.strong_count() != 0 { return false; }
+    world.get_resource::<UsableEffects>().is_none_or(|owner| !owner.loading.contains_key(ticket.path.as_ref()) && owner.retiring.is_empty())
+}
+
+/// Readiness includes actual source acquisition and the existing material,
+/// image and audio acknowledgements, without requiring an active actor.
+pub(super) fn reservation_ready(world: &bevy::prelude::World, key: &str) -> Result<bool, String> {
+    let Some(owner) = world.get_resource::<UsableEffects>() else { return Ok(false) };
+    let Some(paths) = owner.reservations.get(key) else { return Ok(false) };
+    if paths.iter().any(|path| !owner.wanted.keys().any(|wanted| matches!(wanted, EffectOwner::Reservation(group, dependency) if group.as_ref() == key && dependency == path))) {
+        return Err(format!("FX dependency reservation {key} failed acquisition or material publication"));
+    }
+    Ok(owner.reservations_ready.contains(key))
+}
+
+/// Whole-level close bypasses the ordinary scene-publication gate. This
+/// removes desired work only: real render entities, instances and audio
+/// objects retain their leases until their own shutdown acknowledges them.
+/// Call after gameplay producers begin retirement and before FxSimulation
+/// shutdown; retire_level_acquisitions continues draining cancelled workers.
+pub(super) fn begin_retirement(world: &mut bevy::prelude::World) -> Result<(), String> {
+    if let Some(mut requests) = world.get_resource_mut::<EffectRequests>() { requests.0.clear(); }
+    if let Some(mut owner) = world.get_resource_mut::<UsableEffects>() {
+        owner.close_acquisitions();
+        let changed = !owner.wanted.is_empty() || !owner.ready.is_empty() || !owner.reservations.is_empty();
+        owner.wanted.clear(); owner.ready.clear();
+        owner.reservations.clear(); owner.reservations_ready.clear();
+        owner.placements.clear(); owner.entity_placements.clear(); owner.world_placements.clear(); owner.beam_targets.clear();
+        owner.completed.clear(); owner.cache.clear(); owner.base = None;
+        owner.cancel_unwanted_acquisitions();
+        if changed {
+            owner.revision = owner.revision.wrapping_add(1);
+            owner.retirement = owner.retirement.wrapping_add(1);
+        }
+        // Poll once without blocking. No completed acquisition is admitted
+        // after close; its result drops through the existing worker owner.
+        owner.retire_acquisitions();
+    }
+    if let Some(mut active) = world.get_resource_mut::<crate::rendering::bevy_backend::world_effects::DynamicEffects>() {
+        if !active.0.is_empty() { active.0 = Arc::default(); }
+    }
+    Ok(())
+}
+
 /// Desired effect and its prepared immutable dependencies belong to the
 /// usable component, not to its animation node or the global program cache.
 #[derive(Resource, Default)]
 pub(super) struct UsableEffects {
     cancelled: Arc<AtomicBool>,
     wanted: HashMap<EffectOwner, Wanted>,
+    reservations: HashMap<Arc<str>, Vec<String>>,
+    reservations_ready: std::collections::HashSet<Arc<str>>,
     pub(super) placements: HashMap<EffectOwner, super::interactions::EffectSpawn>,
+    entity_placements: HashMap<EffectOwner, EntityPlacement>,
+    world_placements: HashMap<EffectOwner, crate::gameplay::reference_frame::ReferenceFrame>,
+    beam_targets: HashMap<EffectOwner, crate::gameplay::particles::beam::BeamTarget>,
+    transform_revision: u64,
+    published_transform_revision: u64,
     pub(super) ready: HashMap<EffectOwner, Arc<Sources>>,
     cache: HashMap<String, Weak<Sources>>,
     loading: HashMap<String, PendingSource>,
@@ -130,6 +250,29 @@ impl Drop for UsableEffects {
 }
 
 impl UsableEffects {
+    fn retire_completed(&mut self) {
+        let completed: Vec<_> = self.wanted.iter().filter_map(|(key, wanted)|
+            (wanted.retirement.once && wanted.retirement.completed.load(Ordering::Acquire)).then_some(key.clone())).collect();
+        if completed.is_empty() { return; }
+        for key in completed {
+            self.wanted.remove(&key); self.entity_placements.remove(&key); self.world_placements.remove(&key); self.beam_targets.remove(&key);
+            if self.ready.remove(&key).is_some() { self.retirement = self.retirement.wrapping_add(1); }
+        }
+        self.revision = self.revision.wrapping_add(1); self.cleanup_dirty = true;
+        self.cancel_unwanted_acquisitions();
+    }
+    fn release_reservation(&mut self, owner: &Arc<str>) {
+        if let Some(paths) = self.reservations.remove(owner) {
+            for path in paths {
+                let key = EffectOwner::Reservation(owner.clone(), path);
+                self.wanted.remove(&key);
+                if self.ready.remove(&key).is_some() { self.retirement = self.retirement.wrapping_add(1); }
+            }
+            self.reservations_ready.remove(owner);
+            self.revision = self.revision.wrapping_add(1);
+            self.cleanup_dirty = true;
+        }
+    }
     /// Stop desired publication; already-running particle/sound tails retain
     /// their own immutable source leases until the shared FX owner finishes.
     pub(super) fn stop_usable(&mut self, index: usize) {
@@ -172,7 +315,7 @@ impl UsableEffects {
         world: &Arc<Sources>,
     ) {
         self.next_revision = self.next_revision.wrapping_add(1);
-        self.wanted.insert(actor.clone(), Wanted { path: path.clone(), revision: self.next_revision });
+        self.wanted.insert(actor.clone(), Wanted { path: path.clone(), revision: self.next_revision, retirement: Arc::new(Lifetime::new(false)) });
         self.revision = self.revision.wrapping_add(1);
         let cached = self.cache.get(&path).and_then(Weak::upgrade);
         if self.ready.remove(&actor).is_some() {
@@ -274,6 +417,9 @@ impl UsableEffects {
                         self.wanted.remove(&owner);
                         self.ready.remove(&owner);
                         self.placements.remove(&owner);
+                        self.entity_placements.remove(&owner);
+                        self.world_placements.remove(&owner);
+                        self.beam_targets.remove(&owner);
                     }
                     self.revision = self.revision.wrapping_add(1);
                     self.cleanup_dirty = true;
@@ -298,7 +444,12 @@ pub(super) fn prepare_requests(
 ) {
     let (Some(mut owner), Some(programs), Some(resources), Some(world), Some(catalog)) =
         (owner, programs, resources, world, scene.catalog.as_ref()) else { return };
+    if owner.cancelled.load(Ordering::Acquire) {
+        if let Some(mut requests) = requests { requests.0.clear(); }
+        return;
+    }
     if !owner.loading.is_empty() || !owner.retiring.is_empty() { owner.poll(); }
+    owner.retire_completed();
     let retired = prewarm.retired_signal.load(Ordering::Acquire);
     if retired != owner.seen_retired {
         owner.seen_retired = retired;
@@ -348,6 +499,54 @@ pub(super) fn prepare_requests(
                     owner.revision = owner.revision.wrapping_add(1);
                     owner.cleanup_dirty = true;
                 }
+                EffectRequest::StartEntity { owner: key, path, placement, initial_world, retirement } => {
+                    let key = EffectOwner::Entity(key);
+                    owner.beam_targets.remove(&key);
+                    if let Some(frame) = initial_world { owner.world_placements.insert(key.clone(), frame); }
+                    else { owner.world_placements.remove(&key); }
+                    owner.entity_placements.insert(key.clone(), placement);
+                    owner.request(key.clone(), path, catalog.clone(), &programs, &resources, &world.0);
+                    if let Some(wanted) = owner.wanted.get_mut(&key) { wanted.retirement = retirement; }
+                }
+                EffectRequest::UpdateEntity { owner: key, placement } => {
+                    let key = EffectOwner::Entity(key);
+                    let had_world = owner.world_placements.remove(&key).is_some();
+                    owner.beam_targets.remove(&key);
+                    if owner.wanted.contains_key(&key) && (had_world || owner.entity_placements.get(&key).is_none_or(|old|
+                        old.target != placement.target || old.tag != placement.tag || old.local.position != placement.local.position
+                            || old.local.basis != placement.local.basis || old.attached != placement.attached)) {
+                        owner.entity_placements.insert(key, placement);
+                        owner.transform_revision = owner.transform_revision.wrapping_add(1);
+                    }
+                }
+                EffectRequest::UpdateBeam { owner: key, origin, endpoint } => {
+                    let key = EffectOwner::Entity(key);
+                    if !owner.wanted.contains_key(&key) { continue; }
+                    let changed = owner.world_placements.get(&key).is_none_or(|frame| frame.position != origin)
+                        || owner.beam_targets.get(&key).is_none_or(|target| target.position != endpoint);
+                    owner.world_placements.insert(key.clone(), crate::gameplay::reference_frame::ReferenceFrame {position:origin,..Default::default()});
+                    owner.beam_targets.insert(key, crate::gameplay::particles::beam::BeamTarget {position:endpoint,..Default::default()});
+                    if changed { owner.transform_revision = owner.transform_revision.wrapping_add(1); }
+                }
+                EffectRequest::StopEntity { owner: key } => {
+                    let key = EffectOwner::Entity(key);
+                    owner.wanted.remove(&key); owner.entity_placements.remove(&key); owner.world_placements.remove(&key); owner.beam_targets.remove(&key);
+                    if owner.ready.remove(&key).is_some() { owner.retirement = owner.retirement.wrapping_add(1); }
+                    owner.revision = owner.revision.wrapping_add(1); owner.cleanup_dirty = true;
+                }
+                EffectRequest::Reserve { owner: key, mut paths } => {
+                    paths.retain(|path| !path.is_empty() && !path.eq_ignore_ascii_case("NULL"));
+                    paths.sort_unstable(); paths.dedup();
+                    if owner.reservations.get(&key) == Some(&paths) { continue; }
+                    owner.release_reservation(&key);
+                    for path in &paths {
+                        owner.request(EffectOwner::Reservation(key.clone(), path.clone()), path.clone(),
+                            catalog.clone(), &programs, &resources, &world.0);
+                    }
+                    owner.reservations.insert(key, paths);
+                    owner.revision = owner.revision.wrapping_add(1);
+                }
+                EffectRequest::ReleaseReservation { owner: key } => owner.release_reservation(&key),
             }
         }
     }
@@ -480,9 +679,12 @@ pub(super) fn publish(
     use crate::gameplay::{event_graph::EntityReference, reference_frame::ReferenceFrame};
     use crate::rendering::bevy_backend::world_effects::DynamicEffect;
     let Some(mut owner) = owner else { return };
+    if owner.cancelled.load(Ordering::Acquire) { return; }
     let key = |owner: &EffectOwner| match owner {
         EffectOwner::Usable(index) => format!("usable:{index}"),
         EffectOwner::Player(name) => format!("player:{name}"),
+        EffectOwner::Entity(name) => format!("entity:{name}"),
+        EffectOwner::Reservation(name, path) => format!("reservation:{name}:{path}"),
     };
     if prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
         || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
@@ -496,6 +698,9 @@ pub(super) fn publish(
                 owner.wanted.remove(&id);
                 owner.ready.remove(&id);
                 owner.placements.remove(&id);
+                owner.entity_placements.remove(&id);
+                owner.world_placements.remove(&id);
+                owner.beam_targets.remove(&id);
             }
             owner.revision = owner.revision.wrapping_add(1);
             owner.retirement = owner.retirement.wrapping_add(1);
@@ -504,7 +709,8 @@ pub(super) fn publish(
         }
     }
     if owner.base.is_some() && owner.published_revision == Some(owner.revision)
-        && owner.published_active_revision == Some(owner.revision) { return; }
+        && owner.published_active_revision == Some(owner.revision)
+        && owner.published_transform_revision == owner.transform_revision { return; }
     if owner.base.is_none() {
         owner.base = Some(world.0.clone());
         owner.published_revision = Some(0);
@@ -537,42 +743,76 @@ pub(super) fn publish(
         if !needs_decals { decal_materials.completed.store(decal_materials.generation, Ordering::Release); }
         owner.published_revision = Some(owner.revision);
     }
-    if owner.published_active_revision == Some(owner.revision) { return; }
+    if owner.published_active_revision == Some(owner.revision)
+        && owner.published_transform_revision == owner.transform_revision { return; }
     let mut entries: Vec<DynamicEffect> = active.0.iter().filter(|entry| {
-        owner.wanted.iter().any(|(id, wanted)| key(id) == entry.owner && wanted.revision == entry.revision)
+        owner.wanted.iter().any(|(id, wanted)| !matches!(id, EffectOwner::Reservation(_, _))
+            && wanted.revision == entry.revision && key(id) == entry.owner)
     }).cloned().collect();
     let prewarmed = (prewarm.generation == 0 || prewarm.completed.load(Ordering::Acquire) == prewarm.generation)
         && (world_materials.generation == 0 || world_materials.completed.load(Ordering::Acquire) == world_materials.generation)
         && (decal_materials.generation == 0 || decal_materials.completed.load(Ordering::Acquire) == decal_materials.generation);
     if prewarmed {
         let audio = sounds.lock();
+        let source_prepared = |sources: &Arc<Sources>| {
+            if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
+                .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { return false; }
+            let mut events = sources.effects.values().filter_map(|effect| effect.as_ref().ok())
+                .flat_map(|effect| &effect.groups).flat_map(|group| &group.sounds)
+                .flat_map(|sound| [&sound.start, &sound.stop]).flatten().peekable();
+            let has_sound = events.peek().is_some();
+            (!has_sound || audio.ready) && events.all(|event| audio.events.contains_key(&event.name))
+        };
+        // Reservations participate in the same source/material/audio pipeline
+        // but never enter DynamicEffects or create a playing instance.
+        {
+            let UsableEffects { reservations, reservations_ready, ready, .. } = &mut *owner;
+            for (group, paths) in reservations {
+                let dependencies = || ready.iter().filter(|(key, _)| matches!(key, EffectOwner::Reservation(owner, _) if owner == group));
+                if dependencies().count() == paths.len() && dependencies().all(|(_, source)| source_prepared(source)) {
+                    reservations_ready.insert(group.clone());
+                } else { reservations_ready.remove(group); }
+            }
+        }
         for (id, wanted) in &owner.wanted {
+            if matches!(id, EffectOwner::Reservation(_, _)) { continue; }
             let name = key(id);
             if entries.iter().any(|entry| entry.owner == name && entry.revision == wanted.revision) { continue; }
             let Some(sources) = owner.ready.get(id) else { continue };
-            if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
-                .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { continue; }
-            let mut sound_events = sources.effects.values().filter_map(|effect| effect.as_ref().ok())
-                .flat_map(|effect| &effect.groups).flat_map(|group| &group.sounds)
-                .flat_map(|sound| [&sound.start, &sound.stop]).flatten().peekable();
-            let has_sound = sound_events.peek().is_some();
-            if (has_sound && !audio.ready) || !sound_events.all(|event| audio.events.contains_key(&event.name)) { continue; }
-            let (target, local, attached) = match id {
-                EffectOwner::Player(_) => (EntityReference::Player, ReferenceFrame::default(), true),
+            if !source_prepared(sources) { continue; }
+            let (target, tag, local, attached) = match id {
+                EffectOwner::Player(_) => (EntityReference::Player, String::new(), ReferenceFrame::default(), true),
+                EffectOwner::Entity(_) => {
+                    let Some(placement) = owner.entity_placements.get(id) else { continue };
+                    (placement.target.clone(), placement.tag.clone(), placement.local, placement.attached)
+                }
                 EffectOwner::Usable(index) => {
                     let Some(actor) = interactions.as_ref().and_then(|interactions| interactions.actors.get(*index)) else { continue };
                     let Some(placement) = owner.placements.get(id) else { continue };
-                    (EntityReference::Named(actor.entity.clone()), ReferenceFrame { position: placement.origin, basis: placement.axis }, placement.attached)
+                    (EntityReference::Named(actor.entity.clone()), String::new(), ReferenceFrame { position: placement.origin, basis: placement.axis }, placement.attached)
                 }
+                EffectOwner::Reservation(_, _) => continue,
             };
             entries.push(DynamicEffect { owner: name, revision: wanted.revision, effect: wanted.path.clone(),
-                target, local, attached, sources: sources.clone() });
+                target, tag, local, attached, initial_world: owner.world_placements.get(id).copied(), explicit_target: owner.beam_targets.get(id).copied(), sources: sources.clone(), retirement: wanted.retirement.clone() });
         }
     }
-    if entries.len() != active.0.len() || entries.iter().zip(active.0.iter()).any(|(left, right)| left.owner != right.owner || left.revision != right.revision) {
+    for entry in &mut entries {
+        if let Some((id, placement)) = owner.entity_placements.iter().find(|(id,_)| key(id) == entry.owner) {
+            entry.target = placement.target.clone(); entry.tag.clone_from(&placement.tag); entry.local = placement.local; entry.attached = placement.attached;
+            entry.initial_world = owner.world_placements.get(id).copied();
+            entry.explicit_target = owner.beam_targets.get(id).copied();
+        }
+    }
+    if entries.len() != active.0.len() || entries.iter().zip(active.0.iter()).any(|(left, right)| left.owner != right.owner || left.revision != right.revision
+        || left.target != right.target || left.tag != right.tag || left.local.position != right.local.position || left.local.basis != right.local.basis || left.attached != right.attached
+        || left.initial_world.map(|frame| (frame.position, frame.basis)) != right.initial_world.map(|frame| (frame.position, frame.basis))
+        || left.explicit_target.map(|target| (target.position, target.basis)) != right.explicit_target.map(|target| (target.position, target.basis))) {
         active.0 = Arc::new(entries);
     }
-    if active.0.len() == owner.wanted.len()
+    owner.published_transform_revision = owner.transform_revision;
+    let playing_wanted = owner.wanted.keys().filter(|key| !matches!(key, EffectOwner::Reservation(_, _))).count();
+    if (active.0.len() == playing_wanted && owner.reservations_ready.len() == owner.reservations.len())
         || (prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
             || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
             || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)) {

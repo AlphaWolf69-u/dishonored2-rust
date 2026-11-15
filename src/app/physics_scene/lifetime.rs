@@ -67,7 +67,7 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
     }
     let mut registry = scene.registry.take().ok_or("physics lifecycle registry absent")?;
     let result = (|| {
-        let mut host = Host { world, scene: &mut *scene, events: &mut *events };
+        let mut host = Host { world, scene: &mut *scene, events: &mut *events, live: &mut *live };
         loop {
             let state = host.scene.retirement.as_ref().ok_or("physics retirement progress absent")?;
             let Some(&(handle, generation)) = state.components.get(state.requested) else { break; };
@@ -94,9 +94,9 @@ pub(super) fn poll_owned(world: Option<&mut bevy::prelude::World>, scene: &mut P
             let index = host.scene.retirement.as_ref().unwrap().retire_next;
             let entity = &host.scene.entities[index];
             if let Some(world) = host.world.as_deref_mut() { super::super::entity_graphs::retire(world, entity.shared)?; }
-            host.scene.destroy_document_attachments(live, index)?;
+            host.scene.destroy_document_attachments(host.live, index)?;
             let entity = &host.scene.entities[index];
-            if live.retire_for_world_shutdown(entity.shared).is_none() {
+            if host.live.retire_for_world_shutdown(entity.shared).is_none() {
                 return Err("physics managed entity remains attached during retirement".into());
             }
             host.scene.retirement.as_mut().unwrap().retire_next += 1;
@@ -130,6 +130,8 @@ struct Host<'a> {
     world: Option<&'a mut bevy::prelude::World>,
     scene: &'a mut PhysicsScene,
     events: &'a mut EntityEvents,
+    /// Same identity owner supplied to published and preparation rollback.
+    live: &'a mut LiveEntities,
 }
 
 impl ComponentLifecycleWorld for Host<'_> {
@@ -160,17 +162,16 @@ impl ComponentUpdateWorld for Host<'_> {
         else if handle.class_id == scene.classes[7] { membership!(scene.loots) }
         else if handle.class_id == scene.classes[8] { membership!(scene.rigid_bodies) }
         else if handle.class_id == scene.classes[9] { membership!(scene.factions) }
+        else if handle.class_id == scene.classes[10] { membership!(scene.health) }
         else { Err("physics update roster class is unsupported".into()) }
     }
 }
 
 impl ComponentReleaseWorld for Host<'_> {
-    fn pump_events(&mut self, _: &mut ComponentRegistry) -> Result<(), String> {
-        // No callback in the current five factories subscribes numeric entity
-        // messages. Preserve queued errors instead of fabricating dispatch for
-        // an unimplemented listener owner. This runs without a world lock.
-        let errors = self.events.pump(|listener, _, _| Err(format!("physics retirement has no callback for {listener:?}")));
-        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    fn pump_events(&mut self, registry: &mut ComponentRegistry) -> Result<(), String> {
+        // Retirement drains the same numeric registry and actual callback
+        // owner as normal gameplay, before retiring those component leases.
+        self.scene.pump_entity_messages_with_registry(self.live, self.events, registry)
     }
 
     fn stop(&mut self, handle: ComponentHandle, registry: &mut ComponentRegistry) -> Result<(), String> {
@@ -219,6 +220,12 @@ impl ComponentReleaseWorld for Host<'_> {
         } else if handle.class_id == scene.classes[9] {
             scene.factions.get_mut(handle.slot).ok_or("Faction component absent")?
                 .stop(scene.faction_manager.as_mut().ok_or("Faction manager absent")?.manager_mut());
+        } else if handle.class_id == scene.classes[10] {
+            // Health Stop718240 clears the entity presence flag before
+            // base7e7750; deinitialization must not leave a stopped receiver
+            // advertised on its still-live entity in the meantime.
+            let index = scene.owner(handle)?.entity.ok_or("health entity absent")?;
+            scene.entities[index].entity_flags_d7 &= !2;
         }
         registry.stop_update_ownership(handle, self)
     }
@@ -307,6 +314,7 @@ impl ComponentReleaseWorld for Host<'_> {
             entity.components.release(handle, component)
         }
         else if handle.class_id == scene.classes[9] { entity.components.release(handle, scene.factions.get_mut(handle.slot).ok_or("Faction absent")?) }
+        else if handle.class_id == scene.classes[10] { entity.components.release(handle, scene.health.get_mut(handle.slot).ok_or("health absent")?) }
         else { Err("physics shutdown class is unsupported".into()) }
     }
 
@@ -353,6 +361,7 @@ impl ComponentReleaseWorld for Host<'_> {
             scene.rigid_bodies.release(handle.slot)?;
         }
         else if handle.class_id == scene.classes[9] { scene.factions.release(handle.slot)?; }
+        else if handle.class_id == scene.classes[10] { scene.health.release(handle.slot)?; }
         else { return Err("physics pool release class is unsupported".into()); }
         scene.declarations.remove(&handle.packed());
         if let Some(emitter) = audio { super::super::audio::forget_retired_component_object(self.world.as_deref_mut().ok_or("published audio owner absent")?, emitter)?; }

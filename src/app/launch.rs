@@ -339,7 +339,10 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
+    super::player_arms::install_equipment_retirement(&mut app);
+    crate::rendering::bevy_backend::entity_preparation::install(&mut app);
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
+    app.insert_resource(super::player_statistics::PlayerStatistics::prepare());
     app.init_resource::<super::readable_movie::ReadableRequests>();
     app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin);
     if !mode.offscreen() {
@@ -409,12 +412,24 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .add_systems(
             Update,
             (
+              (
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::interaction_focus::apply_inventory_modifiers,
+                super::player_actions::advance_selection,
+                super::runtime_materials::equipment_admission::advance,
+                super::power_world::update,
+                super::power_execution::before_frame,
+              ).chain(),
+              (
                 super::player::update_player,
+                super::runtime_materials::equipment_admission::publish_callbacks,
+                super::power_execution::after_frame,
+                super::entity_messages::update,
+                super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
+              ).chain(),
                 super::fog_scene::update_world_wind,
                 super::vegetation_wind::advance_trigger_winds,
                 super::machinery::update_machinery,
@@ -439,7 +454,8 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 .before(stream_visible_models)
                 .before(shadow_updates::collect_model_casters),
         )
-        .add_systems(PreUpdate, super::interaction_focus::initialize_inventory)
+        .add_systems(PreUpdate, (super::player_statistics::bind_prepared_chapter,
+            super::interaction_focus::initialize_inventory).chain())
         .add_systems(PostUpdate, super::interactions::sync_boxes
             .after(super::model_motion::publish_model_poses))
         .add_systems(PostUpdate, super::interactions::focus_and_interact

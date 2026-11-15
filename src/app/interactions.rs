@@ -74,6 +74,9 @@ pub(super) fn effect_spawn(state: &Usable, path: &str) -> EffectSpawn {
 }
 
 impl Interactions {
+    /// Shared authored component eligibility; keep the established identity
+    /// set instead of acquiring another breakable declaration cache.
+    pub(super) fn is_breakable(&self, name: &str) -> bool { self.breakable.contains(name) }
     pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str) -> Result<Self, String> {
         let read = |path: &str| -> Result<Option<String>, String> {
             Ok(catalog.read(path).map_err(|e| e.to_string())?

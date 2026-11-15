@@ -51,6 +51,11 @@ pub enum Emitter {
     PlayerBody,
     PlayerLeftArm,
     PlayerRightArm,
+    PlayerLeftEquipment,
+    PlayerRightEquipment,
+    /// Host audio object for an actual managed equipment generation. The
+    /// authored casting bit is retained for scene cancellation/retirement.
+    Equipment { entity: crate::gameplay::entity_lifetime::EntityId, part: u8 },
     Effect(u64),
     Component { handle: u64, generation: u32 },
 }
@@ -63,6 +68,9 @@ impl Emitter {
             Self::PlayerBody => 1,
             Self::PlayerLeftArm => 2,
             Self::PlayerRightArm => 4,
+            Self::PlayerLeftEquipment => 8,
+            Self::PlayerRightEquipment => 16,
+            Self::Equipment { part, .. } => part,
         }
     }
 }

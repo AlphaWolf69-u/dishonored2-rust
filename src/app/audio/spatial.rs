@@ -106,7 +106,9 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
     scene.minimum = environment::Levels::default();
     scene.reflection = false;
     scene.collects_environment = false;
-    let rate = clock.as_ref().and_then(|clock| clock.clock().ok()).and_then(|clock| clock.rates(3)).map(|rates| rates[1]);
+    let rate = clock.as_ref().and_then(|clock| {
+        clock.clock().ok()?.entity_rates(clock.player_timespace().ok()?)
+    }).map(|rates| rates[1]);
     if let Some(player) = player.as_ref().and_then(|state| state.player.as_ref()) {
         if let Some((listener, settings)) = player.sound_listener() {
             scene.listener = Some(listener);
@@ -114,7 +116,8 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
             scene.reflection = settings.swap_back_to_front;
             scene.collects_environment = settings.collects_environment;
         }
-        for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm] {
+        for emitter in [Emitter::PlayerBody, Emitter::PlayerLeftArm, Emitter::PlayerRightArm,
+            Emitter::PlayerLeftEquipment, Emitter::PlayerRightEquipment] {
             if let Some((position, axis)) = player.sound_transform(emitter) {
                 scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
                 if let Some(rate) = rate {
@@ -124,6 +127,12 @@ pub(super) fn update(mut scene: ResMut<Scene>, cameras: Query<&Transform, With<C
                 }
             }
         }
+        player.visit_equipment_audio_frames(|emitter, position, axis, settings| {
+            scene.emitters.insert(emitter, Position { position, front: Some(axis.x_axis) });
+            if let Some(rate) = rate {
+                scene.rates.insert(emitter, (settings.rate(rate), rate == 0.0));
+            }
+        });
     }
     // G is a host diagnostic camera; ordinary gameplay uses the component's
     // declared skeleton joints above, independently of the rendered camera.

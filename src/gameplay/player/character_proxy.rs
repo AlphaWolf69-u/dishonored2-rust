@@ -56,6 +56,10 @@ pub trait PlayerWorld {
     /// Resolved arkPhysicsMaterial declaration name for a shape hit. Worlds
     /// without material metadata leave the native material pointer unresolved.
     fn material(&self, _hit: &WorldHit) -> Option<&str> { None }
+    /// Borrow the world's resolved material for sensors requiring its full
+    /// collision/query flags; metadata is never reacquired by a player cast.
+    fn physics_material(&self, _hit: &WorldHit)
+        -> Option<&crate::assets::entities::physics_material::PhysicsMaterial> { None }
 }
 
 /// arkPhysicsMaterial flag byte +0x80 bits the player sensors read.
@@ -182,6 +186,12 @@ impl CharacterProxy {
 
     pub fn contact_count(&self) -> usize {
         self.manifold.len()
+    }
+    /// Borrow actual proxy contacts for native component consumers. Body and
+    /// shape identities remain those produced by the shared query owner.
+    pub fn contact_hits(&self) -> impl Iterator<Item = WorldHit> + '_ {
+        self.manifold.iter().map(|point| WorldHit { position: point.position, normal: point.normal,
+            value: point.distance, body: point.body, key: point.key })
     }
 
     /// Diagnostic: (position, normal, distance, triangle key) per contact.

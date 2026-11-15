@@ -132,6 +132,8 @@ pub struct Controller {
     /// the not-yet-connected possession subsystem.
     possession_state: i32,
     allowed: u64,
+    /// Per-eAction enable counts at controller+0xb80 (47 actions).
+    action_enable_counts: [i8; 47],
     pressed: u64,
     released: u64,
     held: u64,
@@ -160,6 +162,8 @@ pub struct Controller {
     /// +0x170.
     pub must_sprint: bool,
     pub slipping: SlippingThresholds,
+    /// m_triggerThreshold (+0x68), constructor 7f7a60.
+    pub trigger_threshold: f32,
     /// +0x188.
     pub is_slip_falling: bool,
 }
@@ -180,6 +184,7 @@ impl Controller {
             mapping,
             possession_state: POSSESSION_STATES_COUNT,
             allowed: !0,
+            action_enable_counts: [1; 47],
             pressed: 0,
             released: 0,
             held: 0,
@@ -201,15 +206,38 @@ impl Controller {
             sprinting_button_down_before_stop: false,
             must_sprint: false,
             slipping: SlippingThresholds::default(),
+            trigger_threshold: 0.1,
             is_slip_falling: false,
         }
     }
 
     pub fn possession_state(&self) -> i32 { self.possession_state }
 
+    /// 1407f86f0: disabling one owner must preserve other owners' counts.
+    pub fn disable_actions(&mut self, mask: u64) {
+        for (index, count) in self.action_enable_counts.iter_mut().enumerate() {
+            let bit = 1u64 << index;
+            if mask & bit == 0 { continue; }
+            if *count == 1 { self.allowed &= !bit; }
+            *count = count.wrapping_sub(1);
+        }
+    }
+    /// 1407f87e0, paired with every accepted DisableAction lease.
+    pub fn enable_actions(&mut self, mask: u64) {
+        for (index, count) in self.action_enable_counts.iter_mut().enumerate() {
+            let bit = 1u64 << index;
+            if mask & bit == 0 { continue; }
+            if *count == 0 { self.allowed |= bit; }
+            *count = count.wrapping_add(1);
+        }
+    }
+
     pub fn down(&self, action: i32) -> bool {
         self.held & self.allowed & bit(action) != 0
     }
+    /// 140866370 consumes the held fire button when a charged/targeted
+    /// ranged action is explicitly cancelled.
+    pub fn clear_down(&mut self, action: i32) { self.held &= !bit(action); }
     pub fn pressed(&self, action: i32) -> bool {
         self.pressed & self.allowed & bit(action) != 0
     }

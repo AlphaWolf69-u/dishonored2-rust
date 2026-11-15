@@ -15,7 +15,13 @@ pub(super) struct LevelLifetime {
     resources: Vec<ComponentId>,
     /// Keep the exact archive namespace that prepared this level.
     catalog: Option<std::sync::Arc<crate::assets::archive::Catalog>>,
+    producers_retired: bool,
+    equipment_retired: bool,
+    physics_retired: bool,
+    player_retired: bool,
+    effect_requests_retired: bool,
     effects_retired: bool,
+    wind_retired: bool,
     audio_retirement_started: bool,
     cleared: bool,
 }
@@ -47,10 +53,37 @@ impl LevelLifetime {
         // The source read callback is synchronous. Finish its already accepted
         // host cursor while the real components and render/audio owners remain.
         super::interactions::finish_accepted_pickups(world)?;
-        // Poll while all actual support owners remain published. Pending and
-        // errors preserve the sole registry, component pools and body world.
-        if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
-        super::interactions::stop_level(world);
+        // 1408a4830 releases component producers before their shared managers.
+        // Keep real player/clock/physics owners until power and equipment Stop
+        // have withdrawn their requests and acknowledged actual render/audio.
+        if !self.producers_retired {
+            super::player_actions::retire_effects(world)?;
+            super::power_execution::begin_wind_retirement(world)?;
+            super::power_world::retire(world)?;
+            self.producers_retired = true;
+        }
+        if !self.equipment_retired {
+            if !super::runtime_materials::equipment_admission::shutdown(world)? { return Ok(false); }
+            self.equipment_retired = true;
+        }
+        // Pending/errors preserve the sole registry, pools and body world.
+        if !self.physics_retired {
+            if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
+            self.physics_retired = true;
+        }
+        if !self.player_retired {
+            super::player_lifetime::retire(world)?;
+            super::interactions::stop_level(world);
+            self.player_retired = true;
+        }
+        if !self.effect_requests_retired {
+            super::usable_effects::begin_retirement(world)?;
+            self.effect_requests_retired = true;
+        }
+        // begin_retirement closes late producers; observe real canceled IO
+        // completion before any map-scoped source lease can be purged.
+        if world.get_resource_mut::<super::usable_effects::UsableEffects>()
+            .is_some_and(|mut effects| !effects.retire_acquisitions()) { return Ok(false); }
         // Keep accepted FX/audio tickets and their resource owners alive
         // through the real consumer's acknowledgement. Successful shutdown is
         // never replayed if a later phase suspends or fails.
@@ -64,6 +97,13 @@ impl LevelLifetime {
             self.audio_retirement_started = true;
         }
         if !super::audio::poll_level_retirement(world)? { return Ok(false); }
+        // Windblast's real tickets include old render snapshots and audio
+        // tails. Their weak leases must expire before its managed identity,
+        // clock overrides or source declarations can leave the world.
+        if !self.wind_retired {
+            if !super::power_execution::poll_wind_retirement(world)? { return Ok(false); }
+            self.wind_retired = true;
+        }
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
@@ -136,6 +176,7 @@ impl LevelLifetime {
         drop(shape_history);
         drop(blueprint_history);
         drop(level_reads);
+        crate::rendering::bevy_backend::entity_preparation::drain(world);
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();
         }
@@ -156,7 +197,9 @@ impl LevelLifetime {
                 eprintln!("RESOURCE_SCENE_RETIREMENT phase=complete passes={passes} output=false");
                 return Ok(());
             }
-            let progress = (self.effects_retired, self.audio_retirement_started,
+            let progress = (self.producers_retired, self.equipment_retired,
+                self.physics_retired, self.player_retired, self.effect_requests_retired,
+                self.effects_retired, self.audio_retirement_started, self.wind_retired,
                 super::physics_scene::lifetime::retirement_progress(world));
             if previous.is_some_and(|previous| progress <= previous) {
                 return Err(format!("windowless retirement made no synchronous owner progress: {progress:?}"));
@@ -170,6 +213,9 @@ impl LevelLifetime {
 }
 
 pub(super) fn close_level_acquisitions(world: &mut World) {
+    if let Some(actions) = world.get_resource::<super::player_actions::PlayerActions>() {
+        actions.close_acquisitions();
+    }
     // Release a blocked base-image handoff before joining the map reader.
     world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
     if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
@@ -190,6 +236,8 @@ pub(super) fn close_level_acquisitions(world: &mut World) {
 /// Outgoing decoders can still own source data or write catalog entries after
 /// their results are no longer wanted. Observe their retirement before purge.
 pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
+    let equipment = world.get_resource_mut::<super::player_actions::PlayerActions>()
+        .is_none_or(|mut actions| actions.retire_acquisitions());
     let sources = world.get_resource_mut::<super::usable_effects::UsableEffects>()
         .is_none_or(|mut effects| effects.retire_acquisitions());
     let materials = world.get_resource_mut::<super::runtime_materials::RuntimeMaterialCoordinator>()
@@ -200,7 +248,9 @@ pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut animations| animations.retire_acquisitions());
     let textures = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>()
         .is_none_or(|mut textures| textures.retire_acquisitions());
-    sources && materials && readable && usable_animations && textures
+    let retired = sources && materials && readable && usable_animations && textures && equipment;
+    if retired { crate::rendering::bevy_backend::entity_preparation::drain(world); }
+    retired
 }
 
 /// Plugin registration creates these empty owners before the first map.

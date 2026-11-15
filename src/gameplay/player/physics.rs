@@ -3,14 +3,16 @@
 //!
 //! The per-frame step FUN_1401b4760 runs in PRE_PHYSICS; the ground/ceiling
 //! queries FUN_1408002e0 are issued in QUERY_PHYSICS and read by
-//! FUN_1407ff230 in DEFAULT. Impulses (+0x220), the external/one-frame
-//! velocities (+0x54/+0x64, no writer found), the position offset (+0x110),
+//! FUN_1407ff230 in DEFAULT. The external/one-frame velocities (+0x64,
+//! no writer found), the position offset (+0x110),
 //! moving-ground velocity, safe restore, the AI obstacle and the hitbox body
 //! are not ported: the rewrite's collision world is static.
 use super::character_proxy::{CharacterProxy, PlayerWorld, ProxySettings, SupportState, WorldHit};
 use super::shape::{PostureShape, ShapeSettings, POSTURE_AUTOCROUCHING, POSTURE_COUNT, POSTURE_KEEP_PREVIOUS, POSTURE_SWIMMING};
 use crate::gameplay::collision_filter::{filter_info, layer, QueryFilter};
 use bevy_math::{Mat3, Vec3};
+#[path = "impulses.rs"]
+mod impulses;
 
 /// "Unset" sentinel (DAT_141ae8a70).
 pub const UNSET: f32 = 1e30;
@@ -135,6 +137,11 @@ pub struct PlayerPhysics {
     pub gravity_velocity: Vec3,
     /// arkPhysicsPlayer +0x54: swimming current and wave velocity.
     water_velocity: Vec3,
+    /// +0x220 inline authored impulse records and +0x70 evaluated sum.
+    impulses: impulses::Impulses,
+    impulse_velocity: Vec3,
+    /// +0x214 original collision word's layer set (1b4760/0868d0).
+    impulse_collision_layers: u32,
     /// +0x60.
     max_z: f32,
     /// +0x7c.
@@ -248,6 +255,7 @@ impl PlayerPhysics {
                 collision_filter: filter_info(decl.collision_layer) & 0xfbffffff,
             },
         );
+        let impulse_collision_layers = proxy.settings.collision_filter >> 5;
         Self {
             shapes,
             current: 0,
@@ -260,6 +268,9 @@ impl PlayerPhysics {
             ground: Ground::default(),
             gravity_velocity: Vec3::ZERO,
             water_velocity: Vec3::ZERO,
+            impulses: Default::default(),
+            impulse_velocity: Vec3::ZERO,
+            impulse_collision_layers,
             max_z: UNSET,
             gravity_override: UNSET,
             vertical: None,
@@ -518,10 +529,17 @@ impl PlayerPhysics {
         !self.penetrating && self.near_ground() && !self.ceiling_blocks(extra + 0.1)
     }
 
-    /// FUN_1407fdb50, x/y: owner velocity minus gravity (moving ground,
-    /// impulses and external velocities are zero here).
+    /// 7fcb80/1b30f0: queue a real authored player-physics impulse. The
+    /// PRE_PHYSICS owner evaluates its envelope on the same entity delta
+    /// used by gravity and the character solver, independently of state exit.
+    pub fn add_impulse(&mut self, direction: Vec3, strength: f32, duration: f32) -> bool {
+        self.impulses.add(direction, strength, duration)
+    }
+
+    /// 7fdb50 excludes the actual non-input velocity contributions. Moving
+    /// ground and one-frame external velocity still have no admitted owner.
     pub fn input_velocity(&self) -> Vec3 {
-        self.velocity - self.gravity_velocity
+        self.velocity - self.gravity_velocity - self.water_velocity - self.impulse_velocity
     }
 
     /// FUN_1407fd740 → FUN_140085860 (`enabled` false) / FUN_1407fd880 →
@@ -671,6 +689,16 @@ impl PlayerPhysics {
             if self.vertical.is_some() {
                 self.vertical = Some(vertical);
             }
+        }
+        // 5. 1b4760 evaluates and ages all impulses even when a temporary
+        // collision-layer mask suppresses their contribution. 0868d0 tests
+        // the proxy's current layers against its original +0x214 word.
+        self.impulse_velocity = self.impulses.update(dt);
+        if (self.proxy.settings.collision_filter >> 5) & self.impulse_collision_layers
+            == self.impulse_collision_layers {
+            velocity += self.impulse_velocity;
+        } else {
+            self.impulse_velocity = Vec3::ZERO;
         }
         // 6. Ground support.
         let surface = self.proxy.check_support(-Vec3::Z);

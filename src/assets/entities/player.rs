@@ -20,8 +20,15 @@ pub struct PlayerDeclarations {
     pub autocrouch_sensor: Vec<(String, Value)>,
     pub lean_sensor: Vec<(String, Value)>,
     pub mantle_sensor: Vec<(String, Value)>,
+    pub blink_mantle_sensor: Vec<(String, Value)>,
+    pub grapple_sensor: Vec<(String, Value)>,
+    pub grapple_to_mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
+    /// Shared power-system and mark inputs, resolved with the player's other
+    /// components; consumers project typed runtime data before source release.
+    pub powers: Vec<(String, Value)>,
+    pub outsider_mark: Vec<(String, Value)>,
     pub adrenaline: Vec<(String, Value)>,
     pub breath: Vec<(String, Value)>,
     pub body: Vec<(String, Value)>,
@@ -140,7 +147,15 @@ fn component_entries(chain: &[Fields]) -> Vec<(String, Fields)> {
 pub fn entity_component(entity: &str, kind: &str,
     mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String>
 {
-    let entries = component_entries(&entity_chain(entity, &mut read)?);
+    let chain = entity_chain(entity, &mut read)?;
+    entity_component_from_chain(&chain, kind, read)
+}
+
+/// Dynamic entity families prepare their actual descriptor once and resolve
+/// their component from that same retained chain, without reading it twice.
+pub(crate) fn entity_component_from_chain(chain: &[Fields], kind: &str,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Option<Fields>, String> {
+    let entries = component_entries(chain);
     let mut result = None;
     let mut cache = HashMap::new();
     for (_, entry) in entries {
@@ -171,7 +186,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 15] = [
+const PLAYER_COMPONENTS: [&str; 20] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -182,11 +197,16 @@ const PLAYER_COMPONENTS: [&str; 15] = [
     "cpntplayersensorlean",
     "cpntplayerbody",
     "cpntplayersensormantle",
+    "cpntplayersensorblinktomantle",
+    "cpntplayersensorgrapple",
+    "cpntplayersensorgrappletomantle",
     "cpnthealthevolved",
     "cpntmana",
     "cpntadrenaline",
     "cpntplayerbreath",
     "cpntplayerfxmanager",
+    "cpntplayerpowersystem",
+    "cpntplayeroutsidermark",
 ];
 
 fn kind_of(name: &str) -> Option<&str> {
@@ -198,7 +218,7 @@ fn component_key(key: &str) -> Option<&str> {
 }
 
 /// The entity def chain from the root ancestor to `name`.
-fn entity_chain(name: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<Fields>, String> {
+pub(crate) fn entity_chain(name: &str, read: &mut impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<Fields>, String> {
     let mut chain = Vec::new();
     let mut active = std::collections::HashSet::new();
     let mut next = Some(name.to_owned());
@@ -294,11 +314,18 @@ fn player_declarations_with_listener(
     let mantle_sensor = take("cpntplayersensormantle")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
+    let powers = take("cpntplayerpowersystem")?;
+    let outsider_mark = take("cpntplayeroutsidermark")?;
     let adrenaline = take("cpntadrenaline")?;
     let breath = take("cpntplayerbreath")?;
     let body = take("cpntplayerbody")?;
     let fx = take("cpntplayerfxmanager")?;
     let machine = take("cpntplayerstatemachine")?;
+    // Character-specific sensors are optional in the shared player bundle;
+    // the actual owned power requires its own sensor before admission.
+    let blink_mantle_sensor = resolved.remove("cpntplayersensorblinktomantle").unwrap_or_default();
+    let grapple_sensor = resolved.remove("cpntplayersensorgrapple").unwrap_or_default();
+    let grapple_to_mantle_sensor = resolved.remove("cpntplayersensorgrappletomantle").unwrap_or_default();
     let startup = atom(&machine, "m_startupModeId").unwrap_or("PLAYER_MODE_DEFAULT").to_owned();
     let mut mode = None;
     let mut swimming_mode = None;
@@ -324,7 +351,8 @@ fn player_declarations_with_listener(
     let mut swimming_states = Vec::new();
     for name in list_items(&swimming_mode, "m_states") {
         let Some(kind) = kind_of(&name) else { continue };
-        if kind == "playerstateswimming" || kind == "playerstateswimmantle" || kind == "playerstatedead" {
+        if matches!(kind, "playerstateswimming" | "playerstateswimmantle" | "playerstatedead"
+            | "playerstateequipchange" | "playerstatedraw" | "playerstateundraw") {
             swimming_states.push((kind.to_owned(), component_fields(kind, &name, 0, &mut cache, &mut read)?));
         }
     }
@@ -336,7 +364,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, blink_mantle_sensor, grapple_sensor, grapple_to_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

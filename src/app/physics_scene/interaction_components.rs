@@ -222,6 +222,7 @@ impl PhysicsScene {
         else if handle.class_id == self.classes[7] { membership!(self.loots) }
         else if handle.class_id == self.classes[8] { membership!(self.rigid_bodies) }
         else if handle.class_id == self.classes[9] { membership!(self.factions) }
+        else if handle.class_id == self.classes[10] { membership!(self.health) }
         else { Err("component update class unsupported".into()) }
     }
 }

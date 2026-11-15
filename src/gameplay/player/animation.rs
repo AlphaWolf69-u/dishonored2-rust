@@ -6,8 +6,8 @@
 //!
 //! `locoBobAdditives = body ⊕ bobAmount·bob ⊕ additives`, then the root's
 //! lean layers (`body.rs`). Supported AnimBasic additives are implemented
-//! here; Midnight playback lives in player::midnight. Grapple and versus
-//! remain separate integrations.
+//! here; Midnight playback lives in player::midnight. Paused grapple leaves
+//! share this sampler; versus retains its separate input producer.
 use crate::edge_animation::{slerp, EdgeAnimation};
 use crate::edge_skeleton::JointRestPose;
 use std::collections::HashMap;
@@ -17,6 +17,28 @@ use std::collections::HashMap;
 pub struct Pose {
     pub joints: Vec<JointRestPose>,
     pub weights: Vec<u8>,
+}
+
+/// Paused additive leaves driven by shared frame inputs (776840). Frames
+/// belong to the body driver; each receiving tree samples its own clip.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PausedAdditives {
+    pub clips: [Option<usize>; 2],
+    pub frames: [f32; 2],
+    pub blend: f32,
+}
+impl PausedAdditives {
+    pub fn apply(&self, pose: &mut Pose, animations: &[EdgeAnimation], rest: &[JointRestPose]) -> Result<(), String> {
+        if self.blend <= 0.0 { return Ok(()); }
+        for (clip, frame) in self.clips.into_iter().zip(self.frames) {
+            if let Some(index) = clip {
+                let animation = animations.get(index).ok_or("paused additive clip is not admitted")?;
+                let layer = sample(animation, rest, frame / animation.frame_rate)?;
+                blend_add(pose, &layer, self.blend);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Executor op 2: sample at `time`, remove root motion per the clip's
@@ -147,6 +169,8 @@ pub struct LocoData {
     pub transitions: HashMap<(String, String), Transition>,
     /// The selected arm's authored Swimming idle leaf.
     pub swimming_idle: Option<usize>,
+    /// Authored idle leaves, keyed by the same stance/equipment key as stances.
+    pub idle_clips: HashMap<String, usize>,
     pub idle_blend: [f32; 2],
 }
 
@@ -330,7 +354,8 @@ impl LocoNode {
         // idle leaf immediately; validated scalar arms currently bind state 0.
         let idle_stance = if self.manager.state == 5 { self.manager.to.as_deref() }
             else { self.manager.from.as_deref() };
-        let selected_idle = if idle_stance == Some("Swimming") { self.data.swimming_idle } else { None };
+        let selected_idle = idle_stance.and_then(|stance| self.data.idle_clips.get(stance).copied()
+            .or_else(|| (stance == "Swimming").then_some(self.data.swimming_idle).flatten()));
         if self.source_arm_move_state.is_some_and(|state| state != 0) { self.idle = LocoIdle::default(); }
         let stopped = speed <= f32::from_bits(0x3a83_126f);
         if let Some(clip) = self.idle.clip {

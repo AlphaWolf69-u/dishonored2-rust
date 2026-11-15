@@ -339,7 +339,9 @@ A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
   pushed as priority-1 root-motion velocity (`assets/entities/midnight.rs`
   parses the decls). Catfall and mantle track their own scene handle through
   the body and arm proxies; separately started catfall arm scenes keep playing
-  after the state ends. Weapon and mantle-dummy groups have no trees.
+  after the state ends. The two equipment targets now retain their actual
+  managed actor trees and clip banks across ordinary unequip; the
+  mantle-dummy group remains a separate integration.
 - `arms.rs` evaluates the two arm trees and their bind frames. The body model
   uses `m_visibleLegsMaterials` whenever it is published, and all player models
   submit their material-image demands independently of ordinary Tome visibility.
@@ -355,11 +357,33 @@ A full lean puts the eye 0.740 m to the side, the decoded `camera_jnt` value.
   yaw-offset mode hands the yaw to the body. The body's FollowSlope turns
   the skeleton to the ground normal while sliding or catfalling.
 
-Not ported: hit-reaction camera additives, hand equipment (the player moves
-unequipped), health, damage and death (falls never kill), weapon and
-mantle-dummy midnight groups, breakable and NPC vault damage, window vaults,
-blink/grapple mantles, moving platforms, HUD labels, swimming, powers,
-impulses and moving or dynamic bodies.
+Inventory quantities and ownership remain in `app/inventory.rs`, nested under
+`interaction_focus`; `player_actions` composes its authored shortcuts, potion
+requests, owned-equipment preparation and source state callbacks. Every owned
+equipment actor is prepared before loading completes, retained when unequipped,
+and retired on depletion through managed identity, renderer and audio receipts.
+Ammunition and upgrade children share those resource owners and use their actual
+entity clocks and bindings. They do not create a second model/material cache.
+
+`gameplay/damage` supplies typed damage parameters and receiver rules;
+`player_damage` publishes real player health/death notifications. The existing
+`EntityEvents` registry delivers ordinary messages through `app/entity_messages`
+and uses the same concrete callbacks during component retirement. Unsubscribed
+messages drain normally; unsupported registered recipients are explicit errors.
+
+`gameplay/player/equipment_states`, `combat` and `weapons` own equip, reload,
+melee and ranged animation protocols. `powers` and `power_execution` compose
+Blink, static-world Far Reach, Bend Time and Windblast through the existing
+physics, clock, FX, audio and damage owners. Far Reach's hand additives and beam
+use the ordinary clip banks and canonical particle beam endpoint pipeline.
+Swimming and counted physics impulses also use the shared player state owners.
+
+Remaining boundaries include projectile actor/contact/bounce integration (ranged
+fire is not admitted without a real projectile consumer), NPC-dependent powers
+and damage receivers, Breakable destruction, dynamic Far Reach targets,
+hit-reaction camera additives, and the mantle-dummy Midnight group. The detailed
+source addresses, host differences and verification status are tracked in
+`resource-parity.md`; compilation does not establish gameplay or visual parity.
 
 Open questions and blockers (evidence in the local `artifacts/locomotion/`
 research notes):

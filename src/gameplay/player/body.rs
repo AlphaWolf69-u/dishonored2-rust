@@ -4,8 +4,9 @@
 //! and the pose the camera reads `camera_jnt` from (`animation.rs`).
 //!
 //! The jump/land camera additives play through the animBasic node
-//! (`animation.rs`). Arms, footsteps, hit reactions, follow slope and the
-//! swim branch are not ported.
+//! (`animation.rs`). Arms, footsteps, follow slope and swimming retain their
+//! existing owners; grapple paused leaves and beam requests are in `grapple`.
+pub mod grapple;
 use super::animation::{blend_add, sample, wrap180, AnimBasicCommand, AnimBasicNode, LocoNode, PlayMode, Pose};
 use super::camera::BodyPose;
 use super::arms::Arm;
@@ -353,6 +354,8 @@ pub struct Body {
     pub tags: std::collections::HashMap<String, (usize, Vec3, Mat3)>,
     pub skeleton: BodySkeleton,
     pub animations: Vec<EdgeAnimation>,
+    /// Stable model alias indices for later demanded action scenes.
+    pub animation_aliases: std::collections::HashMap<String, usize>,
     pub decl: BodyDecl,
     pub body_node: LocoNode,
     pub bob_node: LocoNode,
@@ -381,6 +384,7 @@ pub struct Body {
     pub legs_visible: bool,
     /// The arm parts (left, right).
     pub arms: Vec<Arm>,
+    pub equipment: [Option<super::equipment::EquipmentTree>; 2],
     pub midnight: Midnight,
     pub follow_slope: FollowSlope,
     slope_rotation: Mat3,
@@ -393,21 +397,33 @@ pub struct Body {
     /// the tree root) and the frames ApplyLean scrubs them to.
     pub lean_clips: [Option<usize>; 2],
     lean_frames: [f32; 2],
+    pub grapple: super::animation::PausedAdditives,
+    grapple_definition: Option<std::sync::Arc<grapple::Definition>>,
+    grapple_tag: Option<(usize, Vec3, Mat3)>,
+    grapple_beam: Option<grapple::Beam>,
+    grapple_beam_requests: Vec<grapple::BeamRequest>,
 }
 
 /// The midnight cast's md6s (CONDMD6): the body's, then the arms'.
-pub fn cast_md6<'a>(body: &'a str, arms: &'a [Arm]) -> [&'a str; 3] {
+pub fn cast_md6<'a>(body: &'a str, arms: &'a [Arm], equipment: &'a [Option<super::equipment::EquipmentTree>; 2]) -> [&'a str; super::midnight::TARGETS] {
     let arm = |i: usize| arms.get(i).map_or("", |a| a.model.as_str());
-    [body, arm(0), arm(1)]
+    [body, arm(0), arm(1), equipment[0].as_ref().map_or("", |tree| tree.model.as_str()), equipment[1].as_ref().map_or("", |tree| tree.model.as_str())]
 }
 
 /// The midnight cast's trees: the body and the left and right arms.
-pub fn cast<'a>(body: &'a [EdgeAnimation], arms: &'a [Arm]) -> super::midnight::Cast<'a> {
+pub fn cast<'a>(body: &'a [EdgeAnimation], arms: &'a [Arm], equipment: &'a [Option<super::equipment::EquipmentTree>; 2]) -> super::midnight::Cast<'a> {
     let arm = |i: usize| arms.get(i).map_or(&[][..], |a| a.animations.as_slice());
-    [body, arm(0), arm(1)]
+    [body, arm(0), arm(1), equipment[0].as_ref().map_or(&[][..], |tree| tree.animations.as_slice()), equipment[1].as_ref().map_or(&[][..], |tree| tree.animations.as_slice())]
 }
 
 impl Body {
+    pub fn replace_equipment_tree(&mut self, side: usize, tree: Option<super::equipment::EquipmentTree>) -> Option<super::equipment::EquipmentTree> {
+        assert!(side < self.equipment.len(), "equipment side must be left or right");
+        self.midnight.retire_target(side + 3);
+        self.midnight.set_equipment_entity(side, tree.as_ref().and_then(|tree| tree.managed_entity));
+        std::mem::replace(&mut self.equipment[side], tree)
+    }
+
     pub fn take_sound_requests(&mut self) -> Vec<crate::gameplay::sound::Request> { std::mem::take(&mut self.sound_requests) }
     pub fn take_contact_requests(&mut self) -> Vec<crate::gameplay::sound::Contact> { std::mem::take(&mut self.contact_requests) }
 
@@ -460,6 +476,7 @@ impl Body {
             tags: Default::default(),
             skeleton,
             animations,
+            animation_aliases: Default::default(),
             decl,
             body_node,
             bob_node,
@@ -482,6 +499,7 @@ impl Body {
             desired_legs: 0,
             legs_visible: false,
             arms: Vec::new(),
+            equipment: [None, None],
             midnight: Midnight::default(),
             follow_slope: FollowSlope::default(),
             slope_rotation: Mat3::IDENTITY,
@@ -490,6 +508,11 @@ impl Body {
             lean: Lean { limits: [1.0; 2], ..Lean::default() },
             lean_clips: [None; 2],
             lean_frames: [0.0; 2],
+            grapple: Default::default(),
+            grapple_definition: None,
+            grapple_tag: None,
+            grapple_beam: None,
+            grapple_beam_requests: Vec::new(),
         }
     }
 
@@ -598,6 +621,12 @@ impl Body {
         for side in 0..self.arms.len() {
             self.midnight.update_node(side + 1, dt);
         }
+        for (side, equipment) in self.equipment.iter_mut().enumerate() {
+            if let Some(equipment) = equipment {
+                equipment.update(dt, None);
+                self.midnight.update_node(side + 3, dt);
+            }
+        }
         // Clips are sampled once at load, so this cannot fail; a failure
         // would leave the frame without root motion.
         if self.midnight.update(dt, &self.animations, &self.skeleton.rest).is_err() {
@@ -662,6 +691,7 @@ impl Body {
         // The midnight blendarray over locoBobAdditives, then its snapshot
         // blender.
         let mut pose = self.midnight.evaluate(pose, &self.animations, &skeleton.rest)?;
+        self.grapple.apply(&mut pose, &self.animations, &skeleton.rest)?;
 
         // The tree root's blendarray adds its first children last: leafLeanUp,
         // then leafLeanLeft, both ADD_RIGHT 1.0 at their scrubbed frame.

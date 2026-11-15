@@ -5,11 +5,10 @@
 //! 0x141c82b28), which runs beside them.
 //!
 //! Command processing follows FUN_140804850 and the rule table FUN_1408644e0
-//! plus the mode's `m_rules`, including CatFall, Mantle and Vault. States the
-//! port does not implement (actions and powers) are "missing" from the mode,
-//! so requests for them are rejected as the game rejects a state its mode
-//! lacks. Fall damage, stats, slide slow-time, shoves and breakables are not
-//! ported.
+//! plus the mode's `m_rules`, including CatFall, Mantle and Vault. Action
+//! families use the combat, equipment and power state owners. Unsupported
+//! authored states remain absent from their mode and are rejected by the
+//! same admission rules; navigation never substitutes another state for them.
 use super::body::{FollowSlope, JumpAnim, Lean};
 use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS, MODE_DROWNING};
 use super::midnight::{Midnight, PreparedScene};
@@ -31,6 +30,11 @@ use std::collections::HashMap;
 pub struct StateId(pub i32);
 
 impl StateId {
+    pub const EQUIP_RIGHT: Self = Self(53);
+    pub const DRAW_RIGHT: Self = Self(54);
+    pub const EQUIP_LEFT: Self = Self(64);
+    pub const DRAW_LEFT: Self = Self(65);
+    pub const UNDRAW: Self = Self(81);
     pub const RUNNING: Self = Self(0);
     pub const SPRINTING: Self = Self(1);
     pub const JUMPING: Self = Self(2);
@@ -43,10 +47,19 @@ impl StateId {
     pub const VAULT: Self = Self(9);
     pub const AUTOCROUCH: Self = Self(10);
     pub const WALLCROUCH: Self = Self(11);
+    pub const BLINKING: Self = Self(12);
+    pub const USE_POWER: Self = Self(63);
+    pub const USE_WINDBLAST: Self = Self(71);
     pub const DEAD: Self = Self(15);
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
     pub const READ_NOTE: Self = Self(52);
+    pub const SLASH: Self = Self(39);
+    pub const BLOCK: Self = Self(44);
+    pub const FIRE_WEAPON: Self = Self(56);
+    pub const CANCEL_FIRE_WEAPON: Self = Self(57);
+    pub const REQUEST_RELOAD_WEAPON: Self = Self(58);
+    pub const RELOAD_WEAPON: Self = Self(59);
     pub const NULL: Self = Self(91);
     pub const ANY: Self = Self(92);
 }
@@ -62,6 +75,8 @@ pub struct StateFlags {
     pub body_parts: u8,
     pub locked_body_parts: u8,
     pub exclusive_body_parts: u8,
+    /// +68, m_unlocksCodeLockedBodyParts; independent of m_allowSelf.
+    pub unlocks_code_locked_body_parts: bool,
     pub allow_self: bool,
     pub quit_self: bool,
     pub cancelable: bool,
@@ -182,6 +197,8 @@ pub struct FallingDecl {
     pub cat_fall_height: f32,
     pub damage_height: f32,
     pub death_height: f32,
+    pub enhanced_damage_height: f32,
+    pub enhanced_death_height: f32,
     /// m_fallDamageDecl is set.
     pub fall_damage: bool,
 }
@@ -195,6 +212,8 @@ impl Default for FallingDecl {
             cat_fall_height: 6.0,
             damage_height: f32::from_bits(0x4107_0a3d),
             death_height: f32::from_bits(0x4160_7ae1),
+            enhanced_damage_height: f32::from_bits(0x412d_47ae),
+            enhanced_death_height: f32::from_bits(0x41a4_0000),
             fall_damage: false,
         }
     }
@@ -206,8 +225,10 @@ pub struct CatFallDecl {
     pub low_damage_midnight: Option<String>,
     pub high_damage_midnight: Option<String>,
     /// m_lowDamageMidnightLeftArm / RightArm and the high-damage pair
-    /// (+0x78 / +0x80, +0xb0 / +0xb8); the sword variants need equipment.
+    /// (+0x78 / +0x80, +0xb0 / +0xb8).
     pub low_damage_arm_midnights: [Option<String>; 2],
+    /// Normal/sneaking sword right-arm overrides (85a910, decl+88/+90).
+    pub low_damage_sword_midnights: [Option<String>; 2],
     pub high_damage_arm_midnights: [Option<String>; 2],
     pub damage_threshold: f32,
     /// m_lookAtParams (degrees: pitch up, down, yaw left, right).
@@ -220,6 +241,7 @@ impl Default for CatFallDecl {
             low_damage_midnight: None,
             high_damage_midnight: None,
             low_damage_arm_midnights: [None, None],
+            low_damage_sword_midnights: [None, None],
             high_damage_arm_midnights: [None, None],
             damage_threshold: 10.0,
             look_at_params: [50.0, 0.0, 50.0, 50.0],
@@ -417,6 +439,18 @@ pub enum Kind {
     Swimming(super::swimming::SwimmingStateDecl),
     SwimMantle,
     ReadNote,
+    EquipChange(Arc<super::equipment_states::Declaration>),
+    DrawEquipment(bool),
+    Undraw(f32),
+    FireWeapon(Arc<super::combat::FireDecl>),
+    Slash(Arc<super::combat::SlashDecl>),
+    Block(Arc<super::combat::BlockDecl>),
+    CancelFireWeapon,
+    RequestReloadWeapon,
+    ReloadWeapon,
+    UsePower(Arc<super::power_states::UsePowerDecl>),
+    Blinking,
+    Grapple(Arc<super::grapple::Decl>),
     Dead(DrowningDeathDecl),
 }
 
@@ -449,6 +483,7 @@ impl StateDecl {
             body_parts: BODY,
             locked_body_parts: 0,
             exclusive_body_parts: BODY,
+            unlocks_code_locked_body_parts: false,
             allow_self: false,
             quit_self: false,
             cancelable: false,
@@ -516,6 +551,74 @@ impl StateDecl {
                 // 844d60 ->853c90: secondary state, empty body-part masks.
                 flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
                 (StateId::READ_NOTE, 0.0)
+            }
+            Kind::EquipChange(ref equip) => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, allow_self: true, breakable: true, ..flags };
+                (equip.state(), 0.0)
+            }
+            Kind::DrawEquipment(left) => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, ..flags };
+                (if left { StateId::DRAW_LEFT } else { StateId::DRAW_RIGHT }, 0.0)
+            }
+            Kind::Undraw(_) => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, ..flags };
+                (StateId::UNDRAW, 0.0)
+            }
+            Kind::FireWeapon(ref fire) => {
+                // 140866440: secondary, left arm exclusive, breakable.
+                flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
+                    exclusive_body_parts: 2, allow_self: fire.action.togglable, breakable: true, ..flags };
+                (StateId::FIRE_WEAPON, 0.0)
+            }
+            Kind::Slash(ref slash) => {
+                // 14086a710: right arm owned and locked, secondary.
+                flags = StateFlags { primary: false, body_parts: 4, locked_body_parts: 4,
+                    exclusive_body_parts: 0, allow_self: slash.action.togglable, ..flags };
+                (StateId::SLASH, 0.0)
+            }
+            Kind::Block(ref block) => {
+                // 140858d50 has the same right-arm masks as Slash.
+                flags = StateFlags { primary: false, body_parts: 4, locked_body_parts: 4,
+                    exclusive_body_parts: 0, allow_self: block.action.togglable, ..flags };
+                (StateId::BLOCK, 0.0)
+            }
+            Kind::CancelFireWeapon => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, ..flags };
+                (StateId::CANCEL_FIRE_WEAPON, 0.0)
+            }
+            Kind::RequestReloadWeapon => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, ..flags };
+                (StateId::REQUEST_RELOAD_WEAPON, 0.0)
+            }
+            Kind::ReloadWeapon => {
+                // 140845660 has the same left-arm masks as FireWeapon.
+                flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
+                    exclusive_body_parts: 2, breakable: true, ..flags };
+                (StateId::RELOAD_WEAPON, 0.0)
+            }
+            Kind::UsePower(ref power) => {
+                // 1408560c0: action state owns the left hand.
+                flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
+                    exclusive_body_parts: 2, ..flags };
+                (if power.windblast { StateId::USE_WINDBLAST } else { StateId::USE_POWER }, 0.0)
+            }
+            Kind::Grapple(_) => {
+                // 837390: base non-primary BODY owner, locked BODY,
+                // no exclusive parts; allowCameraOutOfShape bit6a0 set.
+                flags = StateFlags { primary: false, body_parts: BODY, locked_body_parts: BODY,
+                    exclusive_body_parts: 0, allow_camera_out_of_shape: true, ..flags };
+                (StateId::GRAPPLE, 0.0)
+            }
+            Kind::Blinking => {
+                // 140857150: secondary BODY state; no navigation defaults.
+                flags = StateFlags { primary: false, body_parts: BODY, locked_body_parts: BODY,
+                    exclusive_body_parts: 0, ..flags };
+                (StateId::BLINKING, 0.0)
             }
             Kind::Dead(_) => {
                 flags = StateFlags { primary: true, body_parts: 0x1f, locked_body_parts: 0x1f, exclusive_body_parts: 0x1f, allow_camera_out_of_shape: true, ..flags };
@@ -616,6 +719,20 @@ impl LocoStances {
 
 /// Values other components give the states each frame.
 pub struct Frame<'a> {
+    /// The owning player's counts survive main/swimming mode transitions.
+    pub body_parts: &'a mut super::body_parts::BodyParts,
+    pub attribute_requests: &'a mut Vec<super::AttributeModifierRequest>,
+    pub equipment_changes: &'a mut super::equipment_states::Runtime,
+    /// The real selected ranged component; no inventory or projectile copy.
+    pub weapon: &'a mut Option<super::weapons::Runtime>,
+    /// Equipment action component handles, rather than locomotion blends.
+    pub equipment_transitioning: [bool; 2],
+    /// Arm order: left (inventory slot1), right (inventory slot0).
+    pub equipment_archetypes: [Option<u32>; 2],
+    pub action_time: f64,
+    pub powers: &'a mut super::power_states::Runtime,
+    pub mana: &'a mut super::mana::Mana,
+    pub mana_replenishes: bool,
     pub dt: f32,
     pub world: &'a dyn PlayerWorld,
     pub controller: &'a mut Controller,
@@ -631,6 +748,7 @@ pub struct Frame<'a> {
     /// Entity origin, axis (rows forward/left/up as columns) and velocity.
     pub origin: Vec3,
     pub axis: Mat3,
+    pub camera_axis: Mat3,
     pub velocity: Vec3,
     pub attributes: &'a Attributes,
     pub sprint_toggle: bool,
@@ -646,14 +764,14 @@ pub struct Frame<'a> {
     pub midnight: &'a mut Midnight,
     pub scenes: &'a Scenes,
     /// The player body md6 (CONDMD6 choices).
-    pub md6: [&'a str; 3],
+    pub md6: [&'a str; super::midnight::TARGETS],
     /// The body's and both arms' animations (the midnight cast).
     pub animations: super::midnight::Cast<'a>,
     pub mantle_sensor: &'a mut MantleSensor,
     pub vault_sensor: &'a mut VaultSensor,
     pub retargeting: &'a mut Option<Retargeting>,
-    /// The player's health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX);
-    /// the rewrite has no damage, so it stays full.
+    /// Maximum health (health decl m_health + ARK_ATTRIBUTE_HEALTH_MAX),
+    /// used by 8657c0's fall-damage calculation.
     pub health: f32,
     pub underwater: bool,
     pub swim_mantle_exit: &'a mut bool,
@@ -793,6 +911,9 @@ pub fn scene_paths(states: &[StateDecl]) -> Vec<String> {
                 .collect(),
             Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
             Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
+            Kind::Grapple(d) => d.translate_midnight.iter().chain(&d.wall_midnight).chain(&d.ceil_midnight).collect(),
+            Kind::UsePower(d) => d.out_of_mana.iter().chain(&d.out_of_mana_slide).chain(&d.action.midnight).collect(),
+            Kind::EquipChange(d) => d.power_switch.iter().chain(d.power_switch_slide.iter()).collect(),
             _ => Vec::new(),
         };
         for path in paths {
@@ -829,6 +950,7 @@ struct MantleRun {
     destination_yaw: f32,
     height: u8,
     destination_body: u32,
+    equipment_restore: [bool; 2],
 }
 
 /// Mantle Activate / Deactivate: the destination entity's collision with
@@ -925,12 +1047,21 @@ pub struct State {
     vault: VaultRun,
     swimming_dive: (Vec3, f32),
     death_timer: f32,
+    undraw_elapsed: f32,
+    draw_pending: StateId,
     death_transition_pending: bool,
     death_fx_pending: bool,
+    fire: super::combat::FireRuntime,
+    slash: super::combat::SlashRuntime,
+    block: super::combat::BlockRuntime,
+    /// 14085b490 +56/+57: hands which were holding actual equipment.
+    catfall_restore: [bool; 2],
+    code_locks: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Command {
+    RequestEquipment { side: usize, flags: u32, source: StateId },
     Request(StateId),
     /// FUN_1408024d0 with Sliding's params {uid, 7, speed}.
     RequestSlide(f32),
@@ -952,7 +1083,9 @@ pub struct StateMachine {
     rules: HashMap<(StateId, StateId), Rule>,
     default_state: StateId,
     pending_sounds: Vec<u32>,
+    pending_fall_damage: Option<f32>,
     read_note: super::read_note::Runtime,
+    slash_rules: Option<super::slash_rules::Runtime>,
 }
 
 fn cos_snap(degrees: f32) -> f32 {
@@ -982,7 +1115,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), read_note: Default::default() }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None }
     }
 
     /// The mode: its state decls, `m_rules` and default state.
@@ -1016,8 +1149,15 @@ impl StateMachine {
                 vault: VaultRun::default(),
                 swimming_dive: (Vec3::ZERO, 0.0),
                 death_timer: 0.0,
+                undraw_elapsed: 0.0,
+                draw_pending: StateId::NULL,
                 death_transition_pending: false,
                 death_fx_pending: false,
+                fire: Default::default(),
+                slash: Default::default(),
+                block: Default::default(),
+                catfall_restore: [false; 2],
+                code_locks: 0,
             })
 
             .collect();
@@ -1049,7 +1189,25 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), read_note: Default::default() }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None }
+    }
+
+    pub fn install_slash_rules(&mut self, definition: Arc<crate::assets::slash_rules::Definition>) {
+        self.slash_rules = Some(super::slash_rules::Runtime::new(definition));
+    }
+
+    /// 140854050/090 and 1408029f0/2a10: one counted code lock per
+    /// requesting state and body part. These do not rewrite mode rules.
+    fn code_lock(&mut self, index: usize, part: usize, enabled: bool, frame: &mut Frame) {
+        let bit = 1 << part;
+        let held = self.states[index].code_locks & bit != 0;
+        if enabled && !held {
+            self.states[index].code_locks |= bit;
+            frame.body_parts.soft_lock(part);
+        } else if !enabled && held {
+            self.states[index].code_locks &= !bit;
+            frame.body_parts.soft_unlock(part);
+        }
     }
 
     pub fn active_states(&self) -> &[StateId] {
@@ -1068,11 +1226,15 @@ impl StateMachine {
         }
         self.active.clear();
         self.queue.clear();
+        self.pending_fall_damage = None;
     }
 
     pub fn take_sound_events(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.pending_sounds)
     }
+    /// Host dispatches to the player's existing health owner after this
+    /// state update, before physics/input advances to another frame.
+    pub fn take_fall_damage(&mut self) -> Option<f32> { self.pending_fall_damage.take() }
 
     pub fn is_active(&self, id: StateId) -> bool {
         self.active.contains(&id)
@@ -1086,6 +1248,11 @@ impl StateMachine {
     /// Any active state's `m_allowCameraOutOfShape`.
     pub fn allow_camera_out_of_shape(&self) -> bool {
         self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.allow_camera_out_of_shape))
+    }
+
+    /// 62bf40 reads the actual active FireWeapon state and source phase4.
+    pub fn ranged_is_charging(&self) -> bool {
+        self.state(StateId::FIRE_WEAPON).is_some_and(|state| state.active && state.fire.phase == super::combat::FirePhase::Charging)
     }
 
     pub fn state(&self, id: StateId) -> Option<&State> {
@@ -1142,6 +1309,54 @@ impl StateMachine {
     pub fn request(&mut self, id: StateId) {
         self.queue.push(Command::Request(id));
     }
+    /// 140803280's current-mode gate for the parameterized Blink request.
+    /// Its target/shape payload supplies CanActivate; other queued requests
+    /// still undergo the normal batch arbitration and rejection callback.
+    pub fn grapple_request_allowed(&self) -> bool {
+        self.state(StateId::GRAPPLE).is_some_and(|state| matches!(state.decl.kind, Kind::Grapple(_)))
+            && self.active.iter().all(|&active| self.rule(active, StateId::GRAPPLE).allow)
+    }
+    pub fn blink_request_allowed(&self) -> bool {
+        self.state(StateId::BLINKING).is_some_and(|state| matches!(state.decl.kind, Kind::Blinking))
+            && self.active.iter().all(|&active| self.rule(active, StateId::BLINKING).allow)
+    }
+
+    pub fn request_equipment_left(&mut self, flags: u32, source: StateId) {
+        self.queue.push(Command::RequestEquipment { side: 0, flags, source });
+    }
+
+    pub(super) fn admit_instant_equipment(&mut self, runtime: &mut super::equipment_states::Runtime) {
+        for (side, id) in [(0, StateId::EQUIP_LEFT), (1, StateId::EQUIP_RIGHT)] {
+            if !runtime.instant_pending(side) { continue; }
+            let Some(index) = self.index(id) else { continue };
+            if !matches!(self.states[index].decl.kind, Kind::EquipChange(_))
+                || self.active.iter().any(|from| !self.rule(*from, id).allow) { continue; }
+            runtime.begin_instant(side);
+            // This source request has completed both skipped phases. Preserve
+            // all other queued player actions for the first gameplay frame.
+            self.queue.retain(|command| !matches!(command, Command::Request(state) if *state == id));
+        }
+    }
+
+    pub fn request_equipment_right(&mut self, flags: u32, source: StateId) {
+        self.queue.push(Command::RequestEquipment { side: 1, flags, source });
+    }
+
+    /// Continue only equipment callbacks after the owning Player swaps the
+    /// actual trees. This is not a second simulation/update of other states.
+    pub fn advance_equipment_changes(&mut self, frame: &mut Frame) {
+        for id in [StateId::EQUIP_RIGHT, StateId::EQUIP_LEFT] {
+            let Some(index) = self.index(id).filter(|index| self.states[*index].active) else { continue };
+            let Kind::EquipChange(decl) = &self.states[index].decl.kind else { continue };
+            let sneak = [StateId::SNEAKING, StateId::AUTOCROUCH, StateId::WALLCROUCH, StateId::SLIDING]
+                .into_iter().any(|id| self.is_active(id));
+            match super::equipment_states::advance(decl, sneak, self.is_active(StateId::SLIDING), &self.active, frame) {
+                Ok(true) => self.quit(id),
+                Ok(false) => {},
+                Err(error) => { frame.midnight.last_start_error = Some(error); self.quit(id); },
+            }
+        }
+    }
 
     /// FUN_140854190 → FUN_140802a20.
     pub fn quit(&mut self, id: StateId) {
@@ -1167,6 +1382,10 @@ impl StateMachine {
     /// Slot 6 CanActivate.
     fn can_activate(&self, index: usize, frame: &Frame) -> bool {
         let state = &self.states[index];
+        // 140854890/1408035c0/600: component requests are player-wide;
+        // authored mode rules separately govern state-to-state conflicts.
+        if !frame.body_parts.can_activate(state.decl.flags.body_parts,
+            state.decl.flags.unlocks_code_locked_body_parts) { return false; }
         let physics = &*frame.physics;
         let navigation = physics.can_use_posture(state.decl.navigation.posture);
         match &state.decl.kind {
@@ -1200,6 +1419,34 @@ impl StateMachine {
             }
             Kind::Falling(_) => true,
             Kind::ReadNote => state.decl.flags.body_parts == 0 && self.read_note.admission,
+            Kind::EquipChange(ref decl) => decl.side().is_some_and(|side| frame.equipment_changes.has_request(side)),
+            Kind::DrawEquipment(left) => !frame.equipment_changes.equipped(usize::from(!left)),
+            Kind::Undraw(_) => !self.is_active(StateId::DEAD),
+            Kind::Slash(decl) => frame.equipment_archetypes[1] == Some(1)
+                && !frame.equipment_transitioning[1] && self.slash_rules.is_some()
+                && state.slash.action.can_activate(frame.action_time, &decl.action),
+            Kind::Block(decl) => frame.equipment_archetypes[1] == Some(1)
+                && !frame.equipment_transitioning[1] && state.block.action.can_activate(frame.action_time, &decl.action),
+            Kind::FireWeapon(decl) => {
+                let action = frame.controller.mapping.iter().find(|mapping| mapping.state == state.decl.id)
+                    .map_or(0, |mapping| mapping.action);
+                let transitioning = state.decl.flags.body_parts & 2 != 0 && frame.equipment_transitioning[0]
+                    || state.decl.flags.body_parts & 4 != 0 && frame.equipment_transitioning[1];
+                !transitioning && state.fire.action.can_activate(frame.action_time, &decl.action)
+                    // bevy_backend: reject unavailable projectile births at
+                    // admission. A loaded gun must not take the empty-ammo
+                    // animation merely because the host factory is missing.
+                    && frame.weapon.as_ref().is_some_and(|weapon| (weapon.magazine <= 0 || weapon.bevy_backend_projectile_ready)
+                        && (weapon.can_fire() || frame.controller.pressed(action)
+                            && (state.midnight == 0 || frame.midnight.finished(state.midnight))))
+            }
+            Kind::CancelFireWeapon => self.state(StateId::FIRE_WEAPON).is_some_and(|fire| fire.active
+                && matches!(fire.fire.phase, super::combat::FirePhase::TargetDelay | super::combat::FirePhase::Targeting
+                    | super::combat::FirePhase::TargetAcquired | super::combat::FirePhase::Charging)),
+            Kind::RequestReloadWeapon | Kind::ReloadWeapon => frame.weapon.as_ref().is_some_and(|weapon| weapon.can_reload()),
+            Kind::UsePower(decl) => super::power_states::can_use(frame, decl),
+            Kind::Grapple(_) => frame.powers.grapple_pending && frame.powers.grapple.is_some(),
+            Kind::Blinking => frame.powers.blink_pending && frame.powers.blink.is_some(),
             Kind::Swimming(_) => navigation,
             Kind::SwimMantle => !frame.underwater && frame.mantle_sensor.can_mantle(),
             Kind::Dead(_) => true,
@@ -1208,7 +1455,8 @@ impl StateMachine {
             // FUN_14085b2e0 (swimming is not ported).
             Kind::CatFall(_) => true,
             // FUN_140860180 (blink-to-mantle is not ported).
-            Kind::Mantle(_) => !self.is_active(StateId::MANTLE) && frame.mantle_sensor.can_mantle(),
+            Kind::Mantle(_) => !self.is_active(StateId::MANTLE) && (frame.mantle_sensor.can_mantle()
+                || frame.powers.blink_finished && frame.powers.blink_mantle_sensor.as_ref().is_some_and(|sensor| sensor.can_mantle())),
             // FUN_140872380.
             Kind::Vault(decl) => {
                 let v = frame.velocity;
@@ -1254,10 +1502,272 @@ impl StateMachine {
         }
     }
 
+    /// 140866fe0 chooses the actual selected ranged component's mode.
+    fn activate_fire(&mut self, index: usize, decl: &super::combat::FireDecl, frame: &mut Frame) {
+        let Some(weapon) = frame.weapon.as_ref() else {
+            self.quit(StateId::FIRE_WEAPON);
+            return;
+        };
+        self.states[index].fire.begin(decl, weapon.can_fire(), weapon.target_flags & 2 != 0, weapon.target_flags & 4 != 0);
+        match self.states[index].fire.phase {
+            super::combat::FirePhase::Firing => self.play_weapon_action(index, super::weapons::Action::Fire, decl, frame),
+            super::combat::FirePhase::OutOfAmmo => self.play_weapon_action(index, super::weapons::Action::OutOfAmmo, decl, frame),
+            _ => {}
+        }
+    }
+
+    /// 140866dc0/d30/140867100: absence of an authored fire scene posts
+    /// WEAPON_FIRE. Failure to prepare an existing scene is not that case.
+    fn play_weapon_action(&mut self, index: usize, action: super::weapons::Action,
+        decl: &super::combat::FireDecl, frame: &mut Frame) {
+        let sliding = self.is_active(StateId::SLIDING);
+        let path = frame.weapon.as_ref().and_then(|weapon| weapon.scene(action, sliding)).map(str::to_owned);
+        let rate = frame.weapon.as_ref().map_or(1.0, |weapon| weapon.scene_playrate(action, frame.attributes));
+        let handle = if path.is_some() { Self::play(path.as_ref(), rate, 0xf, frame) } else { 0 };
+        self.states[index].midnight = handle;
+        self.states[index].fire.action.after_scene(handle, &decl.action);
+        if let Some(weapon) = frame.weapon.as_mut() {
+            weapon.set_scene(handle);
+            if action == super::weapons::Action::Fire {
+                weapon.charged_shot = decl.charged_shot_hold_duration <= self.states[index].fire.charge_time;
+            }
+            if action == super::weapons::Action::Fire && path.is_none() { weapon.emit_fire(); }
+        }
+    }
+
+    fn update_fire(&mut self, index: usize, decl: &super::combat::FireDecl, frame: &mut Frame) {
+        use super::combat::{ActionStep, FirePhase};
+        if frame.weapon.is_none() { self.quit(StateId::FIRE_WEAPON); return; }
+        let action = frame.controller.mapping.iter().find(|mapping| mapping.state == StateId::FIRE_WEAPON)
+            .map_or(0, |mapping| mapping.action);
+        let button_down = frame.controller.down(action);
+        match self.states[index].fire.phase {
+            FirePhase::Charging => {
+                // 140867330 does not count charge or release before the
+                // real charge scene has started; a reload can defer it.
+                if self.states[index].midnight == 0 {
+                    if !self.is_active(StateId::RELOAD_WEAPON) {
+                        self.play_weapon_action(index, super::weapons::Action::Charge, decl, frame);
+                    }
+                    return;
+                }
+                self.states[index].fire.charge_time += frame.dt;
+                if self.states[index].fire.released(button_down) {
+                    self.play_weapon_action(index, super::weapons::Action::Fire, decl, frame);
+                }
+            }
+            FirePhase::TargetDelay | FirePhase::Targeting | FirePhase::TargetAcquired => {
+                if self.states[index].fire.released(button_down) {
+                    self.play_weapon_action(index, super::weapons::Action::Fire, decl, frame);
+                } else if self.states[index].fire.advance_target_delay(frame.dt) {
+                    // 140867330 disables the competing target state and
+                    // activates the actual sensor16 request. World target
+                    // discovery consumes this typed effect; no target is made up.
+                    self.quit(StateId(0x4c));
+                    if let Some(weapon) = frame.weapon.as_mut() { weapon.begin_targeting(); }
+                }
+            }
+            FirePhase::Firing | FirePhase::OutOfAmmo => {
+                if self.states[index].fire.phase == FirePhase::OutOfAmmo && button_down { return; }
+                let finished = frame.midnight.finished(self.states[index].midnight);
+                if self.states[index].fire.action.update(frame.dt, &decl.action, button_down, finished, false) == ActionStep::Quit {
+                    self.quit(StateId::FIRE_WEAPON);
+                }
+                // The native FireWeapon's action execute-finished vtable
+                // slot+b8 is a no-op; the fire key owns the actual shot.
+            }
+            FirePhase::Inactive => self.quit(StateId::FIRE_WEAPON),
+        }
+    }
+
+    fn play_from(path: Option<&String>, rate: f32, parts: u8, seconds: f32, frame: &mut Frame) -> u32 {
+        let Some(path) = path else { return 0 };
+        let Some(scene) = frame.scenes.get(path) else {
+            frame.midnight.last_start_error = Some(format!("{path}: scene not loaded"));
+            return 0;
+        };
+        match frame.midnight.start_with_parts_at_seconds(scene, frame.md6, rate, frame.animations, parts, seconds) {
+            Ok(handle) => handle,
+            Err(error) => { frame.midnight.last_start_error = Some(format!("{path}: {error}")); 0 }
+        }
+    }
+
+    /// The no-NPC-target branch of 14086cbf0. Target-dependent fatalities,
+    /// throw hits and blink assaults require their actual sensor owners;
+    /// this branch does not manufacture those entities or conditions.
+    fn play_slash(&mut self, index: usize, decl: &super::combat::SlashDecl, frame: &mut Frame) {
+        let slash = &self.states[index].slash;
+        let context = super::slash_rules::Context {
+            current_posture: if frame.physics.posture == 3 { 1 } else { frame.physics.posture },
+            last_slash_type: slash.last_type,
+            time_since_last_slash: (frame.action_time - slash.last_time) as f32,
+            is_focused: slash.focused,
+            ..Default::default()
+        };
+        let Some(selection) = self.slash_rules.as_mut().and_then(|rules| rules.select_shared(&context)) else { return };
+        let prior = self.states[index].slash.chained_scene;
+        let offset = if prior != 0 && !frame.midnight.finished(prior) { selection.chained_start_seconds } else { 0.0 };
+        // The native attribute lookup leaves the starting rate at one when
+        // this optional attribute is absent; a real stored zero stays zero.
+        let rate = frame.attributes.0.get("ARK_ATTRIBUTE_SLASH_SPEED_FACTOR").copied().unwrap_or(1.0);
+        let handle = Self::play_from(selection.midnight.as_ref(), rate, 7, offset, frame);
+        if handle != 0 {
+            let state = &mut self.states[index];
+            state.midnight = handle;
+            state.slash.action.after_scene(handle, &decl.action);
+            state.slash.chained_scene = handle;
+            state.slash.last_time = frame.action_time;
+            state.slash.last_type = selection.slash_type;
+            state.slash.selected = Some(selection);
+            if state.slash.last_type < 3 && !state.slash.dispersion_active {
+                frame.attribute_requests.push(decl.dispersion.clone());
+                state.slash.dispersion_active = true;
+            }
+        }
+        self.states[index].slash.press_again = false;
+    }
+
+    fn activate_slash(&mut self, index: usize, decl: &super::combat::SlashDecl, frame: &mut Frame) {
+        let can_focus = !self.is_active(StateId::SLIDING);
+        let slash = &mut self.states[index].slash;
+        slash.focus_ready = false;
+        slash.focus_active = false;
+        slash.focused = false;
+        slash.can_focus = can_focus;
+        slash.release_seen = false;
+        slash.press_again = false;
+        slash.action.activate(&decl.action, false);
+        if !frame.equipment_changes.equipped(0) { self.request_equipment_left(4, StateId::SLASH); }
+        // 140854e50's derived OnExecute is 14086c630: a normal swing
+        // begins immediately. Holding focus is enabled by an authored key.
+        self.play_slash(index, decl, frame);
+    }
+
+    fn update_slash(&mut self, index: usize, decl: &super::combat::SlashDecl, frame: &mut Frame) {
+        use super::combat::ActionStep;
+        let action = frame.controller.mapping.iter().find(|mapping| mapping.state == StateId::SLASH)
+            .map_or(0, |mapping| mapping.action);
+        let down = frame.controller.down(action);
+        let finished = frame.midnight.finished(self.states[index].midnight);
+        let held = self.states[index].slash.action.elapsed();
+        match self.states[index].slash.action.update(frame.dt, &decl.action, down, finished, false) {
+            ActionStep::Quit => {
+                // 14086bb60 permits a held block, or a new slash press
+                // after release, to follow the completed real animation.
+                let block = frame.controller.mapping.iter().find(|mapping| mapping.state == StateId::BLOCK)
+                    .map_or(0, |mapping| mapping.action);
+                self.quit(StateId::SLASH);
+                if frame.controller.down(block) { self.request(StateId::BLOCK); }
+                else if self.states[index].slash.press_again && down { self.request(StateId::SLASH); }
+                return;
+            }
+            ActionStep::Execute => {
+                if self.states[index].slash.focus_active {
+                    let slash = &mut self.states[index].slash;
+                    slash.focus_active = false;
+                    slash.focused = held >= decl.focus_hold_duration;
+                    self.play_slash(index, decl, frame);
+                }
+                if self.states[index].slash.action.finish_execution(&decl.action) == ActionStep::Quit {
+                    self.quit(StateId::SLASH);
+                    return;
+                }
+            }
+            ActionStep::None => {}
+        }
+        // 14086d060 waits for FOCUSED_ATTACK_CAN_START, keeps focus out
+        // of sliding, and starts the actual declared focus animation.
+        if self.states[index].slash.focus_ready && !self.states[index].slash.focus_active
+            && !self.states[index].slash.focused && !self.states[index].slash.release_seen
+        {
+            if let Some(path) = decl.action.midnight.as_ref() {
+                let handle = Self::play(Some(path), 1.0, 5, frame);
+                let slash = &mut self.states[index].slash;
+                slash.focus_active = true;
+                slash.press_again = false;
+                slash.action.after_scene(handle, &decl.action);
+                slash.action.set_wait_for_midnight(false);
+                if slash.dispersion_active {
+                    let mut request = decl.dispersion.clone();
+                    request.added = false;
+                    frame.attribute_requests.push(request);
+                    slash.dispersion_active = false;
+                }
+                self.states[index].midnight = handle;
+            }
+        }
+        let slash = &mut self.states[index].slash;
+        if !down { slash.release_seen = true; }
+        if slash.release_seen && down { slash.press_again = true; }
+        if slash.focus_active && self.is_active(StateId::SLIDING) { self.quit(StateId::SLASH); }
+    }
+
+    fn play_block(&mut self, index: usize, decl: &super::combat::BlockDecl, phase: u8, frame: &mut Frame) {
+        let sneak = [StateId::SNEAKING, StateId::AUTOCROUCH, StateId::WALLCROUCH].into_iter().any(|id| self.is_active(id));
+        let path = match phase {
+            1 => if sneak { decl.midnight_sneak_in.as_ref().or(decl.midnight_in.as_ref()) } else { decl.midnight_in.as_ref() },
+            2 => decl.midnight_idle.as_ref(),
+            3 => if sneak { decl.midnight_sneak_out.as_ref().or(decl.midnight_out.as_ref()) } else { decl.midnight_out.as_ref() },
+            _ => None,
+        };
+        self.states[index].block.phase = phase;
+        if let Some(path) = path {
+            let handle = Self::play(Some(path), 1.0, 7, frame);
+            self.states[index].midnight = handle;
+            self.states[index].block.action.after_scene(handle, &decl.action);
+        }
+    }
+
+    fn update_block(&mut self, index: usize, decl: &super::combat::BlockDecl, frame: &mut Frame) {
+        use super::combat::ActionStep;
+        if self.states[index].block.phase != 3 && (1..=4).contains(&self.states[index].block.phase)
+            && frame.midnight.finished(self.states[index].midnight)
+        { self.play_block(index, decl, 2, frame); }
+        match self.states[index].block.left_hand_phase {
+            0 => {
+                if !frame.equipment_changes.equipped(0) {
+                    frame.arms_shown[0] = false;
+                    self.code_lock(index, 1, true, frame);
+                    self.states[index].block.left_hand_phase = 2;
+                } else if self.states[index].block.action.elapsed() >= decl.free_left_hand_duration {
+                    self.request_equipment_left(0x81, StateId::BLOCK);
+                    self.states[index].block.left_hand_phase = 1;
+                }
+            }
+            1 => {
+                self.code_lock(index, 1, true, frame);
+                if !frame.equipment_changes.equipped(0) {
+                    frame.arms_shown[0] = false;
+                    self.states[index].block.left_hand_phase = 2;
+                }
+            }
+            _ => {}
+        }
+        let action = frame.controller.mapping.iter().find(|mapping| mapping.state == StateId::BLOCK)
+            .map_or(0, |mapping| mapping.action);
+        let down = frame.controller.down(action);
+        let finished = frame.midnight.finished(self.states[index].midnight);
+        match self.states[index].block.action.update(frame.dt, &decl.action, down, finished, false) {
+            ActionStep::Execute => {
+                self.play_block(index, decl, 3, frame);
+                self.quit(StateId::BLOCK);
+            }
+            ActionStep::Quit => self.quit(StateId::BLOCK),
+            ActionStep::None => {}
+        }
+    }
+
     /// The midnight messages of this frame (flushed before DEFAULT):
     /// BREAK_PLAYER_STATE quits the breakable state playing that scene
     /// (FUN_140802e10).
     pub fn handle_message(&mut self, event: &str, handle: u32) {
+        if event == "ARK_MDNT_MSG_FOCUSED_ATTACK_CAN_START" {
+            // 14086d3d0, msg154: copy the active Slash's allow-focus flag.
+            if let Some(index) = self.index(StateId::SLASH).filter(|index| self.states[*index].active) {
+                self.states[index].slash.focus_ready = self.states[index].slash.can_focus;
+            }
+            return;
+        }
         if event != "ARK_MDNT_MSG_BREAK_PLAYER_STATE" {
             return;
         }
@@ -1370,6 +1880,14 @@ impl StateMachine {
     /// FUN_1408063f0: commands, the primary default, then the active
     /// states' updates.
     pub fn think(&mut self, frame: &mut Frame) {
+        // 14063bfc0: keep an explicit/empty-magazine reload pending until
+        // the state machine can admit its actual reload state.
+        if !self.is_active(StateId::RELOAD_WEAPON)
+            && frame.weapon.as_mut().is_some_and(|weapon| weapon.take_reload_request())
+            && self.allowed(StateId::RELOAD_WEAPON, frame)
+        {
+            self.request(StateId::RELOAD_WEAPON);
+        }
         // Commands queued while activating are processed in the same frame.
         self.process_commands(frame);
         for _ in 0..16 {
@@ -1394,8 +1912,14 @@ impl StateMachine {
         let mut accepted: Vec<(StateId, Option<f32>)> = Vec::new();
         let mut quits = Vec::new();
         let mut read_note_requested = false;
+        let mut blink_requested = false;
+        let mut grapple_requested = false;
         for command in queue {
             match command {
+                Command::RequestEquipment { side, flags, source } => {
+                    frame.equipment_changes.request_stored(side, flags, source);
+                    self.accept(if side == 0 { StateId::EQUIP_LEFT } else { StateId::EQUIP_RIGHT }, None, &snapshot, &mut accepted, frame);
+                }
                 Command::Quit(id) => {
                     if let Some(position) = accepted.iter().position(|&(a, _)| a == id) {
                         accepted.remove(position);
@@ -1420,12 +1944,30 @@ impl StateMachine {
                     read_note_requested = true;
                     self.accept(StateId::READ_NOTE, None, &snapshot, &mut accepted, frame);
                 }
-                Command::Request(id) => self.accept(id, None, &snapshot, &mut accepted, frame),
+                Command::Request(id) => {
+                    blink_requested |= id == StateId::BLINKING;
+                    grapple_requested |= id == StateId::GRAPPLE;
+                    self.accept(id, None, &snapshot, &mut accepted, frame);
+                },
                 Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
                 Command::RequestCatFall(damage) => self.accept(StateId::CATFALL, Some(damage), &snapshot, &mut accepted, frame),
             }
         }
+        // 857a30 consumes the saved Falling instance before that instance
+        // can receive a new 865b90 request. This host batches request hooks
+        // before deactivation, so resolve that one exit callback first;
+        // otherwise a new FALLING request would erase its existing debt.
+        if self.is_active(StateId::BLINKING)
+            && (quits.contains(&StateId::BLINKING)
+                || accepted.iter().any(|&(id, _)| self.rule(StateId::BLINKING, id).quit)) {
+            self.land_blink_fall_debt(frame);
+        }
         for &(id, _) in &accepted {
+            if id == StateId::BLINKING {
+                frame.powers.blink_from_sprinting = self.is_active(StateId::SPRINTING);
+                frame.powers.blink_from_sliding = self.is_active(StateId::SLIDING);
+                frame.powers.blink_from_falling = self.is_active(StateId::FALLING);
+            }
             let index = self.index(id).unwrap();
             self.on_request_accepted(index);
         }
@@ -1458,6 +2000,17 @@ impl StateMachine {
             self.activate(index, speed, frame);
         }
         if read_note_requested { self.read_note.reject(); }
+        if grapple_requested && !self.is_active(StateId::GRAPPLE) {
+            frame.powers.grapple_pending = false;
+            if let Some(run) = frame.powers.grapple.as_mut() { run.finished = true; run.aborted = true; }
+        }
+        if blink_requested && !self.is_active(StateId::BLINKING) {
+            // A rejected parameterized request returns its real payload to
+            // the world owner; no timeout or synthetic state owns it.
+            frame.powers.blink_pending = false;
+            frame.powers.blink_finished = true;
+            frame.powers.blink_aborted = true;
+        }
         if !self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.primary)) {
             let mut id = self.default_state;
             for _ in 0..8 {
@@ -1491,6 +2044,24 @@ impl StateMachine {
     /// Slot 8 OnRequestAccepted (InAir FUN_14083eb00, Jumping FUN_1408681a0,
     /// Falling FUN_140865b90, Slipping FUN_140870030).
     fn on_request_accepted(&mut self, index: usize) {
+        if let Kind::Slash(decl) = &self.states[index].decl.kind {
+            let decl = decl.action.clone();
+            let active = self.states[index].active;
+            self.states[index].slash.action.requested_again(&decl, active);
+            return;
+        }
+        if let Kind::Block(decl) = &self.states[index].decl.kind {
+            let decl = decl.action.clone();
+            let active = self.states[index].active;
+            self.states[index].block.action.requested_again(&decl, active);
+            return;
+        }
+        if let Kind::FireWeapon(decl) = &self.states[index].decl.kind {
+            let decl = decl.action.clone();
+            let active = self.states[index].active;
+            self.states[index].fire.action.requested_again(&decl, active);
+            return;
+        }
         if matches!(self.states[index].decl.kind, Kind::Slipping(_)) {
             self.states[index].slipping_sneaking = self.is_active(StateId::SNEAKING);
             return;
@@ -1534,6 +2105,75 @@ impl StateMachine {
         if decl.flags.body_parts & LEGS != 0 {
             *frame.desired_legs += 1;
         }
+        match &decl.kind {
+            Kind::Slash(slash) => {
+                self.activate_slash(index, slash, frame);
+                return;
+            }
+            Kind::Block(block) => {
+                self.states[index].block.action.activate(&block.action, false);
+                self.states[index].block.left_hand_phase = 0;
+                self.play_block(index, block, 1, frame);
+                return;
+            }
+            Kind::EquipChange(equipment) => {
+                if let Some(side) = equipment.side().filter(|side| frame.equipment_changes.requests_other_hand(*side)) {
+                    if side == 0 { self.request_equipment_right(4, StateId::NULL); }
+                    else { self.request_equipment_left(4, StateId::NULL); }
+                }
+                self.advance_equipment_changes(frame);
+                return;
+            }
+            Kind::DrawEquipment(left) => {
+                let side = usize::from(!*left);
+                let held = if *left { frame.controller.down(20) } else { frame.controller.down(19) || frame.controller.down(21) };
+                let equipment = frame.equipment_changes.preferred(side);
+                self.states[index].draw_pending = if held { equipment.map_or(StateId::NULL, |equipment| equipment.action_state) } else { StateId::NULL };
+                let flags = if held && self.states[index].draw_pending != StateId::NULL
+                    && equipment.is_some_and(|equipment| equipment.archetype != 2) { 0x18 } else { 8 };
+                if *left { self.request_equipment_left(flags, StateId::NULL); }
+                else { self.request_equipment_right(flags, StateId::NULL); }
+                return;
+            }
+            Kind::Undraw(_) => {
+                self.states[index].undraw_elapsed = 0.0;
+                return;
+            }
+            Kind::FireWeapon(fire) => {
+                self.states[index].fire.action.activate(&fire.action, false);
+                self.activate_fire(index, fire, frame);
+                return;
+            }
+            Kind::CancelFireWeapon => {
+                self.quit(StateId::FIRE_WEAPON);
+                // 140866370 clears native ACTION_FIRE_LEFT (20).
+                frame.controller.clear_down(20);
+                self.quit(decl.id);
+                return;
+            }
+            Kind::RequestReloadWeapon => {
+                if let Some(weapon) = frame.weapon.as_mut() { weapon.request_reload(); }
+                self.quit(decl.id);
+                return;
+            }
+            Kind::ReloadWeapon => {
+                let sliding = self.is_active(StateId::SLIDING);
+                let path = frame.weapon.as_ref().and_then(|weapon| weapon.scene(super::weapons::Action::Reload, sliding))
+                    .map(str::to_owned);
+                if path.is_some() {
+                    // 1408454f0 casts left arm + left equipment (mask 0xa).
+                    let rate = frame.weapon.as_ref().map_or(1.0, |weapon|
+                        weapon.scene_playrate(super::weapons::Action::Reload, frame.attributes));
+                    let handle = Self::play(path.as_ref(), rate, 0xa, frame);
+                    self.states[index].midnight = handle;
+                    if let Some(weapon) = frame.weapon.as_mut() { weapon.set_scene(handle); weapon.reload_requested = false; }
+                } else {
+                    if let Some(weapon) = frame.weapon.as_mut() { weapon.emit_reload(); weapon.reload_requested = false; }
+                }
+                return;
+            }
+            _ => {}
+        }
         if let Kind::CatFall(catfall) = &decl.kind {
             frame.midnight.last_start_error = None;
             // FUN_14085a910 (equipment, the wind blast, fail chance and
@@ -1546,12 +2186,32 @@ impl StateMachine {
             let mut shown = [frame.catfall_sensor.left_hit, frame.catfall_sensor.right_hit];
             frame.catfall_sensor.enable(false);
             let high = self.states[index].damage >= catfall.damage_threshold && catfall.high_damage_midnight.is_some();
+            // 14085b490 distinguishes an equipped entity from an active
+            // equip action: while that action exists, a non-null action
+            // scene means the hand is not yet available. Carry/grapple
+            // owners supply additional restore reasons when implemented;
+            // no carried entity is fabricated here.
+            let equipped = [StateId::EQUIP_LEFT, StateId::EQUIP_RIGHT].map(|id| {
+                let side = usize::from(id == StateId::EQUIP_RIGHT);
+                if self.is_active(id) { !frame.equipment_transitioning[side] }
+                else { frame.equipment_changes.equipped(side) }
+            });
+            self.states[index].catfall_restore = equipped;
+            self.request_equipment_left(0x21, StateId::CATFALL);
+            if !equipped[1] || high { self.request_equipment_right(0x21, StateId::CATFALL); }
             let (scene, arm_scenes) = if high {
                 shown = [true, true];
                 (catfall.high_damage_midnight.as_ref(), &catfall.high_damage_arm_midnights)
             } else {
                 (catfall.low_damage_midnight.as_ref(), &catfall.low_damage_arm_midnights)
             };
+            let mut arm_scenes = arm_scenes.each_ref().map(Option::as_ref);
+            if !high && frame.equipment_archetypes[1] == Some(1) {
+                let [normal, sneaking] = catfall.low_damage_sword_midnights.each_ref().map(Option::as_ref);
+                arm_scenes[1] = if frame.controller.toggled(frame.controller.sneak_action) {
+                    sneaking.or(normal).or(arm_scenes[1])
+                } else { normal.or(arm_scenes[1]) };
+            }
             frame.catfall_sensor.last_selected_hands = Some(shown);
             // FUN_140774a10: hide the arms that are not shown.
             for (side, show) in shown.into_iter().enumerate() {
@@ -1565,8 +2225,8 @@ impl StateMachine {
             // and 4) beside the main one (1); otherwise the main one casts
             // all (7).
             if arm_scenes[0].is_some() && arm_scenes[1].is_some() {
-                Self::play(arm_scenes[0].as_ref(), rate, 2, frame);
-                Self::play(arm_scenes[1].as_ref(), rate, 4, frame);
+                Self::play(arm_scenes[0], rate, 2, frame);
+                Self::play(arm_scenes[1], rate, 4, frame);
                 self.states[index].midnight = Self::play(scene, rate, 1, frame);
             } else {
                 self.states[index].midnight = Self::play(scene, rate, 7, frame);
@@ -1574,6 +2234,12 @@ impl StateMachine {
             return;
         }
         if let Kind::Mantle(mantle) = &decl.kind {
+            if frame.powers.blink_finished && !frame.powers.mantle_sensor_swapped {
+                if let Some(sensor) = frame.powers.blink_mantle_sensor.as_mut() {
+                    std::mem::swap(frame.mantle_sensor, sensor);
+                    frame.powers.mantle_sensor_swapped = true;
+                }
+            }
             frame.midnight.last_start_error = None;
             self.activate_mantle(index, mantle, frame);
             return;
@@ -1581,6 +2247,18 @@ impl StateMachine {
         if matches!(decl.kind, Kind::ReadNote) {
             // 844bf0 ->8450b0: only an accepted state owns the descriptor.
             self.read_note.activate();
+            return;
+        }
+        if let Kind::UsePower(power) = &decl.kind {
+            let sliding = self.is_active(StateId::SLIDING);
+            if !super::power_states::activate_use(frame, sliding, power) { self.quit(decl.id); }
+            return;
+        }
+        if let Kind::Grapple(grapple) = &decl.kind {
+            super::grapple_state::activate(frame, grapple); return;
+        }
+        if matches!(decl.kind, Kind::Blinking) {
+            super::power_states::activate_blink(frame);
             return;
         }
         if matches!(decl.kind, Kind::SwimMantle) {
@@ -1753,7 +2431,9 @@ impl StateMachine {
                 self.states[index].swimming_dive = (direction, impulse);
             }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::Dead(_) => {}
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::UsePower(_) | Kind::Blinking | Kind::Grapple(_) | Kind::Dead(_)
+                | Kind::FireWeapon(_) | Kind::CancelFireWeapon | Kind::RequestReloadWeapon | Kind::ReloadWeapon
+                | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) => {}
         }
     }
 
@@ -1825,19 +2505,104 @@ impl StateMachine {
             *frame.desired_legs -= 1;
         }
         match self.states[index].decl.kind.clone() {
+            Kind::Slash(decl) => {
+                if self.states[index].slash.focus_active {
+                    let slash = &self.states[index].slash;
+                    let context = super::slash_rules::Context {
+                        is_focused: true,
+                        current_posture: if frame.physics.posture == 3 { 1 } else { frame.physics.posture },
+                        last_slash_type: slash.last_type,
+                        time_since_last_slash: (frame.action_time - slash.last_time) as f32,
+                        ..Default::default()
+                    };
+                    if let Some(selection) = self.slash_rules.as_mut().and_then(|rules| rules.select_shared(&context)) {
+                        if selection.cancel_midnight.is_some() {
+                            Self::play(selection.cancel_midnight.as_ref(), 1.0, 5, frame);
+                        }
+                    }
+                }
+                self.states[index].slash.action.deactivate(frame.action_time);
+                self.states[index].slash.focus_active = false;
+                self.states[index].slash.focus_ready = false;
+                self.states[index].slash.focused = false;
+                if self.states[index].slash.dispersion_active {
+                    let mut request = decl.dispersion.clone();
+                    request.added = false;
+                    frame.attribute_requests.push(request);
+                    self.states[index].slash.dispersion_active = false;
+                }
+                self.states[index].midnight = 0;
+                return;
+            }
+            Kind::Block(_) => {
+                if self.states[index].block.left_hand_phase == 2 { frame.arms_shown[0] = true; }
+                self.code_lock(index, 1, false, frame);
+                if self.states[index].block.left_hand_phase > 0 {
+                    self.request_equipment_left(6, StateId::BLOCK);
+                }
+                self.states[index].block.left_hand_phase = 0;
+                self.states[index].block.phase = 0;
+                self.states[index].block.action.deactivate(frame.action_time);
+                self.states[index].midnight = 0;
+                return;
+            }
+            Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) => return,
+            Kind::FireWeapon(_) => {
+                // 140866a20 stops only an interrupted charging scene.
+                if self.states[index].fire.phase == super::combat::FirePhase::Charging {
+                    frame.midnight.stop(self.states[index].midnight);
+                }
+                if let Some(weapon) = frame.weapon.as_mut() {
+                    weapon.finish_scene(self.states[index].midnight);
+                    if weapon.targeting_requested { weapon.end_targeting(); }
+                }
+                self.states[index].fire.phase = super::combat::FirePhase::Inactive;
+                self.states[index].fire.action.deactivate(frame.action_time);
+                self.states[index].midnight = 0;
+                return;
+            }
+            Kind::CancelFireWeapon | Kind::RequestReloadWeapon => return,
+            Kind::ReloadWeapon => {
+                if let Some(weapon) = frame.weapon.as_mut() { weapon.finish_scene(self.states[index].midnight); }
+                self.states[index].midnight = 0;
+                return;
+            }
             Kind::CatFall(_) => {
                 // FUN_14085b1e0 (the scene keeps playing): show the hidden
                 // arms again.
                 *frame.arms_shown = [true; 2];
+                // 14085b1e0 uses the exact fast restore request, not an
+                // inventory add or a fresh equipment entity acquisition.
+                if self.states[index].catfall_restore[0] { self.request_equipment_left(0x46, StateId::CATFALL); }
+                if self.states[index].catfall_restore[1] { self.request_equipment_right(0x46, StateId::CATFALL); }
+                self.states[index].catfall_restore = [false; 2];
                 let crouch = frame.controller.toggled(frame.controller.sneak_action);
                 self.request(if crouch { StateId::SNEAKING } else { StateId::RUNNING });
                 frame.follow_slope.midnight_requests -= 1;
                 return;
             }
             Kind::ReadNote => { self.read_note.deactivate(); return; },
+            Kind::UsePower(_) => {
+                let sliding = self.is_active(StateId::SLIDING);
+                super::power_states::deactivate_use(frame, sliding);
+                self.pending_sounds.append(&mut frame.powers.sound_events);
+                return;
+            },
+            Kind::Blinking => {
+                self.land_blink_fall_debt(frame);
+                super::power_states::deactivate_blink(frame);
+                return;
+            },
+            Kind::Grapple(grapple) => {
+                self.land_falling_if_contact(frame);
+                super::grapple_state::deactivate(frame, &grapple); return;
+            },
             Kind::SwimMantle => return,
             Kind::Mantle(_) => {
                 // FUN_14085fd40.
+                if self.states[index].mantle.equipment_restore[0] { self.request_equipment_left(0x46, StateId::MANTLE); }
+                if self.states[index].mantle.equipment_restore[1] { self.request_equipment_right(0x46, StateId::MANTLE); }
+                self.states[index].mantle.equipment_restore = [false; 2];
                 set_mantle_collision(frame.physics, self.states[index].mantle.destination_body, true);
                 frame.controller.support_state = SupportState::Supported;
                 frame.physics.disable_gravity(false);
@@ -1849,6 +2614,10 @@ impl StateMachine {
                 }
                 frame.midnight.stop(self.states[index].midnight);
                 self.states[index].midnight = 0;
+                if frame.powers.mantle_sensor_swapped {
+                    if let Some(sensor) = frame.powers.blink_mantle_sensor.as_mut() { std::mem::swap(frame.mantle_sensor, sensor); }
+                    frame.powers.mantle_sensor_swapped = false;
+                }
                 return;
             }
             Kind::Vault(_) => {
@@ -1932,11 +2701,87 @@ impl StateMachine {
         }
     }
 
+    /// 140858010: restore velocity only in the native support/sprint/slide/
+    /// vault branches; the target navigation state owns the final posture.
+    fn finish_blink_navigation(&mut self, target: StateId, frame: &mut Frame) {
+        let Some(motion) = frame.powers.blink.as_ref() else { return };
+        let velocity = motion.prior_velocity;
+        let mut selected = target;
+        let possession = frame.controller.possession_state();
+        let falling_support = target != StateId::MANTLE && !(1..=3).contains(&possession) && !frame.physics.near_ground();
+        if target != StateId::MANTLE && frame.physics.near_ground() { frame.controller.support_state = SupportState::Supported; }
+        if falling_support {
+            // Force=true in 1407fbb20 returns FALLING even when the prior
+            // support state was already unsupported.
+            frame.controller.support_state = SupportState::Unsupported;
+            frame.requests.push_linear(0, velocity);
+            selected = StateId::FALLING;
+            self.request(selected);
+        } else if target == StateId::VAULT {
+            frame.requests.push_linear(0, velocity); self.request(selected);
+        } else if target == StateId::MANTLE {
+            frame.requests.push_linear(0, Vec3::ZERO); self.request(selected);
+        } else if frame.powers.blink_from_sprinting {
+            frame.requests.push_linear(0, velocity); selected = StateId::SPRINTING; self.request(selected);
+        } else if frame.powers.blink_from_sliding && self.slide_available(velocity.truncate().length()) {
+            frame.requests.push_linear(0, velocity); selected = StateId::SLIDING;
+            self.queue.push(Command::RequestSlide(velocity.truncate().length()));
+        } else if target != StateId::AUTOCROUCH && frame.controller.toggled(frame.controller.sneak_action) && self.available(StateId::SNEAKING, frame) {
+            frame.requests.push_linear(0, Vec3::ZERO); selected = StateId::SNEAKING; self.request(selected);
+        } else { frame.requests.push_linear(0, Vec3::ZERO); self.request(selected); }
+        if let Some(state) = self.state(selected) {
+            if matches!(state.decl.kind, Kind::Running | Kind::Sneaking | Kind::Sprinting(_) | Kind::Sliding(_) | Kind::Slipping(_)
+                | Kind::AutoCrouch | Kind::Jumping(_) | Kind::Falling(_) | Kind::Swimming(_)) {
+                // 140868e60 reapplies an already active navigation posture;
+                // allowSelf=false must not leave the temporary Blink shape.
+                frame.physics.set_posture(state.decl.navigation.posture, 0.0);
+                frame.body.enter(&state.decl.navigation.loco_stance_name);
+            }
+        }
+    }
+
     /// Slot 13 Update.
     fn update(&mut self, index: usize, frame: &mut Frame) {
         let kind = self.states[index].decl.kind.clone();
         let id = self.states[index].decl.id;
         match kind {
+            Kind::Slash(decl) => self.update_slash(index, &decl, frame),
+            Kind::Block(decl) => self.update_block(index, &decl, frame),
+            Kind::EquipChange(_) => self.advance_equipment_changes(frame),
+            Kind::DrawEquipment(left) => {
+                let pending = self.states[index].draw_pending;
+                if pending == StateId::NULL { self.quit(id); }
+                else if frame.equipment_changes.equipped(usize::from(!left)) {
+                    self.request(pending);
+                    self.states[index].draw_pending = StateId::NULL;
+                }
+            },
+            Kind::Undraw(hold) => {
+                let action = frame.controller.mapping.iter().find(|mapping| mapping.state == StateId::UNDRAW)
+                    .map_or(0, |mapping| mapping.action);
+                if !frame.controller.down(action) { self.quit(id); return; }
+                // 802f90 checks active states' own body-part masks; the
+                // left PLACE_WEAPON_READY state61 is the original exception.
+                let left = self.active.iter().filter_map(|id| self.state(*id))
+                    .any(|state| state.decl.flags.body_parts & 2 != 0) && !self.is_active(StateId(61));
+                let right = self.active.iter().filter_map(|id| self.state(*id))
+                    .any(|state| state.decl.flags.body_parts & 4 != 0);
+                if left || right { self.states[index].undraw_elapsed = 0.0; }
+                else {
+                    if self.states[index].undraw_elapsed >= hold {
+                        let flags = if !frame.equipment_changes.equipped(0) && !frame.equipment_changes.equipped(1) { 4 } else { 0 };
+                        self.request_equipment_left(flags, StateId::NULL);
+                        self.request_equipment_right(flags, StateId::NULL);
+                        self.quit(id);
+                    }
+                    self.states[index].undraw_elapsed += frame.dt;
+                }
+            },
+            Kind::FireWeapon(decl) => self.update_fire(index, &decl, frame),
+            Kind::CancelFireWeapon | Kind::RequestReloadWeapon => {},
+            Kind::ReloadWeapon => {
+                if frame.midnight.finished(self.states[index].midnight) { self.quit(id); }
+            }
             Kind::Running => {
                 self.states[index].navigation.speed_multiplier = frame.attributes.get("ARK_ATTRIBUTE_SPEED_MULTIPLIER");
                 self.navigation_update(index, frame);
@@ -2040,6 +2885,22 @@ impl StateMachine {
                 }
             }
             Kind::SwimMantle | Kind::ReadNote => {}
+            Kind::UsePower(decl) => {
+                let sliding = self.is_active(StateId::SLIDING);
+                if !super::power_states::update_use(frame, sliding, &decl) { self.quit(id); }
+            }
+            Kind::Grapple(decl) => {
+                if let Some(next) = super::grapple_state::update(frame, &decl) {
+                    self.quit(id);
+                    if next != StateId::NULL { self.request(next); }
+                }
+            }
+            Kind::Blinking => {
+                if let Some(next) = super::power_states::update_blink(frame) {
+                    self.quit(id);
+                    if !frame.powers.blink_aborted { self.finish_blink_navigation(next, frame); }
+                }
+            }
             Kind::Dead(dead) => {
                 // 14085c4e0 submits vertical and angular motion requests.
                 frame.requests.push_linear(0, Vec3::new(0.0, 0.0, dead.vertical_speed));
@@ -2086,11 +2947,14 @@ impl StateMachine {
             MantleHeight::High => &decl.high_midnights,
         };
         let destination_body = sensor.destination_body;
-        self.states[index].mantle = MantleRun { final_posture, final_state: final_state.0, destination, destination_yaw, height: height as u8, destination_body };
+        // 14085eaf0 holds only the hands actually used by a non-low mantle,
+        // and only when that hand owns an equipped entity.
+        let equipment_restore = [sensor.use_left_hand, sensor.use_right_hand].map(|used| used && height != MantleHeight::Low);
+        let equipment_restore = std::array::from_fn(|side| equipment_restore[side] && frame.equipment_changes.equipped(side));
+        self.states[index].mantle = MantleRun { final_posture, final_state: final_state.0, destination, destination_yaw, height: height as u8, destination_body, equipment_restore };
         if scenes[slot].is_some() {
             let rate = frame.attributes.0.get("ARK_ATTRIBUTE_MANTLE_SPEED_FACTOR").copied().unwrap_or(1.0);
-            // Mantle casting 140860030 uses the sensor's hand flags. The
-            // corpse/equipment branch is absent while both hands are empty.
+            // Mantle casting 140860030 uses the sensor's hand flags.
             let parts = 1 | if sensor.use_left_hand { 2 } else { 0 } | if sensor.use_right_hand { 4 } else { 0 };
             self.states[index].midnight = Self::play(scenes[slot].as_ref(), rate, parts, frame);
             // FUN_140860680: retarget the player onto the dummy at the destination.
@@ -2125,6 +2989,8 @@ impl StateMachine {
         } else {
             frame.camera.set_target_mode(MODE_ANIMATED, -1.0);
         }
+        if equipment_restore[0] { self.request_equipment_left(0x21, StateId::MANTLE); }
+        if equipment_restore[1] { self.request_equipment_right(0x21, StateId::MANTLE); }
     }
 
     /// Mantle Update FUN_1408607f0.
@@ -2711,7 +3577,7 @@ impl StateMachine {
         self.states[index].jump.timer += frame.dt;
     }
 
-    /// Falling Update FUN_140865c50 (landing without catfall and damage).
+    /// Falling Update865c50 accumulates physical motion before Land8658c0.
     fn falling_update(&mut self, index: usize, decl: &FallingDecl, frame: &mut Frame) {
         let id = self.states[index].decl.id;
         let fall = &mut self.states[index].fall;
@@ -2719,7 +3585,7 @@ impl StateMachine {
         fall.last_origin = frame.origin;
         let accumulated = fall.accumulated_height;
         let from = self.states[index].in_air;
-        if (frame.physics.ground_distance == f32::MAX && frame.physics.ground.state == SupportState::Unsupported)
+        if (frame.physics.ground_distance >= f32::MAX && frame.physics.ground.state == SupportState::Unsupported)
             || frame.controller.is_slip_falling
         {
             if from.from_jumping && frame.physics.gravity_velocity.z > 0.0 {
@@ -2731,16 +3597,7 @@ impl StateMachine {
             frame.physics.ground_query_length = frame.velocity.z.abs() * frame.dt + self.states[index].decl.navigation.max_ground_distance;
             return;
         }
-        // Land() FUN_1408658c0: fall damage, then CATFALL above
-        // m_catFallHeight. Health and death are not ported: no fall kills.
-        let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
-        self.states[index].fall.accumulated_height = 0.0;
-        if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
-            self.states[index].fall.catfall_taken = true;
-            self.quit(id);
-            self.queue.push(Command::RequestCatFall(damage));
-            return;
-        }
+        if self.land_falling(index, decl, frame) { return; }
         self.quit(id);
         let slide_speed = frame.velocity.truncate().length();
         let crouch_action = frame.controller.sneak_action;
@@ -2764,12 +3621,52 @@ impl StateMachine {
         let crouch = frame.controller.toggled(crouch_action);
         frame.jump_anim.end(crouch, false);
     }
+
+    /// 857a30/838600 call Land on the actual mode's stored Falling instance
+    /// even after it was deactivated. 7fdaa0 reads the physics proxy's
+    /// support result (+48 -> +20), independently of controller support.
+    pub(super) fn land_falling_if_contact(&mut self, frame: &mut Frame) -> bool {
+        if frame.physics.ground_distance >= f32::MAX
+            && frame.physics.ground.state == SupportState::Unsupported { return false; }
+        let Some(index) = self.index(StateId::FALLING) else { return false; };
+        let Kind::Falling(decl) = self.states[index].decl.kind.clone() else { return false; };
+        self.land_falling(index, &decl, frame)
+    }
+
+    fn land_blink_fall_debt(&mut self, frame: &mut Frame) {
+        if !frame.powers.blink_from_falling { return; }
+        // 857a30 clears its saved pointer after the conditional Land call.
+        // Do not accumulate Blink's position delta or reset an airborne fall.
+        frame.powers.blink_from_falling = false;
+        self.land_falling_if_contact(frame);
+    }
+
+    /// Land8658c0 owns damage/CatFall and clears only the consumed height.
+    /// Navigation choices and landing-camera work belong to Update865c50;
+    /// Blink and Grapple exits must not run those ordinary update branches.
+    fn land_falling(&mut self, index: usize, decl: &FallingDecl, frame: &mut Frame) -> bool {
+        let accumulated = self.states[index].fall.accumulated_height;
+        let id = self.states[index].decl.id;
+        let damage = if decl.fall_damage { fall_damage(decl, accumulated, frame) } else { 0.0 };
+        if damage > 0.0 { self.pending_fall_damage = Some(damage); }
+        self.states[index].fall.catfall_taken = false;
+        self.states[index].fall.accumulated_height = 0.0;
+        if accumulated > decl.cat_fall_height && self.available(StateId::CATFALL, frame) {
+            self.states[index].fall.catfall_taken = true;
+            self.quit(id);
+            self.queue.push(Command::RequestCatFall(damage));
+            return true;
+        }
+        false
+    }
 }
 
-/// FUN_1408657c0 (no enhanced heights: the reduction attribute keeps its
-/// base value without modifiers).
+/// FUN_1408657c0, with 8651c0 defaults and maximum health.
 fn fall_damage(decl: &FallingDecl, height: f32, frame: &Frame) -> f32 {
-    let (d, death) = (decl.damage_height, decl.death_height);
+    let enhanced = frame.attributes.1.get("ARK_ATTRIBUTE_FALL_DAMAGE_REDUCTION")
+        .is_some_and(|attribute| frame.attributes.get("ARK_ATTRIBUTE_FALL_DAMAGE_REDUCTION") != attribute.base);
+    let (d, death) = if enhanced { (decl.enhanced_damage_height, decl.enhanced_death_height) }
+        else { (decl.damage_height, decl.death_height) };
     if height - d < death {
         let factor = frame.attributes.0.get("ARK_ATTRIBUTE_FALL_DAMAGE_FACTOR").copied().unwrap_or(1.0);
         factor * frame.health * ((height - d) / (death - d))

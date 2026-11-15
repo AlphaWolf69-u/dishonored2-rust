@@ -5,10 +5,10 @@ locally installed copy of Dishonored 2**. This repository contains rewrite
 source and development tools, not the original game or its assets.
 
 The Windows client currently supports selected world/model formats, visibility
-and asset streaming, authored material textures, basic first-person movement,
-decoded collision, and the pause menu with its options (the game's own Flash
+and asset streaming, authored material textures, first-person movement and swimming,
+decoded collision, inventory/equipment and selected power paths, and the pause menu with its options (the game's own Flash
 movies, settings and key bindings). It is **not a complete playable
-replacement**: NPCs, combat, missions, saves, animation, and parts of
+replacement**: NPCs, projectile combat, missions, saves, animation coverage, and parts of
 lighting/material rendering remain incomplete. Visual and gameplay parity are
 still being verified.
 

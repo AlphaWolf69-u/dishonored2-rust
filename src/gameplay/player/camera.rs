@@ -159,6 +159,7 @@ pub const MODE_AND_ARMS: i32 = 0;
 pub const MODE_ANIMATED: i32 = 2;
 pub const MODE_CONSTRAINED: i32 = 3;
 pub const MODE_CONSTRAINED_WITH_ARMS: i32 = 6;
+pub const MODE_GRAPPLE: i32 = 8;
 pub const MODE_CATFALL: i32 = 14;
 pub const MODE_DROWNING: i32 = 15;
 pub const MODE_KEEP_PREVIOUS: i32 = 18;
@@ -249,6 +250,14 @@ impl PlayerCamera {
 
     /// FUN_1407f43b0: queue a target mode (KEEP_PREVIOUS keeps it); a
     /// negative blend takes the decl's `m_modeBlendDuration`.
+    /// 1407f4240 / 1407f2930: temporary decl pitch bounds, in degrees.
+    pub fn set_pitch_limits(&mut self, up: f32, down: f32) {
+        self.min_pitch = -0.017453292 * up; self.max_pitch = 0.017453292 * down;
+    }
+    pub fn reset_pitch_limits(&mut self) {
+        self.set_pitch_limits(self.decl.max_pitch_up, self.decl.max_pitch_down);
+    }
+
     pub fn set_target_mode(&mut self, mode: i32, blend: f32) {
         if mode == MODE_KEEP_PREVIOUS {
             return;
@@ -283,6 +292,15 @@ impl PlayerCamera {
                 *body_yaw = 0.0;
             }
         }
+    }
+
+    /// 7f5d50 writes paused grapple inputs; mode blend weights multiply
+    /// steering before SetGrapple clamps it. Exiting mode8 clears the layer.
+    pub fn grapple_control(&self) -> Option<[f32; 2]> {
+        let weight = self.poses.iter().find_map(|&(mode, weight, _)| (mode == MODE_GRAPPLE).then_some(weight))?;
+        let [pitch_low, pitch_high, yaw_high, yaw_low] = self.constraints;
+        Some([((self.yaw_offset - yaw_low) / (yaw_high - yaw_low) * 2.0 - 1.0) * weight,
+            ((self.pitch - pitch_low) / (pitch_high - pitch_low) * 2.0 - 1.0) * weight])
     }
 
     /// The DEFAULT stage FUN_1407f6140 up to the FOV: modes, look
@@ -529,6 +547,10 @@ impl PlayerCamera {
     }
 
     /// FUN_1407f6a80: camera_jnt in world space, kept inside the capsule.
+    pub fn view_axis(&self, pose: &BodyPose, physics: &PlayerPhysics, controls: &[JointControl]) -> Mat3 {
+        physics.axis() * pose.joint_with_controls(pose.camera, controls).1
+    }
+
     pub fn view(&mut self, pose: &BodyPose, physics: &PlayerPhysics, allow_out_of_shape: bool, controls: &[JointControl]) -> View {
         let (local, local_rotation) = pose.joint_with_controls(pose.camera, controls);
         let axis = physics.axis();
