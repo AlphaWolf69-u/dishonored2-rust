@@ -409,13 +409,18 @@ impl Midnight {
     /// reads the md6 of the entity its node's group is cast to (`md6`:
     /// body, left arm, right arm).
     pub fn resolve(scene: &PreparedScene, mut next: Next, md6: [&str; TARGETS]) -> Result<Option<usize>, String> {
-        for _ in 0..16 {
+        // The native walker has no fixed graph-depth limit. A host validation
+        // rejects a repeated pure CONDMD6 node instead of truncating valid
+        // declaration chains at an arbitrary number of elements.
+        let mut visited = std::collections::HashSet::new();
+        loop {
             match next {
                 Next::Final => return Ok(None),
                 Next::Scene(uid) => {
                     return scene.decl.scenes.iter().position(|s| s.uid == uid).map(Some).ok_or_else(|| format!("missing midnight scene {uid}"));
                 }
                 Next::Node(uid) => {
+                    if !visited.insert(uid) { return Err("midnight graph does not reach a scene".into()); }
                     let node = scene.decl.nodes.iter().find(|n| n.uid == uid).ok_or_else(|| format!("missing midnight node {uid}"))?;
                     let target = cast_target(&node.group).ok_or_else(|| format!("CONDMD6 on group {} is not decoded", node.group))?;
                     let md6 = md6[target];
@@ -424,7 +429,6 @@ impl Midnight {
                 }
             }
         }
-        Err("midnight graph does not reach a scene".into())
     }
 
     /// The clip schedule of every cast tree and the body group's events.

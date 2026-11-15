@@ -73,6 +73,19 @@ pub struct ArmActionDiagnostic {
 /// determines when mana, ammunition or a hit becomes effective.
 pub type AnimationEvent = midnight::PointEvent;
 
+/// Component/state requests pass through the player attribute owner so its
+/// actual notifications reach health, mana, powers and equipped components.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttributeModifierRequest {
+    pub owner: String,
+    pub index: usize,
+    pub tag: String,
+    pub increase: f32,
+    pub percentage: f32,
+    pub duration: f32,
+    pub added: bool,
+}
+
 struct ActiveModifier {
     owner: String,
     index: usize,
@@ -112,6 +125,7 @@ pub struct Player {
     active_modifiers: Vec<ActiveModifier>,
     next_modifier_expiration: Option<f64>,
     attribute_modifier_events: Vec<(String, bool)>,
+    attribute_requests: Vec<AttributeModifierRequest>,
     entity_events: Vec<EntityEvent>,
     managed_entity: Option<crate::gameplay::entity_lifetime::EntityId>,
     pub body: Body,
@@ -133,6 +147,7 @@ pub struct Player {
     damage_receiver: crate::gameplay::damage::Receiver,
     fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     drowning_damage_enabled: bool,
+    drowning_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     mana: mana::Mana,
     powers: power_states::Runtime,
     equipment_changes: equipment_states::Runtime,
@@ -192,6 +207,7 @@ pub struct PlayerSetup {
     pub adrenaline: adrenaline::Settings,
     pub swimming_settings: swimming::SwimmingSettings,
     pub swimming_states: Vec<swimming::SwimmingStateDecl>,
+    pub swimming_equipment: Vec<states::StateDecl>,
     pub swimming_rules: Vec<states::RuleDecl>,
     pub swimming_default_state: StateId,
     pub swimming_has_mantle: bool,
@@ -200,6 +216,7 @@ pub struct PlayerSetup {
     pub breath: swimming::Breath,
     pub accepts_water_damage: bool,
     pub drowning_damage_enabled: bool,
+    pub drowning_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
 }
 
 impl Player {
@@ -473,6 +490,7 @@ impl Player {
             state.navigation = swimming.navigation.clone();
             state
         }).collect();
+        swimming_decls.extend(setup.swimming_equipment);
         if setup.swimming_has_mantle {
             swimming_decls.push(states::StateDecl::class_default(Kind::SwimMantle));
         }
@@ -507,6 +525,7 @@ impl Player {
             active_modifiers: Vec::new(),
             next_modifier_expiration: None,
             attribute_modifier_events: Vec::new(),
+            attribute_requests: Vec::new(),
             entity_events: Vec::new(),
             managed_entity: None,
             body: setup.body,
@@ -526,6 +545,7 @@ impl Player {
             damage_receiver: setup.damage_receiver,
             fall_damage: setup.fall_damage,
             drowning_damage_enabled: setup.drowning_damage_enabled,
+            drowning_damage: setup.drowning_damage,
             mana,
             powers: Default::default(),
             equipment_changes: Default::default(),
@@ -568,6 +588,11 @@ impl Player {
 
     fn frame_impl(&mut self, world: &dyn PlayerWorld, events: &[ActionEvent], settings: &LookSettings, dt: f32, frame_delta: f32, now: f64, base_fov: f32,
         mut inventory: Option<&mut dyn weapons::AmmunitionInventory>) {
+        let gun_socket = self.weapon.as_ref().filter(|weapon| weapon.settings.family == weapons::RangedFamily::Gun)
+            .and_then(|weapon| weapon.settings.projectile_fire_tag.as_deref()).and_then(|tag| self.equipment_tag_world(0, tag));
+        if let Some(weapon) = &mut self.weapon {
+            if weapon.settings.family == weapons::RangedFamily::Gun { weapon.projectile_frame = gun_socket; }
+        }
         while self.next_modifier_expiration.is_some_and(|deadline| deadline <= now) {
             let next = self.active_modifiers.iter().enumerate().filter_map(|(index, value)| {
                 value.expires_at.filter(|deadline| *deadline <= now).map(|deadline| (index, deadline))
@@ -631,7 +656,8 @@ impl Player {
             self.swimming_waves = swimming::WaveFilters::default();
             self.swimming_wave_pose = (0.0, Vec3::Z);
         }
-        let equipment_transitioning = self.equipment_action_handles.map(|handle| handle.is_some_and(|handle| !self.body.midnight.finished(handle)));
+        let equipment_transitioning = std::array::from_fn(|side| self.equipment_changes.transitioning(side)
+            || self.equipment_action_handles[side].is_some_and(|handle| !self.body.midnight.finished(handle)));
         macro_rules! frame {
             () => {
                 Frame {
@@ -651,6 +677,7 @@ impl Player {
                     axis,
                     velocity,
                     attributes: &self.attributes,
+                    attribute_requests: &mut self.attribute_requests,
                     powers: &mut self.powers,
                     equipment_changes: &mut self.equipment_changes,
                     mana: &mut self.mana,
@@ -745,6 +772,12 @@ impl Player {
         self.machine.think(&mut frame!());
         self.apply_equipment_changes();
         self.machine.advance_equipment_changes(&mut frame!());
+        let mut attribute_requests = std::mem::take(&mut self.attribute_requests);
+        for request in attribute_requests.drain(..) {
+            self.apply_attribute_modifier(&request.owner, request.index, &request.tag, request.increase, request.percentage,
+                request.duration, request.added, now);
+        }
+        self.attribute_requests = attribute_requests;
         if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
             weapon.flush_pending_fire(inventory);
         }
@@ -795,9 +828,18 @@ impl Player {
                 if mana_delta > 0.0 { self.mana.gain(mana_delta, &self.attributes); }
                 if !self.health.accepts_water() { raw_damage = 0.0; }
                 if raw_damage > 0.0 {
-                    self.receive_damage(&crate::gameplay::damage::Parameters { amount: raw_damage,
-                        damage_type: crate::gameplay::damage::DamageType::WATER,
-                        hit_direction: Vec3::ZERO, hit_region: 1, attacker: None, inflictor: None, ignore_armor: false });
+                    if let Some(declaration) = &self.drowning_damage {
+                        // 4c0cf0 -> 780a80 retains authored type/bounds and
+                        // supplies the actual player as attacker and inflictor.
+                        let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
+                        parameters.set_amount(declaration, raw_damage, true);
+                        parameters.attacker = self.managed_entity;
+                        parameters.inflictor = self.managed_entity;
+                        parameters.hit_location = Some(self.physics.position());
+                        parameters.hit_direction = -Vec3::Z;
+                        parameters.affected_regions = 0;
+                        self.receive_damage(&parameters);
+                    }
                 }
             }
         }
@@ -1117,6 +1159,19 @@ impl Player {
             Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         Some(settings.rate(clock_rate))
+    }
+
+    /// 53dac0 -> 53d800 -> 53d3f0 reads the animation component's retained
+    /// palette and the entity transform. Reuse the same published world joints
+    /// here; socket queries never decode or pose an additional model instance.
+    pub fn equipment_tag_world(&self, side: usize, tag: &str) -> Option<(Vec3, Mat3)> {
+        let tree = self.body.equipment.get(side)?.as_ref()?;
+        let (joint, local_position, local_rotation) = tree.rig.tag(tag).ok()?;
+        let rows = self.arm_render.iter().find(|entry| entry.model == tree.model)?.joints.get(joint)?;
+        let position = Vec3::new(rows[0][3], rows[1][3], rows[2][3]);
+        let rotation = Mat3::from_cols(Vec3::new(rows[0][0], rows[1][0], rows[2][0]),
+            Vec3::new(rows[0][1], rows[1][1], rows[2][1]), Vec3::new(rows[0][2], rows[1][2], rows[2][2]));
+        Some((position + rotation * local_position, rotation * local_rotation))
     }
 
     /// Audio without a joint attachment uses its entity's origin and axis

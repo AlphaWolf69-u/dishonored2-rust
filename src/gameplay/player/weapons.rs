@@ -19,6 +19,7 @@ fn boolean(fields: &Fields, key: &str, fallback: bool) -> Result<bool, String> {
 pub struct Equipment {
     pub slot: u8,
     pub archetype: u32,
+    pub action_state: super::states::StateId,
     pub equipped_bind_tag: Option<String>,
     pub unequipped_bind_tag: Option<String>,
     pub default_input: Option<String>,
@@ -29,6 +30,7 @@ pub struct Equipment {
     pub can_lower: bool,
     pub force_attachment: bool,
     pub auto_equip: bool,
+    pub default_upgrades: Vec<String>,
     /// Exact component field name -> scene declaration. No guessed fallback
     /// between posture/fast variants is performed by this resource reader.
     pub scenes: HashMap<String, String>,
@@ -65,8 +67,19 @@ impl Equipment {
         };
         let slot = value("m_slot", "arkEquipmentSlot_t", default_slot as i32)?;
         let archetype = value("m_archetype", "arkEquipmentArchetype_t", default_archetype as i32)?;
+        let action_state = atom(fields, "m_playerQuickUseState").map_or(Ok(super::states::StateId::NULL), |text|
+            enumeration("arkPlayerStateId_t", text).map(super::states::StateId)
+                .or_else(|| super::decls::state_id(text)).or_else(|| text.parse().ok().map(super::states::StateId))
+                .ok_or_else(|| format!("unknown equipment quick-use state {text}")))?;
         if !(0..16).contains(&slot) || archetype <= 0 { return Err("equipment has no admissible inventory slot/archetype".into()); }
         let mut scenes = HashMap::new();
+        let mut default_upgrades: Vec<_> = child(fields, "m_defaultUpgrades").iter().filter_map(|(key, value)| {
+            let index: usize = key.strip_prefix("item[")?.strip_suffix(']')?.parse().ok()?;
+            let Value::Atom(value) = value else { return None };
+            let value = value.trim_matches('"');
+            (!value.is_empty() && value != "NULL").then(|| (index, value.to_owned()))
+        }).collect();
+        default_upgrades.sort_by_key(|(index, _)| *index);
         // These are authored pointers, not bulk scene acquisition. The host
         // demands only the action admitted by its equipment state owner.
         for (key, value) in fields {
@@ -77,13 +90,13 @@ impl Equipment {
                 }
             }
         }
-        Ok(Self { slot: slot as u8, archetype: archetype as u32,
+        Ok(Self { slot: slot as u8, archetype: archetype as u32, action_state,
             equipped_bind_tag: text(fields,"m_equippedBindTag"), unequipped_bind_tag: text(fields,"m_unequippedBindTag"),
             default_input: text(fields,"m_defaultAnimInputName"), default_alias: text(fields,"m_defaultAnimAliasName"),
             loco_equip_state: text(fields,"m_locoEquipStateName"), usable_swimming: boolean(fields,"m_usableWhenSwimming",false)?,
             hide_unequipped: boolean(fields,"m_hideWhenNotEquipped",false)?,
             can_lower: boolean(fields,"m_canLower",false)?, force_attachment: boolean(fields,"m_forceAttachment",false)?,
-            auto_equip: boolean(fields,"m_autoEquip",false)?, scenes })
+            auto_equip: boolean(fields,"m_autoEquip",false)?, default_upgrades: default_upgrades.into_iter().map(|(_, value)| value).collect(), scenes })
     }
 }
 
@@ -93,6 +106,12 @@ pub struct Ammunition {
     pub projectile: Option<String>,
     pub attachment: Option<String>,
     pub fits_magazine: bool,
+    pub muzzle_world_fx: Option<String>,
+    pub damage_increment_attribute: Option<String>,
+    pub bypass_big_hit_immunity_attribute: Option<String>,
+    pub gravity_multiplier_attribute: Option<String>,
+    pub sleep_timer_multiplier_attribute: Option<String>,
+    pub spread_damage: bool,
 }
 #[derive(Clone, Debug)]
 pub struct Ranged {
@@ -103,6 +122,14 @@ pub struct Ranged {
     pub recoil_weight_attribute: Option<String>,
     pub fire_playrate_attribute: Option<String>,
     pub reload_playrate_attribute: Option<String>,
+    pub projectile_attachment_tag: Option<String>,
+    pub projectile_fire_tag: Option<String>,
+    pub fired_animation: Option<String>,
+    pub muzzle_tag: Option<String>,
+    pub muzzle_attached_fx: Option<String>,
+    pub spread_area: Option<String>,
+    pub spread_area_reduced: Option<String>,
+    pub spread_area_upgraded: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RangedFamily { Gun, Crossbow }
@@ -113,15 +140,28 @@ impl Ranged {
         if self.family == RangedFamily::Crossbow || !self.ammunition[ammunition].fits_magazine { return 1; }
         attributes.0.get("ARK_ATTRIBUTE_GUN_AMMO_CAPACITY").map_or(0, |value| (*value + 0.5).floor() as i32)
     }
+    pub fn capacity_for_ammunition(&self, item: &str, attributes: &super::states::Attributes) -> Option<i32> {
+        self.ammunition.iter().position(|ammunition| ammunition.item == item).map(|index| self.capacity(index, attributes))
+    }
     pub fn read(fields: &Fields, equipment: Equipment, family: RangedFamily) -> Result<Self, String> {
         let mut ammunition = Vec::new();
         for entry in items(child(fields, "m_ammoTypes")) {
             let Some(item) = text(entry,"m_ammoItem") else { return Err("ranged ammunition has no inventory item".into()) };
             ammunition.push(Ammunition { item, projectile: text(entry,"m_projectileDef"), attachment: text(entry,"m_attachmentDef"),
-                fits_magazine: boolean(entry,"m_fitInMagazine",false)? });
+                fits_magazine: boolean(entry,"m_fitInMagazine",false)?, muzzle_world_fx: text(entry,"m_muzzleWorldFx"),
+                damage_increment_attribute: text(entry,"m_damageIncrementAttribute"),
+                bypass_big_hit_immunity_attribute: text(entry,"m_bypassBigHitImmunityAttribute"),
+                gravity_multiplier_attribute: text(entry,"m_gravityMultiplierAttribute"),
+                sleep_timer_multiplier_attribute: text(entry,"m_sleepTimerMultiplierAttribute"),
+                spread_damage: boolean(entry,"m_spreadDamage",false)? });
         }
         Ok(Self { family, equipment, ammunition, recoil_alias: text(fields,"m_recoilAnim"), recoil_weight_attribute: text(fields,"m_recoilWeightAttribute"),
-            fire_playrate_attribute: text(fields,"m_firePlayrateAttribute"), reload_playrate_attribute: text(fields,"m_reloadPlayrateAttribute") })
+            fire_playrate_attribute: text(fields,"m_firePlayrateAttribute"), reload_playrate_attribute: text(fields,"m_reloadPlayrateAttribute"),
+            projectile_attachment_tag: text(fields, match family { RangedFamily::Gun => "m_bulletAttachmentTag", RangedFamily::Crossbow => "m_boltAttachmentTag" }),
+            projectile_fire_tag: text(fields,"m_bulletFiredTag"), fired_animation: text(fields,"m_boltFiredAnimName"),
+            muzzle_tag: text(fields,"m_muzzleAttachmentTag"), muzzle_attached_fx: text(fields,"m_muzzleAttachedFx"),
+            spread_area: text(fields,"m_spreadArea"), spread_area_reduced: text(fields,"m_spreadAreaReduced"),
+            spread_area_upgraded: text(fields,"m_spreadAreaUpgraded") })
     }
 }
 
@@ -147,8 +187,9 @@ pub struct FireParameters {
 pub enum WeaponEffect {
     /// The projectile owner receives the actual selected declaration and event
     /// properties. This is not replaced with a fabricated hitscan attack.
-    Fire { ammunition: usize, projectile: Option<String>, parameters: FireParameters },
+    Fire { weapon: std::sync::Arc<Ranged>, ammunition: usize, projectile: Option<String>, frame: Option<(bevy_math::Vec3, bevy_math::Mat3)>, parameters: FireParameters },
     MagazineChanged { previous: i32, current: i32 },
+    AmmunitionChanged { previous: usize, current: usize },
     AnimateUpgradeForFire,
     AnimateUpgradeForReload,
     AnimateMagazineForFire,
@@ -169,6 +210,13 @@ pub struct Runtime {
     pub targeting_requested: bool,
     pub reload_requested: bool,
     pub charged_shot: bool,
+    /// Crossbow62b440 requires its real, visible loaded-bolt entity.
+    pub projectile_attachment_ready: bool,
+    /// The canonical entity/socket frame captured before queued state changes.
+    pub projectile_frame: Option<(bevy_math::Vec3, bevy_math::Mat3)>,
+    /// Host admission boundary: the real projectile birth and collision
+    /// consumer must exist before accepting a shot that spends ammunition.
+    pub bevy_backend_projectile_ready: bool,
     selected_ammunition: usize,
     active_scene: u32,
     equipment_target: usize,
@@ -183,8 +231,9 @@ impl Runtime {
         if settings.ammunition.is_empty() { return Err("ranged equipment has no ammunition declarations".into()); }
         if !(3..=4).contains(&equipment_target) { return Err("ranged equipment has no player equipment cast".into()); }
         if capacity < 0 { return Err("negative ranged magazine capacity".into()); }
+        let projectile_attachment_ready = settings.family == RangedFamily::Gun;
         let mut value = Self { settings, magazine: 0, capacity, total_ammo, target_flags: 0, selected_ammunition: 0,
-            active_scene: 0, equipment_target, effects: Vec::new(), pending_fire: Vec::new(), targeting_requested: false, reload_requested: false, charged_shot: false };
+            active_scene: 0, equipment_target, effects: Vec::new(), pending_fire: Vec::new(), targeting_requested: false, reload_requested: false, charged_shot: false, projectile_attachment_ready, projectile_frame: None, bevy_backend_projectile_ready: false };
         value.reload_magazine();
         Ok(value)
     }
@@ -212,7 +261,7 @@ impl Runtime {
         self.active_scene = 0;
         self.reload_requested = false;
     }
-    pub fn can_fire(&self) -> bool { self.magazine > 0 }
+    pub fn can_fire(&self) -> bool { self.bevy_backend_projectile_ready && self.magazine > 0 && (self.settings.family == RangedFamily::Gun || self.projectile_attachment_ready) }
     pub fn can_reload(&self) -> bool { self.magazine < self.capacity && i64::from(self.magazine) < i64::from(self.total_ammo) }
     pub fn update_inventory(&mut self, total: u32) { self.total_ammo = total; }
     pub fn request_reload(&mut self) { if self.can_reload() { self.reload_requested = true; } }
@@ -235,9 +284,16 @@ impl Runtime {
     /// capacity because upgrades and fit-in-magazine rules live there.
     pub fn select_ammunition(&mut self, item: &str, capacity: i32, inventory: &impl AmmunitionInventory) -> Result<bool, String> {
         let Some(index) = self.settings.ammunition.iter().position(|ammo| ammo.item == item) else { return Ok(false) };
-        self.set_capacity(capacity)?;
+        if capacity < 0 { return Err("negative ranged magazine capacity".into()); }
         self.clear_magazine();
+        let previous = self.selected_ammunition;
         self.selected_ammunition = index;
+        self.capacity = capacity;
+        if previous != index {
+            self.bevy_backend_projectile_ready = false;
+            if self.settings.family == RangedFamily::Crossbow { self.projectile_attachment_ready = false; self.projectile_frame = None; }
+            self.effects.push(WeaponEffect::AmmunitionChanged { previous, current: index });
+        }
         self.total_ammo = inventory.quantity(item);
         self.reload_magazine();
         Ok(true)
@@ -294,8 +350,8 @@ impl Runtime {
         let item = self.ammunition().item.as_str();
         inventory.consume(item, 1);
         self.total_ammo = inventory.quantity(item);
-        self.effects.push(WeaponEffect::Fire { ammunition: self.selected_ammunition,
-            projectile: self.ammunition().projectile.clone(), parameters });
+        self.effects.push(WeaponEffect::Fire { weapon: self.settings.clone(), ammunition: self.selected_ammunition,
+            projectile: self.ammunition().projectile.clone(), frame: self.projectile_frame, parameters });
     }
 
     /// Native Midnight message IDs c8..cd are registered at 141a11c80.

@@ -10321,3 +10321,29 @@ Projectile contact field names follow recovered reflection: ContactInfo+0x33 is 
 Prediction: placement-only updates reuse acquired sources and existing active instances, and empty/static-only contact manifolds need no canonical dynamic-world read lock. Runtime costs and visual parity remain unmeasured; no performance improvement is claimed. No compilation, tests or visible launches were run in this batch, as instructed.
 
 Projectile flight entity frames remain in the existing Z-up gameplay/WorldStorage coordinate space, matching the captured weapon socket. The Bevy triangle-query boundary, when hosted, must perform the existing conversion rather than changing the projectile source equations.
+### Player weapon admission and retained source frames (2026-11-15)
+
+- Owners: existing `gameplay/player/{mod,weapons,midnight}.rs` and the
+  canonical equipment rig/pose owner. Expected effect: socket queries reuse
+  the published animation palette (`14053dac0` -> `14053d800` -> `14053d3f0`),
+  without another model acquisition or animation evaluation. No measured
+  performance claim; no new clip residency.
+- `ported`: ranged fire effects retain their actual component declaration,
+  ammunition index and source frame across queued equipment changes. Typed
+  ammunition gravity, damage, immunity and sleep attributes, gun spread
+  declaration pointers, and ordered equipment `m_defaultUpgrades` pointers
+  remain metadata; this does not acquire projectile or upgrade models.
+- `host`: a projectile-family admission flag defaults false until the real
+  birth/contact consumer is installed. Shots cannot spend ammunition while
+  that dependency is missing. `blocked`: dormant throwable/body admission,
+  real hit normals, target/joint attachment and visibility timers still need
+  their canonical physics/entity owners; no substitute hitscan is emitted.
+- `ported`: drowning `1404c0cf0` uses the authored damage declaration and
+  `140780a80` bounds, actual player attacker/inflictor identity, hit origin,
+  downward direction and affected-region mask zero. Swimming admits its own
+  declared equipment states. State attribute changes drain through the one
+  player modifier owner, preserving notifications and queue capacity.
+- Midnight graph walking no longer truncates valid chains at an arbitrary
+  sixteen nodes; host validation rejects a repeated conditional node.
+- Validation: source and installed declaration inspection plus whitespace
+  checking only. No builds, tests, visible launches or visual measurements.
