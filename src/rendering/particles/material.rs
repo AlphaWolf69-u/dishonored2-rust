@@ -136,6 +136,10 @@ pub struct ParticleMaterial {
     /// 1402d5210 derives the mask variant from MAIN only when no distinct
     /// authored masking program is present. Such programs need their own owner.
     pub masking_uses_main: bool,
+    /// Not isAlpha (2d5210's class test on the MAIN blend state): the
+    /// renderer is a model surface drawn in the zPrePass and the opaque
+    /// colour pass, not in the FX colour pass.
+    pub opaque: bool,
     pub state: crate::render_state::RenderState,
     /// Material+4a high three bits, consumed by declaration analysis1c4460.
     pub darkvision_layer: u8,
@@ -303,6 +307,18 @@ impl ParticleMaterial {
             if options["fx/opt/use_lighting"] != 0 {
                 return Err(format!("lit particle/dissolve is not connected: {name}"));
             }
+        }
+        let opaque = !crate::material::shadow_is_alpha(
+            state[0],
+            library.option_value(program.as_bytes(), &overrides, b"isDecal")? != 0,
+            library.option_value(program.as_bytes(), &overrides, b"decalType")? as u32,
+            library.option_value(program.as_bytes(), &overrides, b"skyType")? as u32,
+        );
+        // The rewrite connects the opaque zPrePass/colour programs of the
+        // water programs (particle/blood) with pixel lighting, and of the
+        // unlit particle/liquid.
+        if opaque && !(liquid || (water && options["fx/opt/use_lighting"] == 1)) {
+            return Err(format!("opaque particle program {program} is not connected: {name}"));
         }
         let empty = EnvironmentRenderParameters::default();
         let darkvision_layer =
@@ -479,14 +495,6 @@ impl ParticleMaterial {
             }
             let gloss = scopes.vector("wardRoughness")?;
             let pixel = if options["fx/opt/use_lighting"] == 1 {
-                if !crate::material::shadow_is_alpha(
-                    state[0],
-                    read_option("isDecal")? != 0,
-                    read_option("decalType")? as u32,
-                    read_option("skyType")? as u32,
-                ) {
-                    return Err("opaque particle pixel-lighting inputs are not connected".into());
-                }
                 let self_shadowed_bump = read_option("useSelfShadowedBumpMap")? != 0;
                 let fuzz = if read_option("fuzz/enable")? != 0 {
                     Some([
@@ -668,6 +676,7 @@ impl ParticleMaterial {
             add_liquid,
             water,
             masking_uses_main,
+            opaque,
             state,
             darkvision_layer,
             options,

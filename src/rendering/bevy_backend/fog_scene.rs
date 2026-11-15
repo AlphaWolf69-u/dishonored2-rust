@@ -117,6 +117,9 @@ pub(super) struct FogGpu {
     reported: bool,
     completed: Option<(Entity, u32)>,
     depth_completed: Option<(Entity, u32)>,
+    /// The scene-light stage built this frame's TLF lists (before the opaque
+    /// pass; `completed` follows only after atmosphere).
+    lights_completed: Option<(Entity, u32)>,
     prepared_revision: Option<(Entity, u64)>,
 }
 impl FogGpu {
@@ -152,6 +155,12 @@ impl FogGpu {
     /// Borrow the single completed scene-light list for this gameplay view.
     pub(super) fn tiled_lighting(&self, camera: Entity, frame: u32) -> Option<&super::tiled_lighting_pass::TiledLightingPass> {
         if self.completed != Some((camera, frame)) { return None; }
+        self.current.as_ref()?.tiled.as_ref()
+    }
+    /// The same lists once the scene-light stage has built them, for opaque
+    /// consumers drawn between the opaque pass and atmosphere.
+    pub(super) fn scene_lights(&self, camera: Entity, frame: u32) -> Option<&super::tiled_lighting_pass::TiledLightingPass> {
+        if self.lights_completed != Some((camera, frame)) { return None; }
         self.current.as_ref()?.tiled.as_ref()
     }
     pub(super) fn camera_depth(&self, camera: Entity, frame: u32) -> Option<(&super::water_depth_scene::WaterDepthScene, &FogAttachment)> {
@@ -373,7 +382,7 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
             .queue
             .write_buffer(&parameters.buffer, 0, &[0; 16]);
     }
-    if stage==Stage::Depth {gpu.completed=None;gpu.depth_completed=None;gpu.prepared_revision=None;}
+    if stage==Stage::Depth {gpu.completed=None;gpu.depth_completed=None;gpu.lights_completed=None;gpu.prepared_revision=None;}
     // Without this frame's lists opaque surfaces receive no area light.
     if stage==Stage::Lights {area_bindings.disable_tiles(&resources.queue);}
     let Some(frame) = &frame.0 else {
@@ -1397,6 +1406,10 @@ fn submit_atmosphere(params:AtmosphereParams, stage:Stage) {
     match result {
         Ok(()) => {
             if stage!=Stage::Render {
+                if stage==Stage::Lights {
+                    gpu.lights_completed = resources.water_frame.as_ref().and_then(|f| f.0.as_ref())
+                        .map(|water| (frame.camera, water.matrices.frame));
+                }
                 if stage!=Stage::Depth {*last_error=None;return;}
                 gpu.depth_completed=depth_frame.filter(|_|depth_prepared);
                 gpu.prepared_revision=depth_prepared.then_some((frame.camera,frame.revision));

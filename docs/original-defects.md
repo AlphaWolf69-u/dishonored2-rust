@@ -48,6 +48,24 @@ would change, so it can be made opt-in without guessing.
 - Status: not yet reproduced (translucent vegetation is unported; only the
   two Dust District root sprite materials enable translucency).
 
+### Opaque soft-contact particles discard themselves (particle/blood, particle/liquid)
+- Source: the `particle/blood` and `particle/liquid` colour programs multiply
+  alpha by `SoftContact` before `ClipAlpha` unless `$isZPrePass`. For a
+  non-isAlpha material the colour program reads `ro_fx_depthfull`, which is
+  copied (Karnaca fish-market capture, event 5051) after the zPrePass in
+  which the same particle wrote its own depth (events 4383-4425).
+- Defect: the scene depth equals the particle's depth, so the soft-contact
+  factor is about zero and every lit-pass pixel is discarded. The world
+  behind already failed against the particle's prepass depth, so the lit
+  target keeps its cleared zero there: measured 0 at all sampled blood-drop
+  pixels after events 69112-69154, while their neighbours are lit. Blood
+  drops therefore appear as black (later fogged) silhouettes.
+- Fix: read soft contact from a depth copy taken before the opaque particle
+  zPrePass, or disable soft contact for non-isAlpha particle materials.
+- Rewrite: `render_opaque_particles` in
+  `src/rendering/bevy_backend/camera_scene.rs` uses the fog's opaque-depth
+  snapshot, recorded after the particle zPrePass, as the original does.
+
 ## Engine
 
 ### Image format normalization reads an uninitialized local

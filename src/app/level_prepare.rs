@@ -985,7 +985,11 @@ pub(super) fn prepare_level(
     super::load_timing::mark("machinery and wind");
     check_cancelled()?;
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
-        .insert_resource(ClearColor(Color::srgb(0.055, 0.045, 0.06)))
+        // The original clears the lit HDR target to zero before the opaque
+        // pass (Karnaca fish-market capture, event 157); pixels no opaque
+        // colour draw reaches, such as opaque particle surfaces whose
+        // soft-contact discards them after their zPrePass, keep that zero.
+        .insert_resource(ClearColor(Color::BLACK))
         // Bevy allocates six depth layers for every shadow-casting point
         // light. Dense missions contain hundreds of authored lights, so keep
         // the shadow maps small enough to leave room for the mission assets.

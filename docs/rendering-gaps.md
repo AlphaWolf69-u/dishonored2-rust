@@ -7,17 +7,17 @@ when it is implemented.
 Program census (2026-11-10): `mainProgram` of every installed material
 declaration. Particle programs connected: `particle/add_default`,
 `dist_blur`, `scrolling_water`, `liquid`, `dissolve`, `add_liquid`, `water`,
-`fire`. The two left (`blood`, `filing_container`) are opaque.
+`fire`, `blood`. `filing_container` is left; it is used only by model
+materials (potion and oil liquids), not by FX particles.
 
 | Gap | Installed content | Status |
 |---|---|---|
 | `arkhair` | 134 materials | none: character hair program; needed once characters render |
-| `particle/blood` | 19 materials (combat blood, camera blood, eotw fish blood) | blocked: see below |
 | `arkeyeball` | 23 materials | none: character eye program |
 | Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
 | World FX target/tag pose producer | eotw world FX | none: `world_particle_state` refuses targeted FX |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
-| `particle/filing_container` | 8 materials | blocked with `particle/blood`: opaque (`blend ONE ZERO`, sortCoverage, zPrePass motion vectors) |
+| `particle/filing_container` | 8 model materials (potion and oil liquids) | none: opaque mesh program (`blend ONE ZERO`, sortCoverage); no FX particle uses it |
 
 ## Particle declaration census (2026-11-10)
 
@@ -62,22 +62,31 @@ parameters, below).
 | 1 | particle: unresolved particle declaration producer m_fxEvents |
 | 1 | particle: unresolved particle parent-stage field m_lifeRestriction |
 
-## particle/blood (opaque pixel-lit particles)
+## Opaque particle surfaces (connected)
 
-`particle/blood` shares `particle/water`'s fragment (connected) but defaults
-to `blend ONE ZERO`. Such a particle material is not `isAlpha`: the original
-draws particle renderers as ordinary dynamic model surfaces of their
-material (1401fbad0), so an opaque one goes through the material's zPrePass
-and main passes. Its sun shadow then comes from the screen-shadow mask built
-from that prepass (`parallel_depth_visibility` route 0 reads
-`screen_visibility`), and its AO from the opaque inputs.
+A particle material that is not isAlpha (blend ONE ZERO: the 19
+`particle/blood` materials, and `particle/liquid` materials that override
+their state to ONE ZERO, such as the bloodfly and witch-vine fluids) is a
+model surface (1401fbad0 publishes particle renderers as dynamic model
+surfaces). The Karnaca fish-market capture
+(`bloom-current_frame73362.rdc`) shows each such renderer in two passes:
+the zPrePass (events 4383-4425, GREATER_EQUAL with depth writes, no
+stencil, `cb_particlealphatest` = r_particleAlphaTestDepth 0.035) and the
+opaque colour pass (69112-69154, EQUAL without writes, forward-lit with
+`ro_texscreenshadows` for the sun and AO,
+`cb_particlealphatest` = r_particleAlphaTestLit 0.01569). Distortion and
+fog draws in between belong to companion renderers.
 
-The rewrite draws particles only in the FX colour pass after the opaque
-scene, without depth writes, so `ParticleMaterial` refuses opaque pixel
-lighting. Next step: confirm in an original capture with blood on screen
-which passes draw a `particle/blood` renderer (expected: depth prepass with
-motion vectors, then the lit opaque target), then draw opaque particle
-renderers in the depth prepass and the opaque pass with the water fragment.
+The rewrite publishes these draws separately (`opaque_draws`); its
+`render_opaque_particle_depth` draws them into the view depth before the
+screen-shadow pass and the opaque fog-depth snapshot, and
+`render_opaque_particles` draws their colour after the opaque pass with the
+FX lighting inputs (route 0 screen shadow, screen AO, no vertex fog). The
+zPrePass writes depth only: the rewrite's world prepass has no
+motion-vector target, so the program's psMotionVector export has no
+consumer. The colour program's soft contact reads the post-zPrePass depth,
+exactly as the original's `ro_fx_depthfull` copy does (see
+original-defects.md).
 
 ## Particle surfaces casting shadows
 
@@ -837,8 +846,10 @@ loses w. Remaining, in order:
   The hkfx backend is the single-threaded CPU one (hkfxParallelPhysics'
   constructor has no caller), so the partition has one group and
   constraints would solve in creation order.
-- Remaining refusals: opaque pixel-lit particles (46, see particle/blood),
-  SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
+- Opaque particle surfaces connected (see "Opaque particle surfaces"):
+  FX census 2026-11-15 after this: 0 failing particle declarations
+  (one effect still names a sound declaration without an engine ID).
+- Former refusals: SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
   140fd5250, prune, create from the SpatialPartition's closest
   neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/
   140fd5d00). FX census 2026-11-15: 46 failing particle declarations, all
