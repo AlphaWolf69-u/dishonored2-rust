@@ -20,6 +20,8 @@ pub mod packed;
 pub mod physics_collide;
 #[path = "havok_fx/spatial_partition.rs"]
 pub mod spatial_partition;
+#[path = "havok_fx/solve_self_contacts.rs"]
+pub mod solve_self_contacts;
 #[path = "havok_fx/solve_contacts.rs"]
 pub mod solve_contacts;
 pub mod solve_convex_contacts;

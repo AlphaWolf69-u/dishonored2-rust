@@ -824,12 +824,25 @@ loses w. Remaining, in order:
   `ocean::ocean_query_manager` (the game's single DAT_1432eb1b8) that the
   swimming head queries also use, active while an ocean is enabled
   (140302d20). Not yet seen in the rewrite with an ocean on screen.
+- m_selfCollisions admitted: SolveSelfContacts only solves constraints
+  created from the SpatialPartition's new pairs, and the simulator's
+  partition keeps computeNewPairs off (140fd6a00; 1401dfc20 never sets
+  it; the config copy 140fee960 is reachable only from the uncalled
+  140fecbc0), so the shipped game creates none and the effect changes no
+  body. Its constraint solvers RigidConstraintSolver<0>/<1> (140fd5d00,
+  140fd5320) are ported (`havok_fx::solve_self_contacts`) and match the
+  installed functions on 600/600 cases each
+  (tests/fixtures/self_contact_cases.txt); the decompile inverted the
+  stickiness/restitution selects and the friction-cone lane products.
+  The hkfx backend is the single-threaded CPU one (hkfxParallelPhysics'
+  constructor has no caller), so the partition has one group and
+  constraints would solve in creation order.
 - Remaining refusals: opaque pixel-lit particles (46, see particle/blood),
   SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
   140fd5250, prune, create from the SpatialPartition's closest
   neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/
-  140fd5d00). FX census 2026-11-15: 75 failing particle declarations, 46
-  opaque and 29 self contacts.
+  140fd5d00). FX census 2026-11-15: 46 failing particle declarations, all
+  opaque pixel-lit (see particle/blood).
 - Moving world bodies connected (`havok_fx::dynamic_collide`): the
   PhysicsCollide begin pass (140fbf850: active dynamic bodies near the
   system join the lists of the bodies whose swept box, grown by twice the

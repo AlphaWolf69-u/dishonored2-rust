@@ -441,9 +441,12 @@ fn havok_stage_admission(
                 return Err("Havok particle collision hull was not built".into());
             }
         }
-        if stage.collisions.self_collisions {
-            return Err("Havok particle self collisions (SolveSelfContacts) are not ported".into());
-        }
+        // m_selfCollisions adds SolveSelfContacts (140fd2620), whose
+        // constraints come only from the SpatialPartition's new pairs. The
+        // simulator's partition keeps computeNewPairs off (140fd6a00, never
+        // changed by 1401dfc20), so no constraint is ever created; without
+        // contacts its sleep flags never reach 6 and ProcessDeactivation
+        // changes nothing. The stage therefore moves as without it.
     }
     if asset.spawn_fields.iter().chain(&asset.vector_fields).chain(&asset.acceleration_fields).any(|field| field.target_position || field.cycle_reset) {
         return Err("Havok particle vector fields at the system target or with cycle resets are not connected".into());
