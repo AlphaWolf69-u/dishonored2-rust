@@ -452,8 +452,11 @@ fn havok_stage_admission(
             return Err("Havok particle self collisions (SolveSelfContacts) are not ported".into());
         }
     }
-    if !asset.vector_fields.is_empty() || !asset.acceleration_fields.is_empty() || !asset.spawn_fields.is_empty() {
-        return Err("Havok particle vector fields (arkVectorFieldsHavokEffect) are not ported".into());
+    if !asset.spawn_fields.is_empty() {
+        return Err("Havok particle spawn vector fields are not ported".into());
+    }
+    if asset.vector_fields.iter().chain(&asset.acceleration_fields).any(|field| field.target_position || field.cycle_reset) {
+        return Err("Havok particle vector fields at the system target or with cycle resets are not connected".into());
     }
     if asset.enable_wind && declaration.wind.enabled {
         return Err("Havok particle wind (arkWindHavokEffect) is not ported".into());

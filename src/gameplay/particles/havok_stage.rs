@@ -171,6 +171,11 @@ pub struct HavokStageSimulation {
     /// prepared each simulated frame (1401e7650) and applied to the bodies
     /// by arkAttractorsHavokEffect (1401ce600).
     attractors: Vec<super::attractor::AttractorState>,
+    /// +0x668/+0x678/+0x688: the spawn, vector and acceleration field
+    /// states (140216260 from the spawn seed), prepared with the
+    /// attractors; arkVectorFieldsHavokEffect (1402165f0) applies the last
+    /// two.
+    fields: [Vec<super::field::FieldState>; 3],
     /// Events for the system's ordinary stages and FX event instances,
     /// delivered by the owning system after each frame and step.
     pub deliveries: Vec<super::events::Delivery>,
@@ -325,6 +330,7 @@ impl HavokStageSimulation {
             deliveries: Vec::new(),
             fx_pending: Vec::new(),
             attractors: Vec::new(),
+            fields: [Vec::new(), Vec::new(), Vec::new()],
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
                 solver: match shape {
@@ -341,6 +347,12 @@ impl HavokStageSimulation {
                 filter: crate::gameplay::collision_filter::filter_info(definition.collisions.layer) & 0xf7df_ffff,
             }),
         };
+        {
+            let stage = &result.declaration.havok_stages[result.index].stage;
+            let seed = &mut result.emitter.seed;
+            result.fields = [&stage.spawn_fields, &stage.vector_fields, &stage.acceleration_fields]
+                .map(|definitions| definitions.iter().map(|definition| super::field::FieldState::new(definition, seed)).collect());
+        }
         result.attractors = result
             .definition()
             .stage
@@ -433,10 +445,18 @@ impl HavokStageSimulation {
             self.clip_planes = frame.planes.to_vec();
             // 1401e7650: the attractors from the system origin in world
             // space, with a copy of the cycle seed and the spawn seed.
-            if !self.attractors.is_empty() {
+            {
                 let space = super::space::ParticleSpace::new(frame.pose.basis, true);
                 let mut cycle_seed = self.emitter.cycle_seed();
                 let fraction = self.emitter.cycle.fraction;
+                let stage = &self.declaration.havok_stages[self.index].stage;
+                // 140216430: the fields first, on the same cycle-seed copy;
+                // fields aimed at the system target are refused at admission.
+                for (states, definitions) in self.fields.iter_mut().zip([&stage.spawn_fields, &stage.vector_fields, &stage.acceleration_fields]) {
+                    for (state, definition) in states.iter_mut().zip(definitions) {
+                        state.prepare(definition, self.emitter.elapsed, fraction, delta, frame.pose.position, &space, &mut cycle_seed)?;
+                    }
+                }
                 let attractors = &self.declaration.havok_stages[self.index].stage.attractors;
                 for (state, attractor) in self.attractors.iter_mut().zip(attractors) {
                     state.prepare(attractor, frame.pose.position, &space, fraction, &mut cycle_seed, &mut self.emitter.seed, delta)?;
@@ -548,6 +568,30 @@ impl HavokStageSimulation {
         self.pipeline.allocator.update_allocated();
         let bodies = self.pipeline.allocator.allocated()?.to_vec();
         let dt = if 0. <= dt { dt } else { 0. };
+        // arkVectorFieldsHavokEffect (1402165f0): active vector fields set
+        // the velocity, active acceleration fields add dt times theirs.
+        let stage = &self.declaration.havok_stages[self.index].stage;
+        if !stage.vector_fields.is_empty() || !stage.acceleration_fields.is_empty() {
+            for &body in &bodies {
+                let index = body as usize;
+                let cycles = divide(self.pipeline.linear[index][0][3], self.life[index]);
+                let age = subtract(cycles, cycles.floor());
+                // approximate_: the body's never-written +0x340 seed word.
+                let mut seed = 0;
+                let p = self.pipeline.linear[index][0];
+                let position = [p[0], p[1], p[2]];
+                if let Some(velocity) = super::field::sample(&self.fields[1], &stage.vector_fields, position, age, &mut seed)? {
+                    let v = &mut self.pipeline.linear[index][1];
+                    *v = [velocity[0], velocity[1], velocity[2], v[3]];
+                }
+                if let Some(acceleration) = super::field::sample(&self.fields[2], &stage.acceleration_fields, position, age, &mut seed)? {
+                    let v = &mut self.pipeline.linear[index][1];
+                    for i in 0..3 {
+                        v[i] = add(multiply(dt, acceleration[i]), v[i]);
+                    }
+                }
+            }
+        }
         // arkAttractorsHavokEffect (1401ce600), before the collision effects.
         if !self.attractors.is_empty() {
             let attractors = &self.declaration.havok_stages[self.index].stage.attractors;
