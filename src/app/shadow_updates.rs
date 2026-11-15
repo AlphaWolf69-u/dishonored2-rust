@@ -53,6 +53,200 @@ pub(super) struct ModelShadowCaster {
     pub dynamic: bool,
 }
 
+/// One world-material particle surface instance of this frame. The FX
+/// world is a dynamic render model (1401fbad0); the Karnaca/eotw capture
+/// (stink bug, events 8287-32193) shows its surfaces drawn into the parallel
+/// cascades and the local-light atlas like any dynamic model surface.
+#[derive(Clone)]
+pub(super) struct ParticleShadowCaster {
+    pub mesh: Handle<Mesh>,
+    pub material: super::MaterialHandle,
+    /// Game-space affine rows of the particle instance.
+    pub model: [[f32; 4]; 4],
+    /// Game-space bounds of the transformed surface.
+    pub bounds: [[f32; 3]; 2],
+}
+
+#[derive(Resource, Default)]
+pub(super) struct ParticleShadowCasters {
+    pub current: Option<(u32, Arc<Vec<ParticleShadowCaster>>)>,
+    error: Option<String>,
+}
+
+/// Publish this frame's world-material particle instances with the mesh and
+/// material of their prepared surface proxy.
+pub(super) fn collect_particle_casters(
+    publication: Res<crate::rendering::bevy_backend::camera_scene::FxPublication>,
+    proxies: Query<(
+        &crate::rendering::bevy_backend::particle_meshes::ParticleMeshProxy,
+        &Mesh3d,
+        &super::particle_surface::ParticleSurfaceShadow,
+    )>,
+    mut output: ResMut<ParticleShadowCasters>,
+    mut reported: Local<bool>,
+) {
+    output.current = None;
+    let Some((frame, draws)) = publication.world_meshes() else { return };
+    let result = (|| -> Result<Vec<ParticleShadowCaster>, String> {
+        let mut casters = Vec::new();
+        for draw in draws {
+            let Some((_, mesh, shadow)) = proxies.iter()
+                .find(|(proxy, _, _)| proxy.source == draw.source && proxy.material == draw.material) else {
+                // The surface pass reports publications without a proxy.
+                continue;
+            };
+            let Some(material) = &shadow.material else { continue };
+            let [low, high] = shadow.bounds;
+            for instance in &draw.instances {
+                let model = render_model::affine_rows(instance.position, instance.axes, [1.0; 3]);
+                let mut world = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
+                for corner in 0..8 {
+                    let local = [
+                        if corner & 1 == 0 { low[0] } else { high[0] },
+                        if corner & 2 == 0 { low[1] } else { high[1] },
+                        if corner & 4 == 0 { low[2] } else { high[2] },
+                    ];
+                    for axis in 0..3 {
+                        let value = model[axis][0] * local[0] + model[axis][1] * local[1]
+                            + model[axis][2] * local[2] + model[axis][3];
+                        world[0][axis] = world[0][axis].min(value);
+                        world[1][axis] = world[1][axis].max(value);
+                    }
+                }
+                casters.push(ParticleShadowCaster {
+                    mesh: mesh.0.clone(),
+                    material: material.clone(),
+                    model,
+                    bounds: world,
+                });
+            }
+        }
+        Ok(casters)
+    })();
+    match result {
+        Ok(casters) => {
+            output.error = None;
+            if !casters.is_empty() && !*reported {
+                info!(target: "dh2::shadows", casters = casters.len(), "Particle surface shadow casters online");
+                *reported = true;
+            }
+            output.current = Some((frame, Arc::new(casters)));
+        }
+        Err(error) => {
+            if output.error.as_ref() != Some(&error) {
+                warn!(target: "dh2::shadows", "Particle shadow casters pending: {error}");
+                output.error = Some(error);
+            }
+        }
+    }
+}
+
+/// Rigid shadow instances of this frame's particle surfaces inside `clip`.
+/// bevy_backend: one draw per particle instance; the original draws each
+/// renderer's instances in one direct-instanced draw with the same depth.
+pub(super) fn prepare_particle_shadow_instances(
+    casters: &[ParticleShadowCaster],
+    clip: render_shadow::ShadowMatrix,
+    hardware_bias: [f32; 3],
+    margin: f32,
+    dimensions: [u32; 2],
+    materials: &ShadowMaterials,
+    images: &Assets<Image>,
+    queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
+) -> Result<Vec<shadow_pass::ShadowInstance>, String> {
+    let flat: [f32; 16] = std::array::from_fn(|i| clip[i / 4][i % 4]);
+    let mut instances = Vec::new();
+    for caster in casters {
+        let culled = if margin < 0.0 {
+            render_model::transformed_aabb_clip_cull_at_depth(&flat, caster.bounds[0], caster.bounds[1], margin)
+        } else {
+            render_model::transformed_aabb_clip_cull(&flat, caster.bounds[0], caster.bounds[1])
+        };
+        if culled.culled {
+            continue;
+        }
+        let inputs = materials.0.get(&caster.material)
+            .ok_or("particle surface material has no shadow owner")?
+            .as_ref().map_err(Clone::clone)?;
+        let program = inputs.rigid_base_source.as_ref().map_err(Clone::clone)?
+            .as_ref().ok_or("particle surface material has no resolved default slot10")?;
+        if program.skin_influences != 0 {
+            return Err("particle surface shadow program is skinned".into());
+        }
+        let parameters = inputs.parameters.as_ref().map_err(Clone::clone)?
+            .as_ref().ok_or("particle surface parameter block is absent")?;
+        let multiplier = parameters.vector(b"modeldepthhack", None)?[0];
+        if !multiplier.is_finite() {
+            return Err("particle surface depth multiplier is non-finite".into());
+        }
+        let mvp = render_shadow::multiply_rows(clip, caster.model);
+        let state = render_model::selected_shadow_model_draw_state(
+            inputs.source.shadow_draw_flags49(),
+            inputs.source.main_render_state.ok_or("particle surface MAIN draw state is absent")?,
+            hardware_bias,
+            margin,
+            render_shadow::model_mvp_winding_flipped(&mvp),
+        );
+        let model = &caster.model;
+        let determinant = model[0][0] * (model[1][1] * model[2][2] - model[1][2] * model[2][1])
+            - model[0][1] * (model[1][0] * model[2][2] - model[1][2] * model[2][0])
+            + model[0][2] * (model[1][0] * model[2][1] - model[1][1] * model[2][0]);
+        let (front_face, cull_mode) = shadow_pipeline::shadow_mesh_raster(&state, determinant >= 0.0);
+        let class = program.class;
+        let alpha = shadow_alpha_material(inputs, class, parameters, images, queue, "particle surface")?;
+        let program = match class {
+            shader_cache::CachedRigidShadowClass::Opaque => shadow_pass::ShadowProgram::RigidOpaque,
+            shader_cache::CachedRigidShadowClass::AlphaTested => shadow_pass::ShadowProgram::RigidAlphaTested,
+            shader_cache::CachedRigidShadowClass::VistaAlpha => shadow_pass::ShadowProgram::RigidVistaAlpha,
+            shader_cache::CachedRigidShadowClass::Vegetation => {
+                return Err("particle surface vegetation shadow inputs are not connected".into());
+            }
+        };
+        instances.push(shadow_pass::ShadowInstance {
+            mesh: caster.mesh.clone(),
+            per_instance_cb: shadow_pass::ShadowInstanceConstants::Rigid(
+                shadow_pass::shadow_instance_cb(&mvp, multiplier),
+            ),
+            program,
+            alpha_material: alpha,
+            front_face,
+            cull_mode,
+            draw_state: state,
+            stencil_reference: 0,
+            scissor: shadow_pipeline::ShadowScissor { x: 0, y: 0, width: dimensions[0], height: dimensions[1] },
+        });
+    }
+    Ok(instances)
+}
+
+/// The cutout material of a rigid shadow program: the reference diffuse and
+/// its UV selector, or None for opaque programs.
+fn shadow_alpha_material(
+    inputs: &super::ShadowMaterialInputs,
+    class: shader_cache::CachedRigidShadowClass,
+    parameters: &super::ShadowMaterialParameters,
+    images: &Assets<Image>,
+    queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
+    owner: &str,
+) -> Result<Option<shadow_pass::ShadowAlphaMaterial>, String> {
+    if class == shader_cache::CachedRigidShadowClass::Opaque {
+        return Ok(None);
+    }
+    let slot = inputs.diffuse_image_slot.ok_or_else(|| format!("{owner} cutout has no reference diffuse image"))?;
+    queue.request_shadow_diffuse(slot);
+    let diffuse = queue.diffuse_image_handles.get(slot).and_then(Option::as_ref)
+        .ok_or_else(|| format!("{owner} shadow diffuse slot {slot} awaits texture streaming"))?;
+    if images.get(diffuse).is_none() {
+        return Err(format!("{owner} diffuse asset is not resident"));
+    }
+    let vista = class == shader_cache::CachedRigidShadowClass::VistaAlpha;
+    Ok(Some(shadow_pass::ShadowAlphaMaterial {
+        diffuse: diffuse.clone(),
+        uv_set: if vista { 0 } else { inputs.world_uv_set.ok_or_else(|| format!("{owner} Layer0 UV selector is absent"))? },
+        uv_scale_bias: if vista { [1.0, 1.0, 0.0, 0.0] } else { parameters.vector(b"layer0_scalebias", None)? },
+    }))
+}
+
 #[derive(Resource, Default)]
 pub(super) struct ModelCasterFrame {
     pub current: Option<(u32, Arc<Vec<ModelShadowCaster>>)>,
@@ -1001,6 +1195,7 @@ pub(super) fn prepare_parallel_model_draws(
     images: Res<Assets<Image>>,
     vegetation: Res<VegetationMeshInputs>,
     queue: Res<SceneRenderQueue>,
+    particles: Res<ParticleShadowCasters>,
     mut commands: Commands,
     mut output: ResMut<ParallelModelDraws>,
     profile: Option<Res<frame_profile::CpuFrameProfile>>,
@@ -1111,6 +1306,20 @@ pub(super) fn prepare_parallel_model_draws(
                         &materials,
                         &images,
                         &vegetation,
+                        &mut requests,
+                    )?);
+                }
+                // The FX world is a dynamic model: its surfaces follow the
+                // dynamic model bucket (capture events 8287, 12954, 32193).
+                if let Some((_, casters)) = particles.current.as_ref() {
+                    instances.extend(prepare_particle_shadow_instances(
+                        casters,
+                        cascade.clip,
+                        owner.hardware_bias,
+                        margin,
+                        [owner.dimensions.width, owner.dimensions.height],
+                        &materials,
+                        &images,
                         &mut requests,
                     )?);
                 }

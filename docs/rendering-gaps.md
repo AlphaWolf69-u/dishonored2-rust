@@ -14,7 +14,6 @@ materials (potion and oil liquids), not by FX particles.
 |---|---|---|
 | `arkhair` | 134 materials | none: character hair program; needed once characters render |
 | `arkeyeball` | 23 materials | none: character eye program |
-| Particle surfaces casting shadows | eotw stink bugs (`bug01`), `dust_scorie` | blocked: see below |
 | `arkKisculeNodeEntitySpawnerControl` | eotw outsider shrine FX | none |
 | `particle/filing_container` | 8 model materials (potion and oil liquids) | none: opaque mesh program (`blend ONE ZERO`, sortCoverage); no FX particle uses it |
 
@@ -87,18 +86,25 @@ consumer. The colour program's soft contact reads the post-zPrePass depth,
 exactly as the original's `ro_fx_depthfull` copy does (see
 original-defects.md).
 
-## Particle surfaces casting shadows
+## Particle surfaces casting shadows (connected)
 
-The FX world is itself a render model: FUN_1401fbad0 fills its surface list
-(+0x1c00, one 0x80-byte record per renderer) and ends with the model's
-surface-finishing virtual (+0xb8). A particle surface therefore reaches the
-shadow views like any dynamic model surface, subject to its render entity's
-flags and the material's `noshadow`. The 2026-10-28 eotw capture has no
-particle draws in its shadow passes, but no stink bug or scorie emitter was
-near that view. Next step: an original capture with a stink bug (eotw) in a
-shadow-casting light, then the census of shadow-pass draws using
-`ro_directinstancebuffer`; if present, add the proxy surfaces to the
-rewrite's dynamic caster list with their instance records.
+The FX world is a dynamic render model (1401fbad0 fills its surface list),
+so its world-material surfaces cast shadows like any dynamic model surface.
+The eotw stink-bug capture (`bloom-current_frame114249.rdc`, emitter fx_48)
+shows the bug's surface (stinkbug01.lwo, world material) in the zPrePass
+(5582), the opaque pass (40648), the parallel cascades (8287, 12954, 32193)
+and the local-light atlas (20259-27780).
+
+The rewrite publishes each frame's world-material particle instances as
+`ParticleShadowCaster`s (proxy mesh, the resolved material when its caster
+admission bit 0 is set, game-space instance rows and bounds) and draws them
+after the dynamic model bucket of every cascade and of each dynamically
+refreshed local-light face, with the material's rigid shadow program.
+bevy_backend: one draw per particle instance where the original issues one
+direct-instanced draw per renderer; no shadow cull-distance or partial-update
+cutoff is applied to particle casters yet. Vegetation-program particle
+materials refuse their shadow (wind inputs are not prepared for particle
+meshes).
 
 ## Not gaps
 

@@ -2263,6 +2263,7 @@ pub(super) fn prepare_particle_surfaces(
             failures.push(format!("material unresolved {source} {material}"));
             continue;
         };
+        let resolved_handle = resolved.handle.clone();
         let super::MaterialHandle::Probe(handle) = &resolved.handle else {
             failures.push(format!("{source} {material} is not a forward model material"));
             continue;
@@ -2271,14 +2272,15 @@ pub(super) fn prepare_particle_surfaces(
             failures.push(format!("{source} {material} has no prepared material"));
             continue;
         };
-        match resolver.caster_admission(&material) {
-            Ok(admission) if admission & 1 != 0 => eprintln!(
-                "Particle surface {source} {material}: shadow casting of particle surfaces is unported"
-            ),
-            Ok(_) => {}
-            Err(error) => eprintln!("Particle surface {source} {material}: {error}"),
-        }
+        // The FX world is a dynamic render model: its surfaces cast shadows
+        // through their material like any model surface.
+        let shadow = match resolver.caster_admission(&material) {
+            Ok(admission) => (admission & 1 != 0).then(|| resolved_handle.clone()),
+            Err(error) => { failures.push(format!("{source} {material} caster admission: {error}")); continue; }
+        };
         let grid = source.strip_prefix("sprite-grid:").map(str::parse::<u32>);
+        let positions = super::particle_surface::local_positions(grid.clone().and_then(Result::ok), &model);
+        let bounds = super::particle_surface::local_bounds(&positions);
         let prepared_mesh = match grid {
             Some(Ok(level)) => super::particle_surface::prepare_sprite_grid(level),
             Some(Err(error)) => { failures.push(format!("{source} {error}")); continue; }
@@ -2304,6 +2306,12 @@ pub(super) fn prepare_particle_surfaces(
             failures.push(format!("{source} {material} image acquisition: {error}"));
             continue;
         }
+        let mut prepared_mesh = prepared_mesh;
+        if shadow.is_some() {
+            // Rigid shadow programs read the original game-local positions,
+            // as for model surfaces.
+            super::shadow_preparation::retain_model_shadow_position(&mut prepared_mesh, &positions);
+        }
         let mesh = meshes.add(prepared_mesh);
         let instanced = resolver.probe_materials.add(instanced);
         if !bindings.is_empty() && bindings.len() == images.len() {
@@ -2311,7 +2319,7 @@ pub(super) fn prepare_particle_surfaces(
             dynamic_materials.insert(super::MaterialHandle::Probe(instanced.clone()));
         }
         prepared(super::particle_surface::PreparedSurface {
-            source, material, mesh, handle: instanced, images,
+            source, material, mesh, handle: instanced, images, shadow, bounds,
         });
     }
     failures

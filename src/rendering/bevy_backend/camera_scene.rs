@@ -139,6 +139,12 @@ impl FxPublication {
     /// Read-only lifecycle diagnostic; absence is published by the ordinary
     /// view producer, never manufactured by the observer.
     pub(crate) fn has_view(&self) -> bool { self.0.is_some() }
+    /// This frame's world-material particle surface draws, for consumers
+    /// outside the FX passes (the model shadow casters).
+    pub(crate) fn world_meshes(&self) -> Option<(u32, &[super::particle_system::WorldMeshDraw])> {
+        let frame = self.0.as_ref()?;
+        Some((frame.frame, frame.particles.as_ref().map_or(&[][..], |particles| particles.world_meshes.as_slice())))
+    }
 }
 pub(super) struct FxFrame {
     pub camera: Entity,
