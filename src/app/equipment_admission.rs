@@ -137,18 +137,17 @@ pub(super) fn failed(world: &World, state: &mut RuntimeMaterialCoordinator, erro
     }
 }
 
-/// The loading gate observes real selected material publication and actual
-/// source activation callbacks, rather than a fixed frame delay.
+/// The loading gate waits only for selected material/mesh/image publication.
+/// Native staged draws advance after continue on the normal game clock.
 pub(in crate::app) fn startup_pending(world: &World) -> bool {
     world
         .get_resource::<RuntimeMaterialCoordinator>()
         .is_some_and(|owner| {
-            !owner.equipment.staged.is_empty()
-                || owner.equipment.requested.iter().any(|(entity, lease)| {
-                    lease.strong_count() != 0
-                        && !owner.equipment.failed.contains_key(entity)
-                        && !admitted(world, entity)
-                })
+            owner.equipment.requested.iter().any(|(entity, lease)| {
+                lease.strong_count() != 0
+                    && !owner.equipment.failed.contains_key(entity)
+                    && !admitted(world, entity)
+            })
         })
 }
 

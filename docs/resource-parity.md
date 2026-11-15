@@ -10156,3 +10156,11 @@ implementation plus host worker/asset/GPU lifecycle integration, awaiting the
 parent's single integrated compilation batch and eventual explicitly
 requested runtime/visual validation. No tests, builds, visible launches or
 visual checks were run for this change.
+
+Equipment loading gate clarification (2026-11-15): startup_pending observes
+only selected model/material/image publication, including hidden model
+preparation before a source target is activated. Staged native equipment
+animation/callbacks are excluded because loading pauses the game clock. The
+normal source flags remain unchanged; native draw animation advances after
+continue. startup_error exposes actual resource admission failures. This is
+a host resource-readiness boundary, not a synthesized instant equip.
