@@ -568,7 +568,11 @@ fn acquire(world: &mut World) {
         super::load_timing::mark("outgoing world released");
     }
     if state.published {
-        if let Some(error) = super::runtime_materials::equipment_admission::startup_error(world) {
+        // A failed player resource never completes its gate: report it
+        // instead of waiting on it forever.
+        let player_error = world.get_resource::<super::player_actions::PlayerActions>()
+            .and_then(|actions| actions.startup_error().map(str::to_owned));
+        if let Some(error) = player_error.or_else(|| super::runtime_materials::equipment_admission::startup_error(world)) {
             fail_initial_images(world, &error);
             world.insert_resource(state);
             return;
@@ -580,6 +584,11 @@ fn acquire(world: &mut World) {
                 .is_some_and(|actions| actions.startup_pending())
             || super::runtime_materials::equipment_admission::startup_pending(world));
         if !player_pending { crate::loading::complete("initial player resources"); }
+        else if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD player startup pending: actions[{}] equipment={}",
+                world.get_resource::<super::player_actions::PlayerActions>().map_or(String::new(), |a| a.debug_startup_pending()),
+                super::runtime_materials::equipment_admission::startup_pending(world));
+        }
         match advance_initial_images(world, &state.catalog, &state.gpu) {
             Ok(true) => {
                 let cameras: Vec<_> = world

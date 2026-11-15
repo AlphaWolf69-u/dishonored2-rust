@@ -603,6 +603,15 @@ impl PlayerActions {
         }
     }
 
+    /// The startup conditions still pending (load-timing diagnostics).
+    pub fn debug_startup_pending(&self) -> String {
+        format!("rehydrated={} loading={:?} power_loading={} metadata_loading={:?} ready={} power_ready={} selections={} owned_loading={:?} prepared_owned={} prepared_metadata={} owned_targets={}",
+            self.rehydrated, self.loading.keys().collect::<Vec<_>>(), self.power_loading.len(),
+            self.metadata_loading.keys().collect::<Vec<_>>(), self.ready.len(), self.power_ready.len(),
+            self.selection_requests.len(), self.owned_loading.keys().collect::<Vec<_>>(),
+            self.prepared_owned_equipment.len(), self.prepared_owned_metadata.len(), self.owned_targets.len())
+    }
+
     pub fn startup_pending(&self) -> bool {
         !self.rehydrated
             || !self.loading.is_empty()

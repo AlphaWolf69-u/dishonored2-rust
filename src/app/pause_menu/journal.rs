@@ -118,7 +118,7 @@ pub(in crate::app) fn presentation(item: &crate::assets::inventory_item::Pickabl
         Some(PickableReadable::Note(note) | PickableReadable::Other(note, _)) => Presentation::Note {
             title: note.title.clone(), text: note.text.clone(), note_type: note.note_type },
         Some(PickableReadable::Map(map)) => Presentation::Map {
-            title: map.title.clone(), image: map.image.clone(), legends: map.legends.clone(), map_type: map.map_type },
+            title: map.title.clone(), image: map.image.clone().unwrap_or_default(), legends: map.legends.clone(), map_type: map.map_type },
         None => return Err("Journal item has no supported reading presentation".into()),
     }))
 }

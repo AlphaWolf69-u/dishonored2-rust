@@ -41,7 +41,7 @@ pub struct Descriptor {
     pub animations: Vec<crate::edge_animation::EdgeAnimation>,
     pub animation_aliases: HashMap<String, usize>,
     pub sound_settings: Option<crate::gameplay::sound::component::Settings>,
-    default_clip: usize,
+    default_clip: Option<usize>,
 }
 
 impl std::ops::Deref for Descriptor {
@@ -246,7 +246,7 @@ impl Sources {
             "cpntpower",
             |path| sources.read(path),
         )?);
-        for kind in ["cpntheart", "cpnttimeshiftdevice"] {
+        for kind in ["cpntheart", "cpnttimeshiftdevice", "cpntitemspyglass", "cpntarmor"] {
             if let Some(fields) =
                 entities::player::entity_component(&key, kind, |path| sources.read(path))?
             {
@@ -267,6 +267,8 @@ impl Sources {
             "cpntweaponthrowable" => (4, 1, false),   //632bf0 ->6376c0
             "cpntheart" => (7, 1, false),             //611800 ->619ea0
             "cpnttimeshiftdevice" => (9, 1, false),   //44bbe0 ->619ea0
+            "cpntitemspyglass" => (6, 4, false),      //61b970 ->619ea0
+            "cpntarmor" => (8, 4, false),             // arkDeclCpntArmor ->619ea0
             // Each concrete power constructor calls61ba50 ->619ea0(5,1).
             "cpntpowerbendtime"
             | "cpntpowerblink"
@@ -391,7 +393,11 @@ impl Sources {
                 animations: Vec::new(),
                 loaded: HashMap::new(),
             };
-            let default_clip = clips.clip(default_alias)?;
+            let default_clip = if rig.alias(default_alias).is_some() {
+                Some(clips.clip_cancellable(default_alias, cancelled)?)
+            } else {
+                None
+            };
             (default_clip, clips.animations, clips.loaded)
         };
         check_active(cancelled)?;
