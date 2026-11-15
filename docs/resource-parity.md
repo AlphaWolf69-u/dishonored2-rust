@@ -9024,3 +9024,51 @@ Runtime follow-up (2026-11-15, source batch not yet verified):
   observation tables report overflow explicitly; overflow cannot certify release.
   No synthetic camera, readback payload, clock or acknowledgement is used. The
   older standalone synthetic GPU examples are not run as audit evidence.
+
+Further actual runtime evidence at cc9dca75 (2026-11-15):
+artifacts/active-resource-runtime-20261115T000412Z-dfa8d355/result.json records
+successful worker/publication/in-progress-read cancellation, readable quit,
+EotW/Dust/EotW live UI replacement, moving-view demand/pressure, real output
+audio, water screen enter/leave/reentry, and seven quality/resize samples on
+both maps. The stopped FX observation is explicitly incomplete; it acquired
+its source and particle prewarm but did not publish a first dynamic instance.
+Its remaining admission predicates are now recorded together, without forcing
+readiness. No successful FX tail claim follows from its interrupted process.
+
+The actual read cancellation snapshot has16 inflight requests,14 queued and
+one active source read (700 starts/699 returns), then canonical exit completes.
+The live UI worker survives both replacements with zero outgoing weak leases,
+then joins once at final host destruction. Water source contact and completed
+wave heights drive true/false/true/false screen transitions and canonical
+shutdown clears both particle heads/quads. The warm audio scenario admits16
+cookies/rejects17, completes the replacement watch and real finite FX EOF/End.
+It does not claim cold pending Stop coverage; the next observation uses an
+unplayed installed PlayerBody binding and real same-FIFO Post/Stop, requiring
+the actual cancellation transition and accepted message/ticket IDs.
+
+All36 actual mutable-shape snapshots report zero mutable shapes and zero
+mutation/destruction subscribers. There is no supported mutation emitter.
+The checked detach correction is source-backed but no fake source flag/event
+is used to manufacture a nonempty production case.
+
+Actual DX12 quality/resize attribution has1,118,986 creates and matching frees,
+zero unmatched/duplicate records and zero surviving resources after each host.
+Allocation extent totals are neither upload traffic nor concurrent memory.
+Luminance is a concrete owner bug within those balanced lifetimes: exposure
+kept startup quality while display used live quality, alternating one cache
+key twice per frame. EotW's seven-state route created485 luminance textures
+(1 initial,239/3/239/3 between affected sample pairs). Both consumers now use
+the same extracted current camera/lens publication (36f8a0/372db0), retaining
+the existing single owner and startup fallback only before that view exists.
+Prediction: initial plus four real quality changes, with additional creations
+only for genuine view changes; no new cache, pass or sampling approximation.
+The scoped creation-count observation remains pending for this source batch.
+
+The same actual frames exposed a supported scene skeleton layout error, not
+wrong resource identity: inverse bind banks pad to eight lanes, while the host
+evaluates logical joints. Native24c340/12e1d00 bank semantics and the existing
+usable/physics consumers establish a checked logical projection. Machinery
+scene publication and SceneAnimation palette generation now use it; short
+banks still fail explicitly. Prediction: the permanent palette-length failures
+disappear with no extra allocation or duplicate evaluation. Previously stopped
+animations resume their required work; no speed or memory saving is claimed.

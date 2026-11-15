@@ -88,7 +88,11 @@ impl SceneAnimation {
 
     pub fn palette_from_pose(&self, pose: &crate::gameplay::player::animation::Pose) -> Result<Vec<[[f32; 4]; 3]>, String> {
         let current = crate::edge_skeleton::pose_matrices(&pose.joints, &self.skeleton.hierarchy, &self.root)?;
-        crate::edge_skeleton::skin_palette(&current, &self.skeleton.inverse_bind)
+        // 24c340's native banks are padded to eight lanes. pose_matrices
+        // evaluates logical joints only, so consume just their matching lanes.
+        let inverse = self.skeleton.inverse_bind.get(..current.len())
+            .ok_or("scene skeleton has fewer inverse bind matrices than joints")?;
+        crate::edge_skeleton::skin_palette(&current, inverse)
     }
 
     pub fn palette(&self, scene_ms: i32) -> Result<Vec<[[f32; 4]; 3]>, String> {

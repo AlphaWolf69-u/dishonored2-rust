@@ -289,6 +289,12 @@ impl Player {
 
     pub fn is_swimming(&self) -> bool { self.swimming_active }
 
+    /// Borrow installed, already resolved player SFX bindings without preparing
+    /// their Wwise routes or retaining another decoded scene copy.
+    pub(crate) fn sound_bindings(&self) -> impl Iterator<Item = &midnight::PreparedSound> {
+        self.scenes.values().flat_map(|scene| scene.sounds.iter().flatten())
+    }
+
     /// The actual body model selected at player setup, for F8 lookup.
     pub(crate) fn body_model(&self) -> &str { &self.md6 }
     /// The active mode's states, including when the swimming mode owns them.

@@ -2281,3 +2281,44 @@ unchanged path (storage proportional to path segments). This exists only in
 the explicit benchmark driver, not ordinary player movement. It is outside
 the current correctness repairs and must be measured in that function before
 claiming or implementing an improvement; no FPS/CPU gain is claimed here.
+
+
+Stock GPU clustering buffer reuse (2026-11-15; host backend opportunity).
+`vendor/bevy_pbr-0.19.1/src/cluster/gpu.rs::prepare_clusters_for_gpu_clustering`
+constructs a new `ViewClusterBindings` and `ViewGpuClusteringBuffers` for each
+view on every preparation, then replaces the view components. The completed
+seven-state EotW quality observation recorded these five allocation labels:
+
+| Buffer label/type | Creations | Cumulative allocation extents (bytes) | Maximum live extents (bytes) |
+|---|---:|---:|---:|
+| `StorageBuffer<GpuClusterableObjectIndexListsStorage>` | 2,409 | 631,504,896 | 1,048,576 |
+| `StorageBuffer<GpuClusterOffsetsAndCountsStorage>` | 2,409 | 223,674,368 | 524,288 |
+| `UninitBufferVec<ClusterableObjectZSlice>` | 2,409 | 157,876,224 | 262,144 |
+| `clustering Z slicing metadata buffer` | 2,409 | 157,876,224 | 262,144 |
+| `UninitBufferVec<[UVec4; 2]>` (scratch offsets/counts) | 2,409 | 223,674,368 | 524,288 |
+
+Total: 12,045 creations and 1,394,606,080 cumulative allocation bytes. These
+are DX12 allocation extents (including allocation granularity), not uploaded
+payload bytes, bus traffic, or concurrent residency. Individual label peaks
+are not necessarily simultaneous. Every recorded creation was freed; this is
+balanced per-frame streaming, not missing ownership or a demonstrated leak.
+Evidence: `artifacts/quality-dx12-label-churn-20261115.json`, derived from the
+completed `active-resource-runtime-20261115T000412Z-dfa8d355/10-quality-eotw_p_lowchaos/runtime.log`.
+
+Proposal: preserve buffers in their existing per-view components and update
+contents/reserve capacity rather than replace all five owners each frame.
+Prediction, conditional on stable capacities: avoid four or five fixed GPU
+allocations per view preparation; growth and actual view replacement still
+allocate, and view retirement must still release the same owners. No CPU,
+GPU-time, FPS, or steady-state memory improvement has been measured. This is
+a host backend optimization, not a claim that the original uses Bevy's cluster
+algorithm or buffers.
+
+Why it waits: reuse requires explicit initialization/reset of scratch counts,
+metadata and indirect arguments, capacity/growth and binding replacement,
+plus proof that pending GPU metadata readbacks remain associated with the
+correct view generation and submitted contents. Current ownership is balanced.
+An isolated affected-function/allocation observation must preserve clustering
+output, resizing, asynchronous readback ordering and final retirement before
+this separate optimization is accepted. Do not duplicate the cluster pipeline
+or introduce another resource cache to reduce this count.

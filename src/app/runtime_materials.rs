@@ -890,3 +890,26 @@ fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     }
     Ok(())
 }
+
+
+/// Source-owned read-only worker/publication state for opt-in admission logs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CoordinatorSnapshot {
+    pub initialized: bool,
+    pub revision: Option<u64>,
+    pub published_generation: Option<u64>,
+    pub task_generation: Option<u64>,
+    pub waiting_generation: Option<u64>,
+    pub handled_image_failure: Option<u64>,
+    pub image_failure: Option<(u64, String)>,
+}
+pub(super) fn observe_coordinator(world: &World) -> Result<CoordinatorSnapshot, String> {
+    let state = world.get_resource::<RuntimeMaterialCoordinator>().ok_or("FX admission has no material coordinator")?;
+    let images = world.get_resource::<super::runtime_fx_images::RuntimeFxImages>().ok_or("FX admission has no runtime image owner")?;
+    Ok(CoordinatorSnapshot {
+        initialized: state.initialized, revision: state.revision, published_generation: state.published_generation,
+        task_generation: state.task.as_ref().map(|task| task.generation),
+        waiting_generation: state.waiting.as_ref().map(|waiting| waiting.generation),
+        handled_image_failure: state.handled_image_failure, image_failure: images.failure.clone(),
+    })
+}

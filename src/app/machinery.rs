@@ -422,7 +422,12 @@ pub(super) fn pose_scene_systems(
                 physics_skin.animated_palette(physics, &matrices, joint_frames.as_deref_mut())
             } else {
                 if let Some(frames) = joint_frames.as_deref_mut() { frames.publish(placement, &matrices); }
-                crate::edge_skeleton::skin_palette(&matrices, &animation.skeleton().inverse_bind)
+                // 24c340 uses SIMD-padded banks; this host evaluates only the
+                // logical joints. Project the same logical lanes, as usable and
+                // physics skin owners do; never invent transforms for padding.
+                let inverse = animation.skeleton().inverse_bind.get(..matrices.len())
+                    .ok_or("scene skeleton has fewer inverse bind matrices than joints")?;
+                crate::edge_skeleton::skin_palette(&matrices, inverse)
             }
         })();
         match result {

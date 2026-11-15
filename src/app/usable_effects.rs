@@ -579,3 +579,97 @@ pub(super) fn publish(
         owner.published_active_revision = Some(owner.revision);
     }
 }
+
+
+/// Read-only, per-request lifecycle diagnostic. No readiness or failure value
+/// is manufactured: all tuples contain the existing generation atomics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AdmissionSnapshot {
+    pub queued: bool,
+    pub wanted: bool,
+    pub loading: bool,
+    pub ready: bool,
+    pub active: bool,
+    pub revision: u64,
+    pub wanted_revision: Option<u64>,
+    pub published_revision: Option<u64>,
+    pub published_active_revision: Option<u64>,
+    pub prewarm: (u64, u64, u64),
+    /// generation, completed, failed, GPU completed, image revision, images ready
+    pub world: (u64, u64, u64, u64, u64, u64),
+    /// generation, completed, failed, GPU completed, prepared generation/revision/count
+    pub decal: (u64, u64, u64, u64, Option<u64>, u64, usize),
+    pub coordinator: super::runtime_materials::CoordinatorSnapshot,
+    pub source_world_meshes: usize,
+    pub source_decal_materials: usize,
+    pub image_memberships: usize,
+    pub missing_images: Vec<String>,
+    pub sounds_ready: bool,
+    pub sound_memberships: usize,
+    pub missing_sounds: Vec<String>,
+    pub prepared_errors: Vec<String>,
+}
+pub(super) fn observe_admission(world: &bevy::prelude::World, name: &str, path: &str)
+    -> Result<AdmissionSnapshot, String> {
+    use crate::rendering::bevy_backend::{world_effects::{DynamicEffects, DynamicMaterialPrewarm},
+        particle_images::SceneParticleImages, world_sounds::WorldSounds};
+    let owner = world.get_resource::<UsableEffects>().ok_or("FX admission observation has no request owner")?;
+    let requests = world.get_resource::<EffectRequests>().ok_or("FX admission observation has no command queue")?;
+    let prewarm = world.get_resource::<DynamicMaterialPrewarm>().ok_or("FX admission observation has no particle prewarm owner")?;
+    let materials = world.get_resource::<DynamicWorldMaterials>().ok_or("FX admission observation has no world material owner")?;
+    let decals = world.get_resource::<DynamicDecalMaterials>().ok_or("FX admission observation has no decal material owner")?;
+    let images = world.get_resource::<SceneParticleImages>().ok_or("FX admission observation has no particle image owner")?;
+    let active = world.get_resource::<DynamicEffects>().ok_or("FX admission observation has no active publication")?;
+    let bridge = world.get_resource::<WorldSounds>().ok_or("FX admission observation has no FX sound owner")?.lock();
+    let key = EffectOwner::Player(name.to_owned());
+    let wanted = owner.wanted.get(&key);
+    let source = owner.ready.get(&key);
+    let mut missing_images = Vec::new();
+    let mut missing_sounds = Vec::new();
+    let mut prepared_errors = Vec::new();
+    let mut image_memberships = 0;
+    let mut source_world_meshes = 0;
+    let mut source_decal_materials = 0;
+    let mut sound_memberships = 0;
+    if let Some(source) = source {
+        source_world_meshes = source.world_meshes().len();
+        source_decal_materials = source.decal_materials().len();
+        if !source.effects.contains_key(path) { prepared_errors.push(format!("requested definition {path} absent from prepared source")); }
+        for image in source.particle_materials().flat_map(|material| material.images.values()).filter(|image| image.scene_owned) {
+            image_memberships += 1;
+            if !images.handles.contains_key(&image.path) { missing_images.push(image.path.to_string()); }
+        }
+        for (name, definition) in &source.effects {
+            match definition {
+                Err(error) => prepared_errors.push(format!("{name}: {error}")),
+                Ok(definition) => for event in definition.groups.iter().flat_map(|group| &group.sounds)
+                    .flat_map(|sound| [&sound.start, &sound.stop]).flatten() {
+                    sound_memberships += 1;
+                    match bridge.events.get(&event.name) {
+                        None => missing_sounds.push(event.name.clone()),
+                        Some(Err(error)) => prepared_errors.push(format!("sound {}: {error}", event.name)),
+                        Some(Ok(_)) => {},
+                    }
+                },
+            }
+        }
+    }
+    missing_images.sort(); missing_images.dedup();
+    missing_sounds.sort(); missing_sounds.dedup();
+    prepared_errors.sort(); prepared_errors.dedup();
+    Ok(AdmissionSnapshot {
+        queued: requests.0.iter().any(|request| matches!(request, EffectRequest::StartPlayer { owner, path: requested } if owner == name && requested == path)),
+        wanted: wanted.is_some_and(|wanted| wanted.path == path),
+        loading: owner.loading.contains_key(path), ready: source.is_some(),
+        active: active.0.iter().any(|entry| entry.owner == format!("player:{name}") && entry.effect == path),
+        revision: owner.revision, wanted_revision: wanted.map(|wanted| wanted.revision),
+        published_revision: owner.published_revision, published_active_revision: owner.published_active_revision,
+        prewarm: (prewarm.generation, prewarm.completed.load(Ordering::Acquire), prewarm.failed.load(Ordering::Acquire)),
+        world: (materials.generation, materials.completed.load(Ordering::Acquire), materials.failed.load(Ordering::Acquire),
+            materials.gpu_completed.load(Ordering::Acquire), materials.image_revision, materials.images_ready),
+        decal: (decals.generation, decals.completed.load(Ordering::Acquire), decals.failed.load(Ordering::Acquire),
+            decals.gpu_completed.load(Ordering::Acquire), decals.prepared_generation, decals.prepared_revision, decals.prepared.len()),
+        coordinator: super::runtime_materials::observe_coordinator(world)?, source_world_meshes, source_decal_materials,
+        image_memberships, missing_images, sounds_ready: bridge.ready, sound_memberships, missing_sounds, prepared_errors,
+    })
+}

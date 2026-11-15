@@ -139,10 +139,36 @@ fn acknowledge_dynamic_proxies(
     pipelines: Res<PipelineCache>,
     water: Res<super::water_scene::WaterSceneFrame>,
     view: bevy::render::renderer::ViewQuery<(&bevy::render::sync_world::MainEntity, &bevy::render::view::ExtractedView)>,
+    mut last_observation: Local<Option<String>>,
 ) {
     use std::sync::atomic::Ordering;
-    let Some(water) = water.0.as_ref() else { return };
     let (camera, view) = view.into_inner();
+    if super::world_effects::trace_lifecycle() {
+        // Observe the actual render-world cache, without changing its gates,
+        // specializing another pipeline, or manufacturing a proxy/binding.
+        let cached = specialized.get(&view.retained_view_entity);
+        let mut snapshot = format!("water_camera={:?} view_camera={:?} camera_match={} view_cache={}",
+            water.0.as_ref().map(|water| water.camera), camera.id(),
+            water.0.as_ref().is_some_and(|water| water.camera == camera.id()), cached.is_some());
+        for (kind, batch) in [("decal", &request.decals), ("world", &request.world_meshes)] {
+            snapshot.push_str(&format!(" {kind}=(generation={},proxies={},completed={},failed={})",
+                batch.generation, batch.proxies.len(), batch.completed.load(Ordering::Acquire), batch.failed.load(Ordering::Acquire)));
+            for entity in batch.proxies.iter() {
+                let pipeline = cached.and_then(|cache| cache.get(&bevy::render::sync_world::MainEntity::from(*entity)));
+                let state = pipeline.map(|id| match pipelines.get_render_pipeline_state(*id) {
+                    CachedPipelineState::Ok(_) => "ready".to_owned(),
+                    CachedPipelineState::Err(error) => format!("error:{error:?}"),
+                    state => format!("pending:{:?}", std::mem::discriminant(state)),
+                });
+                snapshot.push_str(&format!(" proxy={entity:?}:pipeline={pipeline:?}:state={state:?}"));
+            }
+        }
+        if last_observation.as_ref() != Some(&snapshot) {
+            eprintln!("FX_RENDER_ADMISSION {snapshot}");
+            *last_observation = Some(snapshot);
+        }
+    }
+    let Some(water) = water.0.as_ref() else { return };
     if camera.id() != water.camera { return; }
     let Some(view_pipelines) = specialized.get(&view.retained_view_entity) else { return };
     for batch in [&request.decals, &request.world_meshes] {

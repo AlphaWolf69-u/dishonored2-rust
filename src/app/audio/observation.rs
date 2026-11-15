@@ -17,6 +17,7 @@ use std::{
 pub(in crate::app) struct Observation {
     notifications: Arc<Mutex<Vec<Notification>>>,
     admissions: Mutex<Vec<Admission>>,
+    queue_transitions: Mutex<Vec<QueueTransition>>,
     ended: Mutex<std::collections::HashSet<u32>>,
     ready: Mutex<std::collections::HashSet<u32>>,
 }
@@ -216,11 +217,8 @@ pub(in crate::app) fn poll(world: &mut World) -> Result<(), String> {
             "offline shared output cannot consume the hardware multichannel fallback".into(),
         );
     }
-    // Run the same completion/retirement consumer used by exclusive lifecycle
-    // callers. FX packet consumption remains in its normal update system.
-    if world.contains_resource::<SoundCompletions>() {
-        super::poll_object_retirements(world)?;
-    }
+    // Observation must not run the production consumer a second time. Normal
+    // PostUpdate and canonical ExitDrain alone advance posts and retirement.
     Ok(())
 }
 
@@ -245,6 +243,10 @@ pub(in crate::app) struct Callback {
     pub kind: &'static str,
 }
 #[derive(Clone, Debug)]
+pub(in crate::app) struct QueueTransition {
+    pub message_id: Option<usize>, pub playing_id: Option<u32>, pub event: u32, pub state: &'static str,
+}
+#[derive(Clone, Debug)]
 pub(in crate::app) struct Admission {
     pub message_id: Option<usize>,
     pub playing_id: u32,
@@ -254,6 +256,9 @@ pub(in crate::app) struct Admission {
     pub error: Option<String>,
 }
 impl Observation {
+    pub(super) fn record_queue(&self, message_id: Option<usize>, playing_id: Option<u32>, event: u32, state: &'static str) {
+        self.queue_transitions.lock().unwrap_or_else(|error| error.into_inner()).push(QueueTransition { message_id, playing_id, event, state });
+    }
     pub(super) fn record_admission(
         &self,
         message_id: Option<usize>,
@@ -295,6 +300,7 @@ pub(in crate::app) struct Snapshot {
     pub object_retirements: Vec<(String, String)>,
     pub callbacks: Vec<Callback>,
     pub admissions: Vec<Admission>,
+    pub queue_transitions: Vec<QueueTransition>,
     pub source_jobs: Vec<(u32, u8, bool)>,
 }
 
@@ -383,6 +389,7 @@ pub(in crate::app) fn snapshot(world: &mut World) -> Snapshot {
             .collect();
     }
     if let Some(observer) = world.get_resource::<Observation>() {
+        result.queue_transitions = observer.queue_transitions.lock().unwrap_or_else(|error| error.into_inner()).clone();
         result.admissions = observer
             .admissions
             .lock()
@@ -442,6 +449,8 @@ use crate::rendering::bevy_backend::world_sounds::{SoundFrame, WorldSounds};
 #[derive(Default)]
 pub(in crate::app) struct ScenarioOptions {
     pub ordinary_event: Option<u32>,
+    /// Observation-only Post then Stop ordering in the existing message FIFO.
+    pub same_step_stop: bool,
     pub fx_event_name: Option<String>,
 }
 #[derive(Debug)]
@@ -465,6 +474,7 @@ pub(in crate::app) struct Scenario {
     fx_reference: u32,
     fx_name: String,
     requests: Vec<usize>,
+    required_pending_cancel: Option<usize>,
     accepted: std::collections::HashSet<u32>,
     fx_handle: SoundHandle<Emitter, PlayingId>,
     fx_object: Option<Emitter>,
@@ -495,6 +505,23 @@ fn watch(world: &mut World, event: u32) {
     completions.watch(event, Emitter::PlayerBody);
 }
 
+/// Select from the current player's actual parsed midnight bindings and
+/// installed bank event index. This neither decodes nor evicts a source. The
+/// returned event has no prepared route and no observed accepted prior post.
+pub(in crate::app) fn select_cold_player_event(world: &World) -> Result<(u32, String), String> {
+    let registry = world.resource::<WwiseRegistry>();
+    let installed = registry.library.event_ids();
+    let observer = world.get_resource::<Observation>().ok_or("audio observation is absent")?;
+    let admissions = observer.admissions.lock().unwrap_or_else(|error| error.into_inner());
+    let player = world.get_resource::<crate::app::player::PlayerState>().and_then(|state| state.player.as_ref()).ok_or("loaded player bindings are absent")?;
+    player.sound_bindings().filter(|sound| sound.emitter == Emitter::PlayerBody
+        && installed.contains(&sound.event) && !registry.sources.contains_key(&sound.event)
+        && !admissions.iter().any(|post| post.event == sound.event && post.error.is_none()))
+        .min_by(|a, b| a.key.event.cmp(&b.key.event))
+        .map(|sound| (sound.event, sound.key.event.clone()))
+        .ok_or_else(|| "no unplayed installed PlayerBody binding has an unprepared route; cold coverage is unavailable without changing conditions".into())
+}
+
 pub(in crate::app) fn begin_scenario(
     world: &mut World,
     options: ScenarioOptions,
@@ -511,10 +538,10 @@ pub(in crate::app) fn begin_scenario(
         })
     };
     let event = if let Some(event) = options.ordinary_event {
-        if !has_play(&event) {
-            return Err(format!(
-                "installed ordinary event {event:#x} has no prepared Play source"
-            ));
+        let bound = world.get_resource::<crate::app::player::PlayerState>().and_then(|state| state.player.as_ref())
+            .is_some_and(|player| player.sound_bindings().any(|sound| sound.emitter == Emitter::PlayerBody && sound.event == event));
+        if !has_play(&event) && !(bound && registry.library.event_ids().contains(&event)) {
+            return Err(format!("ordinary event {event:#x} is neither a prepared Play source nor an installed PlayerBody binding"));
         }
         event
     } else if has_play(&0xc64fd6cf) {
@@ -528,6 +555,13 @@ pub(in crate::app) fn begin_scenario(
             .min()
             .ok_or("no installed prepared ordinary Play event")?
     };
+    if options.same_step_stop {
+        let bound = world.get_resource::<crate::app::player::PlayerState>().and_then(|state| state.player.as_ref())
+            .is_some_and(|player| player.sound_bindings().any(|sound| sound.emitter == Emitter::PlayerBody && sound.event == event));
+        if !bound || registry.sources.contains_key(&event) || !registry.library.event_ids().contains(&event) {
+            return Err("same_step_stop requires a real installed PlayerBody binding with an unprepared route".into());
+        }
+    }
     let sounds = world
         .get_resource::<WorldSounds>()
         .ok_or("FX sound bridge is absent")?
@@ -557,16 +591,23 @@ pub(in crate::app) fn begin_scenario(
         .resource::<SoundCompletions>()
         .playing
         .object_count(Emitter::PlayerBody);
-    eprintln!("AUDIO_ACTIVE_LIFETIME begin ordinary={event:#x} fx={fx_name} fx_reference={fx_reference} baseline_player_cookies={baseline} ordinary_prepared=true cold_io_not_assumed=true");
+    eprintln!("AUDIO_ACTIVE_LIFETIME begin ordinary={event:#x} fx={fx_name} fx_reference={fx_reference} baseline_player_cookies={baseline} ordinary_prepared={} cold_io_not_assumed=true", registry.sources.contains_key(&event));
     drop(sounds);
     watch(world, event);
     let first = request(world, event);
+    if options.same_step_stop {
+        // Both commands traverse the existing FIFO in the normal PostUpdate.
+        // The first route preparation can complete naturally, but the accepted
+        // Post remains queued until its ordinary consumer's next pass.
+        stop(world, event);
+    }
     Ok(Scenario {
-        phase: Phase::ColdPost,
+        phase: if options.same_step_stop { Phase::ColdDrain } else { Phase::ColdPost },
         event,
         fx_reference,
         fx_name,
         requests: vec![first],
+        required_pending_cancel: options.same_step_stop.then_some(first),
         accepted: Default::default(),
         fx_handle: Default::default(),
         fx_object: None,
@@ -582,7 +623,16 @@ impl Scenario {
         if !matches!(self.phase, Phase::Complete) || !self.ended(world) || !self.fx_returned(world) {
             return Err(format!("audio scenario exited before actual completion: {}", self.pending_description()));
         }
+        if !self.pending_cancel_observed(world) {
+            return Err("cold player observation lacks its actual Stop cancellation transition".into());
+        }
         Ok(())
+    }
+    fn pending_cancel_observed(&self, world: &World) -> bool {
+        let Some(message_id) = self.required_pending_cancel else { return true };
+        world.resource::<Observation>().queue_transitions.lock().unwrap_or_else(|error| error.into_inner()).iter().any(|transition|
+            transition.message_id == Some(message_id) && transition.state == "stop-cancel-pending"
+                && transition.playing_id.is_some_and(|id| self.accepted.contains(&id)))
     }
     pub(in crate::app) fn pending_description(&self) -> String {
         format!(
@@ -683,7 +733,7 @@ pub(in crate::app) fn poll_scenario(
             &state.watch_waiting,
             &state.watch_active,
             &state.object_retirements,
-            state.admissions.len(),
+            (state.admissions.len(), state.queue_transitions.len()),
             &state.callbacks,
             (state.output.voices, state.output.pending_actions),
         )
@@ -703,15 +753,19 @@ pub(in crate::app) fn poll_scenario(
     });
     match scenario.phase {
         Phase::ColdPost if observed_requests => {
-            let pending_seen = state
-                .pending_ids
-                .iter()
-                .any(|id| scenario.accepted.contains(id));
+            let pending_seen = state.pending_ids.iter().any(|id| scenario.accepted.contains(id));
+            let queued_during_step = state.queue_transitions.iter().any(|transition|
+                transition.message_id == scenario.requests.first().copied() && transition.state == "event-decode-pending");
+            eprintln!("AUDIO_ACTIVE_LIFETIME ordinary_preparation queued_during_step={queued_during_step} pending_at_stop={pending_seen}");
             eprintln!("AUDIO_ACTIVE_LIFETIME ordinary_stop pending_preparation_observed={pending_seen} cold_interleaving_claimed={pending_seen}");
             stop(world, scenario.event);
             scenario.phase = Phase::ColdDrain;
         }
-        Phase::ColdDrain if scenario.ended(world) => {
+        Phase::ColdDrain if observed_requests && scenario.ended(world) => {
+            if !scenario.pending_cancel_observed(world) {
+                return Err("actual cold PlayerBody Post ended without an attributed stop-cancel-pending transition".into());
+            }
+            eprintln!("AUDIO_ACTIVE_LIFETIME cold_pending_cancel_required={} observed={} real_ends_consumed=true", scenario.required_pending_cancel.is_some(), scenario.pending_cancel_observed(world));
             watch(world, scenario.event);
             scenario.requests.push(request(world, scenario.event));
             scenario.phase = Phase::WatchOld;

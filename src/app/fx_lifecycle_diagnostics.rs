@@ -15,6 +15,8 @@ struct Scenario {
     gap_handles: Vec<u32>,
     gap_frame: Option<u32>,
     phase: Phase,
+    last_first_admission: Option<super::usable_effects::AdmissionSnapshot>,
+    last_second_admission: Option<super::usable_effects::AdmissionSnapshot>,
 }
 /// Retains only weak resource observations and request names. Dropping this
 /// record cannot keep a stopped effect or its decoded payload alive.
@@ -33,6 +35,7 @@ impl Observation {
         let scenarios = paths.iter().enumerate().map(|(index, path)| Scenario {
             path: path.clone(), first: format!("lifecycle-{index}-a"), second: format!("lifecycle-{index}-b"),
             source: None, gap_handles: Vec::new(), gap_frame: None, phase: Phase::Start,
+            last_first_admission: None, last_second_admission: None,
         }).collect::<Vec<_>>();
         world.resource_mut::<EffectRequests>().start_player(&scenarios[0].first, &scenarios[0].path);
         eprintln!("FX_ACTIVE_LIFETIME phase=begin scenarios={} pools={:?}", scenarios.len(), world.resource::<FxSimulation>().observe_fx_pools());
@@ -78,6 +81,25 @@ impl Observation {
     /// shutdown; persistent decal records remain owned until that actual shutdown.
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
         let Some(scenario) = self.scenarios.get_mut(self.next) else { return Ok(true); };
+        let first_admission = super::usable_effects::observe_admission(world, &scenario.first, &scenario.path)?;
+        if scenario.last_first_admission.as_ref() != Some(&first_admission) {
+            eprintln!("FX_ACTIVE_ADMISSION owner={} effect={} snapshot={first_admission:?}", scenario.first, scenario.path);
+            scenario.last_first_admission = Some(first_admission.clone());
+        }
+        if !matches!(scenario.phase, Phase::Start) {
+            let second_admission = super::usable_effects::observe_admission(world, &scenario.second, &scenario.path)?;
+            if scenario.last_second_admission.as_ref() != Some(&second_admission) {
+                eprintln!("FX_ACTIVE_ADMISSION owner={} effect={} snapshot={second_admission:?}", scenario.second, scenario.path);
+                scenario.last_second_admission = Some(second_admission.clone());
+            }
+            if matches!(scenario.phase, Phase::Overlap) {
+                require_admitted(&scenario.path, &scenario.second, &second_admission)?;
+            }
+        }
+        if matches!(scenario.phase, Phase::Start | Phase::Overlap)
+            || (matches!(scenario.phase, Phase::Drain) && !scenario.gap_handles.is_empty()) {
+            require_admitted(&scenario.path, &scenario.first, &first_admission)?;
+        }
         let first_key = format!("player:{}", scenario.first);
         let second_key = format!("player:{}", scenario.second);
         let simulation = world.get_resource::<FxSimulation>().ok_or("active FX simulation is absent")?;
@@ -161,4 +183,20 @@ impl Observation {
         if retained != 0 { return Err("actual shutdown retained observed dynamic FX source owners".into()); }
         Ok(())
     }
+}
+
+fn require_admitted(path: &str, owner: &str, snapshot: &super::usable_effects::AdmissionSnapshot) -> Result<(), String> {
+    if !snapshot.prepared_errors.is_empty() {
+        return Err(format!("FX request {owner}/{path} has prepared dependency errors: {:?}", snapshot.prepared_errors));
+    }
+    for (kind, generation, failed) in [("particle", snapshot.prewarm.0, snapshot.prewarm.2),
+        ("world", snapshot.world.0, snapshot.world.2), ("decal", snapshot.decal.0, snapshot.decal.2)] {
+        if generation != 0 && failed == generation {
+            return Err(format!("FX request {owner}/{path} rejected by {kind} generation {generation}"));
+        }
+    }
+    if !snapshot.queued && !snapshot.wanted && !snapshot.loading && !snapshot.ready && !snapshot.active {
+        return Err(format!("FX request {owner}/{path} was rejected or removed before active admission"));
+    }
+    Ok(())
 }
