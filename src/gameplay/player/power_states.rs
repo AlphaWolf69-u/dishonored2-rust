@@ -325,6 +325,18 @@ impl Player {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.phase() == Phase::Aiming)
     }
     pub fn take_power_execution_request(&mut self) -> bool { std::mem::take(&mut self.powers.execution_requested) && self.power_release_ready() }
+    /// 8566f0 calls8551c0 at the real family ExecuteFinished boundary.
+    /// Finish immediately after the accepted callback; an automatic family
+    /// hold cast still uses856c50's next-update committed-flag path.
+    pub fn finish_power_execution(&mut self) {
+        let id = power_state(self.powers.selected.as_ref().map_or(-1, |cast| cast.settings.id));
+        let quit = self.machine.state(id).is_some_and(|state| {
+            if let super::states::Kind::UsePower(decl) = &state.decl.kind {
+                self.powers.action_state.finish_execution(&decl.action) == ActionStep::Quit
+            } else { false }
+        });
+        if quit { self.machine.quit(id); }
+    }
     pub fn power_action_message(&mut self, handle: u32) {
         if let Some(state) = self.machine.state(power_state(self.powers.selected.as_ref().map_or(-1, |cast| cast.settings.id))) {
             if let super::states::Kind::UsePower(decl) = &state.decl.kind {
