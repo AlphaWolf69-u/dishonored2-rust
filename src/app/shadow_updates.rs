@@ -53,18 +53,32 @@ pub(super) struct ModelShadowCaster {
     pub dynamic: bool,
 }
 
-/// One world-material particle surface instance of this frame. The FX
-/// world is a dynamic render model (1401fbad0); the Karnaca/eotw capture
-/// (stink bug, events 8287-32193) shows its surfaces drawn into the parallel
-/// cascades and the local-light atlas like any dynamic model surface.
+/// One renderer surface of a particle system: its proxy mesh, the resolved
+/// material owning its shadow programs and the game-space rows of each of
+/// its instances.
 #[derive(Clone)]
-pub(super) struct ParticleShadowCaster {
+pub(super) struct ParticleShadowSurface {
     pub mesh: Handle<Mesh>,
     pub material: super::MaterialHandle,
-    /// Game-space affine rows of the particle instance.
-    pub model: [[f32; 4]; 4],
-    /// Game-space bounds of the transformed surface.
+    pub models: Vec<[[f32; 4]; 4]>,
+    /// Game-space bounds of each instance, for the per-instance cull.
+    pub bounds: Vec<[[f32; 3]; 2]>,
+}
+
+/// A particle system as the model caster it is: each FX system is a render
+/// model (1401fcaa0 initializes it, 201480 publishes its bounds and caster
+/// record with the model rule). The base constructor (140233e50 via the
+/// model owner constructor) leaves +0x18bc = 8, +0x18bd bit3 clear and
+/// +0x1c30 = 1; no FX path sets the dynamic-caster bit, so systems are
+/// static-bucket model casters. The eotw stink-bug capture shows the bug's
+/// surface in the parallel cascades (8287, 12954, 32193) and the
+/// local-light atlas (20259-27780).
+#[derive(Clone)]
+pub(super) struct ParticleShadowCaster {
     pub bounds: [[f32; 3]; 2],
+    pub flags: u8,
+    pub sort_distance: f32,
+    pub surfaces: Vec<ParticleShadowSurface>,
 }
 
 #[derive(Resource, Default)]
@@ -73,8 +87,8 @@ pub(super) struct ParticleShadowCasters {
     error: Option<String>,
 }
 
-/// Publish this frame's world-material particle instances with the mesh and
-/// material of their prepared surface proxy.
+/// FX systems' model caster records (201480) and their renderer surfaces,
+/// gated by FUN_140330020's sort distance and cull distance like any model.
 pub(super) fn collect_particle_casters(
     publication: Res<crate::rendering::bevy_backend::camera_scene::FxPublication>,
     proxies: Query<(
@@ -82,23 +96,53 @@ pub(super) fn collect_particle_casters(
         &Mesh3d,
         &super::particle_surface::ParticleSurfaceShadow,
     )>,
+    scene: Res<SceneData>,
+    cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     mut output: ResMut<ParticleShadowCasters>,
     mut reported: Local<bool>,
+    mut debug_frames: Local<u64>,
 ) {
+    if std::env::var_os("DH2_DEBUG_PARTICLE_SHADOWS").is_some() {
+        *debug_frames += 1;
+        if *debug_frames % 300 == 0 {
+            let draws = DEBUG_PARTICLE_SHADOW_DRAWS.swap(0, std::sync::atomic::Ordering::Relaxed);
+            println!("DEBUG_PARTICLE_SHADOWS draws_per_frame={:.1} systems={}", draws as f64 / 300.0,
+                output.current.as_ref().map_or(0, |(_, c)| c.len()));
+        }
+    }
     output.current = None;
     let Some((frame, draws)) = publication.world_meshes() else { return };
     let result = (|| -> Result<Vec<ParticleShadowCaster>, String> {
-        let mut casters = Vec::new();
+        if draws.is_empty() { return Ok(Vec::new()); }
+        let (transform, _) = cameras.single().map_err(|error| error.to_string())?;
+        let camera_view = tome::render_query_base_rows(
+            Mat4::IDENTITY.to_cols_array_2d(),
+            game_pose_from_view_transform(transform),
+        );
+        let mut inverse_view = [[0.0; 4]; 4];
+        if !render_shadow::invert_rows(&camera_view, &mut inverse_view) {
+            return Err("particle caster camera view is singular".into());
+        }
+        let cull_distance = scene.shadow_quality.as_ref().ok_or("caster quality is unavailable")?.cull_distance;
+        let mut systems: Vec<(usize, [[f32; 3]; 2], Vec<ParticleShadowSurface>)> = Vec::new();
         for draw in draws {
             let Some((_, mesh, shadow)) = proxies.iter()
                 .find(|(proxy, _, _)| proxy.source == draw.source && proxy.material == draw.material) else {
                 // The surface pass reports publications without a proxy.
                 continue;
             };
+            let at = match systems.iter().position(|(system, _, _)| *system == draw.system) {
+                Some(at) => at,
+                None => { systems.push((draw.system, draw.system_bounds, Vec::new())); systems.len() - 1 }
+            };
+            // Renderer surfaces without a shadow program still belong to the
+            // system; only admitted ones (material +0x48 bit0) are drawn.
             let Some(material) = &shadow.material else { continue };
-            let [low, high] = shadow.bounds;
-            for instance in &draw.instances {
-                let model = render_model::affine_rows(instance.position, instance.axes, [1.0; 3]);
+            let models: Vec<_> = draw.instances.iter()
+                .map(|instance| render_model::affine_rows(instance.position, instance.axes, [1.0; 3]))
+                .collect();
+            let bounds = models.iter().map(|model| {
+                let [low, high] = shadow.bounds;
                 let mut world = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
                 for corner in 0..8 {
                     let local = [
@@ -113,13 +157,25 @@ pub(super) fn collect_particle_casters(
                         world[1][axis] = world[1][axis].max(value);
                     }
                 }
-                casters.push(ParticleShadowCaster {
-                    mesh: mesh.0.clone(),
-                    material: material.clone(),
-                    model,
-                    bounds: world,
-                });
-            }
+                world
+            }).collect();
+            systems[at].2.push(ParticleShadowSurface {
+                mesh: mesh.0.clone(),
+                material: material.clone(),
+                models,
+                bounds,
+            });
+        }
+        let mut casters = Vec::new();
+        for (_, bounds, surfaces) in systems {
+            let info = render_model::prepare_model_caster_info(
+                bounds, 1, render_model::INITIAL_MODEL_CONTEXT_FLAGS_18BC, 0, false,
+                surfaces.iter().map(|surface| (surface.models.len() as i32, 1)),
+            );
+            let Some(sphere) = info.sphere else { continue };
+            let Some(sort_distance) = render_model::model_caster_sort_distance(info.flags, sphere, &inverse_view, cull_distance)
+                else { continue };
+            casters.push(ParticleShadowCaster { bounds, flags: info.flags, sort_distance, surfaces });
         }
         Ok(casters)
     })();
@@ -127,7 +183,9 @@ pub(super) fn collect_particle_casters(
         Ok(casters) => {
             output.error = None;
             if !casters.is_empty() && !*reported {
-                info!(target: "dh2::shadows", casters = casters.len(), "Particle surface shadow casters online");
+                info!(target: "dh2::shadows", systems = casters.len(),
+                    surfaces = casters.iter().map(|c| c.surfaces.len()).sum::<usize>(),
+                    "Particle system shadow casters online");
                 *reported = true;
             }
             output.current = Some((frame, Arc::new(casters)));
@@ -141,11 +199,17 @@ pub(super) fn collect_particle_casters(
     }
 }
 
-/// Rigid shadow instances of this frame's particle surfaces inside `clip`.
-/// bevy_backend: one draw per particle instance; the original draws each
-/// renderer's instances in one direct-instanced draw with the same depth.
-pub(super) fn prepare_particle_shadow_instances(
-    casters: &[ParticleShadowCaster],
+/// DH2_DEBUG_PARTICLE_SHADOWS=1: particle shadow draws since the last
+/// report (measurement only). DH2_DEBUG_PARTICLE_SHADOW_NO_INSTANCE_CULL=1
+/// disables the per-instance cull for A/B comparison.
+static DEBUG_PARTICLE_SHADOW_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Rigid shadow instances of the given particle system surfaces. The caller
+/// has admitted and culled their systems.
+/// bevy_backend: one draw per particle instance where the original issues one
+/// direct-instanced draw per renderer surface, with the same depth.
+pub(super) fn prepare_particle_shadow_instances<'a>(
+    surfaces: impl IntoIterator<Item = &'a ParticleShadowSurface>,
     clip: render_shadow::ShadowMatrix,
     hardware_bias: [f32; 3],
     margin: f32,
@@ -158,16 +222,8 @@ pub(super) fn prepare_particle_shadow_instances(
 ) -> Result<Vec<shadow_pass::ShadowInstance>, String> {
     let flat: [f32; 16] = std::array::from_fn(|i| clip[i / 4][i % 4]);
     let mut instances = Vec::new();
-    for caster in casters {
-        let culled = if margin < 0.0 {
-            render_model::transformed_aabb_clip_cull_at_depth(&flat, caster.bounds[0], caster.bounds[1], margin)
-        } else {
-            render_model::transformed_aabb_clip_cull(&flat, caster.bounds[0], caster.bounds[1])
-        };
-        if culled.culled {
-            continue;
-        }
-        let inputs = materials.0.get(&caster.material)
+    for surface in surfaces {
+        let inputs = materials.0.get(&surface.material)
             .ok_or("particle surface material has no shadow owner")?
             .as_ref().map_err(Clone::clone)?;
         let program = inputs.rigid_base_source.as_ref().map_err(Clone::clone)?
@@ -181,7 +237,19 @@ pub(super) fn prepare_particle_shadow_instances(
         if !multiplier.is_finite() {
             return Err("particle surface depth multiplier is non-finite".into());
         }
-        let mvp = render_shadow::multiply_rows(clip, caster.model);
+        for (model, bounds) in surface.models.iter().zip(&surface.bounds) {
+        // bevy_backend: the original draws every instance of an admitted
+        // renderer; an instance outside this view writes no depth, so it is
+        // skipped (same output, fewer draws).
+        let culled = if margin < 0.0 {
+            render_model::transformed_aabb_clip_cull_at_depth(&flat, bounds[0], bounds[1], margin)
+        } else {
+            render_model::transformed_aabb_clip_cull(&flat, bounds[0], bounds[1])
+        };
+        if culled.culled && !debug_no_instance_cull() {
+            continue;
+        }
+        let mvp = render_shadow::multiply_rows(clip, *model);
         let state = render_model::selected_shadow_model_draw_state(
             inputs.source.shadow_draw_flags49(),
             inputs.source.main_render_state.ok_or("particle surface MAIN draw state is absent")?,
@@ -189,7 +257,6 @@ pub(super) fn prepare_particle_shadow_instances(
             margin,
             render_shadow::model_mvp_winding_flipped(&mvp),
         );
-        let model = &caster.model;
         let determinant = model[0][0] * (model[1][1] * model[2][2] - model[1][2] * model[2][1])
             - model[0][1] * (model[1][0] * model[2][2] - model[1][2] * model[2][0])
             + model[0][2] * (model[1][0] * model[2][1] - model[1][1] * model[2][0]);
@@ -202,7 +269,7 @@ pub(super) fn prepare_particle_shadow_instances(
             shader_cache::CachedRigidShadowClass::AlphaTested => (shadow_pass::ShadowProgram::RigidAlphaTested, rigid()),
             shader_cache::CachedRigidShadowClass::VistaAlpha => (shadow_pass::ShadowProgram::RigidVistaAlpha, rigid()),
             shader_cache::CachedRigidShadowClass::Vegetation => {
-                vegetation.0.get(&caster.mesh.id())
+                vegetation.0.get(&surface.mesh.id())
                     .ok_or("particle surface wind channels are absent")?
                     .as_ref().map_err(Clone::clone)?;
                 // As model surfaces: group 0 with zero model-time offset.
@@ -215,7 +282,7 @@ pub(super) fn prepare_particle_shadow_instances(
             }
         };
         instances.push(shadow_pass::ShadowInstance {
-            mesh: caster.mesh.clone(),
+            mesh: surface.mesh.clone(),
             per_instance_cb: constants,
             program,
             alpha_material: alpha,
@@ -225,8 +292,15 @@ pub(super) fn prepare_particle_shadow_instances(
             stencil_reference: 0,
             scissor: shadow_pipeline::ShadowScissor { x: 0, y: 0, width: dimensions[0], height: dimensions[1] },
         });
+        }
     }
+    DEBUG_PARTICLE_SHADOW_DRAWS.fetch_add(instances.len() as u64, std::sync::atomic::Ordering::Relaxed);
     Ok(instances)
+}
+
+fn debug_no_instance_cull() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var("DH2_DEBUG_PARTICLE_SHADOW_NO_INSTANCE_CULL").as_deref() == Ok("1"))
 }
 
 /// The cutout material of a rigid shadow program: the reference diffuse and
@@ -1269,9 +1343,32 @@ pub(super) fn prepare_parallel_model_draws(
                 // FUN_140328260 runs separately for both model buckets. Both
                 // follow static WORLD cache restoration in the preserve pass;
                 // neither model bucket may be saved into the world static cache.
+                let particles = particles.current.as_ref().map(|(_, casters)| casters.as_slice()).unwrap_or(&[]);
                 for dynamic in [false, true] {
                     let mut records = Vec::new();
                     let mut keys = Vec::new();
+                    // FX systems are static-bucket model casters (201480):
+                    // their renderer surfaces sort with the static models.
+                    // Their records use the high source range.
+                    if !dynamic {
+                        for (index, caster) in particles.iter().enumerate() {
+                            if caster.sort_distance > maximum {
+                                continue;
+                            }
+                            let culled = if margin < 0.0 {
+                                render_model::transformed_aabb_clip_cull_at_depth(&clip, caster.bounds[0], caster.bounds[1], margin)
+                            } else {
+                                render_model::transformed_aabb_clip_cull(&clip, caster.bounds[0], caster.bounds[1])
+                            };
+                            if culled.culled {
+                                continue;
+                            }
+                            for surface in 0..caster.surfaces.len() {
+                                records.push((usize::MAX - index, surface));
+                                keys.push(render_model::model_shadow_radial_sort_key(caster.bounds, [0.0; 3]));
+                            }
+                        }
+                    }
                     for caster in casters.iter().filter(|caster| {
                         caster.dynamic == dynamic && caster.sort_distance <= maximum
                     }) {
@@ -1304,36 +1401,42 @@ pub(super) fn prepare_parallel_model_draws(
                         }
                     }
                     render_model::sort_model_shadow_records(&mut records, &mut keys)?;
-                    instances.extend(prepare_model_shadow_instances(
-                        &records,
-                        cascade.clip,
-                        owner.hardware_bias,
-                        margin,
-                        [owner.dimensions.width, owner.dimensions.height],
-                        &frame.clocks,
-                        &sources,
-                        &placements,
-                        &materials,
-                        &images,
-                        &vegetation,
-                        &mut requests,
-                    )?);
-                }
-                // The FX world is a dynamic model: its surfaces follow the
-                // dynamic model bucket (capture events 8287, 12954, 32193).
-                if let Some((_, casters)) = particles.current.as_ref() {
-                    instances.extend(prepare_particle_shadow_instances(
-                        casters,
-                        cascade.clip,
-                        owner.hardware_bias,
-                        margin,
-                        [owner.dimensions.width, owner.dimensions.height],
-                        &frame.clocks,
-                        &materials,
-                        &images,
-                        &vegetation,
-                        &mut requests,
-                    )?);
+                    let particle_record = |source: usize| usize::MAX - source < particles.len();
+                    let mut at = 0;
+                    while at < records.len() {
+                        let end = records[at..].iter().position(|&(source, _)| particle_record(source) != particle_record(records[at].0))
+                            .map_or(records.len(), |offset| at + offset);
+                        if particle_record(records[at].0) {
+                            instances.extend(prepare_particle_shadow_instances(
+                                records[at..end].iter().map(|&(source, surface)| &particles[usize::MAX - source].surfaces[surface]),
+                                cascade.clip,
+                                owner.hardware_bias,
+                                margin,
+                                [owner.dimensions.width, owner.dimensions.height],
+                                &frame.clocks,
+                                &materials,
+                                &images,
+                                &vegetation,
+                                &mut requests,
+                            )?);
+                        } else {
+                            instances.extend(prepare_model_shadow_instances(
+                                &records[at..end],
+                                cascade.clip,
+                                owner.hardware_bias,
+                                margin,
+                                [owner.dimensions.width, owner.dimensions.height],
+                                &frame.clocks,
+                                &sources,
+                                &placements,
+                                &materials,
+                                &images,
+                                &vegetation,
+                                &mut requests,
+                            )?);
+                        }
+                        at = end;
+                    }
                 }
                 Ok(instances)
             })();

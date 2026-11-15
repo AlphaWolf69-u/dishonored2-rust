@@ -25,6 +25,12 @@ pub(crate) struct WorldMeshDraw {
     pub material: String,
     pub lighting: [[f32; 4]; 9],
     pub instances: Vec<crate::rendering::particles::ParticleInstance>,
+    /// The publishing system (its slot), a model owner of its own: the
+    /// renderer surfaces of one system share its caster record (201480).
+    pub system: usize,
+    /// The system's model bounds (1c3890's authored root plus 201480's
+    /// generated bounds), its caster sphere source.
+    pub system_bounds: [[f32; 3]; 2],
 }
 
 /// Inputs supplied by the actual render-view publication.
@@ -307,6 +313,8 @@ impl ParticleSystem {
                             material: name.clone(),
                             lighting: lighting.ok_or("world particle sprite lighting was not selected")?,
                             instances,
+                            system: 0,
+                            system_bounds: receiver_bounds,
                         });
                     }
                     continue;
@@ -391,7 +399,8 @@ impl ParticleSystem {
                         &view,self.query_visibility,alpha_scale,order.as_deref(),&mut instances)?;
                     if !instances.is_empty() {
                         world_meshes.push(WorldMeshDraw{source:source.clone(),material:name.clone(),
-                            lighting:lighting.ok_or("world particle mesh lighting was not selected")?,instances});
+                            lighting:lighting.ok_or("world particle mesh lighting was not selected")?,instances,
+                            system:0,system_bounds:receiver_bounds});
                     }
                     continue;
                 }
