@@ -436,7 +436,7 @@ pub(super) fn publish_local_shadow_draws(
                 if light.refresh_dynamic {
                     if let Some((_, casters)) = particle_casters.current.as_ref() {
                         instances.extend(shadow_updates::prepare_particle_shadow_instances(
-                            casters, clip, bias, 0.0, dimensions, &materials, &images, &mut shadow_textures,
+                            casters, clip, bias, 0.0, dimensions, &clocks, &materials, &images, &vegetation, &mut shadow_textures,
                         )?);
                     }
                 }

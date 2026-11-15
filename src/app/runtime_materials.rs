@@ -187,6 +187,11 @@ pub(super) struct PreparedBatch {
     pub image_paths: Vec<String>,
     pub all_images: Vec<Arc<ParticleImage>>,
     dependencies: HashMap<MaterialKey, HashSet<MaterialConsumer>>,
+    /// Shadow program owners of the batch's resolved materials; particle
+    /// surfaces that cast shadows look their material up here.
+    shadow_materials: super::ShadowMaterials,
+    /// Vegetation shadow inputs of the batch's particle surface meshes.
+    vegetation: super::VegetationMeshInputs,
 }
 
 pub(super) struct MaterialWork {
@@ -271,12 +276,13 @@ impl MaterialWork {
         let mut world_images = std::collections::HashMap::new();
         let mut dynamic_materials = HashSet::new();
         let mut dependencies: HashMap<MaterialKey, HashSet<MaterialConsumer>> = HashMap::new();
+        let mut vegetation = super::VegetationMeshInputs::default();
         for (source, material, model) in world_meshes {
             check_active()?;
             let consumer = MaterialConsumer::Mesh((source.clone(), material.clone()));
             resolver.cache.take_dependencies();
             let failures = super::setup::prepare_particle_surfaces(vec![(source, material, model)], &mut resolver,
-                &mut self.assets.meshes, &mut particles, &mut world_images, &mut dynamic_materials,
+                &mut self.assets.meshes, &mut particles, &mut world_images, &mut dynamic_materials, &mut vegetation,
                 |surface| surfaces.push(surface));
             if !failures.is_empty() {
                 return Err(format!("runtime world particle preparation failed: {}", failures.join("; ")));
@@ -310,6 +316,7 @@ impl MaterialWork {
         resolver.cache.disable_dependency_trace();
         let cache = std::mem::take(&mut resolver.cache);
         let image_paths = std::mem::take(&mut resolver.diffuse_image_paths);
+        let shadow_materials = std::mem::take(&mut resolver.shadow_materials);
         drop(resolver);
         // Only the pending batches publish. Existing assets are resolved from
         // the live world again, so their snapshot handles can retire here.
@@ -331,7 +338,8 @@ impl MaterialWork {
         check_active()?;
         drop(particles);
         drop(programs);
-        Ok(PreparedBatch { assets: self.assets, surfaces, surface_images, decals, cache, image_paths, all_images, dependencies })
+        Ok(PreparedBatch { assets: self.assets, surfaces, surface_images, decals, cache, image_paths, all_images, dependencies,
+            shadow_materials, vegetation })
     }
 }
 
@@ -816,7 +824,8 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
 
 fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     batch: PreparedBatch, slots: &[usize]) -> Result<(), String> {
-    let PreparedBatch { assets, surfaces, surface_images, decals, cache, image_paths: _, all_images, dependencies } = batch;
+    let PreparedBatch { assets, surfaces, surface_images, decals, cache, image_paths: _, all_images, dependencies,
+        shadow_materials, vegetation } = batch;
     if all_images.len() != slots.len() { return Err("runtime material slot mapping has the wrong length".into()); }
     let images_by_slot: HashMap<_, _> = slots.iter().copied().zip(all_images.iter().cloned()).collect();
     let mapped = world.resource::<RuntimeMaterialOwner>().cache.map_dynamic(cache, slots)?;
@@ -863,6 +872,16 @@ fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     }
     // Reserved identities become live before any proxy entity is spawned.
     assets.publish(world);
+    {
+        let mut owners = world.resource_mut::<super::ShadowMaterials>();
+        for (handle, inputs) in shadow_materials.0 {
+            owners.0.entry(handle).or_insert(inputs);
+        }
+        let mut meshes = world.resource_mut::<super::VegetationMeshInputs>();
+        for (mesh, inputs) in vegetation.0 {
+            meshes.0.entry(mesh).or_insert(inputs);
+        }
+    }
     for (key, material, binding) in mapped {
         world.resource_mut::<RuntimeMaterialOwner>().cache.insert(key.0.clone(), key.1, Some(material.clone()));
         binding.publish(world, state);

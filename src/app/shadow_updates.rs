@@ -150,8 +150,10 @@ pub(super) fn prepare_particle_shadow_instances(
     hardware_bias: [f32; 3],
     margin: f32,
     dimensions: [u32; 2],
+    clocks: &game_clock::GameplayViewClocks,
     materials: &ShadowMaterials,
     images: &Assets<Image>,
+    vegetation: &VegetationMeshInputs,
     queue: &mut super::scene_queue::ShadowTextureRequests<'_>,
 ) -> Result<Vec<shadow_pass::ShadowInstance>, String> {
     let flat: [f32; 16] = std::array::from_fn(|i| clip[i / 4][i % 4]);
@@ -194,19 +196,27 @@ pub(super) fn prepare_particle_shadow_instances(
         let (front_face, cull_mode) = shadow_pipeline::shadow_mesh_raster(&state, determinant >= 0.0);
         let class = program.class;
         let alpha = shadow_alpha_material(inputs, class, parameters, images, queue, "particle surface")?;
-        let program = match class {
-            shader_cache::CachedRigidShadowClass::Opaque => shadow_pass::ShadowProgram::RigidOpaque,
-            shader_cache::CachedRigidShadowClass::AlphaTested => shadow_pass::ShadowProgram::RigidAlphaTested,
-            shader_cache::CachedRigidShadowClass::VistaAlpha => shadow_pass::ShadowProgram::RigidVistaAlpha,
+        let rigid = || shadow_pass::ShadowInstanceConstants::Rigid(shadow_pass::shadow_instance_cb(&mvp, multiplier));
+        let (program, constants) = match class {
+            shader_cache::CachedRigidShadowClass::Opaque => (shadow_pass::ShadowProgram::RigidOpaque, rigid()),
+            shader_cache::CachedRigidShadowClass::AlphaTested => (shadow_pass::ShadowProgram::RigidAlphaTested, rigid()),
+            shader_cache::CachedRigidShadowClass::VistaAlpha => (shadow_pass::ShadowProgram::RigidVistaAlpha, rigid()),
             shader_cache::CachedRigidShadowClass::Vegetation => {
-                return Err("particle surface vegetation shadow inputs are not connected".into());
+                vegetation.0.get(&caster.mesh.id())
+                    .ok_or("particle surface wind channels are absent")?
+                    .as_ref().map_err(Clone::clone)?;
+                // As model surfaces: group 0 with zero model-time offset.
+                let time = clocks.model_local_time(0.0, 4).ok_or("particle surface model clock is unavailable")?;
+                (shadow_pass::ShadowProgram::Vegetation, shadow_pass::ShadowInstanceConstants::Vegetation(
+                    shadow_pass::vegetation_shadow_instance_cb(
+                        alpha.as_ref().ok_or("particle surface vegetation program has no cutout")?.uv_scale_bias,
+                        &parameters.vegetation(None)?, &mvp, time, multiplier),
+                ))
             }
         };
         instances.push(shadow_pass::ShadowInstance {
             mesh: caster.mesh.clone(),
-            per_instance_cb: shadow_pass::ShadowInstanceConstants::Rigid(
-                shadow_pass::shadow_instance_cb(&mvp, multiplier),
-            ),
+            per_instance_cb: constants,
             program,
             alpha_material: alpha,
             front_face,
@@ -1318,8 +1328,10 @@ pub(super) fn prepare_parallel_model_draws(
                         owner.hardware_bias,
                         margin,
                         [owner.dimensions.width, owner.dimensions.height],
+                        &frame.clocks,
                         &materials,
                         &images,
+                        &vegetation,
                         &mut requests,
                     )?);
                 }

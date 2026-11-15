@@ -102,9 +102,12 @@ after the dynamic model bucket of every cascade and of each dynamically
 refreshed local-light face, with the material's rigid shadow program.
 bevy_backend: one draw per particle instance where the original issues one
 direct-instanced draw per renderer; no shadow cull-distance or partial-update
-cutoff is applied to particle casters yet. Vegetation-program particle
-materials refuse their shadow (wind inputs are not prepared for particle
-meshes).
+cutoff is applied to particle casters yet. The three installed
+vegetation-program particle materials (Dust District root leaves, floor
+leaves) register their wind channels and use the vegetation shadow program
+like model surfaces; that path has not been exercised at runtime yet.
+Runtime-resolved particle materials publish their shadow owners and wind
+inputs with their batch.
 
 ## Not gaps
 
