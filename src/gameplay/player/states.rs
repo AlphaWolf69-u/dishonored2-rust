@@ -5,11 +5,10 @@
 //! 0x141c82b28), which runs beside them.
 //!
 //! Command processing follows FUN_140804850 and the rule table FUN_1408644e0
-//! plus the mode's `m_rules`, including CatFall, Mantle and Vault. States the
-//! port does not implement (actions and powers) are "missing" from the mode,
-//! so requests for them are rejected as the game rejects a state its mode
-//! lacks. Fall damage, stats, slide slow-time, shoves and breakables are not
-//! ported.
+//! plus the mode's `m_rules`, including CatFall, Mantle and Vault. Action
+//! families use the combat, equipment and power state owners. Unsupported
+//! authored states remain absent from their mode and are rejected by the
+//! same admission rules; navigation never substitutes another state for them.
 use super::body::{FollowSlope, JumpAnim, Lean};
 use super::camera::{self, PlayerCamera, MODE_ANIMATED, MODE_CATFALL, MODE_CONSTRAINED, MODE_CONSTRAINED_WITH_ARMS, MODE_DROWNING};
 use super::midnight::{Midnight, PreparedScene};

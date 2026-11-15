@@ -10164,3 +10164,40 @@ animation/callbacks are excluded because loading pauses the game clock. The
 normal source flags remain unchanged; native draw animation advances after
 continue. startup_error exposes actual resource admission failures. This is
 a host resource-readiness boundary, not a synthesized instant equip.
+
+### Player system composition and managed lifetime (2026-11-15)
+
+Prediction before implementation: source preparation runs behind the loading
+screen and retains the canonical declaration/rig/model/clip/sound owners. Only
+actual quantity-positive equipment is admitted (6170b0 ->619380), retaining its
+resources across holster/deactivation (619640/619740); this avoids adding first
+selection I/O compared with the executable. This is a lifecycle/behavior change,
+not a measured CPU, GPU, memory, or performance improvement claim.
+
+- `app/player_lifetime.rs`: ported client-zero `player1` naming/slot from
+  1408ad9c0/1408aeb10/1408aecc0, actual arkPlayer class registration 1413c6010,
+  constructor 140784450/140874c50 MAIN tag, canonical LiveEntities admission
+  only after actual Player construction; no duplicate player or health pool.
+- `assets/entities/player.rs`: power/mark and BlinkToMantle inputs resolve in
+  the existing player bundle, then typed consumers project before its generic
+  setup trees retire. Sensor2 uses 1403a52a0, not a fabricated ordinary sensor.
+- `assets/archive.rs`/`assets/map_resources.rs`: damage and ruleHandler headers
+  share the Catalog registry marker lifecycle. RuleHandler does not occur in
+  0661e0's conditional promotion table (142280ee0..142280ff8; string141c70768),
+  so map registration never fabricates its heap-1 promotion. Non-Slash headers
+  remain lazy; only an actual Slash consumer requests the typed definition.
+- `app/setup.rs`/`app/launch.rs`: host composition of source-backed inventory,
+  action states, typed damage notifications, and actual power family owners.
+  Chapter/statistic binding uses the existing level-info owner, not map-name
+  inference. Initial player resource work joins loading readiness; gameplay
+  animation callbacks themselves do not require an invented loading timeout.
+- `app/level_lifetime.rs`: host acquisition cancellation/drain precedes Catalog
+  purge. Power clock requests stop while physics/events/audio and the actual
+  player generation still exist; player identity retires after typed scene
+  Stop and before shared managed-owner removal. Existing render/audio queues
+  retain their submitted consumers until acknowledgement.
+
+Validation in this batch: original decompilation/installed metadata and static
+integration review. No performance/output-equivalence claim: tests and visible
+launches were not run, per the user's instructions. Combined compilation is
+reserved for the completed coherent feature batch.

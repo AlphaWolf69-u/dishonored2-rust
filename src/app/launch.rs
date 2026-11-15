@@ -341,6 +341,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
     }
     super::player_arms::install_equipment_retirement(&mut app);
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
+    app.insert_resource(super::player_statistics::PlayerStatistics::prepare());
     app.init_resource::<super::readable_movie::ReadableRequests>();
     app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin);
     if !mode.offscreen() {
@@ -412,7 +413,13 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 super::player::sample_player_input,
                 camera_controls.run_if(super::pause_menu::game_not_paused),
                 super::interaction_focus::apply_inventory_modifiers,
+                super::player_actions::advance_selection,
+                super::runtime_materials::equipment_admission::advance,
+                super::power_world::update,
+                super::power_execution::before_frame,
                 super::player::update_player,
+                super::power_execution::after_frame,
+                super::power_world::publish_sounds,
                 super::player::publish_drowning_fx,
                 super::player_arms::update_player_arms,
                 super::fog_scene::update_world_wind,
@@ -439,7 +446,8 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
                 .before(stream_visible_models)
                 .before(shadow_updates::collect_model_casters),
         )
-        .add_systems(PreUpdate, super::interaction_focus::initialize_inventory)
+        .add_systems(PreUpdate, (super::player_statistics::bind_prepared_chapter,
+            super::interaction_focus::initialize_inventory).chain())
         .add_systems(PostUpdate, super::interactions::sync_boxes
             .after(super::model_motion::publish_model_poses))
         .add_systems(PostUpdate, super::interactions::focus_and_interact

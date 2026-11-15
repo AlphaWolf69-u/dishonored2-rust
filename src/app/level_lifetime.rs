@@ -47,9 +47,11 @@ impl LevelLifetime {
         // The source read callback is synchronous. Finish its already accepted
         // host cursor while the real components and render/audio owners remain.
         super::interactions::finish_accepted_pickups(world)?;
+        super::power_world::retire(world)?;
         // Poll while all actual support owners remain published. Pending and
         // errors preserve the sole registry, component pools and body world.
         if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
+        super::player_lifetime::retire(world)?;
         super::interactions::stop_level(world);
         // Keep accepted FX/audio tickets and their resource owners alive
         // through the real consumer's acknowledgement. Successful shutdown is
@@ -170,6 +172,9 @@ impl LevelLifetime {
 }
 
 pub(super) fn close_level_acquisitions(world: &mut World) {
+    if let Some(actions) = world.get_resource::<super::player_actions::PlayerActions>() {
+        actions.close_acquisitions();
+    }
     // Release a blocked base-image handoff before joining the map reader.
     world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
     if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
@@ -190,6 +195,8 @@ pub(super) fn close_level_acquisitions(world: &mut World) {
 /// Outgoing decoders can still own source data or write catalog entries after
 /// their results are no longer wanted. Observe their retirement before purge.
 pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
+    let equipment = world.get_resource_mut::<super::player_actions::PlayerActions>()
+        .is_none_or(|mut actions| actions.retire_acquisitions());
     let sources = world.get_resource_mut::<super::usable_effects::UsableEffects>()
         .is_none_or(|mut effects| effects.retire_acquisitions());
     let materials = world.get_resource_mut::<super::runtime_materials::RuntimeMaterialCoordinator>()
@@ -200,7 +207,7 @@ pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut animations| animations.retire_acquisitions());
     let textures = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>()
         .is_none_or(|mut textures| textures.retire_acquisitions());
-    sources && materials && readable && usable_animations && textures
+    sources && materials && readable && usable_animations && textures && equipment
 }
 
 /// Plugin registration creates these empty owners before the first map.

@@ -20,6 +20,7 @@ pub struct PlayerDeclarations {
     pub autocrouch_sensor: Vec<(String, Value)>,
     pub lean_sensor: Vec<(String, Value)>,
     pub mantle_sensor: Vec<(String, Value)>,
+    pub blink_mantle_sensor: Vec<(String, Value)>,
     pub health: Vec<(String, Value)>,
     pub mana: Vec<(String, Value)>,
     /// Shared power-system and mark inputs, resolved with the player's other
@@ -175,7 +176,7 @@ pub fn entity_components_with_prefix(entity: &str, prefix: &str,
 }
 
 /// The components the player locomotion reads.
-const PLAYER_COMPONENTS: [&str; 17] = [
+const PLAYER_COMPONENTS: [&str; 18] = [
     "cpntplayerphysics",
     "cpntaudio",
     "cpntplayercamera",
@@ -186,6 +187,7 @@ const PLAYER_COMPONENTS: [&str; 17] = [
     "cpntplayersensorlean",
     "cpntplayerbody",
     "cpntplayersensormantle",
+    "cpntplayersensorblinktomantle",
     "cpnthealthevolved",
     "cpntmana",
     "cpntadrenaline",
@@ -298,6 +300,7 @@ fn player_declarations_with_listener(
     let autocrouch_sensor = take("cpntplayersensorautocrouch")?;
     let lean_sensor = take("cpntplayersensorlean")?;
     let mantle_sensor = take("cpntplayersensormantle")?;
+    let blink_mantle_sensor = take("cpntplayersensorblinktomantle")?;
     let health = take("cpnthealthevolved")?;
     let mana = take("cpntmana")?;
     let powers = take("cpntplayerpowersystem")?;
@@ -344,7 +347,7 @@ fn player_declarations_with_listener(
         Some(name) => component_fields("animbasic", &name, 0, &mut cache, &mut read)?,
         None => Vec::new(),
     };
-    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
+    Ok(PlayerDeclarations { physics, audio, audio_listener, camera, controller, attributes, autocrouch_sensor, lean_sensor, mantle_sensor, blink_mantle_sensor, health, mana, powers, outsider_mark, adrenaline, breath, body, fx, mode,
  states, swimming_mode, swimming_states, locomotion, additives, body_model })
 
 }

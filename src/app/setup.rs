@@ -1536,6 +1536,26 @@ pub(super) fn prepare(
         }
         _ => None,
     };
+    // Project shared gameplay inputs while the resolved declaration bundle is
+    // still borrowed; release its generic trees with the other player inputs.
+    if let Some(catalog) = catalog_storage.as_ref() {
+        let character = super::pause_menu::debug_character();
+        let declarations = player_declarations.full(catalog,
+            super::player::character_name(character))?;
+        let limits = match interactions {
+            Some(interactions) => interactions.limits(),
+            None => Arc::new(crate::assets::inventory_item::ReadableLimits::load(catalog,
+                super::player::character_name(character))?),
+        };
+        let powers = super::powers::Powers::prepare(catalog,
+            &declarations.powers, &declarations.outsider_mark, character,
+            limits.assignments().map(|(path, _)| path))?;
+        commands.insert_resource(super::power_world::PowerWorld::prepare(catalog,
+            &powers.definitions.0)?);
+        commands.insert_resource(powers);
+        commands.insert_resource(super::player_actions::PlayerActions::prepare(
+            catalog.clone(), &declarations)?);
+    }
     player_declarations.keep_screen_inputs();
     if let Some(probes) = &scene.environment_probes {
         let camera_game = view_to_game(camera.translation);
@@ -1653,6 +1673,16 @@ pub(super) fn prepare(
     }
     commands.insert_resource(super::player::PlayerState { debug_free_fly: player.is_none(), player, difficulty: catalog.and_then(super::player::load_difficulty) });
     commands.insert_resource(super::player::PlayerInput::default());
+    if let Some(catalog) = catalog {
+        commands.insert_resource(super::player_statistics::PreparedStatisticsChapter::prepare_current(catalog));
+    }
+    commands.queue(|world: &mut World| {
+        if let Err(error) = super::player_lifetime::admit(world) {
+            error!("Player entity publication failed: {error}");
+            crate::platform::client_diagnostics::record(&format!("Player entity publication failed: {error}"));
+            world.write_message(AppExit::error());
+        }
+    });
     if lit {
         // lightcontext HQ/AQ/LQ_ComputeAmbientLighting explicitly disable
         // the old env/ambient high/low term. Probe irradiance owns ambient;
