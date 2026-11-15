@@ -930,6 +930,11 @@ impl Player {
             let input = MotionInput { linear: self.requests.linear, angular: self.requests.angular };
             self.physics.step(world, dt, input);
         }
+        if self.machine.is_active(StateId::GRAPPLE) {
+            if let Some(destination) = self.grapple_state().and_then(|run| run.beam_destination()) {
+                if let Err(error) = self.retarget_grapple_beam(destination) { eprintln!("Grapple beam retarget: {error}"); }
+            }
+        }
         self.update_grapple_beam(dt);
     }
 

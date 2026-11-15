@@ -10584,6 +10584,10 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   bone binding before selection without showing or GPU-skinning the hidden
   actor, inventing a bind frame or posing through another owner. No clip is
   acquired by this publication; stopped clip clocks remain stopped.
+- State27's actual UpdateEnter beam destination (`14083a510`) is applied
+  before `140776490` advances the tip. The state owner supplies its source
+  surface/steering/posture adjustment; the body bridge does not duplicate
+  geometry or continue retargeting in the Stick phase.
 
 ### FarReach body/hand leaves and traveling beam (2026-11-15)
 
