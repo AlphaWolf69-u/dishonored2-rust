@@ -846,6 +846,15 @@ pub(super) fn queue_magazine_final(
     owner.magazine_final.insert(weapon, (ranged, magazine));
     Ok(())
 }
+/// A later round/reload change updates an already pending capacity pose,
+/// without creating a capacity event.44f240 reads the magazine at consume.
+pub(super) fn update_pending_magazine(world: &mut World, weapon: EntityId, magazine: i32) {
+    if let Some(mut owner) = world.get_resource_mut::<Attachments>() {
+        if let Some((_, current)) = owner.magazine_final.get_mut(&weapon) {
+            *current = magazine;
+        }
+    }
+}
 fn magazine_child(owner: &Attachments, weapon: EntityId) -> Option<Option<EntityId>> {
     let upgrades = owner.upgrades.get(&weapon)?;
     let definitions = upgrades.definitions.as_ref()?;
