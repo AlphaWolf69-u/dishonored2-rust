@@ -19,6 +19,8 @@ pub struct Request {
     pub can_jump: bool,
     pub jump_to_target: bool,
     pub snapped_ground: bool,
+    pub snap_action: i32,
+    pub cast_mode: i32,
     pub sensor: Arc<PreparedSensor>,
     pub mantle: Option<super::sensors::MantleSensor>,
 }
@@ -26,6 +28,11 @@ pub struct Request {
 pub struct Feedback {
     pub stick: Option<Arc<crate::assets::wwise::SoundEventDeclaration>>,
     pub unstick: Option<Arc<crate::assets::wwise::SoundEventDeclaration>>,
+    pub leave_wall_fx: Option<Arc<str>>,
+}
+pub struct Effect {
+    pub path: Arc<str>,
+    pub frame: crate::gameplay::reference_frame::ReferenceFrame,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum EquipmentEvent { Stick, Unstick }
@@ -248,6 +255,18 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
         if run.travel_target == Target::Wall { frame.physics.yaw = run.request.target_normal.y.atan2(run.request.target_normal.x); }
         if jump || moving && run.push_time >= decl.push_delay {
             if let Some(sound) = &run.feedback.unstick { frame.powers.sound_events.push(sound.id); }
+            if let Some(path) = &run.feedback.leave_wall_fx {
+                let mut origin = frame.physics.position();
+                let mut basis = frame.physics.axis();
+                if run.travel_target == Target::Wall {
+                    origin -= run.request.target_normal * frame.physics.current_settings().radius;
+                } else {
+                    origin += basis.z_axis * frame.physics.current_settings().height;
+                    basis = bevy_math::Mat3::from_quat(bevy_math::Quat::from_axis_angle(basis.y_axis, f32::from_bits(0x3fc9_0fdb))) * basis;
+                }
+                frame.powers.grapple_effects.push(Effect { path: path.clone(),
+                    frame: crate::gameplay::reference_frame::ReferenceFrame {position: origin.to_array(), basis: basis.to_cols_array_2d()} });
+            }
             Some(next(&run, frame, jump))
         } else { None }
     } else {
@@ -344,15 +363,17 @@ pub fn deactivate(frame: &mut Frame<'_>, decl: &Decl) {
 }
 
 impl Player {
-    pub fn begin_grapple(&mut self, request: Request) -> bool {
+    pub fn begin_grapple(&mut self, request: Request) -> bool { self.begin_grapple_checked(request).is_ok() }
+    pub fn begin_grapple_checked(&mut self, request: Request) -> Result<(), Request> {
         if self.powers.grapple_pending || self.machine.is_active(StateId::GRAPPLE)
-            || !self.machine.grapple_request_allowed() { return false; }
+            || !self.machine.grapple_request_allowed() { return Err(request); }
         let scenes = self.powers.grapple_scenes.clone();
         self.powers.grapple = Some(Runtime::new(request, scenes, self.powers.grapple_feedback.clone()));
-        self.powers.grapple_pending = true; self.machine.request(StateId::GRAPPLE); true
+        self.powers.grapple_pending = true; self.machine.request(StateId::GRAPPLE); Ok(())
     }
     pub fn grapple_state(&self) -> Option<&Runtime> { self.powers.grapple.as_ref() }
     pub fn register_grapple_feedback(&mut self, feedback: Feedback) { self.powers.grapple_feedback = Arc::new(feedback); }
+    pub fn take_grapple_effects(&mut self) -> Vec<Effect> { std::mem::take(&mut self.powers.grapple_effects) }
     pub fn take_grapple_equipment_events(&mut self) -> Vec<EquipmentEvent> { std::mem::take(&mut self.powers.grapple_equipment_events) }
     pub fn register_grapple_scenes(&mut self, scenes: Scenes) { self.powers.grapple_scenes = Arc::new(scenes); }
     pub fn set_grapple_target(&mut self, safe_position: Vec3, target_velocity: Vec3) {
