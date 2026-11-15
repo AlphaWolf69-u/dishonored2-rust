@@ -4,7 +4,7 @@ use super::{states::{Frame, Scenes, StateId}, Player};
 use crate::gameplay::powers::{self, Cast, Phase, Admission, AdmissionContext, action::{Action, Scenes as SceneHost},
     traversal::{BlinkMotion, BlinkContact, BlinkStep}};
 use bevy_math::Vec3;
-use super::combat::{ActionDecl, ActionRuntime, ActionStep};
+use super::combat::{ActionDecl, ActionRuntime, ActionStep, ActionType};
 use crate::{assets::entities::Value, gameplay::options::decl::atom};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,7 +16,11 @@ pub struct UsePowerDecl {
 impl UsePowerDecl {
     pub fn read(fields: &[(String, Value)]) -> Result<Self, String> {
         let path = |name| atom(fields, name).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("NULL")).map(str::to_owned);
-        Ok(Self { action: ActionDecl::read(fields)?, out_of_mana: path("m_outOfManaMidnight"), out_of_mana_slide: path("m_outOfManaMidnightSlide") })
+        let mut action = ActionDecl::read(fields)?;
+        // 1408560c0 writes 1 at decl+0x70: ACTION_ONRELEASE, overriding
+        // arkDeclPlayerStateAction's ONPRESS default when not authored.
+        if atom(fields, "m_type").is_none() { action.kind = ActionType::Release; }
+        Ok(Self { action, out_of_mana: path("m_outOfManaMidnight"), out_of_mana_slide: path("m_outOfManaMidnightSlide") })
     }
 }
 
@@ -198,6 +202,23 @@ impl Player {
         self.powers.selected = Some(cast); self.powers.scenes = scenes;
         self.powers.action_button = self.controller.mapping.iter().find(|mapping| mapping.state == StateId::USE_POWER).map_or(0, |mapping| mapping.action);
         true
+    }
+    /// Actual equipment Deactivate/Stop callback (14061c1a0/14061c2a0),
+    /// after the outgoing equipment scene has reached its native boundary.
+    pub fn unequip_power(&mut self) {
+        if let Some(cast) = self.powers.selected.as_mut() {
+            if self.powers.active { self.powers.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
+            let mut scenes = PreparedScenes { scenes: &self.powers.scenes, fallback: &self.scenes,
+                midnight: &mut self.body.midnight, md6: super::body::cast_md6(&self.md6, &self.body.arms),
+                animations: super::body::cast(&self.body.animations, &self.body.arms), sounds: &mut self.powers.sound_events };
+            self.powers.action.stop(&mut scenes); cast.finish();
+        }
+        self.powers.active = false; self.powers.cancel = false;
+        self.powers.execution_requested = false;
+        self.powers.action_state.deactivate(self.powers.now);
+        self.machine.quit(StateId::USE_POWER);
+        self.update_power_camera_modifier();
+        self.powers.selected = None; self.powers.scenes.clear();
     }
     pub fn selected_power(&self) -> Option<&Cast> { self.powers.selected.as_ref() }
     pub fn selected_power_mut(&mut self) -> Option<&mut Cast> { self.powers.selected.as_mut() }
