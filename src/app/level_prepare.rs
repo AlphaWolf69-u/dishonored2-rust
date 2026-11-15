@@ -991,8 +991,12 @@ pub(super) fn prepare_level(
         catalog_for_machinery, interactions.as_ref(), &placed_models, &joint_requests, &machinery,
         || cancelled(CancellationPoint::General))
         .map_err(std::io::Error::other)?;
-    let joint_frames = super::joint_frames::JointFrames::prepare(catalog_for_machinery, &placed_models, &joint_requests, &machinery, &usable_animations)
+    let objectives = entity_document.as_ref().map(|document| super::objectives::Objectives::load(catalog_for_machinery, document))
+        .transpose().map_err(std::io::Error::other)?.flatten();
+    let mut joint_frames = super::joint_frames::JointFrames::prepare(catalog_for_machinery, &placed_models, &joint_requests, &machinery, &usable_animations)
         .map_err(std::io::Error::other)?;
+    let mut marker_positions = super::objective_markers::Positions::prepare(catalog_for_machinery, entity_document.as_ref(), objectives.as_ref(),
+        &placed_models, &mut joint_frames, &machinery, &usable_animations).map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
     app.insert_resource(super::model_motion::BoundModels::new(
         entity_document
@@ -1019,11 +1023,18 @@ pub(super) fn prepare_level(
             .ok_or("physics entity resource has no map name")?;
         let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
         let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
-        let physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames)
+        let mut physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames)
             .map_err(std::io::Error::other)?;
+        let marker_targets = std::mem::take(&mut marker_positions.targets);
+        physics.admit_marker_targets(document, &marker_targets, &mut live).map_err(std::io::Error::other)?;
+        drop(marker_targets);
         app.insert_resource(live);
         app.insert_resource(entity_events);
         app.insert_resource(physics);
+        if let Some(objectives) = objectives {
+            app.insert_resource(objectives);
+            app.insert_resource(crate::gameplay::gameflow::State::default());
+        }
         if let Some(music) = super::audio::music::Music::load(catalog, document).map_err(std::io::Error::other)? {
             app.insert_resource(music);
         }
@@ -1035,8 +1046,12 @@ pub(super) fn prepare_level(
             .map_err(std::io::Error::other)?,
         );
     }
+    app.insert_resource(marker_positions);
     app.insert_resource(joint_frames);
     if let Some(interactions) = interactions {
+        if let Some(document) = entity_document.as_ref() {
+            app.insert_resource(super::audio::audiographs::Devices::load(&interactions.catalog, document, &interactions).map_err(std::io::Error::other)?);
+        }
         app.insert_resource(interactions);
     }
     app.insert_resource(super::interaction_focus::FocusedInteraction::default());

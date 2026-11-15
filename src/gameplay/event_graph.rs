@@ -50,14 +50,20 @@ impl<T> ManagerWork<T> {
         self.processing = true;
         std::mem::swap(&mut self.current, &mut self.deferred);
     }
+    /// Drain startup callbacks without consuming the first ordinary action.
+    /// 7bf290 crosses this phase boundary before7c10b0 updates the action list.
+    pub fn pop_startup(&mut self) -> Option<T> {
+        if !self.processing || !self.draining_startup { return None; }
+        if let Some(item)=self.startup.pop(){return Some(item);}
+        self.draining_startup=false;
+        self.startup=Vec::new();
+        std::mem::swap(&mut self.current,&mut self.deferred);
+        None
+    }
     pub fn pop(&mut self) -> Option<T> {
         if !self.processing { return None; }
         if self.draining_startup {
-            if let Some(item) = self.startup.pop() { return Some(item); }
-            self.draining_startup = false;
-            // The original destroys its one-shot startup list here.
-            self.startup = Vec::new();
-            std::mem::swap(&mut self.current, &mut self.deferred);
+            if let Some(item)=self.pop_startup(){return Some(item);}
         }
         match self.current.pop() {
             Some(item) => Some(item),
@@ -306,6 +312,35 @@ pub trait GraphInputs {
             }
             _ => Err(format!("unsupported integer binding {}", node.class)),
         }
+    }
+    /// Declaration/enum inputs follow the authored connection before defaults.
+    fn declaration_input(&self, node:&Node, name:&str, default:&str)->Result<String,String>{
+        fn read(inputs:&(impl GraphInputs + ?Sized),id:u32,port:u32,depth:usize)->Result<String,String>{
+            if depth>64{return Err("cyclic declaration graph".into());}
+            let node=inputs.node(id)?;
+            let point=node.ports.iter().find(|point|point.id==port).ok_or("declaration port absent")?;
+            if point.kind=="InputVariable" {if let Some(&(id,port))=point.links.first(){return read(inputs,id,port,depth+1);}}
+            atom(&node.params,&point.name).or_else(||atom(&node.params,"m_value")).map(str::to_owned)
+                .ok_or_else(||format!("unsupported declaration producer {} {}",node.class,point.name))
+        }
+        if let Some((id,port))=self.input(node,name){read(self,id,port,0)}else{Ok(atom(&node.params,name).unwrap_or(default).to_owned())}
+    }
+    /// 523db0 follows connected short-string-id outputs before authored defaults.
+    fn string_id(&self,id:u32,port:u32,depth:usize)->Result<u32,String>{
+        if depth>64{return Err("cyclic string-id graph".into());}
+        let node=self.node(id)?;
+        let point=node.ports.iter().find(|point|point.id==port).ok_or("string-id port absent")?;
+        if point.kind=="InputVariable" {
+            if let Some(&(id,port))=point.links.first(){return self.string_id(id,port,depth+1);}
+        }
+        let value=atom(&node.params,&point.name).or_else(||
+            (node.class.contains("StringId")||node.class.contains("StringID")).then(||atom(&node.params,"m_value")).flatten())
+            .ok_or_else(||format!("unsupported string-id producer {} {}",node.class,point.name))?;
+        Ok(if value.is_empty(){0}else{crate::assets::lang::key_id(value)})
+    }
+    fn string_id_input(&self,node:&Node,name:&str)->Result<u32,String>{
+        if let Some((id,port))=self.input(node,name){self.string_id(id,port,0)}
+        else{let value=atom(&node.params,name).unwrap_or("");Ok(if value.is_empty(){0}else{crate::assets::lang::key_id(value)})}
     }
     fn integer_input(&self, node: &Node, name: &str, default: i32) -> Result<i32, String> {
         if let Some((id, port)) = self.input(node, name) {

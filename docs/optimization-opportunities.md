@@ -2343,3 +2343,19 @@ Playing::update. The music cache avoids hundreds of route/product rebuilds
 but still uses that one small canonical input list. A borrowed/small-buffer
 API would affect ordinary sounds too; its remaining allocation benefit must
 be measured across those callers before changing their common interface.
+
+Audiograph/objective integration sweep (2026-11-15):
+
+- Bound objective targets that lack a final published pose still borrow
+  WorldEffectFrames::frame, whose general bind traversal allocates a visited
+  set and chain. Ordinary unbound/published targets use the nonallocating
+  published_frame path. Expected remaining opportunity: eliminate up to two
+  transient allocations per bound target update by extending the existing
+  final-pose publication owner. This waits for actual bound-target demand and
+  a per-function trace; do not introduce a second binding/pose cache alongside
+  the particle/render agent's owner.
+- Objectives::update currently clones the mailbox Arc once per update to
+  publish marker overrides. Expected opportunity is one Arc increment/decrement
+  pair per update, with no resident-memory saving. This is intentionally left
+  as an interface cleanup until it can be measured in that function; no CPU
+  performance claim is attached to this feature batch.

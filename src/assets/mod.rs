@@ -26,6 +26,7 @@ pub mod pnetwork;
 pub mod shader_cache;
 pub(crate) mod render_parameter;
 pub(crate) mod resource_registry;
+pub mod speech;
 pub mod sound_propagation;
 pub mod sound_effects;
 pub mod texture;

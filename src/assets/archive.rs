@@ -109,6 +109,8 @@ pub struct Catalog {
     pub(crate) difficulty_presets: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::difficulty::Preset>>>,
     pub(crate) sound_rtpcs: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::RtpcDeclaration>>>,
     pub(crate) sound_auxiliary_buses: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<u32>>>,
+    pub(crate) gameflow_programs: std::sync::OnceLock<std::sync::Mutex<crate::gameplay::gameflow::program::ProgramRegistry>>,
+    pub(crate) speech_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::speech::Resources>>,
     pub(crate) sound_events: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::wwise::SoundEventDeclaration>>>,
     pub(crate) kiscule_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::effects::FxGraph>>>,
     pub(crate) particle_resources: std::sync::OnceLock<crate::assets::fx::particle_resources::Owner>,
@@ -183,6 +185,8 @@ impl Drop for Catalog {
         self.difficulty_presets.take();
         self.sound_rtpcs.take();
         self.sound_auxiliary_buses.take();
+        self.gameflow_programs.take();
+        self.speech_resources.take();
         self.sound_events.take();
         self.kiscule_resources.take();
         self.particle_resources.take();
@@ -258,6 +262,8 @@ impl Catalog {
         self.release_parameter_block_level();
         crate::assets::entities::effects::declarations::release_marker(self, 0);
         crate::assets::fx::particle_resources::release_marker(self, 0);
+        crate::gameplay::gameflow::program::release_marker(self, 0);
+        crate::assets::speech::release_marker(self, 0);
         crate::assets::wwise::event_resources::release_marker(self, 0);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
@@ -279,6 +285,8 @@ impl Catalog {
         crate::gameplay::faction_registry::release_marker(self, 1);
         crate::assets::parm_block::release_marker(self, 1);
         crate::assets::fx::particle_resources::release_marker(self, 1);
+        crate::gameplay::gameflow::program::release_marker(self, 1);
+        crate::assets::speech::release_marker(self, 1);
         crate::assets::wwise::event_resources::release_marker(self, 1);
         crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
         crate::assets::wwise::rtpc_resources::release_marker(self, 1);
@@ -546,6 +554,8 @@ impl Catalog {
             difficulty_presets: Default::default(),
             sound_rtpcs: Default::default(),
             sound_auxiliary_buses: Default::default(),
+            gameflow_programs: Default::default(),
+            speech_resources: Default::default(),
             sound_events: Default::default(),
             kiscule_resources: Default::default(),
             particle_resources: Default::default(),

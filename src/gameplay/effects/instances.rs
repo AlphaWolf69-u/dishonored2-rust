@@ -43,6 +43,8 @@ pub struct FxGraphInstances {
     live: Vec<bool>,
     free: Vec<usize>,
     random: Option<Arc<Mutex<crate::random::MwcRandom>>>,
+    gameflow: Option<Arc<crate::gameplay::gameflow::program::Mailbox>>,
+    gameflow_notifications: Vec<crate::gameplay::gameflow::program::Update>,
 }
 impl Index<usize> for FxGraphInstances {
     type Output = Option<FxGraphRuntime>;
@@ -56,6 +58,25 @@ impl IndexMut<usize> for FxGraphInstances {
     }
 }
 impl FxGraphInstances {
+    pub fn poll_gameflow(&mut self)->Vec<String>{
+        let mut errors=Vec::new();
+        let Some(mailbox)=self.gameflow.as_ref() else{return errors};
+        if let Err(error)=mailbox.take_notifications(&mut self.gameflow_notifications){errors.push(error);return errors;}
+        for at in 0..self.gameflow_notifications.len(){
+            let update=self.gameflow_notifications[at];
+            for index in 0..self.runtimes.len(){
+                if !self.live[index]{continue;}
+                if let Some(runtime)=self.runtimes[index].as_mut(){if let Err(error)=runtime.gameflow_notification(update){errors.push(error);}}
+                errors.extend(self.collect(index));
+            }
+        }
+        errors
+    }
+    pub fn set_gameflow(&mut self, mailbox: Arc<crate::gameplay::gameflow::program::Mailbox>) {
+        for runtime in self.runtimes.iter_mut().flatten() {runtime.set_gameflow(Some(mailbox.clone()));}
+        self.gameflow=Some(mailbox);
+    }
+
     /// Runtime references versus distinct immutable definitions (diagnostics).
     pub fn definition_counts(&self) -> (usize, usize) {
         let pointers: std::collections::HashSet<_> = self.runtimes.iter().flatten()
@@ -102,11 +123,12 @@ impl FxGraphInstances {
 
         let mut runtime = FxGraphRuntime::new(graph, HashMap::new());
         runtime.set_owner(owner.clone());
+        runtime.set_gameflow(self.gameflow.clone());
         runtime.random_owner = Some(Arc::clone(random));
         let effectful = runtime.definition().nodes.iter().any(|node|
-            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx"));
+            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx") || gameflow_action(&node.class));
         let mut targets = runtime.definition().nodes.iter().filter(|node|
-            all_nodes || node.class == "arkKisculeNodeEntityFx"
+            all_nodes || node.class == "arkKisculeNodeEntityFx" || gameflow_action(&node.class)
                 || (parent.is_some() && node.class == "arkKisculeNodeDeclExit"))
             .map(|node| node.id).collect::<Vec<_>>();
 
@@ -160,7 +182,9 @@ impl FxGraphInstances {
                 }
             }
         }
-        // Only trace actions that lead to effects or a declaration return.
+        // Host roots also trace actions into the real gameflow owner. Their
+        // declaration callers must stay relevant even without a particle effect.
+        // Only trace actions that lead to owned effects or a declaration return.
         // Unrelated doors, AI and physics remain with their gameplay owners.
         self[index].as_mut().unwrap().include_targets(targets);
         index
@@ -306,7 +330,7 @@ impl FxGraphInstances {
     pub fn startup(&mut self) -> Vec<String> {
         self.events.start();
         let mut errors = Vec::new();
-        while let Some(event) = self.events.pop() {
+        while let Some(event) = self.events.pop_startup() {
             match event {
                 GraphEvent::LoadingEnd { graph, node } => {
                     if !self.live[graph] { continue; }
@@ -411,4 +435,8 @@ impl FxGraphInstances {
         }
         Ok(())
     }
+}
+
+fn gameflow_action(class: &str) -> bool {
+    matches!(class, "arkKisculeNodeActionGameflowMission" | "arkKisculeNodeActionGameflowObjective" | "arkKisculeNodeActionGameflowTask" | "arkKisculeNodeActionGameflowMarkerControl")
 }

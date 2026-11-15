@@ -134,7 +134,9 @@ pub(crate) fn load_with_entities(document: &Document,
         let fields = child(child(&entity.fields, "edit"), "m_kiscule");
         let relevant = super::event_graph::items(child(fields, "m_nodes")).any(|node|
             matches!(super::event_graph::atom(node, "m_name"),
-                Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance")));
+                Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance" |
+                    "arkKisculeNodeActionGameflowMission" | "arkKisculeNodeActionGameflowObjective" |
+                    "arkKisculeNodeActionGameflowTask" | "arkKisculeNodeActionGameflowMarkerControl")));
         let managed = live.is_some_and(|live| live.find(&entity.id).is_some_and(|id|
             live.stage(id) == Some(crate::gameplay::entity_lifetime::Stage::Spawned)));
         if relevant || (managed && super::event_graph::items(child(fields, "m_nodes")).next().is_some()) {

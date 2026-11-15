@@ -360,7 +360,7 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 | `animTree` | none | none: no owner yet |
 | `areaTagCollection` | none | none: no owner yet |
 | `arkCloth` | `assets::bmd6::cloth` | host: demand-only LOD0 header projection under the Catalog Registry; registration1356d10, five-product header088740, generated identity087f50/0882e0/088460 and MD6 remapping088c10/087820/087a20/088150 are source-backed. Preload/bootstrap/map/persistent/session purge, failure sharing, overlays and cancelled publication follow the common resource owner; arkCloth is absent from the conditional heap1 promotion table142280ee0. Header bytes and checksum scratch retire after selection; ordinary generated noncloth meshes use the existing model owner. Other LOD names are validated without retention. Full Havok cloth payload, simulation and cloth-companion rendering remain unimplemented; no frozen cloth substitutes are rendered. Verified at021c7586: dev game/tools and default-library builds pass; all36 actual publication/retirement and GPU upload/removal complete with zero acquisition errors. Only five requested headers load across the route; final header payload count and bytes are zero. |
-| `arkTree` | none | none: no owner yet |
+| `arkTree` | `src/gameplay/gameflow/program.rs` | ported: demand acquisition, shared metadata and scope purge; host: typed runtime/mailboxes; verification below |
 | `baseModel` | `assets::bmd6::ModelSources`, `assets::entities` | host: preparation scopes own immutable decoded BMD6 identities; setup explicitly borrows live physics model sources and runtime skin/usable consumers retain their required Arcs. Final consumer drop frees model payload, with optional acquisition/release identity diagnostics. The extra process-wide weak/coalescing cache was removed: a four-map debug production comparison completed with 210 requests, 203 reads/decodes and 76 matching source/decoded path signatures in BOTH modes, with no client errors. It supplied no measured reuse. First-person render models now use the same loader instead of direct read/decode; the routed loader and removed-cache batch compiled in the release game and completed both four-map runs, with matching model content signatures. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. No CPU/RSS gain is claimed from debug duration. Supported source acquisition and final-consumer retirement are covered by the recorded comparisons and021c7586 all36 observations. GPU mesh residency remains with its existing owner; active skin/animation and runtime replacement observations are separate from these source-lifetime results. |
 | `blueprint` | `assets::entities::blueprint` | host: batch-owned typed child paths/transforms coalesce immutable acquisition/failure, mutable overlays bypass sharing, and definitions retire after static expansion instead of retaining unused assembly descriptors. Native1413517a0/1401c10d0/1401c1270/1401bc1f0; no installed init/common references or conditional marker-1 promotion. Verified06ec97ab: EotW/Dust/EotW placements, reads and transient descriptors unchanged; final consumer retirement clears13/10/13 successful history records. Independent Catalog scopes pass, session consumers return to0. Evidence: DH2-fx-level-lifetime/artifacts/blueprint-history-20261114-comparison.json. No gameplay CPU/GPU gain claimed |
 | `boneCharmCollection` | none | none: no owner yet |
@@ -387,7 +387,7 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 | `fx` | `assets::fx::declaration`, `assets::fx::definition` | host: Catalog-owned selected headers, demand-decoded immutable typed groups/families, cached immutable failures, bootstrap/map/persistent markers and scoped purge (1413630d0 / 140022fd0 / 1400607f0 / 1401c5990). World, screen, pause and contact consumers share descriptors while retaining independent material/image bindings and playback state. Source syntax retires immediately; live root leases preserve inherited read credit through purge. Mutable overlays bypass sharing. All36 CPU acquisitions and final three-map/runtime GPU publication/removal passed; warm addition of another family role remains outside observed coverage. See FX acceptance below |
 | `fxactor` | none | none: FaceFX arkFaceActor resources (registration1413529f0), not idEntityFx actors. The92 indexed .arkfaceactor files have no production reader; supported visual-effects actors acquire entityDef/fx resources through their own owners. Facial animation remains unimplemented |
 | `fxanimset` | none | none: no owner yet |
-| `gameflowManager` | none | none: no owner yet |
+| `gameflowManager` | `src/gameplay/gameflow/program.rs` | ported: demand acquisition, shared metadata and scope purge; host: typed runtime/mailboxes; verification below |
 | `gameLogicManager` | `gameplay::game_logic::Declaration`, `app::level_prepare` | ported: worldspawn-selected inherited declaration, initial state and ordered transition matrix (140787770); host: temporary syntax is dropped after conversion to the level-owned typed declaration, which releases with GameLogic after UI-state retirement. Registered backends are listed under gameLogicState*; unsupported states remain unregistered |
 | `gamesoundproperties` | none | none: no owner yet |
 | `gameVideoClip` | none | none: no owner yet |
@@ -435,10 +435,10 @@ log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 | `soundengineinternals` | `assets::wwise::engine_controls`, `app::audio::AudioMix` | host: supported initialization inputs resolve through one resource reader (141352010 / 1400c84d0 / 1400c88c0); source syntax retires after conversion, copied IDs/ranges stay with the audio session across maps. Unused engine-declaration fields are not retained or implemented. Windowless production-path initialization observations passed |
 | `soundevent` | `assets::wwise::event_resources` | ported: lazy selected headers, immutable shared acquisition/failure, bootstrap/map scopes, purge and Catalog release; production acquisition observations passed; see scope below |
 | `soundrtpc` | `assets::wwise::rtpc_resources` | host: typed Catalog identity, selected headers/bootstrap/map phases, immutable failure cache, overlay bypass, purge and final release (1413520e0 / 1400b4510 / 1400b4560 and common registry). AudioMix retains copied IDs/ranges. Original clamp1400b45c0 unchanged; production initialization and four-load scope observations passed |
-| `speechBarks` | none | none: no owner yet |
-| `speechCharacter` | none | none: no owner yet |
+| `speechBarks` | `src/assets/speech.rs` | ported: demand acquisition, shared metadata and scope purge; host: typed runtime/mailboxes; verification below |
+| `speechCharacter` | `src/assets/speech.rs` | ported: demand acquisition, shared metadata and scope purge; host: typed runtime/mailboxes; verification below |
 | `speechScene` | none | none: no owner yet |
-| `speechVoice` | none | none: no owner yet |
+| `speechVoice` | `src/assets/speech.rs` | ported: demand acquisition, shared metadata and scope purge; host: typed runtime/mailboxes; verification below |
 | `staticParticleModel` | `assets::fx::particle_resources`, `assets::particle_model`, `assets::fx::particle_mesh` | host: same catalog header/purge owner as particledt; demand-loaded mesh dependencies inherit the declaration acquisition scope only when creating a new identity, preserving explicit preloaded markers. One immutable payload is shared by emission/render consumers; GPU upload remains the particle renderer responsibility. Same-build four-load CPU comparison and normal-client GPU-validation route passed |
 | `strIdFormating` | none | none: no owner yet |
 | `swarmGlobalConfig` | none | none: no owner yet |
@@ -9397,3 +9397,174 @@ Player F8 reporting now includes on-demand arm/body probe queries, SH and
 reflection inputs, material names, depth hacks and bounds. It does not
 change shading or add per-frame storage/work. Excess brightness is under
 investigation; no arbitrary first-person brightness multiplier was added.
+
+
+### Audiograph recording playback and declaration ownership (2026-11-15)
+
+Expected costs before implementation: idle playback performs no acquisition,
+decoding or per-frame allocation; selecting a recording acquires only its
+localized speechBarks and referenced speechCharacter/speechVoice metadata.
+The existing Wwise owner streams the current line; no complete recording PCM
+buffer, second decoder cache, audio device or independent playback timer is
+introduced. These are new-feature cost expectations, not measured savings.
+
+Sources: 140520240 stops the old Journal selection before toggling/replacing
+it; 140496300/1404961c0/140496430 begin and advance ordered audiocard lines on
+real speech completion. 14018a1d0 constructs basename_ID and copies the seven
+hash characters; 1404e6b80 combines that prefix, declared voiceName and line
+name before 1400c1210 hashes the Wwise event. 140496760 admits the collectible
+after device use without removing the machine; 140496860 follows the actual
+usable playback state and transition, and completion returns to the authored
+stop state. Host audio-object allocation uses the existing EffectObjects
+namespace for world speech and the existing Menu object for Journal speech.
+
+Owner: assets/speech.rs retains immutable typed speechBarks, speechCharacter
+and speechVoice generations under Catalog declaration markers; map admission,
+bootstrap promotion and map/session purge use the existing Registry rules.
+Only the selected recording resolves dependent speech metadata. Generic source
+trees and strings used solely for event-name construction are temporary. The
+app/audio/audiographs.rs adapter holds completion tickets, selected recording
+leases and cancellable metadata jobs. Cancellation retains the actual worker
+handle until its acknowledgement before declaration-marker purge. Encoded
+media, header reuse, bounded stream buffers and hardware output remain with
+the canonical Wwise sound owner. World device links retire with the map;
+Journal selection is explicitly stopped at map/session retirement.
+
+Status: implementation in progress; production acquisition and playback
+observations pending. This does not implement generic NPC speech, dialogue
+choice, facial animation, or the speech Scene scheduler.
+
+
+### Executable mission objective ownership (2026-11-15, in progress)
+
+Expected costs before implementation: the selected worldspawn gameflow manager
+acquires its reachable tree definitions once behind loading. Its executable
+projection retains compact typed nodes and shared immutable Journal mission
+metadata, not generic Value subtrees. Runtime state has one slot per node;
+ordinary tree updates do not read archives or allocate. Progress publications
+occur only after status changes. Graph declarations stay in the existing
+Kiscule owner; no second level-graph interpreter is constructed.
+
+Original evidence: 1404e83c0/1404e8680/1404e89f0 validate/register gameflow
+identities from root and referenced trees; 1404e9140 resolves native node class.
+140530280/140530550/140530bc0 validate and queue mission/objective/task changes;
+1405d8b70/1405d8bb0/1405d8c00 deliver them into the shared behavior context.
+14040eba0,14040f060,14040f760 supply the actual sparse transition matrices.
+14040eed0,14040f1d0,14040fa70 execute mission/objective/task states;
+1403e6750/1403e66d0 observe task status and pending requests. Ordered sequence,
+selector, parallel and loop execution comes from1405c17b0/1405c1720/1405c1670/
+1405c15b0. Unknown node types are rejected, rather than walked transparently.
+The installed main tree reaches20 tree files with14 concrete node classes,
+18 missions,51 objective decorators and179 task actions.
+
+Owner: gameplay/gameflow/program.rs owns immutable program acquisition and
+mutable tree execution; app/objectives.rs connects it to the existing entity
+Kiscule manager and publishes actual progression to the existing Journal State.
+Graph acceptance notifications preserve the original success/failure outputs.
+The map hint never activates a mission. Host: compact flattened tree slots and
+one typed request mailbox replace the native polymorphic task pools. All
+runtime slots/mailboxes release with the level after graph receivers stop;
+Catalog marker purge releases program/declaration residency.
+
+Implementation and installed-resource observations are still in progress;
+HUD task notifications, actual movie completion callbacks, graph conditions and
+scripted marker add/remove/replace requests are connected. Notifications use
+the authored delays and Iggy vectors; marker slots stay owned by the HUD movie.
+The host marker adapter returns its sole input buffer after each worker
+submission, preventing an unbounded camera-update queue. Pose requests borrow
+WorldEffectFrames; no second entity/model table or GPU pass is added.
+Marker placement now uses676c90/6777d0: optional authored marker tags borrow
+JointFrames' final animation/physics pose; missing tags use the entity origin
+plus the current model bounds height. Point targets retain their origin. Only
+actual authored targets (tree and graph inputs) demand tag frames during
+loading. Temporary rig/rest-pose leases drop before publication. The active
+marker cache retains indices into the existing placements/bounds, not copies
+of models or rigs, and removes entries when their markers retire. Missing
+NPC/script producers are not synthesized.
+
+
+Gameflow execution correction: 1405d8440/1405d83c0 use suspended traversal
+stacks, not repeated recursive walks from the root. Parallel tasks keep two
+continuations and return their ordered completion (1405c1110), rather than an
+invented all-success reduction. 1405c57e0 initializes a negative-stop-condition
+loop to stop on success; failed iterations yield before retry. Runtime stack
+capacity is reused. Native guard1000 detects an infinite same-frame traversal,
+not a host time budget. Active objective failure/cancellation also queues the
+native task requests (140530550/140530660). Notification nodes are indexed
+once per graph instance; an idle graph never scans its immutable nodes for
+gameflow changes. No whole-frame performance claim is made for this feature.
+
+Speech dependency scope: a deferred bootstrap speechBarks or speechCharacter
+passes its actual producer marker to dependent character/voice acquisition.
+Resolved inheritance reads are tracked with the immutable definition; scope
+purge retains only the surviving generations' source history. Cancelled device
+jobs are reaped even after a usable turns off, not just on the next playback.
+
+Marker appearance evidence: 140537690 selects the eight ordinary/optional/
+lethal/non-lethal/mixed icon types; 140538ec0 and140539ae0 create/remove movie
+slots. 1406763e0 supplies projection/clamping; 140676fd0 distance scaling;
+140675600/1406756c0 and14066b900 initialize alpha/scale defaults. Installed
+ui/hud_objectives.uihudelementobjectives supplies the actual values. Screen
+offsets use1080 from141abe820; arrow rotation uses90 from141ae8ab0. Journal's
+default task mark is visible: native66fa10 passes true when its exclusion list
+has no entry. The host State now stores exclusions, preserving that default.
+
+Map heap promotion was checked against the executable's142280ee0 table,
+not inferred from another owner: speechBarks, speechCharacter and speechVoice
+are listed and honor0661e0's heap-1 promotion. gameflowManager is absent and
+retains its declared scope. Gameflow source-history purge checks surviving
+programs before retiring referenced arkTree credits.
+
+The mailbox attaches in the scene-publication command, before the first
+LoadingEnd action can execute. Gameflow initialization runs with the ordinary
+published-world warmup; HUD admissions stay behind the input handoff. This
+avoids losing first-frame mission requests or delaying Journal state until
+after the player enters the level.
+
+Installed-data acquisition observation (windowless, dev,2026-11-15):
+`GAMEFLOW_PROGRAM inventory=(672,18,51,179,21)` covers20 referenced/root
+arkTree files plus the manager, with no unknown node class or duplicate ID.
+A per-file scan confirmed all18 mission roots contain their own51 objective
+and179 task definitions; the extra wrapper tree references two final-mission
+subtrees. The speech observation acquired all35 installed audiograph items and
+matched all138 ordered line events to real loaded sound-bank events. Shared
+roles/voices were reused (17 voice payloads retired); source/audio caches and
+active preparation jobs were empty at the observation's session shutdown.
+These are acquisition/retirement observations, not an auditory or visual check
+and not a claim of whole-frame CPU savings. Gameplay observations follow.
+
+Target notification continuation: task portrait metadata and Set Portrait
+Parameters follow140530cc0/14040f670/14040fa70; a state request takes precedence
+on that update. 14066eff0 substitutes the target portrait for a completed task
+text row, and140670a00 calls _targetNotification._C_ShowNotification with the
+six original arguments. Portrait enum IDs are1419fd250/1419fd2e0; missing
+m_portraitDelay uses4s from14066b0f0. The actual movie disabled callback releases
+the next queued notification. No per-frame metadata parsing or image copies
+are added; the installed movie and existing UI image owner load its images.
+
+Marker target admission follows the existing base-entity owner: demanded
+componentless idEntity targets join the same managed-identity/start/destruction
+roster as physics/interaction headers. No physics actor or component pool is
+created for a point target. Referenced derived classes still require their
+actual actor owner; NPCs/spawners are not synthesized from marker names. The
+temporary requested-name set drops before scene publication.
+
+Connected startup correction: the manager's startup drain previously called
+the combined startup/action popper once beyond the last callback, discarding
+the first ordinary action as a phase error. The shared ManagerWork now exposes
+the7bf290 startup-only boundary and retains every ordinary action for7c10b0.
+Expected effect: one less lost action per startup batch, no extra work queue,
+resource residency or per-frame allocation. Gameflow actions are also genuine
+relevance targets of existing host FX roots and declaration callers; they are
+not excluded merely because an entity has no physics component.
+
+The level graph acquisition filter now admits roots containing owned gameflow
+actions too (including the authored mission UI script). It previously admitted
+only particle/declaration roots and managed physics/interaction entities, so a
+mission-only root never reached the executor at all. This uses the existing
+immutable graph owner and manager; it does not create a separate interpreter.
+
+The compatibility explicit/static mission lookup APIs also use Program's one
+registry now; the old independent tree reader is removed. Live State selection
+retains the shared mission Arc. Only the legacy value-returning API copies a
+mission when an external caller explicitly requests an owned value.

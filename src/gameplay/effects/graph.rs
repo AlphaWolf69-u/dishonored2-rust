@@ -77,6 +77,8 @@ pub struct FxGraphRuntime {
     effects: HashMap<u32, FxNode>,
     entity_effects: HashMap<u32, super::entity_node::EntityFxNode>,
     notifications: Option<Box<HashMap<u32, NotificationState>>>,
+    gameflow: Option<Arc<crate::gameplay::gameflow::program::Mailbox>>,
+    gameflow_subscriptions: Vec<usize>,
 }
 #[derive(Default)]
 struct NotificationState { count: i32, instigator: Option<EntityReference> }
@@ -113,9 +115,14 @@ impl GraphInputs for FxGraphRuntime {
             .iter()
             .find(|point| point.id == port)
             .ok_or("graph variable port absent")?;
-        if node.class == "arkKisculeNodePickupNotification" && point.name == "m_instigator" {
+        if matches!(node.class.as_str(),"arkKisculeNodePickupNotification"|"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification") && point.name == "m_instigator" {
             return Ok(Some(GraphValue::Entity(self.notifications.as_ref()
                 .and_then(|states| states.get(&node.id)).and_then(|state| state.instigator.clone()))));
+        }
+        if node.class == "arkKisculeNodeGetGameflowTaskState" {
+            let name=self.string_id_input(node,"m_taskName")?;
+            let status=self.gameflow.as_ref().and_then(|mailbox|mailbox.status(crate::gameplay::gameflow::program::Domain::Task,name)).unwrap_or(6);
+            return Ok(Some(GraphValue::Int(status)));
         }
         if let Some(value) = super::values::evaluate(self, node, &point.name, depth)? {
             return Ok(Some(value));
@@ -166,6 +173,7 @@ impl FxGraphRuntime {
         let graph = graph.into();
         let relevant = Self::relevant_nodes(&graph, graph.effects.keys().copied().collect());
         let variables = Arc::new(RwLock::new(GraphVariables::new(&graph.variables)));
+        let gameflow_subscriptions=graph.nodes.iter().enumerate().filter(|(_,node)|matches!(node.class.as_str(),"arkKisculeNodeGameflowMissionNotification"|"arkKisculeNodeGameflowObjectiveNotification"|"arkKisculeNodeGameflowTaskNotification")).map(|(index,_)|index).collect();
         Self {
             owner: graph.owner.clone(),
             graph,
@@ -180,8 +188,11 @@ impl FxGraphRuntime {
             effects: HashMap::new(),
             entity_effects: HashMap::new(),
             notifications: None,
+            gameflow_subscriptions,
+            gameflow: None,
         }
     }
+    pub(super) fn set_gameflow(&mut self, mailbox: Option<Arc<crate::gameplay::gameflow::program::Mailbox>>) { self.gameflow = mailbox; }
     pub(super) fn set_owner(&mut self, owner: String) { self.owner = owner; }
     fn relevant_nodes(graph: &FxGraph, mut relevant: HashSet<u32>) -> HashSet<u32> {
         loop {
@@ -319,6 +330,32 @@ impl FxGraphRuntime {
     }
     /// Reset clears the notification count; the subscription owner handles
     /// its own unsubscribe/re-subscribe and preserves the last instigator.
+    /// 63db90/63ddb0/63e000: native Gameflow status notifications use
+    /// the same count/instigator/output owner as pickup notifications.
+    pub fn gameflow_notification(&mut self,update:crate::gameplay::gameflow::program::Update)->Result<(),String>{
+        use crate::gameplay::gameflow::program::Domain;
+        if self.gameflow_subscriptions.is_empty(){return Ok(());}
+        let definition=self.shared_definition();
+        for at in 0..self.gameflow_subscriptions.len() {
+            let node=&definition.nodes[self.gameflow_subscriptions[at]];
+            let (domain,field,prefix)=match node.class.as_str(){
+                "arkKisculeNodeGameflowMissionNotification"=>(Domain::Mission,"m_missionName","Mission"),
+                "arkKisculeNodeGameflowObjectiveNotification"=>(Domain::Objective,"m_objectiveName","Objective"),
+                "arkKisculeNodeGameflowTaskNotification"=>(Domain::Task,"m_taskName","Task"),
+                _=>continue,
+            };
+            if domain!=update.domain || !self.relevant.contains(&node.id)||self.string_id_input(node,field)?!=update.name||!self.boolean_input(node,"m_enabled",true)?{continue;}
+            let listened=self.entity_input(node,"m_listenedEntity",None)?;
+            if listened.as_ref().is_some_and(|entity|*entity!=EntityReference::Player){return Err("gameflow callback requires its resolved player entity binding".into());}
+            let filter=self.entity_input(node,"m_instigator",None)?;
+            if filter.as_ref().is_some_and(|entity|*entity!=EntityReference::Player){continue;}
+            let status=match (update.domain,update.status){(_,0)=>"Pending",(_,2)=>"Active",(_,3)=>"Completed",(crate::gameplay::gameflow::program::Domain::Mission,_)=>"Failed",(_,1)=>"Inactive",(_,4)=>"Failed",(_,5)=>"Canceled",_=>continue};
+            let maximum=self.integer_input(node,"m_maxNotificationCount",-1)?;
+            self.notifications.get_or_insert_with(Default::default).entry(node.id).or_default().instigator=Some(EntityReference::Player);
+            self.notification_outputs(node.id,maximum,&format!("{prefix} {status}"))?;
+        }
+        Ok(())
+    }
     pub fn reset_notification_count(&mut self, id: u32) {
         if let Some(state) = self.notifications.as_mut().and_then(|states| states.get_mut(&id)) {
             state.count = 0;
@@ -384,6 +421,57 @@ impl FxGraphRuntime {
             .ok_or("missing event port")?;
         let mut schedule = None;
         let paired_outputs = match node.class.as_str() {
+            "arkKisculeNodeActionGameflowMarkerControl"=>{
+                let target=|field:&str|atom(&node.params,field).filter(|name|!name.is_empty()&&*name!="NULL").map(|name|EntityReference::Named(name.to_owned()));
+                let entity=self.entity_input(&node,"m_target",target("m_target"))?;
+                let replacement=self.entity_input(&node,"m_newTarget",target("m_newTarget"))?;
+                let accepted=if let Some(EntityReference::Named(entity))=entity {
+                    if world.entity_exists(&EntityReference::Named(entity.clone()))? {
+                        let replacement=match replacement{Some(EntityReference::Named(entity))=>entity,_=>String::new()};
+                        if port.name=="Replace Target"&&(replacement.is_empty()||!world.entity_exists(&EntityReference::Named(replacement.clone()))?){false}else{
+                            let target=crate::gameplay::gameflow::MarkerTarget{name:self.string_id_input(&node,"m_targetName")?,entity};
+                            let replacement=crate::gameplay::gameflow::MarkerTarget{name:self.string_id_input(&node,"m_newTargetName")?,entity:replacement};
+                            self.gameflow.as_ref().map_or(Ok(false),|owner|owner.control_marker(self.string_id_input(&node,"m_taskId")?,&port.name,target,replacement))?
+                        }
+                    }else{false}
+                }else{false};
+                self.emit(id,if accepted{"Update succeeded"}else{"Update failed"})?;
+                true
+            },
+            "arkKisculeNodeActionGameflowMission" | "arkKisculeNodeActionGameflowObjective" | "arkKisculeNodeActionGameflowTask" => {
+                use crate::gameplay::gameflow::program::{Domain,Update};
+                let (domain,field) = if node.class.ends_with("Mission") {(Domain::Mission,"m_missionName")}
+                    else if node.class.ends_with("Objective") {(Domain::Objective,"m_objectiveName")}
+                    else {(Domain::Task,"m_taskName")};
+                let accepted = if port.name=="Set Portrait Parameters" {
+                    let image=self.declaration_input(node,"m_portraitImage","")?;
+                    let portrait=crate::gameplay::gameflow::Portrait {
+                        show:self.boolean_input(node,"m_showPortrait",true)?,
+                        state:self.declaration_input(node,"m_portraitStatus","GAMEFLOW_UI_PORTRAIT_STATE_ASSASSINATED")?,
+                        kind:self.declaration_input(node,"m_portraitType","GAMEFLOW_UI_PORTRAIT_TYPE_TARGET")?,
+                        female:self.boolean_input(node,"m_portraitFemale",false)?,
+                        image:(!image.is_empty()&&image!="NULL").then_some(image),
+                        name:self.string_id_input(node,"m_portraitName")?,
+                    };
+                    self.gameflow.as_ref().map_or(Ok(false),|owner|owner.submit_portrait(self.string_id_input(node,field)?,portrait))?
+                } else {
+                let status = match port.name.as_str() {
+                    "Activate" | "Reactivate" | "Uncomplete" => 2, "Complete" => 3, "Fail" => 4, "Cancel" => 5, "Reset" | "Unactivate" => 0,
+                    other => return Err(format!("unsupported gameflow action input {other}")),
+                };
+                // 530280/530550/530bc0 validate the declared native node class,
+                // enqueue its request, and notify acceptance before forwarding.
+                let update=Update{domain,name:self.string_id_input(&node,field)?,status};
+                self.gameflow.as_ref().map_or(Ok(false),|mailbox|mailbox.submit(update))?
+                };
+                self.emit(id,if accepted {"Update succeeded"} else {"Update failed"})?;
+                true
+            }
+            "arkKisculeNodeGameflowMissionNotification" | "arkKisculeNodeGameflowObjectiveNotification" | "arkKisculeNodeGameflowTaskNotification" if port.name=="Reset"=>{
+                self.reset_notification_count(id);
+                self.emit(id,"Reset")?;
+                false
+            }
             "arkKisculeNodePickupNotification" if port.name == "Reset" => {
                 return Ok(GraphStep::PickupReset { node: id });
             }

@@ -51,8 +51,16 @@ impl Usable {
         if self.transition_remaining.is_some() || self.definition.steps.is_empty() {
             return Changes::default();
         }
+        self.set_state((self.state + 1) % self.definition.steps.len())
+    }
+
+    pub fn transitioning(&self) -> bool { self.transition_remaining.is_some() }
+
+    /// 77b3b0 applies the requested authored state, also used by audiograph End.
+    pub fn set_state(&mut self, next: usize) -> Changes<'_> {
+        if next >= self.definition.steps.len() { return Changes::default(); }
         let previous = self.state;
-        self.state = (self.state + 1) % self.definition.steps.len();
+        self.state = next;
         let from = &self.definition.steps[previous];
         let to = &self.definition.steps[self.state];
         let transitioning = from.transition_animation.is_some() || from.transition_min_duration > 0.0;

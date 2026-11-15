@@ -8,13 +8,14 @@ pub(super) enum Kind { Journal, Readable }
 pub(super) struct Snapshot {
     documents: Vec<DocumentEntry>, maps: Vec<JournalItem>, audiographs: Vec<JournalItem>,
     progress: Option<crate::gameplay::gameflow::State>,
+    playing_audiograph: Option<u32>,
 }
 pub(super) struct Command { pub epoch: u64, pub operation: Operation }
 pub(super) enum Operation {
     Journal { screen: (i32,i32), path: String, snapshot: Snapshot },
     Readable { screen: (i32,i32), path: String, presentation: Arc<Presentation> },
     Key { down: bool, key: u32 }, Cursor { x: f64, y: f64 }, Button { down: bool, button: u8 }, Wheel(i32),
-    Tick(f64), Clear,
+    Audiograph(Option<u32>), Tick(f64), Clear,
 }
 pub(super) struct Event { pub epoch: u64, pub payload: Notification }
 pub(super) enum Notification {
@@ -40,7 +41,7 @@ impl Worker {
                     self.clear(); *generation = generation.wrapping_add(1);
                     trace_readable_ui(|| format!("Journal movie loading epoch={} path={path} documents={} maps={} audiographs={}", command.epoch, snapshot.documents.len(), snapshot.maps.len(), snapshot.audiographs.len()));
                     self.journal = Some(journal_movie::Movie::load(screen, *generation, &path,
-                        snapshot.documents, snapshot.maps, snapshot.audiographs, None, None, snapshot.progress)?);
+                        snapshot.documents, snapshot.maps, snapshot.audiographs, snapshot.playing_audiograph, None, snapshot.progress)?);
                     send(Notification::Ready(Kind::Journal));
                 },
                 Operation::Readable { screen, path, presentation } => {
@@ -93,6 +94,9 @@ impl Worker {
                         if closed { self.journal = None; send(Notification::Closed(Kind::Journal)); }
                     }
                 },
+                Operation::Audiograph(playing) => {
+                    if let Some(movie) = &mut self.journal { movie.set_playing_audiograph(playing)?; }
+                },
                 Operation::Clear => self.clear(),
             }
             Ok(())
@@ -116,12 +120,17 @@ pub(in crate::app) fn presentation(item: &crate::assets::inventory_item::Pickabl
 }
 
 #[derive(Default)]
-pub(super) struct Session { pub active: Option<Kind>, pub ready: bool, pub in_flight: bool, hud_ready: bool, read_admission: Option<bool>, elapsed: f64, cursor: Option<(f64,f64)> }
+pub(super) struct Session { pub active: Option<Kind>, pub ready: bool, pub in_flight: bool, hud_ready: bool, read_admission: Option<bool>, elapsed: f64, cursor: Option<(f64,f64)>, playing_audiograph: Option<u32> }
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Data<'w> {
     logic: Option<ResMut<'w, GameLogic>>,
+    audio: ResMut<'w, super::super::audio::audiographs::Audiographs>,
+    loading: Res<'w, super::super::loading_screen::Acquisition>,
     progress: Option<ResMut<'w, crate::gameplay::gameflow::State>>,
     requests: Option<ResMut<'w, readable_movie::ReadableRequests>>,
+}
+impl Data<'_> {
+    pub(super) fn tasks_notified(&mut self,ids:Vec<u32>){if let Some(progress)=self.progress.as_deref_mut(){for id in ids{progress.mark_task_notified(id);}}}
 }
 impl Session {
     pub fn hud_ready(&mut self) { self.hud_ready = true; }
@@ -182,7 +191,8 @@ impl Session {
         let inventory = inventory.ok_or("Journal inventory owner is absent")?;
         let progress = data.progress.as_deref().cloned();
         let snapshot = Snapshot { documents: inventory.items().to_vec(), maps: inventory.maps().to_vec(),
-            audiographs: inventory.audiographs().to_vec(), progress };
+            audiographs: inventory.audiographs().to_vec(), progress, playing_audiograph: data.audio.playing() };
+        self.playing_audiograph = snapshot.playing_audiograph;
         let path = self.switch(StateId::JOURNAL, data)?;
         self.send(epoch, Operation::Journal { screen, path, snapshot }, commands);
         Ok(())
@@ -190,6 +200,10 @@ impl Session {
     pub fn update(&mut self, epoch: u64, screen: (i32,i32), data: &mut Data,
         mut player: Option<&mut crate::gameplay::player::Player>, commands: &Sender<super::Command>, dt: f64, paused: bool) -> Result<(), String> {
         self.initialize(data)?;
+        if self.active.is_some() && self.playing_audiograph != data.audio.playing() {
+            self.playing_audiograph = data.audio.playing();
+            self.send(epoch, Operation::Audiograph(self.playing_audiograph), commands);
+        }
         if let Some(player) = player.as_deref_mut() {
             let available = self.hud_ready && !paused && self.active.is_none()
                 && data.logic.as_deref().is_some_and(|logic| logic.available(StateId::READ_NOTE)
@@ -271,7 +285,10 @@ impl Session {
                         journal_movie::Action::ShowHistory(show) => if let Some(progress) = data.progress.as_deref_mut() { progress.set_show_history(show); },
                         journal_movie::Action::MarkTasks(marked,ids) => if let Some(progress) = data.progress.as_deref_mut() { for id in ids { progress.set_task_marked(id,marked); } },
                         journal_movie::Action::Show(_) | journal_movie::Action::ShowMap(_) => {},
-                        journal_movie::Action::PlayAudiograph { .. } => return Err("Journal audiograph playback requires its real completion owner".into()),
+                        journal_movie::Action::PlayAudiograph { item, path } => {
+                            let entry = inventory.audiographs().iter().find(|entry| entry.item_id == item && entry.path.eq_ignore_ascii_case(&path)).ok_or("audiograph is no longer admitted")?;
+                            data.audio.request(item, entry.declaration.clone(), data.loading.catalog.clone())?;
+                        },
                         journal_movie::Action::PurchasePower { .. } => return Err("Journal power purchase requires its actual power-system eligibility owner".into()),
                     }
                 }

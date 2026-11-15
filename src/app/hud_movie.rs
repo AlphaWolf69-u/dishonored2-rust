@@ -3,6 +3,8 @@
 //! `arkGameLogicStateInGame::OnFlashLoaded` (14078b550) binds the HUD
 //! elements before the root state supplies the input bindings.  The movie is
 //! kept alive for the in-game state, unlike the per-open journal movie.
+mod objectives;
+mod markers;
 use crate::assets::archive::Catalog;
 use crate::flash::{Player, bitmap_resources::MovieBitmaps, render};
 use crate::gameplay::pause_state;
@@ -10,6 +12,8 @@ use crate::rendering::bevy_backend::flash_ui::FlashFrame;
 use std::sync::Arc;
 
 pub(super) struct HudMovie {
+    objectives: objectives::State,
+    markers: markers::State,
     player: Player,
     images: Arc<MovieBitmaps>,
     cache: render::Cache,
@@ -218,7 +222,10 @@ impl HudMovie {
             stage,
             (screen.0 as u32, screen.1 as u32),
         ));
+        let (objectives,markers)=objectives::State::load(catalog,language)?;
         Ok(Self {
+            objectives,
+            markers,
             player,
             images,
             cache,
@@ -397,6 +404,7 @@ impl HudMovie {
         dt: f64,
         force: bool,
     ) -> Result<(Option<FlashFrame>, Vec<u32>, bool), String> {
+        self.advance_objectives()?;
         let settings_generation = crate::platform::console::shared().generation();
         if self.settings_generation != settings_generation {
             Self::settings(&mut self.player)?;
@@ -448,7 +456,7 @@ impl HudMovie {
             }
         }
         if changed {
-            sounds = super::pause_menu::movie_notifications(&mut self.player, "").1;
+            sounds = self.objective_notifications();
             self.serial += 1;
             let started = self.timing_since.map(|_| std::time::Instant::now());
             self.last = Some(FlashFrame {

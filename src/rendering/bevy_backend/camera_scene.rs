@@ -51,6 +51,10 @@ impl Default for FxSimulation {
 }
 
 impl FxSimulation {
+    pub(crate) fn set_gameflow(&mut self, mailbox: std::sync::Arc<crate::gameplay::gameflow::program::Mailbox>) {
+        self.world_particles.set_gameflow(mailbox);
+    }
+
     pub(crate) fn prepare_entity_graphs(&mut self,
         definitions: &super::world_effects::WorldEffectDefinitions,
         sources: &crate::rendering::particles::world_sources::WorldFxSources,

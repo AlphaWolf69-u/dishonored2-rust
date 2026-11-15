@@ -363,6 +363,10 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
     }
     let loading_schedules = super::loading_screen::Schedules::capture(&mut app);
     app.add_plugins(auto_exposure::ExposurePlugin)
+        .add_systems(PreUpdate, super::objectives::connect)
+        .add_systems(PostUpdate, super::objectives::update
+            .after(crate::rendering::bevy_backend::camera_scene::simulate_effects))
+        .add_systems(PostUpdate,super::objective_markers::update.after(super::objectives::update).run_if(super::loading_screen::is_playing))
         .add_plugins(super::audio::SoundPlugin)
         .add_plugins(crate::rendering::bevy_backend::display_scene::DisplayPlugin)
         .add_plugins(super::alpha_depth_pass::AlphaDepthPassPlugin)

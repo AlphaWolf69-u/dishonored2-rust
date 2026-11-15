@@ -59,6 +59,21 @@ fn observe_decal_leases(
 
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-gameflow" => {
+            let catalog=dishonored2_rust::archive::Catalog::open(base)?;
+            let manager=args.first().map(String::as_str).unwrap_or("gameflow/manager.gameflowmanager");
+            let program=dishonored2_rust::gameplay::gameflow::program::Program::load(&catalog,manager)?;
+            println!("GAMEFLOW_PROGRAM manager={manager} inventory={:?}",program.inventory());
+            drop(program);
+            drop(catalog);
+        }
+        "inspect-audiographs" => {
+            #[cfg(feature="game")]
+            dishonored2_rust::app::inspect_audiograph_resources(base,args)?;
+            #[cfg(not(feature="game"))]
+            return Err("inspect-audiographs requires game feature".into());
+        }
+
         "inspect-character-selection" => {
             if args.is_empty() { return Err("inspect-character-selection requires installed level names".into()); }
             for name in args {

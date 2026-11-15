@@ -12,6 +12,7 @@ pub struct PickableItem {
     pub modifiers: ItemModifiers,
     item_type: Option<String>,
     audio: Option<(String, String)>,
+    pub audiograph_card: Option<String>,
     pickup_image: Option<String>,
     // The same read-generation lease covers every inherited inventory path.
     _source: Arc<()>,
@@ -154,6 +155,7 @@ impl PickableSources {
             (atom(&fields, "m_name").unwrap_or("").to_owned(), atom(&fields, "m_description").unwrap_or("").to_owned()));
         let item = Arc::new(PickableItem { path: key.clone(), readable, modifiers: modifiers_fields(&key, &fields)?,
             item_type: atom(&fields, "m_type").map(str::to_owned), audio,
+            audiograph_card: atom(&fields, "m_audiographCard").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned),
             pickup_image: atom(&fields, "m_pickupLogImage").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned), _source: fields.source.clone() });
         // Overlay requests bypass reuse, but their read generations remain
         // accounted until every old/new consumer releases its actual lease.

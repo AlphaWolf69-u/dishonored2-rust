@@ -196,6 +196,14 @@ impl WorldEffectFrames {
         }
     }
 
+    /// Borrow the ordinary unbound/published pose without allocating a bind
+    /// traversal. Bound entities still use the one existing resolver below.
+    pub fn published_frame(&self, entity:&str)->Result<Option<ReferenceFrame>,String>{
+        if let Some(frame)=self.published.get(entity){return Ok(Some(*frame));}
+        let Some(entry)=self.entities.get(entity) else{return Ok(None);};
+        if entry.parent.is_none(){return Ok(Some(entry.spawn));}
+        self.frame(entity)
+    }
     pub fn frame(&self, entity: &str) -> Result<Option<ReferenceFrame>, String> {
         let mut current = entity;
         let mut visited = HashSet::new();

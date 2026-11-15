@@ -581,6 +581,39 @@ impl PhysicsScene {
         Ok(scene)
     }
 
+    /// Demand admission of actual componentless idEntity marker targets.
+    /// Uses the same874c50/8a6180 identity and retirement roster as other
+    /// admitted entity headers. Derived actors keep their real class owner;
+    /// a reference to an unimplemented NPC/spawner never fabricates that actor.
+    pub(super) fn admit_marker_targets(&mut self, document:&entities::Document,
+        requested:&std::collections::HashSet<String>, live:&mut crate::gameplay::entity_lifetime::LiveEntities)->Result<(),String>{
+        let tag=self.types.intern_name(Some(b"MAIN"))?;
+        let class=self.types.classes().hierarchy().registration_order().iter().copied().find(|&index|{
+            self.types.classes().metadata(index).is_some_and(|metadata|self.types.classes().name_text(metadata.name)==Some(b"idEntity".as_slice()))
+        }).ok_or("base entity class metadata absent")?;
+        let mut count=0;
+        for definition in document.definitions.iter().filter(|definition|definition.kind=="entity" && requested.contains(&definition.id.to_ascii_lowercase())){
+            if live.find(&definition.id).is_some(){continue;}
+            let actual=definition.fields.iter().find_map(|(key,value)|match (key.as_str(),value){("class",entities::Value::Atom(value))=>Some(value.trim_matches('"')),_=>None});
+            if actual!=Some("idEntity"){continue;}
+            let edit=crate::gameplay::options::decl::scope(&definition.fields,"edit").unwrap_or(&[]);
+            if crate::gameplay::options::decl::scope(edit,"m_componentDecls").is_some_and(|fields|fields.iter().any(|(key,_)|key.starts_with("item_add["))){continue;}
+            let pose=entities::spawn_frame(definition)?;
+            let index=self.entities.len();
+            let shared=live.allocate_managed(Arc::from(definition.id.as_str()),class,None,0,tag)?;
+            self.entities.push(PhysicsEntity{name:definition.id.clone(),shared,components:EntityComponents::new(index),class,environment:None,
+                flags:0,entity_flags:0x001e_8008,entity_flags_d7:0,priority:0,frame:crate::gameplay::reference_frame::PublishedFrame{pose,
+                    ..crate::gameplay::reference_frame::ReferenceFrameCache::default().published()},timespace:0});
+            self.entity_flags_d4.push(0);
+            live.initialized(shared)?;
+            live.spawned(shared)?;
+            self.shared_indices.insert(shared,index);
+            count+=1;
+        }
+        eprintln!("OBJECTIVE_TARGET_LIFETIME admitted_base_entities={count}");
+        Ok(())
+    }
+
     fn water_component(&self, index: usize) -> Result<Option<ComponentHandle>, String> {
         let entity = self.entities.get(index).ok_or("water query entity absent")?;
         entity.components.find_component(self.dependency_ranges[0], [0x20, 0], |handle| {

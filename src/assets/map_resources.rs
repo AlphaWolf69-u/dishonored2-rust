@@ -46,7 +46,7 @@ const ENTRY: usize = 28;
 /// records, masks, and HeaderSelection publication. Keep these stages in
 /// agreement as each real class owner joins the existing preload pass.
 fn preload_declaration_kind(kind: &str) -> bool {
-    kind.eq_ignore_ascii_case("anim") || kind.eq_ignore_ascii_case("animset")
+    kind.eq_ignore_ascii_case("gameflowManager") || crate::assets::speech::is_kind(kind) || kind.eq_ignore_ascii_case("anim") || kind.eq_ignore_ascii_case("animset")
         || kind.eq_ignore_ascii_case("md6def") || kind.eq_ignore_ascii_case("inventoryLoadout")
         || kind.eq_ignore_ascii_case("inventoryItemCollection") || kind.eq_ignore_ascii_case("pblock")
         || kind.eq_ignore_ascii_case("inventoryitem")
@@ -353,6 +353,8 @@ impl LevelList {
             crate::assets::animation_rig::declaration::promote_bootstrap_records(catalog)?;
             crate::assets::parm_block::promote_bootstrap(catalog)?;
             crate::assets::fx::particle_resources::promote_bootstrap(catalog)?;
+            crate::gameplay::gameflow::program::promote_bootstrap(catalog)?;
+            crate::assets::speech::promote_bootstrap(catalog)?;
             crate::assets::wwise::event_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::auxiliary_resources::promote_bootstrap(catalog)?;
             crate::assets::wwise::rtpc_resources::promote_bootstrap(catalog)?;
@@ -474,6 +476,10 @@ impl LevelList {
             } else if resource.kind.eq_ignore_ascii_case("soundauxbus") {
                 crate::assets::wwise::auxiliary_resources::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;
+            } else if resource.kind.eq_ignore_ascii_case("gameflowManager") {
+                crate::gameplay::gameflow::program::register_preload(catalog, &resource.path, context as u8)?;
+            } else if crate::assets::speech::is_kind(&resource.kind) {
+                crate::assets::speech::register_preload(catalog, &resource.kind, &resource.path, context as u8, promote_preload_kinds)?;
             } else if resource.kind.eq_ignore_ascii_case("soundevent") {
                 crate::assets::wwise::event_resources::register_preload(catalog,
                     &resource.path, context as u8, promote_preload_kinds)?;

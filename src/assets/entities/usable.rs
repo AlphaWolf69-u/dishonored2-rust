@@ -5,6 +5,7 @@ use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct Step {
+    pub name: String,
     pub animation: Option<u8>,
     pub transition_animation: Option<u8>,
     pub transition_min_duration: f32,
@@ -28,7 +29,7 @@ pub struct Step {
 impl Default for Step {
     fn default() -> Self {
         // 14077a640: sparse list entries retain their constructed values.
-        Self { animation: None, transition_animation: None, transition_min_duration: 0.5,
+        Self { name: String::new(), animation: None, transition_animation: None, transition_min_duration: 0.5,
             effect: None, effect_origin: [0.0; 3],
             effect_axis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             effect_attached: true, wait_transition_end_to_play_effect: false,
@@ -355,6 +356,7 @@ fn parse(fields: &[(String, Value)]) -> Result<DefinitionData, String> {
             *axis = vector(matrix, &format!("mat[{row}]"), default)?;
         }
         *slot = Some(Step {
+            name: atom(data, "m_name").unwrap_or("").to_owned(),
             animation: animation_index(data, "m_animIdx")?,
             transition_animation: animation_index(data, "m_transitionAnimIdx")?,
             // 14077a640 initializes the per-state duration to 0.5 seconds
@@ -432,6 +434,25 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
                 (definition, scheduling)
             };
             result.push(Binding { entity: entity.id.clone(), definition, scheduling });
+        }
+    }
+    Ok(result)
+}
+
+/// 496610/496760: collectible and usable-state links on placed audiographs.
+/// Uses the same inherited and inline component resolver as ordinary usables.
+pub fn audiograph_bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<(String,String,String,String)>, String> {
+    let declarations = document.definitions.iter().filter(|d| d.kind == "component")
+        .map(|d| (d.id.as_str(),d)).collect::<HashMap<_,_>>();
+    let mut cache = HashMap::new();
+    let mut result = Vec::new();
+    for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
+        for (key,value) in child(child(&entity.fields,"edit"),"m_componentDecls") {
+            if !key.starts_with("item_add[") { continue; }
+            let Some(entry) = scope(Some(value)) else { continue };
+            let Some(fields) = components::entry_fields(entry,"cpntaudiograph",&declarations,&mut cache,&mut read)? else { continue };
+            let item = atom(&fields,"m_collectible").filter(|path| !path.is_empty() && *path != "NULL").ok_or("audiograph has no collectible")?;
+            result.push((entity.id.clone(),item.to_owned(),atom(&fields,"m_playbackStateName").unwrap_or("").to_owned(),atom(&fields,"m_stopStateName").unwrap_or("").to_owned()));
         }
     }
     Ok(result)

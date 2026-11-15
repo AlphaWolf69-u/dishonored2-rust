@@ -48,6 +48,8 @@ enum Command {
     HudOxygen(Option<super::hud_movie::Oxygen>),
     HudHealth(super::hud_movie::Health),
     HudMana(super::hud_movie::Mana),
+    HudObjectives(Vec<crate::gameplay::gameflow::ObjectiveUpdate>),
+    HudMarkers(Vec<super::objective_markers::Marker>),
     HudAdmission(bool),
     EndHud,
     /// While closed: build the next open's player ahead of time.
@@ -83,6 +85,8 @@ enum Event {
     HudReady(u64, f64, Option<Vec<String>>),
     HudFailed(u64, String),
     HudSound(u64, u32),
+    HudTasksNotified(u64,Vec<u32>),
+    HudMarkersReturned(u64,Vec<super::objective_markers::Marker>),
     TexturePending,
     Frame(FlashFrame),
     Sound(u32),
@@ -293,6 +297,8 @@ pub struct PauseMenu {
     hud_oxygen: Option<super::hud_movie::Oxygen>,
     hud_health: Option<super::hud_movie::Health>,
     hud_mana: Option<super::hud_movie::Mana>,
+    hud_objectives: Vec<crate::gameplay::gameflow::ObjectiveUpdate>,
+    marker_buffer: Option<Vec<super::objective_markers::Marker>>,
     hud_admission: Option<bool>,
     hud_starting_powers: Option<Vec<String>>,
     hud_interval: f64,
@@ -380,11 +386,20 @@ impl Default for PauseMenu {
             })
             .expect("pause movie thread");
         let hud_timing_since = std::env::var_os("DH2_DEBUG_HUD_TIMING").filter(|value| value == "1").map(|_| std::time::Instant::now());
-        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
+        Self { commands, events, textures, texture_wait, worker: Some(worker), open: false, cursor_restore: HashMap::new(), cursor_ui_open: false, modal: Default::default(), ready: false, prepared_for: None, debug_opened: false, debug_step: 0, debug_frames: (0, 0.0, None), hud_started: false, hud_epoch: 0, hud_in_flight: false, hud_in_flight_force: false, hud_in_flight_before_ready: false, hud_failed: false, hud_interaction: None, hud_oxygen: None, hud_health: None, hud_mana: None, hud_objectives: Vec::new(), marker_buffer: Some(Vec::new()), hud_admission: None, hud_starting_powers: None, hud_interval: 0.0, hud_elapsed: 0.0, hud_phase: 0.0, hud_force: true, hud_timing_since, hud_dispatches: 0, hud_acks: 0, hud_waits: 0, hud_wait_time: std::time::Duration::ZERO }
     }
 }
 
 impl PauseMenu {
+    pub(super) fn marker_buffer(&mut self)->Option<Vec<super::objective_markers::Marker>>{
+        if self.hud_interval<=0.||self.hud_failed{return None;}
+        self.marker_buffer.take()
+    }
+    pub(super) fn publish_markers(&mut self,buffer:Vec<super::objective_markers::Marker>){
+        let _=self.commands.send(Command::HudMarkers(buffer));
+    }
+    pub(super) fn queue_objectives(&mut self,mut updates:Vec<crate::gameplay::gameflow::ObjectiveUpdate>){self.hud_objectives.append(&mut updates);}
+
     pub(super) fn open_pause(&mut self, size: (u32, u32)) {
         if self.open { return; }
         let _ = self.commands.send(Command::Open { screen: pause_state::screen_size(size, size) });
@@ -424,9 +439,11 @@ impl PauseMenu {
         self.hud_oxygen = None;
         self.hud_health = None;
         self.hud_mana = None;
+        self.hud_objectives.clear();
         self.hud_admission = None;
         self.hud_starting_powers = None;
         self.hud_interval = 0.0;
+        self.marker_buffer=Some(Vec::new());
         self.hud_elapsed = 0.0;
         self.hud_phase = 0.0;
         self.hud_force = true;
@@ -643,6 +660,8 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
                 match movie.frame(dt, force) {
                     Ok((frame, sounds, ticked)) => {
                         for sound in sounds { let _ = outbox.send(Event::HudSound(hud_epoch, sound)); }
+                        let notified=movie.take_notified_tasks();
+                        if !notified.is_empty(){let _=outbox.send(Event::HudTasksNotified(hud_epoch,notified));}
                         let _ = outbox.send(Event::HudFrame(hud_epoch, frame, ticked));
                     }
                     Err(error) => { hud = None; let _ = outbox.send(Event::HudFailed(hud_epoch, error)); }
@@ -660,6 +679,11 @@ fn run(inbox: Receiver<Command>, outbox: Sender<Event>) {
             Command::HudMana(value) => if let Some(movie) = hud.as_mut() {
                 if let Err(error) = movie.mana(value) { warn!("HUD mana: {error}"); }
             },
+            Command::HudMarkers(markers)=>{
+                if let Some(movie)=hud.as_mut(){if let Err(error)=movie.markers(&markers){warn!("HUD objective markers: {error}");}}
+                let _=outbox.send(Event::HudMarkersReturned(hud_epoch,markers));
+            },
+            Command::HudObjectives(updates) => if let Some(movie)=hud.as_mut(){movie.queue_objectives(updates);},
             Command::HudAdmission(value) => if let Some(movie) = hud.as_mut() { movie.inactivity_admission(value); },
             Command::EndHud => { hud = None; modal.clear(); },
             Command::Loading { screen, map, frames } => {
@@ -938,6 +962,10 @@ pub fn update_pause_menu(
     let (mut keys, mut gamepad) = input_events;
     let (focused, mut player_state, mut documents) = hud_data;
     let modal_screen = windows.iter().next().map_or((1920,1080), |window| pause_state::screen_size((window.physical_width(),window.physical_height()), (window.physical_width(),window.physical_height())));
+    if menu.hud_interval>0.0&&!menu.hud_objectives.is_empty(){
+        let updates=std::mem::take(&mut menu.hud_objectives);
+        let _=menu.commands.send(Command::HudObjectives(updates));
+    }
     if !super::loading_screen::is_loading(&loading) {
         if let Err(error) = menu.modal.update(menu.hud_epoch, modal_screen, &mut journal_data,
             player_state.as_deref_mut().and_then(|runtime| runtime.player.as_mut()), &menu.commands, time.delta_secs_f64(), menu.open) {
@@ -1207,6 +1235,10 @@ pub fn update_pause_menu(
             Err(std::sync::mpsc::TryRecvError::Empty) => break,
         };
         match event {
+            Event::HudMarkersReturned(epoch,buffer)=>{if epoch==menu.hud_epoch{menu.marker_buffer=Some(buffer);}},
+            Event::HudTasksNotified(epoch,ids) => {
+                if epoch==menu.hud_epoch{journal_data.tasks_notified(ids);}
+            },
             Event::Modal(event) => {
                 if event.epoch == menu.hud_epoch {
                     if let journal::Notification::ScreenFx(on) = &event.payload {

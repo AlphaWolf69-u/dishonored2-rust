@@ -78,6 +78,55 @@ impl JointFrames {
         Ok(result)
     }
 
+    /// Marker tags are optional (676c90/6777d0). Acquire through the existing
+    /// rig owner behind loading; retain only demanded joint frames. Temporary
+    /// rest palettes and rig leases end before publishing the level.
+    pub(super) fn prepare_optional_tags(&mut self, catalog: &Catalog, models: &[PlacedModel],
+        requests: &[(usize, String)], machinery: &super::machinery::AmbientMachinery,
+        animations: &super::usable_animation::UsableAnimations) -> Result<(), String> {
+        let mut rigs = HashMap::new();
+        let mut rest = HashMap::new();
+        for (placement, name) in requests {
+            if self.resolve(*placement, name)?.is_some() { continue; }
+            let model = models.get(*placement).ok_or("marker placement is absent")?;
+            let Some(declaration) = crate::bmd6::declaration_path(&model.resource_path) else { continue; };
+            let rig = if let Some(rig) = animations.prepared_rig(*placement) { rig } else {
+                match rigs.entry(model.resource_path.clone()) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let (binding, _) = crate::assets::animation_rig::declaration::resolve_binding(catalog,
+                            &model.resource_path, crate::assets::animation_rig::declaration::LoadContext::Level)?;
+                        if !binding.is_some_and(|binding| binding.name.is_some()) { continue; }
+                        let path = declaration.strip_prefix("generated/decls/md6def/")
+                            .and_then(|path| path.strip_suffix(".decl")).ok_or("marker MD6 path is invalid")?;
+                        entry.insert(crate::assets::animation_rig::Rig::acquire(catalog, path)?)
+                    }
+                }
+            };
+            let Some((joint, offset, orientation)) = rig.optional_tag_quaternion_in_group("_info", name)? else { continue; };
+            let joint = i16::try_from(joint).map_err(|_| "marker joint exceeds signed representation")?;
+            let matrix = match animations.initial_joint_matrix(*placement, joint, &rig.skeleton)? {
+                Some(matrix) => matrix,
+                None => match machinery.initial_joint_matrix(*placement, joint, &rig.skeleton)? {
+                    Some(matrix) => matrix,
+                    None => {
+                        if !rest.contains_key(&rig.path) {
+                            rest.insert(rig.path.clone(), crate::edge_skeleton::pose_matrices(&rig.skeleton.rest, &rig.skeleton.hierarchy, &rig.root)?);
+                        }
+                        *rest[&rig.path].get(joint as usize).ok_or("marker tag joint is outside skeleton")?
+                    }
+                }
+            };
+            let initial = matrix_frame(matrix);
+            let frames = self.placements.entry(*placement).or_insert_with(|| PlacementFrames {
+                scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
+            });
+            frames.joints.entry(joint).or_insert(Frames { initial, current: initial });
+            frames.bindings.insert(name.clone(), JointBinding { joint, offset: offset.to_array(), orientation: orientation.to_array(), from_tag: true });
+        }
+        Ok(())
+    }
+
     pub(super) fn resolve(&self, placement: usize, tag: &str) -> Result<Option<JointBinding>, String> {
         Ok(self.placements.get(&placement).and_then(|entry| entry.bindings.get(tag)).copied())
     }

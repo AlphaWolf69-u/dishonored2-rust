@@ -78,6 +78,7 @@ pub fn inspect_runtime_lifecycles(
             | "fx"
             | "audio"
             | "music"
+            | "objectives"
             | "paused-exit"
             | "loading-audio"
             | "ui-exit"
@@ -282,6 +283,14 @@ pub fn inspect_runtime_lifecycles(
                         complete = elapsed >= 5.0 && runtime.app.world().get_non_send_resource::<super::pause_menu::PauseMenu>().is_some_and(|menu| menu.pause_ready())
                             && runtime.app.world().resource::<crate::gameplay::game_clock_runtime::GamePaused>().0;
                         if complete { eprintln!("PAUSED_AUDIO_EXIT actual_menu_ready=true"); }
+                    }
+                    "objectives" if playing => {
+                        complete = playing_since.is_some_and(|time|time.elapsed().as_secs_f64()>=5.0);
+                        if complete {
+                            let progress=runtime.app.world().get_resource::<crate::gameplay::gameflow::State>().ok_or("gameflow owner is absent")?;
+                            eprintln!("{}",progress.diagnostic());
+                            if progress.mission().is_none() { return Err("authored LoadingEnd did not activate a mission".into()); }
+                        }
                     }
                     "music" if playing => {
                         // Observe the actual level manager and output clock;

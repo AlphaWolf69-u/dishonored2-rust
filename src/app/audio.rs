@@ -17,6 +17,7 @@ mod session;
 pub(super) use session::{close_admission as close_session_admission, work as acquire_audio_work, Session as AudioSession};
 pub(super) mod level;
 pub(super) mod music;
+pub(super) mod audiographs;
 pub(super) use contacts::ContactSound;
 
 #[derive(Message, Clone, Copy)]
@@ -502,6 +503,7 @@ fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut
 }
 
 pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
+    audiographs::stop(world)?;
     music::stop(world)?;
     world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
     world.run_system_cached(play_events).map_err(|error| error.to_string())?;
@@ -531,7 +533,7 @@ pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, S
             return Err(format!("world FX sound retirement failed: {error}"));
         }
     }
-    Ok(!pending && !retiring && !fx_pending)
+    Ok(audiographs::drained(world)? && !pending && !retiring && !fx_pending)
 }
 
 pub(super) fn begin_level(world: &mut World) {
@@ -606,6 +608,7 @@ pub(super) fn initialize_resources(app: &mut App) {
         .init_resource::<RetiringSounds>()
         .init_resource::<PendingSounds>()
         .init_resource::<SoundCompletions>()
+        .init_resource::<audiographs::Audiographs>()
         .init_resource::<SoundDecodeQueue>()
         .init_resource::<AudioMix>()
         .init_resource::<bevy_backend::Engine>()
@@ -624,7 +627,7 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), effects::update, update_playing_volume, play_events, reap_retiring_objects)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), audiographs::update, effects::update, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }

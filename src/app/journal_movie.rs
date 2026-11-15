@@ -257,9 +257,8 @@ impl Movie {
         player.set_value("journalData.notes.hasNewMaps", any_new.into()).map_err(|e| player.describe(&e))?;
         // 14051e950 reads the selected live mission and only journal-visible
         // objectives in statuses 2..5. Definitions alone do not imply progress.
-        // No live progression producer exists in the current scalar host.
-        // Its absence leaves the movie's authored defaults; never synthesize
-        // a mission or status snapshot from the selected map.
+        // The live gameflow owner supplies progression. An absent owner leaves
+        // authored defaults; the selected map is never a mission substitute.
         if let Some(gameflow) = gameflow {
         player.set_value("journalData.mission.showHistory", gameflow.show_history().into()).map_err(|e| player.describe(&e))?;
         if let Some(mission) = gameflow.mission() {
@@ -374,8 +373,12 @@ impl Movie {
                 .map(|entry| entry.declaration.as_ref()))
     }
 
-    /// The native callback writes cost=0 and refreshes runes only on a
-    /// successful inventory purchase (140521580 / 14078d1f0).
+    /// 140520240 updates reversed Journal rows when playback changes.
+    pub(super) fn set_playing_audiograph(&mut self, playing: Option<u32>) -> Result<(), String> {
+        let items = self.audiographs.iter().map(|item| item.item_id).collect::<Vec<_>>();
+        for item in items { self.audiograph_playing(item, playing == Some(item))?; }
+        Ok(())
+    }
     pub(super) fn audiograph_playing(&mut self, item: u32, playing: bool) -> Result<(), String> {
         if let Some(index) = self.audiographs.iter().rev().position(|entry| entry.item_id == item) {
             self.player.call_path_method("journalData.notes.audiographsData", "updatePlayingStatusAt", &[(index as i32).into(), playing.into()])
@@ -391,6 +394,7 @@ impl Movie {
         Ok(())
     }
 
+    /// 140521580/14078d1f0 refresh cost and runes only after a successful purchase.
     pub(super) fn purchase_result(&mut self, success: bool, runes: u32) -> Result<(), String> {
         if let Some(object) = self.purchase_object.take() {
             if success {

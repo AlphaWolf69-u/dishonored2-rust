@@ -2082,7 +2082,10 @@ pub(super) fn prepare(
             &mut resolver, meshes, commands));
         let mut simulation = crate::rendering::bevy_backend::camera_scene::FxSimulation::default();
         simulation.prepare_entity_graphs(graphs, &sources, live_entities)?;
-        commands.insert_resource(simulation);
+        commands.queue(move |world:&mut World|{
+            super::objectives::attach(world,&mut simulation);
+            world.insert_resource(simulation);
+        });
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
     commands.insert_resource(super::texture_streaming::environment_images::OceanImageSlots(ocean_image_slots));

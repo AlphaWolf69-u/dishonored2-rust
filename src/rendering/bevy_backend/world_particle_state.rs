@@ -439,6 +439,10 @@ impl Drop for WorldParticleState {
     }
 }
 impl WorldParticleState {
+    pub(crate) fn set_gameflow(&mut self, mailbox: Arc<crate::gameplay::gameflow::program::Mailbox>) {
+        self.graphs.set_gameflow(mailbox);
+    }
+
     /// One shared graph manager is constructed before source startup callbacks.
     /// Real admitted entities own gameplay roots; other existing map FX roots
     /// keep their explicitly host-scoped relevance filter in this same manager.
@@ -1147,6 +1151,7 @@ impl WorldParticleState {
             }
             self.collect(index);
         }
+        for error in self.graphs.poll_gameflow(){self.report(error);}
         self.graphs.events.begin_update();
         while let Some(event) = self.graphs.events.pop() {
             let (index, node, port) = match event {
