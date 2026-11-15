@@ -1547,9 +1547,15 @@ pub(super) fn prepare(
             None => Arc::new(crate::assets::inventory_item::ReadableLimits::load(catalog,
                 super::player::character_name(character))?),
         };
+        // 140455850 resolves powers over the inventory's item entries
+        // (1406144e0), which hold the loadout's items whether or not the
+        // collection lists them (Corvo's collection lists no power items).
+        let loadout = crate::assets::inventory_item::default_loadout_definition(catalog,
+            super::player::character_name(character))?;
         let powers = super::powers::Powers::prepare(catalog,
             &declarations.powers, &declarations.outsider_mark, character,
-            limits.assignments().map(|(path, _)| path))?;
+            limits.assignments().map(|(path, _)| path)
+                .chain(loadout.iter().flat_map(|loadout| loadout.assignments()).map(|(path, _)| path)))?;
         // Actual owned power entities prepare their family dependencies in
         // the owned-target worker; Journal metadata alone does not load them.
         commands.insert_resource(super::power_world::PowerWorld::prepare(catalog, &[])?);

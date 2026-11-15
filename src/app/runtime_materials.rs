@@ -1210,7 +1210,7 @@ fn coordinate_inner(
         requests.extend(
             equipment
                 .iter()
-                .flat_map(|request| request.descriptor.geometry.surfaces.iter())
+                .flat_map(|request| request.descriptor.visual.iter().flat_map(|visual| visual.geometry.surfaces.iter()))
                 .filter(|surface| !crate::material::is_null_material(&surface.material_path))
                 .map(|surface| (surface.material_path.clone(), MaterialGeometry::Model)),
         );

@@ -52,7 +52,11 @@ struct Entry {
     weapon: Arc<Weapon>,
     ammunition: String,
     path: String,
-    selection: Selection,
+    /// The weapon tag the child binds to (empty: the entity frame).
+    tag: String,
+    /// Resolved once the child's model is known (879890 selects the parent
+    /// md6 property group by it).
+    selection: Option<Selection>,
     binding: Option<Binding>,
     explicit_identity: bool,
     animation: Animation,
@@ -140,10 +144,7 @@ pub(super) fn select(
         };
         // Gun44dae0/crossbow62b1b0 initialize both tag strings with
         //131ae0: omitted properties are empty entity-frame bindings752900.
-        let tag = tag.unwrap_or("");
-        // Validate while this immutable rig is borrowed, before any worker can
-        // reserve/publish child draw entities. There is no fallback socket.
-        let selection = Selection::read(&weapon.rig, tag)?;
+        let tag = tag.unwrap_or("").to_owned();
         let live = world
             .get_resource::<LiveEntities>()
             .ok_or("ammunition has no managed owner")?;
@@ -170,7 +171,8 @@ pub(super) fn select(
                 weapon,
                 ammunition: ammunition.to_owned(),
                 path: path.to_owned(),
-                selection,
+                tag,
+                selection: None,
                 binding: None,
                 explicit_identity: false,
                 animation: Animation::Static,
@@ -233,12 +235,17 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
             let Some(descriptor) = entry.descriptor.as_ref() else {
                 continue;
             };
+            // Validated before any child draw entity is reserved or published.
+            // There is no fallback socket.
+            let selection = match entry.selection {
+                Some(selection) => selection,
+                None => *entry.selection.insert(Selection::read(&entry.weapon.visual.as_ref().ok_or("ammunition weapon has no render model")?.rig, &descriptor.model, &entry.tag)?),
+            };
             if entry.binding.is_none() {
                 let Some((parent, _)) = super::equipment_identity::frame(world, weapon) else {
                     continue;
                 };
-                let joint = entry
-                    .selection
+                let joint = selection
                     .joint()
                     .and_then(|joint| {
                         world
@@ -247,10 +254,7 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                             .and_then(|player| player.equipment_joint_world(weapon, joint))
                     })
                     .map(frame);
-                entry.binding =
-                    entry
-                        .selection
-                        .bind(entry.explicit_identity, parent, joint, parent);
+                entry.binding = selection.bind(entry.explicit_identity, parent, joint, parent);
                 if entry.binding.is_none() {
                     continue;
                 }
@@ -457,7 +461,7 @@ pub(super) fn current_frame(
         .get_resource::<Attachments>()?
         .live
         .get(&Key::ammo(weapon))?;
-    match entry.selection {
+    match entry.selection? {
         // The caller already resolved this authored model tag this frame.
         Selection::Tag { .. } => tag_frame.map(frame),
         Selection::Entity => {
@@ -715,7 +719,9 @@ fn advance_upgrades(world: &mut World, owner: &mut Attachments) -> Result<(), St
         // vector and static/entity channel ordering.
         let selections = definitions
             .iter()
-            .map(|upgrade| Selection::read(&descriptor.rig, &upgrade.tag))
+            .map(|upgrade| upgrade.attachments.iter()
+                .map(|child| child.as_ref().map(|child| Selection::read(&descriptor.visual.as_ref().ok_or("upgraded weapon has no render model")?.rig, &child.model, &upgrade.tag)).transpose())
+                .collect::<Result<Vec<_>, _>>())
             .collect::<Result<Vec<_>, _>>()?;
         for (index, upgrade) in definitions.iter().enumerate() {
             for (channel, child) in upgrade.attachments.iter().enumerate() {
@@ -729,7 +735,8 @@ fn advance_upgrades(world: &mut World, owner: &mut Attachments) -> Result<(), St
                         weapon: descriptor.clone(),
                         ammunition: upgrade.declaration.clone(),
                         path: child.entity.clone(),
-                        selection: selections[index],
+                        tag: upgrade.tag.clone(),
+                        selection: selections[index][channel],
                         binding: None,
                         explicit_identity: true,
                         animation: upgrade.animation,

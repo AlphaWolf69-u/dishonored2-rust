@@ -149,19 +149,20 @@ impl PreparedScene {
         self.select_group(scene, target, Some(model))
     }
 
+    /// The scene's groups cast to `target`, in scene order.
+    fn groups_on<'a>(&'a self, scene: usize, target: usize, model: Option<&'a str>) -> impl Iterator<Item = usize> + 'a {
+        self.decl.scenes[scene].groups.iter().enumerate()
+            .filter(move |(_, g)| !model.is_some_and(|model| !g.specific_models.is_empty() && !g.specific_models.iter().any(|value| value == model)))
+            .filter(move |(_, g)| self.decl.group_name(g.group).and_then(cast_target) == Some(target))
+            .map(|(i, _)| i)
+    }
+
+    /// The group whose anim track drives `target`. 8542b0 casts PlayerBody
+    /// and PlayerCamera to the same entity; each group's track write
+    /// (1407e2ad0 -> 1406eb410) clears and rebuilds that entity's midnight
+    /// node, so the last group in scene order determines the tree.
     fn select_group(&self, scene: usize, target: usize, model: Option<&str>) -> Result<Option<usize>, String> {
-        let s = &self.decl.scenes[scene];
-        let mut found = None;
-        for (i, g) in s.groups.iter().enumerate() {
-            if model.is_some_and(|model| !g.specific_models.is_empty() && !g.specific_models.iter().any(|value| value == model)) { continue; }
-            if self.decl.group_name(g.group).and_then(cast_target) == Some(target) {
-                if found.is_some() {
-                    return Err("a midnight scene with two groups on one player tree is not decoded".into());
-                }
-                found = Some(i);
-            }
-        }
-        Ok(found)
+        Ok(self.groups_on(scene, target, model).last())
     }
 
     fn target_clips(&self, scene: usize, target: usize) -> &[usize] {
@@ -229,11 +230,46 @@ struct Instance {
     graph: GraphState,
 }
 
-struct GraphState { booleans: Vec<bool>, loops: Vec<i32> }
+/// 140652ed0's per-name random state (1407cd330): the output count, the
+/// outputs already drawn (20 bits) and m_autoDisable / m_looping.
+#[derive(Clone, Copy)]
+struct RandomState { count: u32, used: u32, auto_disable: bool, looping: bool }
+
+struct GraphState { booleans: Vec<bool>, ints: Vec<i32>, randoms: Vec<Option<RandomState>>, loops: Vec<i32> }
 impl GraphState {
     fn new(scene: &PreparedScene) -> Self {
+        use crate::entities::midnight::IntCondition;
+        // 1407ce5f0 creates one variable or random state per name; lookups
+        // by name (140195650) find the first int node carrying it.
+        let first_int = |name: &str| scene.decl.int_nodes.iter().find(|node| node.name == name).unwrap();
         Self { booleans: scene.decl.bool_nodes.iter().map(|node|
-            scene.decl.bool_nodes.iter().find(|first| first.name == node.name).unwrap().default).collect(), loops: vec![-1; scene.decl.loops.len()] }
+            scene.decl.bool_nodes.iter().find(|first| first.name == node.name).unwrap().default).collect(),
+            ints: vec![0; scene.decl.int_nodes.len()],
+            randoms: scene.decl.int_nodes.iter().map(|node| match first_int(&node.name) {
+                first @ crate::entities::midnight::CondInt { condition: IntCondition::Random { auto_disable, looping }, .. } =>
+                    Some(RandomState { count: first.outputs.len() as u32, used: 0, auto_disable: *auto_disable, looping: *looping }),
+                _ => None,
+            }).collect(),
+            loops: vec![-1; scene.decl.loops.len()] }
+    }
+    fn int_slot(scene: &PreparedScene, index: usize) -> usize {
+        scene.decl.int_nodes.iter().position(|node| node.name == scene.decl.int_nodes[index].name).unwrap()
+    }
+    /// 140652ed0 with the game LCG (1408ac150): -1 when every output of an
+    /// auto-disabling node has been drawn.
+    fn draw(state: &mut RandomState, random: &mut u32) -> Result<i32, String> {
+        let mut next = || { *random = random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f); (*random >> 10) & 0x7fff };
+        if !state.auto_disable {
+            if state.count == 0 { return Err("Midnight random condition has no outputs".into()); }
+            let value = next() % state.count;
+            state.used |= (1 << (value & 0x1f)) & 0xfffff;
+            return Ok(value as i32);
+        }
+        let open: Vec<u32> = (0..state.count).filter(|&index| state.used & (1 << (index & 0x1f)) & 0xfffff == 0).collect();
+        if open.is_empty() { return Ok(-1); }
+        let value = open[(next() as i32 % open.len() as i32) as usize];
+        if state.looping && open.len() == 1 { state.used = 0; } else { state.used |= (1 << (value & 0x1f)) & 0xfffff; }
+        Ok(value as i32)
     }
     fn loop_slot(scene: &PreparedScene, index: usize) -> usize {
         scene.decl.loops.iter().position(|node| node.name == scene.decl.loops[index].name).unwrap()
@@ -330,7 +366,7 @@ impl Midnight {
     /// 7d4cb0 -> 7cb9e0: the last argument forces an active loop's immediate
     /// break; it is not a message payload. Deferred breaks take the authored
     /// end output on the next visit to the named graph loop.
-    pub fn send_message(&mut self, handle: u32, name: &str, force: bool, cast: Cast) -> Result<bool, String> {
+    pub fn send_message(&mut self, handle: u32, name: &str, force: bool, cast: Cast, random: &mut u32) -> Result<bool, String> {
         let Some(i) = self.instances.iter().position(|instance| instance.handle == handle) else { return Ok(false) };
         let instance = &mut self.instances[i];
         let Some((index, node)) = instance.scene.decl.loops.iter().enumerate().find(|(_, node)| node.name == name) else { return Ok(false) };
@@ -342,7 +378,7 @@ impl Midnight {
         let parts = instance.parts;
         let md6 = instance.md6.clone();
         let next = Self::resolve_graph(&prepared, prepared.decl.scenes[instance.current].next,
-            md6.each_ref().map(String::as_str), &mut instance.graph)?;
+            md6.each_ref().map(String::as_str), &mut instance.graph, random)?;
         let entered = next.map(|index| self.enter(&prepared, index, cast, parts, md6.each_ref().map(String::as_str))
             .map(|(clips, events)| (index, clips, events))).transpose()?;
         Self::interrupt_sounds(&self.instances[i], &mut self.sound_requests);
@@ -482,12 +518,9 @@ impl Midnight {
 
     /// FUN_1407cc650: resolve a graph element; CONDMD6 (FUN_1407ccdc0)
     /// reads the md6 of the entity its node's group is cast to (`md6`:
-    /// body, left arm, right arm).
-    pub fn resolve(scene: &PreparedScene, next: Next, md6: [&str; TARGETS]) -> Result<Option<usize>, String> {
-        Self::resolve_graph(scene, next, md6, &mut GraphState::new(scene))
-    }
-
-    fn resolve_graph(scene: &PreparedScene, mut next: Next, md6: [&str; TARGETS], graph: &mut GraphState) -> Result<Option<usize>, String> {
+    /// body, left arm, right arm). `random` is the game LCG (1408ac150)
+    /// random int conditions draw from.
+    fn resolve_graph(scene: &PreparedScene, mut next: Next, md6: [&str; TARGETS], graph: &mut GraphState, random: &mut u32) -> Result<Option<usize>, String> {
         // The native walker has no fixed graph-depth limit. A host validation
         // rejects a repeated pure CONDMD6 node instead of truncating valid
         // declaration chains at an arbitrary number of elements.
@@ -520,6 +553,24 @@ impl Midnight {
                     if !visited.insert(uid) { return Err("midnight graph does not reach a scene".into()); }
                     if let Some((index, node)) = scene.decl.bool_nodes.iter().enumerate().find(|(_, node)| node.uid == uid) {
                         next = if graph.booleans[index] { node.when_true } else { node.when_false };
+                        continue;
+                    }
+                    if let Some((index, node)) = scene.decl.int_nodes.iter().enumerate().find(|(_, node)| node.uid == uid) {
+                        // 1407cccd0: output `value` below the output count,
+                        // otherwise (and for -1) the default output.
+                        use crate::entities::midnight::IntCondition;
+                        let slot = GraphState::int_slot(scene, index);
+                        let value = match node.condition {
+                            IntCondition::Static => graph.ints[slot],
+                            IntCondition::Kiscule => -1,
+                            IntCondition::Random { .. } => GraphState::draw(
+                                graph.randoms[slot].as_mut().ok_or("Midnight random condition has no state")?, random)?,
+                        };
+                        next = match usize::try_from(value) {
+                            Ok(value) if value < node.outputs.len() => node.outputs[value],
+                            _ if value == -1 || value >= node.outputs.len() as i32 => node.default,
+                            _ => return Err(format!("Midnight int condition {} has no output {value}", node.name)),
+                        };
                         continue;
                     }
                     if let Some((index, node)) = scene.decl.loops.iter().enumerate().find(|(_, node)| node.uid == uid) {
@@ -581,37 +632,40 @@ impl Midnight {
                     main: key.main_clip,
                 });
             }
-            events.extend(group.events.iter().map(|event| (event.clone(), target)));
+            // Every group cast to this tree keeps its own event track.
+            for g in prepared.groups_on(index, target, Some(md6[target])) {
+                events.extend(prepared.decl.scenes[index].groups[g].events.iter().map(|event| (event.clone(), target)));
+            }
         }
         Ok((schedules, events))
     }
 
     /// FUN_1408549c0 → FUN_1407d6040 / FUN_1407d9270: start at t = 0 (the
     /// first data is written now). An interrupted previous scene snapshots.
-    pub fn start(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast) -> Result<u32, String> {
-        self.start_with_parts(prepared, md6, rate, cast, 1)
+    pub fn start(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, random: &mut u32) -> Result<u32, String> {
+        self.start_with_parts(prepared, md6, rate, cast, 1, random)
     }
 
     /// `parts` is the cast mask (1 body, 2 left arm, 4 right arm).
-    pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8) -> Result<u32, String> {
-        self.start_with_parts_at_seconds(prepared, md6, rate, cast, parts, 0.0)
+    pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, random: &mut u32) -> Result<u32, String> {
+        self.start_with_parts_at_seconds(prepared, md6, rate, cast, parts, 0.0, random)
     }
 
     /// 86c6a0 -> 7d91c0 -> 7d2160: chained attacks start at the authored
     /// scene offset. Keys before that time are not replayed; points exactly
     /// at the offset and clips containing it initialize there (7dfbd0).
-    pub fn start_with_parts_at_seconds(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32) -> Result<u32, String> {
-        self.start_with_bools(prepared, md6, rate, cast, parts, seconds, &[])
+    pub fn start_with_parts_at_seconds(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32, random: &mut u32) -> Result<u32, String> {
+        self.start_with_bools(prepared, md6, rate, cast, parts, seconds, &[], random)
     }
 
     /// 8549c0 invokes OnSceneStarted before Start resolves its first node.
     /// These named values therefore apply before the initial graph walk.
-    pub fn start_with_bools(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32, booleans: &[(&str, bool)]) -> Result<u32, String> {
+    pub fn start_with_bools(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32, booleans: &[(&str, bool)], random: &mut u32) -> Result<u32, String> {
         let mut graph = GraphState::new(prepared);
         for (index, node) in prepared.decl.bool_nodes.iter().enumerate() {
             if let Some((_, value)) = booleans.iter().rev().find(|(name, _)| *name == node.name) { graph.booleans[index] = *value; }
         }
-        let Some(index) = Self::resolve_graph(prepared, prepared.decl.first, md6, &mut graph)? else { return Ok(0) };
+        let Some(index) = Self::resolve_graph(prepared, prepared.decl.first, md6, &mut graph, random)? else { return Ok(0) };
         let time = (seconds * 1000.0) as i32;
         if time > prepared.decl.scenes[index].length_ms { return Err("Midnight StartTime is superior to first scene length".into()); }
         let (clips, events) = self.enter(prepared, index, cast, parts, md6)?;
@@ -653,7 +707,7 @@ impl Midnight {
 
     /// The manager update before the component stages: the time step, the
     /// events (returned as (event name, handle)) and the anim data.
-    pub fn advance(&mut self, dt: f32, cast: Cast) -> Result<Vec<(String, u32)>, String> {
+    pub fn advance(&mut self, dt: f32, cast: Cast, random: &mut u32) -> Result<Vec<(String, u32)>, String> {
         let mut messages = Vec::new();
         let mut ended_instances = Vec::new();
         for inst in &mut self.instances {
@@ -704,7 +758,7 @@ impl Midnight {
             let i = self.instances.iter().position(|inst| inst.handle == handle).unwrap();
             let inst = &mut self.instances[i];
             let (prepared, md6, parts) = (inst.scene.clone(), inst.md6.clone(), inst.parts);
-            match Self::resolve_graph(&prepared, prepared.decl.scenes[inst.current].next, md6.each_ref().map(String::as_str), &mut inst.graph)? {
+            match Self::resolve_graph(&prepared, prepared.decl.scenes[inst.current].next, md6.each_ref().map(String::as_str), &mut inst.graph, random)? {
                 None => {
                     self.instances.remove(i);
                 }

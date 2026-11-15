@@ -144,10 +144,11 @@ pub(super) fn prepare_equipment_model(
     commands: &mut super::setup_commands::SetupCommands,
 ) -> Result<PreparedEquipmentModel, String> {
     let (hack, parameter) = arm_model_depth_hack(player_depth_hack);
+    let visual = descriptor.visual.as_ref().ok_or("equipment without a render model has no draw model")?;
     let mut model = prepare_model(
-        descriptor.model.clone(),
-        descriptor.geometry.clone(),
-        descriptor.rig.skeleton.clone(),
+        visual.model.clone(),
+        visual.geometry.clone(),
+        visual.rig.skeleton.clone(),
         hack,
         parameter,
         &[],
@@ -159,7 +160,7 @@ pub(super) fn prepare_equipment_model(
     if model.surfaces.is_empty() {
         return Err(format!(
             "{} has no drawable equipment surfaces",
-            descriptor.model
+            visual.model
         ));
     }
     model.managed_entity = Some(entity);

@@ -239,6 +239,7 @@ fn player_bytes(scene: &MidnightScene) -> usize {
         + vector_bytes(&scene.nodes) + scene.nodes.iter().map(|node| node.group.capacity() + vector_bytes(&node.next)
             + node.next.iter().map(|(name, _)| name.capacity()).sum::<usize>()).sum::<usize>()
         + vector_bytes(&scene.bool_nodes) + scene.bool_nodes.iter().map(|node| node.name.capacity()).sum::<usize>()
+        + vector_bytes(&scene.int_nodes) + scene.int_nodes.iter().map(|node| node.name.capacity() + vector_bytes(&node.outputs)).sum::<usize>()
         + vector_bytes(&scene.loops) + scene.loops.iter().map(|node| node.name.capacity()).sum::<usize>()
         + vector_bytes(&scene.scenes) + scene.scenes.iter().map(|scene| vector_bytes(&scene.groups) + scene.groups.iter().map(|group|
             vector_bytes(&group.specific_models) + group.specific_models.iter().map(String::capacity).sum::<usize>()

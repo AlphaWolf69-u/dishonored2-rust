@@ -85,6 +85,8 @@ struct PreparedScenes<'a, 'b> {
     md6: [&'b str; super::midnight::TARGETS],
     animations: super::midnight::Cast<'b>,
     sounds: &'a mut Vec<u32>,
+    /// The game LCG (gameLocal+0x600f8) random graph conditions draw from.
+    random: &'a mut u32,
     wind_loop: Option<bool>,
     cancel_event: Option<u32>,
 }
@@ -96,7 +98,7 @@ impl SceneHost for PreparedScenes<'_, '_> {
             .fold(0u8, |mask, (index, _)| mask | (1 << index));
         let booleans = [("ShoudLoop", self.wind_loop.unwrap_or(false))];
         self.midnight.start_with_bools(scene, self.md6, 1.0, self.animations, parts, 0.0,
-            if self.wind_loop.is_some() { &booleans } else { &[] })
+            if self.wind_loop.is_some() { &booleans } else { &[] }, self.random)
     }
     fn stop(&mut self, handle: u32) { self.midnight.stop(handle); }
     fn finished(&self, handle: u32) -> bool { self.midnight.finished(handle) }
@@ -115,7 +117,7 @@ pub fn can_use(frame: &Frame<'_>, decl: &UsePowerDecl) -> bool {
 pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> bool {
     let runtime = &mut *frame.powers;
     let Some(cast) = runtime.selected.as_mut() else { return false };
-    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
+    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, random: frame.random, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
     let admission = cast.admission(runtime.now, frame.mana, frame.attributes, frame.mana_replenishes,
         &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
             check_recharge_target: false, cost_factor: runtime.cost_factor,
@@ -164,7 +166,7 @@ pub fn update_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> 
         &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
             check_recharge_target: false, cost_factor: runtime.cost_factor,
             health_overcast: runtime.health_overcast, health: frame.health }) != Admission::Allowed { return false; }
-    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
+    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, random: frame.random, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")), cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
     let step = runtime.action_state.update(frame.dt, &decl.action, frame.controller.down(runtime.action_button),
         scenes.finished(runtime.action_state.scene), false);
     match step { ActionStep::Execute if cast.phase() == Phase::Aiming => runtime.execution_requested = true,
@@ -181,7 +183,7 @@ pub fn update_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> 
                 if cast.settings.windblast.as_ref().is_some_and(|settings| runtime.action_state.elapsed() < settings.hold_minimal_duration_for_shockwave) {
                     scenes.midnight.set_bool(runtime.action.entry_handle(), "ShoudLoop", false);
                 }
-                if let Err(error) = scenes.midnight.send_message(runtime.action_state.scene, "Loop", false, scenes.animations) {
+                if let Err(error) = scenes.midnight.send_message(runtime.action_state.scene, "Loop", false, scenes.animations, scenes.random) {
                     scenes.midnight.last_start_error = Some(error); return false;
                 }
                 runtime.wind_released = true;
@@ -195,7 +197,7 @@ pub fn deactivate_use(frame: &mut Frame<'_>, sliding: bool) {
     let runtime = &mut *frame.powers;
     if let Some(cast) = runtime.selected.as_mut() {
         if runtime.active { runtime.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
-        let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: None, cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
+        let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, random: frame.random, wind_loop: None, cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
         if let Err(error) = runtime.action.finish(cast, sliding, &mut scenes) {
             scenes.midnight.last_start_error = Some(error);
             runtime.action.stop(&mut scenes); cast.finish();
@@ -276,7 +278,7 @@ impl Player {
             if self.powers.active { self.powers.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
             let mut scenes = PreparedScenes { scenes: &self.powers.scenes, fallback: &self.scenes,
                 midnight: &mut self.body.midnight, md6: super::body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment),
-                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events, wind_loop: None, cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
+                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events, random: &mut self.random, wind_loop: None, cancel_event: cast.settings.cancel_sound_event.as_ref().map(|event| event.id) };
             self.powers.action.stop(&mut scenes); cast.finish();
         }
         self.powers.active = false; self.powers.cancel = false;

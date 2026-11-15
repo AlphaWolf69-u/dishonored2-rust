@@ -292,7 +292,7 @@ impl Models {
     ) -> Result<(), String> {
         for (&id, model) in &mut self.live {
             let render = renders.iter().find(|render| {
-                render.managed_entity == Some(model.parent) && render.model == model.weapon.model
+                render.managed_entity == Some(model.parent) && model.weapon.visual.as_ref().is_some_and(|visual| render.model == visual.model)
             });
             let parent = identities
                 .and_then(|identities| identities.published_frame(model.parent))

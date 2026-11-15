@@ -25,7 +25,7 @@ pub(super) struct Binding {
 
 pub(in crate::app) fn joint_requests(document: &entities::Document,
     interactions: Option<&super::super::interactions::Interactions>, models: &[entities::PlacedModel])
-    -> Result<Vec<(usize, String)>, String> {
+    -> Result<Vec<(usize, String, Option<String>)>, String> {
     let Some(interactions) = interactions else { return Ok(Vec::new()); };
     let authored = entities::resolved_entity_binds(document).into_iter().map(|binding| (binding.entity_id.clone(), binding))
         .collect::<HashMap<_, _>>();
@@ -39,8 +39,11 @@ pub(in crate::app) fn joint_requests(document: &entities::Document,
             path.push(next);
             if let Some(tag) = &binding.tag {
                 let placement = *placements.get(binding.parent.as_str()).ok_or("bound tag parent render placement absent")?;
-                if !requests.iter().any(|(index, name)| *index == placement && name == tag) {
-                    requests.push((placement, tag.clone()));
+                // 879890 selects the parent md6 property group by the bound
+                // child's model; a child without one uses _info.
+                let group = placements.get(next).map(|&child| models[child].resource_path.clone());
+                if !requests.iter().any(|(index, name, old)| *index == placement && name == tag && *old == group) {
+                    requests.push((placement, tag.clone(), group));
                 }
             }
             next = &binding.parent;
@@ -156,7 +159,8 @@ impl PhysicsScene {
             let placement = placements.get(binding.parent.as_str()).copied();
             let (joint, offset, orientation) = if let Some(tag) = &binding.tag {
                 let placement = placement.ok_or("bound tag parent has no render placement")?;
-                let selected = joint_frames.resolve(placement, tag)?.ok_or_else(|| format!("bound parent joint absent: {}:{tag}", binding.parent))?;
+                let group = placements.get(binding.entity_id.as_str()).map(|&child| models[child].resource_path.as_str());
+                let selected = joint_frames.resolve(placement, group, tag)?.ok_or_else(|| format!("bound parent joint absent: {}:{tag}", binding.parent))?;
                 if selected.from_tag {
                     self.entities[child].frame.pose = joint_frames.bound_frame(placement, selected.joint, 0,
                         selected.offset, selected.orientation, self.entities[parent].frame.pose)?

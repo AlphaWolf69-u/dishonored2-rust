@@ -19,7 +19,8 @@ struct Frames {
 
 struct PlacementFrames {
     scale: [f32; 3],
-    bindings: HashMap<String, JointBinding>,
+    /// (bound child's model property group, tag); None is _info.
+    bindings: HashMap<(Option<String>, String), JointBinding>,
     joints: HashMap<i16, Frames>,
 }
 
@@ -32,12 +33,12 @@ pub(super) struct JointFrames {
 }
 
 impl JointFrames {
-    pub(super) fn prepare(catalog: &Catalog, models: &[PlacedModel], requests: &[(usize, String)],
+    pub(super) fn prepare(catalog: &Catalog, models: &[PlacedModel], requests: &[(usize, String, Option<String>)],
         machinery: &super::machinery::AmbientMachinery,
         animations: &super::usable_animation::UsableAnimations) -> Result<Self, String> {
         let mut result = Self::default();
         let mut rigs = HashMap::new();
-        for (placement, name) in requests {
+        for (placement, name, group) in requests {
             let model = models.get(*placement).ok_or("joint attachment placement is absent")?;
             let rig = if let Some(rig) = animations.prepared_rig(*placement) { rig } else { match rigs.entry(model.resource_path.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -49,7 +50,7 @@ impl JointFrames {
                     entry.insert(crate::assets::animation_rig::Rig::acquire(catalog, path)?)
                 },
             } };
-            let binding = match rig.optional_tag_quaternion_in_group("_info", name)? {
+            let binding = match rig.optional_tag_quaternion_in_group(group.as_deref().unwrap_or("_info"), name)? {
                 Some((joint, offset, orientation)) => JointBinding {
                     joint: i16::try_from(joint).map_err(|_| "bound joint index exceeds signed representation")?,
                     offset: offset.to_array(), orientation: orientation.to_array(), from_tag: true,
@@ -73,7 +74,7 @@ impl JointFrames {
                 let initial = matrix_frame(matrix);
                 entry.insert(Frames { initial, current: initial });
             }
-            frames.bindings.insert(name.clone(), binding);
+            frames.bindings.insert((group.clone(), name.clone()), binding);
         }
         Ok(result)
     }
@@ -87,7 +88,7 @@ impl JointFrames {
         let mut rigs = HashMap::new();
         let mut rest = HashMap::new();
         for (placement, name) in requests {
-            if self.resolve(*placement, name)?.is_some() { continue; }
+            if self.resolve(*placement, None, name)?.is_some() { continue; }
             let model = models.get(*placement).ok_or("marker placement is absent")?;
             let Some(declaration) = crate::bmd6::declaration_path(&model.resource_path) else { continue; };
             let rig = if let Some(rig) = animations.prepared_rig(*placement) { rig } else {
@@ -122,13 +123,15 @@ impl JointFrames {
                 scale: model.scale, bindings: HashMap::new(), joints: HashMap::new(),
             });
             frames.joints.entry(joint).or_insert(Frames { initial, current: initial });
-            frames.bindings.insert(name.clone(), JointBinding { joint, offset: offset.to_array(), orientation: orientation.to_array(), from_tag: true });
+            frames.bindings.insert((None, name.clone()), JointBinding { joint, offset: offset.to_array(), orientation: orientation.to_array(), from_tag: true });
         }
         Ok(())
     }
 
-    pub(super) fn resolve(&self, placement: usize, tag: &str) -> Result<Option<JointBinding>, String> {
-        Ok(self.placements.get(&placement).and_then(|entry| entry.bindings.get(tag)).copied())
+    /// `group` is the bound child's model (879890's property selector).
+    pub(super) fn resolve(&self, placement: usize, group: Option<&str>, tag: &str) -> Result<Option<JointBinding>, String> {
+        Ok(self.placements.get(&placement).and_then(|entry| entry.bindings.iter()
+            .find(|((g, t), _)| g.as_deref() == group && t == tag)).map(|(_, binding)| *binding))
     }
 
     pub(super) fn frame(&self, placement: usize, joint: i16, phase: u8) -> Result<Option<ReferenceFrame>, String> {

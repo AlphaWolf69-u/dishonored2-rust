@@ -157,6 +157,12 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
             ) else {
                 break;
             };
+            // Only hand slots and powers have first-person targets; the
+            // head slot equips through the inventory (7f8d60 -> 614b20).
+            if metadata.equipment.archetype != 5 && metadata.equipment.slot > 1 {
+                actions.owned_targets.pop_front();
+                continue;
+            }
             let result = if metadata.equipment.archetype == 5 {
                 let definitions = world
                     .get_resource::<super::super::powers::Powers>()
@@ -209,6 +215,14 @@ pub(in crate::app) fn advance_selection(world: &mut World) {
                 continue;
             };
             let slot = metadata.equipment.slot;
+            // 7f8d60: a SLOT_HEAD item equips directly through the inventory
+            // (614b20); only the arm slots enter the equipment states.
+            if metadata.equipment.archetype != 5 && slot == 4 {
+                if !inventory.equipped(slot).is_some_and(|equipped| equipped.eq_ignore_ascii_case(&selection.equipment)) {
+                    inventory.equip(&selection.equipment, slot, true);
+                }
+                continue;
+            }
             let live = if metadata.equipment.archetype == 5 {
                 actions.active_power.as_deref() == Some(selection.equipment.as_str())
             } else {

@@ -910,7 +910,7 @@ struct GpuReadiness(
 );
 
 #[derive(Clone, Resource, Default, bevy::render::extract_resource::ExtractResource)]
-struct ScenePublished(bool);
+pub(super) struct ScenePublished(bool);
 
 #[derive(Clone, Resource, Default, bevy::render::extract_resource::ExtractResource)]
 struct SceneImageRequests {
@@ -1163,6 +1163,6 @@ pub(super) fn is_playing(state: Res<Acquisition>) -> bool {
     state.finished
 }
 
-fn scene_published(published: Res<ScenePublished>) -> bool {
+pub(super) fn scene_published(published: Res<ScenePublished>) -> bool {
     published.0
 }

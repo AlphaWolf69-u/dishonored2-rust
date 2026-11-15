@@ -132,7 +132,7 @@ impl Positions {
             }
         });
         if let Some(placement) = source.placement {
-            if let Some(binding) = joints.resolve(placement, &self.tags[kind])? {
+            if let Some(binding) = joints.resolve(placement, None, &self.tags[kind])? {
                 let model = &models[placement];
                 let parent = crate::gameplay::reference_frame::ReferenceFrame {
                     position: model.position,

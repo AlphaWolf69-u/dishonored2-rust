@@ -230,7 +230,7 @@ pub(super) fn advance(decl: &Declaration, sneaking: bool, sliding: bool,
 fn start(path: &str, side: usize, frame: &mut Frame<'_>) -> Result<u32, String> {
     let scene = frame.scenes.get(path).ok_or_else(|| format!("equipment scene was not acquired: {path}"))?;
     // 836ad0: actual arm and its equipment, independently of the other hand.
-    frame.midnight.start_with_parts(scene, frame.md6, 1.0, frame.animations, if side == 0 { 0xa } else { 0x14 })
+    frame.midnight.start_with_parts(scene, frame.md6, 1.0, frame.animations, if side == 0 { 0xa } else { 0x14 }, frame.random)
 }
 
 impl Player {

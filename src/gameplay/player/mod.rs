@@ -237,7 +237,7 @@ impl Player {
         if parts == 0 || parts & !0b1_1111 != 0 { return Err("invalid player animation cast mask".into()); }
         let models = body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment);
         let cast = body::cast(&self.body.animations, &self.body.arms, &self.body.equipment);
-        self.body.midnight.start_with_parts(scene, models, rate, cast, parts)
+        self.body.midnight.start_with_parts(scene, models, rate, cast, parts, &mut self.random)
     }
 
     pub fn cancel_animation_scene(&mut self, handle: u32) {
@@ -447,6 +447,8 @@ impl Player {
     pub fn max_health(&self) -> f32 { self.health.maximum(&self.attributes) }
     pub fn is_dead(&self) -> bool { self.health.is_dead() }
     pub fn projected_health(&self) -> f32 { self.health.projected(&self.attributes, self.health_regen_factor) }
+    /// The body md6 the scenes' CONDMD6 nodes match.
+    pub fn md6(&self) -> &str { &self.md6 }
     pub fn health_hud(&self) -> Option<(f32, f32, f32, bool, i32)> {
         let extensions = self.health.extensions(&self.attributes);
         Some((self.health(), self.max_health(), self.projected_health(), self.health() < 20.0, extensions))
@@ -637,7 +639,7 @@ impl Player {
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
         let cast = body::cast(&self.body.animations, &self.body.arms, &self.body.equipment);
-        match self.body.midnight.advance(dt, cast) {
+        match self.body.midnight.advance(dt, cast, &mut self.random) {
             Ok(messages) => {
                 for (event, handle) in messages {
                     self.machine.handle_message(&event, handle);
