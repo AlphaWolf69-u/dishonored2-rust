@@ -69,6 +69,8 @@ pub struct Cast {
 impl Cast {
     pub fn new(settings: Settings) -> Self { Self { settings, phase: Phase::Idle, last_cast: None, free_until: 0.0 } }
     pub fn phase(&self) -> Phase { self.phase }
+    /// 61c320 refreshes the same last-use timestamp during traversal.
+    pub fn refresh_cooldown(&mut self, now: f64) { self.last_cast = Some(now); }
     /// 14061c350 extends the free-cost deadline, never shortens it.
     pub fn grant_free_window(&mut self, now: f64, duration: f32) { self.free_until = self.free_until.max(now + duration as f64); }
     /// 14061c060: equality at the deadline still uses the normal cost.

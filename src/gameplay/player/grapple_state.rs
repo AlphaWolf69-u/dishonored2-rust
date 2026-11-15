@@ -230,6 +230,8 @@ fn next(run: &Runtime, frame: &Frame<'_>, jump: bool) -> StateId {
 /// Returns the source's actual requested navigation state. A rejected
 /// clearance query exits through that same owner rather than moving a body.
 pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
+    // 83a2c0 invokes61c320 even on its first-update skip.
+    frame.powers.refresh_owned_cooldown(6);
     let mut run = frame.powers.grapple.take()?;
     let result = if run.aborted { Some(StateId::FALLING) }
     else if run.first_update { run.first_update = false; None }

@@ -297,6 +297,7 @@ impl Player {
     /// notification; inventory retains its separate attached callback.
     pub fn power_attribute_changed(&mut self) { self.powers.attribute_messages = self.powers.attribute_messages.wrapping_add(1); }
     pub fn take_power_attribute_change_count(&mut self) -> u32 { std::mem::take(&mut self.powers.attribute_messages) }
+    pub fn set_power_time(&mut self, now: f64) { self.powers.now = now; }
     pub fn set_power_admission(&mut self, now: f64, owned: bool, family_available: bool, health_overcast: bool, cost_factor: f32) {
         self.powers.now = now; self.powers.owned = owned; self.powers.family_available = family_available;
         self.powers.health_overcast = health_overcast; self.powers.cost_factor = cost_factor;
@@ -380,4 +381,11 @@ fn power_state(id: i32) -> StateId { if id == 10 { StateId::USE_WINDBLAST } else
 /// The executable compares each upgrade attribute with its authored base.
 pub fn attribute_changed(attributes: &super::states::Attributes, tag: &str) -> bool {
     attributes.0.get(tag).zip(attributes.1.get(tag)).is_some_and(|(value, declaration)| *value != declaration.base)
+}
+
+impl Runtime {
+    pub(super) fn refresh_owned_cooldown(&mut self, id: i32) {
+        if let Some(cast) = self.selected.as_mut().filter(|cast| cast.settings.id == id) { cast.refresh_cooldown(self.now); }
+        else if let Some((cast, _)) = self.owned_casts.get_mut(&id) { cast.refresh_cooldown(self.now); }
+    }
 }
