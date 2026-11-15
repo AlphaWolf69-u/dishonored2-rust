@@ -187,6 +187,57 @@ pub struct CollisionExtraction {
     pub triangles: Vec<MeshTriangle>,
     pub compressed_decode_failures: Vec<String>,
     pub unknown_shapes: BTreeMap<String, usize>,
+    details: ShapeDetails,
+}
+
+#[derive(Default, Debug)]
+enum ShapeDetails {
+    #[default]
+    Records,
+    Counts { convex: usize, compressed: usize },
+}
+
+impl CollisionExtraction {
+    pub(crate) fn convex_count(&self) -> usize {
+        match self.details {
+            ShapeDetails::Records => self.convex.len(),
+            ShapeDetails::Counts { convex, .. } => convex,
+        }
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn compressed_count(&self) -> usize {
+        match self.details {
+            ShapeDetails::Records => self.compressed.len(),
+            ShapeDetails::Counts { compressed, .. } => compressed,
+        }
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn detail_capacity_bytes(&self) -> usize {
+        self.convex.capacity() * std::mem::size_of::<ConvexCollider>()
+            + self.convex.iter().map(|shape| {
+                shape.vertices.capacity() * std::mem::size_of::<[f32; 3]>()
+            }).sum::<usize>()
+            + self.compressed.capacity() * std::mem::size_of::<CompressedCollider>()
+            + self.shape_bodies.values().map(|bodies| {
+                bodies.capacity() * std::mem::size_of::<usize>()
+            }).sum::<usize>()
+    }
+
+    fn record_convex(&mut self, vertices: Vec<[f32; 3]>, source_shape_item: usize) {
+        match &mut self.details {
+            ShapeDetails::Records => self.convex.push(ConvexCollider { vertices, source_shape_item }),
+            ShapeDetails::Counts { convex, .. } => *convex += 1,
+        }
+    }
+
+    fn truncate_convex(&mut self, count: usize) {
+        match &mut self.details {
+            ShapeDetails::Records => self.convex.truncate(count),
+            ShapeDetails::Counts { convex, .. } => *convex = count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -886,6 +937,7 @@ impl PhysWorld {
             0,
             NO_SHAPE_TAGS,
             &mut output,
+            &|| false,
         )?;
         Ok(output)
     }
@@ -993,6 +1045,20 @@ impl PhysWorld {
     }
 
     pub fn collision_shapes(&self, bytes: &[u8]) -> Result<CollisionExtraction, String> {
+        self.extract_collision(bytes, ShapeDetails::Records, &|| false)
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn collision_for_navigation(
+        &self, bytes: &[u8], keep_details: bool, cancelled: &impl Fn() -> bool,
+    ) -> Result<CollisionExtraction, String> {
+        let details = if keep_details { ShapeDetails::Records } else { ShapeDetails::Counts { convex: 0, compressed: 0 } };
+        self.extract_collision(bytes, details, cancelled)
+    }
+
+    fn extract_collision(
+        &self, bytes: &[u8], details: ShapeDetails, cancelled: &impl Fn() -> bool,
+    ) -> Result<CollisionExtraction, String> {
         let root = self.item_at(bytes, 1, 0)?;
         let bodies = le32(root, 0x38)? as usize;
         let body_item = self.items.get(bodies).ok_or("missing body item")?;
@@ -1005,8 +1071,9 @@ impl PhysWorld {
                 .items
                 .get(system_materials)
                 .is_none_or(|item| item.count == 0);
-        let mut output = CollisionExtraction::default();
+        let mut output = CollisionExtraction { details, ..Default::default() };
         for body in 0..body_item.count {
+            if cancelled() { return Err("collision acquisition cancelled".into()); }
             let info = self.item_at(bytes, bodies, body)?;
             let shape = le32(info, 0)? as usize;
             if shape == 0 {
@@ -1037,6 +1104,7 @@ impl PhysWorld {
                 0,
                 NO_SHAPE_TAGS,
                 &mut output,
+                cancelled,
             )?;
             for triangle in &mut output.triangles[first..] {
                 triangle.body_filter = body_filter;
@@ -1048,13 +1116,15 @@ impl PhysWorld {
                         shape_tag_material(body_material, &triangle.shape_tags, &self.material_map);
                 }
             }
-            for triangle in &output.triangles[first..] {
-                let bodies = output
-                    .shape_bodies
-                    .entry(triangle.source_shape_item)
-                    .or_default();
-                if bodies.last() != Some(&body) {
-                    bodies.push(body);
+            if matches!(output.details, ShapeDetails::Records) {
+                for triangle in &output.triangles[first..] {
+                    let bodies = output
+                        .shape_bodies
+                        .entry(triangle.source_shape_item)
+                        .or_default();
+                    if bodies.last() != Some(&body) {
+                        bodies.push(body);
+                    }
                 }
             }
         }
@@ -1072,6 +1142,7 @@ impl PhysWorld {
         depth: usize,
         shape_tags: ShapeTagPath,
         output: &mut CollisionExtraction,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), String> {
         if depth >= SHAPE_TAG_LEVELS {
             return Err(format!(
@@ -1123,10 +1194,7 @@ impl PhysWorld {
                             quad_second: false,
                         });
                     }
-                    output.convex.push(ConvexCollider {
-                        vertices,
-                        source_shape_item: index,
-                    });
+                    output.record_convex(vertices, index);
                 } else {
                     *output
                         .unknown_shapes
@@ -1167,6 +1235,7 @@ impl PhysWorld {
                         depth + 1,
                         child_tags,
                         output,
+                        cancelled,
                     )?;
                 }
             }
@@ -1230,44 +1299,41 @@ impl PhysWorld {
                         });
                     }
                 }
-                output.convex.push(ConvexCollider {
-                    vertices,
-                    source_shape_item: index,
-                });
+                output.record_convex(vertices, index);
             }
             "hknpCompressedMeshShape" => {
                 // Standalone HKX and level BPHYSWORLD use different serialized
                 // pointer/array layouts; the authored type metadata owns offsets.
                 let (tree, tree_type) = self.compressed_tree(bytes, index)?;
                 let (min, max) = self.compressed_domain(tree, tree_type)?;
-                let mut bounds_min = [f32::INFINITY; 3];
-                let mut bounds_max = [f32::NEG_INFINITY; 3];
-                for corner in 0..8 {
-                    let local = std::array::from_fn(|axis| {
-                        if corner & (1 << axis) == 0 {
-                            min[axis]
-                        } else {
-                            max[axis]
+                match &mut output.details {
+                    ShapeDetails::Records => {
+                        let mut bounds_min = [f32::INFINITY; 3];
+                        let mut bounds_max = [f32::NEG_INFINITY; 3];
+                        for corner in 0..8 {
+                            let local = std::array::from_fn(|axis| {
+                                if corner & (1 << axis) == 0 { min[axis] } else { max[axis] }
+                            });
+                            let world = transform.apply(local);
+                            for axis in 0..3 {
+                                bounds_min[axis] = bounds_min[axis].min(world[axis]);
+                                bounds_max[axis] = bounds_max[axis].max(world[axis]);
+                            }
                         }
-                    });
-                    let world = transform.apply(local);
-                    for axis in 0..3 {
-                        bounds_min[axis] = bounds_min[axis].min(world[axis]);
-                        bounds_max[axis] = bounds_max[axis].max(world[axis]);
+                        output.compressed.push(CompressedCollider {
+                            bounds_min, bounds_max, source_shape_item: index,
+                        });
                     }
+                    ShapeDetails::Counts { compressed, .. } => *compressed += 1,
                 }
-                output.compressed.push(CompressedCollider {
-                    bounds_min,
-                    bounds_max,
-                    source_shape_item: index,
-                });
                 let previous_triangles = output.triangles.len();
-                let previous_convex = output.convex.len();
+                let previous_convex = output.convex_count();
                 if let Err(error) = self.decode_compressed_mesh(
-                    bytes, tree, tree_type, index, transform, depth, shape_tags, output,
+                    bytes, tree, tree_type, index, transform, depth, shape_tags, output, cancelled,
                 ) {
+                    if cancelled() { return Err(error); }
                     output.triangles.truncate(previous_triangles);
-                    output.convex.truncate(previous_convex);
+                    output.truncate_convex(previous_convex);
                     output.compressed_decode_failures.push(error);
                 }
             }
@@ -1287,6 +1353,7 @@ impl PhysWorld {
         depth: usize,
         shape_tags: ShapeTagPath,
         output: &mut CollisionExtraction,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<(), String> {
         let references: Vec<usize> = [
             "sections",
@@ -1336,6 +1403,7 @@ impl PhysWorld {
             .count;
         let (domain_min, domain_max) = self.compressed_domain(tree, tree_type)?;
         for section_number in 0..section_count {
+            if cancelled() { return Err("collision acquisition cancelled".into()); }
             let section = self.item_at(bytes, sections_ref, section_number)?;
             let base = [
                 float(section, 0x30)?,
@@ -1516,11 +1584,9 @@ impl PhysWorld {
                         shape_index,
                         primitive_tags(number - first_primitive)?,
                         &mut output.triangles,
+                        cancelled,
                     )?;
-                    output.convex.push(ConvexCollider {
-                        vertices: hull,
-                        source_shape_item: shape_index,
-                    });
+                    output.record_convex(hull, shape_index);
                 }
             }
             // Decode ordinary corners only when referenced. Shared-index
@@ -1696,6 +1762,7 @@ fn triangulate_convex_vertices(
     source_shape_item: usize,
     shape_tags: ShapeTagPath,
     triangles: &mut Vec<MeshTriangle>,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<(), String> {
     let sub = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] { std::array::from_fn(|i| a[i] - b[i]) };
     let dot = |a: [f32; 3], b: [f32; 3]| -> f32 { (0..3).map(|i| a[i] * b[i]).sum() };
@@ -1799,6 +1866,7 @@ fn triangulate_convex_vertices(
         orient([second, fourth, third]),
     ];
     for point in 0..vertices.len() {
+        if cancelled() { return Err("collision acquisition cancelled".into()); }
         if seed.contains(&point) {
             continue;
         }
@@ -1811,16 +1879,10 @@ fn triangulate_convex_vertices(
                 > epsilon * dot(normal, normal).sqrt()
         };
         let mut horizon = Vec::<(usize, usize)>::new();
+        let mut edge_positions = None;
         for face in faces.iter().filter(|face| visible(face)) {
             for edge in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
-                if let Some(index) = horizon
-                    .iter()
-                    .position(|&(a, b)| a == edge.1 && b == edge.0)
-                {
-                    horizon.swap_remove(index);
-                } else {
-                    horizon.push(edge);
-                }
+                update_convex_horizon(&mut horizon, &mut edge_positions, edge);
             }
         }
         if horizon.is_empty() {
@@ -1843,6 +1905,44 @@ fn triangulate_convex_vertices(
         });
     }
     Ok(())
+}
+
+#[inline]
+fn update_convex_horizon(
+    edges: &mut Vec<(usize, usize)>,
+    positions: &mut Option<std::collections::BTreeSet<(usize, usize, usize)>>,
+    (a, b): (usize, usize),
+) {
+    const INDEX_THRESHOLD: usize = 64;
+    static LINEAR_SEARCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+    if let Some(positions) = positions {
+        // Repeated directed edges are possible. Match the first reversed
+        // entry by vector position, then mirror Vec::swap_remove exactly.
+        let reversed = positions.range((b, a, 0)..=(b, a, usize::MAX)).next().copied();
+        if let Some(reversed @ (_, _, index)) = reversed {
+            positions.remove(&reversed);
+            let last = edges.len() - 1;
+            if index != last {
+                let (x, y) = edges[last];
+                positions.remove(&(x, y, last));
+                positions.insert((x, y, index));
+            }
+            edges.swap_remove(index);
+        } else {
+            positions.insert((a, b, edges.len()));
+            edges.push((a, b));
+        }
+    } else if let Some(index) = edges.iter().position(|&edge| edge == (b, a)) {
+        edges.swap_remove(index);
+    } else {
+        edges.push((a, b));
+        if edges.len() == INDEX_THRESHOLD && !*LINEAR_SEARCH.get_or_init(|| {
+            std::env::var_os("DH2_DEBUG_LINEAR_CONVEX_HORIZON").is_some_and(|value| value == "1")
+        }) {
+            *positions = Some(edges.iter().enumerate().map(|(index, &(x, y))| (x, y, index)).collect());
+        }
+    }
 }
 
 fn float(bytes: &[u8], at: usize) -> Result<f32, String> {

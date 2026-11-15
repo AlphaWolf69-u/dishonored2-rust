@@ -28,10 +28,8 @@ pub fn acquire_with(catalog: &Catalog, name: &str,
     };
     // Publication is serialized with decoding, so concurrent consumers cannot
     // prepare duplicate generations or overwrite a recorded immutable failure.
-    let value = if shared {
-        catalog.sound_rtpcs.get_or_init(Default::default).lock()
-            .map_err(|_| "sound RTPC registry is poisoned")?.acquire(&path, 0, load)
-    } else { load(0) };
+    let value = catalog.sound_rtpcs.get_or_init(Default::default).lock()
+        .map_err(|_| "sound RTPC registry is poisoned")?.acquire_with_sharing(&path, 0, shared, load);
     let acquisition_cycles = acquisition_start.zip(if trace { crate::loading::thread_cycles() } else { None })
         .map_or(0, |(start, end)| end.saturating_sub(start));
     if trace {

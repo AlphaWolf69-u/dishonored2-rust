@@ -121,6 +121,13 @@ pub(super) fn parse_graph(owner: String, fields: &[(String, Value)]) -> Result<F
 }
 
 pub fn load(document: &Document) -> Result<Vec<std::sync::Arc<FxGraph>>, String> {
+    load_with_entities(document, None)
+}
+
+/// Entity-owned graphs are admitted from the real spawned roster. Other map
+/// roots retain the pre-existing FX projection until their entity is hosted.
+pub(crate) fn load_with_entities(document: &Document,
+    live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> Result<Vec<std::sync::Arc<FxGraph>>, String> {
     let _tag = crate::platform::allocation_tags::tag("FX graph definitions");
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
@@ -128,7 +135,9 @@ pub fn load(document: &Document) -> Result<Vec<std::sync::Arc<FxGraph>>, String>
         let relevant = super::event_graph::items(child(fields, "m_nodes")).any(|node|
             matches!(super::event_graph::atom(node, "m_name"),
                 Some("arkKisculeNodeFx" | "arkKisculeNodeDeclInstance")));
-        if relevant {
+        let managed = live.is_some_and(|live| live.find(&entity.id).is_some_and(|id|
+            live.stage(id) == Some(crate::gameplay::entity_lifetime::Stage::Spawned)));
+        if relevant || (managed && super::event_graph::items(child(fields, "m_nodes")).next().is_some()) {
             result.push(std::sync::Arc::new(parse_graph(entity.id.clone(), fields)?));
         }
     }

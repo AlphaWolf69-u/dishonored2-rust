@@ -5,24 +5,26 @@
 
 // Host equivalent of the resource registry's scoped purge (140060180).
 mod residency;
-pub(crate) use residency::{acquire, release_unused};
-static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
-pub(crate) struct HistoryLease;
+pub(crate) use residency::{Registry, acquire, release_unused};
+static HISTORY_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
+
+pub(crate) struct HistoryLease(u64);
+
 impl HistoryLease {
-    pub(crate) fn acquire() -> std::sync::Arc<Self> {
-        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        std::sync::Arc::new(Self)
+    pub(crate) fn acquire(catalog: u64) -> Self {
+        HISTORY_SCOPES.acquire(catalog);
+        Self(catalog)
     }
 }
+
 impl Drop for HistoryLease {
     fn drop(&mut self) {
-        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
-        *scopes -= 1;
-        if *scopes != 0 { return; }
-        let (count, bytes, slots, _) = crate::loading::retain_kind("skeleton", |_| false);
-        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("MEMORY skeleton history release: entries={count} path_capacity_bytes={bytes} slots={slots}");
-        }
+        HISTORY_SCOPES.release(self.0, || {
+            let (count, bytes, slots) = crate::loading::forget_catalog_kind(self.0, "skeleton").unwrap_or_default();
+            if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+                eprintln!("MEMORY skeleton history release: entries={count} path_capacity_bytes={bytes} slots={slots} catalog={}", self.0);
+            }
+        });
     }
 }
 

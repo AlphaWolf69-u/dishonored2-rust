@@ -50,6 +50,8 @@ pub struct TiledLightingPass {
     prepared: bool,
 }
 impl TiledLightingPass {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) { visit("tlf-tile-depth", &self.tile_depth); }
     pub fn grid(&self) -> TileGrid { self.grid }
     fn upload<const N: usize>(queue: &RenderQueue, buffer: &Buffer, records: &[[u32; N]]) {
         super::tiled_lighting_gpu::write_words(queue, buffer, records.as_flattened());

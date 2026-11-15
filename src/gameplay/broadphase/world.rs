@@ -92,6 +92,20 @@ impl Default for HybridBroadphase {
 }
 
 impl HybridBroadphase {
+    pub(crate) fn remove_bodies(&mut self, bodies: &[(u32, u32)]) -> Result<(), String> {
+        for &(id, location) in bodies {
+            if location & 0x1fff_ffff == 0x1fff_ffff { continue; }
+            let layer = (location >> 29) as usize;
+            let leaf = (location & 0x1fff_ffff) as usize;
+            let tree = self.trees.get_mut(layer).ok_or("broadphase removal layer is missing")?;
+            tree.remove_body(id, leaf)?;
+            self.dirty[layer] = true;
+            let slot = (id & 0x00ff_ffff) as usize;
+            if slot < self.pending_bodies.len() { self.pending_bodies.reset(slot)?; }
+        }
+        Ok(())
+    }
+
     pub fn with_body_capacity(capacity: usize) -> Self {
         Self {
             pending_bodies: crate::gameplay::bit_field::BitField::zeroed(capacity),

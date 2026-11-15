@@ -10,7 +10,12 @@ use crate::{
     platform::cvars::CVars,
 };
 
+use std::sync::{Arc, OnceLock};
+
 pub struct ComponentTypes {
+    // bevy_backend: preserve immutable shared class metadata while dynamic
+    // atomic names use one monotonic name owner for this same catalog scope.
+    runtime_names: std::sync::Mutex<crate::gameplay::name_pool::NamePool>,
     classes: ClassRegistry,
     factories: Vec<ComponentPoolDeclaration>,
     initialization: Vec<crate::assets::class_metadata::ComponentTypeDeclaration>,
@@ -19,6 +24,77 @@ pub struct ComponentTypes {
 }
 
 impl ComponentTypes {
+    pub(crate) fn acquire(catalog: &crate::archive::Catalog) -> Result<Arc<Self>, String> {
+        static MODE: OnceLock<(bool, bool)> = OnceLock::new();
+        let (separate, trace) = *MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SEPARATE_COMPONENT_METADATA").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_COMPONENT_METADATA").is_some_and(|value| value == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let mut loaded = false;
+        let mut load = || {
+            let _tag = crate::platform::allocation_tags::tag("Component metadata resources");
+            let value = Self::new(ClassDeclarations::load(catalog.base())?)?;
+            loaded = true;
+            Ok::<_, String>(Arc::new(value))
+        };
+        let value = if separate {
+            load()?
+        } else {
+            let mut owner = catalog.component_types.lock()
+                .map_err(|_| "component metadata owner is poisoned")?;
+            if owner.is_none() { *owner = Some(load()?); }
+            owner.as_ref().unwrap().clone()
+        };
+        if trace {
+            let cycles = started.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            let mut signature = blake3::Hasher::new();
+            let classes = value.classes();
+            let count = classes.hierarchy().registration_order().len();
+            let ranges = (0..count).map(|class| classes.hierarchy().type_range(class))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut membership = vec![0u8; count.div_ceil(8)];
+            let mut numeric = blake3::Hasher::new();
+            // 1990d0 orders NameId addresses. Independent registries can
+            // assign different opaque IDs while accepting the same named
+            // descendants. Compare every named acceptance relation.
+            for class in 0..count {
+                let metadata = classes.metadata(class).ok_or("component class metadata is absent")?;
+                signature.update(classes.name_text(metadata.name).ok_or("component class name is absent")?);
+                signature.update(&[0]);
+                signature.update(classes.name_text(metadata.base_name).ok_or("component base name is absent")?);
+                signature.update(&[metadata.flags]);
+                signature.update(&metadata.instance_size.to_le_bytes());
+                for word in metadata.dispatch_keys.into_iter().chain(metadata.callback_words) {
+                    signature.update(&word.to_le_bytes());
+                }
+                let [first, last] = ranges[class];
+                numeric.update(&first.to_le_bytes());
+                numeric.update(&last.to_le_bytes());
+                membership.fill(0);
+                for (candidate, &[id, _]) in ranges.iter().enumerate() {
+                    if first <= id && id <= last { membership[candidate / 8] |= 1 << (candidate % 8); }
+                }
+                signature.update(&membership);
+            }
+            signature.update(format!("{:?}{:?}{:?}", value.factories, value.initialization, value.definitions).as_bytes());
+            for factory in &value.factories {
+                signature.update(&value.initialization_rank(factory.pool_index)?.to_le_bytes());
+            }
+            let source_bytes = if loaded {
+                catalog.base().parent().and_then(|path| std::fs::metadata(path.join("Dishonored2.exe")).ok())
+                    .map_or(0, |metadata| metadata.len())
+            } else { 0 };
+            eprintln!("COMPONENT_METADATA_ACQUIRE catalog={} identity={:p} loaded={loaded} source_bytes={source_bytes} cycles={cycles} classes={} factories={} signature={} numeric={}",
+                catalog.identity(), Arc::as_ptr(&value), classes.hierarchy().registration_order().len(),
+                value.factories.len(), signature.finalize(), numeric.finalize());
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn factories(&self) -> &[ComponentPoolDeclaration] { &self.factories }
+
     pub fn new(installed: ClassDeclarations) -> Result<Self, String> {
         let classes = installed.registry()?;
         use super::dependencies::{Dependency, DependencyClass, InitializationPlan};
@@ -50,6 +126,7 @@ impl ComponentTypes {
         let initialization_plan = InitializationPlan::build(&inputs)
             .map_err(|e| format!("installed component initialization graph: {e:?}"))?;
         Ok(Self {
+            runtime_names: Default::default(),
             classes,
             factories: installed.component_pools,
             initialization: installed.component_types,
@@ -60,6 +137,19 @@ impl ComponentTypes {
 
     pub fn classes(&self) -> &ClassRegistry {
         &self.classes
+    }
+
+    /// Reuse registered class spellings before admitting a dynamic name.
+    /// All runtime entity/tag clients of this shared type owner use this API.
+    pub fn intern_name(&self, bytes: Option<&[u8]>) -> Result<crate::gameplay::name_pool::NameId, String> {
+        if let Some(bytes) = bytes {
+            for &class in self.classes.hierarchy().registration_order() {
+                let metadata = self.classes.metadata(class).ok_or("registered class metadata absent")?;
+                if self.classes.name_text(metadata.name) == Some(bytes) { return Ok(metadata.name); }
+                if self.classes.name_text(metadata.base_name) == Some(bytes) { return Ok(metadata.base_name); }
+            }
+        }
+        self.runtime_names.lock().map_err(|_| "component runtime-name owner is poisoned")?.intern(bytes)
     }
 
     /// Actual virtual80 priority, resolved from the installed dependency graph.
@@ -136,6 +226,14 @@ impl ComponentTypes {
             self.classes.hierarchy(),
             scheduling,
         )
+    }
+}
+
+impl Drop for ComponentTypes {
+    fn drop(&mut self) {
+        if std::env::var_os("DH2_DEBUG_COMPONENT_METADATA").is_some_and(|value| value == "1") {
+            eprintln!("COMPONENT_METADATA_RETIRE identity={:p}", self);
+        }
     }
 }
 
@@ -232,6 +330,7 @@ mod tests {
             processed_start_count: 0,
             queue_reset_count: 0,
             pending_release: crate::storage::PointerList::owned_with_capacity(64).unwrap(),
+            ..super::super::ComponentRegistry::new().unwrap()
         };
         let handle = super::super::entity::ComponentFactory {
             declaration: &declaration,

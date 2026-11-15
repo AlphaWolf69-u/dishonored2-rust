@@ -91,6 +91,19 @@ impl PhysicsActorLinks {
         })
     }
 
+    /// Host worker retains traversal capacity across actors/frames; the same
+    /// 753c10 algorithm and callback order run on the canonical actor pool.
+    pub fn consume_post_updates_reuse(
+        &mut self,
+        task: &crate::gameplay::physics_world::update_queue::ObjectUpdateTask<usize>,
+        world: &mut impl PostPhysicsWorld,
+        path: &mut Vec<usize>,
+    ) -> Result<(), String> {
+        self.consume_updates(task, ActorUpdatePhase::PostPhysics, |actors, actor, _| {
+            actors.post_update_inner(actor, world, path)
+        })
+    }
+
     pub fn post_update(
         &mut self,
         actor: usize,

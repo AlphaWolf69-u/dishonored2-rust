@@ -4,6 +4,9 @@ mod light_sources;
 use std::collections::{HashMap, HashSet};
 use crate::render_light::ScatteringParameters;
 mod components;
+mod processed_decl;
+pub mod spawn;
+pub mod character_selection;
 pub use components::scheduling_bindings as component_scheduling;
 pub(crate) use components::overlay_owned;
 pub mod wind;
@@ -28,11 +31,31 @@ pub mod physics;
 /// invalid UTF-8 instead changes an installed MAIN name into `arkDefault�`.
 /// Preserve quoted content and comment boundaries before decoding the text.
 pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
-    let needs_normalization =
-        |byte: u8| byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace());
-    if !bytes.iter().copied().any(needs_normalization) {
+    if !bytes.iter().copied().any(normalized_whitespace) {
         return String::from_utf8_lossy(bytes);
     }
+    let mut bytes = bytes.to_vec();
+    normalize_declaration_text(&mut bytes);
+    std::borrow::Cow::Owned(decode_utf8_lossy(bytes))
+}
+
+pub(crate) fn owned_declaration_text(mut bytes: Vec<u8>) -> String {
+    if bytes.iter().copied().any(normalized_whitespace) {
+        normalize_declaration_text(&mut bytes);
+    }
+    decode_utf8_lossy(bytes)
+}
+
+pub(crate) fn decode_utf8_lossy(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+}
+
+fn normalized_whitespace(byte: u8) -> bool {
+    byte >= 0x80 || (byte <= 32 && !byte.is_ascii_whitespace())
+}
+
+fn normalize_declaration_text(bytes: &mut Vec<u8>) {
     #[derive(Clone, Copy)]
     enum State {
         Plain,
@@ -42,7 +65,6 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     }
     let mut state = State::Plain;
     let mut escaped = false;
-    let mut normalized = bytes.to_vec();
     let mut at = 0;
     while at < bytes.len() {
         let byte = bytes[at];
@@ -69,11 +91,11 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
             }
             State::Plain => {
                 if byte == 0 {
-                    normalized.truncate(at);
+                    bytes.truncate(at);
                     break;
                 }
-                if needs_normalization(byte) {
-                    normalized[at] = b' ';
+                if normalized_whitespace(byte) {
+                    bytes[at] = b' ';
                 } else if byte == b'"' || byte == b'\'' {
                     state = State::Quoted(byte);
                 } else if byte == b'/' {
@@ -93,7 +115,6 @@ pub fn declaration_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
         }
         at += 1;
     }
-    std::borrow::Cow::Owned(String::from_utf8_lossy(&normalized).into_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +144,20 @@ pub struct Definition {
 pub struct Document {
     pub version: u32,
     pub definitions: Vec<Definition>,
+}
+
+/// Optional map-entry metadata, indexed into `Document::definitions`.
+/// Entries without authored layers or groups occupy no storage here.
+#[derive(Debug, Default)]
+pub struct MapMetadata {
+    pub entries: Vec<MapEntryMetadata>,
+}
+
+#[derive(Debug)]
+pub struct MapEntryMetadata {
+    pub definition_index: usize,
+    pub layers: Vec<String>,
+    pub groups: Vec<String>,
 }
 
 /// Authored visuals shadow preset. `cull_distance` is `m_shadowCullDistance`,
@@ -425,6 +460,7 @@ pub struct PlacedEnvironmentVolume {
 struct Lexer<'a> {
     text: &'a str,
     at: usize,
+    map_quotes: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -472,7 +508,7 @@ impl<'a> Lexer<'a> {
         while self.at < bytes.len() {
             let byte = bytes[self.at];
             if let Some(open_quote) = quote {
-                if byte == b'\\' {
+                if byte == b'\\' && !self.map_quotes {
                     self.at = (self.at + 2).min(bytes.len());
                     continue;
                 }
@@ -502,7 +538,7 @@ impl<'a> Lexer<'a> {
 /// Shared original-declaration tokenization; keep drawing-state parsing on the
 /// same comment/string rules as material and render-parameter declarations.
 pub(crate) fn declaration_lexemes(text: &str) -> Result<Vec<&str>, String> {
-    let mut lexer = Lexer { text, at: 0 };
+    let mut lexer = Lexer { text, at: 0, map_quotes: false };
     let mut result = Vec::new();
     while let Some(token) = lexer.next()? {
         result.push(match token {
@@ -526,7 +562,14 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Result<Self, String> {
-        let mut lexer = Lexer { text, at: 0 };
+        let mut lexer = Lexer { text, at: 0, map_quotes: false };
+        let ahead = lexer.next()?;
+        Ok(Self { lexer, ahead })
+    }
+    fn new_map(text: &'a str) -> Result<Self, String> {
+        // idMapFile uses lexer flag 0x20: backslashes are literal and do not
+        // escape a following quote (1400acba0 / 140135700).
+        let mut lexer = Lexer { text, at: 0, map_quotes: true };
         let ahead = lexer.next()?;
         Ok(Self { lexer, ahead })
     }
@@ -573,7 +616,27 @@ impl<'a> Parser<'a> {
             if !direct_scope {
                 self.expect(Token::Equals)?;
             }
-            let value = if self.ahead == Some(Token::Open) {
+            // 140014850 reads these entity-definition properties as raw
+            // braced text (14013c5d0), not reflected property dictionaries.
+            // Brush primitives contain anonymous scopes and plane tuples.
+            let value = if depth == 0 && matches!(key.as_str(), "primitives" | "kisculeDiff")
+                && self.ahead == Some(Token::Open) {
+                let start = self.lexer.at - 1;
+                let mut nesting = 0usize;
+                let end = loop {
+                    let end = self.lexer.at;
+                    match self.advance()? {
+                        Some(Token::Open) => nesting += 1,
+                        Some(Token::Close) => {
+                            nesting -= 1;
+                            if nesting == 0 { break end; }
+                        }
+                        None => return Err("unterminated raw entity-definition property".into()),
+                        _ => {}
+                    }
+                };
+                Value::Atom(self.lexer.text[start..end].to_owned())
+            } else if self.ahead == Some(Token::Open) {
                 self.advance()?;
                 let nested = self.fields(depth + 1)?;
                 self.expect(Token::Close)?;
@@ -609,20 +672,68 @@ impl<'a> Parser<'a> {
         }
         Ok(fields)
     }
-    fn document(&mut self) -> Result<Document, String> {
+    fn map_names(&mut self, mut names: Option<&mut Vec<String>>) -> Result<(), String> {
+        self.expect(Token::Open)?;
+        loop {
+            match self.advance()? {
+                Some(Token::Close) => return Ok(()),
+                Some(Token::Atom(atom)) => {
+                    if let Some(name) = atom.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                        if let Some(names) = names.as_deref_mut() {
+                            if !names.iter().any(|existing| existing == name) { names.push(name.to_owned()); }
+                        }
+                    }
+                }
+                None => return Err("unterminated map metadata block".into()),
+                Some(Token::Open) => return Err("nested map metadata block".into()),
+                Some(Token::Equals | Token::Semicolon) => {}
+            }
+        }
+    }
+
+    fn document(&mut self, capture_metadata: bool, capture_ranges: bool) -> Result<(Document, MapMetadata, Vec<std::ops::Range<usize>>), String> {
         if self.atom()? != "Version" {
             return Err("missing Version header".into());
         }
         let version = self.atom()?.parse().map_err(|_| "invalid version number")?;
         let mut definitions = Vec::new();
+        let mut metadata = MapMetadata::default();
+        let mut definition_ranges = Vec::new();
         while self.ahead.is_some() {
             let kind = self.atom()?.to_string();
             self.expect(Token::Open)?;
+            let mut layers = Vec::new();
+            let mut groups = Vec::new();
+            while kind == "entity" {
+                match self.ahead {
+                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut layers))?; }
+                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut groups))?; }
+                    _ => break,
+                }
+            }
             let class = self.atom()?.to_string();
             let id = self.atom()?.to_string();
+            // `ahead` is the opening brace and the lexer has already consumed
+            // that one byte. Keep the entire reflected edit as a batch range.
+            let definition_start = self.lexer.at.saturating_sub(1);
+            // 1400a9c50 extracts the braced entityDef text with 140133d00
+            // and submits it to the declaration owner (1400136c0/140012160).
+            // Its strings follow declaration rules, not the outer map's
+            // literal-backslash lexer flags (1400acba0: 0x230).
+            let map_quotes = self.lexer.map_quotes;
+            self.lexer.map_quotes = false;
             self.expect(Token::Open)?;
             let fields = self.fields(0)?;
+            let definition_end = self.lexer.at;
+            self.lexer.map_quotes = map_quotes;
             self.expect(Token::Close)?;
+            while kind == "entity" {
+                match self.ahead {
+                    Some(Token::Atom("layers")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut layers))?; }
+                    Some(Token::Atom("groups")) => { self.advance()?; self.map_names(capture_metadata.then_some(&mut groups))?; }
+                    _ => break,
+                }
+            }
             self.expect(Token::Close)?;
             definitions.push(Definition {
                 kind,
@@ -630,16 +741,49 @@ impl<'a> Parser<'a> {
                 id,
                 fields,
             });
+            if capture_ranges { definition_ranges.push(definition_start..definition_end); }
+            if !layers.is_empty() || !groups.is_empty() {
+                metadata.entries.push(MapEntryMetadata {
+                    definition_index: definitions.len() - 1,
+                    layers,
+                    groups,
+                });
+            }
         }
-        Ok(Document {
+        Ok((Document {
             version,
             definitions,
-        })
+        }, metadata, definition_ranges))
     }
 }
 
 pub fn parse(text: &str) -> Result<Document, String> {
-    Parser::new(text)?.document()
+    Parser::new_map(text)?.document(false, false).map(|(document, _, _)| document)
+}
+
+pub fn parse_map(text: &str) -> Result<(Document, MapMetadata), String> {
+    let (document, metadata, _) = Parser::new_map(text)?.document(true, false)?;
+    Ok((document, metadata))
+}
+
+/// Source ranges are preparation-scoped; runtime entities retain only their
+/// resolved declarations, never this complete map source lease.
+pub(crate) struct DeclarationSources {
+    text: std::sync::Arc<str>,
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl DeclarationSources {
+    fn definition(&self, index: usize) -> Result<Vec<processed_decl::Node>, String> {
+        let range = self.ranges.get(index).ok_or_else(|| "invalid definition index".to_owned())?;
+        processed_decl::parse(processed_decl::Source::range(self.text.clone(), range.clone()))
+    }
+}
+
+pub(crate) fn parse_preparation(text: std::sync::Arc<str>)
+    -> Result<(Document, MapMetadata, DeclarationSources), String> {
+    let (document, metadata, ranges) = Parser::new_map(&text)?.document(true, true)?;
+    Ok((document, metadata, DeclarationSources { text, ranges }))
 }
 
 fn find_atom<'a>(fields: &'a [(String, Value)], wanted: &str) -> Option<&'a str> {
@@ -709,19 +853,34 @@ pub fn world_far_shadow_bounds(document: &Document) -> Result<Option<[[f32; 3]; 
 /// Env decl text with its escapes decoded and line breaks unified: some
 /// shipped env decls (the FX environments, e.g. `env/fx/ui_pause`) separate
 /// lines with a bare CR, which the decl lexer also treats as a line break.
-fn decode_environment_source(source: &str) -> String {
+fn decode_environment_source(source: &str) -> std::borrow::Cow<'_, str> {
+    let mut source = std::borrow::Cow::Borrowed(source.trim_matches('"'));
+    for (from, to) in [("\\t", "\t"), ("\\n", "\n"), ("\\\"", "\""), ("\r\n", "\n"), ("\r", "\n")] {
+        if source.contains(from) {
+            source = std::borrow::Cow::Owned(source.replace(from, to));
+        }
+    }
     source
-        .trim_matches('"')
-        .replace("\\t", "\t")
-        .replace("\\n", "\n")
-        .replace("\\\"", "\"")
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
 }
 
 /// idDeclEnv constructor 140017b30 initializes blendDuration to one second.
 pub fn environment_blend_duration(source: &str) -> Result<f32, String> {
-    for line in decode_environment_source(source).lines() {
+    environment_blend_duration_decoded(&decode_environment_source(source))
+}
+
+/// idDeclEnv::Parse 140017f90 stores audioParms.soundEvent at +90.
+/// `inherit` copies renderParms only; it does not inherit this nullable event.
+pub fn environment_sound_event(source: &str) -> Result<Option<String>, String> {
+    let source = decode_environment_source(source);
+    let tokens = declaration_lexemes(&source)?;
+    Ok(tokens.windows(2).rev().find(|pair| pair[0].eq_ignore_ascii_case("soundEvent"))
+        .map(|pair| pair[1].trim_matches('"'))
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL"))
+        .map(str::to_owned))
+}
+
+fn environment_blend_duration_decoded(source: &str) -> Result<f32, String> {
+    for line in source.lines() {
         let Some(value) = line.trim().strip_prefix("blendDuration") else {
             continue;
         };
@@ -733,11 +892,15 @@ pub fn environment_blend_duration(source: &str) -> Result<f32, String> {
     Ok(1.0)
 }
 
+#[cfg(test)]
 fn parse_environment_render_parameters(source: &str) -> Vec<(String, String)> {
-    let decoded = decode_environment_source(source);
+    environment_render_parameters_decoded(&decode_environment_source(source))
+}
+
+fn environment_render_parameters_decoded(source: &str) -> Vec<(String, String)> {
     let mut in_render_parms = false;
     let mut parameters = Vec::new();
-    for line in decoded.lines() {
+    for line in source.lines() {
         let line = line.trim();
         if !in_render_parms {
             if line
@@ -777,7 +940,10 @@ fn parse_env_rgb(value: &str) -> Option<[f32; 3]> {
 
 /// Parse lighting keys from an authored env declaration's renderParms block.
 pub fn environment_lighting(source: &str) -> EnvironmentLighting {
-    let decoded = decode_environment_source(source);
+    environment_lighting_decoded(&decode_environment_source(source))
+}
+
+fn environment_lighting_decoded(source: &str) -> EnvironmentLighting {
     let mut result = EnvironmentLighting {
         ambient_high: None,
         ambient_low: None,
@@ -799,7 +965,7 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
         auto_exposure_adapt_speed_up: None,
         auto_exposure_adapt_speed_down: None,
     };
-    for line in decoded.lines() {
+    for line in source.lines() {
         let line = line.trim();
         let Some((key, value)) = line.split_once(char::is_whitespace) else {
             continue;
@@ -853,10 +1019,9 @@ pub fn environment_lighting(source: &str) -> EnvironmentLighting {
     result
 }
 
-fn environment_parent(source: &str) -> Option<String> {
-    let decoded = decode_environment_source(source);
+fn environment_parent_decoded(source: &str) -> Option<String> {
     let mut in_inherit = false;
-    for line in decoded.lines() {
+    for line in source.lines() {
         let line = line.trim();
         if !in_inherit {
             if line.starts_with("inherit") && line.contains('{') {
@@ -945,11 +1110,12 @@ where
     where
         F: FnMut(&str) -> Result<Option<String>, String>,
     {
-        let local = environment_lighting(source);
+        let decoded = decode_environment_source(source);
+        let local = environment_lighting_decoded(&decoded);
         if depth >= 16 {
             return Ok(local);
         }
-        let Some(parent) = environment_parent(source) else {
+        let Some(parent) = environment_parent_decoded(&decoded) else {
             return Ok(local);
         };
         if visited.iter().any(|existing| existing == &parent) {
@@ -978,6 +1144,41 @@ where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
     environment_parameters_with_parent_cache(resource, source, resolve, None)
+}
+
+/// Acquire one coherent world declaration chain for lighting and render settings.
+pub fn load_world_environment(
+    catalog: &crate::archive::Catalog,
+    resource: &str,
+) -> Result<Option<(EnvironmentLighting, EnvironmentRenderParameters, f32)>, Box<dyn std::error::Error>> {
+    let mut current = resource.to_owned();
+    let mut layers = Vec::new();
+    let mut lighting = Vec::new();
+    let mut duration = Ok(1.0);
+    loop {
+        let Some(bytes) = catalog.read(&format!("generated/decls/env/{current}.decl"))? else { break; };
+        let text = String::from_utf8_lossy(&bytes);
+        let source = decode_environment_source(&text);
+        if layers.is_empty() {
+            duration = environment_blend_duration_decoded(&source);
+        }
+        lighting.push(environment_lighting_decoded(&source));
+        let parent = environment_parent_decoded(&source);
+        layers.push(EnvironmentRenderParameterLayer {
+            resource: current,
+            parameters: environment_render_parameters_decoded(&source),
+        });
+        let Some(parent) = parent else { break; };
+        // Depths 0 through 16 are valid. The old walks track ancestors only.
+        if layers.len() > 16 || layers[1..].iter().any(|layer| layer.resource == parent) {
+            break;
+        }
+        current = parent;
+    }
+    let Some(lighting) = lighting.into_iter().rev().reduce(overlay_environment_lighting) else {
+        return Ok(None);
+    };
+    Ok(Some((lighting, EnvironmentRenderParameters { layers }, duration.map_err(std::io::Error::other)?)))
 }
 
 #[derive(Clone)]
@@ -1009,10 +1210,11 @@ pub(crate) fn environment_parameters_with_parent_cache<F>(
     resource: &str, source: &str, mut resolve: F, mut cache: Option<&mut EnvironmentParentCache>,
 ) -> Result<EnvironmentRenderParameters, String>
 where F: FnMut(&str) -> Result<Option<String>, String> {
+    let source = decode_environment_source(source);
     let mut layers = vec![EnvironmentRenderParameterLayer {
-        resource: resource.to_owned(), parameters: parse_environment_render_parameters(source),
+        resource: resource.to_owned(), parameters: environment_render_parameters_decoded(&source),
     }];
-    let mut next = environment_parent(source);
+    let mut next = environment_parent_decoded(&source);
     let mut visited = Vec::<String>::new();
     // The source pushes depth 0 through depth 16, then stops.
     while layers.len() <= 16 {
@@ -1025,9 +1227,10 @@ where F: FnMut(&str) -> Result<Option<String>, String> {
         } else {
             if let Some(owner) = cache.as_deref_mut() { owner.misses += 1; }
             let Some(source) = resolve(&parent)? else { break; };
+            let source = decode_environment_source(&source);
             let entry = CachedEnvironmentParent {
-                layer: EnvironmentRenderParameterLayer { resource: parent.clone(), parameters: parse_environment_render_parameters(&source) },
-                parent: if layers.len() < 16 || cache.is_some() { environment_parent(&source) } else { None },
+                layer: EnvironmentRenderParameterLayer { resource: parent.clone(), parameters: environment_render_parameters_decoded(&source) },
+                parent: if layers.len() < 16 || cache.is_some() { environment_parent_decoded(&source) } else { None },
             };
             if let Some(owner) = cache.as_deref_mut() { owner.parents.insert(parent.clone(), entry.clone()); }
             entry
@@ -2234,6 +2437,36 @@ pub fn entity_binds(document: &Document) -> Vec<EntityBind> {
         .collect()
 }
 
+/// Resolve authored managed entity pointers before attempting attachment.
+/// 1417f3bf0 reflects bindParent as idManagedClassPtr<idEntity>; 140877370
+/// calls 140875e80 only when 1406dc560 resolves that pointer. Deleted/null
+/// targets therefore leave the child unbound. Preserve entity_binds as the
+/// raw declaration view; all runtime attachment owners use this projection.
+/// 1408a7d90/140143650 compare managed entity names ASCII-insensitively.
+/// Lookup borrows document names and is discarded after preparation.
+pub fn resolved_entity_binds(document: &Document) -> Vec<EntityBind> {
+    #[derive(Clone, Copy)]
+    struct Name<'a>(&'a str);
+    impl PartialEq for Name<'_> {
+        fn eq(&self, other: &Self) -> bool { self.0.eq_ignore_ascii_case(other.0) }
+    }
+    impl Eq for Name<'_> {}
+    impl std::hash::Hash for Name<'_> {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            for byte in self.0.bytes() { state.write_u8(byte.to_ascii_lowercase()); }
+        }
+    }
+    let names: HashMap<_, _> = document.definitions.iter()
+        .filter(|definition| definition.kind == "entity")
+        .map(|definition| (Name(definition.id.as_str()), definition.id.as_str()))
+        .collect();
+    entity_binds(document).into_iter().filter_map(|mut binding| {
+        let parent = *names.get(&Name(&binding.parent))?;
+        if binding.parent != parent { binding.parent = parent.to_owned(); }
+        Some(binding)
+    }).collect()
+}
+
 pub fn rigid_body_settings(document: &Document) -> Vec<RigidBodySettings> {
     let declarations: HashMap<&str, &Definition> = document
         .definitions
@@ -2402,7 +2635,7 @@ fn inherited_model(
 /// Declaration bodies may contain brush/patch syntax rather than key-value
 /// fields. Inspect only the two property paths needed for model inheritance.
 fn declaration_inheritance(text: &str) -> Result<(Option<String>, Option<String>), String> {
-    let mut lexer = Lexer { text, at: 0 };
+    let mut lexer = Lexer { text, at: 0, map_quotes: false };
     let mut scopes = Vec::<String>::new();
     let mut previous = None;
     let mut before_previous = None;
@@ -2455,107 +2688,130 @@ fn placed_models_using(
     inherited: &HashMap<String, String>,
     blueprints: bool,
 ) -> Vec<PlacedModel> {
-    let mut result = Vec::new();
-    for definition in &document.definitions {
-        if definition.kind != "entity" {
-            continue;
+    document.definitions.iter().filter(|definition| definition.kind == "entity" && !entity_hidden(definition))
+        .filter_map(|definition| placed_model_descriptor(definition, inherited.get(&definition.id).map(String::as_str), blueprints))
+        .collect()
+}
+
+/// Authored visibility belongs to the entity, independently of its physical
+/// resource descriptor. A hidden model can still own collision resources.
+pub(crate) fn entity_hidden(definition: &Definition) -> bool {
+    scope(field(&definition.fields, "edit"))
+        .and_then(|edit| scope(field(edit, "flags")))
+        .and_then(|flags| field(flags, "hide"))
+        .is_some_and(|value| matches!(value, Value::Atom(flag) if flag == "true"))
+}
+
+/// Acquire just one entity's authored RenderModel descriptor.808ea0 reads
+/// that model name/scale even when the entity produces no color projection.
+/// No generic definition clone or whole-map model collection is retained.
+pub(crate) fn model_descriptor(
+    definition: &Definition,
+    mut read: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<Option<PlacedModel>, String> {
+    let edit = scope(field(&definition.fields, "edit")).unwrap_or(&[]);
+    let explicit = scope(field(edit, "renderModelInfo")).and_then(|info| field(info, "model"));
+    let inherited = if explicit.is_none() {
+        match field(&definition.fields, "inherit") {
+            Some(Value::Atom(name)) => inherited_model(name.trim_matches('"'), 0, &mut HashMap::new(), &mut read)?,
+            _ => None,
         }
-        let Some(edit) = scope(field(&definition.fields, "edit")) else {
-            continue;
-        };
-        if scope(field(edit, "flags"))
-            .and_then(|flags| field(flags, "hide"))
-            .is_some_and(|value| matches!(value, Value::Atom(flag) if flag == "true"))
-        {
-            continue;
-        }
-        let render_info = scope(field(edit, "renderModelInfo"));
-        let model_path = match render_info.and_then(|info| field(info, "model")) {
-            Some(Value::Atom(path)) => path.as_str(),
-            _ => match inherited.get(&definition.id) {
-                Some(path) => path.as_str(),
-                None => continue,
-            },
-        };
-        let model_path = model_path.trim_matches('"');
-        let resource_path = if let Some(stem) = model_path.strip_suffix(".lwo") {
-            format!("generated/model/{stem}.bmodel")
-        } else if model_path.ends_with(".bmodel") {
-            format!("generated/model/{model_path}")
-        } else if blueprints && model_path.ends_with(".blueprint") {
-            format!("generated/decls/blueprint/{model_path}.decl")
-        } else if blueprints && model_path.ends_with(".md6") {
-            format!(
-                "generated/basemodel/{}.bmd6model",
-                model_path.trim_end_matches(".md6")
-            )
-        } else {
-            continue;
-        };
-        let Some(position) =
-            scope(field(edit, "spawnPosition")).and_then(|values| vector(values, [0.0; 3]))
-        else {
-            continue;
-        };
-        let scale = render_info
-            .and_then(|info| scope(field(info, "scale")))
-            .and_then(|values| vector(values, [1.0; 3]))
-            .unwrap_or([1.0; 3]);
-        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let rotation = scope(field(edit, "spawnOrientation"))
-            .and_then(|values| scope(field(values, "mat")))
-            .and_then(|matrix| {
-                let mut rows = identity;
-                for row in 0..3 {
-                    if let Some(values) = scope(field(matrix, &format!("mat[{row}]"))) {
-                        rows[row] = vector(values, identity[row])?;
-                    }
-                }
-                Some(rows)
-            })
-            .unwrap_or(identity);
-        let custom_materials = render_info
-            .and_then(|info| scope(field(info, "m_customMaterials")))
-            .map(|overrides| {
-                let count = match field(overrides, "num") {
-                    Some(Value::Atom(value)) => value
-                        .parse::<usize>()
-                        .ok()
-                        .filter(|&n| n <= 64)
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-                (0..count)
-                    .map(|index| match field(overrides, &format!("item[{index}]")) {
-                        Some(Value::Atom(path))
-                            if !path.trim_matches('"').is_empty()
-                                && !path.trim_matches('"').eq_ignore_ascii_case("NULL") =>
-                        {
-                            Some(path.trim_matches('"').to_string())
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let max_visible_range = render_info
-            .and_then(|info| field(info, "maxVisibleRange"))
-            .and_then(|value| match value {
-                Value::Atom(text) => text.strip_suffix('m').unwrap_or(text).parse::<f32>().ok(),
-                _ => None,
-            })
-            .filter(|value| value.is_finite());
-        result.push(PlacedModel {
-            id: definition.id.clone(),
-            resource_path,
-            position,
-            scale,
-            rotation,
-            custom_materials,
-            max_visible_range,
-        });
+    } else { None };
+    let descriptor = placed_model_descriptor(definition, inherited.as_deref(), true);
+    if descriptor.is_none() && (explicit.is_some() || inherited.is_some()) {
+        return Err(format!("{}: authored RenderModel descriptor is unsupported or incomplete: model={explicit:?}, inherited={inherited:?}", definition.id));
     }
-    result
+    Ok(descriptor)
+}
+
+fn placed_model_descriptor(definition: &Definition, inherited: Option<&str>, blueprints: bool) -> Option<PlacedModel> {
+    if definition.kind != "entity" { return None; }
+    let edit = scope(field(&definition.fields, "edit"))?;
+    let render_info = scope(field(edit, "renderModelInfo"));
+    let model_path = match render_info.and_then(|info| field(info, "model")) {
+        Some(Value::Atom(path)) => path.as_str(),
+        _ => match inherited {
+            Some(path) => path,
+            None => return None,
+        },
+    };
+    let model_path = model_path.trim_matches('"');
+    let resource_path = if let Some(stem) = model_path.strip_suffix(".lwo") {
+        format!("generated/model/{stem}.bmodel")
+    } else if model_path.ends_with(".bmodel") {
+        format!("generated/model/{model_path}")
+    } else if blueprints && model_path.ends_with(".blueprint") {
+        format!("generated/decls/blueprint/{model_path}.decl")
+    } else if blueprints && model_path.ends_with(".md6") {
+        format!(
+            "generated/basemodel/{}.bmd6model",
+            model_path.trim_end_matches(".md6")
+        )
+    } else {
+        return None;
+    };
+    let Some(position) =
+        scope(field(edit, "spawnPosition")).and_then(|values| vector(values, [0.0; 3]))
+    else {
+        return None;
+    };
+    let scale = render_info
+        .and_then(|info| scope(field(info, "scale")))
+        .and_then(|values| vector(values, [1.0; 3]))
+        .unwrap_or([1.0; 3]);
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let rotation = scope(field(edit, "spawnOrientation"))
+        .and_then(|values| scope(field(values, "mat")))
+        .and_then(|matrix| {
+            let mut rows = identity;
+            for row in 0..3 {
+                if let Some(values) = scope(field(matrix, &format!("mat[{row}]"))) {
+                    rows[row] = vector(values, identity[row])?;
+                }
+            }
+            Some(rows)
+        })
+        .unwrap_or(identity);
+    let custom_materials = render_info
+        .and_then(|info| scope(field(info, "m_customMaterials")))
+        .map(|overrides| {
+            let count = match field(overrides, "num") {
+                Some(Value::Atom(value)) => value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n <= 64)
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            (0..count)
+                .map(|index| match field(overrides, &format!("item[{index}]")) {
+                    Some(Value::Atom(path))
+                        if !path.trim_matches('"').is_empty()
+                            && !path.trim_matches('"').eq_ignore_ascii_case("NULL") =>
+                    {
+                        Some(path.trim_matches('"').to_string())
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let max_visible_range = render_info
+        .and_then(|info| field(info, "maxVisibleRange"))
+        .and_then(|value| match value {
+            Value::Atom(text) => text.strip_suffix('m').unwrap_or(text).parse::<f32>().ok(),
+            _ => None,
+        })
+        .filter(|value| value.is_finite());
+    Some(PlacedModel {
+        id: definition.id.clone(),
+        resource_path,
+        position,
+        scale,
+        rotation,
+        custom_materials,
+        max_visible_range,
+    })
 }
 
 /// Resolve map-local pickable components referenced by placed pickup entities.
@@ -3847,3 +4103,5 @@ mod line_break_tests {
         }
     }
 }
+
+pub(crate) mod rigid_body;

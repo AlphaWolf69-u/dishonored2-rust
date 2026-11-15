@@ -1,6 +1,7 @@
 //! Event controls issued to an audio component (PostEvent / StopEvent).
 pub mod mix;
 pub mod music_clip;
+pub mod music;
 pub mod containers;
 pub mod states;
 pub mod switches;
@@ -73,4 +74,6 @@ pub enum Request {
     PostAt { event: u32, emitter: Emitter, position: bevy_math::Vec3,
         front: Option<bevy_math::Vec3>, parameter: Option<(u32, f32)> },
     Stop { event: u32, emitter: Emitter },
+    /// Host FIFO boundary for1400c7a20 deferred object return.
+    Retire { emitter: Emitter },
 }

@@ -43,6 +43,12 @@ pub struct CameraMaskInputs<'a> {
     pub far_scissor: [u32; 4],
 }
 impl CameraMasks {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        visit("dof-near-mask", &self.near);
+        visit("dof-mask-temporary", &self._temporary);
+        visit("dof-far-mask", &self.far);
+    }
     /// `extent` is the allocated dofMaskDiv2 size. Source quality and view
     /// resource allocation remain with the frame owner, as in the game.
     pub fn new(device: &RenderDevice, extent: [u32; 2]) -> Result<Self, String> {

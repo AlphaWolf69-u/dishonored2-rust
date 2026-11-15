@@ -12,6 +12,42 @@ pub struct MotionStorage {
     cell_lists: [Vec<u32>; 32],
 }
 impl MotionStorage {
+    pub(crate) fn cancel_uninitialized_reservation(&mut self, id: u32) -> Result<(), String> {
+        let index = id as usize;
+        let motion = self.motions.get(index).ok_or("reserved motion is missing")?;
+        if index == 0 || self.initialized.get(index).copied() != Some(false)
+            || motion.space_splitter_weight == 0 || motion.first_body_id != 0x00ff_ffff {
+            return Err("motion is not an uninitialized reservation".into());
+        }
+        let count = self.active_count.checked_sub(1).ok_or("motion count underflow")?;
+        self.motions[index] = Motion::default();
+        self.next_free[index] = self.free_head;
+        self.free_head = Some(index);
+        self.active_count = count;
+        Ok(())
+    }
+
+    /// 140cd7310 retires the motion after its last body and solver entry.
+    pub(crate) fn release_detached(&mut self, id: u32) -> Result<(), String> {
+        let index = id as usize;
+        if index == 0 { return Err("cannot release the static anchor motion".into()); }
+        let motion = self.get(id).ok_or("released motion is not initialized")?;
+        if motion.first_body_id != 0x00ff_ffff || motion.solver_id != 0x7fff_ffff {
+            return Err("motion must be detached from bodies and solver before release".into());
+        }
+        let count = self.active_count.checked_sub(1).ok_or("motion count underflow")?;
+        let mut cleared = Motion::default();
+        cleared.pose.orientation = [0., 0., 0., 1.];
+        cleared.cell = u8::MAX;
+        cleared.solver_id = 0x7fff_ffff;
+        self.motions[index] = cleared;
+        self.initialized[index] = false;
+        self.next_free[index] = self.free_head;
+        self.free_head = Some(index);
+        self.active_count = count;
+        Ok(())
+    }
+
     /// cd77b0 appends to the selected cell and publishes the solver-list index.
     pub fn add_to_solver(&mut self, id: u32) -> Result<(), String> {
         let cell = self.get(id).ok_or("solver motion is not initialized")?.cell as usize;
@@ -32,17 +68,20 @@ impl MotionStorage {
         let index = motion.solver_id as usize;
         let list = self
             .cell_lists
-            .get_mut(cell)
+            .get(cell)
             .ok_or("motion solver cell exceeds world lists")?;
         if index >= list.len() {
             return Err("motion solver index exceeds its cell list".into());
         }
+        if list[index] != id { return Err("motion solver index identifies another motion".into()); }
         let last = *list.last().unwrap();
+        if index + 1 < list.len() && self.get(last).is_none() {
+            return Err("moved solver motion is missing".into());
+        }
+        let list = &mut self.cell_lists[cell];
         list.swap_remove(index);
         if index < list.len() {
-            self.get_mut(last)
-                .ok_or("moved solver motion is missing")?
-                .solver_id = index as u32;
+            self.get_mut(last).expect("validated moved solver motion").solver_id = index as u32;
         }
         self.get_mut(id).unwrap().solver_id = 0x7fff_ffff;
         Ok(())

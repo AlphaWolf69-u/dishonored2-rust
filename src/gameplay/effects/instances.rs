@@ -15,8 +15,21 @@ use crate::{
 use std::{
     collections::HashMap,
     ops::{Index, IndexMut},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}},
 };
+
+// Subscription callbacks must never alias a graph from an earlier level.
+static NEXT_GRAPH_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub enum GraphEvent {
+    Action { graph: usize, node: u32, port: u32 },
+    LoadingEnd { graph: usize, node: u32 },
+}
+impl GraphEvent {
+    pub fn graph(&self) -> usize {
+        match *self { Self::Action { graph, .. } | Self::LoadingEnd { graph, .. } => graph }
+    }
+}
 
 #[derive(Default)]
 pub struct FxGraphInstances {
@@ -25,7 +38,11 @@ pub struct FxGraphInstances {
     effectful: Vec<bool>,
     children: HashMap<(usize, u32), usize>,
     failures: HashMap<(usize, u32), String>,
-    pub events: Vec<(usize, u32, u32)>,
+    pub events: crate::gameplay::event_graph::ManagerWork<GraphEvent>,
+    generations: Vec<u32>,
+    live: Vec<bool>,
+    free: Vec<usize>,
+    random: Option<Arc<Mutex<crate::random::MwcRandom>>>,
 }
 impl Index<usize> for FxGraphInstances {
     type Output = Option<FxGraphRuntime>;
@@ -46,11 +63,20 @@ impl FxGraphInstances {
         (self.runtimes.iter().flatten().count(), pointers.len())
     }
     pub fn new(roots: &[Arc<FxGraph>], declarations: &FxDeclarations, seed: u64) -> Self {
+        Self::with_admission(roots, declarations, seed, false)
+    }
+    /// A live entity graph may route to gameplay, motion and FX through the
+    /// same queue; it must not inherit the render-only FX relevance filter.
+    pub fn new_level(roots: &[Arc<FxGraph>], declarations: &FxDeclarations, seed: u64) -> Self {
+        Self::with_admission(roots, declarations, seed, true)
+    }
+    fn with_admission(roots: &[Arc<FxGraph>], declarations: &FxDeclarations, seed: u64, all_nodes: bool) -> Self {
         let _tag = crate::platform::allocation_tags::tag("FX graph instances");
         let random = Arc::new(Mutex::new(crate::random::MwcRandom::event_manager(seed)));
         let mut instances = Self::default();
+        instances.random = Some(random.clone());
         for root in roots {
-            instances.add(root.clone(), root.owner.clone(), None, declarations, &random, &mut Vec::new());
+            instances.add(root.clone(), root.owner.clone(), None, declarations, &random, &mut Vec::new(), all_nodes);
         }
         instances
     }
@@ -62,6 +88,7 @@ impl FxGraphInstances {
         declarations: &FxDeclarations,
         random: &Arc<Mutex<crate::random::MwcRandom>>,
         path: &mut Vec<String>,
+        all_nodes: bool,
     ) -> usize {
         // Diagnostic A/B retains the former per-instance deep-copy cost.
         let graph = if std::env::var("DH2_DEBUG_SHARED_FX_GRAPHS").as_deref() == Ok("0") {
@@ -73,29 +100,33 @@ impl FxGraphInstances {
             .filter_map(|node| instance_declaration(node).map(|name| (node.id, name.to_owned())))
             .collect::<Vec<_>>();
 
-        let index = self.runtimes.len();
         let mut runtime = FxGraphRuntime::new(graph, HashMap::new());
         runtime.set_owner(owner.clone());
-        runtime.random_owner = Some(random.clone());
-        let effectful = runtime.definition().nodes.iter().any(|node| {
-            matches!(
-                node.class.as_str(),
-                "arkKisculeNodeFx" | "arkKisculeNodeEntityFx"
-            )
-        });
-        let mut targets = runtime
-            .definition()
-            .nodes
-            .iter()
-            .filter(|node| {
-                node.class == "arkKisculeNodeEntityFx"
-                    || (parent.is_some() && node.class == "arkKisculeNodeDeclExit")
-            })
-            .map(|node| node.id)
-            .collect::<Vec<_>>();
-        self.runtimes.push(Some(runtime));
-        self.parents.push(parent);
-        self.effectful.push(effectful);
+        runtime.random_owner = Some(Arc::clone(random));
+        let effectful = runtime.definition().nodes.iter().any(|node|
+            matches!(node.class.as_str(), "arkKisculeNodeFx" | "arkKisculeNodeEntityFx"));
+        let mut targets = runtime.definition().nodes.iter().filter(|node|
+            all_nodes || node.class == "arkKisculeNodeEntityFx"
+                || (parent.is_some() && node.class == "arkKisculeNodeDeclExit"))
+            .map(|node| node.id).collect::<Vec<_>>();
+
+        let index = if let Some(index) = self.free.pop() {
+            self.runtimes[index] = Some(runtime);
+            self.parents[index] = parent;
+            self.effectful[index] = effectful;
+            self.live[index] = true;
+            index
+        } else {
+            let index = self.runtimes.len();
+            self.runtimes.push(Some(runtime));
+            self.parents.push(parent);
+            self.effectful.push(effectful);
+            self.generations.push(0);
+            self.live.push(true);
+            index
+        };
+        // Zero is reserved for exhaustion; never wrap and alias old work.
+        self.generations[index] = u32::try_from(NEXT_GRAPH_GENERATION.fetch_add(1, Ordering::Relaxed)).unwrap_or(0);
         for (node, name) in children {
             let definition = declarations.get(&name).and_then(|graph| {
                 if path.contains(&name) {
@@ -110,7 +141,7 @@ impl FxGraphInstances {
             match definition {
                 Ok(graph) => {
                     path.push(name);
-                    let child = self.add(graph, owner.clone(), Some((index, node)), declarations, random, path);
+                    let child = self.add(graph, owner.clone(), Some((index, node)), declarations, random, path, all_nodes);
                     path.pop();
                     let variables = self[child].as_ref().unwrap().variables.clone();
                     self[index]
@@ -134,6 +165,116 @@ impl FxGraphInstances {
         self[index].as_mut().unwrap().include_targets(targets);
         index
     }
+    pub fn has_root_owner(&self, owner: &str) -> bool {
+        self.runtimes.iter().enumerate().any(|(index, runtime)|
+            self.live[index] && self.parents[index].is_none()
+                && runtime.as_ref().is_some_and(|runtime| runtime.graph_owner().eq_ignore_ascii_case(owner)))
+    }
+    pub fn root_owners(&self) -> impl Iterator<Item = &str> {
+        self.runtimes.iter().enumerate().filter_map(|(index, runtime)| {
+            (self.live[index] && self.parents[index].is_none())
+                .then(|| runtime.as_ref().map(|runtime| runtime.graph_owner())).flatten()
+        })
+    }
+    /// Stable subscription identity: a reused slot always receives a new
+    /// generation, so delayed notifications cannot target its next owner.
+    pub fn instance_id(&self, index: usize) -> Option<u64> {
+        if !*self.live.get(index)? { return None; }
+        let slot = u32::try_from(index).ok()?;
+        let generation = *self.generations.get(index)?;
+        (generation != 0).then_some((u64::from(generation) << 32) | u64::from(slot))
+    }
+    pub fn instance_index(&self, id: u64) -> Option<usize> {
+        let index = id as u32 as usize;
+        (self.instance_id(index)? == id).then_some(index)
+    }
+    pub fn admit_root(&mut self, graph: Arc<FxGraph>, declarations: &FxDeclarations) -> Result<u64, String> {
+        let random = self.random.clone().ok_or("graph manager has not been initialized")?;
+        // An explicitly admitted live entity graph is a gameplay graph even
+        // when the manager also still hosts legacy FX-filtered roots.
+        let index = self.add(graph.clone(), graph.owner.clone(), None, declarations, &random, &mut Vec::new(), true);
+        self.instance_id(index).ok_or_else(|| "graph instance index exceeds the handle range".into())
+    }
+    /// Restore an authored render-only root using the original FX relevance
+    /// filter. It shares this manager and its declaration/random owners, but
+    /// does not assert that the corresponding gameplay entity has spawned.
+    pub fn admit_render_root(&mut self, graph: Arc<FxGraph>, declarations: &FxDeclarations) -> Result<u64, String> {
+        let random = self.random.clone().ok_or("graph manager has not been initialized")?;
+        let index = self.add(graph.clone(), graph.owner.clone(), None, declarations, &random, &mut Vec::new(), false);
+        self.instance_id(index).ok_or_else(|| "graph instance index exceeds the handle range".into())
+    }
+    /// Queue the admitted root's startup nodes on the shared manager stack.
+    /// 14063fa90 defers them until the game-local manager readiness flag.
+    pub fn queue_loading_end(&mut self, root: u64) -> Result<(), String> {
+        let indices = self.retirement_subtree(root).ok_or("loading graph subtree is unavailable")?;
+        for index in indices {
+            let nodes = self.runtimes[index].as_ref().ok_or("loading graph is busy")?.definition().nodes.iter()
+                .filter(|node| node.class == "arkKisculeNodeLoadingEnd").map(|node| node.id).collect::<Vec<_>>();
+            for node in nodes { self.events.push(GraphEvent::LoadingEnd { graph: index, node }); }
+        }
+        Ok(())
+    }
+    /// Identify the complete declaration subtree before the entity owner
+    /// detaches its subscriptions and FX callbacks.
+    pub fn live_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.live.iter().enumerate().filter_map(|(index, &live)| live.then_some(index))
+    }
+    pub fn retirement_subtree(&self, id: u64) -> Option<Vec<usize>> {
+        let root = self.instance_index(id)?;
+        if self.parents[root].is_some() { return None; }
+        let mut result = vec![root];
+        let mut cursor = 0;
+        while cursor < result.len() {
+            let parent = result[cursor];
+            for (index, binding) in self.parents.iter().enumerate() {
+                if self.live[index]
+                    && binding.is_some_and(|(owner, _)| owner == parent) {
+                    result.push(index);
+                }
+            }
+            cursor += 1;
+        }
+        if result.iter().any(|&index| self.runtimes[index].is_none()) { return None; }
+        Some(result)
+    }
+    /// Receiver teardown must run first, while the instance IDs are valid.
+    pub fn retire_detached(&mut self, indices: &[usize]) -> Result<(), String> {
+        if indices.iter().any(|&index| self.live.get(index) == Some(&true)
+            && self.runtimes.get(index).is_some_and(Option::is_none)) {
+            return Err("graph receiver is executing; defer teardown until its action returns".into());
+        }
+        self.events.retain(|event| !indices.contains(&event.graph()));
+        self.children.retain(|(parent, _), child| !indices.contains(parent) && !indices.contains(child));
+        self.failures.retain(|(parent, _), _| !indices.contains(parent));
+        for &index in indices.iter().rev() {
+            if let Some(runtime) = self.runtimes.get_mut(index) {
+                if runtime.take().is_some() {
+                    self.parents[index] = None;
+                    self.effectful[index] = false;
+                    self.live[index] = false;
+                    self.free.push(index);
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn picked_up(&mut self, id: u64, node: u32, successful: bool, from_grapple: bool)
+        -> Result<Vec<String>, String> {
+        let index = self.instance_index(id).ok_or("pickup notification graph has retired")?;
+        self.runtimes.get_mut(index).and_then(Option::as_mut).ok_or("graph instance absent or busy")?
+            .picked_up(node, successful, from_grapple)?;
+        Ok(self.collect(index))
+    }
+    pub fn pickup_subscriptions(&self, graph: u64)
+        -> Result<(Vec<(u32, crate::gameplay::event_graph::EntityReference)>, Vec<String>), String> {
+        let index = self.instance_index(graph).ok_or("pickup graph has retired")?;
+        let runtime = self.runtimes.get(index).and_then(Option::as_ref).ok_or("pickup graph is busy")?;
+        Ok(runtime.pickup_subscriptions())
+    }
+    pub fn pickup_subscription(&self, graph: u64, node: u32) -> Result<Option<crate::gameplay::event_graph::EntityReference>, String> {
+        let index = self.instance_index(graph).ok_or("pickup graph retired")?;
+        self.runtimes[index].as_ref().ok_or("pickup graph busy")?.pickup_subscription(node)
+    }
     pub fn owner(&self, index: usize) -> &str {
         self[index].as_ref().expect("FX graph busy").graph_owner()
     }
@@ -153,12 +294,30 @@ impl FxGraphInstances {
             .transpose()
     }
     pub fn loading_end(&mut self) -> Vec<String> {
+        let roots = self.runtimes.iter().enumerate().filter_map(|(index, _)|
+            self.parents[index].is_none().then(|| self.instance_id(index)).flatten()).collect::<Vec<_>>();
         let mut errors = Vec::new();
-        for index in 0..self.runtimes.len() {
-            if let Err(error) = self[index].as_mut().unwrap().loading_end() {
-                errors.push(format!("{}: {error}", self.owner(index)));
+        for root in roots { if let Err(error) = self.queue_loading_end(root) { errors.push(error); } }
+        errors.extend(self.startup());
+        errors
+    }
+    /// Drain only the native startup callback list. Their emitted ordinary
+    /// actions stay in the manager's alternating update queues until gameplay.
+    pub fn startup(&mut self) -> Vec<String> {
+        self.events.start();
+        let mut errors = Vec::new();
+        while let Some(event) = self.events.pop() {
+            match event {
+                GraphEvent::LoadingEnd { graph, node } => {
+                    if !self.live[graph] { continue; }
+                    self.events.startup_callback(true);
+                    if let Err(error) = self.runtimes[graph].as_mut().ok_or_else(|| "startup graph busy".to_owned())
+                        .and_then(|runtime| runtime.loading_end_node(node)) { errors.push(error.to_owned()); }
+                    errors.extend(self.collect(graph));
+                    self.events.startup_callback(false);
+                }
+                GraphEvent::Action { .. } => { errors.push("ordinary action entered the startup callback list".into()); break; }
             }
-            errors.extend(self.collect(index));
         }
         errors
     }
@@ -182,7 +341,7 @@ impl FxGraphInstances {
             let Some(child) = self.children.get(&(index, id)).copied() else {
                 // An empty declaration has no child: 7bb9d0 falls through to
                 // ordinary dispatch instead of inventing an auto-exit.
-                self.events.push((index, id, port));
+                self.events.push(GraphEvent::Action { graph: index, node: id, port });
                 return Ok(());
             };
             let name = &node
@@ -242,7 +401,7 @@ impl FxGraphInstances {
                 self.flush(parent)?;
             }
         } else {
-            self.events.push((index, id, port));
+            self.events.push(GraphEvent::Action { graph: index, node: id, port });
         }
         Ok(())
     }

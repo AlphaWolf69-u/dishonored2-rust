@@ -336,16 +336,16 @@ fn world_shadow_test_world() -> world_mesh::WorldMesh {
     };
     world_mesh::WorldMesh {
         spatial_query_cache: Default::default(),
-        meshes: vec![world_mesh::Mesh {
-            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            uvs: vec![
+        meshes: vec![world_mesh::Mesh::from_parts(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![
                 [half::f16::ZERO, half::f16::ZERO],
                 [half::f16::ONE, half::f16::ZERO],
                 [half::f16::ZERO, half::f16::ONE],
             ],
-            packed_channels: vec![[0; 16]; 3],
-            indices: vec![0, 1, 2],
-        }],
+            vec![[0; 16]; 3],
+            vec![0, 1, 2],
+        )],
         matrices: vec![
             matrix(0.0),
             matrix(1.0),
@@ -539,6 +539,7 @@ fn world_shadow_test_scene(world: world_mesh::WorldMesh) -> SceneData {
         world,
         player_start: None,
         placed_models: Vec::new(),
+        expanded_placement_roots: None,
         placed_lights: Vec::new(),
         environment_lighting: None,
         environment_render_parameters: None,
@@ -1015,6 +1016,7 @@ fn shadow_owner_uses_level_sources_without_publishing_fake_frame() {
         world: world_mesh::parse(&fs::read(&source_path).unwrap()).unwrap(),
         player_start: None,
         placed_models: Vec::new(),
+        expanded_placement_roots: None,
         placed_lights: Vec::new(),
         environment_lighting: Some(lighting),
         environment_render_parameters: Some(parameters),
@@ -5488,7 +5490,7 @@ fn world_shadow_sources_resolve_level_materials() {
         let decoded = &world.meshes[object.mesh_index];
         assert_eq!(
             source.raw_vertex_count.as_ref().unwrap(),
-            &decoded.positions.len()
+            &decoded.positions().len()
         );
         if !checked_meshes.insert((object.mesh_index, object.flipped)) {
             continue;
@@ -5504,9 +5506,9 @@ fn world_shadow_sources_resolve_level_materials() {
         else {
             panic!("local BWM position attribute is missing")
         };
-        assert_eq!(raw, &decoded.positions);
-        assert_eq!(forward.len(), decoded.positions.len());
-        for (&local, converted) in decoded.positions.iter().zip(forward) {
+        assert_eq!(raw, decoded.positions());
+        assert_eq!(forward.len(), decoded.positions().len());
+        for (&local, converted) in decoded.positions().iter().zip(forward) {
             assert_eq!(*converted, game_to_view(local).to_array());
         }
         let bevy::mesh::VertexAttributeValues::Float32x2(raw_normal) =
@@ -5514,8 +5516,8 @@ fn world_shadow_sources_resolve_level_materials() {
         else {
             panic!("local BWM normal attribute is missing")
         };
-        assert_eq!(raw_normal.len(), decoded.packed_channels.len());
-        for (actual, packed) in raw_normal.iter().zip(&decoded.packed_channels) {
+        assert_eq!(raw_normal.len(), decoded.packed_channels().len());
+        for (actual, packed) in raw_normal.iter().zip(decoded.packed_channels()) {
             assert_eq!(
                 *actual,
                 [packed[4], packed[5]].map(|byte| ((byte as i8 as f32) / 127.0).max(-1.0))
@@ -5526,8 +5528,8 @@ fn world_shadow_sources_resolve_level_materials() {
         else {
             panic!("local BWM color attribute is missing")
         };
-        assert_eq!(raw_color.len(), decoded.packed_channels.len());
-        for (actual, packed) in raw_color.iter().zip(&decoded.packed_channels) {
+        assert_eq!(raw_color.len(), decoded.packed_channels().len());
+        for (actual, packed) in raw_color.iter().zip(decoded.packed_channels()) {
             assert_eq!(
                 *actual,
                 [packed[12], packed[13], packed[14]].map(|byte| byte as f32 / 255.0)
@@ -5910,10 +5912,10 @@ fn shadow_sources_resolve_actual_world_materials() {
         let source = &world.meshes[object.mesh_index];
         let handle = handles.entry(object.mesh_index).or_insert_with(|| {
             geometry.add(view_geometry::source_mesh_from_uvs(
-                &source.positions,
-                view_geometry::MeshUvs::Packed(&source.uvs),
-                &source.indices,
-                &source.packed_channels,
+                source.positions(),
+                view_geometry::MeshUvs::Packed(source.uvs()),
+                source.indices(),
+                source.packed_channels(),
                 false,
             ))
         });
@@ -5921,8 +5923,8 @@ fn shadow_sources_resolve_actual_world_materials() {
             true,
             handle,
             &mut geometry,
-            &source.positions,
-            &source.packed_channels,
+            source.positions(),
+            source.packed_channels(),
         );
         assert!(
             inputs.0[&handle.id()].is_ok(),
@@ -5936,7 +5938,7 @@ fn shadow_sources_resolve_actual_world_materials() {
         else {
             panic!("missing native local positions")
         };
-        assert_eq!(raw, &source.positions);
+        assert_eq!(raw, source.positions());
     }
     assert!(vegetation_materials.is_empty() || !inputs.0.is_empty());
     let vertices: usize = inputs
@@ -8128,7 +8130,7 @@ fn dense_depth_grid_matches_bounds_after_camera_shifts() {
     for object in &bwm.objects {
         for instances in &mut bwm_instances[object.matrix_start..object.matrix_end] {
             instances.push(triangles.len());
-            triangles.push(bwm.meshes[object.mesh_index].indices.len() / 3);
+            triangles.push(bwm.meshes[object.mesh_index].indices().len() / 3);
         }
     }
     let mapping = TomeRenderInstanceMap::from_world_mapping(&bwm, &bwm_instances);
@@ -8275,7 +8277,7 @@ fn authored_distance_tiers_dispatch_far_bwm_surfaces() {
         for instances in &mut bwm_instances[object.matrix_start..object.matrix_end] {
             instances.push(lods.len());
             lods.push(object.lod);
-            triangles.push(world.meshes[object.mesh_index].indices.len() / 3);
+            triangles.push(world.meshes[object.mesh_index].indices().len() / 3);
         }
     }
     let mapping = TomeRenderInstanceMap::from_world_mapping(&world, &bwm_instances);
@@ -8705,12 +8707,12 @@ fn authored_id_dispatch_uses_group_emptiness_and_unsigned_sort() {
 fn sightline_identifies_bwm_surface_and_instance() {
     let world = world_mesh::WorldMesh {
         spatial_query_cache: Default::default(),
-        meshes: vec![world_mesh::Mesh {
-            positions: vec![[-1.0, 2.0, -1.0], [1.0, 2.0, -1.0], [0.0, 2.0, 1.0]],
-            uvs: vec![],
-            packed_channels: vec![],
-            indices: vec![0, 1, 2],
-        }],
+        meshes: vec![world_mesh::Mesh::from_parts(
+            vec![[-1.0, 2.0, -1.0], [1.0, 2.0, -1.0], [0.0, 2.0, 1.0]],
+            vec![],
+            vec![],
+            vec![0, 1, 2],
+        )],
         matrices: vec![[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]],
         visibility: vec![world_mesh::WorldVisibility {
             bounds: [[-1.0, 2.0, -1.0], [1.0, 2.0, 1.0]],
@@ -9413,9 +9415,9 @@ fn installed_dust_cable_md6_placements_pose_and_query() {
         let mut low = [f32::MAX; 3];
         let mut high = [f32::MIN; 3];
         for surface in &model.surfaces {
-            let mut mesh = source_mesh(
+            let mut mesh = view_geometry::source_mesh_from_uvs(
                 &surface.positions,
-                &surface.uvs,
+                view_geometry::MeshUvs::Packed(&surface.uvs),
                 &surface.indices,
                 &surface.packed_channels,
                 false,

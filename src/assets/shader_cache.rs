@@ -18,12 +18,13 @@ type Result<T> = std::result::Result<T, String>;
 mod water;
 mod boat;
 mod parameters;
-pub(crate) fn retire_catalog(catalog: u64) -> usize {
-    let parameters = parameters::retire_catalog(catalog);
+pub(crate) use parameters::Parameters as ParameterTables;
+
+pub(crate) fn retire_indices() -> usize {
     let mut indices = INDICES.lock().unwrap_or_else(|error| error.into_inner());
     let before = indices.len();
     indices.retain(|_, entry| entry.current.strong_count() != 0);
-    parameters + before - indices.len()
+    before - indices.len()
 }
 pub use water::{CachedWaterDepthClass, CachedWaterDepthSource};
 const VERSION: u32 = 14;
@@ -208,7 +209,7 @@ impl ShaderCache {
         };
         let key = (base.to_owned(), backend);
         let mut indices = INDICES.lock().unwrap_or_else(|error| error.into_inner());
-        indices.retain(|(installation, _), entry| installation == base && entry.current.strong_count() != 0);
+        indices.retain(|_, entry| entry.current.strong_count() != 0);
         let shared = std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1");
         if let Some(index) = indices.get(&key).filter(|_| shared).and_then(|entry| entry.current.upgrade()) {
             let cache = Self {
@@ -505,6 +506,58 @@ pub struct ProgramLibrary {
         HashMap<(Vec<u8>, u32), Result<Option<std::sync::Arc<CachedWaterDepthSource>>>>,
 }
 
+/// Observe interleaved installed program libraries and their session leases.
+#[cfg(feature = "game")]
+pub(crate) fn observe_session_scopes(base: &Path) -> Result<()> {
+    use crate::assets::archive::Catalog;
+    let directory = base.file_name().ok_or("shader base has no directory name")?;
+    // Distinct archive spelling exercises the weak index key without a copy
+    // of the installed shader files.
+    let alternate = base.join("..").join(directory);
+    let a = Catalog::open(base).map_err(|error| error.to_string())?;
+    let b = Catalog::open(&alternate).map_err(|error| error.to_string())?;
+    let mut first = ProgramLibrary::open(base, ShaderCacheBackend::Pc, &a)?;
+    let mut other = ProgramLibrary::open(&alternate, ShaderCacheBackend::Pc, &b)?;
+    let mut again = ProgramLibrary::open(base, ShaderCacheBackend::Pc, &a)?;
+    if !Arc::ptr_eq(&first.parameter_kinds, &again.parameter_kinds)
+        || !Arc::ptr_eq(&first.option_defaults, &again.option_defaults)
+        || !Arc::ptr_eq(&first.cache.index, &again.cache.index)
+        || Arc::ptr_eq(&first.parameter_kinds, &other.parameter_kinds)
+        || first.parameter_kinds != other.parameter_kinds || first.option_defaults != other.option_defaults
+        || first.cache.index.names != other.cache.index.names
+        || first.cache.index.stage_counts != other.cache.index.stage_counts {
+        return Err("interleaved shader libraries changed or lost their session metadata".into());
+    }
+    let program = b"postfx_dof_combine";
+    let definition = first.cache.raw_definition(program)?.ok_or("installed DOF program is absent")?;
+    if other.cache.raw_definition(program)?.as_ref() != Some(&definition)
+        || again.cache.raw_definition(program)?.as_ref() != Some(&definition) {
+        return Err("shader library cursor read different installed program bytes".into());
+    }
+    let first_tables = Arc::downgrade(&first.parameter_kinds);
+    let first_index = Arc::downgrade(&first.cache.index);
+    let other_tables = Arc::downgrade(&other.parameter_kinds);
+    let other_index = Arc::downgrade(&other.cache.index);
+    let counts = (first.parameter_kinds.len(), first.option_defaults.len(),
+        first.cache.index.programs.len(), first.cache.index.stages.len());
+    drop(a);
+    if first_tables.strong_count() == 0 || first_index.strong_count() == 0 {
+        return Err("closing the catalog released its live program libraries".into());
+    }
+    drop((first, again));
+    if first_tables.strong_count() != 0 || first_index.strong_count() != 0
+        || other_tables.strong_count() == 0 || other_index.strong_count() == 0 {
+        return Err("shader metadata did not retire independently".into());
+    }
+    drop((other, b));
+    if other_tables.strong_count() != 0 || other_index.strong_count() != 0 {
+        return Err("shader metadata survived the final session".into());
+    }
+    eprintln!("SHADER_SESSION_SCOPES kinds={} options={} programs={} stages={} program_bytes={} independent=true reused=true retired=true",
+        counts.0, counts.1, counts.2, counts.3, definition.len());
+    Ok(())
+}
+
 impl ProgramLibrary {
     pub fn open(
         base: &Path,
@@ -512,7 +565,7 @@ impl ProgramLibrary {
         catalog: &crate::archive::Catalog,
     ) -> Result<Self> {
         let cache = ShaderCache::open(base, backend)?;
-        let parameters = parameters::acquire(base, catalog)?;
+        let parameters = parameters::acquire(catalog)?;
         if std::env::var("DH2_DEBUG_UNSHARED_SHADER_METADATA").as_deref() != Ok("1") {
             // Host lifetime for the original engine-global cache (140064e00,
             // 1402c8d50): reusable between maps, retired with this session.

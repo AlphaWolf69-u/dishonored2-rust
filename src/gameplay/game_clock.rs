@@ -245,6 +245,10 @@ impl GameClock {
         (group < GROUP_COUNT).then(|| self.f32(group * GROUP_STRIDE + 0x28))
     }
 
+    /// GameLocal virtual+c0 (1408a89a0 -> 1410701c0) returns the same
+    /// clock-owned frame marker used by reference-frame publication.
+    pub fn frame_marker(&self) -> i32 { self.u32(0) as i32 }
+
     /// 877eb0 selects the entity's timespace through DAT_1422952d8 before
     /// calling the same 059680 delta getter. Entity timespace is not a raw
     /// clock-group index; the four entries are [3,4,2,0].

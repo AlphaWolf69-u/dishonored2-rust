@@ -8,6 +8,27 @@ use crate::{
 };
 use bevy::prelude::{info, warn};
 
+/// Read-only snapshot of the same native821350/21f820 owner. Frame/age
+/// are observations, never inputs to a diagnostic clock or substitute state.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScreenLifecycleSnapshot {
+    pub underwater: bool,
+    pub age: f32,
+    pub frame: Option<u32>,
+    pub particle_heads: [u16; 2],
+    pub quads: usize,
+    pub active_quads: usize,
+    pub entering_quads: usize,
+    pub leaving_quads: usize,
+}
+impl ScreenLifecycleSnapshot {
+    pub(crate) fn ownership_changed(self, after: Self) -> bool {
+        self.underwater != after.underwater || self.particle_heads != after.particle_heads
+            || self.quads != after.quads || self.active_quads != after.active_quads
+            || self.entering_quads != after.entering_quads || self.leaving_quads != after.leaving_quads
+    }
+}
+
 pub(crate) struct ScreenEffectState {
     underwater: bool,
     age: f32,
@@ -27,6 +48,23 @@ impl Default for ScreenEffectState {
     }
 }
 impl ScreenEffectState {
+    pub(crate) fn lifecycle_snapshot(&self) -> ScreenLifecycleSnapshot {
+        ScreenLifecycleSnapshot {
+            underwater: self.underwater, age: self.age, frame: self.frame,
+            particle_heads: self.particle_heads, quads: self.quads.len(),
+            active_quads: self.quads.iter().filter(|quad| quad.blend.active).count(),
+            entering_quads: self.quads.iter().filter(|quad| !quad.leaving).count(),
+            leaving_quads: self.quads.iter().filter(|quad| quad.leaving).count(),
+        }
+    }
+    pub(crate) fn shutdown(&mut self, systems: &mut ParticleSystems) -> Result<(), String> {
+        for head in &mut self.particle_heads {
+            systems.clear(head)?;
+        }
+        *self = Self::default();
+        Ok(())
+    }
+
     fn start(
         &mut self,
         definition: &sources::EffectDefinition,

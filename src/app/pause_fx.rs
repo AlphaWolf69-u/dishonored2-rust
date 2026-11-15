@@ -14,7 +14,7 @@ use crate::gameplay::effects::{
     timing::EffectTimingRanges,
 };
 use crate::gameplay::game_clock_runtime::{ClockRuntime, GamePaused};
-use crate::gameplay::options::decl::{atom, list_items, read_edit, scope};
+use crate::gameplay::options::decl::{atom, read_edit};
 use bevy::prelude::*;
 use std::sync::Arc;
 
@@ -28,6 +28,7 @@ const PAUSE_STATE: &str = "ui/gamelogic/state_pause.gamelogicstatepause";
 const TIME_SCALE: f32 = 1.0;
 
 pub(super) struct ScreenFx {
+    _source: Arc<crate::assets::fx::definition::Definition>,
     timings: EffectTimingRanges,
     effect: Arc<EnvironmentEffectDefinition>,
     /// The override environment (`env/fx/ui_pause`).
@@ -40,16 +41,15 @@ pub(super) fn load(catalog: &Catalog) -> Result<ScreenFx, String> {
     let mut read = |p: &str| catalog.read(p).ok().flatten();
     let state = read_edit(&mut read, "gamelogicstatepause", PAUSE_STATE)?;
     let name = atom(&state, "m_screenFX").ok_or("the pause state has no m_screenFX")?.to_string();
-    let edit = crate::assets::fx::declaration::read(catalog, &name)?;
-    let groups = scope(&edit, "m_groups").ok_or_else(|| format!("{name} has no m_groups"))?;
-    for group in list_items(groups) {
-        let crate::assets::entities::Value::Scope(fields) = group else { continue };
-        let group = crate::assets::fx::environment_group(fields)?;
-        if !group.enabled {
-            continue;
-        }
-        if let Some(env) = group.environments.into_iter().find(|e| e.enabled && e.environment.is_some()) {
-            return Ok(ScreenFx { timings: group.timings, effect: Arc::new(env.blend), environment: env.environment.unwrap() });
+    let source = crate::assets::fx::declaration::acquire(catalog, &name,
+        crate::assets::fx::definition::Consumer::Common, None)?;
+    if !source.groups_present { return Err(format!("{name} has no m_groups")); }
+    for group in &source.groups {
+        let group = &group.asset;
+        if !group.enabled { continue; }
+        if let Some(env) = group.environments.iter().find(|e| e.enabled && e.environment.is_some()) {
+            return Ok(ScreenFx { timings: group.timings, effect: env.blend.clone(),
+                environment: env.environment.as_ref().unwrap().clone(), _source: source.clone() });
         }
     }
     Err(format!("{name} has no environment override"))
@@ -59,7 +59,8 @@ pub(super) fn load(catalog: &Catalog) -> Result<ScreenFx, String> {
 pub(super) fn environment_parameters(catalog: &Catalog, name: &str) -> Result<crate::assets::entities::EnvironmentRenderParameters, String> {
     let read = |name: &str| -> Result<Option<String>, String> {
         let resource = format!("generated/decls/env/{name}.decl");
-        catalog.read(&resource).map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned())).map_err(|e| e.to_string())
+        catalog.read(&resource).map(|bytes| bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "pause-env")))
+            .map_err(|error| error.to_string())
     };
     let source = read(name)?.ok_or_else(|| format!("environment {name} is not installed"))?;
     crate::assets::entities::environment_render_parameters_with_inheritance(name, &source, read)

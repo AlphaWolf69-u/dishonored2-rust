@@ -115,7 +115,7 @@ pub(super) fn compound_query_geometry() -> QueryShapes {
             },
         );
     }
-    QueryShapes { root: 1, shapes }
+    QueryShapes { root: 1, shapes, resources: None }
 }
 
 #[test]

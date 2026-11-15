@@ -275,12 +275,7 @@ pub fn material_density(
     name: &str,
     read: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> Result<f32, String> {
-    let density = super::physics_material::physics_material(name, read)?.density;
-    if density > 0. {
-        Ok(density)
-    } else {
-        Err(format!("invalid density in physics material {name}"))
-    }
+    super::physics_material::physics_material(name, read)?.positive_density()
 }
 
 /// Convenience selection for the ambient motor audit; passive supporting

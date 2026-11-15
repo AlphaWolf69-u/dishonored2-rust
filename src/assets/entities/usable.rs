@@ -61,6 +61,7 @@ pub struct DefinitionData {
 pub struct Binding {
     pub entity: String,
     pub definition: Arc<DefinitionData>,
+    pub scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling,
 }
 
 /// Corners of the fake interaction box in game coordinates. 14077af40
@@ -87,6 +88,11 @@ pub struct ReadableBinding {
     pub occlusion_shape: usize,
     pub locked: bool,
     pub allowed_swimming: bool,
+    pub component: Arc<crate::gameplay::pickable_component::PickableDefinition>,
+    pub loot: Option<Arc<crate::gameplay::loot_component::EmptyLootDefinition>>,
+    pub rigid: Option<Arc<super::rigid_body::Definition>>,
+    pub faction: Option<(String, crate::gameplay::component_state::declaration::DeclarationScheduling)>,
+    pub unsupported_pickup_components: Vec<String>,
 }
 
 /// 14061e1a0 lets the interaction sensor pass through a material with
@@ -114,11 +120,17 @@ pub fn breakable_entities(document: &Document) -> Result<HashSet<String>, String
 
 /// Readable pickables declare the read state on their pickup interaction;
 /// other pickables must not be converted into notes merely by model name.
-pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option<String>, String>) -> Result<Vec<ReadableBinding>, String> {
+pub fn readable_bindings(catalog: &crate::archive::Catalog, document: &Document) -> Result<Vec<ReadableBinding>, String> {
+    let mut read = |path: &str| catalog.read(path).map_err(|error| error.to_string())
+        .map(|bytes| bytes.map(super::owned_declaration_text));
     let declarations: HashMap<&str, &Definition> = document.definitions.iter()
         .filter(|d| d.kind == "component").map(|d| (d.id.as_str(), d)).collect();
     let mut cache = HashMap::new();
     let mut result = Vec::new();
+    let mut definitions = HashMap::<String, Arc<crate::gameplay::pickable_component::PickableDefinition>>::new();
+    let mut loot_definitions = HashMap::<String, Arc<crate::gameplay::loot_component::EmptyLootDefinition>>::new();
+    let mut rigid_definitions = HashMap::<String, Arc<super::rigid_body::Definition>>::new();
+    let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog)?;
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         for (key, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
             if !key.starts_with("item_add[") { continue; }
@@ -134,6 +146,104 @@ pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Resu
                 eprintln!("Readable component {} {key} has no inventory item", entity.id);
                 continue;
             };
+            let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                    .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+            let component = if let Some(shared) = identity.as_ref().and_then(|key| definitions.get(key)) {
+                shared.clone()
+            } else {
+                let begin_pickup_sound = atom(&fields, "m_beginPickupSoundEvent")
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
+                    .map(|name| crate::assets::wwise::event_resources::acquire_with(catalog, name, &mut read)).transpose()?;
+                let definition = Arc::new(crate::gameplay::pickable_component::PickableDefinition {
+                    item: item.to_owned(), quantity: atom(&fields, "m_quantity").unwrap_or("0").parse()
+                        .map_err(|_| "invalid pickable quantity")?, begin_pickup_sound,
+                    shadow_grapple: boolean(&fields, "m_canBeShadowGrappled", true)?,
+                    usable_by_player: boolean(&fields, "m_usableByPlayer", true)?,
+                    invisible_npc_loot: boolean(&fields, "m_invisibleNpcLoot", false)?,
+                    pickup_interaction: crate::gameplay::interaction_definition::InteractionDef::from_fields(interaction)?,
+                    scheduling: components::scheduling(&fields,
+                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
+                });
+                if !catalog.has_overlays() {
+                    if let Some(key) = identity { definitions.insert(key, definition.clone()); }
+                }
+                definition
+            };
+            let mut loot = None;
+            let mut rigid = None;
+            let mut faction = None;
+            let mut unsupported_pickup_components = Vec::new();
+            for (slot, value) in child(child(&entity.fields, "edit"), "m_componentDecls") {
+                if !slot.starts_with("item_add[") { continue; }
+                let Some(entry) = scope(Some(value)) else { continue; };
+                let kind = components::entry_class(entry, &declarations)?;
+                if matches!(kind.as_deref(), Some("cpntprojectile" | "cpntgrenade" | "cpntmine" | "cpntstunmine")) {
+                    unsupported_pickup_components.push(kind.clone().unwrap());
+                }
+                if kind.as_deref() == Some("cpntrigidbody") {
+                    if rigid.is_some() { return Err(format!("{}: multiple RigidBody components are unsupported", entity.id)); }
+                    let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                        .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                            .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+                    if let Some(shared) = identity.as_ref().and_then(|key| rigid_definitions.get(key)) {
+                        rigid = Some(shared.clone());
+                        continue;
+                    }
+                    let fields = components::entry_fields(entry, "cpntrigidbody", &declarations, &mut cache, &mut read)?
+                        .ok_or("RigidBody declaration resolution changed class")?;
+                    let name = atom(entry, "mapComponentDecl").or_else(|| atom(entry, "inheritedDecl"))
+                        .ok_or("RigidBody declaration identity is absent")?;
+                    let definition = Arc::new(super::rigid_body::Definition {
+                        settings: super::rigid_body::from_resolved("", name, &fields)?,
+                        declaration_flags: super::rigid_body::declaration_flags(&fields)?,
+                        scheduling: Arc::new(components::scheduling(&fields,
+                            crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?),
+                    });
+                    if !catalog.has_overlays() {
+                        if let Some(key) = identity { rigid_definitions.insert(key, definition.clone()); }
+                    }
+                    rigid = Some(definition);
+                    continue;
+                }
+                if kind.as_deref() == Some("cpntfaction") {
+                    if faction.is_some() { return Err(format!("{}: multiple Faction components are unsupported", entity.id)); }
+                    if atom(entry, "mapComponentDecl").is_some() || field(entry, "inlineDecl").is_some() {
+                        return Err(format!("{}: map/inline Faction requires its processed declaration identity", entity.id));
+                    }
+                    let resource = atom(entry, "inheritedDecl").ok_or("Faction declaration identity is absent")?;
+                    let name = resource.rsplit_once('.').filter(|(_, extension)| extension.eq_ignore_ascii_case("cpntfaction"))
+                        .map(|(name, _)| name).ok_or("Faction declaration extension is invalid")?;
+                    let definition = faction_session.acquire_definition(catalog, name)?;
+                    let fields = definition.lease.resolved_fields_for_entry(entry)?;
+                    faction = Some((name.to_owned(), components::scheduling(&fields,
+                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?));
+                    continue;
+                }
+                let Some(fields) = components::entry_fields(entry, "cpntloot", &declarations, &mut cache, &mut read)? else { continue; };
+                if loot.is_some() { return Err(format!("{}: multiple Loot components are unsupported", entity.id)); }
+                let identity = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                    .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                        .map(|name| format!("inherited:{}", name.replace('\\', "/").to_ascii_lowercase()))).flatten());
+                if let Some(shared) = identity.as_ref().and_then(|key| loot_definitions.get(key)) {
+                    loot = Some(shared.clone());
+                    continue;
+                }
+                if !child(&fields, "m_itemDefs").iter().all(|(name, value)|
+                    name == "num" && matches!(value, Value::Atom(value) if value == "0")) {
+                    return Err(format!("{}: nonempty Loot requires its actual child spawn/attachment callbacks", entity.id));
+                }
+                let definition = Arc::new(crate::gameplay::loot_component::EmptyLootDefinition {
+                    scheduling: components::scheduling(&fields,
+                        crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?,
+                    tags: [Arc::from(atom(&fields, "m_basicLootTag").unwrap_or("belt")),
+                        Arc::from(atom(&fields, "m_specialLootTag").unwrap_or("belt02"))],
+                });
+                if !catalog.has_overlays() {
+                    if let Some(key) = identity { loot_definitions.insert(key, definition.clone()); }
+                }
+                loot = Some(definition);
+            }
             result.push(ReadableBinding {
                 entity: entity.id.clone(), item: item.to_owned(),
                 interaction_name: optional_string(interaction, "m_name"),
@@ -144,6 +254,11 @@ pub fn readable_bindings(document: &Document, mut read: impl FnMut(&str) -> Resu
                 occlusion_shape: index(interaction, "m_occlusionShapeIndex", 0)?,
                 locked: boolean(interaction, "m_lockedInteraction", false)?,
                 allowed_swimming: boolean(interaction, "m_allowedWhileSwimming", true)?,
+                component,
+                loot,
+                rigid,
+                faction,
+                unsupported_pickup_components,
             });
         }
     }
@@ -162,7 +277,7 @@ pub fn player_sensor(catalog: &crate::archive::Catalog, character: &str) -> Resu
     let entity = format!("models/characters/player/{character}/body.def");
     let fields = super::player::entity_component(&entity, "cpntplayersensorinteraction", |path| {
         Ok(catalog.read(path).map_err(|e| e.to_string())?
-            .map(|bytes| super::declaration_text(&bytes).into_owned()))
+            .map(super::owned_declaration_text))
     })?.ok_or_else(|| format!("{entity}: missing interaction sensor"))?;
     let mut sensor = Sensor { max_distance: number(&fields, "m_maxDistance", 3.0)?, shape_radii: [0.005, 0.05, 0.1, 0.5, 0.7] };
     let radii = child(&fields, "m_shapeRadius");
@@ -290,16 +405,16 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
     let declarations: HashMap<&str, &Definition> = document.definitions.iter()
         .filter(|d| d.kind == "component").map(|d| (d.id.as_str(), d)).collect();
     let mut source_cache = HashMap::new();
-    let mut typed_cache: HashMap<String, Arc<DefinitionData>> = HashMap::new();
+    let mut typed_cache: HashMap<String, (Arc<DefinitionData>, crate::gameplay::component_state::declaration::DeclarationScheduling)> = HashMap::new();
     let mut result = Vec::new();
     for entity in document.definitions.iter().filter(|d| d.kind == "entity") {
         let entries = child(child(&entity.fields, "edit"), "m_componentDecls");
         for (key, value) in entries.iter().filter(|(key, _)| key.starts_with("item_add[")) {
             let Some(entry) = scope(Some(value)) else { continue };
-            let cache_key = if field(entry, "inlineDecl").is_none() {
-                atom(entry, "mapComponentDecl").or_else(|| atom(entry, "inheritedDecl")).map(str::to_owned)
-            } else { None };
-            let definition = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
+            let cache_key = atom(entry, "mapComponentDecl").map(|name| format!("map:{name}"))
+                .or_else(|| field(entry, "inlineDecl").is_none().then(|| atom(entry, "inheritedDecl")
+                    .map(|name| format!("inherited:{name}"))).flatten());
+            let (definition, scheduling) = if let Some(shared) = cache_key.as_ref().and_then(|k| typed_cache.get(k)) {
                 shared.clone()
             } else {
                 let fields = match components::entry_fields(entry, "cpntusablewithstatelist", &declarations, &mut source_cache, &mut read) {
@@ -311,10 +426,12 @@ pub fn bindings(document: &Document, mut read: impl FnMut(&str) -> Result<Option
                     Ok(definition) => Arc::new(definition),
                     Err(error) => { eprintln!("Usable component {} {key}: {error}", entity.id); continue; }
                 };
-                if let Some(key) = cache_key { typed_cache.insert(key, definition.clone()); }
-                definition
+                let scheduling = components::scheduling(&fields,
+                    crate::gameplay::component_state::declaration::DeclarationScheduling::from_base_flags(0))?;
+                if let Some(key) = cache_key { typed_cache.insert(key, (definition.clone(), scheduling.clone())); }
+                (definition, scheduling)
             };
-            result.push(Binding { entity: entity.id.clone(), definition });
+            result.push(Binding { entity: entity.id.clone(), definition, scheduling });
         }
     }
     Ok(result)

@@ -9,7 +9,128 @@ duplicate inefficient ownership. The user explicitly authorizes improvements
 over its algorithms when output is preserved, memory is reduced and performance
 does not regress. Backend differences must remain labelled and measured.
 
-## Latest continuation (2026-11-09)
+## Completed current-resource lifecycle audit (2026-11-15)
+
+The audit is complete for the resource owners and consumers currently implemented
+in the rewrite. This covers installed-file acquisition, CPU/GPU publication,
+streaming demand, reuse, cancellation, live replacement, tails and final release.
+It does not claim that unimplemented gameplay/resource consumers now exist.
+The original addresses and each host deviation remain in resource-parity.md.
+
+Coverage is concrete: all36 installed variants passed initial publication and
+retirement; the detailed EotW runtime trace records151 positively consumed kinds
+out of459 coverage rows, with zero missing ledger owners.151 is not an all36
+consumed-kind union. The14 family groups in the current parity matrix reconcile
+those kinds with their typed owners. Earlier all36 scope and13 paired source
+comparisons remain unchanged; current live observations add the paths below.
+
+The following is the authoritative current disposition. It supersedes historical
+pending/review predictions below only for the explicitly named supported paths.
+No tests or visual inspection were performed, and no visible client was launched.
+
+| Runtime path | Current disposition |
+|---|---|
+| Moving fine-mip demand, pressure, withdrawal/revival and GPU handoff | Complete/host for G's114 post-playing read/upload/commit chains and7147 exit/return cycles across521 slots. Actual pressure reductions/reupgrades occurred during loading, not the moving walk. Scene withdrawal retains reads until commit; no walk cancellation is claimed. |
+| Ordinary sound cookies/watch generations and actual output End | B/C complete the actual output/capacity/watch/EOF paths. Cold watched+uncached ordinary producer is N/A per F (zero production watched callers); no false cold success. |
+| Accepted portable readable/pickup and usable owner shutdown | B actual readable quit completes with accepted_pickups=0; nonempty pending cursor at exit was not observed. Source-backed canonical drain, A typed component teardown and existing usable cancellation/Stop ownership are retained. Full interaction/gameplay families excluded. |
+| Active world FX admission, overlap, temporary view gap, Stop/restart/tails | Accepted/host at3c1997: actual WORLD fly Start/overlap/view gap/restart; candle natural tail drain and source release; decal tail retained until map clear, then pools/source leases0. Late material-owner transfer fixed. Fly sound intentionally persists under native Stop (authored looping, no Stop event); earlier natural-drain timeout stays failed, not rewritten as passed. See H/I. |
+| FX warm additional role / purged-but-live reacquisition | Source API correction retained; complete current-producer census makes both scenarios N/A. No manual purge or fabricated role pairing. |
+| Live quality/viewport targets and pending readback Drop | C/D complete all seven fenced quality/resize states on EotW and Dust; real callback owners retire. Luminance485→5 quality creations, resize7→7, palette errors33/3→0. Opaque driver bytes remain unknown. |
+| UI pending image reply, live movie/map epochs and final worker join | Actual early-quit reply drain passes; B EotW→Dust→EotW preserves one live worker, releases outgoing checkpoint leases, then joins at host destruction. Destructor wake was not observed (wakes0), not silently claimed. |
+| Active scene/UI image view replacement | Native snapshot semantics retained;215 UI identities and zero cross-role matches across8036 sources make the proposed authored race inapplicable. Existing wrapper-replacement evidence is not mislabeled active movie rendering. |
+| Whole-map worker/publication/active-read cancellation and render acknowledgement | B passes real full-App exit-worker, exit-published and exit-reading;16 inflight/14 queued/one active read snapshot precedes canonical closure. A separately covers source read cancellation and retry. |
+| Nonempty mutable shape subscriptions | All36 actual snapshots are empty and there is no supported mutation emitter. Source-backed detach is retained; nonempty runtime case is N/A. |
+
+Evidence (local artifacts, with independent source cohorts preserved):
+
+- A: `final-resource-acceptance-summary-20261114.json` and
+  `coherent-all-level-lifetimes-20261114-20261114T210550Z-51108984/result.json`:
+  all36 initial owner/GPU publication and retirement, with paired owner evidence.
+- B: `active-resource-runtime-20261115T000412Z-dfa8d355/result.json`:
+  real worker/publication/active-read exit, UI map reuse, audio output, water
+  transitions and28 fenced quality/resize samples. Its interrupted FX is not passed.
+- C/D: `active-resource-runtime-20261115T010155Z-08c70159/result.json` and
+  `luminance-and-skin-runtime-comparison-20261115.json`: quality485→5 texture
+  creations per map, resize7→7; palette-length errors33/3→0. No whole-frame CPU,
+  FPS or process-memory claim follows from these scoped counts.
+- E: `resource-consumed-kind-owners-20261115.json`: exact consumed-kind inventory.
+- F: `audio-ordinary-watched-applicability-20261115.json`,
+  `fx-current-consumer-role-census-20261115.json`,
+  `ui-scene-uri-census-20261115-v3.json`: source/census-backed applicability,
+  not fabricated nonempty runtime passes.
+- G: `streaming-per-slot-lifecycle-evidence-20261115.json`,
+  `fx-cancel-revive-source-disposition-20261115.json`, and corrected
+  `active-resource-runtime-20261115T000412Z-dfa8d355/gpu-return-state-summary.json`.
+  Four GPU hosts balance1,118,986 creates/frees and end with zero live resources.
+  Occupied heap slack is not empty heaps; transient snapshot/log mismatches are
+  retained and opaque driver allocations remain unknown.
+- H: `active-resource-build-20261115T031259Z-a3542766/result.json`,
+  `active-resource-runtime-20261115T033353Z-2b65f66b/result.json` and the two
+  successful quality rows in `active-resource-runtime-20261115T032435Z-d115ec6e/result.json`:
+  final3c1997 tools/default-library/normal-game checks, actual FX closure,
+  and14 additional fenced quality samples with zero renderer errors. Final
+  quality creates exactly5 luminance pyramid textures per map (a separate sampler
+  index buffer is not another texture). This confirms the late FX handoff repair.
+- I: `fly-retained-tail-native-disposition-20261115.json`: installed declarations
+  and native0b3850/2302a0 establish intentional persistent sound retention with no
+  authored Stop. The fly natural-drain timeout remains failed; its real canonical
+  cleanup is successful. No expiry or forced audio completion was invented.
+
+Current-producer absence is explicit for ordinary watched+cold sound graphs,
+nonempty mutable subscriptions, cross-role FX warm additions/purged-live requests,
+and active scene/UI identity collisions. Their API/source dispositions remain
+separate from actual runtime observations. Readable exit had accepted_pickups=0;
+nonempty pending accepted-cursor teardown is source-backed, not claimed observed.
+General active-map managed entity deletion, unsupported cloth/cinematic/physics/
+music/equipment/player-state consumers and broader original feature parity remain
+separate feature work. No existing supported owner defect remains identified by
+this audit; future consumers must integrate with the same owners.
+
+## Current integrated scope (2026-11-11)
+
+Main ff333c2e includes the accepted packed texture readers, common CPU/GPU
+model reuse, shader-buffer staging ownership and App-owned shader libraries.
+Installed format observations cover11,885 2D textures,2,897 cubes,102 volumes
+and one array without expanding their compressed GPU formats. Separate packed
+particle-model observation covers473 models/621,356 vertices. The all36-level
+windowless route exercises initial image streaming, GPU upload and map cleanup
+in one reused host; it retains only intended bootstrap/common mesh owners,
+releases map shader buffers and sky materials, then releases shader-library
+handles and the Catalog at host/session shutdown. Detailed provenance and
+scope limits remain in resource-parity.md.
+
+FX descriptor identity/release is now integrated through the Catalog owner:
+world, player screen, pause and contact consumers share immutable typed data;
+resolved rendering/audio state remains independently scoped. All36 installed
+level preparations pass; the final three-map and runtime asset-publication
+observations release FX owner/source allocations at session destruction. This
+is separate from already accepted shared Kiscule graphs. Warm addition of a
+different family role and active emitter-tail appearance were not exercised.
+No claim of full lifecycle completion or gameplay performance follows from
+these asset-only observations. Older sections below are historical evidence,
+not assertions that later accepted fixes are still missing.
+
+## Integrated acquisition and release evidence (2026-11-10)
+
+| Owner | Verified scope on main | Remaining evidence |
+|---|---|---|
+| Compiled world geometry | The archive reader opened all 36 installed worlds. Edge of the World and Dust District matched the buffered geometry and GPU asset counts. Shared geometry backing retires after its final CPU consumer, before base image reads. | The windowless observer leaves view drawing and live close latency outside its scope. |
+| Vertex probes | The two-map comparison matched the full GPU buffer CRCs. Shader-only position and lookup storage releases after packing while the CPU query data remains live. | This is load and ownership evidence. Walking-frame timings were outside the observation. |
+| Inline and separate texture mips | Inline compaction matched 8,129 prepared images and GPU retirement counts. Separate acquisition matched 70 archive samples across all five formats and four suffixes. The gameplay worker uses the measured acquisition owner. | Separate-mip demand, queued completion, and publication timing still need live evidence. |
+| Replaced texture views | The windowless named UI route acquired the current committed image and changed to its replacement through the existing GPU registry. The displaced wrapper retired after its final lease. | Active movie drawing during replacement was outside the observation. |
+| Texture request state | The per-map worker owns its scratch. A reused FX slot classifies the incoming image using the same priority rules as a fresh slot. The installed FX observations retired seven slots, GPU images and cached particle views, suppressed a stale read after final release, and discarded a completed 21,840-byte payload before upload. | The withdrawal checks cover the boundaries before admission and GPU submission. In-progress archive decompression and active gameplay revival remain separate. |
+| Initial worker mip uploads | 32 installed images across five formats matched their payload signatures and retired through the normal upload queue. Reusing their decoded archive members removed 25.8 MB of overlapping copied payload capacity per observation. | The windowless route covers the reader and GPU mailbox. Live demand, revivals and cancellation remain separate. |
+| Collision geometry | Four installed maps matched collision geometry and materials after removing tuple staging and audit-only shape details. High-chaos Palace avoids a 190 MB tuple buffer. Its indexed convex hull search matched the previous triangle order and reduced same-build shape extraction cycles from 1,346 billion to 6.8 billion. | Runtime queries use the existing decoded index. Live close during collision preparation remains unobserved. |
+| Fog and shadow sampling | Each of three transitions cleared three extracted resources, five fog and sampling images, four buffers and the separate screen-shadow image. | The windowless route covers upload and release. |
+| Forward tiled lighting | The normal release path restored empty bindings and dropped the three outgoing GPU allocations, totaling 4,849,664 bytes after queue drain. | This isolates the forward publisher from the view and measures its allocations only. |
+| Loading fade and map sources | On the three-map sequence each load acquired one authored fade, with durations of four, two and two seconds, and each retirement removed five map-source history entries. | Scripted fade consumers are separate from direct loading. |
+
+The joined movie worker and Catalog shutdown were observed through final
+retirement. Closing during individual in-flight map stages still needs scoped
+evidence. The [parity ledger](resource-parity.md) records the original functions
+and the limits of each observation.
+
+## Earlier observations (2026-11-09)
 
 The current production capture reads148 resource kinds; all map to a named
 owner in the parity ledger. This counts resource consumers, not completed
@@ -172,17 +293,17 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 
 | Family | Acquisition / representation | Residency, reuse and release | Audit finding |
 |---|---|---|---|
-| Archive catalog and aliases | `assets/archive`: one shared index per installation, packed sorted names; archive members read by offset; zlib only for compressed members | Process owner; lazy exclusive container-reader leases, closed with catalogue; no extracted-file prerequisite or whole-archive resident payload | Intentional resident metadata; 95,232 production acquisitions reused 16 file opens across three maps (95,216 reuses). Required zlib decoding streams into final output; no payload cache or CPU-time saving claim |
+| Archive catalog and aliases | `assets/archive`: one shared index per installation, packed sorted names; archive members read by offset; zlib only for compressed members | Session root lease with shared consumer Arcs; lazy exclusive container-reader leases, closed with the final catalogue owner; no extracted-file prerequisite or whole-archive resident payload | Intentional resident metadata; 95,232 production acquisitions reused 16 file opens across three maps (95,216 reuses). Required zlib decoding streams into final output; no payload cache or CPU-time saving claim |
 | Load manifests | `assets/map_resources`: session init/common lists, temporary per-map assembly, weak combined-table lookup | `loading` releases progress tables at play; diagnostic coverage takes and drops its report reference | Original `1400661e0` frees request tables separately from registered payloads. Host cache retains only init/common metadata; map descriptors no longer accumulate across visits |
 | Mapinfo/localization/config | `gameplay/map_info`, `assets/lang`, `platform/rewrite_settings` | A session metadata index finds mapinfo; only requested parsed declarations stay resident and aliases share identities; loading-info cache holds the current map; session settings retained | Intentional small metadata, but mapinfo cache is not an eviction policy; mission text remains a localization key; translation tables are keyed by the startup language. Runtime language switching is explicitly absent (`gameplay/options/audio::after_change`), so it is not a hidden live-language invalidation path. The two language indexes share immutable translation values; Russian value allocation layouts save a counted 1,382,138 bytes before allocator bookkeeping, and key/ID lookup profiling found no regression |
 | Compiled world | `app/level_prepare`, `assets/world_mesh`: current BWM only, parsed once | Scene holds instance/spatial metadata; `app/setup` empties vertex/index vectors after upload; world teardown drops metadata | CPU geometry release exists; shared receiver tree survives upload because shadows/decals still query it |
-| Placed models/materials | `app/setup`, `app/material_loading`, `assets/bmd6` | Per-map geometry/material construction and asset handles; canonical Bevy assets release when references disappear | Original `14025aa00` reads each compiled model through `140259960`, acquires its skeleton through `1400607f0`, and closes the source before returning. Installed streamed-index flags do not identify ordinary placed-model pages. The existing per-map prepared model/mesh owner is appropriate; no missing spatial-page streamer is inferred. Generic init/common model identity reuse remains a distinct acquisition question |
+| Placed models/materials | `app/setup`, `app/material_loading`, `assets/bmd6` | Per-map geometry/material construction and asset handles; canonical Bevy assets release when references disappear | Original `14025aa00` reads each compiled model through `140259960`, acquires its skeleton through `1400607f0`, and closes the source before returning. Installed streamed-index flags do not identify ordinary placed-model pages. The existing per-map prepared model/mesh owner is appropriate; no missing spatial-page streamer is inferred. Init/common immutable BML1 sources now share Catalog identities and device-local common meshes across maps. Same-binary Edge/Dust/Edge construction counts20/16/20 become20/2/0 with identical mesh contents and valid GPU ranges; common buffers stay two after map sealing. Per-map and modified/sheared geometry retain their separate owners |
 | Surface images | `app/texture_streaming`: base compiled chain, finer separate mips requested on demand | Bounded IO queue, per-frame upload budget, mip reduction; init/common committed handles retained; map owners removed on teardown | Scene pressure/reservation and static/dynamic priority rules implemented from `14030f3d0`/`1402d4e20`; default walking has zero unnecessary drops, the 256 MiB run releases 35,258,368 bytes then stabilizes. Three-map handoff exits 0. Particle 2D images now use the same slots, projected-area demand, upload and pressure budgets; compatible registered base views now avoid a second scene upload; UI snapshots reuse the committed scene/common handle |
 | Resident postprocess/UI images | `app/resident_images::ResidentImages` | One full-mip path registry for UI, fog, lens, area lights and cloud/depth-default inputs; movie/frame leases survive registry purge; init/common entries survive maps. IO is outside its mutex; pending batch identities include layout dimensions | Same-build EotW/Dust/EotW separate/shared comparison: 39 -> 23 asset/uploads, 11,761,316 -> 9,716,732 logical payload bytes. Shared purge released 7 then 6 entries and retained 3 then 4 common images. Scene-base preparation reuses equivalent registered complete views; new UI acquisitions select current committed scene/common views and existing wrappers retain snapshot leases (`1402df8c0`/`1402bd380`). Three-map A/B removed three identical 1,024-byte default-image uploads; no large residency saving is claimed. Different source-mip views preserve their own resolution policy |
 | Cube/array water images and renderer noise | `app/resident_images`, `bevy_backend/layered_images`, `bevy_backend/noise_textures` | One shared immutable GPU source per typed resource; acquired staging retires after upload; common/builtin identities survive map purge; map cubes release | Production EotW/Dust/EotW: cube/array uploads 8 -> 4, caustics 5 -> 1; 36,700,160 B used staging capacity retired. Procedural uploads 12 -> 2, identical content CRC. All three cube/array descriptors/payload fingerprints match. Unused prefetched staging remains outside this result. Fixed 2D ocean masks now use the same image owner: three-map acquisitions 17 -> 6, 8,397,824 cumulative payload bytes avoided; all seven descriptor/content fingerprints match, GPU-only CPU backing is zero, and map-only entries release at transitions |
 | Lighting upload staging | `bevy_backend/tiled_lighting_gpu`, `bevy_backend/tiled_lighting_pass` | Borrow initialized contiguous u32 words for synchronous queue copy on little-endian hosts; retain serialization on other targets | First-map 254 preparations: 1,016 temporary allocations / 3,710,432 copied bytes -> zero; required 762 queue writes / 2,930,144 bytes unchanged. No CPU timing claim or tests |
 | Probes/lighting | `assets/probe_lighting`, `app/setup`, `bevy_backend/lighting_scene` | Current-map CPU query backing plus GPU buffers/images; references released by scene teardown | Runtime geometry/SH and GPU shading have real consumers. Superseded raw probe sample/index vectors now retire after gameplay preparation: 23,425,664 bytes EotW, 19,970,016 Dust, with unchanged prepared cell/quad/probe counts in the three-map A/B. Standalone PRB readers retain full source data. The PNW archive member is parsed through a bounded stream instead of a whole decoded source allocation; all 36 installed networks have matching parsed-record fingerprints. Probe history is released with the last set owner: 3,312 / 2,825 / 3,312 names on EotW / Dust / EotW |
-| Shader cache/programs | `assets/shader_cache`: indices resident, large stage streams stay on disk; requested stages inflated | ProgramLibrary caches prepared definitions per owner; device pipelines persist | Justified format inflation and backend shader translation. `ProgramCacheSource` is still requested by directional/local shadow owner preparation, so dropping it after scene cooking is unsafe. Shared resource lookup/purge remains the original registry boundary; per-world ProgramLibrary ownership is required until shadow owners retire. Immutable index/schema metadata now shares across maps (733,409 serialized index bytes read once instead of once per level, same index/schema identities over three acquisitions); per-world prepared definitions and independent file cursors remain. Host particle compiled programs now survive map retirement separately from materials/images: same-binary three-map creations 52 -> 18 pipelines and 3 -> 1 shader/layout sets, unchanged volume uploads. Physical driver/device-cache byte accounting remains required work |
+| Shader cache/programs | `assets/shader_cache`: indices resident, large stage streams stay on disk; requested stages inflated | ProgramLibrary caches prepared definitions per owner; device pipelines persist | Justified format inflation and backend shader translation. `ProgramCacheSource` is still requested by directional/local shadow owner preparation, so dropping it after scene cooking is unsafe. Shared resource lookup/purge remains the original registry boundary; per-world ProgramLibrary ownership is required until shadow owners retire. Immutable index/schema metadata now shares across maps (733,409 serialized index bytes read once instead of once per level, same index/schema identities over three acquisitions); per-world prepared definitions and independent file cursors remain. Host particle compiled programs now survive map retirement separately from materials/images: same-binary three-map creations 52 -> 18 pipelines and 3 -> 1 shader/layout sets, unchanged volume uploads. Shader-library handles now belong to App rather than a forgotten strong handle: all67 survive the live host and reach zero after it drops. All36 initial-streaming/upload/removal observations release map shader buffers and sky materials; physical pipeline-object/driver cache bytes remain distinct from those asset and allocator measurements |
 | Tome/visibility | `app/state::TomeWorld`, `ShadowCasterWorld`: source blob plus typed query structures | Shared Arc backing for query jobs, level-scoped query pool and mutable scratch | Source blob still serves runtime queries; decoded traversal/object tables are a host performance representation, not forgotten staging. Existing a34a947 query traces measured 826 -> 682 CPU ms/s and median span 3.05 -> 2.30 ms for the combined query optimization. Packed tree descent is already implemented (d05a6f5); preserve the accepted query layout rather than discarding consumed tables without equivalent performance proof |
 | Collision/physics | `app/physics_scene`, `gameplay/collision_queries`, model collision loaders | Level-owned shapes and compact decoded triangle/cell backing; dynamic bodies hold runtime state | Keep decoded query backing: previous real walking measurements showed compressed decoding regressed CPU severely; source-format purity is not a goal |
 | Collision broad phase (`NavigationWorld`) | `gameplay/navigation::CollisionWorld`, `app/state::NavigationWorld` | Current-map static collision triangles and packed cell lists; removed with map resources | Despite the wrapper name, this is the player collision query index, not an AI Navmesh resource owner. The `navigation`/`Navmesh` declaration classes are unconsumed, as the parity ledger records; do not claim an implemented AI navigation lifecycle |
@@ -199,15 +320,14 @@ lifecycle has been ported. Source paths below are relative to `src/`.
 | Fonts/glyphs/library bitmaps | `assets/iggy/font`, `flash/glyph_cache`, `flash/bitmap_resources`, `bevy_backend/flash_ui` | Metadata-only lookups; lazy outlines; R8 glyph pages; BC7 library images passed through; obsolete movie-generation GPU textures removed on close | Original page creation/update and unused-slot reuse are implemented (`14107b7e0`, `14107b2d0`, `14107a980`); versions update one GPU identity with dirty rectangles. Loading-only CPU bitmap packs release with the movie and submitted frames, retiring 3,242,736 bytes in the installed ownership comparison. Shared packs transfer to warm consumers without another read; Journal, pause, HUD and readables keep session reuse. Source-backed CPU page snapshots preserve in-flight draws and copy only while an older version is leased. UI GPU texture leases now have the installed 2,048-entry / 0x1428000-byte limits, with inactive eviction; real loading/pause peak is 44 entries / 8,495,572 bytes, closing leaves only the 4-byte white builtin |
 | Movie runtime | `flash::Player`, `flash/avm2::heap` | Per-movie roots, tracing of objects/shared scopes, weak listeners and Dictionary keys, explicit closed-VM teardown | Original `141062a90`/`141063ed0`/`141064cd0` collection and weak-handle behavior implemented with host reference tracing; automatic scheduling is a host difference. Three-map production run completed, zero retained objects on close; measured live loading heaps contained no garbage |
 | Render targets/descriptors/history | `bevy_backend/{camera_scene,fog_scene,display_scene,shadow_pass,auto_exposure}` | Level acknowledgement releases world/view references before destination acquisition; device pipelines and reusable viewport capacity survive | Prior repeated-map measurements verified static shadow cache no longer accumulates. Repeated production resizes completed in EotW and Dust. The Dust ocean pass retained culled 960x540 targets/bindings: pre-admission invalidation now releases 21,954,560 B of obsolete live GPU allocations, with identical streamed bytes and upgrade counts in the same-binary comparison. Size-independent wave history and resources remain. Quality-setting replacement still needs separate coverage |
-| Pending IO/uploads/diagnostics | `TextureReadWorker`, `PreparedImageMailbox`, render extraction, F8 histories | Receiver drop stops outgoing reader after the current read; publication mailboxes reset; pending extraction retains handles until prepared | Bounded in-flight work can briefly outlive map teardown; do not treat allocator-reserved GPU heaps or OS file cache as live resources |
+| Pending IO/uploads/diagnostics | `TextureReadWorker`, `PreparedImageMailbox`, render extraction, F8 histories | The map request closes the outgoing reader and advances the upload generation. Queued and unclaimed results are discarded. The loading screen waits for the active reader before clearing the map. Pending render extraction retains handles until its acknowledgement | The installed Dunwall Tower and Edge of the World runs submitted a real texture request and completed retirement before map clear. They did not distinguish cancellation before I/O from completion of a read already inside I/O. Allocator-reserved GPU heaps and OS file cache are separate |
 
 Absent systems remain `none` in `resource-parity.md`; they are not silently
 counted as audited implementations. The table records ownership findings; it is not completion of the requested implementation.
 Rows marked partial/under measurement still require the stated runtime or
 original-code evidence before claiming a complete, correct lifecycle.
 
-Live quality replacement (source written; coordinated build and production
-observation pending): native `5120d0 -> 511a70` applies changed widgets and
+Live quality replacement: `5120d0 -> 511a70` applies changed widgets and
 `50ff40` writes the shadow row into live CVars; fog/blur case 14 writes
 `r_downsampleQuality`. These paths do not reload the level. The host previously
 refreshed lens settings but retained the level's fog settings and shadow
@@ -233,8 +353,11 @@ matching B/C states by live allocation labels/counts/bytes and unchanged streame
 image payload, separately from allocator-reserved bytes/blocks. A warm pipeline
 or reserved block plateau is reusable device capacity, not evidence of obsolete
 world targets. Format and dimension keys are present in fog/lens/camera/shadow
-owners; single-sample admission remains explicit. This source repair makes no
-claim of measured byte savings or complete physical driver-cache accounting.
+owners; single-sample admission remains explicit. The main release observation
+completed all seven quality changes with stable live allocation totals and
+unchanged finer-mip bytes. Individual shadow atlas labels and attribution of
+the additional reserved heap capacity remain incomplete. See the live quality
+replacement observation in `resource-parity.md`.
 
 ## Audit result and remaining gaps
 
@@ -291,15 +414,24 @@ that representation. The later shared property-chain implementation and its
 measured results are recorded in the sound actor property chains row above.
 
 
-UI bitmap backing review: `flash::bitmap_resources::load` reads the separate
-`.raw.iggytex` member, copies just the selected compiled image ranges and then
-drops the source member. Those bitmap blocks are not embedded duplicates in
-`IggyFile`'s retained `.iggy` bytes. The session library cache prevents repeated
-bitmap reads/decode; it is intentional, not a second resident raw-file copy.
-Aligned BC7 data remains compressed; the documented nonaligned backend fallback
-still needs cropped RGBA output. The generic entity document likewise drops at
-the end of `app::level_prepare`; runtime scene ownership holds typed records,
-not the whole parser tree.
+UI bitmap backing review: the loading, HUD, Journal, notes, pause and
+global-dialog movies acquired 25 nonempty bitmap packs from installed
+archives. Each pack shared its decoded `.raw.iggytex` archive member across
+images. All bitmap bytes came from that allocation without an RGBA expansion
+or per-image payload copy. The `.iggy` source carries the texture records and
+does not duplicate their bitmap payload. The index stores those members in
+40,645,081 compressed bytes for 94,059,288 decoded bytes, so direct file
+mapping cannot replace decompression.
+
+The default policy released the 3,242,736-byte loading-only pack and kept
+90,816,552 bytes after the observed movie maps closed. Forcing movie-scoped
+ownership dropped retained payload to zero and preserved the Journal image
+signature. Its final bitmap reacquisition increased from 0.125 to 39.204 ms
+in the paired release observation. Keep the session policy while it protects
+reopening latency. These are bitmap acquisition and owner capacities,
+separate from total process memory and on-screen menu readiness. Evidence:
+`artifacts/ui-supported-bitmap-census-20261110` and
+`artifacts/ui-journal-pack-reuse-20261110`.
 
 
 2026-11-04 viewport acceptance (14909a0): both same-binary Dust retain/retire

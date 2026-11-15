@@ -220,6 +220,7 @@ fn typed_trigger_publication_matches_complete_executed_physics_queue_and_water_p
             };
             let mut geometry = Geometry;
             let mut callbacks = PublicationContext {
+            timespaces: None,
                 geometry: &mut geometry,
                 events: &mut events,
                 cache: BodyCacheSettings {

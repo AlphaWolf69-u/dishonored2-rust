@@ -16,6 +16,7 @@ pub(super) struct SceneGpuInputs {
 
 impl SceneGpuInputs {
     pub(super) fn install(app: &mut App) {
+        super::common_model_meshes::install(app);
         use bevy::{
             ecs::schedule::common_conditions::run_once,
             render::{
@@ -51,42 +52,54 @@ impl SceneGpuInputs {
 
 pub(super) struct ScenePreparation {
     meshes: AssetBatch<Mesh>,
-    images: AssetBatch<Image>,
+    common_meshes: super::common_model_meshes::Prepared,
+    images: super::resident_images::PreparedImages,
     probes: AssetBatch<ProbeMaterial>,
     decals: AssetBatch<DecalMaterial>,
     skies: AssetBatch<SkyMaterial>,
     buffers: AssetBatch<ShaderBuffer>,
     allocator: bevy::ecs::entity::RemoteAllocator,
     device: RenderDevice,
-    shared_images: super::texture_streaming::SharedImages,
     audio: super::audio::AudioPreparation,
-    resident_images: super::resident_images::ResidentImages,
 }
 impl ScenePreparation {
     pub fn new(world: &mut World) -> Self {
+        let resident_images = world.resource::<super::resident_images::ResidentImages>().clone();
+        let shared_images = world.resource::<super::texture_streaming::SharedImages>().clone();
         Self {
             meshes: AssetBatch::new(world.resource::<Assets<Mesh>>()),
-            images: AssetBatch::new(world.resource::<Assets<Image>>()),
+            common_meshes: super::common_model_meshes::Prepared::new(world.resource::<super::common_model_meshes::Shared>().clone()),
+            images: super::resident_images::PreparedImages::new(
+                world.resource::<Assets<Image>>(), resident_images, shared_images),
             probes: AssetBatch::new(world.resource::<Assets<ProbeMaterial>>()),
             decals: AssetBatch::new(world.resource::<Assets<DecalMaterial>>()),
             skies: AssetBatch::new(world.resource::<Assets<SkyMaterial>>()),
             buffers: AssetBatch::new(world.resource::<Assets<ShaderBuffer>>()),
             allocator: world.entity_allocator().build_remote_allocator(),
             device: world.resource::<RenderDevice>().clone(),
-            shared_images: world
-                .resource::<super::texture_streaming::SharedImages>()
-                .clone(),
             audio: super::audio::AudioPreparation::take(world),
-            resident_images: world.resource::<super::resident_images::ResidentImages>().clone(),
         }
     }
     pub fn prepare(
         mut self,
         prepared: &mut super::loading_screen::PreparedLevel,
-    ) -> Result<(), String> {
+        base_image_batch_bytes: Option<usize>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<super::texture_streaming::BaseImageReader>, String> {
+        let check_cancelled = || {
+            if cancelled() {
+                Err("scene preparation cancelled".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
+        let resident_images = self.images.registry().clone();
         let mut scene = prepared
             .take_resource::<SceneData>()
             .expect("prepared scene");
+        self.images.begin_acquisition(scene.catalog.as_deref());
+        self.common_meshes.begin(scene.catalog.as_deref());
         let mut programs = prepared.take_resource::<ProgramCacheSource>();
         let navigation = prepared.take_resource::<NavigationWorld>();
         let tome = prepared.take_resource::<TomeWorld>();
@@ -106,25 +119,30 @@ impl ScenePreparation {
         };
         let physics_texts = prepared.take_resource::<super::level_prepare::PreparedPhysicsTexts>()
             .map_or_else(Default::default, |texts| texts.0);
-        self.audio.prepare(&mut commands, physics_texts);
+        let (contact_catalog, contact_map) = prepared.get_resource::<super::level_prepare::LevelSourceReads>()
+            .ok_or("prepared contact resource context is absent")?.acquisition_source();
+        self.audio.prepare(&mut commands, contact_catalog.clone(), contact_map, physics_texts);
+        check_cancelled()?;
         if let Some(programs) = &mut programs {
             let (frame, source) = super::shadow_updates::prepare_screen_shadow_source(
                 &scene,
                 programs,
-                &mut self.images,
-                &self.resident_images,
+                self.images.assets(),
+                &resident_images,
             )?;
             commands.insert_resource(frame);
             commands.insert_resource(source);
         }
-        commands.insert_resource(super::area_lights::prepare(&scene, &mut self.images, &self.resident_images));
-        super::setup::prepare(
+        commands.insert_resource(super::area_lights::prepare(&scene, self.images.assets(), &resident_images));
+        let (images, shared) = self.images.setup_inputs();
+        let base_reader = super::setup::prepare(
             &mut commands,
             &mut scene,
             programs.as_mut(),
             navigation.as_ref(),
             &mut self.meshes,
-            &mut self.images,
+            Some(&mut self.common_meshes),
+            images,
             &mut self.probes,
             &mut self.skies,
             &mut self.buffers,
@@ -136,10 +154,13 @@ impl ScenePreparation {
             interactions.as_ref(),
             volumes.as_ref(),
             effects.as_ref(),
-            Some(&self.shared_images),
-            &self.resident_images,
-        );
-        match super::ParallelShadowOwner::from_scene(&scene, &mut self.images) {
+            prepared.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>(),
+            Some((shared, base_image_batch_bytes)),
+            &resident_images,
+            &check_cancelled,
+        )?;
+        check_cancelled()?;
+        match super::ParallelShadowOwner::from_scene(&scene, self.images.assets()) {
             Ok(owner) => commands.insert_resource(owner),
             Err(error) => eprintln!("Parallel shadow owner unavailable: {error}"),
         }
@@ -148,22 +169,26 @@ impl ScenePreparation {
                 &scene,
                 tome.as_ref(),
                 &settings,
-                &mut self.images,
+                self.images.assets(),
                 programs,
             ) {
                 Ok(owner) => commands.insert_resource(owner),
                 Err(error) => eprintln!("Local shadow owner unavailable: {error}"),
             }
         }
+        check_cancelled()?;
+        let mut image_ids = self.images.assets()
+            .ids(|image| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
+        // The session LUT was reserved outside this batch, but it still
+        // participates in the existing display readiness gate.
+        if let Some(cube) = resident_images.default_colour_cube() {
+            image_ids.push(cube.id());
+        }
+        let mut mesh_ids = self.meshes.ids(|mesh| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD));
+        mesh_ids.extend(self.common_meshes.ids().filter(|id| !self.meshes.contains(*id)));
         prepared.insert_resource(SceneGpuInputs {
-            images: Arc::new(
-                self.images
-                    .ids(|image| image.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),
-            ),
-            meshes: Arc::new(
-                self.meshes
-                    .ids(|mesh| mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),
-            ),
+            images: Arc::new(image_ids),
+            meshes: Arc::new(mesh_ids),
             buffers: Arc::new(
                 self.buffers
                     .ids(|buffer| buffer.asset_usage.contains(RenderAssetUsages::RENDER_WORLD)),
@@ -199,6 +224,7 @@ impl ScenePreparation {
             let assets = super::load_timing::Span::new("asset publication");
             self.meshes
                 .publish(&mut world.resource_mut::<Assets<Mesh>>());
+            self.common_meshes.publish(world);
             self.images
                 .publish(&mut world.resource_mut::<Assets<Image>>());
             self.buffers
@@ -216,6 +242,6 @@ impl ScenePreparation {
             drop(entities);
             super::load_timing::mark("prepared scene published");
         });
-        Ok(())
+        Ok(base_reader)
     }
 }

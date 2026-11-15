@@ -111,7 +111,7 @@ pub(super) fn character_name(character: Character) -> &'static str {
 type ArmSceneRig = std::sync::Arc<Rig>;
 
 fn text_of(catalog: &Catalog, path: &str) -> Result<Option<String>, String> {
-    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+    Ok(catalog.read(path).map_err(|e| e.to_string())?.map(crate::entities::owned_declaration_text))
 }
 
 /// One arm part (FUN_140770560 spawn + bind, FUN_140771a00 start): its
@@ -189,8 +189,8 @@ fn load_body(
     additives: &[(String, crate::entities::Value)],
     scene_paths: &[String],
     listener: Option<crate::gameplay::sound::listener::Settings>,
+    cancelled: Option<&dyn Fn() -> bool>,
 ) -> Result<(Body, Scenes), String> {
-    let text = |path: &str| text_of(catalog, path);
     let rig = Rig::acquire(catalog, body_model)?;
     let body_skeleton = BodySkeleton {
         data: rig.skeleton.clone(),
@@ -275,8 +275,8 @@ fn load_body(
         .collect();
     for path in scene_paths {
         let resource = format!("generated/decls/midnightscene/{path}.decl");
-        let source = text(&resource)?.ok_or_else(|| format!("{resource} is absent"))?;
-        let decl = crate::entities::midnight::parse(&source).map_err(|e| format!("{resource}: {e}"))?;
+        let decl = crate::assets::midnight_scene::acquire_player(catalog, path, cancelled)
+            .map_err(|error| format!("{resource}: {error}"))?;
         let sounds = prepare_sounds_owned(catalog, &decl, &casting)?;
         let count = decl.scenes.len();
         let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
@@ -285,12 +285,12 @@ fn load_body(
             let Some(element) = next.take() else { break };
             let Some(index) = Midnight::resolve(&prepared, element, [body_model, &arm_models[0], &arm_models[1]]).map_err(|e| format!("{resource}: {e}"))? else { break };
             if let Some(g) = prepared.player_group(index).map_err(|e| format!("{resource}: {e}"))? {
-                let keys = prepared.decl.scenes[index].groups[g].anim_keys.clone();
+                let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                 prepared.clips[index] = keys.iter().map(|k| clip(&k.anim)).collect::<Result<_, _>>()?;
             }
             for (side, clips) in arm_clips.iter_mut().enumerate() {
                 if let Some(g) = prepared.group(index, side + 1).map_err(|e| format!("{resource}: {e}"))? {
-                    let keys = prepared.decl.scenes[index].groups[g].anim_keys.clone();
+                    let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                     prepared.arm_clips[side][index] = keys.iter().map(|k| clips.clip(&k.anim)).collect::<Result<_, _>>()?;
                 }
             }
@@ -326,6 +326,12 @@ pub(super) fn load_player_setup(catalog: &Catalog, character: Character) -> Resu
 
 pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Character,
     source: &mut crate::entities::player::DeclarationSource) -> Result<PlayerSetup, String> {
+    load_player_setup_with_source_cancellable(catalog, character, source, None)
+}
+
+pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, character: Character,
+    source: &mut crate::entities::player::DeclarationSource,
+    cancelled: Option<&dyn Fn() -> bool>) -> Result<PlayerSetup, String> {
     let declarations = source.full(catalog, character_name(character))?;
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
@@ -343,7 +349,7 @@ pub(super) fn load_player_setup_with_source(catalog: &Catalog, character: Charac
         )?.map(|fields| crate::gameplay::sound::listener::Settings::read(&fields)).transpose()?
     } else { declarations.audio_listener.clone().transpose()? };
     let (mut body, scenes) =
-        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths, listener)?;
+        load_body(catalog, &declarations.body_model, &camera, &declarations.locomotion, &declarations.body, &declarations.additives, &scene_paths, listener, cancelled)?;
     body.sound_settings = crate::gameplay::sound::component::Settings::read(&declarations.audio)?;
     let attributes = decls::attributes(&declarations.attributes)?;
     let health = decls::health(&declarations.health)?;

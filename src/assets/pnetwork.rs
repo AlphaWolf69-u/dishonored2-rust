@@ -65,12 +65,6 @@ pub struct Tetrahedron {
     pub probe_indices: [u16; 4],
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct TetrahedronVertex {
-    pub position: [f32; 3],
-    pub probe_weights: [u8; 4],
-}
-
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub probe_name: String,
@@ -96,7 +90,8 @@ pub struct SpatialData {
     pub voronoi_version: u32,
     pub cell_count: usize,
     pub tetrahedra: Vec<Tetrahedron>,
-    pub vertices: Vec<TetrahedronVertex>,
+    pub vertex_positions: Vec<[f32; 3]>,
+    pub vertex_probe_weights: Vec<[u8; 4]>,
     pub bytes_consumed: usize,
 }
 
@@ -104,8 +99,36 @@ pub struct SpatialData {
 pub struct VertexReferences {
     pub cell_probe_indices: Vec<[u32; 4]>,
     pub instance_offsets: Vec<u32>,
-    pub tetrahedron_indices: Vec<u32>,
+    pub tetrahedron_indices: VertexIndices,
     pub bytes_consumed: usize,
+}
+
+/// Installed little-endian shader words with optional room for the upload prefix.
+#[derive(Clone, Debug, Default)]
+pub struct VertexIndices {
+    data: Vec<u8>,
+    prefix: usize,
+}
+
+impl VertexIndices {
+    pub fn len(&self) -> usize { self.bytes().len() / 4 }
+
+    pub fn bytes(&self) -> &[u8] { &self.data[self.prefix..] }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn into_upload(self, prefix: usize, size: usize) -> (Vec<u8>, bool) {
+        let mut data = self.data;
+        let old_end = data.len();
+        let index_end = prefix + old_end - self.prefix;
+        let direct = self.prefix == prefix && data.capacity() >= size;
+        data.reserve_exact(size.saturating_sub(old_end));
+        if prefix != self.prefix {
+            data.resize(old_end.max(index_end), 0);
+            data.copy_within(self.prefix..old_end, prefix);
+            data.truncate(index_end);
+        }
+        (data, direct)
+    }
 }
 
 
@@ -186,20 +209,20 @@ fn read_spatial<R: Read>(input: &mut Input<R>) -> Result<SpatialData, String> {
     let vertex_bytes = input.u32()? as usize;
     if vertex_bytes % 16 != 0 { return Err(format!("tetrahedron-vertex buffer has invalid byte size {vertex_bytes}")); }
     if vertex_bytes > input.limit.saturating_sub(input.position) { return Err("truncated tetrahedron-vertex shader buffer".into()); }
-    let mut vertices = Vec::with_capacity(vertex_bytes / 16);
+    let mut vertex_positions = Vec::with_capacity(vertex_bytes / 16);
+    let mut vertex_probe_weights = Vec::with_capacity(vertex_bytes / 16);
     read_records::<_, 16>(input, vertex_bytes / 16, |raw| {
-        let packed = word(raw, 12);
-        vertices.push(TetrahedronVertex { position: [f32::from_bits(word(raw, 0)), f32::from_bits(word(raw, 4)), f32::from_bits(word(raw, 8))],
-            probe_weights: [packed as u8, (packed >> 8) as u8, (packed >> 16) as u8, (packed >> 24) as u8] });
+        vertex_positions.push([0, 4, 8].map(|offset| f32::from_bits(word(raw, offset))));
+        vertex_probe_weights.push(raw[12..16].try_into().unwrap());
     })?;
-    if tetrahedra.iter().any(|t| t.vertex_indices.iter().any(|&i| i as usize >= vertices.len())) {
+    if tetrahedra.iter().any(|t| t.vertex_indices.iter().any(|&i| i as usize >= vertex_positions.len())) {
         return Err("tetrahedron references a vertex outside its shader buffer".into());
     }
     if cells.iter().any(|c| c.first_tetrahedron.checked_add(c.tetrahedron_count).is_none_or(|end| end > runtime_tetrahedra.len()))
         || runtime_tetrahedra.iter().any(|t| t.shader_index >= tetrahedra.len()) {
         return Err("Voronoi CPU query references an invalid tetrahedron".into());
     }
-    Ok(SpatialData { voronoi_version, cell_count, cells, runtime_tetrahedra, tetrahedra, vertices, bytes_consumed: input.position })
+    Ok(SpatialData { voronoi_version, cell_count, cells, runtime_tetrahedra, tetrahedra, vertex_positions, vertex_probe_weights, bytes_consumed: input.position })
 }
 
 pub fn spatial_data(bytes: &[u8], offset: usize) -> Result<SpatialData, String> {
@@ -221,7 +244,8 @@ fn read_words<R: Read>(input: &mut Input<R>, size: usize) -> Result<Vec<u32>, St
     }
     Ok(words)
 }
-fn read_references<R: Read>(input: &mut Input<R>, secondary_probe_count: usize) -> Result<VertexReferences, String> {
+fn read_references<R: Read>(input: &mut Input<R>, secondary_probe_count: usize,
+    upload: Option<(usize, usize)>) -> Result<VertexReferences, String> {
     let rows = input.u32()? as usize; let columns = input.u32()? as usize;
     if rows > 1_000_000 || columns > 4 { return Err(format!("invalid probe-index table dimensions {rows}x{columns}")); }
     let count = rows.checked_mul(columns).ok_or("probe-index table size overflow")?;
@@ -233,7 +257,17 @@ fn read_references<R: Read>(input: &mut Input<R>, secondary_probe_count: usize) 
         cell_probe_indices[i / columns][i % columns] = if secondary_probe_count != 0 && value != u32::MAX && value as usize >= secondary_probe_count { 0 } else { value };
     }
     let size = ((input.u32()? as usize) >> 2) * 4;
-    let tetrahedron_indices = read_words(input, size)?;
+    if size > input.limit.saturating_sub(input.position) {
+        return Err("truncated probe-network word buffer".into());
+    }
+    let (prefix, suffix) = upload.unwrap_or_default();
+    let index_end = prefix.checked_add(size).ok_or("probe upload size overflow")?;
+    let capacity = index_end.checked_add(suffix).ok_or("probe upload size overflow")?;
+    let mut data = Vec::new();
+    data.try_reserve_exact(capacity).map_err(|error| error.to_string())?;
+    data.resize(index_end, 0);
+    input.read(&mut data[prefix..])?;
+    let tetrahedron_indices = VertexIndices { data, prefix };
     let status = input.u8()?;
     if status != 0 { return Err("probe-network vertex lighting unavailable (native load status 9)".into()); }
     let size = ((input.u32()? as usize) >> 2) * 4;
@@ -244,15 +278,19 @@ fn read_references<R: Read>(input: &mut Input<R>, secondary_probe_count: usize) 
 pub fn vertex_references(bytes: &[u8], offset: usize, secondary_probe_count: usize) -> Result<VertexReferences, String> {
     if offset > bytes.len() { return Err("truncated probe-network data".into()); }
     let mut input = Input { source: io::Cursor::new(&bytes[offset..]), position: offset, limit: bytes.len() };
-    read_references(&mut input, secondary_probe_count)
+    read_references(&mut input, secondary_probe_count, None)
 }
 
 /// Parse one uncompressed network in stream order without retaining the input.
-pub(crate) fn read_stream(source: &mut dyn Read, length: usize) -> Result<(Vec<String>, Vec<String>, SpatialData, VertexReferences), String> {
+pub(crate) fn read_stream(source: &mut dyn Read, length: usize, instances: Option<usize>) -> Result<(Vec<String>, Vec<String>, SpatialData, VertexReferences), String> {
     let mut input = Input { source, position: 0, limit: length };
     let (_, names, secondary) = read_names(&mut input)?;
     let spatial = read_spatial(&mut input)?;
-    let references = read_references(&mut input, secondary.len())?;
+    let upload = instances.map(|instances| (
+        (10 + instances) * 4,
+        spatial.tetrahedra.len() * 24 + spatial.vertex_positions.len() * 16 + names.len() * 8,
+    ));
+    let references = read_references(&mut input, secondary.len(), upload)?;
     // Match the existing full-member acquisition: validate even unused trailing bytes.
     let tail = length - input.position;
     input.skip(tail)?;
@@ -282,16 +320,19 @@ pub(crate) fn fingerprint(names: &[String], secondary: &[String], data: &Spatial
     for t in &data.runtime_tetrahedra { u64v(&mut c,t.shader_index as u64); u32v(&mut c,t.cell_index); for p in &t.positions { for v in p { u32v(&mut c,v.to_bits()); } } }
     u64v(&mut c,data.tetrahedra.len() as u64);
     for t in &data.tetrahedra { for v in t.vertex_indices { u32v(&mut c,v); } for v in t.probe_indices { c.update(&v.to_le_bytes()); } }
-    u64v(&mut c,data.vertices.len() as u64);
-    for v in &data.vertices { for x in v.position { u32v(&mut c,x.to_bits()); } c.update(&v.probe_weights); }
+    u64v(&mut c,data.vertex_positions.len() as u64);
+    for (position, weights) in data.vertex_positions.iter().zip(&data.vertex_probe_weights) {
+        for x in position { u32v(&mut c,x.to_bits()); }
+        c.update(weights);
+    }
     u64v(&mut c,refs.cell_probe_indices.len() as u64); for row in &refs.cell_probe_indices { for &v in row { u32v(&mut c,v); } }
     let mut bytes = [0u8; 65536];
-    for values in [&refs.tetrahedron_indices, &refs.instance_offsets] {
-        u64v(&mut c,values.len() as u64);
-        for chunk in values.chunks(bytes.len() / 4) {
-            for (v, target) in chunk.iter().zip(bytes.chunks_exact_mut(4)) { target.copy_from_slice(&v.to_le_bytes()); }
-            c.update(&bytes[..chunk.len() * 4]);
-        }
+    u64v(&mut c,refs.tetrahedron_indices.len() as u64);
+    c.update(refs.tetrahedron_indices.bytes());
+    u64v(&mut c,refs.instance_offsets.len() as u64);
+    for chunk in refs.instance_offsets.chunks(bytes.len() / 4) {
+        for (v, target) in chunk.iter().zip(bytes.chunks_exact_mut(4)) { target.copy_from_slice(&v.to_le_bytes()); }
+        c.update(&bytes[..chunk.len() * 4]);
     }
     u64v(&mut c,refs.bytes_consumed as u64);
     c.sum()
@@ -344,7 +385,7 @@ mod tests {
         }
         let tail = vertex_references(&bytes, 0, 8).unwrap();
         assert_eq!(tail.cell_probe_indices, [[7, 0, u32::MAX, u32::MAX]]);
-        assert_eq!(tail.tetrahedron_indices, [11, 22]);
+        assert_eq!(tail.tetrahedron_indices.bytes(), [11, 0, 0, 0, 22, 0, 0, 0]);
         assert_eq!(tail.instance_offsets, [3, 4, 5]);
         assert_eq!(tail.bytes_consumed, bytes.len());
         bytes[28] = 1;
@@ -362,7 +403,7 @@ mod tests {
         bytes.push(0);
         bytes.extend_from_slice(&0u32.to_le_bytes());
         let tail = vertex_references(&bytes, 0, 0).unwrap();
-        assert_eq!(tail.tetrahedron_indices, [123]);
+        assert_eq!(tail.tetrahedron_indices.bytes(), [123, 0, 0, 0]);
         assert!(tail.instance_offsets.is_empty());
         assert_eq!(tail.bytes_consumed, bytes.len());
         assert!(vertex_references(&bytes[..bytes.len() - 1], 0, 0).is_err());

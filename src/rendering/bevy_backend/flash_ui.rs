@@ -68,10 +68,14 @@ enum TextureKey {
     /// Identity of the shared immutable image, kept unique by its live movie
     /// map leases until this cache entry is retired.
     Bitmap(usize),
-    Game(String),
     Ramp(Vec<u8>),
     /// A glyph cache page by (id, version).
     Glyphs(u64, u64),
+}
+
+enum FillImage<'a> {
+    Cached(TextureKey),
+    Registered(&'a TextureView),
 }
 
 /// Layer and filter render targets kept between frames, by size and format.
@@ -466,7 +470,6 @@ fn render_flash_ui(
             gpu.uploaded = None;
             // A hidden movie may still own its image map and glyph page.
             // Retire only entries whose real movie/frame leases have ended.
-            gpu.textures.retain(|key, _| !matches!(key, TextureKey::Game(_)));
             gpu.textures.begin_frame();
             gpu.textures.trim();
             gpu.textures.report("closed");
@@ -500,23 +503,33 @@ fn render_flash_ui(
     }
     // Library bitmaps use shared immutable image identity; gradient ramps use content.
     let key_started = gpu.textures.tracing().then(std::time::Instant::now);
-    let keys: Vec<TextureKey> = frame
-        .list
-        .batches
-        .iter()
-        .map(|b| match &b.texture {
+    let mut fills = Vec::with_capacity(frame.list.batches.len());
+    for batch in &frame.list.batches {
+        let key = match &batch.texture {
             FillTexture::White => TextureKey::White,
             FillTexture::Bitmap(c) => TextureKey::Bitmap(frame.images.get(c).map_or(0, |image| Arc::as_ptr(image) as usize)),
-            FillTexture::Game(name) => TextureKey::Game(name.clone()),
+            FillTexture::Game(name) => {
+                let Some(image) = frame.game_images.get(name).and_then(|handle| images.get(handle.id())) else {
+                    gpu.textures.retire_unowned(&frame.list.glyph_pages);
+                    gpu.textures.trim();
+                    return; // Keep the movie covered until its image is prepared.
+                };
+                // 1410150f0 binds the named wrapper's image. The frame's
+                // asset handle keeps this snapshot alive across scene replacement.
+                fills.push(FillImage::Registered(&image.texture_view));
+                continue;
+            }
             FillTexture::Ramp(i) => TextureKey::Ramp(frame.list.ramps[*i].to_vec()),
             FillTexture::Glyphs(i) => TextureKey::Glyphs(frame.list.glyph_pages[*i].id, frame.list.glyph_pages[*i].version),
-        })
-        .collect();
+        };
+        fills.push(FillImage::Cached(key));
+    }
     if let Some(started) = key_started { gpu.textures.record_key_build(started.elapsed()); }
     // The outgoing map may have died after this incoming movie acquired the
     // same image. Register its live lease before retiring obsolete owners.
     let track_started = gpu.textures.tracing().then(std::time::Instant::now);
-    for (key, batch) in keys.iter().zip(&frame.list.batches) {
+    for (fill, batch) in fills.iter().zip(&frame.list.batches) {
+        let FillImage::Cached(key) = fill else { continue; };
         if let FillTexture::Bitmap(character) = &batch.texture {
             if let Some(image) = frame.images.get(character) { gpu.textures.track_bitmap(key, &frame.images, image); }
         }
@@ -528,38 +541,14 @@ fn render_flash_ui(
     }
     if let Some(started) = track_started { gpu.textures.record_owner_tracking(started.elapsed()); }
     gpu.textures.retire_unowned(&frame.list.glyph_pages);
-    // 1410150f0 binds the image owner, not a permanently captured view. Drop
-    // outgoing named bindings even when one movie replaces another directly.
-    gpu.textures.retain(|key, _| match key {
-        TextureKey::Game(name) => frame.game_images.contains_key(name),
-        _ => true,
-    });
-    for (key, batch) in keys.iter().zip(&frame.list.batches) {
-        if let TextureKey::Game(name) = key {
-            let Some(image) = frame.game_images.get(name).and_then(|handle| images.get(handle.id())) else {
-                gpu.textures.trim();
-                return; // Keep the movie covered until its image is prepared.
-            };
-            if gpu.textures.get(key).is_none_or(|(_, view)| view.id() != image.texture_view.id()) {
-                gpu.textures.insert(key.clone(), (image.texture.clone(), image.texture_view.clone()));
-                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                    println!("MEMORY UI named image binding: name={name} view={:?}", image.texture_view.id());
-                }
-            }
-            gpu.textures.touch(key);
-            continue;
-        }
+    for (fill, batch) in fills.iter().zip(&frame.list.batches) {
+        let FillImage::Cached(key) = fill else { continue; };
         if gpu.textures.touch(key) {
             continue;
         }
         let uploaded = match key {
             TextureKey::White => upload(&device, &queue, 1, 1, &[255; 4]),
             TextureKey::Ramp(bytes) => upload(&device, &queue, 64, 1, bytes),
-            // 1410150f0 binds the existing idImage, not a second UI copy.
-            TextureKey::Game(name) => match frame.game_images.get(name).and_then(|handle| images.get(handle.id())) {
-                Some(image) => (image.texture.clone(), image.texture_view.clone()),
-                None => { gpu.textures.trim(); return; }, // The image owner has not uploaded it yet.
-            },
             TextureKey::Bitmap(identity) => match (match &batch.texture {
                 FillTexture::Bitmap(character) => frame.images.get(character),
                 _ => None,
@@ -738,9 +727,12 @@ fn render_flash_ui(
         .list
         .batches
         .iter()
-        .zip(&keys)
-        .map(|(b, key): (&Batch, &TextureKey)| {
-            let (_, view) = gpu.textures.get(key)?;
+        .zip(&fills)
+        .map(|(b, fill)| {
+            let view = match fill {
+                FillImage::Cached(key) => &gpu.textures.get(key)?.1,
+                FillImage::Registered(view) => *view,
+            };
             let sampler = &programs.samplers[(b.repeat as usize) * 2 + b.smooth as usize];
             Some(device.create_bind_group(Some("flash fill texture"), &programs.texture_layout, &BindGroupEntries::sequential((view, sampler))))
         })

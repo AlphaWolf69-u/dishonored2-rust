@@ -6,7 +6,9 @@
 //! is followed by a relocation program (a type-zero section) that marks which
 //! fields are self-relative 64-bit pointers. The reader keeps the original
 //! bytes and resolves only the fields that program names as pointers.
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+use std::rc::{Rc, Weak};
 use std::fmt;
 use std::ops::Range;
 
@@ -510,13 +512,46 @@ impl<'a> Node<'a> {
         self.file.sections[self.section].pointers.contains(&(self.offset + delta))
     }
 
+    fn remaining_bytes(&self) -> Result<&'a [u8]> {
+        let remaining = self.file.sections[self.section].len().saturating_sub(self.offset);
+        self.bytes(0, remaining)
+    }
+
     /// A NUL-terminated UTF-16LE string, as Iggy stores library names.
     pub fn wide_str(&self) -> Result<String> {
+        static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (copy, trace) = *MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_COPY_IGGY_STRINGS").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_IGGY_STRINGS").is_some_and(|value| value == "1"),
+        ));
+        let start = trace.then(crate::loading::thread_cycles).flatten();
+        let (text, units, temporary) = if copy {
+            self.wide_str_copied()?
+        } else {
+            let bytes = self.remaining_bytes()?;
+            let units = bytes.chunks_exact(2).position(|pair| pair == [0, 0])
+                .ok_or(Error::Range { section: self.section, offset: self.offset + bytes.len() / 2 * 2 })?;
+            let words = bytes[..units * 2].chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+            let mut text = String::with_capacity(units);
+            text.extend(char::decode_utf16(words).map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER)));
+            (text, units, 0)
+        };
+        if trace {
+            let cycles = start.zip(crate::loading::thread_cycles())
+                .map_or(0, |(a, b)| b.saturating_sub(a));
+            eprintln!("IGGY_WIDE_STRING units={units} temporary={temporary} cycles={cycles} signature={}",
+                blake3::hash(text.as_bytes()));
+        }
+        Ok(text)
+    }
+
+    fn wide_str_copied(&self) -> Result<(String, usize, usize)> {
         let mut units = Vec::new();
         loop {
             let unit = self.u16(2 * units.len())?;
             if unit == 0 {
-                return Ok(String::from_utf16_lossy(&units));
+                return Ok((String::from_utf16_lossy(&units), units.len(), units.capacity() * 2));
             }
             units.push(unit);
         }
@@ -524,48 +559,71 @@ impl<'a> Node<'a> {
 
     /// A NUL-terminated byte string.
     pub fn c_str(&self) -> Result<String> {
-        let mut out = Vec::new();
-        loop {
-            let b = self.u8(out.len())?;
-            if b == 0 {
-                return Ok(String::from_utf8_lossy(&out).into_owned());
-            }
-            out.push(b);
-        }
+        let bytes = self.remaining_bytes()?;
+        let end = bytes.iter().position(|&byte| byte == 0)
+            .ok_or(Error::Range { section: self.section, offset: self.offset + bytes.len() })?;
+        Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
     }
 }
 
 #[cfg(test)]
 mod tests;
 
-/// Immutable installed Iggy resources. 1400607f0 first resolves an existing
-/// resident object through 14005feb0. Each player still owns its VM and live
-/// timeline state; only the parsed file/relocations and borrowed fonts share.
-/// Host: the UI worker uses Rc; no VM object crosses thread boundaries.
-pub fn acquire(catalog: &super::archive::Catalog, resource: &str) -> std::result::Result<std::rc::Rc<IggyFile>, String> {
-    type Key = (u64, String);
-    thread_local! {
-        static FILES: std::cell::RefCell<std::collections::HashMap<Key, std::rc::Rc<IggyFile>>> = std::cell::RefCell::new(Default::default());
+thread_local! {
+    static FILE_SCOPES: RefCell<HashMap<u64, Weak<FileScope>>> = RefCell::new(HashMap::new());
+}
+
+/// Host worker lease for the immutable Iggy files resolved by 1400607f0 /
+/// 14005feb0. The VM and timeline remain private to each player.
+pub(crate) struct FileScope {
+    catalog: u64,
+    files: RefCell<HashMap<String, Rc<IggyFile>>>,
+}
+
+impl FileScope {
+    pub(crate) fn for_catalog(catalog: &super::archive::Catalog) -> Rc<Self> {
+        let identity = catalog.identity();
+        FILE_SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+            if let Some(scope) = scopes.get(&identity).and_then(Weak::upgrade) {
+                return scope;
+            }
+            let scope = Rc::new(Self { catalog: identity, files: RefCell::default() });
+            scopes.insert(identity, Rc::downgrade(&scope));
+            scope
+        })
     }
-    let key = (catalog.identity(), resource.replace('\\', "/").to_ascii_lowercase());
-    let existing = FILES.with(|files| {
-        let mut files = files.borrow_mut();
-        // Existing players own their Rc; the registry keeps only this catalog.
-        files.retain(|(identity, _), _| *identity == catalog.identity());
-        files.get(&key).cloned()
-    });
-    let mutable = catalog.has_overlay_file(resource);
-    if let Some(file) = existing.filter(|_| !mutable) {
-        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-            eprintln!("LOAD Iggy reuse: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
+
+    /// Read the installed format using the existing relocation reader.
+    /// Editable overlays are always re-read.
+    pub(crate) fn acquire(&self, catalog: &super::archive::Catalog, resource: &str)
+        -> std::result::Result<Rc<IggyFile>, String>
+    {
+        debug_assert_eq!(self.catalog, catalog.identity());
+        let key = (!catalog.has_overlay_file(resource))
+            .then(|| resource.replace('\\', "/").to_ascii_lowercase());
+        if let Some(file) = key.as_ref().and_then(|key| self.files.borrow().get(key).cloned()) {
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("LOAD Iggy reuse: {resource} identity={:p}", Rc::as_ptr(&file));
+            }
+            return Ok(file);
         }
-        return Ok(file);
+        let bytes = catalog.read(resource).map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{resource} not indexed"))?;
+        let file = Rc::new(IggyFile::parse(bytes).map_err(|e| format!("{resource}: {e}"))?);
+        if let Some(key) = key {
+            self.files.borrow_mut().insert(key, file.clone());
+        }
+        if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            eprintln!("LOAD Iggy acquire: {resource} identity={:p}", Rc::as_ptr(&file));
+        }
+        Ok(file)
     }
-    let bytes = catalog.read(resource).map_err(|e| e.to_string())?.ok_or_else(|| format!("{resource} not indexed"))?;
-    let file = std::rc::Rc::new(IggyFile::parse(bytes).map_err(|e| format!("{resource}: {e}"))?);
-    if !mutable { FILES.with(|files| files.borrow_mut().insert(key, file.clone())); }
-    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-        eprintln!("LOAD Iggy acquire: {resource} identity={:p}", std::rc::Rc::as_ptr(&file));
+}
+
+impl Drop for FileScope {
+    fn drop(&mut self) {
+        // The UI thread may already be tearing down its thread-local slots.
+        let _ = FILE_SCOPES.try_with(|scopes| scopes.borrow_mut().remove(&self.catalog));
     }
-    Ok(file)
 }

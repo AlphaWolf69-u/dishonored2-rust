@@ -22,6 +22,13 @@ fn placed_vertex(placement: &entities::PlacedModel, local: [f32; 3]) -> [f32; 3]
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--particle-model-streams") {
+        let base = dishonored2_rust::assets::installation::game_base()?;
+        return dishonored2_rust::assets::particle_model::observe_streams(&base).map_err(Into::into);
+    }
+    if std::env::args().nth(1).as_deref() == Some("--catalog-stream") {
+        return inspect_catalog_stream();
+    }
     let sample = fs::read("artifacts/life_preserver_01.bmodel")?;
     let parsed = bmodel::parse(&sample)?;
     println!(
@@ -767,6 +774,59 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (path, state) in failures.into_iter().take(40) {
         println!("{state} {path}");
     }
+    Ok(())
+}
+
+fn inspect_catalog_stream() -> Result<(), Box<dyn Error>> {
+    let base = dishonored2_rust::assets::installation::game_base()?;
+    let catalog = archive::Catalog::open(base.as_path())?;
+    let mut count = 0;
+    let mut unsupported = 0;
+    let mut decoded_bytes = 0;
+    let mut largest_member = 0;
+    let mut buffered = std::time::Duration::ZERO;
+    let mut streamed = std::time::Duration::ZERO;
+    for path in catalog.paths_with_suffix(".bmodel") {
+        let Some(size) = catalog.resource_size(&path).filter(|size| *size >= 256 * 1024) else {
+            continue;
+        };
+        let read_buffered = || -> Result<bmodel::Model, String> {
+            let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+                .ok_or("missing indexed model")?;
+            bmodel::parse(&bytes).map_err(|error| format!("{path}: {error}"))
+        };
+        let read_streamed = || bmodel::load(&catalog, &path)?
+            .ok_or_else(|| "missing indexed model".to_owned());
+        let observe = |read: &dyn Fn() -> Result<bmodel::Model, String>| {
+            let start = std::time::Instant::now();
+            let result = read();
+            (result, start.elapsed())
+        };
+        let ((before, before_time), (after, after_time)) = if (count + unsupported) % 2 == 0 {
+            (observe(&read_buffered), observe(&read_streamed))
+        } else {
+            let after = observe(&read_streamed);
+            (observe(&read_buffered), after)
+        };
+        match (before, after) {
+            (Ok(before), Ok(after)) if before == after => {}
+            (Err(before), Err(after)) if before == after => {
+                unsupported += 1;
+                eprintln!("unsupported {before}");
+                continue;
+            }
+            (before, after) => return Err(format!(
+                "streamed model differs: {path}; buffered={:?}, streamed={:?}",
+                before.err(), after.err(),
+            ).into()),
+        }
+        count += 1;
+        decoded_bytes += size;
+        largest_member = largest_member.max(size);
+        buffered += before_time;
+        streamed += after_time;
+    }
+    println!("models={count} unsupported={unsupported} decoded_bytes={decoded_bytes} largest_member={largest_member} buffered_us={} streamed_us={}", buffered.as_micros(), streamed.as_micros());
     Ok(())
 }
 

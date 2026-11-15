@@ -155,7 +155,7 @@ fn upgrades(catalog: &Catalog, fields: &[(String, Value)], mapping: &HashMap<Str
 /// journal presentation; quantity and modifier state are queried separately.
 pub fn definitions<'a>(catalog: &Catalog, character: &str, items: impl IntoIterator<Item = &'a str>) -> Result<(Vec<Power>, String), String> {
     let read = |path: &str| -> Result<Option<String>, String> {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| entities::declaration_text(&bytes).into_owned()))
+        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(entities::owned_declaration_text))
     };
     let body = format!("models/characters/player/{character}/body.def");
     let system = entities::player::entity_component(&body, "cpntplayerpowersystem", read)?

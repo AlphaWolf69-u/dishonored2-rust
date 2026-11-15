@@ -132,9 +132,9 @@ impl WindSnapshot {
 
     /// 677ec0 queries ordinary trigger layer16. 678070 replaces only a strictly
     /// lower priority; completed absence falls back to the registered world wind.
-    pub fn velocity(
+    pub(crate) fn velocity(
         &self,
-        geometry: &super::world_point_query::snapshot::PointQuerySnapshot,
+        geometry: &super::world_point_query::level::LevelPointQueries,
         query: &mut super::world_point_query::WorldPointQuery,
         point: [f32; 3],
     ) -> Result<[f32; 3], String> {
@@ -189,7 +189,7 @@ pub fn trigger_wind_sources(
     catalog: &crate::archive::Catalog,
     document: &crate::entities::Document,
 ) -> Result<Vec<TriggerWindSource>, String> {
-    trigger_wind_sources_with_sources(catalog, document, &mut Default::default())
+    trigger_wind_sources_with_sources(catalog, document, &mut crate::physworld::source::ShapeSources::uncached(catalog))
 }
 
 pub(crate) fn trigger_wind_sources_with_sources(
@@ -199,7 +199,7 @@ pub(crate) fn trigger_wind_sources_with_sources(
     let read = |name: &str| {
         catalog
             .read(name)
-            .map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+            .map(|bytes| bytes.map(crate::entities::owned_declaration_text))
             .map_err(|error| error.to_string())
     };
     let result: Vec<_> = crate::entities::wind::trigger_winds(document, read)?

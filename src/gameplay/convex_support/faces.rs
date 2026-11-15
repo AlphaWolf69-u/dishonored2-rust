@@ -14,7 +14,7 @@ pub struct PenetrationFace {
     pub mark: u32,
 }
 
-pub(super) fn reciprocal_sqrt_estimate(value: f32) -> f32 {
+pub(crate) fn reciprocal_sqrt_estimate(value: f32) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};

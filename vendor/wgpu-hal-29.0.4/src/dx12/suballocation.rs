@@ -10,6 +10,29 @@ use crate::{
     AllocationSizes,
 };
 
+/// Opt-in ownership evidence only. No map, COM lease, label clone or event
+/// history is retained by the device. Consumers pair create/free records and
+/// join actual heap/offset ranges to generate_allocator_report snapshots.
+fn trace_allocation(phase: &str, resource: &Direct3D12::ID3D12Resource, allocation: &Allocation, label: Option<&str>) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("DH2_DEBUG_DX12_ALLOCATION_LIFETIME").as_deref() == Ok("1")) { return; }
+    use windows::core::Interface;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (heap, heap_bytes, heap_type, heap_flags, offset) = match &allocation.inner {
+        AllocationInner::Placed { inner } => {
+            // The allocation still owns this actual heap at the observation.
+            let heap = unsafe { inner.heap() };
+            let desc = unsafe { heap.GetDesc() };
+            (heap.as_raw() as usize, desc.SizeInBytes, desc.Properties.Type.0, desc.Flags.0, inner.offset())
+        }
+        AllocationInner::Committed { .. } => (0, 0, 0, 0, 0),
+    };
+    log::warn!(target: "wgpu_hal::dx12::resource_lifetime",
+        "DX12_ALLOCATION serial={serial} phase={phase} resource={:#x} heap={heap:#x} heap_bytes={heap_bytes} heap_type={heap_type} heap_flags={heap_flags} offset={offset} bytes={} kind={:?} label={label:?}",
+        resource.as_raw() as usize, allocation.size(), allocation.ty);
+}
+
 #[derive(Debug)]
 pub(crate) enum AllocationType {
     Buffer,
@@ -266,6 +289,7 @@ impl<'a> DeviceAllocationContext<'a> {
                 return Err(error);
             }
         }
+        trace_allocation("created", &resource, &allocation, label);
         Ok((resource, allocation))
     }
 
@@ -300,6 +324,7 @@ impl<'a> DeviceAllocationContext<'a> {
         resource: Direct3D12::ID3D12Resource,
         allocation: Allocation,
     ) {
+        trace_allocation("rollback", &resource, &allocation, None);
         drop(resource);
         let counter = match allocation.ty {
             AllocationType::Buffer => &self.counters.buffer_memory,
@@ -324,6 +349,7 @@ impl<'a> DeviceAllocationContext<'a> {
         allocation: Allocation,
     ) {
         // Make sure the resource is released before we free the allocation.
+        trace_allocation("freed", &resource, &allocation, None);
         drop(resource);
 
         let counter = match allocation.ty {

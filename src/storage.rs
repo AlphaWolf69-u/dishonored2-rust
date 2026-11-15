@@ -164,6 +164,49 @@ impl PointerList {
         }
     }
 
+    /// Host lifecycle queues must retain their existing entries when a
+    /// fallible growth fails. Successful growth preserves the same packed
+    /// header and insertion order as `append`.
+    pub fn append_preserving(&mut self, value: u64, grow_one_at_a_time: bool) -> Result<u32, String> {
+        let count = self.count();
+        let capacity = self.capacity();
+        if count > capacity || capacity as usize != self.slots.len() {
+            return Err("pointer list metadata disagrees with storage".into());
+        }
+        if count == capacity {
+            let requested = growth_capacity(self.capacity_word, grow_one_at_a_time);
+            if requested <= capacity || requested > COUNT_MASK {
+                return Err("pointer growth exceeds packed capacity".into());
+            }
+            let mode = (self.capacity_word >> 6) & 3;
+            if mode == 0 || mode == 3 {
+                let mut replacement = allocate_zeroed_pointers(requested)?;
+                replacement[..count as usize].copy_from_slice(&self.slots[..count as usize]);
+                self.slots = replacement;
+                self.capacity_word = (requested << 8) | (self.capacity_word & 0xff);
+            } else {
+                return Ok(u32::MAX);
+            }
+        }
+        self.slots[count as usize] = value;
+        self.count_word = (self.count_word & !COUNT_MASK) | (count + 1);
+        Ok(count)
+    }
+
+    /// Insert into a lifecycle-owned list without losing its existing prefix
+    /// when host allocation fails.
+    pub fn insert_preserving(&mut self, requested_index: u32, value: u64,
+        grow_one_at_a_time: bool) -> Result<u32, String> {
+        let count = self.count();
+        let index = if (requested_index as i32) < 0 { 0 } else { requested_index.min(count) };
+        if self.append_preserving(value, grow_one_at_a_time)? != count {
+            return Err("pointer allocator rejected growth mode".into());
+        }
+        self.slots.copy_within(index as usize..count as usize, index as usize + 1);
+        self.slots[index as usize] = value;
+        Ok(index)
+    }
+
     ///75f060 followed by16a4a0: preserve the owned list's count-header flags.
     pub fn owned_with_capacity(capacity: u32) -> Result<Self, String> {
         if capacity > COUNT_MASK {

@@ -65,6 +65,52 @@ impl Default for BodyInfo {
 }
 
 impl PhysWorld {
+    /// Resolve a body's serialized name without retaining a second copy of it.
+    /// The runtime body owner copies the name during admission.
+    pub fn body_name<'a>(&self, bytes: &'a [u8], reference: usize)
+        -> Result<Option<&'a [u8]>, String> {
+        if reference == 0 {
+            return Ok(None);
+        }
+        let item = self.items.get(reference).ok_or("body name item missing")?;
+        let start = self.data_start.checked_add(item.offset).ok_or("body name offset overflow")?;
+        let end = start.checked_add(item.count).ok_or("body name length overflow")?;
+        if end > self.data_start + self.data_size {
+            return Err("body name exceeds DATA".into());
+        }
+        let data = slice(bytes, start, item.count)?;
+        let length = data.iter().position(|&byte| byte == 0).unwrap_or(data.len());
+        Ok(Some(&data[..length]))
+    }
+
+    /// Resolve the mass-distribution item referenced by a body creation record.
+    /// Item indices belong to this serialized physics resource, not the world.
+    pub fn body_mass_distribution(
+        &self,
+        bytes: &[u8],
+        reference: usize,
+    ) -> Result<Option<MassDistribution>, String> {
+        if reference == 0 {
+            return Ok(None);
+        }
+        let item = self.items.get(reference).ok_or("mass distribution item missing")?;
+        if self.types[item.type_index].name != "hknpMassDistribution" {
+            return Err(format!("item {reference} is not an hknpMassDistribution"));
+        }
+        let data = self.item_at(bytes, reference, 0)?;
+        let vector = |field: &str| -> Result<[f32; 4], String> {
+            let at = self.field_offset(item.type_index, field)?;
+            Ok([float(data, at)?, float(data, at + 4)?,
+                float(data, at + 8)?, float(data, at + 12)?])
+        };
+        Ok(Some(MassDistribution {
+            center_of_mass_and_volume: vector("centerOfMassAndVolume")?,
+            major_axis_space: vector("majorAxisSpace")?,
+            inertia_tensor: vector("inertiaTensor")?,
+        }))
+    }
+
+
     /// Read the physics system's creation array, retaining its source order,
     /// inherited fields, raw four-lane values and unresolved item references.
     pub fn body_infos(&self, bytes: &[u8]) -> Result<Vec<BodyInfo>, String> {

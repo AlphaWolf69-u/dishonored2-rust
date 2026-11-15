@@ -29,18 +29,19 @@ pub(in crate::app) struct LevelAudio {
     auxiliary_buses: crate::gameplay::sound::auxiliary::Buses,
 }
 impl LevelAudio {
-    pub(in crate::app) fn load(catalog: &crate::archive::Catalog, entities: &str, base: &std::path::Path) -> Result<Self, String> {
+    pub(in crate::app) fn load(catalog: &crate::archive::Catalog, entities: &str) -> Result<Self, String> {
         let path = format!("{}.soundpropa", entities.trim_end_matches(".entities"));
-        let bytes = catalog.read(&path).map_err(|error| error.to_string())?
+        let graph = crate::assets::sound_propagation::Propagation::load(catalog, &path)?
             .ok_or_else(|| format!("missing acoustic resource {path}"))?;
-        let graph = crate::assets::sound_propagation::Propagation::parse(&bytes).map_err(|error| error.to_string())?;
         let auxiliary_buses = crate::gameplay::sound::auxiliary::Buses::load(&graph, catalog, |path|
-            catalog.read(path).map(|bytes| bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+            catalog.read(path).map(|bytes| bytes.map(crate::entities::owned_declaration_text))
                 .map_err(|error| error.to_string()))?;
-        Ok(Self { world: Arc::new(Mutex::new(AcousticWorld::new(graph, base)?)), objects: HashMap::new(),
+        let constants = crate::assets::physics_material::MaterialConstants::acquire(catalog)?;
+        Ok(Self { world: Arc::new(Mutex::new(AcousticWorld::with_material_constants(graph, constants)?)), objects: HashMap::new(),
             listener_position: None, listener_zone: None, auxiliary_buses })
     }
     pub(super) fn release_object(&mut self, emitter: Emitter) { self.objects.remove(&emitter); }
+    pub(super) fn emitters(&self) -> impl Iterator<Item = Emitter> + '_ { self.objects.keys().copied() }
 
     /// Shared c2b60/c3a00 publication for retained component and FX objects.
     /// The caller supplies the object's actual range and settings; this owner

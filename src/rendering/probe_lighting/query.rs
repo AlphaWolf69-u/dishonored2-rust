@@ -12,6 +12,19 @@ pub struct Quad {
     u: [f32; 3],
     v: [f32; 3],
 }
+
+pub(super) fn geometry_crc(cells: &[CellGeometry]) -> u32 {
+    let mut crc = flate2::Crc::new();
+    for cell in cells {
+        crc.update(&(cell.quads.len() as u64).to_le_bytes());
+        for word in cell.center.iter().chain(cell.quads.iter().flat_map(|quad| {
+            quad.position.iter().chain(&quad.normal).chain(&quad.u).chain(&quad.v)
+        })) {
+            crc.update(&word.to_le_bytes());
+        }
+    }
+    crc.sum()
+}
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| a[i] - b[i])
 }

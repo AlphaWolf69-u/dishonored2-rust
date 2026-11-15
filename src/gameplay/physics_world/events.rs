@@ -20,6 +20,10 @@ pub(crate) enum BodyEventCallback {
 pub struct PublicationSignals<S, C> {
     pub activation: ActivationSignals<S, C>,
     pub added: Signal<S, C>,
+    pub motion_destroyed: Signal<S, C>,
+    pub motion_type_changed: Signal<S, C>,
+    pub destroyed: Signal<S, C>,
+    pub removed: Signal<S, C>,
     pub static_transform: Signal<S, C>,
     pub transform: Signal<S, C>,
     pub motion_capacity_requested: Signal<S, C>,
@@ -32,6 +36,10 @@ impl<S, C> Default for PublicationSignals<S, C> {
         Self {
             activation: ActivationSignals::default(),
             added: Signal::default(),
+            motion_destroyed: Signal::default(),
+            motion_type_changed: Signal::default(),
+            destroyed: Signal::default(),
+            removed: Signal::default(),
             static_transform: Signal::default(),
             transform: Signal::default(),
             motion_capacity_requested: Signal::default(),
@@ -44,8 +52,12 @@ impl<S, C> Default for PublicationSignals<S, C> {
 
 #[derive(Clone, Copy)]
 pub enum PublicationEvent<'a> {
-    Activation { ids: &'a [u32], active: bool },
+    Activation { ids: &'a [u32], active: bool, timespaces: Option<&'a crate::gameplay::motion_timespaces::MotionTimespaces> },
     Added(&'a [u32]),
+    Removed(&'a [u32]),
+    Destroyed(&'a [u32]),
+    MotionDestroyed(u32),
+    MotionTypeChanged { body: u32, is_static: bool },
     Transform { body: u32, static_only: bool },
     MotionCapacityRequested,
     MotionCreated { info: &'a MotionInfo, motion: u32 },
@@ -164,6 +176,31 @@ fn emit<'a, S: Copy + Eq, C: Copy + Eq>(
     error.map_or(Ok(()), Err)
 }
 
+fn emit_retirement<'a, S: Copy + Eq, C: Copy + Eq>(
+    signal: &mut Signal<S, C>,
+    components: &mut TriggerComponentStore<'a>,
+    dispatch: &mut impl FnMut(
+        &mut Signal<S, C>,
+        S,
+        C,
+        ActivationOwners<'_>,
+        PublicationEvent<'_>,
+        &mut TriggerComponentStore<'a>,
+    ) -> Result<(), String>,
+    owners: ActivationOwners<'_>,
+    event: PublicationEvent<'_>,
+) -> Result<(), String> {
+    signal.emit_resumable(&event, |signal, subscriber, callback, &event| {
+        let live = ActivationOwners {
+            bodies: &mut *owners.bodies,
+            motions: &mut *owners.motions,
+            deactivation: &mut *owners.deactivation,
+            broadphase: &mut *owners.broadphase,
+        };
+        dispatch(signal, subscriber, callback, live, event, components)
+    })
+}
+
 impl<'a, S: Copy + Eq, C: Copy + Eq, F> PublicationEvents
     for ComponentPublicationEvents<'a, S, C, F>
 where
@@ -192,8 +229,16 @@ where
             &mut self.components,
             &mut self.dispatch,
             owners,
-            PublicationEvent::Activation { ids, active },
+            PublicationEvent::Activation { ids, active, timespaces: None },
         )
+    }
+    fn activation_with_timespaces(
+        &mut self, owners: ActivationOwners<'_>, ids: &[u32], active: bool,
+        timespaces: Option<&crate::gameplay::motion_timespaces::MotionTimespaces>,
+    ) -> Result<(), String> {
+        let signal = if active { &mut self.signals.activation.activated } else { &mut self.signals.activation.deactivated };
+        emit(signal, &mut self.components, &mut self.dispatch, owners,
+            PublicationEvent::Activation { ids, active, timespaces })
     }
     fn added(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
         emit(
@@ -203,6 +248,24 @@ where
             owners,
             PublicationEvent::Added(ids),
         )
+    }
+    fn removed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
+        emit_retirement(&mut self.signals.removed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::Removed(ids))
+    }
+
+    fn destroyed(&mut self, owners: ActivationOwners<'_>, ids: &[u32]) -> Result<(), String> {
+        emit_retirement(&mut self.signals.destroyed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::Destroyed(ids))
+    }
+
+    fn motion_destroyed(&mut self, owners: ActivationOwners<'_>, motion: u32) -> Result<(), String> {
+        emit_retirement(&mut self.signals.motion_destroyed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::MotionDestroyed(motion))
+    }
+    fn motion_type_changed(&mut self, owners: ActivationOwners<'_>, body: u32, is_static: bool) -> Result<(), String> {
+        emit_retirement(&mut self.signals.motion_type_changed, &mut self.components, &mut self.dispatch,
+            owners, PublicationEvent::MotionTypeChanged { body, is_static })
     }
     fn transform_changed(
         &mut self,

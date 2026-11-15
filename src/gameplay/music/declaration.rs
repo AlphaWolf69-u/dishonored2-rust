@@ -19,6 +19,18 @@ pub struct Event {
     pub declaration: Box<str>,
 }
 
+impl Event {
+    /// Share declaration admission with every other sound-event consumer.
+    /// This compact manager reference owns no bank/media or parsed subtree.
+    pub fn acquire(catalog: &crate::archive::Catalog, name: &str) -> Result<Arc<Self>, String> {
+        let event = crate::assets::wwise::event_resources::acquire_with(catalog, name, |path|
+            catalog.read(path).map(|bytes| bytes.map(crate::entities::owned_declaration_text))
+                .map_err(|error| error.to_string()))?;
+        Ok(Arc::new(Self { id: event.id,
+            declaration: format!("generated/decls/soundevent/{}.decl", name.replace('\\', "/").to_ascii_lowercase()).into_boxed_str() }))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Stinger {
     pub event: Option<Arc<Event>>,

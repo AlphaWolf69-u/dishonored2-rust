@@ -1,6 +1,6 @@
 //! Setup.
 use super::{
-    apply_rest_pose, authored_area_light_transform, authored_light_cosines, authored_mesh,
+    apply_rest_pose, authored_area_light_transform, authored_light_cosines,
     authored_world_bounds, auto_exposure, bmd6, bmodel, camera_projection, coarse_depth, entities,
     env, environment_sun_ray, f8_camera_pose, f8_reference_fov, fs,
     game_affine_to_view, game_to_view, initial_placed_model_query, light_backend_intensity,
@@ -9,7 +9,7 @@ use super::{
     needs_exact_world_mesh, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, render_bounds, render_light, render_model,
     rest_skinning, retain_model_shadow_position, retain_skin_inputs, shadow_pipeline,
-    shadow_sampling, shadow_updates, source_mesh, surface_sampler_image, texture, tome,
+    shadow_sampling, shadow_updates, surface_sampler_image, texture, tome,
     transformed, transformed_direction, view_of, view_to_game, Arc, BTreeMap, Bounds,
     CascadeShadowConfigBuilder, DecalMaterial, DepthPrepass, DiffuseMipState,
     FocusTarget, FocusTargets, HashMap, HashSet, LocalLightCull,
@@ -21,12 +21,144 @@ use super::{
     TextureReadWorker, TomeRenderInstanceMap, VegetationMeshInputs, ViewSettings,
     WorldShadowMeshSources, DEFAULT_FAR, DEFAULT_HORIZONTAL_FOV_DEGREES, DEFAULT_NEAR,
 };
+use super::view_geometry::{authored_mesh_from_uvs, source_mesh_from_uvs, MeshUvs};
 use bevy::prelude::*;
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
 
 enum SceneSkeletalModel {
     Prepared(Arc<bmd6::ModelInfo>),
     Shared(Arc<bmd6::ModelInfo>),
+}
+
+struct StaticModelSlot {
+    last_placement: usize,
+    source: Option<Option<bmodel::ModelSource>>,
+    level_bytes: usize,
+}
+
+fn uses_static_model(path: &str) -> bool {
+    !path.ends_with(".blueprint.decl") && !path.ends_with(".bmd6model")
+        && !path.contains("/collisions/") && !path.contains("/templates/occlusion/")
+        && !path.contains("/skiff_01_noswim")
+}
+
+fn capacity_bytes<T>(values: &Vec<T>) -> usize {
+    values.capacity() * std::mem::size_of::<T>()
+}
+
+struct TransformScratch {
+    points: Vec<Vec3>,
+    separate: bool,
+    observation: Option<TransformScratchObservation>,
+}
+
+#[derive(Default)]
+struct TransformScratchObservation {
+    fills: usize,
+    growths: usize,
+    vertices: usize,
+    peak_capacity: usize,
+    cycles: u64,
+}
+
+impl TransformScratch {
+    fn new(separate: bool, observe: bool) -> Self {
+        Self { points: Vec::new(), separate, observation: observe.then(TransformScratchObservation::default) }
+    }
+
+    fn fill(&mut self, positions: &[[f32; 3]], transform: impl Fn([f32; 3]) -> Vec3) {
+        let started = self.observation.as_ref().and_then(|_| crate::loading::thread_cycles());
+        let capacity = if self.separate { 0 } else { self.points.capacity() };
+        let transformed = positions.iter().copied().map(transform);
+        if self.separate {
+            self.points = Vec::new();
+            self.points = transformed.collect();
+        } else {
+            self.points.clear();
+            self.points.reserve_exact(positions.len());
+            self.points.extend(transformed);
+        }
+        if let Some(observation) = &mut self.observation {
+            observation.fills += 1;
+            observation.growths += usize::from(self.points.capacity() > capacity);
+            observation.vertices += positions.len();
+            observation.peak_capacity = observation.peak_capacity.max(self.points.capacity());
+            if let Some(started) = started {
+                observation.cycles += crate::loading::thread_cycles().unwrap_or(started).saturating_sub(started);
+            }
+        }
+    }
+
+    fn report(self, phase: &str) {
+        if let Some(observation) = self.observation {
+            eprintln!("SCENE_TRANSFORM_SCRATCH phase={phase} separate={} fills={} growths={} vertices={} peak_bytes={} cycles={}",
+                self.separate, observation.fills, observation.growths, observation.vertices,
+                observation.peak_capacity * std::mem::size_of::<Vec3>(), observation.cycles);
+        }
+    }
+}
+
+#[derive(Default)]
+struct ModelMeshObservation {
+    enabled: bool,
+    repeated: bool,
+    initializations: usize,
+    skinned_vertices: usize,
+    cycles: u64,
+}
+
+impl ModelMeshObservation {
+    fn prepare(&mut self, skinned_vertices: usize, initialize: impl FnOnce()) {
+        let start = self.enabled.then(crate::loading::thread_cycles).flatten();
+        initialize();
+        if self.enabled {
+            self.initializations += 1;
+            self.skinned_vertices += skinned_vertices;
+            if let Some(start) = start {
+                self.cycles += crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            }
+        }
+    }
+
+    fn report(&self, marker: &str, meshes: &dyn AssetWrite<Mesh>, instances: &[RenderInstance],
+        common: Option<&super::common_model_meshes::Prepared>) {
+        if !self.enabled { return; }
+        let mut known = HashMap::new();
+        let mut digest = blake3::Hasher::new();
+        for instance in instances {
+            let ordinal = known.len();
+            let index = known.entry(instance.mesh.id()).or_insert_with(|| {
+                let mesh = meshes.get(&instance.mesh)
+                    .or_else(|| common.and_then(|common| common.debug_mesh(instance.mesh.id())))
+                    .expect("prepared model mesh or enabled common-mesh observation");
+                digest.update(&mesh.count_vertices().to_le_bytes());
+                for (attribute, values) in mesh.attributes() {
+                    digest.update(format!("{:?}", attribute).as_bytes());
+                    let bytes = values.get_bytes();
+                    digest.update(&bytes.len().to_le_bytes());
+                    digest.update(bytes);
+                }
+                match mesh.indices() {
+                    Some(bevy::mesh::Indices::U16(indices)) => {
+                        digest.update(&[2]);
+                        digest.update(&indices.len().to_le_bytes());
+                        for index in indices { digest.update(&index.to_le_bytes()); }
+                    }
+                    Some(bevy::mesh::Indices::U32(indices)) => {
+                        digest.update(&[4]);
+                        digest.update(&indices.len().to_le_bytes());
+                        for index in indices { digest.update(&index.to_le_bytes()); }
+                    }
+                    None => { digest.update(&[0]); }
+                }
+                ordinal
+            });
+            digest.update(&index.to_le_bytes());
+        }
+        eprintln!("{marker} repeated={} instances={} meshes={} initializations={} skinned_vertices={} cycles={} signature={}",
+            self.repeated, instances.len(), known.len(), self.initializations, self.skinned_vertices,
+            self.cycles, digest.finalize());
+    }
 }
 impl std::ops::Deref for SceneSkeletalModel {
     type Target = bmd6::ModelInfo;
@@ -113,18 +245,19 @@ pub(super) fn setup(
     mut world_matrices: ResMut<super::world_instances::WorldMatrices>,
     moving: (Option<Res<super::machinery::AmbientMachinery>>, Option<Res<super::interactions::Interactions>>),
     environment_volumes: Option<Res<super::state::EnvironmentVolumes>>,
-    effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>),
+    effects_and_images: (Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>>, Res<super::resident_images::ResidentImages>, Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>),
 ) {
     let (mut programs, prepared) = programs;
-    let (effect_graphs, resident_images) = effects_and_images;
+    let (effect_graphs, resident_images, live_entities) = effects_and_images;
     let (machinery, interactions) = moving;
     if prepared.is_some() { return; }
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
-    prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
-        &mut meshes, &mut images, &mut probe_materials, &mut sky_materials,
+    let _ = prepare(&mut commands, &mut scene, programs.as_deref_mut(), navigation.as_deref(),
+        &mut meshes, None, &mut images, &mut probe_materials, &mut sky_materials,
         &mut probe_sh_buffers, &render_device, &mut decal_materials, &view_settings,
         &mut world_matrices, machinery.as_deref(), interactions.as_deref(), environment_volumes.as_deref(),
-        effect_graphs.as_deref(), None, &resident_images);
+        effect_graphs.as_deref(), live_entities.as_deref(), None, &resident_images, &|| Ok(()))
+        .unwrap_or_else(|error| panic!("Scene preparation failed: {error}"));
 }
 
 pub(super) fn prepare(
@@ -133,6 +266,7 @@ pub(super) fn prepare(
     mut programs: Option<&mut ProgramCacheSource>,
     navigation: Option<&NavigationWorld>,
     meshes: &mut dyn AssetWrite<Mesh>,
+    mut common_meshes: Option<&mut super::common_model_meshes::Prepared>,
     images: &mut dyn AssetWrite<Image>,
     probe_materials: &mut dyn AssetWrite<ProbeMaterial>,
     sky_materials: &mut dyn AssetWrite<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
@@ -145,12 +279,15 @@ pub(super) fn prepare(
     interactions: Option<&super::interactions::Interactions>,
     environment_volumes: Option<&super::state::EnvironmentVolumes>,
     effect_graphs: Option<&crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>,
-    shared_images: Option<&super::texture_streaming::SharedImages>,
+    live_entities: Option<&crate::gameplay::entity_lifetime::LiveEntities>,
+    shared_images: Option<(&super::texture_streaming::SharedImages, Option<usize>)>,
     resident_images: &super::resident_images::ResidentImages,
-) {
-    // Take the catalog to avoid borrowing the scene while setup mutates its
-    // parsed world, then transfer ownership to the texture worker below.
-    let catalog_storage = scene.catalog.take();
+    check_cancelled: &impl Fn() -> Result<(), String>,
+) -> Result<Option<super::texture_streaming::BaseImageReader>, String> {
+    check_cancelled()?;
+    // Setup mutates the parsed world. Borrow through a separate lease while
+    // the published scene keeps its catalog for runtime FX and diagnostics.
+    let catalog_storage = scene.catalog.clone();
     let catalog = catalog_storage.as_deref();
     let fog_material = crate::rendering::bevy_backend::fog_material::FogMaterialResources::new(
         images,
@@ -242,7 +379,7 @@ pub(super) fn prepare(
             "Startup trace: beginning world setup ({} BWM objects, {} world meshes, {} placed models)",
             scene.world.objects.len(),
             scene.world.meshes.len(),
-            scene.placed_models.len()
+            scene.expanded_placement_roots.unwrap_or(scene.placed_models.len())
         );
     }
     // Preserve ordered primary probe IDs in binding100; per-object records
@@ -268,21 +405,62 @@ pub(super) fn prepare(
     if records.is_empty() {
         records.push([Vec4::ZERO; 9]);
     }
-    // The per-vertex references only build this GPU buffer; nothing reads
-    // them on the CPU afterwards, so they are released once it is built.
-    let words = scene
-        .environment_probes
-        .as_mut()
-        .map(|set| {
+    // The CPU references build only this GPU buffer. Write the host WGSL
+    // layout straight into its upload backing, then retire setup-only arrays.
+    let trace_probe = env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+    let copy_probe = env::var_os("DH2_DEBUG_COPY_VERTEX_PROBE_BUFFER").is_some_and(|v| v == "1");
+    let copy_indices = env::var_os("DH2_DEBUG_COPY_PROBE_INDICES").is_some_and(|v| v == "1");
+    let started = trace_probe.then(crate::loading::thread_cycles).flatten();
+    let mut word_capacity_bytes = 0;
+    let mut reuse_index_backing = false;
+    let mut vertex_probe_buffer = if let Some(set) = scene.environment_probes.as_mut() {
+        let buffer = if copy_probe {
             let words = set.vertex_shader_words();
-            if let Some(set) = std::sync::Arc::get_mut(set) {
-                set.vertex_references.instance_offsets = Vec::new();
-                set.vertex_references.tetrahedron_indices = Vec::new();
+            word_capacity_bytes = words.capacity() * size_of::<u32>();
+            ShaderBuffer::from(words)
+        } else if let Some(set) = Arc::get_mut(set).filter(|_| !copy_indices) {
+            let (bytes, direct) = set.take_vertex_shader_bytes();
+            reuse_index_backing = direct;
+            ShaderBuffer { data: Some(bytes), ..default() }
+        } else {
+            ShaderBuffer {
+                data: Some(set.vertex_shader_bytes()),
+                ..default()
             }
-            words
-        })
-        .unwrap_or_else(|| vec![0u32; 8]);
-    let bytes = words.len() as u64 * 4;
+        };
+        if let Some(set) = std::sync::Arc::get_mut(set) {
+            set.vertex_references.instance_offsets = Vec::new();
+            set.vertex_references.tetrahedron_indices = Default::default();
+            let retain_source = env::var_os("DH2_DEBUG_RETAIN_VERTEX_PROBE_SOURCES").is_some_and(|v| v == "1");
+            if trace_probe {
+                let position_bytes = set.spatial.vertex_positions.capacity() * size_of::<[f32; 3]>();
+                let table_bytes = set.vertex_references.cell_probe_indices.capacity() * size_of::<[u32; 4]>();
+                eprintln!("MEMORY vertex probe source retirement: retain={retain_source} position_bytes={position_bytes} table_bytes={table_bytes}");
+            }
+            if !retain_source {
+                set.spatial.vertex_positions = Vec::new();
+                set.vertex_references.cell_probe_indices = Vec::new();
+            }
+        }
+        buffer
+    } else {
+        ShaderBuffer {
+            data: Some(vec![0; 8 * size_of::<u32>()]),
+            ..default()
+        }
+    };
+    let data = vertex_probe_buffer.data.as_ref().expect("prepared PNW GPU buffer");
+    let bytes = data.len() as u64;
+    if trace_probe {
+        let cycles = started.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        let mut crc = flate2::Crc::new();
+        crc.update(data);
+        eprintln!(
+            "MEMORY vertex probe buffer: copy={copy_probe} bytes={bytes} capacity={} word_capacity_bytes={word_capacity_bytes} cycles={cycles} signature={:08x} reuse_index_backing={reuse_index_backing}",
+            data.capacity(), crc.sum(),
+        );
+    }
     let limits = render_device.limits();
     assert!(
         bytes <= u64::from(limits.max_storage_buffer_binding_size)
@@ -296,7 +474,6 @@ pub(super) fn prepare(
         records.len(),
         limits.max_storage_buffer_binding_size
     );
-    let mut vertex_probe_buffer = ShaderBuffer::from(words);
     vertex_probe_buffer.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
     let vertex_probe_buffer = probe_sh_buffers.add(vertex_probe_buffer);
     // Only the handle is consumed before the completed probe data is uploaded.
@@ -357,13 +534,17 @@ pub(super) fn prepare(
             scene.environment_probes.as_deref(),
             images,
             probe_sh_buffers,
-        )
-        .expect("installed environment reflections");
+            check_cancelled,
+        )?;
     let water_probes = loaded_reflections.water_probes(
         scene.environment_probes.as_deref(),
         vertex_probe_buffer.clone(),
         probe_sh_buffers,
     );
+    let secondary_probe_count = loaded_reflections.cube_count;
+    if let Some(probes) = scene.environment_probes.as_mut().and_then(Arc::get_mut) {
+        probes.release_reflection_preparation();
+    }
     commands.insert_resource(crate::rendering::bevy_backend::water_scene::WaterLighting(
         water_probes,
     ));
@@ -439,8 +620,15 @@ pub(super) fn prepare(
             }
         }
     }
+    let separate_points = env::var_os("DH2_DEBUG_SEPARATE_TRANSFORM_SCRATCH").is_some_and(|value| value == "1");
+    let observe_points = env::var_os("DH2_DEBUG_TRANSFORM_SCRATCH").is_some_and(|value| value == "1");
+    let mut world_points = TransformScratch::new(separate_points, observe_points);
+    let world_mesh_start = render_instances.len();
     let mut bwm_visibility_render_instances = vec![Vec::new(); scene.world.visibility.len()];
     for (object_number, object) in scene.world.objects.iter().enumerate() {
+        if object_number % 32 == 0 {
+            check_cancelled()?;
+        }
         if object_number == scene.world.objects.len() / 2 {
             super::load_timing::mark("setup: half of the world objects");
         }
@@ -475,16 +663,12 @@ pub(super) fn prepare(
             .clone();
         world_shadow_mesh_sources.objects[object_number].gather_flags48 = Some(admission);
         let first_material = if let Some(matrix) = scene.world.matrices.get(object.matrix_start) {
-            let points: Vec<Vec3> = source
-                .positions
-                .iter()
-                .map(|&position| transformed(matrix, position))
-                .collect();
+            world_points.fill(source.positions(), |position| transformed(matrix, position));
             let _tag = crate::platform::allocation_tags::tag("world material resolution");
             resolver.get_world(
                 &object.material_path,
                 object_number,
-                mean_game_position(&points),
+                mean_game_position(&world_points.points),
             )
         } else {
             None
@@ -521,11 +705,10 @@ pub(super) fn prepare(
         for matrix_index in object.matrix_start..object.matrix_end {
             let matrix = &scene.world.matrices[matrix_index];
             let visibility_record = &scene.world.visibility[matrix_index];
-            let points: Vec<Vec3> = source
-                .positions
-                .iter()
-                .map(|&position| transformed(matrix, position))
-                .collect();
+            if matrix_index != object.matrix_start || separate_points {
+                world_points.fill(source.positions(), |position| transformed(matrix, position));
+            }
+            let points = world_points.points.as_slice();
             if trace_startup {
                 eprintln!(
                     "Startup trace: resolving BWM material object={} matrix={} path={}",
@@ -538,7 +721,7 @@ pub(super) fn prepare(
                 resolver.get_world(
                     &object.material_path,
                     object_number,
-                    mean_game_position(&points),
+                    mean_game_position(points),
                 )
             };
             let Some(mat) = mat else {
@@ -556,7 +739,7 @@ pub(super) fn prepare(
             world_shadow_mesh_sources
                 .bind_material(object_number, &mat.handle)
                 .expect("resolved BWM object/material ownership");
-            for &point in &points {
+            for &point in points {
                 whole_world.add(point);
                 regions
                     .entry((point.x / 35.0).floor() as i32)
@@ -565,14 +748,14 @@ pub(super) fn prepare(
             }
             let instance = game_affine_to_view(matrix);
             let bounds = authored_world_bounds(visibility_record);
-            let render_instance = if needs_exact_world_mesh(&instance, &source.positions, &points) {
+            let render_instance = if needs_exact_world_mesh(&instance, source.positions(), points) {
                 // Bevy's Transform cannot express shear. Preserve the exact
                 // authored affine transform in this instance's vertex data.
                 let baked = meshes.add(super::view_geometry::authored_mesh_from_uvs(
-                    &points,
-                    super::view_geometry::MeshUvs::Packed(&source.uvs),
-                    &source.indices,
-                    &source.packed_channels,
+                    points,
+                    super::view_geometry::MeshUvs::Packed(source.uvs()),
+                    source.indices(),
+                    source.packed_channels(),
                     |v| transformed_direction(matrix, v),
                 ));
                 let render_instance = RenderInstance {
@@ -627,15 +810,22 @@ pub(super) fn prepare(
                 resolver.needs_vegetation_channels(&render_instance.material),
                 &render_instance.mesh,
                 meshes,
-                &source.positions,
-                &source.packed_channels,
+                source.positions(),
+                source.packed_channels(),
             );
             let render_index = render_instances.len();
             bwm_visibility_render_instances[matrix_index].push(render_index);
             render_instances.push(render_instance);
         }
     }
+    world_points.report("world");
+    if observe_points {
+        ModelMeshObservation { enabled: true, ..Default::default() }
+            .report("WORLD_MESH_PREPARATION", meshes, &render_instances[world_mesh_start..], common_meshes.as_deref());
+    }
     super::load_timing::mark("setup: world geometry and materials");
+    // Only the later placed-model and arm writers can update their records.
+    let writable_probe_start = resolver.probe_sh_records.len();
 
     if trace_startup {
         eprintln!(
@@ -644,7 +834,8 @@ pub(super) fn prepare(
             resolver.diffuse_image_paths.len()
         );
     }
-    let root_placement_count = scene.placed_models.len();
+    let prepared_root_count = scene.expanded_placement_roots.take();
+    let root_placement_count = prepared_root_count.unwrap_or(scene.placed_models.len());
     let mut expanded_placements =
         if env::var_os("DH2_DEBUG_RETAIN_PLACEMENT_STAGING").is_some_and(|value| value == "1") {
             scene.placed_models.clone()
@@ -652,18 +843,40 @@ pub(super) fn prepare(
             // RenderSourcePlacements is the only live owner after setup.
             std::mem::take(&mut scene.placed_models)
         };
-    if let Some(catalog) = catalog {
+    if let Some(catalog) = catalog.filter(|_| prepared_root_count.is_none()) {
         super::view_geometry::expand_model_placements(&mut expanded_placements, catalog);
     }
     if env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
         report_placement_storage(&scene.placed_models, &expanded_placements);
     }
-    let mut model_cache = HashMap::<String, Option<bmodel::ModelSource>>::new();
+    let trace_model_staging = env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1");
+    let retain_static_sources = env::var_os("DH2_DEBUG_RETAIN_STATIC_MODEL_STAGING").is_some_and(|value| value == "1");
+    let placement_start = trace_model_staging.then(crate::loading::thread_cycles).flatten();
+    let mut model_cache = HashMap::new();
+    if !retain_static_sources {
+        for (number, placement) in expanded_placements.iter().enumerate() {
+            let path = placement.resource_path.as_str();
+            if uses_static_model(path) {
+                model_cache.insert(path, StaticModelSlot { last_placement: number, source: None, level_bytes: 0 });
+            }
+        }
+    }
+    let mut static_live_bytes = 0;
+    let mut static_peak_bytes = 0;
+    let mut static_decoded_bytes = 0;
+    let mut packed_uv_pairs = 0;
+    let mut packed_uv_mismatches = 0;
     let common_models = catalog.and_then(bmodel::CommonModels::shared);
     let mut md6_cache = HashMap::<String, Option<SceneSkeletalModel>>::new();
     let mut model_sources = catalog.map(bmd6::ModelSources::new);
     let mut md6_rest_pose_instances = 0usize;
     let mut model_mesh_handles = HashMap::<(String, usize, bool, u8), Handle<Mesh>>::new();
+    let placed_mesh_start = render_instances.len();
+    let mut mesh_observation = ModelMeshObservation {
+        enabled: env::var_os("DH2_DEBUG_MODEL_MESH_PREPARATION").is_some_and(|value| value == "1"),
+        repeated: env::var_os("DH2_DEBUG_REPEAT_MODEL_MESH_PREPARATION").is_some_and(|value| value == "1"),
+        ..Default::default()
+    };
     let mut model_instances = 0usize;
     let mut model_surfaces = 0usize;
     let mut placed_model_queries = Vec::new();
@@ -690,7 +903,11 @@ pub(super) fn prepare(
             expanded_placements.get(index).map(|placement| (placement.resource_path.as_str(), model))
         }).collect()
     } else { HashMap::new() };
+    let mut placed_points = TransformScratch::new(separate_points, observe_points);
     for (number, placement) in expanded_placements.iter().enumerate() {
+        if number % 32 == 0 {
+            check_cancelled()?;
+        }
         if trace_startup {
             eprintln!(
                 "Startup trace: placed model {}/{} id={} resource={}",
@@ -763,11 +980,8 @@ pub(super) fn prepare(
                     if material::is_null_material(material_path) {
                         continue;
                     }
-                    let points: Vec<Vec3> = surface
-                        .positions
-                        .iter()
-                        .map(|&vertex| placed_vertex(placement, vertex))
-                        .collect();
+                    placed_points.fill(&surface.positions, |vertex| placed_vertex(placement, vertex));
+                    let points = placed_points.points.as_slice();
                     if points.is_empty() || surface.indices.is_empty() {
                         continue;
                     }
@@ -778,30 +992,58 @@ pub(super) fn prepare(
                     ) else {
                         continue;
                     };
-                    let bounds = render_bounds(&points);
+                    let bounds = render_bounds(points);
                     let instance = placed_transform(placement);
-                    let world_baked = !deformed.contains(&number)
-                        && needs_exact_world_mesh(&instance, &surface.positions, &points);
+                    let deforms = deformed.contains(&number);
+                    let world_baked = !deforms
+                        && needs_exact_world_mesh(&instance, &surface.positions, points);
                     let skin_influences = resolver.shadow_materials.skin_influences(&mat.handle);
+                    let flipped = instance.to_matrix().determinant() < 0.0;
+                    let repeated = mesh_observation.repeated;
+                    let pose_vertices = if skin_influences != 0 && skinning.is_ok() {
+                        surface.positions.len()
+                    } else { 0 };
+                    let mut initialize_mesh = |mesh: &mut Mesh| {
+                        mesh_observation.prepare(pose_vertices, || {
+                            retain_model_shadow_position(mesh, &surface.positions);
+                            // Physics-system skinning re-poses these every frame.
+                            if deforms {
+                                mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
+                            }
+                            retain_skin_inputs(mesh, surface);
+                            if skin_influences != 0 {
+                                if let Err(error) = skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
+                                    apply_rest_pose(mesh, surface, &skin.matrices, skin_influences, placement, world_baked)
+                                }) {
+                                    eprintln!("Model rest pose pending {}: {error}", placement.resource_path);
+                                }
+                            }
+                        });
+                    };
+                    let mut prepare_mesh = |mut mesh: Mesh| {
+                        if !repeated { initialize_mesh(&mut mesh); }
+                        meshes.add(mesh)
+                    };
+                    let uvs = MeshUvs::Packed(&surface.uvs);
                     let (mesh, transform) = if world_baked {
                         (
-                            meshes.add(authored_mesh(
-                                &points,
-                                &surface.uvs,
+                            prepare_mesh(authored_mesh_from_uvs(
+                                points,
+                                uvs,
                                 &surface.indices,
                                 &surface.packed_channels,
                                 |v| placed_direction(placement, v),
                             )),
                             Transform::IDENTITY,
                         )
-                    } else if deformed.contains(&number) {
+                    } else if deforms {
                         (
-                            meshes.add(source_mesh(
+                            prepare_mesh(source_mesh_from_uvs(
                                 &surface.positions,
-                                &surface.uvs,
+                                uvs,
                                 &surface.indices,
                                 &surface.packed_channels,
-                                instance.to_matrix().determinant() < 0.0,
+                                flipped,
                             )),
                             instance,
                         )
@@ -811,47 +1053,24 @@ pub(super) fn prepare(
                                 .entry((
                                     placement.resource_path.clone(),
                                     surface_number,
-                                    instance.to_matrix().determinant() < 0.0,
+                                    flipped,
                                     skin_influences,
                                 ))
                                 .or_insert_with(|| {
-                                    meshes.add(source_mesh(
+                                    prepare_mesh(source_mesh_from_uvs(
                                         &surface.positions,
-                                        &surface.uvs,
+                                        uvs,
                                         &surface.indices,
                                         &surface.packed_channels,
-                                        instance.to_matrix().determinant() < 0.0,
+                                        flipped,
                                     ))
                                 })
                                 .clone(),
                             instance,
                         )
                     };
-                    retain_model_shadow_position(meshes, &mesh, &surface.positions);
-                    if let Some(mut mesh) = meshes.get_mut(&mesh) {
-                        // Physics-system skinning re-poses these every frame.
-                        if deformed.contains(&number) {
-                            mesh.asset_usage |= bevy::asset::RenderAssetUsages::MAIN_WORLD;
-                        }
-                        retain_skin_inputs(&mut mesh, surface);
-                        if skin_influences != 0 {
-                            match skinning.as_ref().map_err(Clone::clone).and_then(|skin| {
-                                apply_rest_pose(
-                                    &mut mesh,
-                                    surface,
-                                    &skin.matrices,
-                                    skin_influences,
-                                    placement,
-                                    world_baked,
-                                )
-                            }) {
-                                Ok(()) => {}
-                                Err(error) => eprintln!(
-                                    "Model rest pose pending {}: {error}",
-                                    placement.resource_path
-                                ),
-                            }
-                        }
+                    if repeated {
+                        initialize_mesh(meshes.get_mut(&mesh).expect("prepared skeletal mesh"));
                     }
                     vegetation_meshes.prepare(
                         resolver.needs_vegetation_channels(&mat.handle),
@@ -940,29 +1159,41 @@ pub(super) fn prepare(
             }
             continue;
         }
-        // Authoring helpers carry debug colours but are not visible objects.
-        if placement.resource_path.contains("/collisions/")
-            || placement.resource_path.contains("/templates/occlusion/")
-            || placement.resource_path.contains("/skiff_01_noswim")
-        {
-            continue;
-        }
-        let model = model_cache
-            .entry(placement.resource_path.clone())
-            .or_insert_with(|| {
-                let catalog = catalog.as_ref()?;
-                match bmodel::acquire(catalog, &placement.resource_path, common_models) {
-                    Ok(Some(model)) => Some(model),
-                    Ok(None) => {
-                        eprintln!("Model not indexed: {}", placement.resource_path);
-                        None
+        // Authoring helpers have no slot because they are not visible objects.
+        let path = placement.resource_path.as_str();
+        let slot = if retain_static_sources && uses_static_model(path) {
+            model_cache.entry(path).or_insert(StaticModelSlot {
+                last_placement: number, source: None, level_bytes: 0,
+            })
+        } else {
+            let Some(slot) = model_cache.get_mut(path) else { continue; };
+            slot
+        };
+        let StaticModelSlot { last_placement, source, level_bytes } = slot;
+        let model = source.get_or_insert_with(|| {
+            let catalog = catalog.as_ref()?;
+            match bmodel::acquire(catalog, path, common_models) {
+                Ok(Some(model)) => {
+                    if trace_model_staging && matches!(&model, bmodel::ModelSource::Level(_)) {
+                        *level_bytes = model.surfaces.iter().map(|s| capacity_bytes(&s.positions)
+                            + capacity_bytes(&s.uvs) + capacity_bytes(&s.packed_channels)
+                            + capacity_bytes(&s.indices)).sum();
+                        static_live_bytes += *level_bytes;
+                        static_decoded_bytes += *level_bytes;
+                        static_peak_bytes = static_peak_bytes.max(static_live_bytes);
                     }
-                    Err(error) => {
-                        eprintln!("Model acquisition failed {}: {error}", placement.resource_path);
-                        None
-                    }
+                    Some(model)
                 }
-            });
+                Ok(None) => {
+                    eprintln!("Model not indexed: {path}");
+                    None
+                }
+                Err(error) => {
+                    eprintln!("Model acquisition failed {path}: {error}");
+                    None
+                }
+            }
+        });
         let Some(model) = model else {
             continue;
         };
@@ -996,12 +1227,9 @@ pub(super) fn prepare(
             if material::is_null_material(material_path) {
                 continue;
             }
-            let points: Vec<Vec3> = surface
-                .positions
-                .iter()
-                .map(|&vertex| placed_vertex(placement, vertex))
-                .collect();
-            for &point in &points {
+            placed_points.fill(&surface.positions, |vertex| placed_vertex(placement, vertex));
+            let points = placed_points.points.as_slice();
+            for &point in points {
                 whole_world.add(point);
                 regions
                     .entry((point.x / 35.0).floor() as i32)
@@ -1015,14 +1243,30 @@ pub(super) fn prepare(
             ) else {
                 continue;
             };
-            let bounds = render_bounds(&points);
+            let bounds = render_bounds(points);
             let instance = placed_transform(placement);
-            let world_baked = needs_exact_world_mesh(&instance, &surface.positions, &points);
-            let (mesh, transform) = if world_baked {
+            let world_baked = needs_exact_world_mesh(&instance, &surface.positions, points);
+            let repeated = mesh_observation.repeated;
+            let mut initialize_mesh = |mesh: &mut Mesh| mesh_observation.prepare(0, || {
+                retain_model_shadow_position(mesh, &surface.positions);
+            });
+            let needs_vegetation = resolver.needs_vegetation_channels(&mat.handle);
+            let cached_common = if !world_baked && matches!(&*model, bmodel::ModelSource::Common(_)) {
+                common_meshes.as_deref_mut().filter(|common| common.enabled()).map(|common|
+                    common.acquire(path, surface_number, instance.to_matrix().determinant() < 0.0,
+                        needs_vegetation, surface, meshes, |mesh| initialize_mesh(mesh)))
+            } else { None };
+            let mut prepare_mesh = |mut mesh: Mesh| {
+                if !repeated { initialize_mesh(&mut mesh); }
+                meshes.add(mesh)
+            };
+            let (mesh, transform) = if let Some(common) = &cached_common {
+                (common.handle.clone(), instance)
+            } else if world_baked {
                 baked_shear_instances += 1;
                 (
-                    meshes.add(super::view_geometry::authored_mesh_from_uvs(
-                        &points,
+                    prepare_mesh(super::view_geometry::authored_mesh_from_uvs(
+                        points,
                         super::view_geometry::MeshUvs::Packed(&surface.uvs),
                         &surface.indices,
                         &surface.packed_channels,
@@ -1040,26 +1284,39 @@ pub(super) fn prepare(
                             0,
                         ))
                         .or_insert_with(|| {
-                            meshes.add(super::view_geometry::source_mesh_from_uvs(
+                            let mesh = super::view_geometry::source_mesh_from_uvs(
                                 &surface.positions,
                                 super::view_geometry::MeshUvs::Packed(&surface.uvs),
                                 &surface.indices,
                                 &surface.packed_channels,
                                 instance.to_matrix().determinant() < 0.0,
-                            ))
+                            );
+                            if trace_model_staging {
+                                if let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
+                                    mesh.attribute(super::view_geometry::PACKED_UV_0)
+                                {
+                                    packed_uv_pairs += uvs.len();
+                                    packed_uv_mismatches += surface.uvs.len().abs_diff(uvs.len())
+                                        + surface.uvs.iter().zip(uvs).filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits)).count();
+                                }
+                            }
+                            prepare_mesh(mesh)
                         })
                         .clone(),
                     instance,
                 )
             };
-            retain_model_shadow_position(meshes, &mesh, &surface.positions);
-            vegetation_meshes.prepare(
-                resolver.needs_vegetation_channels(&mat.handle),
-                &mesh,
-                meshes,
-                &surface.positions,
-                &surface.packed_channels,
-            );
+            if repeated {
+                initialize_mesh(meshes.get_mut(&mesh).expect("prepared static mesh"));
+            }
+            if let Some(common) = &cached_common {
+                if let Some(result) = &common.vegetation {
+                    vegetation_meshes.0.insert(mesh.id(), result.clone());
+                }
+            } else {
+                vegetation_meshes.prepare(needs_vegetation, &mesh, meshes,
+                    &surface.positions, &surface.packed_channels);
+            }
             render_instances.push(RenderInstance {
                 source: Some(RenderInstanceSource {
                     surface: RenderModelSurface::Bmodel {
@@ -1124,7 +1381,19 @@ pub(super) fn prepare(
                 });
             }
         }
+        if !retain_static_sources && *last_placement == number {
+            *source = None;
+            static_live_bytes -= *level_bytes;
+        }
     }
+    let static_resource_count = model_cache.len();
+    drop(model_cache);
+    if trace_model_staging {
+        let cycles = placement_start.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        eprintln!("STATIC_MODEL_STAGING retained={retain_static_sources} sources={static_resource_count} decoded_bytes={static_decoded_bytes} peak_bytes={static_peak_bytes} live_bytes={static_live_bytes} cycles={cycles}");
+    }
+    placed_points.report("placed-models");
     println!(
         "Initial BML/MD6 query groups: {}; constructor-default range models: {}; blueprint and surface bit40 producers remain unsupported",
         placed_model_queries.len(),
@@ -1149,11 +1418,11 @@ pub(super) fn prepare(
         records: resolver.probe_sh_buffer.clone(),
         indices: render_instances.iter().map(|instance| instance.probe_index).collect(),
     });
-    commands.insert_resource(super::model_motion::ModelProbeLighting(
-        resolver.probe_sh_buffer.clone(),
-    ));
+    check_cancelled()?;
     super::load_timing::mark("setup: placed models");
-    resolver.upload_probe_records();
+    if let Some(lighting) = resolver.upload_probe_records(writable_probe_start) {
+        commands.insert_resource(lighting);
+    }
     println!(
         "Shared geometry: {} world meshes and {} placed-model surfaces; {} world instances baked for shear",
         world_shadow_mesh_sources.shared_mesh_count,
@@ -1164,7 +1433,7 @@ pub(super) fn prepare(
     println!(
         "Placed models: {model_instances}/{} instances, {} unique resources, {model_surfaces} surfaces",
         root_placement_count,
-        model_cache.len()
+        static_resource_count
     );
     println!(
         "MD6 skeletal instances shown in compiled rest pose: {md6_rest_pose_instances}; joint animation is not implemented"
@@ -1172,28 +1441,9 @@ pub(super) fn prepare(
     // Host decoding scratch ends here, before later water/FX acquisition.
     // Runtime meshes/query/skinning owners already hold their required data;
     // as with input retirement at 14025aa00's exit, staging is not residency.
-    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-        let mut packed_uv_pairs = 0;
-        let mut packed_uv_mismatches = 0;
-        for ((path, surface, _, _), handle) in &model_mesh_handles {
-            let Some(model) = model_cache.get(path).and_then(Option::as_ref) else { continue; };
-            let Some(source) = model.surfaces.get(*surface) else { continue; };
-            let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
-                meshes.get(handle).and_then(|mesh| mesh.attribute(super::view_geometry::PACKED_UV_0))
-                else { continue; };
-            packed_uv_pairs += uvs.len();
-            packed_uv_mismatches += source.uvs.len().abs_diff(uvs.len())
-                + source.uvs.iter().zip(uvs).filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits)).count();
-        }
+    mesh_observation.report("MODEL_MESH_PREPARATION", meshes, &render_instances[placed_mesh_start..], common_meshes.as_deref());
+    if trace_model_staging {
         eprintln!("MEMORY BML1 packed UV preparation: pairs={packed_uv_pairs} mismatches={packed_uv_mismatches}");
-        fn capacity_bytes<T>(values: &Vec<T>) -> usize {
-            values.capacity() * std::mem::size_of::<T>()
-        }
-        let static_bytes: usize = model_cache.values().flatten()
-            .filter(|model| matches!(model, bmodel::ModelSource::Level(_)))
-            .flat_map(|model| &model.surfaces)
-            .map(|s| capacity_bytes(&s.positions) + capacity_bytes(&s.uvs)
-                + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)).sum();
         let skeletal_bytes: usize = md6_cache.values().flatten()
             .filter(|model| matches!(model, SceneSkeletalModel::Prepared(_)))
             .flat_map(|model| &model.surfaces)
@@ -1201,9 +1451,8 @@ pub(super) fn prepare(
                 + capacity_bytes(&s.packed_channels) + capacity_bytes(&s.indices)
                 + capacity_bytes(&s.skin_weights) + capacity_bytes(&s.skin_indices)).sum();
         eprintln!("MEMORY model staging retirement: static_resources={} skeletal_resources={} vertex_index_capacity_bytes={}",
-            model_cache.len(), md6_cache.len(), static_bytes + skeletal_bytes);
+            static_resource_count, md6_cache.len(), skeletal_bytes);
     }
-    drop(model_cache);
     drop(md6_cache);
     drop(model_sources);
     drop(physics_models);
@@ -1272,7 +1521,7 @@ pub(super) fn prepare(
     // not move the saved camera while comparing rendering at that same pose.
     let player = match (navigation.as_ref(), scene.player_start, catalog) {
         (Some(_), Some(start), Some(catalog)) if env::var_os("DH2_REPLAY_F8").is_none() => {
-            match super::player::load_player_setup_with_source(catalog, super::pause_menu::debug_character(), &mut player_declarations) {
+            match super::player::load_player_setup_with_source_cancellable(catalog, super::pause_menu::debug_character(), &mut player_declarations, Some(&|| check_cancelled().is_err())) {
                 Ok(setup) => {
                     let yaw = start.forward_xy[1].atan2(start.forward_xy[0]);
                     crate::gameplay::player::Player::new(setup, Vec3::from(start.position), yaw, reference_horizontal_fov)
@@ -1324,7 +1573,7 @@ pub(super) fn prepare(
                 probe.position,
                 distance,
                 probe.static_lighting_sh[0],
-                probes.secondary_resources.len(),
+                secondary_probe_count,
             );
         }
     }
@@ -1784,8 +2033,6 @@ pub(super) fn prepare(
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
     commands.insert_resource(ShadowModelBoundsSources(shadow_model_bounds));
     commands.insert_resource(shadow_updates::ModelShadowSources(model_shadow_sources));
-    commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
-    commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     let mut ocean_image_slots = Vec::new();
     let mut ocean_inline_slots = std::collections::HashSet::new();
     let mut particle_resources = crate::rendering::particles::definition::ParticleResources::default();
@@ -1814,6 +2061,7 @@ pub(super) fn prepare(
                 super::player::character_name(super::pause_menu::debug_character()), &mut particle_resources, &mut player_declarations)
                 .unwrap_or_else(|error|panic!("player screen effects: {error}"))
         ))));
+        commands.insert_resource(crate::rendering::bevy_backend::camera_scene::FxSimulation::default());
     }
     // World FX load after the water and ocean programs, as before. Particle
     // surface proxies may register further images: extend the tables.
@@ -1832,6 +2080,9 @@ pub(super) fn prepare(
         for error in surface_failures { eprintln!("Particle surface: {error}"); }
         particle_surfaces.extend(super::projected_decals::prepare(&sources, &scene.world, &render_instances,
             &mut resolver, meshes, commands));
+        let mut simulation = crate::rendering::bevy_backend::camera_scene::FxSimulation::default();
+        simulation.prepare_entity_graphs(graphs, &sources, live_entities)?;
+        commands.insert_resource(simulation);
         commands.insert_resource(crate::rendering::bevy_backend::world_effects::WorldEffectSources(sources));
     }
     commands.insert_resource(super::texture_streaming::environment_images::OceanImageSlots(ocean_image_slots));
@@ -1890,6 +2141,10 @@ pub(super) fn prepare(
     ));
     world_shadow_mesh_sources.release_cpu_copies(meshes);
     commands.insert_resource(world_shadow_mesh_sources);
+    // Water was the last CPU consumer of the installed geometry sections.
+    // The prepared meshes own their vertex and index data independently.
+    scene.world.meshes = Vec::new();
+    super::load_timing::mark("world geometry source released");
     let world_lods_by_render_instance = if trace_bwm_lod {
         render_instances
             .iter()
@@ -1921,8 +2176,8 @@ pub(super) fn prepare(
         trace_bwm_lod,
         world_lods_by_render_instance,
         last_bwm_lod_visibility_report: None,
-        diffuse_image_demands: (0..diffuse_image_count)
-            .map(|slot| texture::ProjectedAreaDemand::with_priority(resolver.cache.image_priority(slot)))
+        diffuse_image_demands: resolver.diffuse_image_paths.iter().enumerate()
+            .map(|(slot, path)| super::texture_streaming::image_demand(path, resolver.cache.image_priority(slot)))
             .collect(),
         diffuse_image_paths: std::mem::take(&mut resolver.diffuse_image_paths),
         diffuse_image_materials,
@@ -1943,16 +2198,21 @@ pub(super) fn prepare(
         diffuse_mip_upgrades: 0,
         preferred_mip,
     };
-    if let Some(catalog) = catalog {
-        super::load_timing::keep_load_list(catalog);
-    }
-    if let (Some(catalog), Some(shared)) = (catalog, shared_images) {
-        commands.insert_resource(super::texture_streaming::prepare_base_images(catalog, &render_queue, shared, resident_images, &ocean_inline_slots)
-            .unwrap_or_else(|error| panic!("Scene image acquisition failed: {error}")));
-    }
+    let base_reader = if let (Some(catalog), Some((shared, budget))) = (&catalog_storage, shared_images) {
+        let (prepared, reader) = super::texture_streaming::prepare_base_images(
+            catalog, &render_queue, shared, resident_images, &ocean_inline_slots, budget, check_cancelled,
+        )?;
+        commands.insert_resource(prepared);
+        reader
+    } else { None };
     resolver.cache.retire_staged_source();
     resolver.cache.report_source_handoff();
     resolver.cache.report_runtime_retention();
+    // Host handoff follows every material consumer, including particle and
+    // decal preparation (1fbad0/31ad30). Taking these owners earlier replaces
+    // their shared bindings with defaults while the resolver still uses them.
+    commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
+    commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     commands.insert_resource(super::runtime_materials::RuntimeMaterialOwner {
         bindings: runtime_material_bindings,
         cache: std::mem::take(&mut resolver.cache),
@@ -1978,15 +2238,8 @@ pub(super) fn prepare(
             }
         }
     });
-    // Every world mesh is uploaded and its shadow/water/probe inputs are
-    // built; the original keeps no CPU copy of uploaded world geometry.
-    for mesh in &mut scene.world.meshes {
-        mesh.positions = Vec::new();
-        mesh.uvs = Vec::new();
-        mesh.packed_channels = Vec::new();
-        mesh.indices = Vec::new();
-    }
     super::load_timing::mark("setup: end");
+    Ok(base_reader)
 }
 
 /// 1401fbad0 makes a particle mesh renderer an ordinary model surface of its

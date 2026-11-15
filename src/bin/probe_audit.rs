@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set.spatial.voronoi_version,
             set.spatial.cell_count,
             set.spatial.tetrahedra.len(),
-            set.spatial.vertices.len(),
+            set.spatial.vertex_positions.len(),
             probe_index_counts.1,
             probe_index_counts.0,
             started.elapsed().as_secs_f32()
@@ -211,10 +211,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for (vertex_slot, &vertex_index) in
                         tetrahedron.vertex_indices.iter().enumerate()
                     {
-                        let vertex = set.spatial.vertices[vertex_index as usize];
+                        let vertex = vertex_index as usize;
                         println!(
                             "  tetra vertex {vertex_slot}: index {vertex_index}, position {:?}, packed weights {:?}",
-                            vertex.position, vertex.probe_weights
+                            set.spatial.vertex_positions[vertex], set.spatial.vertex_probe_weights[vertex],
                         );
                     }
                 }

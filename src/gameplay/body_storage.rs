@@ -13,8 +13,10 @@ mod changes;
 pub use changes::{BodyActivation, BodyChange};
 #[path = "body_storage/activation.rs"]
 mod activation;
+pub(crate) use activation::AttachmentCellCursor;
 #[path = "body_storage/transform_distance.rs"]
 mod transform_distance;
+pub(crate) use transform_distance::TransformDistanceCursor;
 #[cfg(test)]
 pub(crate) use activation::tests::{initialize as activation_test_state, snapshot as activation_snapshot};
 
@@ -82,6 +84,56 @@ pub struct BodyStorage {
 }
 
 impl BodyStorage {
+    pub(crate) fn cancel_uninitialized_reservation(&mut self, id: u32) -> Result<(), String> {
+        let index = (id & 0x00ff_ffff) as usize;
+        let body = self.get(id).ok_or("reserved body is missing")?;
+        if body.status & 1 != 0 { return Err("body reservation was already initialized".into()); }
+        let count = self.active_count.checked_sub(1).ok_or("body count underflow")?;
+        let body = &mut self.bodies[index];
+        body.id |= 0x00ff_ffff;
+        body.motion_id = 0x7fff_ffff;
+        self.next_free[index] = self.free_head;
+        self.free_head = Some(index);
+        self.active_count = count;
+        Ok(())
+    }
+
+    pub(crate) fn verify_detached(&self, id: u32) -> Result<(), String> {
+        let index = (id & 0x00ff_ffff) as usize;
+        if index == 0 { return Err("cannot release the static anchor body".into()); }
+        let body = self.get(id).ok_or("released body ID is stale")?;
+        // c8f080 clears pending-addition flags but keeps the change record and
+        // its index for the normal change-list owner to retire later.
+        let change = *self.change_indices.get(index).ok_or("released body change index is missing")?;
+        let pending = if change == u32::MAX { false } else {
+            self.changes.get(change as usize).ok_or("released body change is missing")?.flags & 3 != 0
+        };
+        if body.broadphase_id != u32::MAX || body.active_list_index != u32::MAX
+            || (body.motion_id != 0 && body.motion_id != 0x7fff_ffff)
+            || pending {
+            return Err("body must be removed from its world and motion before release".into());
+        }
+        Ok(())
+    }
+
+    /// 140caea70 returns a fully detached body slot to its existing free list.
+    pub(crate) fn release_detached(&mut self, id: u32) -> Result<(), String> {
+        self.verify_detached(id)?;
+        let index = (id & 0x00ff_ffff) as usize;
+        let next_count = self.active_count.checked_sub(1).ok_or("body count underflow")?;
+        if let Some(name) = self.names.get_mut(index) { *name = None; }
+        if let Some(properties) = self.mass_properties.get_mut(index) { *properties = BodyMassProperties::default(); }
+        self.mass_distributions.remove(&index);
+        let body = &mut self.bodies[index];
+        body.flags &= !0xf;
+        body.id |= 0x00ff_ffff;
+        body.motion_id = 0x7fff_ffff;
+        self.next_free[index] = self.free_head;
+        self.free_head = Some(index);
+        self.active_count = next_count;
+        Ok(())
+    }
+
     /// Slot zero is the world's permanent static anchor; real reservations
     /// start at slot one. The capacity is supplied by the world configuration.
     /// An anchor-only buffer has no free slots (zero acoustic volumes).

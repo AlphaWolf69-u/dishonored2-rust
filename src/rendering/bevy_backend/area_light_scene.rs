@@ -22,14 +22,26 @@ pub(super) struct AreaLightScene {
     pub packets: Arc<Vec<[u32; 28]>>,
     source: Option<Arc<Vec<[u32; 28]>>>,
     camera: Option<Entity>,
+    empty_tiles: Option<(Buffer, Buffer, Buffer)>,
 }
 impl AreaLightScene {
+    fn remember_empty_tiles(&mut self, bindings: &bevy::pbr::AreaLightBindings) {
+        self.empty_tiles.get_or_insert_with(|| (bindings.records.clone(), bindings.heads.clone(), bindings.pool.clone()));
+    }
+
     pub(super) fn release_level(world: &mut World) {
-        let mut scene = world.resource_mut::<Self>();
-        let images = scene.pool.as_mut().map_or(0, AreaLightPool::release_images);
-        scene.packets = Default::default();
-        scene.source = None;
-        scene.camera = None;
+        let (images, empty_tiles) = {
+            let mut scene = world.resource_mut::<Self>();
+            let images = scene.pool.as_mut().map_or(0, AreaLightPool::release_images);
+            scene.packets = Default::default();
+            scene.source = None;
+            scene.camera = None;
+            (images, scene.empty_tiles.clone())
+        };
+        if let Some((records, heads, pool)) = empty_tiles {
+            let queue = world.resource::<RenderQueue>().clone();
+            world.resource_mut::<bevy::pbr::AreaLightBindings>().publish_tiles(&queue, records, heads, pool, [0; 4]);
+        }
         if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
             eprintln!("MEMORY area-light release: image_handles={images}");
         }
@@ -86,6 +98,7 @@ fn prepare(
     if scene.matches(&frame) {
         return;
     }
+    scene.remember_empty_tiles(&bindings);
     let result = (|| -> Result<(), String> {
         if frame.camera.is_none() {
             return Err("area lights await a camera publication".into());
@@ -134,4 +147,43 @@ fn prepare(
             }
         }
     }
+}
+
+/// Observe the actual TLF allocations and the forward publisher without a view.
+pub(crate) fn observe_tile_retirement(world: &mut World) -> Result<(), String> {
+    use super::tiled_lighting_pass::TiledLightingPass;
+    use bevy::pbr::AreaLightBindings;
+
+    world.init_resource::<AreaLightScene>();
+    world.init_resource::<AreaLightBindings>();
+    let device = world.resource::<RenderDevice>().clone();
+    let queue = world.resource::<RenderQueue>().clone();
+    let bindings = world.resource::<AreaLightBindings>();
+    let ids = |bindings: &AreaLightBindings| [bindings.records.id(), bindings.heads.id(), bindings.pool.id()];
+    let fallback = ids(bindings);
+    world.resource_scope(|world, mut scene: Mut<AreaLightScene>| {
+        scene.remember_empty_tiles(world.resource::<AreaLightBindings>());
+    });
+    let pipelines = TlfPipelines::from_world(world);
+    let grid = crate::tiled_lighting::TileGrid::new(1920, 1080, 16)?;
+    let pass = TiledLightingPass::new(&device, &pipelines, grid);
+    let bytes = pass.lights.size() + pass.normal_heads.size() + pass.buffers.pool.size();
+    world.resource_mut::<AreaLightBindings>().publish_tiles(&queue, pass.lights.clone(),
+        pass.normal_heads.clone(), pass.buffers.pool.clone(), [grid.dimensions[0], grid.lighting_shift, 1, 1]);
+    drop(pass);
+    let report = |phase| -> Result<(), String> {
+        device.poll(PollType::Wait { submission_index: Some(queue.submit([])), timeout: None })
+            .map_err(|error| error.to_string())?;
+        if let Some(allocations) = device.wgpu_device().generate_allocator_report() {
+            for allocation in allocations.allocations.into_iter().filter(|entry| entry.name.starts_with("TLF ")) {
+                eprintln!("AREA_TILE_ALLOCATION phase={phase} label={:?} bytes={}", allocation.name, allocation.size);
+            }
+        }
+        Ok(())
+    };
+    report("forward-owner")?;
+    AreaLightScene::release_level(world);
+    report("released")?;
+    eprintln!("AREA_TILE_RETIREMENT restored={} logical_bytes={bytes}", ids(world.resource::<AreaLightBindings>()) == fallback);
+    Ok(())
 }

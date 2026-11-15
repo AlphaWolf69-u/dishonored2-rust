@@ -15,6 +15,24 @@ pub mod camera_view;
 #[cfg(feature = "game")]
 pub mod camera_scene;
 
+/// Mirror absence as well as changes for map-owned render publications.
+#[cfg(feature = "game")]
+pub(crate) fn extract_level_resource<R>(
+    mut commands: bevy::prelude::Commands,
+    source: bevy::render::Extract<Option<bevy::prelude::Res<R::Source>>>,
+    target: Option<bevy::prelude::ResMut<R>>,
+) where
+    R: bevy::render::extract_resource::ExtractResource<Mutability = bevy::ecs::component::Mutable>,
+{
+    use bevy::prelude::DetectChanges;
+    match (source.as_ref(), target) {
+        (Some(source), Some(mut target)) if source.is_changed() => *target = R::extract_resource(source),
+        (Some(source), None) => commands.insert_resource(R::extract_resource(source)),
+        (None, Some(_)) => commands.remove_resource::<R>(),
+        _ => {}
+    }
+}
+
 /// Host world/view references release before destination resources are
 /// acquired. Global programs and viewport-only reusable storage remain.
 #[cfg(feature = "game")]
@@ -24,17 +42,23 @@ pub(crate) fn release_level(world: &mut bevy::prelude::World) {
     camera_scene::release_level(world);
     fog_scene::FogGpu::release_level(world);
     display_scene::release_level(world);
+    display_capture::DisplayCaptureGpu::release_level(world);
     auto_exposure::release_level(world);
+    alpha_depth_scene::AlphaGpu::release_level(world);
+    coarse_depth::CoarseDepthGpu::release_level(world);
     if std::env::var("DH2_DEBUG_RETAIN_WORLD_BINDINGS").as_deref() != Ok("1") {
         area_light_scene::AreaLightScene::release_level(world);
         screen_shadow_pass::ScreenGpu::release_level(world);
         projected_decals::release_level(world);
+        particle_meshes::release_level(world);
         let mut draws = world.resource_mut::<bevy::pbr::DirectInstanceDraws>();
         draws.entities.clear();
         draws.bind_group = None;
         draws.bind_groups.clear();
     }
 }
+#[cfg(feature = "game")]
+pub(crate) mod readback_lifecycle;
 #[cfg(feature = "game")]
 pub mod camera_alpha_colours;
 #[cfg(feature = "game")]
@@ -83,7 +107,7 @@ pub mod coarse_depth;
 #[cfg(feature = "game")]
 pub mod area_light_pool;
 #[cfg(feature = "game")]
-mod area_light_scene;
+pub(crate) mod area_light_scene;
 #[cfg(feature = "game")]
 pub mod shader_buffer_patches;
 #[cfg(feature = "game")]

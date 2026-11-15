@@ -17,6 +17,7 @@ use bevy::{
 };
 pub use sources::ScreenEffectSources;
 pub(super) use state::ScreenEffectState;
+pub(crate) use state::ScreenLifecycleSnapshot;
 use std::sync::Arc;
 
 #[derive(Resource, Clone, Default, ExtractResource)]

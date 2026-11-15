@@ -18,7 +18,7 @@ pub struct ScreenQuadAsset {
     pub enabled: bool,
     pub material: Option<String>,
     pub stage: ScreenQuadStage,
-    pub blend: EnvironmentEffectDefinition,
+    pub blend: std::sync::Arc<EnvironmentEffectDefinition>,
 }
 
 pub fn screen_quad(fields: &[(String, Value)]) -> Result<ScreenQuadAsset, String> {
@@ -27,10 +27,8 @@ pub fn screen_quad(fields: &[(String, Value)]) -> Result<ScreenQuadAsset, String
     // partial-edit reader rather than introducing a second envelope format.
     let common = fields
         .iter()
-        .filter(|(name, _)| !matches!(name.as_str(), "m_material" | "m_stage"))
-        .cloned()
-        .collect::<Vec<_>>();
-    let common = environment_effect(&common)?;
+        .filter(|(name, _)| !matches!(name.as_str(), "m_material" | "m_stage"));
+    let common = environment_effect_fields(common)?;
     let mut result = ScreenQuadAsset {
         name: common.name,
         enabled: common.enabled,

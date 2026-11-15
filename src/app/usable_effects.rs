@@ -48,7 +48,7 @@ pub(super) struct DynamicDecalMaterials {
     pub retirement: u64,
     pub sources: Arc<Sources>,
     pub leases: Arc<Vec<Weak<Sources>>>,
-    pub prepared_generation: u64,
+    pub prepared_generation: Option<u64>,
     pub prepared_revision: u64,
     pub prepared: Arc<Vec<super::runtime_materials::PreparedDecal>>,
     pub gpu_completed: Arc<std::sync::atomic::AtomicU64>,
@@ -64,6 +64,11 @@ impl ParticleResourceOwner {
 
 type Sources = crate::rendering::particles::world_sources::WorldFxSources;
 type Acquisition = Task<Result<Arc<Sources>, String>>;
+
+struct PendingSource {
+    task: Mutex<Acquisition>,
+    cancelled: Arc<AtomicBool>,
+}
 
 struct Wanted {
     path: String,
@@ -104,7 +109,8 @@ pub(super) struct UsableEffects {
     pub(super) placements: HashMap<EffectOwner, super::interactions::EffectSpawn>,
     pub(super) ready: HashMap<EffectOwner, Arc<Sources>>,
     cache: HashMap<String, Weak<Sources>>,
-    loading: HashMap<String, Mutex<Acquisition>>,
+    loading: HashMap<String, PendingSource>,
+    retiring: Vec<Mutex<Acquisition>>,
     completed: Vec<(String, Result<Arc<Sources>, String>)>,
     pub(super) revision: u64,
     next_revision: u64,
@@ -124,7 +130,37 @@ impl Drop for UsableEffects {
 }
 
 impl UsableEffects {
+    /// Stop desired publication; already-running particle/sound tails retain
+    /// their own immutable source leases until the shared FX owner finishes.
+    pub(super) fn stop_usable(&mut self, index: usize) {
+        let actor = EffectOwner::Usable(index);
+        self.wanted.remove(&actor);
+        if self.ready.remove(&actor).is_some() { self.retirement = self.retirement.wrapping_add(1); }
+        self.placements.remove(&actor);
+        self.revision = self.revision.wrapping_add(1);
+        self.cleanup_dirty = true;
+    }
     pub(super) fn cancellation_token(&self) -> Arc<AtomicBool> { self.cancelled.clone() }
+
+    pub(super) fn close_acquisitions(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        let still_running = |task: &mut Mutex<Acquisition>| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none()
+        };
+        self.loading.retain(|_, pending| still_running(&mut pending.task));
+        self.retiring.retain_mut(still_running);
+        if let Some(cleanup) = &mut self.cleanup {
+            let cleanup = cleanup.get_mut().unwrap_or_else(|error| error.into_inner());
+            if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(cleanup)).is_some() {
+                self.cleanup = None;
+            }
+        }
+        self.loading.is_empty() && self.retiring.is_empty() && self.cleanup.is_none()
+    }
 
     fn request(
         &mut self,
@@ -138,64 +174,81 @@ impl UsableEffects {
         self.next_revision = self.next_revision.wrapping_add(1);
         self.wanted.insert(actor.clone(), Wanted { path: path.clone(), revision: self.next_revision });
         self.revision = self.revision.wrapping_add(1);
+        let cached = self.cache.get(&path).and_then(Weak::upgrade);
         if self.ready.remove(&actor).is_some() {
             self.retirement = self.retirement.wrapping_add(1);
             self.cleanup_dirty = true;
         }
-        if world.effects.get(&path).is_some_and(Result::is_ok) {
-            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() { eprintln!("FX_LIFECYCLE source=world effect={path}"); }
-            match world.subset(&path) {
-                Ok(source) => { self.ready.insert(actor, Arc::new(source)); return; }
-                Err(error) => { bevy::log::warn!("Usable effect {path} dependencies unavailable: {error}"); }
-            }
-        }
-        if let Some(source) = self.cache.get(&path).and_then(Weak::upgrade) {
+        if let Some(source) = cached {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() { eprintln!("FX_LIFECYCLE source=weak effect={path}"); }
             self.ready.insert(actor, source);
             return;
         }
+        if world.effects.get(&path).is_some_and(Result::is_ok) {
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() { eprintln!("FX_LIFECYCLE source=world effect={path}"); }
+            match world.subset(&path) {
+                Ok(source) => {
+                    let source = Arc::new(source);
+                    self.cache.insert(path, Arc::downgrade(&source));
+                    self.ready.insert(actor, source);
+                    return;
+                }
+                Err(error) => { bevy::log::warn!("Usable effect {path} dependencies unavailable: {error}"); }
+            }
+        }
         if self.loading.contains_key(&path) { return; }
         let name = path.clone();
-        let cancelled = self.cancelled.clone();
+        let level_closed = self.cancelled.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
         let programs = programs.0.clone();
         let resources = resources.0.clone();
-        self.loading.insert(path, Mutex::new(IoTaskPool::get().spawn(async move {
+        let task = IoTaskPool::get().spawn(async move {
             let started = crate::rendering::bevy_backend::world_effects::trace_lifecycle().then(std::time::Instant::now);
-            if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
+            let cancelled = || level_closed.load(Ordering::Acquire) || stop.load(Ordering::Acquire);
+            if cancelled() { return Err("effect acquisition cancelled".into()); }
             let mut programs = programs.lock().unwrap_or_else(|error| error.into_inner());
             let programs = programs.as_mut().map_err(|error| error.clone())?;
+            if cancelled() { return Err("effect acquisition cancelled".into()); }
             let mut resources = resources.lock().unwrap_or_else(|error| error.into_inner());
-            if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
-            let sources = Sources::load_named_shared(vec![name.clone()], &catalog, programs, &mut resources);
+            let sources = Sources::load_named_cancellable(vec![name.clone()], &catalog, programs, &mut resources, cancelled)?;
             sources.effects.get(&name).ok_or_else(|| format!("effect {name} was not acquired"))?
                 .as_ref().map_err(Clone::clone)?;
-            if cancelled.load(Ordering::Acquire) { return Err("level unloaded".into()); }
             if let Some(started) = started {
                 eprintln!("FX_LIFECYCLE source=io effect={name} definitions={} acquire_ms={:.3}",
                     sources.effects.len(), started.elapsed().as_secs_f64() * 1000.0);
             }
             Ok(Arc::new(sources))
-        })));
+        });
+        self.loading.insert(path, PendingSource { task: Mutex::new(task), cancelled });
     }
 
     fn cancel_unwanted_acquisitions(&mut self) {
-        let before = self.loading.len();
         let wanted = &self.wanted;
-        self.loading.retain(|path, _| wanted.values().any(|request| &request.path == path));
-        if self.loading.len() != before {
-            self.cleanup_dirty = true;
-            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
-                eprintln!("FX_LIFECYCLE source_acquisitions_cancelled={}", before - self.loading.len());
-            }
+        let before = self.retiring.len();
+        for (_, pending) in self.loading.extract_if(|path, _| !wanted.values().any(|request| &request.path == path)) {
+            pending.cancelled.store(true, Ordering::Release);
+            self.retiring.push(pending.task);
+        }
+        if self.retiring.len() != before && crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+            eprintln!("FX_LIFECYCLE source_acquisitions_cancelled={}", self.retiring.len() - before);
         }
     }
 
     fn poll(&mut self) {
+        let retiring = self.retiring.len();
+        self.retiring.retain_mut(|task| {
+            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none()
+        });
+        // The cancelled decoder and its output have dropped. A prune can now
+        // retire their dependencies even if a previous prune already ran.
+        self.cleanup_dirty |= self.retiring.len() != retiring;
         if self.loading.is_empty() { return; }
         self.completed.clear();
         let completed = &mut self.completed;
-        self.loading.retain(|name, task| {
-            let task = task.get_mut().unwrap_or_else(|error| error.into_inner());
+        self.loading.retain(|name, pending| {
+            let task = pending.task.get_mut().unwrap_or_else(|error| error.into_inner());
             if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
                 completed.push((name.clone(), result));
                 false
@@ -227,7 +280,6 @@ impl UsableEffects {
                 }
             }
         }
-        self.cache.retain(|_, sources| sources.strong_count() != 0);
     }
 }
 
@@ -246,12 +298,11 @@ pub(super) fn prepare_requests(
 ) {
     let (Some(mut owner), Some(programs), Some(resources), Some(world), Some(catalog)) =
         (owner, programs, resources, world, scene.catalog.as_ref()) else { return };
-    if !owner.loading.is_empty() { owner.poll(); }
+    if !owner.loading.is_empty() || !owner.retiring.is_empty() { owner.poll(); }
     let retired = prewarm.retired_signal.load(Ordering::Acquire);
     if retired != owner.seen_retired {
         owner.seen_retired = retired;
         owner.cleanup_dirty = true;
-        owner.cache.retain(|_, source| source.strong_count() != 0);
     }
     if owner.cleanup.is_some() {
         let task = owner.cleanup.as_mut().unwrap().get_mut().unwrap_or_else(|error| error.into_inner());
@@ -259,6 +310,7 @@ pub(super) fn prepare_requests(
     }
     if owner.cleanup_dirty && owner.cleanup.is_none() {
         owner.cleanup_dirty = false;
+        owner.cache.retain(|_, source| source.strong_count() != 0);
         let resources = resources.0.clone();
         let cancelled = owner.cancelled.clone();
         owner.cleanup = Some(Mutex::new(IoTaskPool::get().spawn(async move {
@@ -274,11 +326,7 @@ pub(super) fn prepare_requests(
         for change in &mut interactions.pending {
             let actor = EffectOwner::Usable(change.actor);
             if change.stop_effect {
-                owner.wanted.remove(&actor);
-                if owner.ready.remove(&actor).is_some() { owner.retirement = owner.retirement.wrapping_add(1); }
-                owner.placements.remove(&actor);
-                owner.revision = owner.revision.wrapping_add(1);
-                owner.cleanup_dirty = true;
+                owner.stop_usable(change.actor);
                 change.stop_effect = false;
             }
             if let Some(spawn) = change.start_effect.take() {
@@ -308,6 +356,111 @@ pub(super) fn prepare_requests(
     if owner.revision != previous_revision && !owner.loading.is_empty() {
         owner.cancel_unwanted_acquisitions();
     }
+}
+
+/// Observe installed source leases through the same request and publication
+/// systems as gameplay. No simulation, player input, audio, or draw runs.
+pub(super) fn inspect_source_requests(world: &mut bevy::prelude::World, effect: &str) -> Result<(), String> {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::rendering::bevy_backend::{particle_images::SceneParticleImages,
+        world_effects::{DynamicEffects, DynamicMaterialPrewarm, WorldEffectSources}, world_sounds::WorldSounds};
+
+    world.init_resource::<EffectRequests>();
+    world.init_resource::<DynamicMaterialPrewarm>();
+    world.init_resource::<DynamicEffects>();
+    world.init_resource::<SceneParticleImages>();
+    world.init_resource::<WorldSounds>();
+    let first_key = "resource-observer-a";
+    let second_key = "resource-observer-b";
+    let first = EffectOwner::Player(first_key.into());
+    let second = EffectOwner::Player(second_key.into());
+    let sources = world.get_resource::<WorldEffectSources>().ok_or("scene did not publish world FX sources")?;
+    if sources.0.effects.contains_key(effect) {
+        return Err(format!("{effect} is already in the scene's FX sources"));
+    }
+    let advance = |world: &mut bevy::prelude::World| -> Result<(), String> {
+        world.run_system_once(prepare_requests).map_err(|error| format!("FX requests: {error:?}"))?;
+        world.run_system_once(publish).map_err(|error| format!("FX publication: {error:?}"))
+    };
+    let drain = |world: &mut bevy::prelude::World| -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            advance(world)?;
+            let owner = world.resource::<UsableEffects>();
+            if owner.loading.is_empty() && owner.retiring.is_empty() && owner.cleanup.is_none() && !owner.cleanup_dirty {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline { return Err("FX acquisition did not settle".into()); }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+
+    {
+        let mut requests = world.resource_mut::<EffectRequests>();
+        requests.start_player(first_key, effect);
+        requests.stop_player(first_key);
+    }
+    advance(world)?;
+    let retiring = world.resource::<UsableEffects>().retiring.len();
+    drain(world)?;
+    let owner = world.resource::<UsableEffects>();
+    eprintln!("RESOURCE_FX_REQUEST phase=cancelled admitted={retiring} ready={} retiring={} cached={}",
+        owner.ready.len(), owner.retiring.len(), owner.cache.len());
+
+    world.resource_mut::<EffectRequests>().start_player(first_key, effect);
+    drain(world)?;
+    let source = world.resource::<UsableEffects>().ready.get(&first).map(Arc::downgrade)
+        .ok_or_else(|| format!("{effect} did not acquire a source"))?;
+    world.resource_mut::<EffectRequests>().start_player(second_key, effect);
+    drain(world)?;
+    let owner = world.resource::<UsableEffects>();
+    let shared = owner.ready.get(&second).is_some_and(|second| Weak::ptr_eq(&source, &Arc::downgrade(second)));
+    eprintln!("RESOURCE_FX_REQUEST phase=overlap ready={} shared={shared} cached={}", owner.ready.len(), owner.cache.len());
+    {
+        let mut requests = world.resource_mut::<EffectRequests>();
+        requests.stop_player(first_key);
+        requests.stop_player(second_key);
+    }
+    drain(world)?;
+    let owner = world.resource::<UsableEffects>();
+    eprintln!("RESOURCE_FX_REQUEST phase=released ready={} cached={} source_leases={}",
+        owner.ready.len(), owner.cache.len(), source.strong_count());
+
+    world.resource_mut::<EffectRequests>().start_player(first_key, effect);
+    advance(world)?;
+    let admitted = world.resource::<UsableEffects>().loading.len();
+    let texture = super::texture_streaming::observe_level_acquisition(world);
+    let readable_request = {
+        let mut request = None;
+        if let (Some(interactions), Some(physics), Some(live)) = (
+            world.get_resource::<super::interactions::Interactions>(),
+            world.get_resource::<super::physics_scene::PhysicsScene>(),
+            world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>(),
+        ) {
+            for (index, readable) in interactions.readable.iter().enumerate() {
+                if let Some((identity, item)) = physics.readable_item(&readable.entity, live)? {
+                    request = Some((index, identity, item));
+                    break;
+                }
+            }
+        }
+        request
+    };
+    let readable = if let Some((index, identity, item)) = readable_request {
+        world.resource_mut::<super::interactions::Interactions>().request_readable(index, identity, item);
+        true
+    } else { false };
+    let rig = super::usable_animation::observe_level_acquisition(world);
+    super::level_lifetime::close_level_acquisitions(world);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !super::level_lifetime::retire_level_acquisitions(world) {
+        if std::time::Instant::now() >= deadline { return Err("outgoing FX worker did not retire".into()); }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let owner = world.resource::<UsableEffects>();
+    eprintln!("RESOURCE_FX_REQUEST phase=map_retirement admitted={admitted} readable={readable} rig={rig} texture={texture} loading={} retiring={} ready={} cached={}",
+        owner.loading.len(), owner.retiring.len(), owner.ready.len(), owner.cache.len());
+    Ok(())
 }
 
 /// Publish shared immutable sources first so the existing audio and image
@@ -425,4 +578,195 @@ pub(super) fn publish(
             || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)) {
         owner.published_active_revision = Some(owner.revision);
     }
+}
+
+
+/// Read-only, per-request lifecycle diagnostic. No readiness or failure value
+/// is manufactured: all tuples contain the existing generation atomics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AdmissionSnapshot {
+    pub queued: bool,
+    pub wanted: bool,
+    pub loading: bool,
+    pub ready: bool,
+    pub active: bool,
+    pub revision: u64,
+    pub wanted_revision: Option<u64>,
+    pub published_revision: Option<u64>,
+    pub published_active_revision: Option<u64>,
+    pub prewarm: (u64, u64, u64),
+    /// generation, completed, failed, GPU completed, image revision, images ready
+    pub world: (u64, u64, u64, u64, u64, u64),
+    /// generation, completed, failed, GPU completed, prepared generation/revision/count
+    pub decal: (u64, u64, u64, u64, Option<u64>, u64, usize),
+    pub coordinator: super::runtime_materials::CoordinatorSnapshot,
+    pub source_world_meshes: usize,
+    pub source_decal_materials: usize,
+    pub image_memberships: usize,
+    pub missing_images: Vec<String>,
+    pub sounds_ready: bool,
+    pub sound_memberships: usize,
+    pub missing_sounds: Vec<String>,
+    pub prepared_errors: Vec<String>,
+}
+pub(super) fn observe_admission(world: &bevy::prelude::World, name: &str, path: &str)
+    -> Result<AdmissionSnapshot, String> {
+    use crate::rendering::bevy_backend::{world_effects::{DynamicEffects, DynamicMaterialPrewarm},
+        particle_images::SceneParticleImages, world_sounds::WorldSounds};
+    let owner = world.get_resource::<UsableEffects>().ok_or("FX admission observation has no request owner")?;
+    let requests = world.get_resource::<EffectRequests>().ok_or("FX admission observation has no command queue")?;
+    let prewarm = world.get_resource::<DynamicMaterialPrewarm>().ok_or("FX admission observation has no particle prewarm owner")?;
+    let materials = world.get_resource::<DynamicWorldMaterials>().ok_or("FX admission observation has no world material owner")?;
+    let decals = world.get_resource::<DynamicDecalMaterials>().ok_or("FX admission observation has no decal material owner")?;
+    let images = world.get_resource::<SceneParticleImages>().ok_or("FX admission observation has no particle image owner")?;
+    let active = world.get_resource::<DynamicEffects>().ok_or("FX admission observation has no active publication")?;
+    let bridge = world.get_resource::<WorldSounds>().ok_or("FX admission observation has no FX sound owner")?.lock();
+    let key = EffectOwner::Player(name.to_owned());
+    let wanted = owner.wanted.get(&key);
+    let source = owner.ready.get(&key);
+    let mut missing_images = Vec::new();
+    let mut missing_sounds = Vec::new();
+    let mut prepared_errors = Vec::new();
+    let mut image_memberships = 0;
+    let mut source_world_meshes = 0;
+    let mut source_decal_materials = 0;
+    let mut sound_memberships = 0;
+    if let Some(source) = source {
+        source_world_meshes = source.world_meshes().len();
+        source_decal_materials = source.decal_materials().len();
+        if !source.effects.contains_key(path) { prepared_errors.push(format!("requested definition {path} absent from prepared source")); }
+        for image in source.particle_materials().flat_map(|material| material.images.values()).filter(|image| image.scene_owned) {
+            image_memberships += 1;
+            if !images.handles.contains_key(&image.path) { missing_images.push(image.path.to_string()); }
+        }
+        for (name, definition) in &source.effects {
+            match definition {
+                Err(error) => prepared_errors.push(format!("{name}: {error}")),
+                Ok(definition) => for event in definition.groups.iter().flat_map(|group| &group.sounds)
+                    .flat_map(|sound| [&sound.start, &sound.stop]).flatten() {
+                    sound_memberships += 1;
+                    match bridge.events.get(&event.name) {
+                        None => missing_sounds.push(event.name.clone()),
+                        Some(Err(error)) => prepared_errors.push(format!("sound {}: {error}", event.name)),
+                        Some(Ok(_)) => {},
+                    }
+                },
+            }
+        }
+    }
+    missing_images.sort(); missing_images.dedup();
+    missing_sounds.sort(); missing_sounds.dedup();
+    prepared_errors.sort(); prepared_errors.dedup();
+    Ok(AdmissionSnapshot {
+        queued: requests.0.iter().any(|request| matches!(request, EffectRequest::StartPlayer { owner, path: requested } if owner == name && requested == path)),
+        wanted: wanted.is_some_and(|wanted| wanted.path == path),
+        loading: owner.loading.contains_key(path), ready: source.is_some(),
+        active: active.0.iter().any(|entry| entry.owner == format!("player:{name}") && entry.effect == path),
+        revision: owner.revision, wanted_revision: wanted.map(|wanted| wanted.revision),
+        published_revision: owner.published_revision, published_active_revision: owner.published_active_revision,
+        prewarm: (prewarm.generation, prewarm.completed.load(Ordering::Acquire), prewarm.failed.load(Ordering::Acquire)),
+        world: (materials.generation, materials.completed.load(Ordering::Acquire), materials.failed.load(Ordering::Acquire),
+            materials.gpu_completed.load(Ordering::Acquire), materials.image_revision, materials.images_ready),
+        decal: (decals.generation, decals.completed.load(Ordering::Acquire), decals.failed.load(Ordering::Acquire),
+            decals.gpu_completed.load(Ordering::Acquire), decals.prepared_generation, decals.prepared_revision, decals.prepared.len()),
+        coordinator: super::runtime_materials::observe_coordinator(world)?, source_world_meshes, source_decal_materials,
+        image_memberships, missing_images, sounds_ready: bridge.ready, sound_memberships, missing_sounds, prepared_errors,
+    })
+}
+
+
+/// Opt-in lifecycle observer only. Inspect the existing requested proxies and
+/// borrow the real asset owners; do not acquire assets or alter visibility.
+pub(super) fn publish_proxy_observation(world: &mut bevy::prelude::World) {
+    use bevy::{asset::VisitAssetDependencies, prelude::*, render::sync_world::RenderEntity};
+    use crate::rendering::bevy_backend::projected_decals::{DynamicProxyReadiness, ProxyMainObservation};
+    let Some(request) = world.get_resource::<DynamicProxyReadiness>() else { return };
+    let mut ids = request.decals.proxies.iter().chain(request.world_meshes.proxies.iter()).copied().collect::<Vec<_>>();
+    ids.sort_unstable(); ids.dedup();
+    let observations = ids.into_iter().map(|entity| {
+        let mesh = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.id());
+        let material = world.get::<MeshMaterial3d<super::ProbeMaterial>>(entity).map(|material| material.0.id());
+        let mesh_asset = mesh.and_then(|mesh| world.get_resource::<Assets<Mesh>>().and_then(|assets| assets.get(mesh)));
+        let material_asset = material.and_then(|material| world.get_resource::<Assets<super::ProbeMaterial>>().and_then(|assets| assets.get(material)));
+        let mut images = Vec::new();
+        let mut buffers = Vec::new();
+        let mut base_other_dependencies = Vec::new();
+        if let Some(material) = material_asset {
+            material.base.visit_dependencies(&mut |id| {
+                match id.try_typed::<Image>() {
+                    Ok(id) => images.push((format!("base:{}", images.len()), id,
+                        world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(id).is_some()))),
+                    Err(_) => base_other_dependencies.push(id),
+                }
+            });
+            let extension = &material.extension;
+            if let Some(handle) = &extension.fog_world { images.push(("fog_world".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fog_canvas { images.push(("fog_canvas".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fog_curve { images.push(("fog_curve".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fog_depth { images.push(("fog_depth".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.reflection_brdf_lookup { images.push(("reflection_brdf_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.reflections { images.push(("reflections".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.local_shadow_map { images.push(("local_shadow_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.shadow_map { images.push(("shadow_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.screen_map { images.push(("screen_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_map { images.push(("cloud_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse0 { images.push(("diffuse0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse1 { images.push(("diffuse1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse2 { images.push(("diffuse2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.bump0 { images.push(("bump0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.bump1 { images.push(("bump1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.bump2 { images.push(("bump2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.gloss0 { images.push(("gloss0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.gloss1 { images.push(("gloss1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.gloss2 { images.push(("gloss2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.metallic0 { images.push(("metallic0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.metallic1 { images.push(("metallic1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.metallic2 { images.push(("metallic2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.mask0 { images.push(("mask0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.mask1 { images.push(("mask1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.mask2 { images.push(("mask2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.specular0 { images.push(("specular0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.specular1 { images.push(("specular1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.specular2 { images.push(("specular2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.detail_bump { images.push(("detail_bump".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.emissive_map { images.push(("emissive_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.emissive_mask { images.push(("emissive_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.anisotropic_sampler_image { images.push(("anisotropic_sampler_image".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.lightmap { images.push(("lightmap".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_diffuse { images.push(("filling_diffuse".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_distortion1 { images.push(("filling_distortion1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_distortion2 { images.push(("filling_distortion2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_lookup { images.push(("filling_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_normal { images.push(("filling_normal".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_fresnel { images.push(("filling_fresnel".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.linear_clamp_image { images.push(("linear_clamp_image".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_opacity { images.push(("cloud_opacity".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_density { images.push(("cloud_density".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_back_density { images.push(("cloud_back_density".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.skin_fresnel_lookup { images.push(("skin_fresnel_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse_lookup { images.push(("diffuse_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.sss_mask { images.push(("sss_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fuzz_mask { images.push(("fuzz_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.translucency_mask { images.push(("translucency_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            buffers.push(("fog_objects", extension.fog_objects.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.fog_objects.id()).is_some())));
+            buffers.push(("fog_parameters", extension.fog_parameters.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.fog_parameters.id()).is_some())));
+            buffers.push(("reflection_planes", extension.reflection_planes.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.reflection_planes.id()).is_some())));
+            buffers.push(("material_exposure", extension.material_exposure.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.material_exposure.id()).is_some())));
+            buffers.push(("sh", extension.sh.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.sh.id()).is_some())));
+            buffers.push(("vertex_probes", extension.vertex_probes.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.vertex_probes.id()).is_some())));
+            buffers.push(("shadow", extension.shadow.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.shadow.id()).is_some())));
+            buffers.push(("local_shadow", extension.local_shadow.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.local_shadow.id()).is_some())));
+            buffers.push(("vegetation_slots", extension.vegetation_slots.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.vegetation_slots.id()).is_some())));
+            buffers.push(("vegetation_instances", extension.vegetation_instances.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.vegetation_instances.id()).is_some())));
+        }
+        let main = format!("entity_exists={} mesh={mesh:?} mesh_cpu={} mesh_usage={:?} material={material:?} material_cpu={} visibility={:?} inherited={:?} view_visible={:?} class={:?} layers={:?} no_frustum={} no_cpu_culling={} parent={:?} other_base_dependencies={base_other_dependencies:?}",
+            world.get_entity(entity).is_ok(), mesh_asset.is_some(), mesh_asset.map(|mesh| mesh.asset_usage), material_asset.is_some(),
+            world.get::<Visibility>(entity), world.get::<InheritedVisibility>(entity), world.get::<ViewVisibility>(entity),
+            world.get::<bevy::camera::visibility::VisibilityClass>(entity).map(|class| &class.0),
+            world.get::<bevy::camera::visibility::RenderLayers>(entity), world.get::<bevy::camera::visibility::NoFrustumCulling>(entity).is_some(),
+            world.get::<bevy::camera::visibility::NoCpuCulling>(entity).is_some(), world.get::<ChildOf>(entity).map(|parent| parent.parent()));
+        ProxyMainObservation { entity, render_entity: world.get::<RenderEntity>(entity).map(RenderEntity::id), main, images, buffers }
+    }).collect::<Vec<_>>();
+    let mut request = world.resource_mut::<DynamicProxyReadiness>();
+    if request.diagnostics.as_ref() != &observations { request.diagnostics = Arc::new(observations); }
 }

@@ -27,6 +27,13 @@ impl BitField {
         self.words[bit >> 5] |= 1 << (bit & 31);
         Ok(())
     }
+    /// 1412862b0 clears one removed body's pending mark, retaining every
+    /// other bit and the bitfield's allocated length/capacity.
+    pub(crate) fn reset(&mut self, bit: usize) -> Result<(), String> {
+        if bit >= self.bits { return Err("bit index exceeds bitfield length".into()); }
+        self.words[bit >> 5] &= !(1u32 << (bit & 31));
+        Ok(())
+    }
     /// Preserve existing used bits, fill added bits with wrapping -fill and
     /// normalize unused tail bits according to fill==0, as the source does.
     pub fn resize(&mut self, bits: usize, fill: i32) {

@@ -129,6 +129,7 @@ fn creation_matches_complete_executed_entity_factory() {
             processed_start_count: 0,
             queue_reset_count: 0,
             pending_release: crate::storage::PointerList::owned_with_capacity(64).unwrap(),
+            ..ComponentRegistry::new().unwrap()
         };
         let declaration = ComponentDeclaration { identity: 0x1000, class_id: key,
             scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling {

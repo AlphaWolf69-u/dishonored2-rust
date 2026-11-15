@@ -49,16 +49,12 @@ pub(crate) fn acquire_manager(
         let _tag = crate::platform::allocation_tags::tag("Difficulty declarations");
         parse(marker).map(Arc::new)
     };
-    let value = if shared(catalog) {
-        catalog
-            .difficulty_definitions
-            .get_or_init(Default::default)
-            .lock()
-            .map_err(|_| "difficulty manager registry is poisoned")?
-            .acquire(MANAGER, 0, load)
-    } else {
-        load(0)
-    };
+    let value = catalog
+        .difficulty_definitions
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "difficulty manager registry is poisoned")?
+        .acquire_with_sharing(MANAGER, 0, shared(catalog), load);
     if trace {
         eprintln!(
             "DIFFICULTY_MANAGER_ACQUIRE decoded={decoded} success={}",
@@ -82,16 +78,12 @@ pub(crate) fn acquire_preset(
         let _tag = crate::platform::allocation_tags::tag("Difficulty declarations");
         parse().map(Arc::new)
     };
-    let value = if shared(catalog) {
-        catalog
-            .difficulty_presets
-            .get_or_init(Default::default)
-            .lock()
-            .map_err(|_| "difficulty preset registry is poisoned")?
-            .acquire(&path, marker, load)
-    } else {
-        load(0)
-    };
+    let value = catalog
+        .difficulty_presets
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "difficulty preset registry is poisoned")?
+        .acquire_with_sharing(&path, marker, shared(catalog), load);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!(
             "DIFFICULTY_PRESET_ACQUIRE path={path} decoded={decoded} success={}",

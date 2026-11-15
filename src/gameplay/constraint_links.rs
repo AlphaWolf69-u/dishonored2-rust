@@ -17,13 +17,18 @@ pub struct ConstraintLinks<'a> {
     pub next: &'a [[u32; 2]],
 }
 
+pub(crate) struct ConstraintCursor { current: u32, visited: usize }
+impl ConstraintCursor {
+    pub(crate) fn new(head: u32) -> Self { Self { current: head, visited: 0 } }
+}
+
 impl ConstraintLinks<'_> {
     pub fn activate_neighbors(
         &self,
         enabled: bool,
         bodies: &BodyStorage,
         body: u32,
-        mut activate: impl FnMut(u32, u32) -> Result<(), String>,
+        activate: impl FnMut(u32, u32) -> Result<(), String>,
     ) -> Result<(), String> {
         if !enabled {
             return Ok(());
@@ -31,16 +36,26 @@ impl ConstraintLinks<'_> {
         let Some(&head) = self.heads.get((body & 0x00ff_ffff) as usize) else {
             return Ok(());
         };
-        let mut current = head;
-        let mut visited = 0;
-        while current != 0x7fff_ffff {
-            if visited >= self.constraints.len() {
+        let mut cursor = ConstraintCursor::new(head);
+        self.activate_neighbors_resumable(enabled, bodies, body, &mut cursor, activate)
+    }
+
+    pub(crate) fn cursor(&self, body: u32) -> ConstraintCursor {
+        ConstraintCursor::new(self.heads.get((body & 0x00ff_ffff) as usize).copied().unwrap_or(0x7fff_ffff))
+    }
+
+    pub(crate) fn activate_neighbors_resumable(
+        &self, enabled: bool, bodies: &BodyStorage, body: u32, cursor: &mut ConstraintCursor,
+        mut activate: impl FnMut(u32, u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !enabled { return Ok(()); }
+        while cursor.current != 0x7fff_ffff {
+            if cursor.visited >= self.constraints.len() {
                 return Err("cyclic constraint adjacency".into());
             }
-            visited += 1;
             let constraint = self
                 .constraints
-                .get(current as usize)
+                .get(cursor.current as usize)
                 .ok_or("constraint adjacency references a missing record")?;
             let side = usize::from(constraint.bodies[0] != body);
             if constraint.flags & 4 == 0 {
@@ -52,10 +67,11 @@ impl ConstraintLinks<'_> {
                     }
                 }
             }
-            current = self
+            cursor.current = self
                 .next
                 .get(constraint.link_index)
                 .ok_or("constraint adjacency references a missing next pair")?[side];
+            cursor.visited += 1;
         }
         Ok(())
     }

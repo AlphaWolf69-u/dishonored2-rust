@@ -84,6 +84,8 @@ pub struct AreaFogPass {
     volumes: Vec<Volume>,
 }
 impl AreaFogPass {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) { visit("fog-area-interval", &self.interval.texture); }
     pub fn new(
         device: &RenderDevice,
         extents: FogExtents,

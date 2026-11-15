@@ -7,18 +7,24 @@ mod pcm;
 mod graph;
 mod bevy_backend;
 mod fade;
-mod contacts;
+pub(super) mod contacts;
 mod acquisition;
+pub(super) mod observation;
 use crate::assets::declaration_texts;
 mod effects;
 mod spatial;
 mod session;
-pub(super) use session::{work as acquire_audio_work, Session as AudioSession};
+pub(super) use session::{close_admission as close_session_admission, work as acquire_audio_work, Session as AudioSession};
 pub(super) mod level;
+pub(super) mod music;
 pub(super) use contacts::ContactSound;
 
 #[derive(Message, Clone, Copy)]
 pub struct SoundEvent(pub Request);
+
+/// The scheduled and exclusive lifecycle consumer share one message cursor.
+#[derive(Resource, Default)]
+struct SoundEventCursor(bevy::ecs::message::MessageCursor<SoundEvent>);
 
 /// One in-flight decode per event and level bank generation. Each client has
 /// its own lease, so canceling an FX or UI request does not cancel another.
@@ -86,9 +92,12 @@ impl SoundDecodeQueue {
 /// post is finished only after every submitted voice releases its event ticket.
 #[derive(Resource, Default)]
 pub(super) struct SoundCompletions {
-    waiting: std::collections::HashSet<(u32, Emitter)>,
+    // Host subscriptions have generations: cancel/re-watch must not resurrect
+    // an older pending post or let its End complete the replacement.
+    waiting: std::collections::HashMap<(u32, Emitter), u64>,
+    next_watch: u64,
     completed: std::collections::HashMap<(u32, Emitter), bool>,
-    active: std::collections::HashSet<(u32, Emitter)>,
+    active: std::collections::HashMap<(u32, Emitter), crate::gameplay::sound::playing::PlayingId>,
     playing: crate::gameplay::sound::playing::PlayingEvents,
     started: std::collections::HashSet<crate::gameplay::sound::playing::PlayingId>,
     decode_failures: std::collections::HashMap<u32, String>,
@@ -98,7 +107,9 @@ pub(super) struct SoundCompletions {
 impl SoundCompletions {
     pub fn watch(&mut self, event: u32, emitter: Emitter) {
         self.completed.remove(&(event, emitter));
-        self.waiting.insert((event, emitter));
+        self.next_watch = self.next_watch.checked_add(1).expect("sound watch identity exhausted");
+        self.waiting.insert((event, emitter), self.next_watch);
+        self.active.remove(&(event, emitter));
     }
     /// `true` means at least one voice was submitted and has now ended;
     /// `false` means preparation, streaming or submission failed.
@@ -112,12 +123,17 @@ impl SoundCompletions {
         self.retire_if_unused(event);
     }
     fn failed(&mut self, event: u32, emitter: Emitter) {
-        if self.waiting.remove(&(event, emitter)) { self.completed.insert((event, emitter), false); }
+        if self.waiting.remove(&(event, emitter)).is_some() { self.completed.insert((event, emitter), false); }
         self.retire_if_unused(event);
     }
+    fn failed_watch(&mut self, event: u32, emitter: Emitter, watch: Option<u64>) {
+        if watch.is_some() && self.waiting.get(&(event, emitter)).copied() == watch {
+            self.failed(event, emitter);
+        }
+    }
     fn retire_if_unused(&mut self, event: u32) {
-        if !self.waiting.iter().any(|(id, _)| *id == event)
-            && !self.active.iter().any(|(id, _)| *id == event)
+        if !self.waiting.keys().any(|(id, _)| *id == event)
+            && !self.active.keys().any(|(id, _)| *id == event)
             && self.dynamic_sources.remove(&event) {
             self.retired_sources.push(event);
         }
@@ -125,12 +141,16 @@ impl SoundCompletions {
     fn pump(&mut self) {
         use crate::gameplay::sound::playing::NotificationKind;
         for note in self.playing.take_notifications() {
+            // Unwatched posts still own a real object cookie and source ticket,
+            // but cannot complete a separate watched post with the same key.
+            if note.event.callbacks & 8 == 0 { continue; }
             match note.kind {
                 NotificationKind::SourceReady => { self.started.insert(note.id); },
                 NotificationKind::End => {
                     let submitted = self.started.remove(&note.id);
                     let key = (note.event.declaration, note.event.object);
-                    if self.active.remove(&key) {
+                    if self.active.get(&key) == Some(&note.id) {
+                        self.active.remove(&key);
                         self.completed.insert(key, submitted);
                         self.retire_if_unused(key.0);
                     }
@@ -140,9 +160,6 @@ impl SoundCompletions {
         }
     }
 }
-#[derive(Component)]
-struct TrackedSound(#[allow(dead_code)] crate::gameplay::sound::playing::Ticket);
-
 #[derive(Resource, Default)]
 struct WwiseRegistry {
     banks: Arc<Vec<Bank>>,
@@ -157,8 +174,6 @@ struct WwiseRegistry {
     /// The level's listed sound events were prepared at load.
     preloaded: bool,
     level_prepared: bool,
-    /// Package location of every media read, for streamed sources.
-    locators: Arc<std::sync::Mutex<HashMap<u32, graph::StreamLocator>>>,
     stream_acquisition: Arc<std::sync::Mutex<(u64, u64, u64, std::time::Duration)>>,
     stream_io: Arc<crate::assets::wwise::stream_io::ReadPool>,
     /// The plugin owns the worker. Snapshots/queued inputs use a weak link so
@@ -173,28 +188,32 @@ impl WwiseRegistry {
     /// references while an already-running read finishes safely.
     fn decode_snapshot(&self) -> Self {
         Self { banks: self.banks.clone(), attenuations: self.attenuations.clone(),
-            library: self.library.clone(), locators: Arc::default(),
+            library: self.library.clone(),
             stream_acquisition: self.stream_acquisition.clone(), stream_io: self.stream_io.clone(),
             source_jobs: self.source_jobs.clone(),
             media_generation: self.media_generation,
             ..Default::default() }
     }
-    fn playback(&self, event: u32) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
+    fn playback(&self, event: u32, resident_streams: bool,
+        locators: &mut HashMap<(usize, u32), graph::StreamLocator>,
+    ) -> Result<Vec<crate::assets::wwise::PlaybackCommand>, Box<dyn std::error::Error>> {
         let mut files = HashMap::<usize, std::fs::File>::new();
-        self.library.event_playback_shared(event, |owner, media_id, stream_type| {
+        let actions = self.library.event_playback_shared(event, |owner, media_id, stream_type| {
             let bank = self.banks.get(owner).ok_or_else(|| std::io::Error::new(
                 std::io::ErrorKind::InvalidData, "Wwise source bank ownership is absent"))?;
             let Some(media) = bank.package.media_file(media_id as u64, bank.entry.language_id) else { return Ok(None); };
-            self.locators.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, graph::StreamLocator {
-                path: bank.path.clone(), offset: media.offset,
-                size: usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?,
-                pool: self.stream_io.clone(),
-                source_jobs: self.source_jobs.clone(),
-            });
+            let size = usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise media too large"))?;
+            if !resident_streams && stream_type != 0 {
+                locators.entry((owner, media_id)).or_insert_with(|| graph::StreamLocator {
+                    path: bank.path.clone(), offset: media.offset, size,
+                    pool: self.stream_io.clone(),
+                    source_jobs: self.source_jobs.clone(),
+                });
+            }
             if stream_type == 1 && crate::assets::wwise::stream_io::enabled() {
                 // The bank owns the prefetch bytes. Publish the package extent
                 // without reading the full file or duplicating that prefix.
-                return Ok(Some(crate::assets::wwise::MediaBytes::stream_header(Vec::new(), media.size as usize)));
+                return Ok(Some(crate::assets::wwise::MediaBytes::stream_header(Vec::new(), size)));
             }
             let file = match files.entry(owner) {
                 hashbrown::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -203,16 +222,15 @@ impl WwiseRegistry {
             if stream_type == 2 {
                 use std::io::{Seek, SeekFrom};
                 let started = std::time::Instant::now();
-                let size = usize::try_from(media.size).map_err(|_| std::io::Error::other("Wwise stream too large"))?;
                 let header_only = std::env::var("DH2_DEBUG_EAGER_STREAM_ACQUISITION").as_deref() != Ok("1")
-                    && std::env::var("DH2_DEBUG_RESIDENT_STREAMS").as_deref() != Ok("1");
+                    && !resident_streams;
                 let acquired = if header_only {
                     file.seek(SeekFrom::Start(media.offset))?;
                     let header = crate::assets::wwise::read_stream_header(file, size)?;
                     if crate::assets::wwise::stream_format(&header, size)?.is_some() {
                         crate::assets::wwise::MediaBytes::stream_header(header, size)
-                    } else { bank.package.read_entry(file, media)?.into() }
-                } else { bank.package.read_entry(file, media)?.into() };
+                    } else { bank.package.read_resident_entry(file, media)? }
+                } else { bank.package.read_resident_entry(file, media)? };
                 let mut totals = self.stream_acquisition.lock().unwrap_or_else(|e| e.into_inner());
                 totals.0 += 1;
                 totals.1 += acquired.len() as u64;
@@ -220,8 +238,24 @@ impl WwiseRegistry {
                 totals.3 += started.elapsed();
                 return Ok(Some(acquired));
             }
-            bank.package.read_entry(file, media).map(|bytes| Some(bytes.into()))
-        })?.ok_or_else(|| "event has no supported Wwise actions".into())
+            bank.package.read_resident_entry(file, media).map(Some)
+        })?.ok_or("event has no supported Wwise actions")?;
+        // A second event may reuse the bank owner's immutable music graph.
+        // Its source callback then does not run again: derive package extents
+        // from the source's owning bank, without rereading encoded headers.
+        if !resident_streams {
+            for action in &actions {
+                let crate::assets::wwise::PlaybackCommand::Play { node: crate::assets::wwise::PlaybackNode::Music(graph), .. } = action else { continue; };
+                for (owner, media_id) in graph.media.iter().filter_map(|source| source.variant.streamed) {
+                    if locators.contains_key(&(owner, media_id)) { continue; }
+                    let bank = self.banks.get(owner).ok_or("music source bank ownership is absent")?;
+                    let media = bank.package.media_file(u64::from(media_id), bank.entry.language_id).ok_or("music package extent is absent")?;
+                    locators.insert((owner, media_id), graph::StreamLocator { path: bank.path.clone(), offset: media.offset,
+                        size: usize::try_from(media.size)?, pool: self.stream_io.clone(), source_jobs: self.source_jobs.clone() });
+                }
+            }
+        }
+        Ok(actions)
     }
     fn prepare(&mut self, event: u32) -> Result<(), Box<dyn std::error::Error>> {
         if self.sources.contains_key(&event) { return Ok(()); }
@@ -236,9 +270,11 @@ impl WwiseRegistry {
     /// The event's actions with every Play source decoded.
     fn decode_event(&self, event: u32) -> Result<Vec<SourceAction>, Box<dyn std::error::Error>> {
         use crate::assets::wwise::PlaybackCommand;
+        let resident_streams = std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1");
+        let mut locators = HashMap::new();
         let graph_actions = {
             let _tag = crate::platform::allocation_tags::tag("sound bank lookup");
-            self.playback(event)?
+            self.playback(event, resident_streams, &mut locators)?
         };
         let _tag = crate::platform::allocation_tags::tag("sound graph");
         let mut actions = Vec::new();
@@ -262,11 +298,8 @@ impl WwiseRegistry {
             // 14113b5c0 sends every Play through the same source
             // and bus clock, including plain PCM and UI sounds.
             PlaybackCommand::Play { settings, node, .. } => Ok(SourceAction::Play { settings,
-                definition: Arc::new(graph::Definition::decode(node, &self.attenuations, &|id| {
-                    // Diagnostic A/B: DH2_DEBUG_RESIDENT_STREAMS=1 keeps streamed sources resident.
-                    if std::env::var_os("DH2_DEBUG_RESIDENT_STREAMS").is_some_and(|v| v == "1") { return None; }
-                    self.locators.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
-                }, self.media_generation)?) }),
+                definition: Arc::new(graph::Definition::decode(node, &self.attenuations,
+                    &|source| locators.get(&source).cloned(), self.media_generation)?) }),
             } })();
             match decoded {
                 Ok(action) => actions.push(action),
@@ -335,29 +368,177 @@ struct AudioTarget {
 pub struct SoundPlugin;
 
 pub(super) struct AudioAssetsPlugin;
+
+/// Host capability: source acquisition also runs without AudioPlugin. Such
+/// Apps must not create an output mixer with no playback consumer.
+#[derive(Resource, Clone, Copy, PartialEq, Eq)]
+enum PlaybackBackend { Absent, Hardware, Observation }
 impl Plugin for AudioAssetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_audio_source::<graph::ScheduledAudio>()
-            .add_audio_source::<bevy_backend::OutputAudio>();
+        if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
+            // Bevy's playback systems require AudioOutput, GlobalVolume and
+            // DefaultSpatialScale, supplied only by its hardware AudioPlugin.
+            app.add_audio_source::<graph::ScheduledAudio>()
+                .add_audio_source::<bevy_backend::OutputAudio>();
+        } else {
+            // Acquisition and the sole offline consumer need asset ownership,
+            // not hardware playback/cleanup systems or a dummy output device.
+            app.init_asset::<graph::ScheduledAudio>()
+                .init_asset::<bevy_backend::OutputAudio>();
+        }
     }
 }
 
 #[derive(Resource, Default)]
 struct PendingSounds(Vec<PendingSound>);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObjectRetirement { Queued, Submitted, Complete }
+#[derive(Resource, Default)]
+struct RetiringSounds(std::collections::HashMap<Emitter, ObjectRetirement>);
+
+fn request_emitter(request: &Request) -> Emitter {
+    match *request {
+        Request::Post { emitter, .. } | Request::PostWithParameter { emitter, .. }
+        | Request::PostAt { emitter, .. } | Request::Stop { emitter, .. } | Request::Retire { emitter } => emitter,
+    }
+}
+
+fn request_object_retirement(world: &mut World, emitter: Emitter) -> Result<(), String> {
+    if !world.contains_resource::<RetiringSounds>() || !world.contains_resource::<Messages<SoundEvent>>() {
+        return Err("sound object retirement requires the active audio owners".into());
+    }
+    if world.resource::<RetiringSounds>().0.contains_key(&emitter) { return Ok(()); }
+    world.resource_mut::<RetiringSounds>().0.insert(emitter, ObjectRetirement::Queued);
+    world.write_message(SoundEvent(Request::Retire { emitter }));
+    Ok(())
+}
+
 struct PendingSound {
     request: Request,
+    message_id: Option<usize>,
     // A retry must not release its already completed reads while another
     // source is pending; the source's own resident lookup is deliberately weak.
     media: Vec<graph::StreamHold>,
-    watched: bool,
+    watched: Option<u64>,
+    // c4550/c6030 admit the playing ID and object cookie before source preparation.
+    ticket: Option<crate::gameplay::sound::playing::Ticket>,
+}
+
+fn cancel_pending_posts(pending: &mut Vec<PendingSound>, completions: &mut SoundCompletions,
+    emitter: Emitter, event: Option<u32>) {
+    pending.retain(|queued| {
+        let id = match queued.request {
+            Request::Post { event, .. } | Request::PostWithParameter { event, .. }
+                | Request::PostAt { event, .. } => event,
+            _ => return true,
+        };
+        if request_emitter(&queued.request) != emitter || event.is_some_and(|event| event != id) { return true; }
+        completions.failed_watch(id, emitter, queued.watched);
+        false
+    });
+}
+
+/// Retire one actual component object before its generation can be recycled.
+/// Decode jobs remain shared with their other admitted clients.
+pub(super) fn retire_component_object(world: &mut World, emitter: Emitter) -> Result<bool, String> {
+    request_object_retirement(world, emitter)?;
+    Ok(world.resource::<RetiringSounds>().0.get(&emitter) == Some(&ObjectRetirement::Complete))
+}
+
+/// Called after the component pool actually releases the acknowledged generation.
+pub(super) fn forget_retired_component_object(world: &mut World, emitter: Emitter) -> Result<(), String> {
+    let mut retiring = world.resource_mut::<RetiringSounds>();
+    if retiring.0.get(&emitter) != Some(&ObjectRetirement::Complete) {
+        return Err("component sound object has not acknowledged retirement".into());
+    }
+    retiring.0.remove(&emitter);
+    Ok(())
+}
+
+/// Advance the existing consumer after exclusive callers restore scene owners.
+/// The output callback progresses independently; never spin waiting for it.
+pub(in crate::app) fn has_output(world: &World) -> bool { world.resource::<bevy_backend::Engine>().has_output() }
+
+pub(in crate::app) fn poll_object_retirements(world: &mut World) -> Result<(), String> {
+    world.run_system_cached(bevy_backend::retire).map_err(|error| error.to_string())?;
+    world.run_system_cached(play_events).map_err(|error| error.to_string())?;
+    world.run_system_cached(reap_retiring_objects).map_err(|error| error.to_string())?;
+    if let Some(error) = world.resource::<RetiringSounds>().0.iter().find_map(|(&emitter, &state)|
+        (state != ObjectRetirement::Complete).then(|| world.resource::<bevy_backend::Engine>().object_retirement_pending(emitter).err()).flatten()) {
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Keep the exact sound object and its histories until its accepted posts,
+/// output voices and event tickets have all retired.
+fn reap_retiring_objects(engine: Res<bevy_backend::Engine>, mut retiring: ResMut<RetiringSounds>,
+    mut registry: ResMut<WwiseRegistry>, mut completions: ResMut<SoundCompletions>,
+    level: Option<ResMut<level::LevelAudio>>, mut scene: ResMut<spatial::Scene>,
+    sounds: Option<Res<crate::rendering::bevy_backend::world_sounds::WorldSounds>>) {
+    if retiring.0.is_empty() { return; }
+    let mut level = level;
+    for (&emitter, state) in &mut retiring.0 {
+        if *state != ObjectRetirement::Submitted { continue; }
+        if !matches!(engine.object_retirement_pending(emitter), Ok(false)) { continue; }
+        if completions.playing.references_object(emitter) { continue; }
+        if sounds.as_ref().is_some_and(|sounds| sounds.lock().playing.references_object(emitter)) { continue; }
+        let events: std::collections::HashSet<_> = completions.waiting.keys().chain(completions.active.keys())
+            .filter_map(|&(event, object)| (object == emitter).then_some(event)).collect();
+        completions.waiting.retain(|(_, object), _| *object != emitter);
+        completions.active.retain(|(_, object), _| *object != emitter);
+        completions.completed.retain(|(_, object), _| *object != emitter);
+        for event in events { completions.retire_if_unused(event); }
+        registry.scheduled_selections.lock().unwrap_or_else(|error| error.into_inner())
+            .retain(|(_, object), _| *object != Some(emitter));
+        if let Some(level) = level.as_deref_mut() { level.release_object(emitter); }
+        scene.release_object(emitter);
+        if let Some(sounds) = &sounds { sounds.lock().objects.remove(&emitter); }
+        *state = ObjectRetirement::Complete;
+    }
+    // Components retain acknowledgement until their pool slot is released.
+    retiring.0.retain(|emitter, state| *state != ObjectRetirement::Complete || matches!(emitter, Emitter::Component { .. }));
+}
+
+pub(in crate::app) fn begin_level_retirement(world: &mut World) -> Result<(), String> {
+    music::stop(world)?;
+    world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    world.run_system_cached(play_events).map_err(|error| error.to_string())?;
+    let mut emitters = world.resource::<bevy_backend::Engine>().level_emitters();
+    if let Some(level) = world.get_resource::<level::LevelAudio>() { emitters.extend(level.emitters()); }
+    emitters.extend(world.resource::<PendingSounds>().0.iter().map(|queued| request_emitter(&queued.request)));
+    emitters.extend(world.query::<&AudioTarget>().iter(world).map(|target| target.emitter));
+    emitters.remove(&Emitter::Menu);
+    if let Some(sounds) = world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>() {
+        let sounds = sounds.lock();
+        for ticket in &sounds.queued { emitters.remove(&ticket.event().object); }
+        for emitter in &sounds.released { emitters.remove(emitter); }
+    }
+    for emitter in emitters { request_object_retirement(world, emitter)?; }
+    Ok(())
+}
+
+pub(in crate::app) fn poll_level_retirement(world: &mut World) -> Result<bool, String> {
+    world.run_system_cached(effects::update).map_err(|error| error.to_string())?;
+    poll_object_retirements(world)?;
+    let pending = world.resource::<PendingSounds>().0.iter().any(|queued| request_emitter(&queued.request) != Emitter::Menu);
+    let retiring = world.resource::<RetiringSounds>().0.iter().any(|(&emitter, &state)| emitter != Emitter::Menu && state != ObjectRetirement::Complete);
+    let fx_pending = world.get_resource::<crate::rendering::bevy_backend::world_sounds::WorldSounds>()
+        .is_some_and(|sounds| { let sounds = sounds.lock(); !sounds.queued.is_empty() || !sounds.released.is_empty() });
+    if fx_pending {
+        if let Some(error) = world.resource::<effects::EffectAudio>().last_error.as_ref() {
+            return Err(format!("world FX sound retirement failed: {error}"));
+        }
+    }
+    Ok(!pending && !retiring && !fx_pending)
 }
 
 pub(super) fn begin_level(world: &mut World) {
     world.resource::<bevy_backend::Engine>().release_level();
+    world.resource_mut::<RetiringSounds>().0.retain(|emitter, _| *emitter == Emitter::Menu);
     let mut registry = world.resource_mut::<WwiseRegistry>();
     registry.sources.clear();
-    registry.locators.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let keep = registry.shared_banks;
     Arc::make_mut(&mut registry.library).truncate(keep);
     Arc::make_mut(&mut registry.banks).truncate(keep);
@@ -376,18 +557,18 @@ pub(super) fn begin_level(world: &mut World) {
     registry.level_prepared = false;
     drop(registry);
     world.resource::<bevy_backend::Engine>().retain_nodes(&actors);
+    world.insert_resource(SoundDecodeQueue::default());
+    world.insert_resource(PendingSounds::default());
     world.resource_mut::<WwiseRegistry>().media_generation = graph::retain_media(&sound_ids);
     if let Some(mut completions) = world.get_resource_mut::<SoundCompletions>() {
         let waiting = std::mem::take(&mut completions.waiting);
-        for key in waiting { completions.completed.insert(key, false); }
+        for (key, _) in waiting { completions.completed.insert(key, false); }
         completions.decode_failures.clear();
         // Active menu voices can outlive a level, but their old acquisition
         // keys must never evict a new level's event with the same numeric ID.
         completions.dynamic_sources.clear();
         completions.retired_sources.clear();
     }
-    world.insert_resource(SoundDecodeQueue::default());
-    world.insert_resource(PendingSounds::default());
     world.insert_resource(spatial::Scene::default());
     world.insert_resource(effects::EffectAudio::default());
     if let Some(contacts) = world.get_resource::<contacts::ContactSounds>() {
@@ -401,6 +582,10 @@ pub(super) fn begin_level(world: &mut World) {
 /// Acquisition owners without gameplay schedules or an audio output device.
 /// The client and windowless resource observations use the same initialization.
 pub(super) fn initialize_resources(app: &mut App) {
+    let hardware = app.is_plugin_added::<bevy::audio::AudioPlugin>();
+    let offline = app.world().contains_resource::<observation::Observation>();
+    assert!(!(hardware && offline), "offline audio requires hardware AudioPlugin disabled");
+    app.insert_resource(if offline { PlaybackBackend::Observation } else if hardware { PlaybackBackend::Hardware } else { PlaybackBackend::Absent });
     if !app.world().contains_resource::<Assets<graph::ScheduledAudio>>() {
         app.init_asset::<graph::ScheduledAudio>();
     }
@@ -410,12 +595,15 @@ pub(super) fn initialize_resources(app: &mut App) {
     crate::loading::gate(LISTED_SOUNDS_GATE);
     crate::loading::gate(LEVEL_SOUNDS_GATE);
     app.add_message::<SoundEvent>()
+        .add_message::<music::MusicEvent>()
         .add_message::<ContactSound>()
         .init_resource::<contacts::ContactSounds>()
         .init_resource::<objects::EffectObjects>()
         .init_resource::<effects::EffectAudio>()
         .init_resource::<WwiseRegistry>()
         .init_resource::<acquisition::SourceJobs>()
+        .init_resource::<SoundEventCursor>()
+        .init_resource::<RetiringSounds>()
         .init_resource::<PendingSounds>()
         .init_resource::<SoundCompletions>()
         .init_resource::<SoundDecodeQueue>()
@@ -426,6 +614,8 @@ pub(super) fn initialize_resources(app: &mut App) {
     let mut registry = app.world_mut().resource_mut::<WwiseRegistry>();
     registry.source_jobs = source_jobs;
     registry.media_generation = graph::retain_media(&Default::default());
+    drop(registry);
+    observation::attach(app.world_mut());
 }
 
 impl Plugin for SoundPlugin {
@@ -434,7 +624,7 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, effects::update, update_playing_volume, play_events)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), effects::update, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -453,7 +643,7 @@ fn wwise_id(name: &str) -> u32 {
 
 /// wwisedescription.txt ("cooked level descriptions", 1400c0cb0): "V1", an
 /// entry count, then per entry its name, package prefixes and bank names.
-fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box<dyn std::error::Error>> {
+fn level_banks(base: &std::path::Path, language: &str, map: &str) -> Result<LevelBanks, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(base.join("wwisedescription.txt"))?;
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("V1") { return Err("wwisedescription.txt is not V1".into()); }
@@ -465,8 +655,7 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
         let banks = lines.next().unwrap_or("").split_whitespace().collect::<Vec<_>>();
         entries.insert(name, (packages, banks));
     }
-    let map = crate::gameplay::map_info::current_map().ok_or("no current map for its sound banks")?;
-    let map = map.trim_start_matches("maps/").trim_end_matches(".map").to_owned();
+    let map = map.trim_start_matches("maps/").trim_end_matches(".entities").trim_end_matches(".map").to_owned();
     let mut selection = LevelBanks { packages: vec!["main-init.pck".to_owned()], banks: Default::default(),
         shared_packages: ["main-init.pck".to_owned()].into(), shared_banks: Default::default() };
     for name in ["common", "init", map.as_str()] {
@@ -490,24 +679,27 @@ fn level_banks(base: &std::path::Path, language: &str) -> Result<LevelBanks, Box
 }
 
 fn index_banks(mut registry: ResMut<WwiseRegistry>, mut mix: ResMut<AudioMix>,
-    mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, mut commands: Commands) {
+    mut engine: ResMut<bevy_backend::Engine>, mut outputs: ResMut<Assets<bevy_backend::OutputAudio>>, commands: Commands,
+    source: Option<Res<super::level_prepare::LevelSourceReads>>, backend: Res<PlaybackBackend>) {
     if registry.preloaded { return; }
+    let Some(source) = source else { return };
+    let (catalog, map) = source.acquisition_source();
     let mut commands = super::setup_commands::SetupCommands::Direct(commands);
-    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands);
+    prepare_banks(&mut registry, &mut mix, &mut engine, &mut outputs, &mut commands, catalog, map, *backend);
 }
 
 fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
     engine: &mut bevy_backend::Engine,
     outputs: &mut dyn crate::rendering::bevy_backend::asset_preparation::AssetWrite<bevy_backend::OutputAudio>,
-    commands: &mut super::setup_commands::SetupCommands) {
+    commands: &mut super::setup_commands::SetupCommands, catalog: &crate::archive::Catalog, map: &str, playback: PlaybackBackend) {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
-        let base = crate::assets::installation::game_base()?;
+        let base = catalog.base();
         let audio_language = crate::assets::lang::read_audio_language(&base)?;
         let package_language = crate::assets::wwise::language_name(audio_language).ok_or("unsupported audio package language")?;
         // 1400bd510 (LoadSharedCookedGamePackages): the "common", "init" and
         // current-map entries of wwisedescription.txt name the packages
         // (prefix + language / "sfx.pck") and banks to load, plus main-init.pck.
-        let selection = level_banks(&base, package_language)?;
+        let selection = level_banks(base, package_language, map)?;
         let paths = selection.packages.iter().map(|name| base.join("pck").join(name))
             .filter(|path| path.is_file()).collect::<Vec<_>>();
 
@@ -582,8 +774,7 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
                 registry.library.resident_allocations().take(registry.shared_banks).take(4).collect::<Vec<_>>());
         }
         if mix.mixer.is_some() { return Ok(None); }
-        let catalog = crate::archive::Catalog::shared(&base)?;
-        let controls = crate::assets::wwise::engine_controls::EngineControls::acquire(&catalog)?;
+        let controls = crate::assets::wwise::engine_controls::EngineControls::acquire(catalog)?;
         let bindings = controls.volumes.into_iter().zip([
             "s_MasterBus_Gain", "s_SFX_Gain", "s_Voices_Gain", "s_Music_Gain", "s_Video_Gain",
         ]).collect::<Vec<_>>();
@@ -599,12 +790,16 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
             mix.mixer = Some(output_mix.into());
             mix.bindings = bindings;
             mix.apply_settings();
-            if let Some(mixer) = &mix.mixer {
-                match bevy_backend::Engine::new(mixer, registry.states.clone()) {
+            if let Some(mixer) = mix.mixer.as_ref().filter(|_| playback != PlaybackBackend::Absent) {
+                match bevy_backend::Engine::new(mixer, registry.states.clone(), catalog.base()) {
                     Ok((initialized, output)) => {
                         if let Some(mixer) = &mut mix.mixer { mixer.activity = initialized.activity(); }
                         *engine = initialized;
-                        commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE, super::level_lifetime::SessionEntity));
+                        if playback == PlaybackBackend::Observation {
+                            commands.queue(move |world: &mut World| observation::install_output(world, output));
+                        } else {
+                            commands.spawn((AudioPlayer(outputs.add(output)), PlaybackSettings::ONCE, super::level_lifetime::SessionEntity));
+                        }
                         info!("Shared stereo audio output initialized with installed bus effects");
                     },
                     Err(error) => error!("Shared Wwise audio output unavailable: {error}"),
@@ -622,16 +817,19 @@ fn prepare_banks(registry: &mut WwiseRegistry, mix: &mut AudioMix,
 /// is then decoded while it plays. Every listed event's media is read and
 /// prepared here, on all cores, instead of on the main thread at its first
 /// post.
-fn preload_level_events(mut registry: ResMut<WwiseRegistry>, contacts: Option<Res<contacts::ContactSounds>>) {
-    if !registry.preloaded { prepare_listed_events(&mut registry, None, contacts.as_deref().and_then(|c| c.declarations())); }
+fn preload_level_events(mut registry: ResMut<WwiseRegistry>, contacts: Option<Res<contacts::ContactSounds>>,
+    source: Option<Res<super::level_prepare::LevelSourceReads>>) {
+    if registry.preloaded { return; }
+    let Some(source) = source else { return };
+    let (catalog, map) = source.acquisition_source();
+    prepare_listed_events(&mut registry, None, contacts.as_deref().and_then(|c| c.declarations()), catalog, map);
 }
-fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>, declarations: Option<&declaration_texts::DeclarationTexts>) {
+fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<&bevy::tasks::TaskPool>,
+    declarations: Option<&declaration_texts::DeclarationTexts>, catalog: &crate::archive::Catalog, map: &str) {
     let started = std::time::Instant::now();
     let result = (|| -> Result<Vec<u32>, String> {
-        let base = crate::assets::installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = crate::archive::Catalog::shared(&base).map_err(|e| e.to_string())?;
-        let map = crate::gameplay::map_info::current_map().ok_or("no current map")?;
-        let map = map.trim_start_matches("maps/").trim_end_matches(".map");
+        let base = catalog.base();
+        let map = map.trim_start_matches("maps/").trim_end_matches(".entities").trim_end_matches(".map");
         let language = crate::assets::lang::read_text_language(&base)?;
         let list = crate::assets::map_resources::acquire_level_list(&base, &catalog, map, language)?;
         let mut events = Vec::new();
@@ -652,7 +850,7 @@ fn prepare_listed_events(registry: &mut WwiseRegistry, acquisition_pool: Option<
                 if trace { reads += 1; }
                 let bytes = catalog.read(path).map_err(|error| format!("{path}: {error}"))?;
                 if trace { decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
-                Ok(bytes.map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                Ok(bytes.map(crate::entities::owned_declaration_text))
             }) {
                 Ok(Some(declaration)) => events.push(declaration.id),
                 Ok(None) => {}
@@ -721,6 +919,9 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
             owners.values().sum::<usize>(), sources.iter().copied().collect::<HashMap<_, _>>().len(),
             sources.iter().filter(|(id, _)| banks.contains_key(id)).count());
         graph::capture_media_signatures();
+        registry.library.report_media_sections();
+        crate::assets::wwise::Package::report_media_lookup();
+        crate::assets::wwise::report_bank_index_lookup();
         crate::assets::wwise::capture_property_chains();
         for (representation, (n, installed, views)) in graph::resident_media_stats() {
             eprintln!("LOAD sound media representation {representation}: {n} current sources, {} MB installed, {} MB logical views", installed >> 20, views >> 20);
@@ -746,11 +947,15 @@ fn prepare_all(registry: &mut WwiseRegistry, events: &[u32], acquisition_pool: O
 /// the map load, once both exist and before they are first evaluated.
 fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
     sources: Option<Res<crate::rendering::bevy_backend::world_effects::WorldEffectSources>>,
+    music: Option<Res<music::Music>>,
+    environments: Option<Res<super::state::EnvironmentVolumes>>,
     mut registry: ResMut<WwiseRegistry>)
 {
     if registry.level_prepared { return; }
     let (Some(mut physics), Some(sources)) = (physics, sources) else { return };
     let mut events: Vec<u32> = sources.0.sound_events().collect();
+    if let Some(music) = music { events.extend(music.events()); }
+    if let Some(environments) = environments { events.extend(environments.0.iter().filter_map(|volume| volume.ambiance.as_ref().map(|event| event.id))); }
     let visited = physics.visit_audio(|_, binding, _| {
         events.extend(binding.events.iter().flatten().map(|event| event.id));
         Ok(())
@@ -767,7 +972,9 @@ fn prepare_level_sounds(physics: Option<ResMut<super::physics_scene::PhysicsScen
 
 fn play_events(
     mut commands: Commands,
-    mut events: MessageReader<SoundEvent>,
+    physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    events: Res<Messages<SoundEvent>>,
+    mut event_cursor: ResMut<SoundEventCursor>,
     mut registry: ResMut<WwiseRegistry>,
     mut scheduled_sources: ResMut<Assets<graph::ScheduledAudio>>,
     mix: Res<AudioMix>,
@@ -776,10 +983,13 @@ fn play_events(
     mut pending: ResMut<PendingSounds>,
     mut completions: ResMut<SoundCompletions>,
     mut decodes: ResMut<SoundDecodeQueue>,
+    mut retiring: ResMut<RetiringSounds>,
+    observer: Option<Res<observation::Observation>>,
+    (loading, exit): (Option<Res<super::loading_screen::Acquisition>>, Option<Res<super::loading_screen::ExitState>>),
 ) {
     completions.pump();
     for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
-    let wanted_decodes: std::collections::HashSet<_> = completions.waiting.iter().map(|(event, _)| *event).collect();
+    let wanted_decodes: std::collections::HashSet<_> = completions.waiting.keys().map(|(event, _)| *event).collect();
     decodes.retain_client(DecodeClient::Watched, &wanted_decodes);
     decodes.poll();
     for event in wanted_decodes {
@@ -797,55 +1007,125 @@ fn play_events(
     }
     let Some(mixer) = &mix.mixer else {
         for queued in std::mem::take(&mut pending.0) {
+            if let Request::Retire { emitter } = queued.request {
+                match engine.release_object(emitter) {
+                    Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
+                    Err(error) => { warn!("Sound object retirement failed: {error}"); pending.0.push(queued); },
+                }
+                continue;
+            }
             match queued.request {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
-                    | Request::PostAt { event, emitter, .. } if queued.watched => completions.failed(event, emitter),
+                    | Request::PostAt { event, emitter, .. } if queued.watched.is_some() => completions.failed_watch(event, emitter, queued.watched),
                 _ => {},
             }
         }
-        for message in events.read() {
+        for message in event_cursor.0.read(&events) {
             match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
                     | Request::PostAt { event, emitter, .. } => completions.failed(event, emitter),
                 Request::Stop { .. } => {},
+                Request::Retire { emitter } => {
+                    match engine.release_object(emitter) {
+                        Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
+                        Err(error) => {
+                            warn!("Sound object retirement failed: {error}");
+                            pending.0.push(PendingSound { request: message.0, media: Vec::new(), watched: None, ticket: None, message_id: None });
+                        },
+                    }
+                },
             }
         }
         return;
     };
-    // A request whose streamed media is still being read waits, keeping its
-    // place ahead of later requests for the same emitter.
+    // Posts retain FIFO order while preparation waits. Stop/Retire bypass a
+    // cold post to cancel its real preparation owner, as they do queued actions.
     let requests: Vec<PendingSound> = std::mem::take(&mut pending.0).into_iter()
-        .chain(events.read().map(|message| {
+        .chain(event_cursor.0.read_with_id(&events).map(|(message, message_id)| {
             let watched = match message.0 {
                 Request::Post { event, emitter } | Request::PostWithParameter { event, emitter, .. }
-                    | Request::PostAt { event, emitter, .. } => completions.waiting.contains(&(event, emitter)),
-                Request::Stop { .. } => false,
+                    | Request::PostAt { event, emitter, .. } => completions.waiting.get(&(event, emitter)).copied(),
+                Request::Stop { .. } | Request::Retire { .. } => None,
             };
-            PendingSound { request: message.0, media: Vec::new(), watched }
+            PendingSound { request: message.0, message_id: Some(message_id.id), media: Vec::new(), watched, ticket: None }
         })).collect();
     let mut waiting = Vec::new();
-    for queued in requests {
+    for mut queued in requests {
+        let emitter = request_emitter(&queued.request);
+        let is_retire = matches!(queued.request, Request::Retire { .. });
+        let state = retiring.0.get(&emitter).copied();
+        let stale_component = matches!(emitter, Emitter::Component { handle, generation }
+            if state != Some(ObjectRetirement::Queued)
+                && !physics.as_ref().is_some_and(|scene| scene.audio_component_live(handle, generation)));
+        if !is_retire && (stale_component || matches!(state, Some(ObjectRetirement::Submitted | ObjectRetirement::Complete))) {
+            if queued.watched.is_some() {
+                match queued.request {
+                    Request::Post { event, .. } | Request::PostWithParameter { event, .. } | Request::PostAt { event, .. } => completions.failed_watch(event, emitter, queued.watched),
+                    _ => {}
+                }
+            }
+            continue;
+        }
         let request = queued.request;
         let (event, emitter, parameter, position) = match request {
             Request::Post { event, emitter } => (event, emitter, None, None),
             Request::PostWithParameter { event, emitter, parameter, value } => (event, emitter, Some((parameter, value)), None),
             Request::PostAt { event, emitter, parameter, position, front } =>
                 (event, emitter, parameter, Some(spatial::Position { position, front })),
+            Request::Retire { emitter } => {
+                cancel_pending_posts(&mut pending.0, &mut completions, emitter, None);
+                waiting.retain(|object| *object != emitter);
+                match engine.release_object(emitter) {
+                    Ok(()) => { retiring.0.insert(emitter, ObjectRetirement::Submitted); },
+                    Err(error) => { warn!("Sound object retirement failed: {error}"); pending.0.push(queued); },
+                }
+                continue;
+            }
             Request::Stop { event, emitter } => {
-                if waiting.contains(&emitter) { pending.0.push(queued); continue; }
+                // 141127000 stops voices AND cancels pending actions (1410e9950).
+                cancel_pending_posts(&mut pending.0, &mut completions, emitter, Some(event));
+                if !pending.0.iter().any(|post| request_emitter(&post.request) == emitter) {
+                    waiting.retain(|object| *object != emitter);
+                }
                 engine.stop_event(event, emitter);
                 continue;
             }
         };
+        // Loading is not the pause menu's snapshot of existing playing IDs.
+        // Keep world posts ordered and owned until the real input handoff;
+        // stop/retire requests above continue to drain, and UI stays audible.
+        if emitter != Emitter::Menu && !exit.as_ref().is_some_and(|exit| exit.requested())
+            && loading.as_ref().is_some_and(|state| super::loading_screen::is_loading(state)) {
+            pending.0.push(queued);
+            continue;
+        }
+        if queued.watched.is_some() && completions.waiting.get(&(event, emitter)).copied() != queued.watched { continue; }
+        if queued.ticket.is_none() {
+            let playing_id = engine.playing_id();
+            let admitted = completions.playing.register_with_id(playing_id, crate::gameplay::sound::playing::Event {
+                declaration: event, object: emitter, callbacks: if queued.watched.is_some() { 8 } else { 0 },
+            });
+            if let Some(observer) = &observer {
+                observer.record_admission(queued.message_id, playing_id, event, emitter,
+                    completions.playing.object_count(emitter), admitted.as_ref().err());
+            }
+            match admitted {
+                Ok(ticket) => queued.ticket = Some(ticket),
+                Err(error) => {
+                    warn!("Wwise event registration failed: {error}");
+                    completions.failed_watch(event, emitter, queued.watched);
+                    continue;
+                },
+            }
+        }
         if waiting.contains(&emitter) { pending.0.push(queued); continue; }
-        if queued.watched && !completions.waiting.contains(&(event, emitter)) { continue; }
         // 1408abb10 pauses components on a zero owner clock; 140709110
         // forbids posting into a frozen component. Stop requests above still run.
-        if scene.frozen(emitter) { completions.failed(event, emitter); continue; }
-        if queued.watched && !registry.sources.contains_key(&event) {
+        if scene.frozen(emitter) { completions.failed_watch(event, emitter, queued.watched); continue; }
+        if queued.watched.is_some() && !registry.sources.contains_key(&event) {
             if let Some(error) = completions.decode_failures.remove(&event) {
                 warn!("Wwise event {event:#010x} background preparation failed: {error}");
-                completions.failed(event, emitter);
+                completions.failed_watch(event, emitter, queued.watched);
                 continue;
             }
             decodes.request(event, DecodeClient::Watched, &registry);
@@ -854,7 +1134,7 @@ fn play_events(
             continue;
         }
         if let Err(error) = registry.prepare(event) {
-            completions.failed(event, emitter);
+            completions.failed_watch(event, emitter, queued.watched);
             warn!("Wwise event {event:#010x} has no supported route: {error}");
             continue;
         }
@@ -876,54 +1156,53 @@ fn play_events(
             // All previously ready sources now have replacement holds. Keep
             // the old ones alive through acquisition, then transfer ownership.
             drop(queued.media);
-            if stream_failed && completions.waiting.contains(&(event, emitter)) {
-                completions.failed(event, emitter);
+            if stream_failed && queued.watched.is_some() {
+                completions.failed_watch(event, emitter, queued.watched);
                 continue;
             }
             if loading {
                 waiting.push(emitter);
-                pending.0.push(PendingSound { request, media: holds, watched: queued.watched });
+                pending.0.push(PendingSound { request, message_id: queued.message_id, media: holds, watched: queued.watched, ticket: queued.ticket });
                 continue;
             }
-            let tracked = if completions.waiting.remove(&(event, emitter)) {
-                match completions.playing.register(crate::gameplay::sound::playing::Event {
-                    declaration: event, object: emitter, callbacks: 8,
-                }) {
-                    Ok(ticket) => { completions.active.insert((event, emitter)); Some(ticket) },
-                    Err(error) => { warn!("Wwise completion registration failed: {error}"); completions.completed.insert((event, emitter), false); None },
-                }
-            } else { None };
-            let playing_id = engine.playing_id();
+            let tracked = queued.ticket.take();
+            let playing_id = tracked.as_ref().expect("admitted ordinary post").id().value();
+            if queued.watched.is_some() {
+                completions.waiting.remove(&(event, emitter));
+                completions.active.insert((event, emitter), tracked.as_ref().unwrap().id());
+            }
             for action in actions.iter().cloned() {
                 match action {
                     SourceAction::SetState { action, target_path } => {
-                        if let Err(error) = engine.post_state(action, target_path, event, emitter) {
+                        if let Err(error) = engine.post_state_with_ticket(action, target_path, event, emitter, tracked.clone()) {
                             warn!("Wwise event {event:#010x} Set State unavailable: {error}");
                         }
                     },
                     SourceAction::Stop { action, target_path } => {
-                        if let Err(error) = engine.post_stop(action, target_path, event, emitter) {
+                        if let Err(error) = engine.post_stop_with_ticket(action, target_path, event, emitter, tracked.clone()) {
                             warn!("Wwise event {event:#010x} Stop unavailable: {error}");
                         }
                     },
                     SourceAction::Play { settings, definition } => {
                         match definition.prepare(registry.scheduled_selections.clone(), emitter, mixer, parameter, &scene, position, settings) {
-                            Ok((source, scheduled)) => {
+                            Ok((mut source, scheduled)) => {
+                                // The audio source survives ECS removal while
+                                // its output tail/stop is still being processed.
+                                // End belongs to that real owner, not its proxy.
+                                if let Some(ticket) = &tracked { source.retain_event(ticket.clone()); }
                                 let audio_target = AudioTarget { event, emitter, paused: false, world_paused: false };
                                 if source.can_route() {
                                     match engine.submit(source, playing_id, event) {
                                         Ok(voice) => {
-                                            let mut entity = commands.spawn((voice, audio_target, scheduled, StreamedMedia(holds.clone())));
-                                            if let Some(ticket) = &tracked { ticket.source_ready(); entity.insert(TrackedSound(ticket.clone())); }
+                                            commands.spawn((voice, audio_target, scheduled, StreamedMedia(holds.clone())));
                                         },
                                         Err(error) => { error!("Wwise event {event:#010x} shared output unavailable: {error}"); continue; },
                                     }
                                 } else {
                                     match engine.register_fallback(scheduled.clone(), event, emitter) {
                                         Ok(control) => {
-                                            let mut entity = commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
+                                            commands.spawn((AudioPlayer(scheduled_sources.add(source)), PlaybackSettings::DESPAWN,
                                                 audio_target, scheduled, control, StreamedMedia(holds.clone())));
-                                            if let Some(ticket) = &tracked { ticket.source_ready(); entity.insert(TrackedSound(ticket.clone())); }
                                         },
                                         Err(error) => error!("Wwise event {event:#010x} action control unavailable: {error}"),
                                     }
@@ -934,8 +1213,13 @@ fn play_events(
                     }
                 }
             }
-        } else { completions.failed(event, emitter); }
+        } else { completions.failed_watch(event, emitter, queued.watched); }
     }
+    // Cancellation releases only this client's preparation lease. A shared FX
+    // decode keeps its own client, and a running task cannot republish here
+    // once the last watched request has gone.
+    let wanted: std::collections::HashSet<_> = completions.waiting.keys().map(|(event, _)| *event).collect();
+    decodes.retain_client(DecodeClient::Watched, &wanted);
 }
 
 /// Wwise RTPC changes affect sounds already playing. Mirror that when a
@@ -996,6 +1280,7 @@ fn update_playing_volume(
 pub(super) struct AudioPreparation {
     registry: WwiseRegistry, mix: AudioMix, engine: bevy_backend::Engine,
     outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch<bevy_backend::OutputAudio>,
+    playback: PlaybackBackend,
 }
 impl AudioPreparation {
     pub fn take(world: &mut World) -> Self {
@@ -1004,12 +1289,13 @@ impl AudioPreparation {
             mix: std::mem::take(&mut *world.resource_mut::<AudioMix>()),
             engine: std::mem::take(&mut *world.resource_mut::<bevy_backend::Engine>()),
             outputs: crate::rendering::bevy_backend::asset_preparation::AssetBatch::new(world.resource::<Assets<bevy_backend::OutputAudio>>()),
+            playback: *world.resource::<PlaybackBackend>(),
         }
     }
     pub fn prepare(&mut self, commands: &mut super::setup_commands::SetupCommands,
-        seed: declaration_texts::PhysicsSeed) {
-        let contacts = contacts::ContactSounds::acquire_with_seed(seed);
-        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands);
+        catalog: Arc<crate::archive::Catalog>, map: &str, seed: declaration_texts::PhysicsSeed) {
+        let contacts = contacts::ContactSounds::acquire_with_seed(catalog.clone(), map, seed);
+        prepare_banks(&mut self.registry, &mut self.mix, &mut self.engine, &mut self.outputs, commands, &catalog, map, self.playback);
         // Host: cold media reads/decodes must not occupy the frame executor.
         // Keep its existing parallelism rather than the smaller async pool,
         // and release these workers before scene preparation continues.
@@ -1018,7 +1304,7 @@ impl AudioPreparation {
                 .num_threads(bevy::tasks::ComputeTaskPool::get().thread_num().max(1))
                 .thread_name("sound acquisition".to_owned())
                 .build());
-        prepare_listed_events(&mut self.registry, pool.as_ref(), contacts.declarations());
+        prepare_listed_events(&mut self.registry, pool.as_ref(), contacts.declarations(), &catalog, map);
         commands.insert_resource(contacts);
     }
     pub fn publish(self, world: &mut World) {
@@ -1027,4 +1313,33 @@ impl AudioPreparation {
         world.insert_resource(self.engine);
         self.outputs.publish(&mut world.resource_mut::<Assets<bevy_backend::OutputAudio>>());
     }
+}
+
+/// Resolve every installed map's bank selection without acquiring media.
+pub(super) fn observe_bank_inventory(base: &std::path::Path) -> Result<(), String> {
+    let catalog = crate::archive::Catalog::open(base).map_err(|error| error.to_string())?;
+    let language = crate::assets::lang::read_audio_language(base)?;
+    let language = crate::assets::wwise::language_name(language).ok_or("unsupported audio package language")?;
+    let mut count = 0;
+    for path in catalog.paths_with_suffix(".mapresources") {
+        let Some(name) = path.strip_prefix("generated/buildgame/")
+            .and_then(|path| path.strip_suffix(".mapresources")) else { continue };
+        if matches!(name, "init" | "common") { continue; }
+        let entities = format!("maps/{name}.entities");
+        if !catalog.contains(&entities) { return Err(format!("manifest has no entities companion: {entities}")); }
+        let map = name;
+        let selection = level_banks(base, language, &entities).map_err(|error| error.to_string())?;
+        let mut banks = selection.banks.into_iter().collect::<Vec<_>>();
+        let mut shared_banks = selection.shared_banks.into_iter().collect::<Vec<_>>();
+        let mut shared_packages = selection.shared_packages.into_iter().collect::<Vec<_>>();
+        banks.sort_unstable();
+        shared_banks.sort_unstable();
+        shared_packages.sort_unstable();
+        eprintln!(r#"AUDIO_BANK_CONTEXT {{"map":{map:?},"language":{language:?},"packages":{:?},"banks":{banks:?},"shared_packages":{shared_packages:?},"shared_banks":{shared_banks:?}}}"#,
+            selection.packages);
+        count += 1;
+    }
+    if count == 0 { return Err("no installed audio bank maps were resolved".into()); }
+    eprintln!("AUDIO_BANK_CONTEXT_COMPLETE maps={count}");
+    Ok(())
 }

@@ -683,18 +683,19 @@ pub(super) fn prepare_local_shadow_owner(
         precomputed_world_casters.len(),
         topology.words[1]
     );
-    let mut image = |extent: [u32; 3]| -> Result<Handle<Image>, String> {
-        Ok(images.add(shadow_pipeline::shadow_depth_image(
+    let mut image = |extent: [u32; 3], label: &'static str| -> Result<Handle<Image>, String> {
+        Ok(images.add(shadow_pipeline::shadow_depth_image_named(
             bevy::render::render_resource::Extent3d {
                 width: extent[0],
                 height: extent[1],
                 depth_or_array_layers: extent[2],
             },
             format,
+            label,
         )?))
     };
-    let atlas_image = image(settings.atlas)?;
-    let cache_image = image(settings.cache)?;
+    let atlas_image = image(settings.atlas, "local shadow atlas")?;
+    let cache_image = image(settings.cache, "local shadow static cache")?;
     Ok(LocalShadowOwner {
         settings,
         atlas_image,

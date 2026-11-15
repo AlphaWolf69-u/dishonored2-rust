@@ -12,6 +12,33 @@ differences, current release scopes and unresolved streaming gaps, is in
 remain the baseline; the user also authorizes improvements that preserve
 behavior and improve performance/memory rather than copying inefficiencies.
 
+## Current supported lifecycle disposition (2026-11-15)
+
+The reopened audit is complete for currently implemented consumers, including
+active streaming, tails, replacement and interrupted acquisition. The authoritative
+current runtime table and evidence keys A–I are in
+[resource-lifetimes.md](resource-lifetimes.md#completed-current-resource-lifecycle-audit-2026-11-15).
+The matrix below supersedes older pending predictions for those exact paths.
+Historical `partial` entries about missing gameplay do not mean those features
+were implemented, nor do they reopen already accepted current-owner lifetimes.
+
+| Current consumed owner / boundary | Original basis | Current disposition and exact limit |
+|---|---|---|
+| Archive/Catalog, selected declarations, init/common/map histories and shutdown | `1400607f0`, `14005feb0`, `140060b60`, `1400661e0`, `140060180`; persistent-type table `142280ee0` | **Complete for supported acquisitions; host representation.** A proves scoped sharing, cancellation, outgoing history release and final Catalog destruction. Demand-only typed payloads and direct installed archive/format consumption remain; no extracted asset prerequisite. This does not instantiate every registered class. |
+| World/Tome/model/immutable common GPU meshes | `14026a5a0`, `140259d50`, `140278df0`, `14026a240`; WORLD tree `140295fa0` | **Supported owner lifecycle complete/host.** A: all36 initial publication/removal and intended host/common baselines. CPU upload staging retires; required collision/visibility query representations remain map-owned intentionally. B/C add real normal-frame retirement. Full original model/visibility feature coverage is not claimed. |
+| MD6, skeletons, animation/AnimSet, Midnight and blueprint projections | `1401c8cf0`, `14024f2a0`, `14024adf0`, `140247a40`, `1402462b0`, `140193a10`, `1413517a0`, `1401c10d0`; generic scope/purge above | **Supported source/instance lifecycle complete/host.** A closes demanded identities/typed projections and histories; no eager parse-all or duplicate mutable instance world. D supersedes the later palette-layout defect: logical inverse-bind projection removes33/3 palette errors on the two observed routes. Unimplemented cinematic, animation-LOD and cloth simulation consumers are separate features. |
+| Cloth-bearing standard MD6 base selection | `140088c10 -> 140087820/140087a20`; registry `141356d10` | **Consumed header projection complete/host, not cloth runtime.** A selects real generated noncloth products, reads five demanded compact headers, retains zero header payload bytes at final purge; remaining common header identities die with Catalog. `md6-cloth-map-demands-20261114.json`, `cloth-md6-header-products-20261114.json`, `cloth-header-projection-storage-20261114.json` establish installed metadata scope. No cloth simulation/render companion promise. |
+| Physics shape/source/history, real body/component retirement | `14006a910`, `140060180`, mutable detach `140cdfcb0/140ce03d0/140ce04a0`; Stop/deinitialize pool owners cited in ledger | **Supported lifecycle complete/host.** A:116 common shape headers, one demanded payload, coin reads3→1, outgoing body/shape consumers and final Catalog release. All36 real prepared snapshots have zero mutable shapes/subscribers and no supported mutation emitter: nonempty mutation is **N/A**, not a fabricated passed runtime case. Dynamic solver/general body families remain separate unsupported consumers. |
+| Streamed scene images, resident views, materials and map withdrawal | `1402e9ff0`, `14030dbf0`, `1402f5530`, `1402df8c0` | **Current supported streaming and release complete/host.** A covers initial identity/upload/removal; G identifies114 actual post-playing read/upload/commit chains and7147 exit/return cycles across521 slots. Ordinary scene withdrawal correctly retains an in-flight read through commit. The four pressure256 reductions and slot4117 reduction/reupgrade/reduction occurred during loading, not the moving walk. No in-flight cancellation was observed on those completed walks; B exit-reading separately supplies16 inflight/14 queued/one active read before canonical closure. Existing installed archive observer separately covers partial read cancellation. This is not every possible image-read failure or a claim about opaque driver allocations. |
+| Render programs, shader metadata/device caches, quality/resize targets and callbacks | `141352730`, `1402ca9c0`, `1402c9f00`, `1402ca440`; `14036f8a0`, `140372db0` | **Current supported device/map owner lifecycle complete/host.** A releases67 shader-library handles. C/D complete seven fenced quality and resize states on EotW and Dust, including real callback Drop; Corrected B GPU accounting reports1,118,986 matched creates/frees and zero final resources; occupied slack is not empty heaps, and transient unmatched records remain visible. D supersedes luminance thrash prediction: quality485→5 creations per map; resize7→7. This establishes owner events/counts, not original GPU-bank/source-preload parity, upload traffic, RSS, walking CPU or FPS. |
+| Iggy sources, imported libraries/fonts/glyphs, live VM and modal worker | Named snapshots `1410150f0`, `14101d290`, `1402df8c0`, `1402f5530`; VM `1410298b0`, `1410629a0/141086460`; live trace/sweep `1410642f0/141064430/141063ed0/141063530`; modal exit `140790ea0 -> 140788d70` | **Supported lifecycle complete/host within stated evidence.** Earlier live-VM/closed-movie results retained; B actual ui-transition proves EotW→Dust→EotW with one surviving worker, zero outgoing checkpoint weak leases and one final join. Earlier a122 early-quit proves actual pending reply drain+join, not destructor wake (wakes0; no movie published before that quit). F finds215 UI identities, zero cross-role scene/env matches: do not invent active scene/UI replacement content. Normal nested Journal subscreen return is source-backed; no new human appearance claim. |
+| Readable/Pickable item, accepted pickup cursor, usable animation assets | READ_NOTE `1407905e0`; pickup `140844bf0 -> 14076e2b0/14076ec20`; usable `14077b3b0`, `14077b610/14077bda0`, `1407e5190`, `140257330`, `14025aa00` | **Current supported acquisition/action retirement complete/host.** B read-exit uses an actual admitted portable item and canonical shutdown; its accepted_pickups=0 snapshot does not prove a nonempty pending cursor at exit. The accepted-cursor drain correction is source-backed; A closes typed components. Existing installed usable clip/model cancellation and real worker retirement are recorded at54dc48d9 in the ledger; Stop drops the same placement/node/asset owners. This does not certify every interactive object, normal document UI appearance, full inventory/equipment or arbitrary gameplay entity removal. |
+| Banks/package/media/setup, ordinary playing cookies and real audio output | `1400c93c0/1400c93f0/1400c97e0`, `1400c0360/1400c0620`; `1400c4550/1400c6030`; Stop `141127000 -> 1410e9950`; End `1410e1290` | **Current supported source/output lifetime complete/host.** B/C actual paced decoder/output,16 admitted cookies/17th rejection, watch replacement, finite FX EOF/End and final shutdown. F establishes zero production ordinary watched-Post producers, so watched+uncached asynchronous cold Post/Stop is **N/A for current gameplay**; source cancellation remains API correctness, not observed cold coverage. Failed cold-player runs remain failed/inapplicable. No hardware-audio or full Wwise algorithm claim. |
+| FX immutable definitions, PMODEL/fields, material/image dependencies and live instances/tails | `1413630d0`, `140022fd0`, `1400607f0`, `1401c5990`, PMODEL `140232220`, renderer surface `1401fbad0/14031ad30`; chains/Stop `140223dd0/140223f60/140220520/140230960/140230980/1402307e0/140199df0` | **Supported lifecycle accepted/host.** H confirms the late material-owner handoff repair, actual WORLD fly admission/overlap/gap/restart and canonical clear, plus candle natural drain and persistent decal ownership through map clear. I proves the fly sound intentionally persists under native Stop; its earlier natural-drain timeout remains failed. F/G close current cross-role/purged-live applicability and source-backed exact-task cancellation/revival without fabricated consumers. |
+| Screen-water/ocean histories and source-owned asynchronous readbacks | Existing water/fog/native framebuffer boundaries in ledger; `1402fdea0`, `14036f8a0` | **Current supported owner lifecycle complete/host.** B actual contact/wave-driven true/false/true/false water-screen transitions, both particle heads/quads cleared at shutdown. C real callback retirement has no surviving owner states/strong source leases/overflow; quality/resize fenced samples complete. This is not every water appearance/physics feature. |
+| Faction, contact/configuration, player-mode/state/component and option metadata | Family-specific original functions retained in each E row; registry/scope boundaries above | **Current consumed projections owned and retired; gameplay remains scoped.** E resolves every positive consumed row to an owner, including temporary setup parsing whose generic syntax is intentionally discarded. A graph/faction fingerprints and hierarchy closure match. Unsupported playerState variants, NPC/equipment/mission/audiograph/save consumers do not become implemented merely because configuration is read. |
+
+
 ## Classes
 
 ### GPU heap occupancy attribution (2026-11-09)
@@ -148,6 +175,14 @@ required with the coherent backend batch.
 | `FUN_140064720`, `FUN_140064820` | per-container registration of a map's list | host: lookup is `140064590` (vtable `141acc328` + `0xb0`), which normalizes the manifest path and searches registered container name tables; `assets::map_resources::load_list` resolves the manifest's owning archive, then interprets ids against that archive's index. Installed input audit: 38 manifest paths, no cross-container duplicates. Redundant index rescans are separate acquisition work, not an unresolved virtual call |
 | "%i streamed" entries (`140066ac0`-`140066b8c`) | the map preloader skips index flag `0x20` and `.sbcm`/`.tbcm`/`.bwm` records | partial: classification traced in installed instructions; `140068800` reads the index flags into record+`0x4a0`. In installed `game1_001.index`, 6,952 flagged records are image mips (6,476), Iggy (350) and generic files (126). This does not imply that every ordinary placed mesh is spatially streamed. Typed rewrite owners request these payloads themselves; unified registry-driven loading remains partial |
 
+Contact declaration ownership prediction (2026-11-10). The bootstrap phase at 1400661e0 and registry acquisition/purge at 1400607f0/140060180 distinguish session declarations from the outgoing map. The host already shares installed init/common physicsMaterial, contact FX and sound-event source text, but its single global table is replaced by a second Catalog. Move that existing table to its owning Catalog and release only that catalog's outgoing history, preserving live sound-event records from the typed registry (141352070/1400b3750). Predict A/B/A catalog interleaving performs two common-table acquisitions instead of three, with unchanged payloads, single-catalog source counts and overlay freshness. Closing A releases its session lease without affecting B. Measure common-table identity, reads, source signatures and exact map-history retirement.
+
+Camera and contact database session-cache prediction (2026-11-10). Original 1400661e0/1400607f0 retain initialized resource identities, 1403160f0 selects the DOF material variants, and 1400040a0/1400041a0 use the parsed contact database. The host stores both prepared tables in one process-wide replaceable slot per class. Catalog A/B/A therefore decodes A's identical source again even while A is live. Use independent catalog-owned slots and serialize only acquisitions of the same table in the same catalog. Expect two acquisitions instead of three on A/B/A, one per ordinary session, unchanged 63 camera material paths and authored kernels, and the same contact hash entries. Existing editable overlays must still read fresh contents, and outgoing level material cleanup must preserve only its own session's camera material credits. Compare payloads and independent final lease release using the installed source.
+
+Manifest catalog ownership prediction (2026-11-10). Original 1400661e0 consumes init/common and map manifests in order, then releases the assembled request table; 140060b60 and 140060180 separately control actual resource residency. The host's global source and combined-list tables evict all other Catalog entries on acquisition, even when their consumers and catalogs remain live. Move both existing tables to the Catalog, share the same source admission lock between direct and combined reads, keep init/common strongly owned, and leave ordinary combined maps weak. A/B/A should keep A's bootstrap source and live combined-list identities, while a map whose last consumer released must rebuild only its map/reuse sources. Expect identical ordered descriptors, header masks, loading progress and GPU inputs, with no extra retention in one active catalog. Editable primary/reuse manifests continue to reacquire independently. Measure source identity, skipped archive/index work and independent final release.
+
+Catalog-scoped model, material and shape retirement prediction (2026-11-10). The installed 1400607f0/140060180 registry acquires and purges resource identities. The host has independent catalog namespaces but these three history scopes use process-wide counters and purge all namespaces together. Count their existing level leases per Catalog, and end only the retired catalog's read-credit scope. Preserve live common static models and prepared camera materials in that same Catalog. Dropping a static model/shape source from one catalog should neither hold its names for an unrelated live catalog nor remove that catalog's records. The normal repeated-map route should retain the common records and release outgoing records with unchanged installed model, material, shape and GPU payloads. This is loading ownership, with no per-frame work or payload change.
+
 ### Parameter-block sharing across consumers
 
 Prediction before implementation (2026-11-09): native0607f0/05feb0 returns one resource identity,98cdd0 deserializes its typed assignments and060180 retires unused resources. Existing ParmBlockSources only shares within one caller table; material/equipment acquisition must not decode a second copy of a live particle block. Put weak/coalescing record identities on the actual Catalog, preserve caller-local weak lookup tables and typed parse/metadata APIs, and let real FX/material Arc leases own the decoded data. Two simultaneous immutable acquisitions through different caller tables should return one Arc identity and perform one read/parse; each existing caller fast hit remains local. Editable generations stay independent and alive until their actual users release. Registry metadata is lazy and drops with Catalog; dead records retire their exact read-history identity after in-flight acquisitions and old generations release. No decoded image acquisition, rendering, sampling precision or per-frame resource lookup is added. No resident-byte or CPU-time saving is claimed before the real caller workload is measured; additional weak record metadata is intentional resource identity/ownership overhead.
@@ -160,17 +195,28 @@ Prediction before implementation (2026-11-09): the weak process lookup currently
 
 Prediction before implementation (2026-11-09): registration must use the first primary header container in mounted master order (140064590), while payload acquisition keeps its existing selected data archive. Retain each path's header-group membership across payload overrides and lazily read the small master primary table once per Catalog. This adds session metadata, not a second resource owner or per-frame lookup. No CPU-time or memory-saving claim is made. Native 140068c30 reads the primary pairs and 1400658b0 mounts them before additional data archives. The installed master maps native container0 to game1_patch.index/game1.resources; init and common manifest payloads are in archive slot6 but still belong to header container0. All71 installed preload/reuse manifest paths have one primary membership, so this distinction applies across every installed map. This owner API is source-written; registration activation and production acceptance remain to be completed with the animation-resource batch. Evidence: artifacts/installed-container-layout.json and container-registration-scope-source.json. No tests were written or run.
 
+Archive index name staging prediction (2026-11-10). The installed index reader 140068800 reuses an index-record workspace while reading kind, source and path, and 140064590 resolves the resulting header identity. The rewrite's Catalog::open allocates three independent name buffers for every record even when it only compares an existing kind and ignores the source. The four selected installed indexes contain 219,315 rows, 194,075 selected paths after normalization/precedence, and 19,364 image alias candidates. Reuse the record's owned name buffers in the shared parser and transfer path storage and requested image aliases to the catalog. Keep the exact owned visitor contract for manifest and diagnostic consumers, and release sorted path strings as their bytes enter the final packed table. Expect kind/source scratch transfers to fall by about 419,000, with no change to selection, alias precedence, validation or resident catalog layout. Measure catalogue opening only, and compare all installed identities as well as selected payloads before integration. Evidence: DH2-screen-shadow-retirement/artifacts/archive-index-acquisition-census-20261110.json.
+
+Archive index name staging acceptance (32c1f060). Four same-binary opens each read all 219,315 installed index rows and selected the same 194,075 paths and 17,264,487 packed name bytes. The complete ordered entry and alias fingerprints and all 20 sampled archive payload fingerprints matched. Kind-buffer growths fell from 219,315 to 689 and source-buffer growths from 219,314 to 24,342, eliminating 413,598 growths per catalog open. Path growth count remained 219,287. Scoped dev catalog-opening cycles were 831,969,773 and 860,069,560 in the separate-buffer control and 742,561,575 and 759,614,380 with reuse. All four acquisitions exited zero. This covers catalog construction and selected installed payload access, without a gameplay frame or peak RAM claim. Evidence: DH2-screen-shadow-retirement/artifacts/catalog-index-name-staging-20261110-comparison.json.
+
 ### Image (`idImage`)
 
 | Original | Behavior | Status |
 |---|---|---|
 | `1402ea140` LoadResourceInternal | reads the `.bimage` and uploads its base mip chain through `1402e9ff0` at load | ported: setup initializes every scene image's base chain |
+| `1402e9ff0` / `1402f5500` | uploads each authored image record | host: `assets::texture` also supplies contiguous Bevy upload payloads. The shared 2D material reader and Ward reflection lookup reuse the decoded archive member in place. Particle field sampling keeps only the first authored RG8 mip after validating the complete chain. |
 | `1400607f0` / `14005feb0` acquired image lookup | returns the resident resource identity | host: `texture_streaming::SharedImages` captures committed init/common images on map teardown and transfers matching handles/states into destination setup without a base read/upload. Transfer removes the old session-held handle, preventing it from pinning a superseded active texture. Inactive common images remain charged and eligible for mailbox-acknowledged pressure reduction. Scene and particle 2D identities share the streamer. UI, fog, lens, area-light and cloud/depth-default full-mip consumers share the session ResidentImages owner; original 14005feb0/140060180 lookup/purge boundaries are implemented with Bevy handles and explicit movie leases. Equivalent initial base views now transfer from the registered owner; named UI bindings acquire committed scene/common views and retain snapshot leases. Different source-mip views remain distinct to preserve the scene minimum policy |
 | `1402e9ff0` | the base-chain GPU upload | host: existing Bevy image owner uploads reserved image identities; loading waits for generation-tagged GPU readiness, with common/init before map images. Custom material/sky/audio asset tracking remains active while map systems are suspended; dependent materials retry until images are ready. Original upload dispatch is traced: 1402f5500 selects 1402f50c0 (2D/cube UpdateSubresource1 or Map/copy/Unmap) or 1402f52f0 (3D row/slice pitches); 1402f4060 finalizes descriptors and releases replaced views/resources. Host Bevy/wgpu preparation and compressed queue uploads replace those D3D11 calls |
 | `FUN_14030e840` arkTextureStreamer | streams `<image>.bimage%d_mip%d` during play | host: scene images use the original pressure gate, expired/minimum and density/one-level reductions (`14030f3d0`, `14030d7a0`, `14030d8d0`), sampling-role priorities (`1402d4e20`), static/dynamic mode and path/age keys. Pending reservations count against finer-mip residency; completed reads/uploads stay until pressure requires eviction. Common images transfer between active/map-cache ownership, with inactive pressure using the same GPU mailbox. Stable host tie-breaking and padded-block byte accounting differ explicitly. Default/constrained-budget walking and three-map execution are recorded below. Particle 2D demand uses this same streamer; named UI acquisition now reuses committed scene/common views without forcing full mips; compatible registered base views avoid scene reacquisition |
 | `r_textureStreamingPerFrameBudgetKB` | upload budget per frame (4096 KB) | ported |
 | `listImages` / readonly resource registry | the original's named image residency (sizes, classes, views) | verified snapshots: bootstrap has 643 resource registries / 23,534 entries including 1,548 named images; full-Steam Institute and EotW snapshots capture named image scopes and current views, including the EotW ocean streamer record. The user-driven waterfront observation sampled that record over movement; precise coverage and limits are recorded below. Allocator totals alone do not supply named image residency |
 | `1400607f0` / `14005feb0`, `1402ea140` | particle image acquisition independent of materials/draw state | host: `rendering::particles::image_resources::ParticleImages` shares compiled 2D/volume chains by resolved path and dimension during level acquisition. `bevy_backend::particle_images::ParticleImagesGpu` owns one GPU texture per acquired identity; sampler/state variants only bind it. Both release with level/pass ownership. Production release A/B: 102 -> 62 CPU image acquisitions, 22,200,416 -> 16,134,008 acquired bytes; 190 -> 59 GPU uploads, 43,785,808 -> 16,046,296 uploaded bytes. Image acquisition/upload CPU 37.240 -> 11.323 ms (repeat 12.003 ms). EotW -> Dust -> EotW releases each outgoing pass and reacquires 59/54/59 unique textures, with zero client errors. Particle 2D identities/demand now use the scene owner (3dd8a11); remaining volumes retain complete single-mip authored data. Equivalent registered scene-base views and current named-UI snapshots now share handles; intentionally different mip views remain independent |
+
+Unpublished scene image rollback prediction (2026-11-10). Original image lookup/publication/purge are 14005feb0 / 1402f5530 / 140060180. The host's scene worker registers reserved 2D handles before publishing its AssetBatch, so compatible readers can share the same placeholder. If the batch is abandoned, its image payloads drop but the registry and any named UI binding can still return the unpublished identity. Withdraw only IDs still owned by the dropped batch, and mark those wrapper snapshots invalid for later requests. Keep previously committed views and the existing successful publication path. Expect a retry of the same installed path to receive a new usable ID, with a previously published unrelated image unchanged and no retained abandoned registry lease. This adds no image conversion or per-frame work; named binding lookup checks the cancelled state. Layered sources have separate CPU/GPU ownership and do not refer to these reserved 2D handles.
+
+Unpublished layered-image rollback prediction (2026-11-10). The existing water image registry uses the original lookup and purge boundaries 1400607f0 / 14005feb0 / 140060180. Cube and array staging owns the complete installed inline chain until the first GPU upload. An abandoned scene can leave newly acquired sources strongly owned by the session registry, even after its 2D reservations are withdrawn. Tag only newly inserted layered sources with their scene batch, clear that tag at publication, and remove matching entries when the batch is discarded. Existing committed and overlapping live leases stay valid. Expect the abandoned Dust District ocean cube and caustics array to drop their staging when their final batch references release, with normal common-image reuse and upload bytes preserved. No extra format conversion, frame work or per-image payload copy is needed.
+
+Cancelled image acquisition history prediction (2026-11-10). The game increments resource-load progress from registered acquisitions in 1400661e0 and retires resource identities through 140060180. The host records archive reads before image preparation and normally prunes that history at outgoing map release. When a prepared scene never publishes, the matching history survives even after the scene batch and its reservations retire. Reuse the image owner predicate at aborted preparation, retaining committed registry and shared cache entries and pruning only the affected Catalog's read history. The scene worker already takes a shared-image snapshot; transfer that snapshot to its image batch without a second copy. Expect the abandoned installed image to lose its read credit, a committed image and an independent catalog to retain theirs, and retry to register a fresh read. No successful-path image IO, mip policy or frame work changes are expected.
 
 ### Sound (Wwise)
 
@@ -182,6 +228,18 @@ Prediction before implementation (2026-11-09): registration must use the first p
 | stream manager (stream type != 0 sources) | streamed sources (type 2, no bank prefix) are read from their package while they play; prefetched sources (type 1) start at once from a bank prefix while the rest streams | host: required format metadata is prepared for graph construction; selected voices stream installed Vorbis/IMA packets through a shared 2 MiB, 16 KiB-granularity reader. Type 1 borrows its authored bank prefix and streams continuation. Packed seek tables stay packed; metadata/setup and decoder workspaces are separate from that device budget. Three-map default playback, the final walking PCM/CPU comparison and installed byte-prefix comparisons are recorded below. The legacy full-reader path is diagnostic-only |
 | listed `soundevent` decls | loaded with the map | ported: prepared at startup |
 | `1400c93c0`, `1400c93f0`, `1400c97e0` -> `1400c0360` / `1400c0620` | startup and map bank/package acquisitions have separate unload lists | partial: common/init banks and their media stay resident; map banks, map-only cached media and world playback/actions release on transition. Host: one Arc package index per path, a stable startup-bank prefix and one persistent audio output; verified in repeated-map client acquisition (three retained startup bank identities). Prepared event graphs are rebuilt against the current bank registry rather than retaining references to unloaded map actors |
+
+Wwise property staging prediction (2026-11-10). The installed Play, Stop and Set State readers at 141116320 / 14113b7a0, 141141fc0 and 14113c730 supply property ID tables followed by serialized values. The host's bank reader already lends slices of the original member independently of the cursor. Action ranges and actor/bus bundles copy the ID slices before reading values, then discard the copies. Borrow those immutable IDs and preserve the paired typed values, property order, offsets and validation errors. Expect one fewer temporary allocation for every nonempty property or range ID table consumed by the changed functions. This does not change retained actor or sound data, callback work, decode format or frame timing. Verify parsed installed actor and action records before integrating.
+
+Wwise media chunk reuse prediction (2026-11-10). Original 1410f1910 looks up and reuses the loaded Sound, 1411284e0/1410f3fe0 bind its authored source and 141122400 replaces or releases that source. The host keeps the bank bytes but reconstructs a heap-allocated chunk directory for every uncached sound visited in each event. Keep just the validated DIDX and DATA ranges on the already-loaded bank; decode and borrow the same installed record and media bytes. Predict one fewer directory walk and temporary hash allocation per such lookup, identical media, stream formats and I/O, and two optional ranges of additional metadata per live bank. That metadata retires with the existing bank owner. No per-sample work, media conversion or change to source residency is expected. Compare the previous walk and range lookup within the same executable, with scoped lookup cycles and actual installed event publication.
+
+Wwise package lookup prediction (2026-11-10). The original AKPK lookup 1400caec0/1400caf40 binary-searches each authored table by media ID and language. A header-only census of all 82 installed packages found 132,632 entries in 75 nonempty media/external tables, all sorted by that key with no ties within a table. Use the order of the existing immutable entry arrays, without allocating a second index. Preserve standard-before-external order and the first exact match. Keep the prior linear behavior for externally supplied unordered tables. Expect logarithmic lookup on the entire installed set, unchanged selected extents and media/stream fingerprints, and no added read, conversion, payload allocation or per-voice work. Measure this lookup separately from the bank chunk change above. Evidence: DH2-scene-shutdown/artifacts/wwise-package-media-order-20261110.json.
+
+Wwise bank DIDX search prediction (2026-11-10). The bank loader acquires the authored 12-byte records at 1410f3c10 and uses them in 1410f3a60 to register DATA-backed sound media. The host borrows the exact loaded bank bytes but scans the DIDX chunk for each resident source or stream prefetch. A census of all 176 indexed banks in 82 packages found 651,846 records in 164 DIDX tables. Every table is sorted by ID with no duplicates and the largest has 18,694 entries. Validate order at bank registration and binary-search the same immutable rows in place. Use the first matching row and keep the previous linear fallback for unusual unordered or truncated tables, preserving their existing checked error boundaries. Expect substantially less work for the same in-bank queries and identical decoded source extents, bank leases and play/stream output. Only the order flag is retained with the bank. No additional index or asset conversion and no per-voice work. Compare the isolated DIDX lookup and full installed graph output. Evidence: DH2-scene-shutdown/artifacts/wwise-bank-didx-order-20261110.json.
+
+Wwise bank DIDX lookup acceptance (748d7d31). The same dev executable ran Edge of the World, Dust District and Edge of the World with scanned and ordered DIDX lookups, holding the previously verified bank/package lookup paths constant. All 27,177 prepared media fingerprints, 5,837 stream records, three encoded residency snapshots and stream request/byte totals matched. The same 81,414 DIDX lookups fell from 379,350,726 to 101,150,407 measured thread cycles. Both observations exited zero. The observation covers production acquisition and release with installed banks, without voice playback or frame-time measurement. Evidence: DH2-collision-staging/artifacts/wwise-bank-index-lookup-20261110-comparison.json.
+
+Wwise bank/package lookup acceptance (9d98c32a). The same dev executable ran the previous directory walk/linear package scan and the shared ranges/ordered lookup through windowless Edge of the World, Dust District and Edge of the World publication and release. All 27,177 prepared media fingerprints, 5,837 stream records, three encoded residency snapshots, and three stream request/byte totals matched. Bank directory walks fell from 81,414 to zero, with affected lookup cycles from 255,086,397 to 70,153,428. The same 6,155 package lookups fell from 48,294,840 to 13,226,393 cycles. The five loaded banks held 240 bytes of range fields. Both runs exited zero. This measures media lookup and installed acquisition, without a voice playback or frame-time measurement. Evidence: DH2-scene-shutdown/artifacts/wwise-media-table-lookup-20261110-comparison.json.
 
 ### Material, model, animation, physics, FX, Iggy, entities
 
@@ -285,7 +343,11 @@ No images, gameplay input, tests or frame-time performance claim were used.
 ## Kinds
 
 Every kind in the installed load lists has a row (`loading::tests`). A
-trailing `*` covers a family of kinds.
+trailing `*` covers a family of kinds. Listed-kind coverage alone does not
+establish a consumer. The completed EotW runtime capture contains459 coverage
+kinds,151 with positive successful-read counts; all151 resolve to named owners
+here, with zero missing/none-owner matches. Exact names, wildcard matches and
+log lines are in `artifacts/resource-consumed-kind-owners-20261115.json`.
 
 | Kind | Owner | Status |
 |---|---|---|
@@ -294,35 +356,35 @@ trailing `*` covers a family of kinds.
 | `activeRagdoll` | none | none: no owner yet |
 | `anim` | `assets::edge_animation::{EdgeAnimation,residency}` | host: immutable compressed resource identity; requested init/common clips persist, map-only entries are weak and prune after actor release. Original lookup/purge `1400607f0`/`140060180`, blob loader `14024adf0`; sampling reads the same compressed bytes. Three-map production acquisition 600 -> 276, with identical fingerprints for all 600 requests and zero outgoing map leases. Per-character playback state stays separate; no GPU upload belongs to the clip itself |
 | `animBasic` | `assets::animation_rig`, `gameplay::player::animation`, `app::usable_animation` | host: declaration syntax converts to a model-specific immutable item slice; a BasicRig template and its instances share that slice, with independent commands, clocks and blend/playback state. Last template/node release retires item metadata; animation clips retain their existing scoped owner. Native1407e4540/1407e5190/1406e4af0/1406e51d0. Source scopes and generic native registry phases are not reproduced by this model-resolved representation. Four-load actual prop acquisition/instance-data and retirement comparisons passed; see scope below |
-| `animSet` | `assets::animation_rig::animset` | host: Catalog-owned per-declaration records coalesce cold acquisition and share immutable aliases/generated movement while consumers overlap. Rigs retain ordered leases; editable generations and in-flight loads survive purge. Dead records retire their read history after consumers release, and Catalog shutdown drops registry allocations. Working-main three-map execution created/released44 matching identities and ended with zero owner-tag bytes. Original247a40/2462b0/060180 boundaries are traced; original heap/registration-phase admission remains in the active resource-manager port, and later Midnight consumers require their authored events. No sharing saving is claimed for main's current three-rig route |
+| `animSet` | `assets::animation_rig::animset` | host: Catalog-owned per-declaration records coalesce cold acquisition and share immutable aliases/generated movement while consumers overlap. Rigs retain ordered leases; editable generations and in-flight loads survive purge. Dead records retire their read history after consumers release, and Catalog shutdown drops registry allocations. Working-main three-map execution created/released44 matching identities and ended with zero owner-tag bytes. Original247a40/2462b0/060180 boundaries are traced; lazy header registration, bootstrap promotion and scoped retirement are connected through the existing resource manager and included in021c7586 all36 acquisition/retirement. Unsupported Midnight event consumers remain separate. No sharing saving is claimed for main's current three-rig route |
 | `animTree` | none | none: no owner yet |
 | `areaTagCollection` | none | none: no owner yet |
-| `arkCloth` | none | none: no owner yet |
+| `arkCloth` | `assets::bmd6::cloth` | host: demand-only LOD0 header projection under the Catalog Registry; registration1356d10, five-product header088740, generated identity087f50/0882e0/088460 and MD6 remapping088c10/087820/087a20/088150 are source-backed. Preload/bootstrap/map/persistent/session purge, failure sharing, overlays and cancelled publication follow the common resource owner; arkCloth is absent from the conditional heap1 promotion table142280ee0. Header bytes and checksum scratch retire after selection; ordinary generated noncloth meshes use the existing model owner. Other LOD names are validated without retention. Full Havok cloth payload, simulation and cloth-companion rendering remain unimplemented; no frozen cloth substitutes are rendered. Verified at021c7586: dev game/tools and default-library builds pass; all36 actual publication/retirement and GPU upload/removal complete with zero acquisition errors. Only five requested headers load across the route; final header payload count and bytes are zero. |
 | `arkTree` | none | none: no owner yet |
-| `baseModel` | `assets::bmd6::ModelSources`, `assets::entities` | host: preparation scopes own immutable decoded BMD6 identities; setup explicitly borrows live physics model sources and runtime skin/usable consumers retain their required Arcs. Final consumer drop frees model payload, with optional acquisition/release identity diagnostics. The extra process-wide weak/coalescing cache was removed: a four-map debug production comparison completed with 210 requests, 203 reads/decodes and 76 matching source/decoded path signatures in BOTH modes, with no client errors. It supplied no measured reuse. First-person render models now use the same loader instead of direct read/decode; the routed loader and removed-cache batch compiled in the release game and completed both four-map runs, with matching model content signatures. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. No CPU/RSS gain is claimed from debug duration. GPU mesh residency remains with its existing owner; complete class lifecycle parity is still partial. |
-| `blueprint` | `assets::entities::blueprint` | host: batch-owned typed child paths/transforms coalesce immutable acquisition/failure, mutable overlays bypass sharing, and all definition payloads retire after expansion. Final instances retain independent transforms. Native1413517a0/1401c10d0/1401c1270/1401bc1f0; generic registry scopes remain separate. Four-load source/placement identity and retirement observations passed; see scope below |
+| `baseModel` | `assets::bmd6::ModelSources`, `assets::entities` | host: preparation scopes own immutable decoded BMD6 identities; setup explicitly borrows live physics model sources and runtime skin/usable consumers retain their required Arcs. Final consumer drop frees model payload, with optional acquisition/release identity diagnostics. The extra process-wide weak/coalescing cache was removed: a four-map debug production comparison completed with 210 requests, 203 reads/decodes and 76 matching source/decoded path signatures in BOTH modes, with no client errors. It supplied no measured reuse. First-person render models now use the same loader instead of direct read/decode; the routed loader and removed-cache batch compiled in the release game and completed both four-map runs, with matching model content signatures. Original identity/load provenance: `1400607f0` / `14025aa00`; read-history teardown: `140060180`. No CPU/RSS gain is claimed from debug duration. Supported source acquisition and final-consumer retirement are covered by the recorded comparisons and021c7586 all36 observations. GPU mesh residency remains with its existing owner; active skin/animation and runtime replacement observations are separate from these source-lifetime results. |
+| `blueprint` | `assets::entities::blueprint` | host: batch-owned typed child paths/transforms coalesce immutable acquisition/failure, mutable overlays bypass sharing, and definitions retire after static expansion instead of retaining unused assembly descriptors. Native1413517a0/1401c10d0/1401c1270/1401bc1f0; no installed init/common references or conditional marker-1 promotion. Verified06ec97ab: EotW/Dust/EotW placements, reads and transient descriptors unchanged; final consumer retirement clears13/10/13 successful history records. Independent Catalog scopes pass, session consumers return to0. Evidence: DH2-fx-level-lifetime/artifacts/blueprint-history-20261114-comparison.json. No gameplay CPU/GPU gain claimed |
 | `boneCharmCollection` | none | none: no owner yet |
 | `boneCharmLoadout` | none | none: no owner yet |
 | `climb` | none | none: no owner yet |
 | `contactSystem` | none | none: no owner yet |
-| `ContactSystemDB` | `assets::entities::contacts`, `app::audio::contacts` | host: the common parsed database is shared by catalog identity; level-specific contact chains and sound state stay independent. Four-map clients reduced reads/parses 4 -> 1 with matching 7,407-entry fingerprints; a three-load release acquisition comparison measured 26,196,065 -> 9,042,530 thread cycles. Editable overlays retain separate reads. Original common acquisition is 1400661e0 / 1400607f0; whole-class forced purge remains outside this owner |
+| `ContactSystemDB` | `assets::entities::contacts`, `app::audio::contacts` | host: the common parsed database is shared by catalog identity; level-specific contact chains and sound state stay independent. Four-map clients reduced reads/parses 4 -> 1 with matching 7,407-entry fingerprints; a three-load release acquisition comparison measured 26,196,065 -> 9,042,530 thread cycles. Editable overlays retain separate reads. Original common acquisition is 1400661e0 / 1400607f0. The Catalog owns this intentional session metadata until session destruction; no current producer requests native class-wide forced purge. Active contact sound/FX playback remains a separate runtime scope |
 | `curvefloat` | `app::fog_scene`, `app::resident_images` | host: registered fog curves use installed compiled R16F images, shared through the image owner and purged by image scope; `1402edb60`/`1402ade20`/`1402add00`/`1402adf20` generate and upload the original lookup. All 16 indexed curve declarations have matching 4096x1 R16F compiled image names. An original EotW GPU capture matches its installed image in all 4,096 samples; other curves have descriptor/index coverage, not original-output comparisons. Scripted curve producers remain separate |
 | `damage` | `app::player`, `gameplay::player::decls` | host: the supported drowning path resolves inherited source only during player preparation, consumes the water damage/health filters into typed player settings and drops the generic fields; no runtime source reads or retained generic damage tree. Original dispatch/filter consumers are 1404c0cf0 / 140717800 / 140717dc0; other damage consumers are not claimed implemented |
-| `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Renderer residency/unload lifecycle remains partial. |
+| `decal` | `assets::decal` | partial: typed `arkFXDecalDesc` acquisition (`143ae3730`/`217d50`), shared declaration references and ordinary FX chain playback (`222f80`/`2191f0`/`2191d0`/`218980`); installed projection-program defaults/overrides and the FX opacity image are resolved by the existing material owner; host: shared-geometry receiver submission, borrowed skin palettes and depth-box reconstruction are connected; typed acquisition covers all 25 installed decal declarations and 99 material variants; a D3D12 capture verifies the animated depth-box draw changes scene RGB pixels. WORLD receiver admission reuses the `298ee0` cursor/material rules. Clip-model bounds use fragment clipping in place of D3D clip-distance exports. Skin-decal FX remains a separate unsupported family. Catalog-scoped decal references now use selected lazy headers, bootstrap promotion and map/persistent purge, with immutable failure reuse and editable bypass; all25 installed declarations and controlled owner scopes passed, and actual header selections match all36 primary/reuse maps. Renderer residency/unload evidence is recorded below. |
 | `DevGui_Menu` | none | none: no owner yet |
 | `difficultyManager` | `assets::difficulty`, `gameplay::options::gameplay` | host: scoped immutable definition identities coalesce player/options acquisition; runtime managers retain a generation lease, shared direct preset/slot arrays and independent custom/current values. Selected headers/bootstrap promotion/map purge/Catalog release follow the common registry; no heap-1 promotion is invented for this class. Native141387290/1406472a0/140648590. Four-map CPU acquisition comparison verified (015e50e8); see acceptance below |
 | `difficultyPreset` | `assets::difficulty` | host: scoped typed presets with immutable failure reuse and overlay bypass; manager definitions retain source-generation leases while contiguous copied preset tables preserve direct runtime lookups. Native1413872f0/140647550 and common registry phases. No shader/GPU/streaming objects. Four-map CPU acquisition comparison verified (015e50e8); see acceptance below |
 | `drop` | none | none: no owner yet |
-| `entityDef` | `assets::entities`, `assets::entities::light_sources`, `assets::entities::player::DeclarationSource` | host: placed models cache inherited model references per preparation; lights borrow ordered decoded source layers from a temporary owner, with editable-overlay/pure-reader bypass and complete retirement after typed light construction. Player/arm source bundles release after setup consumers. Native registration141352590 and identity1400607f0; light-source four-map production acquisition comparison verified (557dbc1a). Remaining entity consumers and full generic registry lifecycle still require review |
-| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation; runtime physics/water records retain only needed fields and ordinary area parameters move to the area owner. Editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318. Four-map comparisons, including Dust return water, match ordered area and compact-volume fingerprints. A level-scoped parsed-parent cache avoids 1,351 inherited reads on the four-map route, with 516 matching profile signatures; it drops after preparation. Full declaration registry lifecycle remains partial |
+| `entityDef` | `assets::entities`, `assets::entities::light_sources`, `assets::entities::player::DeclarationSource` | host: placed models cache inherited model references per preparation; lights borrow ordered decoded source layers from a temporary owner, with editable-overlay/pure-reader bypass and complete retirement after typed light construction. Player/arm source bundles release after setup consumers. Native registration141352590 and identity1400607f0; light-source four-map production acquisition comparison verified (557dbc1a). Production literal entityDef consumers are source-reviewed in EntityDef consumer review below; each releases transient parser syntax after producing its typed output. Full generic declaration-header parity and unsupported consumers remain outside these host-scoped representations |
+| `env` | `assets::entities`, `assets::environment`, `rendering::environment` | host: area and physics consumers reuse one resolved volume preparation; runtime physics/water records retain only needed fields and ordinary area parameters move to the area owner. Editable overlays preserve separate acquisitions. EotW / Dust / EotW resolutions fell 1,000 -> 500 and inherited declaration reads 2,636 -> 1,318. Four-map comparisons, including Dust return water, match ordered area and compact-volume fingerprints. A level-scoped parsed-parent cache avoids 1,351 inherited reads on the four-map route, with 516 matching profile signatures; it drops after preparation. This transient typed projection intentionally omits a second generic declaration payload registry; supported volume/source leases retire through the level owners, including the021c7586 all36 route. Generic unimplemented environment consumers are not counted as covered |
 | `EnvProbe` | `assets::bprobe`, `assets::pnetwork`, `rendering::probe_lighting` | host: original `1402b15e0` consumes the network sequentially; bounded archive streaming retains parsed query tables and retires source staging. Scene/particle leases share a probe set and release its read-history names on last owner drop. All 36 installed network records matched the previous reader; EotW / Dust / EotW released 3,312 / 2,825 / 3,312 history entries. GPU resource ownership remains host-specific |
 | `equipmentUpgrade` | none | none: no owner yet |
 | `explosion` | none | none: no owner yet |
-| `fade` | `assets::fx::fade`, `app::loading_fade` | partial: world-authored load colour/opacity curves and durations; runtime sampling follows `140166f60` / `140166e40` / `140167170`. Host display UI composition; priority/listener/script arbitration remains outside the direct-map loader |
-| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | partial: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the decoded traversal/object tables intentionally retain flat runtime query data. Historical source a34a947 measured the associated query package at 826 -> 682 CPU ms/s and 3.05 -> 2.30 ms median query span; this is a host performance representation, not abandoned parse staging. The source blob and typed query data share map ownership and release together |
+| `fade` | `assets::fx::fade`, `app::loading_fade` | host: select the initial or later authored declaration at `1408aac09` / `1408aac1f`, acquire only that curve for the direct-map load, sample with `140166f60` / `140166e40` / `140167170`, and release the loading controller's curve lease at fade completion; the Catalog retains any bootstrap or map-scoped identity until its purge. Priority/listener/script arbitration remains outside the direct-map loader. Catalog-scoped immutable fade identities now own selected header registration, bootstrap promotion, cached failures and conditional map/persistent purge; loading controllers lease curves while keeping independent clocks. Installed seven-definition content and controlled bootstrap/map/persistent/final-lease observations passed; all36 actual manifest selections match independent primary/reuse data |
+| `File` | `assets::level`, `assets::world_mesh`, `visibility::tome` | host: world (BWM) vertex data and the shared shadow source meshes are released after setup's uploads, as the original keeps no CPU copy of uploaded world geometry (F8 re-reads the world on demand); host: one lazily prepared immutable `295fa0` WORLD bounds tree is shared by shadows and projected decals (three consumers: 13,864,920 -> 4,622,536 requested bytes, identical installed EotW query output); the Tome blob stays resident and its cell tree is descended in place (axis codes, planes, implicit children and leaf ranks from a 64-node rank directory, bounds split from the root), as the original reads it; the decoded traversal/object tables intentionally retain flat runtime query data. Historical source a34a947 measured the associated query package at 826 -> 682 CPU ms/s and 3.05 -> 2.30 ms median query span; this is a host performance representation, not abandoned parse staging. The source blob and typed query data share map ownership and release together |
 | `Font` | `assets::iggy::font`, `flash::text`, `flash::glyph_cache` | host: metadata reads do not decode glyphs; live movie consumers share metrics, kerning and lazy outlines over retained Iggy source bytes through a weak provider index (original14102bd60/14102ba20). Source/provider/movie ownership has no strong cycle. Existing R8 glyph pages, dirty updates, installed atlas caps and inactive GPU eviction remain unchanged. Working-main same-binary production acquisition created35->7 providers, peak record bytes400964->200634, and released every created identity in both modes. This validates provider lifetime/reuse, not CPU speed or total IGGY parity |
 | `footStepPhysMat` | none | none: no owner yet |
-| `fx` | `assets::fx::declaration`, `rendering::particles::world_sources`, `app::audio::contacts` | host: one inherited source-acquisition path for world, screen, pause and contact FX (140022fd0 / 1400607f0); scratch syntax retires after conversion to existing typed level/instance owners. Immutable common source texts use the existing session owner; overlays bypass it. Typed catalog resource-list residency remains partial; no generic syntax cache is retained. Source/build acquisition and normal-client observations passed; see scope below |
+| `fx` | `assets::fx::declaration`, `assets::fx::definition` | host: Catalog-owned selected headers, demand-decoded immutable typed groups/families, cached immutable failures, bootstrap/map/persistent markers and scoped purge (1413630d0 / 140022fd0 / 1400607f0 / 1401c5990). World, screen, pause and contact consumers share descriptors while retaining independent material/image bindings and playback state. Source syntax retires immediately; live root leases preserve inherited read credit through purge. Mutable overlays bypass sharing. All36 CPU acquisitions and final three-map/runtime GPU publication/removal passed; warm addition of another family role remains outside observed coverage. See FX acceptance below |
 | `fxactor` | none | none: FaceFX arkFaceActor resources (registration1413529f0), not idEntityFx actors. The92 indexed .arkfaceactor files have no production reader; supported visual-effects actors acquire entityDef/fx resources through their own owners. Facial animation remains unimplemented |
 | `fxanimset` | none | none: no owner yet |
 | `gameflowManager` | none | none: no owner yet |
@@ -330,7 +392,7 @@ trailing `*` covers a family of kinds.
 | `gamesoundproperties` | none | none: no owner yet |
 | `gameVideoClip` | none | none: no owner yet |
 | `greatestMomentsManager` | none | none: no owner yet |
-| `iggyFile` | `flash`, `gameplay::pause_state` | partial: reads its resources; installed imports now acquire their complete authored dependency closure once per player VM through the existing shared source owner, before entry scripts/movie construction; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners) |
+| `iggyFile` | `assets::iggy::FileScope`, `flash`, `gameplay::pause_state` | host: worker-scoped immutable source/ABC acquisition and movie-local runtime ownership; installed imports now acquire their complete authored dependency closure once per player VM through the existing shared source owner, before entry scripts/movie construction; `flash::bitmap_resources` owns immutable library bitmap payloads, shared across menu instances. `1402e2c00` uploads format 13 as BC7_UNORM directly; gameplay now retains/uploads those blocks rather than expanding to RGBA. GPU bitmap/glyph textures release on movie close (`m_cacheResources = 0`); old unique glyph IDs no longer accumulate across opens. Host fallback: non-block-aligned base extents retain the existing cropped decode because wgpu requires block-aligned BC extents. Original `1402e2c00` mip-chain acquisition/upload is connected; its sampler filters follow `1402dfd40`. Host: immutable CPU library bitmaps remain a shared session cache to avoid repeated reads/decoding; movie GPU images release separately. Three-map acquisition used 34,556,544 CPU bitmap bytes against the retained 86,057,717-byte IGGY tag baseline (which includes additional UI owners). File-to-font provider links are weak; retained file bytes support lazy outlines and parsed ABC. Source-backed bitmap ranges share their member allocation, and Catalog retirement releases session cache ownership. Font/provider and bitmap-reopening evidence is recorded below. Active movie replacement and modal transition retirement remain separate runtime observations |
 | `image` | `app::texture_streaming`, `app::resident_images`, `assets::texture`, `rendering::bevy_backend` | host: indexed compiled images are acquired through shared scene and resident-view owners; scene mips stream on demand, GPU upload staging is retired, and map images release while reusable common/UI views remain leased. Original acquisition `1402e9ff0` and streamer `14030dbf0` are mapped to the host backend. Scoped loading-history cleanup now removes stale names after level release while preserving reusable image and UI bindings. Full backend fence and device-allocation parity remain partial; see the image sections below |
 | `inventoryitem` | `assets/inventory_item.rs`, `assets/inventory_item/sources.rs` | host: Catalog identity, live readable/history leases and inherited read-generation retirement; ported readable defaults63c510; blocked: full general item/equipment variants |
 | `inventoryItemCollection` | `assets/inventory_item/configuration.rs` | ported:613ae0 construction, inherited item list, first-occurrence6136e0,613930 destruction; host: scoped Catalog resource records; verified: EotW/Dust/EotW CPU preparation shares bootstrap definitions and releases the item owner at Catalog destruction; gameplay quantities/eligibility are separate |
@@ -340,13 +402,13 @@ trailing `*` covers a family of kinds.
 | `kiscule` | `assets::entities::effects::declarations`, `assets::resource_registry` | host: catalog-scoped immutable declaration identity, cached immutable failures, selected preload headers, bootstrap/map phases and scoped purge follow 14138ca50 / 1400607f0 / 14005feb0 / 1400661e0 / 140060b60 / 140060180. Deferred bootstrap dependencies preserve later explicit map markers and recursive references keep first-reference order. Entity-embedded roots remain map-owned; runtime variables, gates, owner overrides and queues stay instance-local (`7bc1d0`/`7bb9d0`). Payload decoding remains demand driven. Same-build acquisition and normal-client observations passed; see measured tradeoff below |
 | `layer` | none | none: no owner yet |
 | `loco` | none | none: no owner yet |
-| `mapInfo` | `gameplay::map_info` | host: session declaration index follows `1400607f0` / `14005feb0`; only requested parsed declarations are retained and aliases share the same immutable identity. A five-level production comparison reduced reads 50 -> 19 and decoded bytes 200,076 -> 77,776 with matching declaration fingerprints. Overlay and read-failure paths retain the existing scan; whole resource-class purge remains partial |
+| `mapInfo` | `gameplay::map_info` | host: session declaration index follows `1400607f0` / `14005feb0`; only requested parsed declarations are retained and aliases share the same immutable identity. A five-level production comparison reduced reads 50 -> 19 and decoded bytes 200,076 -> 77,776 with matching declaration fingerprints. Overlay and read-failure paths retain the existing scan. The Catalog owns the intentional session index and requested declarations; no current producer requests native class-wide forced purge. Session retention is an explicit host policy rather than a pending unload operation for an implemented caller |
 | `massprops` | `assets::physworld::mass::{MassSources,resources}` | host: demand-decoded principal frames replace original Havok resource payloads; Catalog identity, selected headers, bootstrap/map scopes, immutable absence/failure, purge and final release follow 141356de0 / 140089390 / 140089690 / 140089320 and the common registry rules. Body overrides still apply to a copy. Four-load production CPU acquisition/purge observations passed; live cross-map appearance is not claimed |
-| `material` | `app::material_loading` (material class), `app::runtime_materials` (host preparation) | partial: startup cache ownership is transferred to the level for runtime reuse; worker preparation uses the same resolver and live-world asset providers. Image acquisition failures reject the prepared batch before proxy publication. Runtime requests have separate level-unload and supersession cancellation. Host proxy publication shares the startup bundle and exposes entity IDs for pipeline readiness. The generation admission, image-slot remapping and tail-scoped retirement coordinator is integrated and compiled; four-map default production loads/unloads passed. Runtime material work checks the level and supersession tokens between acquisitions. The effect source owner drops a queued job when its last requester leaves. Clean game-feature compilation of `8ebfd33f` passed. Live dynamic success, failure, cancellation and tail retirement remain unobserved for this batch. |
+| `material` | `app::material_loading` (material class), `app::runtime_materials` (host preparation) | partial: startup cache ownership is transferred to the level for runtime reuse. Workers use the same resolver and asset providers, validate image readiness, and discard failed or superseded batches. Windowless Dunwall Escape observed installed decal admission, cancellation of a replacement batch, and zero outgoing decal materials and images after release. Windowless runtime mesh and slot observations are recorded below. Active draws, live tails, and an installed image-read failure remain outside that coverage |
 | `md6Def` | `assets::animation_rig::declaration`, `assets::bmd6` | host: Catalog-owned ordered resource headers, shared immutable declaration generations and retained parent/model references. Creating lookup and existing-only lookup remain distinct; failed/absent loads stay attached to their actual header. Preload registers lazy identities from the actual primary/reuse manifests; bootstrap promotion and map-marker retirement follow060b60/0661e0/0410f0, with dead read history removed after all generations release. Unused declaration payloads remain demand-loaded. The working-host owner compiled in release4e7683a2 and completed the recorded EotW/Dust/EotW CPU-preparation acquisition and purge route; all 51 common MD6 headers remained unloaded while the three requested Corvo declarations loaded per batch. The earlier ad376ca0 three-map GPU acceptance covers AnimSet ownership and must not be used as MD6 acceptance. Full MD6 render-transition and nonloading-query coverage remains separate from this CPU-worker scope evidence. Joint-helper/pose consumers still have explicit admission limits; no unimplemented consumer is reported as active |
-| `midnightScene` | `assets::entities::scene_motion`, `gameplay::scene_motion`, `app::player` | host: supported autonomous machinery clips share immutable map-owned definitions across graphs/playback, with separate clocks and bindings (1405329c0 / 140533460 / 1407d6040); temporary source syntax and lookup cache retire after preparation, final leases retire with machinery. Full cinematic runtime and registry preload scopes remain partial. Four-load source identity/initial pose and retirement observations passed; see scope below |
-| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); packed meshes retain both authored half-float UV sets; rigid and skinned model shadow programs keep the game-space position they consume, and vegetation uses additional wind inputs; sheared baked instances keep float vertices. Map acquisition and release use temporary model preparation data and Bevy mesh handles. Windowless EotW and Dust uploads followed by map clear return to the four preexisting host mesh IDs. Pre-level host slabs are sealed before map allocation so map buffers retire after their last level lease. Demand-decoded immutable init/common BML1 sources now share Catalog ownership across levels; GPU mesh identity reuse remains open. Original static-model loader and retirement are `14026a5a0`, `140259d50`, `140278df0` and `14026a240`, with lookup/purge `1400607f0`/`140060180` |
-| `musicManager` | `gameplay::music` | ported: compact inherited definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger update (1406647d0, 1406649b0, 1406634c0), startup/shutdown including request reset (1406637e0, 1406641e0, 14054ced0); blocked: connect this owner to the single entity dispatcher being implemented in the HUD branch and the actual worldspawn audio component, and resolve the alloc-game feature 0x20 gate before activation. No banks, media or GPU resources are duplicated by this owner; sound acquisition/playback stays with the sound class. Source compiled in f25c019; runtime activation remains blocked. Wwise music actors (HIRC 10/12) also require their actual scheduler, so wiring the manager alone will not produce music. |
+| `midnightScene` | `assets::midnight_scene`, `assets::entities::{midnight,scene_motion}`, `gameplay::scene_motion`, `app::player` | host: supported autonomous machinery clips share immutable map-owned definitions across graphs/playback, with separate clocks and bindings (1405329c0 / 140533460 / 1407d6040); temporary source syntax and lookup cache retire after preparation, final leases retire with machinery. Canonical declaration identities now have demand-only player/motion/animated views, preload/bootstrap/map/persistent/session scope hooks and production cancellation propagation; generic cinematic runtime remains partial. Verified at200df5cf: independent scene scopes, read cancellation and Catalog-history checks passed; paired windowless EotW/Dust/EotW acquisition and retirement completed with matching source content, and sharing reduced projection decodes65 to39. These observations exclude gameplay frames, playback and GPU upload. Verified at371c6435: game/tools compilation, default-library check, scope/cancellation/history observations and paired acquisition/retirement pass. Source021c7586 additionally passes all36 publication/retirement and initial GPU acquisition/removal paths. Earlier four-load source identity/initial pose and retirement observations remain separate; see scope below |
+| `model` | `assets::bmodel`, `app::setup` (model class) | partial: shared world/model surfaces upload normal and tangent as SNORM8x4 and colour as UNORM8x4, as installed (bitangent derived in the vertex shader); packed meshes retain both authored half-float UV sets; rigid and skinned model shadow programs keep the game-space position they consume, and vegetation uses additional wind inputs; sheared baked instances keep float vertices. Map acquisition and release use temporary model preparation data and Bevy mesh handles. Windowless EotW and Dust uploads followed by map clear return to the four preexisting host mesh IDs. Pre-level host slabs are sealed before map allocation so map buffers retire after their last level lease. Demand-decoded immutable init/common BML1 sources now share Catalog ownership across levels; Device-scoped immutable common meshes now have transactional publication and separate vertex/index allocation domains; actual GPU ranges, immutable contents, cancelled nonpublication and final release passed at2d666eb6. Persistent free-space lookup reuse passed at02200717, keeping two common buffers across Edge/Dust/Edge. Original static-model loader and retirement are `14026a5a0`, `140259d50`, `140278df0` and `14026a240`, with lookup/purge `1400607f0`/`140060180` |
+| `musicManager` | `gameplay::music`, `app::audio::music` | ported: inherited compact definition (140662be0, 141804e20, 1418052b0, 1418054d0), inline ten-request owner (140662fe0, 140663fe0, 1406645e0), stage/threat/stinger decisions (1406647d0, 1406649b0, 1406634c0), start/stop/reset (1406637e0, 1406641e0, 14054ced0). Live admission uses the authored worldspawn audio component and actual entity timespace; stop precedes its output/stream/bank retirement. Host: this client admits a normal gameplay world (AllocGame feature 0x20 also gates difficulty and Kiscule); player callbacks use the app message adapter while request notifications use the shared entity queue, with its native two-word inline payload. NPC perception/combat callbacks require the corresponding NPC producers; this owner does not fabricate them from camera distance or movement. Music scheduling and encoded media remain in the sound owner; see the music playback section below. |
 | `navigation` | none | none: no owner yet |
 | `Navmesh` | none | none: no owner yet |
 | `navmeshLayerSettings` | none | none: no owner yet |
@@ -355,15 +417,15 @@ trailing `*` covers a family of kinds.
 | `particledt` | `assets::fx::particle_resources`, `rendering::particles::definition` | host: catalog identity, coalesced immutable acquisition, cached immutable failures, bootstrap/map markers and scoped purge follow 1400607f0/14005feb0/140060b60/1400661e0/140060180; payload decoding is demand driven. Live generations outlast purge through consumer leases; overlays bypass immutable sharing. Caller-local tables retain the existing fast path. Same-build four-load CPU comparison and normal-client GPU-validation route passed; runtime simulation and GPU publication remain with their existing owners. Stage trail strips (1402107b0's per-renderer dynamic idTriangles, vertex format 4) are host: one `ParticlePass` vertex buffer created at the first strip draw, grown to the next power of two and released with the pass. Beam strips (1401d8d50, the same format) use that buffer too. The beam noise permutation window (rva 0x1ae8930, read by 14010dff0) is read from the hash-checked executable once per catalog (`Catalog::beam_noise`) when a loaded definition has a noisy beam |
 | `pauseMenuSectionOptions` | `gameplay::options`, `gameplay::pause_state` | host: requested options declarations initialize owned typed sections/state; root syntax retires after initialization, subclass syntax after its last constructor reader, and the actual pause/preparation owner releases typed state. No movie or GPU resources are owned by this CPU declaration layer. Native14137dcc0/140516d70/140516e40; four-load source-retirement and typed-state comparison passed; see scope below |
 | `pblock` | `assets::parm_block`, `rendering::render_program`, `rendering::particles::definition` | partial: the installed registry has 96 declarations; typed acquisition and weak declaration/history ownership are connected to particle definitions and retained through runtime tails, and compile in the integrated game build. Metadata is acquired lazily through the shared program library; mutable overlays bypass sharing. FX descriptors preserve `m_parmBlock` but the world FX owner still rejects those systems because per-instance binding and actual masking-pass activation remain unconnected. Original registration is `141351ed0`, value deserialization `14098cdd0`, and particle application `140227cd0` / `140228110` / `1403421e0`. The masking executor is `1403222f0`, registered by `14034fe00`: it binds maskBuffer with scene depth, selects slots 15/16, and preserves material state except depth writes; `render_state::masking_surface_draw_state`, `material_lists::model_masking_admitted`, and `render_model::update_particle_parameters` port the traced rules but await renderer integration. EotW / Dust / Dust return / EotW measured coverage remains 0/33, 0/37, 0/31, 0/33 listed declarations. Complete per-instance binding, target execution and color-grading consumer before lifting rejection. |
-| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Model collision and machinery requests now route through the physics source owner. The candidate cache of alias targets was removed after the Dust return comparison showed extra temporary storage and slower acquisition with no saved reads. Full resource registry lifetime remains partial. Original 14006a910 pushes the map heap for named maps; physhape is absent from 1400661e0's conditional persistent-type promotion table at 142280ee0. Init/common inherit their caller's scope |
-| `physicsMaterial` | `assets::declaration_texts`, `assets::entities::physics_material`, `app::audio::contacts` | host: world, model collision, machinery and startup share temporary source texts, then transfer listed common texts to the existing session owner; unlisted texts drop after preparation. EotW / Dust / EotW source reads 749 -> 62, plus 45 contact reads avoided; all recorded collision/material and contact signatures matched. Typed parsed definitions and full registry lifecycle remain partial |
-| `physSystem` | `assets::physworld::physics_system` | host: machinery acquires immutable decoded systems through the physics owner; repeated paths share during level preparation and each instance constructs independent bodies and constraints. Four sampled loads required 5 reads instead of 12 with matching per-instance definition fingerprints. The original MD6 definition parser `1401c9630` acquires the ragdoll's physics-system identity through `1400607f0` on registry `142bf86f0`; `14076abc0` constructs its live bodies from that resource, and `14008d7b0` releases the resource's owned Havok object at destruction. Session/common residency and full registry purge remain partial |
+| `physhape` | `assets::physworld`, `assets::entities::triggers` | host: trigger physics retains owned query geometry, bounds and cached mass results; immutable trigger HKX source/schema retire after scene initialization, while mutable shapes keep their source. EotW / Dust / EotW releases 332 / 259 / 332 sources and matching geometry/mass fingerprints were recorded. Area, physics and wind preparation share matching immutable source/schema identities through the last consumer; 1,013 reads were avoided across four loads and the temporary cache released afterward. Model collision and machinery requests now route through the physics source owner. The candidate cache of alias targets was removed after the Dust return comparison showed extra temporary storage and slower acquisition with no saved reads. The current source owner now provides demand-only common/init source retention, independent map/read-history leases and retained standalone/alias/ExtraHD query leases; old temporary area-map sharing remains. Its native registry/bootstrap/map/session routes are ported; uncached spatial Polytope/Box mass calculation is implemented, and200df5cf completed paired EotW/Dust/EotW acquisition and retirement. That cohort registered zero physhape headers, so common-source retention/reuse was not verified. The corrected preload admission gate in389ad6ff is verified at371c6435:116 common headers are registered, only one requested payload is resident, common coin source reads fall from3 to1, and final Catalog consumers release. Verified at021c7586 across all36 publication/retirement and GPU acquisition/removal paths. Original 14006a910 pushes the map heap for named maps; physhape is absent from 1400661e0's conditional persistent-type promotion table at 142280ee0. Init/common inherit their caller's scope |
+| `physicsMaterial` | `assets::entities::physics_material::resources`, `assets::declaration_texts` | host: Catalog-owned selected headers, lazy shared complete typed values and immutable failures, bootstrap promotion, conditional persistent-map markers and scoped purge. Collision, machinery and world material libraries acquire through that owner. Collision queries retain their existing contiguous value snapshot, while material libraries lease immutable definitions and keep mutable numeric records separately. Editable overlays bypass sharing. Original registration 141352520, construction 14008b640 and common registry rules apply. Installed acquisition, all 314 typed values and contact ancestry, bootstrap/map/persistent/final-lease retirement and independent catalog observations passed at ae50334e; see acceptance below |
+| `physSystem` | `assets::physworld::physics_system` | host: Catalog-owned selected headers, lazy shared decoded systems and immutable failures, bootstrap promotion, explicit map markers and scoped purge. Recipes retain generation leases and instantiate independent mutable bodies and constraints. Original lookup and instance boundaries `1401c9630` / `1400607f0` / `14076abc0` / `14008d7b0`. Installed four-map acquisition matches all twelve admitted recipe/mapping inputs. Bootstrap reuse, live-map purge protection, exact read-history release and final consumer release were observed at b7bacad0. Unsupported character-system parser inputs remain explicitly rejected. See physics-system registry acceptance below |
 | `physworld` | `assets::level`, `assets::physworld`, `gameplay::navigation`, `app::level_lifetime` | host: the selected map companion is acquired once by level preparation; source bytes and Havok schema/decoded construction tables retire at the end of the physics phase. Only owned full-precision collision triangles, packed cell indices, material/filter and owner state survive in NavigationWorld; it releases with the outgoing level. Failed/cancelled preparation drops the same owned values. Native registration141388640 and compressed-mesh tree141262020; no per-query source decoding, GPU upload or session pin. This covers the supported static-query representation, not a port of the whole Havok world runtime or generic native resource registry |
 | `playerLocomotion` | `assets::entities::player::DeclarationSource`, `app::player`, `gameplay::player::animation` | host: inherited declaration syntax is acquired during player setup and shared with arm/body consumers through the temporary setup owner. Runtime body/bob/arm LocoData owns model-specific clip indices, speed sets and transitions; mutable playback remains per node. Generic syntax is dropped after setup consumers, with no frame-time archive reads or permanent source cache. Original registration14138cdb0, common identity1400607f0 and animation update1406f4c70; selected native registry header/purge phases remain a host deviation, not ported |
 | `playerMode` | `assets::entities::player::DeclarationSource`, `gameplay::player::decls`, `gameplay::player::states` | host: startup and swimming modes resolve inherited sources during setup; typed rules, default IDs and supported state records move to level-owned runtime StateMachine data. Generic mode syntax drops after the player/arms consumers; no mode-declaration source trees survive in the player runtime. Original registration14138f7d0 and common identity1400607f0. Unsupported player modes are not acquired for runtime use. Selected native registry header/purge phases remain a host deviation, not ported |
 | `playerStatisticsManager` | none | none: no owner yet |
 | `proceduralLookAt` | none | none: no owner yet |
-| `ragdoll` | `assets::physworld::physics_system` | host: machinery resolves a skeleton/system pair and shares the immutable decoded ragdoll mapping, with independent runtime bodies and skinning state. Four sampled loads required 5 reads instead of 12 and matched the per-instance definitions. Original `14009a3c0` acquires the associated physics-system and skeleton identities before constructing the generated ragdoll path. Session/common residency and full registry purge remain partial |
+| `ragdoll` | `assets::physworld::physics_system` | host: Catalog-owned selected headers, lazy shared immutable mapping slices and retained failures, bootstrap promotion, explicit map markers and scoped purge. Original generated identity/read boundaries `14009a3c0` / `14009a530` / `14009a670`. Ragdoll instances retain their mapping generation while mutable bodies and skinning remain separate. Installed four-map definition fingerprints and b7bacad0 bootstrap/map/final-lease observations passed. Session requests survived map purge and reused their identity without IO. See physics-system registry acceptance below |
 | `ratLocomotion` | none | none: no owner yet |
 | `renderParm` | `assets::render_parameter` | host: Catalog-owned static code-default bytes, coalesced immutable reads/failures and lazy numeric metadata; editable paths create fresh leases. Catalog retirement drops session ownership; renderer/environment/sampler readers share this owner. Original1402d82c0/1402d8310/1402d8820/1400606f0; no native purge marker inferred. Four-load acquisition/storage and installed decal-material observations passed; see scope below |
 | `renderProg` | `assets::shader_cache::ProgramLibrary`, `app::scene_preparation`, `app::runtime_materials` | host: immutable compiled indices share Catalog ownership; definitions decode on demand into the level program library, temporary compressed/unpacked RPD/RPVD/UCD buffers retire after conversion/admission, and prepared variants retain their required binding metadata. Validated UCD stage checksums share the level library so material variants avoid re-inflating the same stage. Runtime preparation leases the same library; final level/worker release closes its cursors and drops definitions/variant caches. Original141352730/1402ca9c0/1402c9f00/1402ca440; native GPU-bank publication, source/include validation and optional preload are not implemented by this serialized-source owner. Backend GPU objects retain their existing renderer owners |
@@ -385,7 +447,16 @@ trailing `*` covers a family of kinds.
 | `vault` | none | none: arkJumpDef_Vault resources for NPC navigation (2 installed navmesh/npc_movement declarations), with no production reader. Player vaulting uses its separate player-state/sensor declarations; it does not acquire this resource class |
 | `vaultClimb` | none | none: no owner yet |
 | `vaultDrop` | none | none: no owner yet |
-| `cpnt*` | `assets::entities` (components of placed entities) | partial: a few component types read (e.g. `cpntHealthEvolved`); most none |
+| `cpntAudio` | `assets::entities::audio`, `app::audio`, `app::player` | host: inherited fields resolve during scene/player preparation. World emitters retain typed settings, event leases and a reference frame. Player arms retain typed sound settings. The generic component text and resolved field caches retire after their preparation consumers. Sound banks and playback retain their separate audio scopes. |
+| `cpntAudioListener` | `assets::entities::player`, `app::player`, `app::audio` | host: the selected character's inherited listener fields convert to typed listener settings before the declaration bundle is returned. The active listener is a world/audio runtime object. |
+| `cpntFaction` | `gameplay::faction_registry`, `gameplay::faction_manager`, `app::faction_component` | ported: session declaration identities05fc00/0610d0 and real component Initialize/Start/Stop5bd9a0/5bda20/5bdad0; host: Catalog-scoped declaration/header registration and typed Arc leases, independent level runtime matrices/entity registrations, consumed preload gate and final release. Source021c7586 passes paired graph/faction semantic equality and all36 acquisition/retirement. This supplies faction resource/runtime ownership, not unimplemented NPC behavior. |
+| `cpntInventory` | `assets::inventory_item`, `app::interaction_focus` | host: the inherited component contributes initial item references. Runtime inventory owns item leases and quantities, with no component text cache retained by those entries. |
+| `cpntPickable_Simple` | `assets::entities::usable`, `assets::inventory_item::sources`, `gameplay::pickable_component`, `app::physics_scene` | ported: typed READ_NOTE bindings share the scoped item Arc with the admitted component and read UI; per-batch syntax retires after preparation. Stop cancels pending acquisition, source retirement joins the reader, and component shutdown releases its item after body/graph retirement. The native pickedUp-before-inventory ordering and ordinary readable keyframe/filter/hide branches are connected to the same body. General pickup families remain outside this coverage. The200df5cf cohort completed supported readable-body acquisition and retirement across EotW/Dust/EotW. Final371c6435 compiles and passes paired acquisition/retirement; it additionally admits hidden readable physical descriptors without creating color projections. Their six affected variants pass the021c7586 all36 publication/retirement and GPU acquisition/removal sweep. Runtime pickup interaction and general pickup families are not certified by these acquisition observations. |
+| `cpntPlayerSensorInteraction` | `assets::entities::usable`, `app::interactions` | host: the selected character's inherited definition supplies the interaction distance and five cast radii (1403b7a40, 1403b8d60). Only the typed sensor settings survive acquisition. |
+| `cpntPlayer*` | `assets::entities::player`, `app::player`, `gameplay::player` | partial: observed physics, camera, controller, body, state machine, auto-crouch, lean, mantle, breath and FX-manager fields feed supported runtime owners. Shared player/arm preparation retains field leases until their final setup and screen-effect consumers. This row covers the observed inputs, with unimplemented component behavior excluded. |
+| `cpntTrigger` | `assets::entities::triggers`, `gameplay::trigger_volume` | partial: the map loader resolves typed trigger settings and shape leases. Generic inherited fields retire after preparation. The map owns supported overlap and event state; shape lifetimes are tracked separately under `physhape`. |
+| `cpntWind` | `assets::entities::wind`, `gameplay::machinery_world` | host: typed wind settings feed supported world and trigger wind consumers. The inheritance cache is local to component preparation and drops with its reader. |
+| `cpnt*` | `assets::entities` (components of placed entities) | partial: the named rows cover independently traced consumers. The observed health, mana, adrenaline and attribute inputs use the player declaration bundle and typed runtime settings. Other indexed component types may have no consumer. |
 | `UI_HUDElement*` | `app::hud_movie` | host: in-game HUD configuration resolves installed state/HUD declarations on its existing movie worker; typed thresholds, bindings and gauge state live with HudMovie, temporary declaration fields drop after loading, and movie/image/font leases use the shared Flash owners. Supported interaction, breath, health and mana consumers are present; this does not claim all HUD families. Source consumer 14078b550 / 14038f7d0 / 140674be0 |
 | `playerState*` | `assets::entities::player::DeclarationSource`, `gameplay::player::decls`, `gameplay::player::states` | host: ordered inherited mode/state declarations are resolved during player preparation; only supported state trees survive to typed StateDecl/Midnight construction. Setup subtrees release after their last player/arm consumer; mutable state, clocks and clip leases live with the level player. Unimplemented state mechanics are excluded. Generic native registry header/preload phases remain 1400607f0 / 1400661e0; this host does not pin unused state syntax to a session registry |
 | `gameLogicState*` | `gameplay::game_logic`, `app::pause_menu`, `app::loading_movie`, `app::hud_movie` | ported: world-selected transition matrix and stack (140787770 / 1407886c0 / 1407885b0 / 140787510); host: registered in-game, pause, read-note, Journal and map-transition backends retain their actual movie/declaration leases and retire through the existing UI-worker acknowledgement before level support resources drop. This does not register unimplemented states or claim their lifecycles |
@@ -394,6 +465,80 @@ trailing `*` covers a family of kinds.
 
 ### Active implementation: original lifecycle completion
 
+- Camera depth owner retirement (`14036d0c0`, `1402fbe40`, `1402fc6a0`, `140351780`). The coarse reduction retains a binding to the outgoing camera depth along with its pyramid and staging ring, and alpha depth keeps an opacity image even without an active view. Release those view allocations at the existing render acknowledgement, while keeping device shader pipeline caches. Cancel outstanding readback mappings by retiring their generations before dropping the staging buffers. Predict zero outgoing pyramid, opacity, and ring identities at the map boundary. At 1920×1080 their own logical texture and readback payloads exceed 13 MB before allocator padding and the old bound depth texture. Allocation starts again at the next valid view; ordinary in-map rendering and resize policy stay the same.
+
+- Packed acoustic route lookup (`1400b7790`, `1400b7ce0`). The original resolves a zone pair to an offset and traverses the installed packed records in place. Both host audio admission and detailed path scoring currently allocate an owned route list and a portal vector for each record before applying distance and direction. Borrow validated portal words from the existing map-owned table. Predict zero route and portal allocations per gameplay lookup, with matching traversal order, cost and malformed-list rejection. Measure only lookup and traversal over actual installed zone pairs, including the added bounds-validation pass. The graph's retained table size and audio playback state stay the same.
+
+  Installed lookup comparison `2e7959e1` matched the ordered routes and portal signatures for Edge of the World, Dust District and the Clockwork Mansion boat. Each of the two owned passes built 104,832 / 239,319 / 1,681,717 nonempty route-list and portal buffers. Each borrowed pass built zero. On the boat, lookup plus traversal used 338.8–345.8 million thread cycles with owned lists and 59.3–60.1 million with borrowed lists. This measures the changed traversal over installed pairs. Full mixer timing, in-game listening and malformed archive inputs were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/packed-acoustic-route-20261110-comparison.json`.
+
+- Shared particle physics queries (`140677ec0`, `140678070`, `1401fc710`, `140c85490`). The original queries the published physics world. The host cloned every reachable trigger body, broadphase tree and water height for every published camera frame, even after particle simulation moved to the main world. Keep one map-owned collision geometry owner, resolve wind identities after component startup, and let the frame stamp lease the same geometry. Current trigger and water bodies are published only during startup; moving machinery and player physics use separate owners. Predict one validation pass per map, zero per-frame copies or allocations for publishing query inputs, and the same tree order, filters, positions and water heights. The final lease detaches shape observers before freeing geometry.
+
+- Physics shape-observer teardown (`140cdfcb0`, `140ce03d0`, `1408a4830`). Trigger and acoustic worlds own Havok shape-observer registrations. Their Rust drop paths currently free both objects without running the existing detach routine. Drain active and pooled registrations in the original order while each shape's signals are still owned, including failed preparation and the final acoustic-world lease. Expect zero remaining subscriptions after a successful drain, with no gameplay work or change to published shapes and queries. Detached records are retired once even when a caller explicitly releases its world before Rust drop.
+
+  Windowless Edge of the World, Dust District and Clockwork Mansion boat publication and clear (`8ad64e43`) reached both teardown hooks in all three maps with no errors. All six registries had zero mutable observers. This verifies the owner ordering for those installed maps. A nonempty observer drain was outside the observation. Evidence: `DH2-fx-level-lifetime/artifacts/shape-observer-retirement-20261110-comparison.json`.
+
+- Default colour grading image (`1402f5cc0`, `1402ecb20`, `1402f5420`). Renderer bootstrap registers the 32³ identity LUT once. The display owner currently recreates it in every map. Use the existing session intrinsic image owner and pass the same immutable handle to display preparation. Keep the separate mutable colour-history images (`14036d0c0`, `140326af0`) under the view owner. Expect one 131,072-byte source upload per session and zero duplicate source uploads across maps. The default handle remains resident between maps, while the authored world and override cubes retain their current map ownership. Pixel encoding, sampling and blending stay the same.
+
+  Windowless D3D12 comparison `baf3183e` reused one 32³ RGBA8 texture across Edge of the World, Dust District and a return to Edge of the World. The map-local path created three image identities, and the shared path used the same GPU identity before preparation and after teardown at every step. Two 131,072-byte source uploads were avoided. Active image, mesh, buffer and sky material counts matched at each load. This comparison covers asset upload and residency, with view draws outside its scope. Evidence: `DH2-collision-staging/artifacts/default-colour-cube-20261110-comparison.json`.
+
+- Acoustic propagation acquisition (`1400b7fe0`, `1400b9eb0`, `1400b7ef0`). The original consumes the installed v13 resource sequentially and reads the packed route table into its final `TAG_AUDIO_PROPA` allocation. The host currently stages the whole decoded member before copying the routes. Stream large members through the existing archive reader, reuse one zone-shape scratch allocation, and fill the final route vector directly. Installed members include 3,214,915 bytes in Edge of the World, 7,992,417 in Dust District, and 31,181,079 on the Clockwork Mansion boat. Predict removing one whole-member allocation, offset by the bounded archive buffer and largest scratch. Keep the small files on the borrowed parser to avoid inflating staging for short resources. The typed zone/portal geometry and packed runtime route bytes must match. This changes map preparation only.
+
+  Installed comparison `7fe12e35` matched typed geometry, portals and packed route fingerprints across all 36 files, with 31 large files streamed and five small files buffered. Tracked source staging fell from 3,214,916 to 73,440 bytes in Edge of the World, from 7,992,418 to 73,248 in Dust District, and from 31,181,080 to 73,248 on the Clockwork Mansion boat. All three also reached scene publication and release. These figures cover the source buffer and retained scratch capacity, excluding the decompressor workspace and unchanged runtime route storage. No playback timing was measured. Evidence: `DH2-scene-shutdown/artifacts/acoustic-staging-20261110-comparison.json`.
+
+- Superseded runtime material work (`1400607f0`, `140060180`, `1408a4830`). The map gate drains only the task still owned by the coordinator. Supersession or image failure previously dropped the handle while synchronous material work could still hold and populate shared owners. Keep the existing task slot until the cancelled work returns. Discard its output even when the numerical generation did not change. Both jobs already require the same program and particle locks, so serialize admission as well and avoid a second snapshot while the first job retires. Predict at most one in-flight material batch, no superseded publication or decoder writes after map purge, and no additional work on settled frames. The replacement can be submitted as soon as the coordinator observes the old task return.
+
+  The windowless Dunwall Tower stink-bug mesh and Edge of the World blood-splatter decal acquisitions (`48327082`) each discarded generation 1 and published generation 2. The mesh route released two images and one mesh, and the decal route released seven images and four decal materials. Both returned to zero owned GPU assets with zero retired-slot texture requests. This exercises actual material supersession and GPU asset retirement. It does not time a map change while the decoder is blocked inside archive I/O. Evidence: `DH2-fx-resources/artifacts/runtime-material-supersession-20261110-comparison.json`.
+
+- Inline volume upload staging (`1402e9ff0`, `1402f4060`, `1402f5500`, `1402f52f0`). The original creates the typed image and passes authored slice payloads to its uploader. The host needs a contiguous mip-major buffer for Bevy's 3D image upload. Reuse the archive member allocation by compacting the validated slice ranges in place, including particle volumes and display colour LUTs. Predict no second payload allocation during preparation, with identical dimensions, format, mips and payload bytes. The compacted vector retains up to the original member's header and allocation slack until upload, so this change targets peak overlapping staging and allocation traffic. No gameplay or GPU timing gain is predicted.
+
+  All 102 installed BIM volumes matched the borrowed reader byte for byte, including descriptors and 183,073,792 payload bytes. Every owned result used the original allocation. The census removes 187,776,000 cumulative bytes of separate payload capacity and retains 80,886 cumulative bytes of original allocation slack. These totals span the entire installed set and do not measure concurrent residency. Edge of the World and Dust District also completed windowless scene publication and release. Active particle rendering and GPU timing were outside the observation. Evidence: `DH2-fx-level-lifetime/artifacts/inline-volume-staging-20261110-comparison.json` (`235741f0`).
+
+- Blueprint instance handoff (`1401bc1f0`, `1401bc3c0`, `1401c1270`). Machinery and render setup currently expand the same installed placements in separate batches. Pass one ordered placement list through both owners after root-only collision preparation. The original uses a shared assembly definition with instance-owned transforms. Predict one fewer root-list clone, one fewer transform expansion per authored occurrence and one fewer declaration read per unique path on the duplicate batch. Existing overlay sessions still acquire independently, so mutable inputs retain their acquisition boundaries. The placement order, render geometry and machinery indices should match, with no additional gameplay residency or work.
+
+  The same-binary Edge of the World / Dust District / Edge of the World comparison (`9281383b`) reduced expansion calls from 312 to 156 and installed declaration reads from 72 to 36. All ordered blueprint expansions, final placement signatures, placed-model mesh signatures and published/retired asset counts matched. The first comparison expected a world-mesh signature from a separate disabled diagnostic. The accepted result uses the emitted placed-model signatures and makes no world-mesh or gameplay timing claim. Evidence: `DH2-collision-staging/artifacts/blueprint-placement-handoff-20261110-accepted.json`.
+
+- Texture worker map retirement (`14030d1e0`, `140060180`, `1408a4830`). The scene streamer remains scheduled during the outgoing render handoff. Previously it could still admit archive reads and upload work before the old worker dropped. Close admissions when the map request arrives, discard queued/completed reads, and wait through the loading screen for the detached reader to finish its current member. The worker acknowledges after dropping any unused payload, including its cancellation path. Expect zero old read results applied after closing and no old decoded read staging when the next map begins. The initial texture upload gates and ordinary mip demand remain unchanged. A read already inside archive I/O may finish without blocking the update thread.
+
+  The windowless Dunwall Tower and Edge of the World runs (`77d7776c`) submitted an installed scene image request in each map alongside readable, rig and FX requests. Both runs completed the production retirement gate before clearing the map, with zero outgoing FX requests and texture retirement acknowledged. The observer does not distinguish a read cancelled before I/O from one already in progress. Evidence: `DH2-fx-resources/artifacts/texture-map-retirement-20261110-comparison.json`.
+
+- Compatible named image reuse (`14005feb0`, `1402df8c0`, `1402f5530`). A streamed view may share the same path as a fixed authored view and still start at a different mip. Require the installed initial mip selection for fixed-view cache hits, including weak leases and cross-cache reuse. Named Iggy wrappers continue leasing the current committed view, and now use the existing shared scene-view lease instead of constructing another identity wrapper. Expect zero extra uploads for compatible views and a separate authored acquisition only when the active view does not cover the requested mip chain. Ordinary streaming and its per-frame pressure decisions are unchanged. Installed-view admission and exact payload evidence are separate from live UI appearance.
+
+  The installed ocean amplitude mask and building diffuse image (`f8e7e9d5`) reused compatible leases and recovered mip 0 after a coarse scene publication and map purge. Both recovered payload CRCs matched the original full-mip acquisitions. Evidence: `DH2-scene-shutdown/artifacts/resident-view-admission-20261110-comparison.json`.
+
+- World-particle mesh buffer lifetime (`140319900`, `1402bb550`, `1402bace0`, `1408a4830`). The direct-instancing host prepared two GPU buffers and a binding even on a view with zero particle instances. It also held their largest capacities across maps after releasing the bindings. Allocate only for an actual nonempty submission and release the buffers, staging and proxy index at outgoing render acknowledgement. Zero-count proxies keep the same no-draw admission. Expect zero particle instance buffer allocations on maps with no submitted world-mesh particles, and two fewer retained buffers when leaving a map that used them. Active submissions keep their layouts, records and upload path. Actual GPU allocation sizes and active rendering remain to be observed.
+- Outgoing interaction acquisitions (`1408a4830`, `140060180`, `140844bf0`, `1407e4540`). Readable item and usable rig workers can outlive their ECS handles while synchronous decoding runs. They can still insert inventory, model, skeleton or animation entries into the shared catalog. Share one cancellation signal for these map-owned requests, stop a queued read before it takes the source lock, and observe both workers returning before map purge. A read or rig decode already running may finish. The expected change is at the map boundary, with no new work per walking frame and no change to admitted item data or animation playback. Keep observation of installed acquisition and outgoing retirement separate from gameplay presentation.
+
+  The installed Dunwall Tower and Edge of the World observation (`b817fc2b`) submitted one authored readable and one usable rig alongside an outgoing FX request in each map. The production gate settled before both map clears. One FX decode had already returned before cancellation completed; its output was discarded. This covers task admission and map retirement, with no live animation, UI presentation or blocked I/O timing claim. Evidence: `DH2-scene-shutdown/artifacts/map-declaration-retirement-20261110-comparison.json`.
+
+- Late Wwise preparation retirement (`1410f1910`, `141122400`, `141160970`). The existing bank generation rejects stale media publication, but a preparation can rebuild Vorbis headers after the map's header sweep. Bind unclaimed preparation results to their submission generation. If an outgoing job finishes or is discarded after that generation has retired, drop its source leases before pruning unused decoder headers. Release completed-but-unclaimed world jobs before the normal generation change, so they use the existing map sweep. Expect no late job to retain decoder headers after its final result drops. Existing prepared sources and common voices retain their leases, with no per-sample work and one generation read per submitted preparation. Validate normal source output and distinguish late-result retirement from live playback.
+
+  The same installed EotW / Dust / EotW acquisition route (`b817fc2b`) matched 27,177 media records, 5,837 stream records, encoded residency and read volume at all three publications. This covers the ordinary acquired output after changing retirement order. It does not exercise a stream decoder completing after the generation change or measure voice timing. Evidence: `DH2-scene-shutdown/artifacts/sound-publication-after-map-retirement-20261110-comparison.json`.
+- Scene transform scratch (`1402974c0`, `1401bc1f0`). The host evaluates the authored world and placed-model transforms to prepare probe samples, bounds and baked-shear meshes. It allocated a transformed position vector for every surface or matrix, and transformed each world object's first matrix twice. Reuse one temporary vector per preparation phase and reuse the first world matrix's points between material resolution and its placement. Expect capacity growth only when a larger input arrives, one fewer transform per first-matrix source vertex, and zero retained scratch after each phase. Preserve the vertex arithmetic, reduction order and baked mesh output. Compare scoped transform cycles and installed scene/mesh outputs with fresh scratch in the same executable. No frame-time or persistent memory gain is predicted.
+
+  The optimized same-executable comparison (`19b5b7f9`) matched world and placed-mesh fingerprints, instance counts, and the prepared/published/retired asset counts on EotW and Dust District. The two-map route reduced scratch growths from 272,324 to 43 and avoided 16,235,887 first-matrix vertex transforms. Total cycles measured inside the affected fills fell from 1,041–1,048 million to 819–834 million across two pairs. Largest allocation in each phase was unchanged. This measures preparation only. The same build covered compilation and ordinary map publication/removal of the new visibility owner, with populated live visibility scratch and query timing outside scope. Evidence: `DH2-fx-level-lifetime/artifacts/scene-transform-scratch-20261110-comparison.json`.
+- Visibility scratch ownership (`140a82710`, `14037ef90`, `1408a4830`). Cached Tome indices, cell/depth output and the previous visibility bitset are meaningful only within the current map. Move them from scheduler locals to the existing map visibility mapping. A renderer extraction with no scene also drops the alpha-depth candidate index from the outgoing map. Expect those allocations to end at map retirement, with the same key, visibility, shadow and texture-demand logic and no new gameplay allocations or locks. The windowless map route can verify acquisition and removal of the owner. Populated-cache bytes and live query timing are separate observations.
+
+Visibility query scratch prediction (2026-11-10). The original Umbra consumer 14037e1d0 marks per-member visibility in its existing output storage, with the query owner at 14037ef90 and map destruction at 1408a4830. The host creates one all-false fallback Vec<bool> and a second instance-sized bitmap for every admitted result. Keep one reusable bitmap on the existing map visibility owner. For a successful result at N nonzero instances, expect two allocations and two N-byte clears to become zero allocations after warm-up and one N-byte clear. A frame without a usable result needs neither allocation nor clear. The previous visible mirror remains separate. Expect unchanged visible instance indices, hidden/retired behavior, texture demand and shadow query publication. A map replacement retires the bitmap with the map owner. Verify allocation identity and mapped outputs before integrating; any timings apply only to scratch preparation.
+- Runtime FX source leases (`1400607f0`, `140060180`, `140199df0`). Reuse the live per-path source set before extracting another dependency map from the published level. Both worker acquisitions and subsets of already prepared sources register a weak identity. A request replacing its own playback can hold that source through the change, while simulation and bindings remain per actor. Prune dead identities with the existing acquisition cleanup. Expect one live dependency map per overlapping path, no additional archive reads, and no source kept alive by this index. Verify the actual request path separately from material publication.
+
+  Installed request observation (`62563e57`): in Dunwall Tower and Edge of the World, each same-update start/stop admitted one cancelled task and settled with zero ready sources, retiring tasks, or cached identities. The later request acquired one definition through the real worker. An overlapping request reused the same live source, with two requesters and one cached identity. Stopping both returned the identity and live source count to zero. This observes command admission, the cancelled task's acknowledgement, and final release. It does not establish interruption partway through an archive read, live emitter tails, or a performance delta. Evidence: `DH2-fx-resources/artifacts/runtime-fx-source-requests-20261110-comparison.json`.
+- Installed Wwise codec census. All 82 packages in this installation contain 132,518 indexed Vorbis and 114 indexed IMA ADPCM media records. Bank indexes reference a further 643,577 Vorbis and 8,269 IMA ADPCM ranges, including prefetched prefixes and repeated ranges. The existing installed packet readers cover both codecs. The PCM WAV conversion is a fallback for other inputs and this inventory found no installed PCM records. The Vorbis decoder still rebuilds its setup header from Wwise codebooks. Evidence: `DH2-scene-shutdown/artifacts/installed-wwise-media-format-census-20261110.json`.
+- Decal declaration leases (`143ae3730`, `140217d50`, `140060180`). The installed FX scan found 85 references to 25 decal declarations, with 15 referenced by multiple effects. The previous per-call resolver reparsed the same declaration when separate live FX acquisitions requested it. Keep a weak decal lookup in the existing level FX acquisition owner. Two overlapping requests should read and resolve it once, with unchanged variant names. Editable overlays still resolve on demand, and a later request after the last owner drops reacquires the declaration. Expect fewer declaration reads only where live requests overlap, with no change to the frame path or permanent decoded decal residency. Evidence: `DH2-interactions/artifacts/decal-cross-effect-declaration-reuse-20261110.json`.
+
+  Installed declaration observation (`e2922b78`) resolved nine references to four declarations across five FX. Sharing reduced simultaneous parsed identities from nine to four, with identical resolved variant signatures and zero retained references after release in both runs. This covers decoded identity and final release. Timing and authored decal animation were outside the observation. Evidence: `DH2-scene-shutdown/artifacts/installed-decal-leases-20261110-comparison.json`.
+- Cancelled FX acquisition (`140022fd0`, `140060180`, `140199df0`). The host drops an unused task handle and schedules cache pruning immediately. A synchronous decoder already running can acquire resources after that prune. Signal a per-path cancellation, keep the cancelled task until it acknowledges completion, then schedule another prune after its result is dropped. Stop at declaration/group boundaries and before acquiring the shared resource locks. A separate live requester still shares a pending load, and a revived path can start a fresh load. Expect no cancelled definition publication or cache prune race, with unchanged successful output. An in-progress group or archive read may finish. Installed cancellation and retirement observations remain pending.
+- Outgoing map FX worker retirement (`1408a4830`, `140199df0`, `140060180`). The shared catalog registry locks exclude purge while one declaration is being decoded. They cannot exclude another acquisition by the same outgoing job after that lock is released. At map transition stop issuing requests, signal cancellation, and retain both source and material task handles until they finish. Discard unpublished outputs before the ordinary render acknowledgement and level purge authorize the next map. The loading thread checks once per update and does not join or wait for an archive read. Expect zero outgoing worker publications after purge, with no additional gameplay frame work. Existing active effects retire through the normal FX shutdown. A transition with an installed FX acquisition in progress remains unobserved.
+
+  The installed windowless route (`02d177f2`) recorded one admitted outgoing FX source request in each of Dunwall Tower and Edge of the World. It ran the production retirement gate and cleared both maps with zero loading, retiring, ready, or cached FX sources. The simulation owner was absent before preparation, present after publication, and absent after clear. Both runs also repeated ordinary acquisition and overlapping reuse successfully. This observes source worker and level-owner boundaries. Active emitter teardown, in-flight material decoding, shadow-owner late admission, and pipelined texture mailbox overlap were outside the run. Evidence: `DH2-fx-level-lifetime/artifacts/fx-map-retirement-20261110-comparison.json`.
+- Late FX catalog ownership (`1400607f0`, `140060180`). Setup keeps the scene's reference to the same Catalog that the texture worker uses. Previously both EotW and Dust reached runtime material preparation and failed because setup had moved the scene reference away. The windowless rerun (`f136cef7`) published four installed decal materials per map and released every FX-only image and decal asset after the requests ended. EotW published seven new GPU images and Dust six, with one reused scene image. Existing world-mesh proxies were reused in both. The observation covers successful publication and asset retirement, without camera specialization or active effect tails. Evidence: `DH2-fx-resources/artifacts/runtime-fx-publication-v2-20261110-comparison.json`.
+- Close admission before host teardown. Winit receives `AppExit` after the final update and clears its main world before `App::run` returns. Waiting until the external `AudioSession` drops leaves its cancellation flag unset while the world's acquisition owners begin to retire. Signal the existing session after the final loading and window-exit systems observe a real exit. This is host scheduling for the shutdown boundary (`1408a4830`, `1400bc8f0`); final cache retirement still waits for admitted work. Expect one close signal per exit, earlier cancellation at existing worker checkpoints, and zero new steady-state allocations or locks. A file read already in progress still has to return. The saved windowless cancellation samples prove the checkpoints only.
+- World and player FX ownership (`1408a4830`, `140199df0`, `140821350`, `14021f820`). The map owns simulation state and its particle pools. The player-water/view update supplies frame inputs and does not own those pools. End player particle chains at map teardown before the world manager clears its chains. Prediction: no pool recreation on first camera publication or a temporary missing frame, one fewer initialization of both 1,024-slot pools per normal map entry, and no live player particle slots at the world shutdown boundary. Missing view inputs still withdraw the draw publication. This concerns host ownership and level acquisition, with no lower frame-time claim. Live camera-gap and active player-particle teardown observations remain pending.
+
+  Allocate the simulation with the map's screen FX sources in common scene setup. Previously the host also allocated empty pools before the first map and recreated them immediately after clearing each map. Expect no simulation storage in the empty host or between map teardown and the next scene preparation. Failed preparation discards the unpublished simulation with its setup commands. The windowless scene lifecycle observer records owner presence before preparation, after publication, and after release. It does not run emitters or create a gameplay view.
+- Edge skeleton registry (`1400607f0`, `14024f2a0`, `140060180`). The Catalog owns the weak coalescing table, and live skeletons hold weak retirement links. Normalized-path hits borrow the path and reuse the existing key. In the EotW and Dust publication comparison (`e33ec311`), all 131 acquisitions and 79 installed source signatures matched. Both runs decoded 122 skeletons, reused nine and released all live payloads. The catalog-owned table retired with zero entries and seven reserved slots. This observes acquisition, reuse and retirement, without a timing inference. Evidence: `DH2-interactions/artifacts/catalog-skeleton-registry-20261110-comparison.json`.
+- Wwise stream location ownership (`1400bc8f0`, `1410bf740`, `1410f1910` / `141122400`). The event resolver already looks up a Sound's package using its owning bank and language. Retain that bank identity in the streamed reference until graph decoding and keep the locator table local to that acquisition. Expect zero level-retained lookup entries, no cross-event lock or overwrite during parallel preload, and unchanged media extents for unambiguous IDs. Only the graph's actual stream sources retain their locators. The existing resident package-entry reader can also fill fallback resident media directly, avoiding one temporary buffer and payload copy per full package read. Header-only and prefetched stream acquisition retain their current reads. The lifetime prediction concerns acquisition and its scratch storage, with no steady-state voice cost or lower frame-time prediction. Installed publication and scoped timing observations remain pending.
+
+  Installed publication (`ff26580f`) matched the previously accepted EotW / Dust / EotW run across 27,177 prepared-media records and 5,837 stream-format records. Encoded residency and stream acquisition counts and read byte totals matched at all three map checkpoints. An independent installed package comparison found 76 cross-package IDs in the EotW selection and 81 in Dust, with byte-identical duplicates in both. The observer used actual installed source acquisition and publication. Voice playback, the full-media fallback and scoped performance were outside that observation. Evidence: `DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-comparison.json` and `wwise-stream-bank-identities-20261110.json`.
 - Sound source release: `141122400` releases an old bank-backed source before
   assigning new media; `1410f1910` reuses the registered Sound object. The host
   now prunes unused Vorbis header/codebook cache entries after map voices and
@@ -785,6 +930,10 @@ GPU validation errors. These are nine acquisition operations, not hundreds of
 independent timing samples or a whole-frame FPS improvement.
 
 ### Session shader metadata reuse
+
+Shader metadata catalog acceptance (2cf152fb). On A/B/A, both parameter and index acquisitions recorded cold/cold/reused. Returning to A avoided a 733,409-byte index read and reused all 1,688 parameter kinds and 239 option defaults. The independent installed libraries matched 270 program entries, 14,711 stage entries, and the 4,281-byte DOF program read. Dropping one catalog kept its live libraries valid, then released their last leases independently. Edge of the World and Dust District matched the earlier windowless DX12 image, GPU, common-texture and material records. Evidence: DH2-screen-shadow-retirement/artifacts/shader-session-metadata-20261110-comparison.json.
+
+Shader metadata catalog ownership prediction (2026-11-10). Original 1402d8820 initializes render-parameter declarations, 1400607f0/14005feb0 reuse them, and 1402ca9c0 acquires the installed shader index with session lifetime. The rewrite's parameter snapshot is a single global replacement slot even though every input comes from its Catalog. The shader-index weak table also deletes other base-path identities whenever one base opens. Move the parameter snapshot to the source Catalog and prune only expired weak index identities. An interleaved A/B/A acquisition should parse two metadata snapshots and two previously distinct index keys instead of three, keeping identical metadata and per-library cursors. Editable renderparm sources must still decode independently. Expect no new program parsing, GPU operations or per-frame work. Compare the actual program library identities, authored metadata and final consumer release.
 
 UI named-image binding correction: `1410150f0` binds the image resource,
 whose current GPU view can change independently of a movie's draw list. The
@@ -1601,11 +1750,58 @@ pool mutex, loose overlays keep their direct-read behavior, and no decoded
 payload cache was introduced. These counts establish eliminated filesystem
 operations, not measured CPU milliseconds or resident MB savings.
 
+Final owner observations recorded 15 cached readers after 55,629 acquisitions
+in the EotW / Dust / EotW route and 16 after 29,113 acquisitions in the EotW
+quality route. Both counts were emitted by the catalog reader pool's destructor.
+Keeping the readers for that session preserves map-to-map reuse while the
+catalog drop closes the physical files. Evidence:
+`DH2-scene-shutdown/artifacts/wwise-event-stream-locators-20261110-publication/stderr.log`
+and `artifacts/resource-quality-blocks-20261109/stderr.log`.
+
 Shadow retirement acceptance: the same production client exited 0 without
 shadow-target retirement events. Source-absent entries are now pruned before
 revision reuse, but this route did not replace an atlas within one map. No
 measured GPU memory saving or live quality/resolution coverage is claimed;
 that broader coverage remains open. Existing map-boundary cleanup is unchanged.
+
+Texture mailbox retirement (`140060180`, `14030d1e0`). The pipelined host can
+dispatch another render schedule after the outgoing acknowledgement and before
+the main world's next update resets the mailbox. An upload batch already taken
+by that render schedule could append old waiting jobs or completion records to
+the new generation. Recheck the generation at the existing publication lock.
+Expect zero old records or deferred payloads republished after a reset, and one
+comparison per upload batch with no additional lock or GPU operation. This is a
+host handoff correction. Exact overlap timing remains unobserved.
+
+The `14030cce0` request order operates on registered images. On the host an
+FX slot can outlive its old image as an empty reusable index. `r_addAllMips`
+previously admitted those empty indices and could queue a read that completed
+after another image reused the same index. Skip unassigned slots when building
+the request order. Expect zero reads for retired slots and unchanged ordering
+for live images, including in all-mips mode. The installed DX12 observer
+(`5ac96a60`) published and released two Tower FX image slots and seven
+Edge of the World slots. The production all-mips ordering returned 1,974
+and 4,143 registered requests respectively and zero retired slots. All
+observed FX assets released while their level stayed alive. This exercises
+request ordering on real retired slots. A subsequent slot reassignment,
+live rendering, and map-generation overlap were outside this observation.
+Evidence: `DH2-fx-level-lifetime/artifacts/runtime-fx-retired-slots-20261110-comparison.json`.
+
+A later seven-snapshot EotW quality route (`6b15daea`) observed four real
+parallel/local target replacements at settings generations 3, 4, 6, and 7.
+Each replacement retired one old parallel target and kept the current one.
+All four local atlas/cache identity pairs changed, and the two settings-only
+snapshots retained their existing pairs. This covers ordinary replacement
+while both owners are present. It does not cover an owner first created after
+startup. Evidence: `artifacts/resource-quality-blocks-20261109/stderr.log`.
+
+Late shadow owner retirement (`1400410f0`). A quality change can create a
+parallel or local shadow owner after startup, including a level that started
+without that owner. The startup snapshot cannot record this later insertion.
+Release both owners explicitly after the outgoing render acknowledgement and
+the ordinary level resource removals. Expect any late-created image leases to
+retire at this boundary, with two resource checks per level unload and no
+frame work. This edge still needs an actual late-admission observation.
 
 
 Named UI image lifetime evidence/prediction (before implementation):
@@ -2115,9 +2311,17 @@ The host image owner will reuse an already acquired scene-base view only when
 its initial complete-chain view selects the scene loader's requested source mip.
 Already replaced/trimmed views are not treated as complete base chains. This
 preserves the scene minimum/residency policy rather than pinning full chains.
-Later UI acquisitions use the committed scene/common view; existing wrappers
-retain their previous view. Registered current views change only on successful
-streaming commits, including inactive common-image reductions.
+The first live named wrapper uses the committed scene/common view.
+`14101d290` first searches the global Iggy wrapper table by name and adds the
+new context reference through `14100d6f0`. It calls the texture resolver only
+when no wrapper is live. `1402df8c0` likewise acquires the SRV on its first
+reference and reuses the saved handle for further references. A streamed
+replacement leaves that named snapshot available to all holders of its live
+wrapper. After the last wrapper reference releases, the next wrapper uses
+the current committed view. The host's weak named-binding lookup represents
+this sharing without extending the wrapper lifetime. Registered current
+views change only on successful streaming commits, including inactive
+common-image reductions. This scope is established by executable code.
 
 Prediction: each eligible base slot removes exactly one independent payload
 preparation and upload, equal to that registered view's payload bytes. Mip and
@@ -2954,6 +3158,80 @@ ordering comparison. Counts describe cumulative temporary allocations and
 buffer ownership, not process RSS or CPU-time changes. Evidence:
 `artifacts/texture-scratch-v3-comparison.json`.
 
+Streaming priority ownership prediction: original 14030cdb0 derives the
+priority class from the current image record's path. The host cache currently
+rebuilds classifications only when the slot array changes length. Reusing a
+retired FX slot can keep its previous path class and therefore change the new
+image's request and reduction order. Classify each path on admission and keep
+its class beside the projected demand in the existing record's alignment
+padding. Inactive shared images retain that class with the mip state. This
+removes the separate two-byte-per-slot cache, its full
+path rescan on append, and the second classification on shared-image capture.
+Existing slots should keep the same priority keys. Reused slots should get
+the same key as a fresh slot for the same path and demand, apart from the
+existing slot-index tie break. No per-frame path processing is added.
+
+Texture request scratch lifetime prediction: the streaming system currently
+retains its request flags, priority keys and instance-to-image index in Bevy
+system locals. They survive `LevelLifetime::clear` and are rebuilt when the
+next scene queue is first observed. Giving those buffers to the per-map
+texture worker should release their outgoing capacities with the worker,
+including on close. The same instance and request order should reach the
+streamer, with no new allocations on ordinary gameplay frames. This is a host
+ownership change at the map retirement boundary (1408a4830), separate from
+the earlier mailbox-scratch measurements.
+
+The game-feature check on db1cb92a compiled the exact texture sources now
+integrated. LevelLifetime removes the texture worker with the outgoing map,
+which owns its request state and cached instance slots. Projected demand
+carries the original name-based priority initialized for each newly admitted
+identity, including reused FX slots. Existing priority-key construction is
+unchanged. Live slot reuse, affected CPU cost and mip publication still need
+runtime observations. Evidence: DH2-scene-shutdown/artifacts/resource-shutdown-batch-20261110-check-provenance.json.
+
+
+Initial texture worker prediction. Original 1402e9ff0 hands validated
+authored inline records to 1402f5500. The host worker currently allocates one
+new byte buffer per inline mip even when the upload already owns the decoded
+archive member. For initial inline-only worker jobs, keep that member once
+and hand checked mip ranges to the upload queue. Expect no second payload
+allocation or copy, with only record headers and the archive capacity slack
+retained until upload. Keep separately streamed mip jobs on their existing
+direct acquisition path. Compare matching mip order, dimensions, payload
+signatures and GPU publication before claiming a gameplay memory or CPU gain.
+
+Installed worker upload acceptance (0b3f82fa). Four same-executable
+observations loaded 32 archived images across five formats and one to seven
+inline levels. All inputs matched the previously observed installed CRC,
+dimensions, format, mip count and next finer suffix. The real GPU upload
+mailbox accepted every job. After upload all decoded archive owners were
+released, and after the diagnostic released its image handles all 32 GPU
+identities retired. Per run the old path copied 25,838,832 payload bytes
+into new mip buffers. The new path reused one decoded member per image
+(25,843,168 bytes of total member capacity, including 4,336 bytes of
+headers and slack). These figures describe overlapping copies avoided
+during acquisition, not steady-state memory saved. Scoped reader cycles
+were 209.5–216.4 million copied and 190.0–191.1 million archive-backed.
+Live gameplay demand and cancellation were outside this windowless
+observation. Evidence: DH2-fx-resources/artifacts/worker-inline-images-20261110-comparison.json.
+
+Worker initial-chain acquisition prediction. When an explicit initial mip
+selects separate files, the worker reads each full member and copies its
+payload even though the upload can own the buffer returned by
+`read_separate_mip`. Use the same direct reader already measured for finer
+upgrades (14030e840 and 14030f030) and transfer its payload unchanged to the
+initial chain. Keep the existing resident-image packing path and dimension
+checks. Expect one fewer overlapping whole-member allocation for each
+selected separate worker mip, with unchanged upload bytes and suffix order.
+
+Installed acceptance (`1f85fde2`). The same game-feature executable read 30
+installed mixed chains in each mode. All 35 separate-member reads selected the
+same members, totaling 13,042,364 decoded member bytes. The upload payload CRCs,
+formats, dimensions, and mip selection matched. Both runs published all 30
+images through the render mailbox and retired all observed image and archive
+backing leases. This verifies acquisition and upload ownership. Live demand and
+release CPU timing were outside the observation. Evidence:
+`DH2-interactions/artifacts/initial-separate-worker-mips-20261110-comparison.json`.
 
 ### Fog curve resource ownership
 
@@ -3014,6 +3292,8 @@ interactive-map movie.
 
 
 ### Map-info lookup prediction
+
+Map-info catalog ownership prediction (2026-11-10). The original keeps the loaded idDeclMapInfo pointer at gameLocal+0x337118 and uses declaration identity lookup 1400607f0/14005feb0. The host's single map-info registry and current-label cache evict an independently open catalog. Store the existing lazy index and loading label in their Catalog and remove its redundant resolved-path map. The target index and parsed declaration table already cover hits, and the exhausted scan cursor covers misses. A/B/A should read each catalog once, reuse low/high-chaos aliases, release each cache at its own Catalog close, and keep edited declarations fresh. Predict one fewer key and shared pointer per successful lookup and no cached negative path string. Compare actual installed declarations and loading labels.
 
 The original init/common manifests register 28/39 mapInfo resources and
 `1400607f0` / `14005feb0` resolve their resident identities. The rewrite
@@ -3490,8 +3770,9 @@ and `artifacts/shape-parent-comparison.json`.
 
 `1401653e0` and `140165420` resolve numeric IDs and text keys to the same
 original language-dictionary entry. `assets::lang::StringTable` retains one
-immutable value shared by both lookup indexes; the session UI worker owns the
-table and catalog changes release its cache lease. The parser moves each
+immutable value shared by both lookup indexes. The catalog owns the currently
+selected installed table, with existing movies retaining their own leases.
+The parser moves each
 original key into its temporary collision map and reuses the computed ID,
 while retaining the previous collision message. This is a host ownership
 optimization; language contents, key case rules and fallbacks remain unchanged.
@@ -3517,6 +3798,25 @@ code was removed from normal source after measurement. Evidence: local
 
 
 ### Physics-shape scope evidence
+
+Demand-loaded bootstrap shape ownership prediction (2026-11-14). Original
+`14008c840` resolves the installed shape key through registry lookup
+`1400607f0`; `140060b60` promotes already registered bootstrap identities to
+marker 2, and `140060180` purges the selected marker. Physhape is absent
+from the conditional marker-1 table. Register the selected init/common shape
+names without reading or parsing their payloads, and retain only demanded
+bootstrap source/schema objects in the Catalog. Keep the accepted temporary
+area-source map policy; do not add a cache of map alias targets or pin all map
+HKX. Compact alias dependencies inherit their parent's bootstrap scope while
+using this same source owner. Expect the previously observed common coin's
+three acquisitions across maps to read/parse its immutable source once rather
+than three times. The retained payload is one demanded source/schema, not
+the 116-name common corpus. Unused bootstrap payload acquisitions remain zero;
+the installed map acquisition/geometry fingerprints and accepted 1,013-read
+map sharing saving must remain unchanged. Per-source history credits survive
+their live consumers, bootstrap credits survive map retirement, and final
+session retirement releases them. Measure only production source acquisition
+read/byte/count/cycle spans; no gameplay CPU or GPU gain is predicted.
 
 The saved original bootstrap registry snapshot contains 128 `physhape`
 and 118 `massprops` resources before a map is loaded; the saved Edge of
@@ -3584,11 +3884,27 @@ nonempty pending queue is source-reviewed rather than claimed as exercised.
 
 A rewrite history snapshot contained one common-list physhape: a coin
 collider read by the static-model path three times across the level sequence.
-The rewrite currently has no reusable session owner for that decoded shape, so
-its last level lease retires the read-history identity even when the name is
-listed as common. The next request already rereads it; clearing the stale
-history does not introduce that read. This is a host bookkeeping boundary, not
-a claim that the original discards its common shape.
+The demand-loaded `physworld::source::Owner` now registers selected bootstrap
+headers and promotes them separately, retaining only acquired source/schema
+objects through map transitions. Model collision, including compact scaled
+aliases and their dependencies, uses this same owner. Physhape never receives
+conditional marker 1. Map sources keep the accepted temporary area cache and
+one-shot alias-target policy rather than gaining a second resident map cache.
+Their actual live sources lease read credits; dropping the last map scope
+prunes outgoing credits while preserving bootstrap and live mutable inputs.
+Source credits share an independent history state, not the registry or Catalog,
+so a session source cannot retain its owner in a cycle. Lock order is bootstrap
+registry -> credit state -> loading history; credit drop never reenters the
+registry. History hash capacity shrinks at the map boundary even when a common
+source remains. Catalog teardown drops its common payload leases; live source
+consumers retain their own bytes/schema. Source files are read directly and
+their owned bytes are moved into the source without copying or format changes.
+Host: unused bootstrap shapes remain unparsed and ordinary map HKX is not
+pinned. Verification: implementation source-reviewed against the saved
+`14008c840` / `1400607f0` / `140060b60` / `140060180` decompilation; affected
+production read/byte/cycle and matching-geometry measurement awaits the
+coordinated build slot. Earlier three-read observations are baseline evidence,
+not a measured result of this implementation.
 
 ### Model, particle and camera-metadata scopes
 
@@ -4255,6 +4571,9 @@ required. No tests or compiler were run for this isolated source change.
 
 ### Music-track clip timing (source implementation, 2026-11-05)
 
+Historical acquisition-only status below; the 2026-11-15 music playback
+section records the completed scheduler and current live resource owner.
+
 `gameplay::sound::music_clip` ports 141159840 / 141159fd0 / 1411588a0's
 40-byte serialized clip to six-word sample timing conversion. It uses the
 actual engine rate, preserves double arithmetic and operand order, skips
@@ -4265,9 +4584,9 @@ an invalid integer divisor rather than substituting a duration.
 
 This record retains no media/decoder and allocates nothing on success.
 Prediction: new music scheduling support, no walking CPU or resident-memory
-gain. Full track/segment/container playback remains unimplemented; this is
+gain. At this acquisition stage, full track/segment/container playback was unimplemented; this was
 not a claim of audible music. The acquisition batch compiled in a85088d;
-clip sample conversion has not yet been exercised by scheduled playback.
+clip sample conversion had not yet been exercised by scheduled playback.
 Existing bank/media owners stay authoritative. No tests were run.
 
 The bank owner now exposes `music_track_prelude`: borrowed source descriptors,
@@ -4302,7 +4621,7 @@ duration plus variable-length cue records. Cue labels, children and stinger
 arrays borrow bank storage; no temporary label String or secondary encoded
 buffer is retained. Bounds checks cover counted arrays and variable labels.
 Music-node meter/stinger interpretation, marker sample conversion, transitions
-and scheduled playback remain separate work; serialized fields are not used
+and scheduled playback were then separate work; serialized fields were not used
 as guessed runtime settings. Compiled acquisition coverage is recorded below.
 
 Music switch-container acquisition now follows 141151320's transition rules
@@ -4376,8 +4695,191 @@ cost or new success-path allocation; failure no longer strands a slot or leaves
 a false cached class. Production error-path exercise remains outstanding;
 no tests or compilation were run for this source fix.
 
+Host component-list allocation safety (recovered from checkpoint 2410aafb):
+`875d50` entity insertion and `7e7210`/`7eb2f0`, `7e7b10`,
+`7e7c00`, `7e72c0` registration/start/stop/release enqueue now use the same
+packed-list owner with fallible growth that retains its existing entries.
+The original non-returning allocation failure is not reproduced by a Rust
+`Result`: the earlier generic `16a4a0` capacity adapter could discard the old
+backing storage before its caller restored only the newly admitted owner's
+flags. The host adapter allocates before publishing replacement storage, so
+the existing rollback paths retain all preceding live component identities.
+Successful capacity, count flags, insertion order and generation assignment
+remain unchanged. Prediction before recovery: no new per-frame work, reads,
+resident cache or successful-growth allocation; failed growth preserves the
+previous list and returns the error. This is failure safety, not a measured
+performance improvement. Source and whitespace review only; no tests, build
+or production allocation-failure exercise was performed. The separately
+checkpointed resumable startup/release dispatcher is not claimed integrated.
+
+Usable backend retirement recovery (`77b610`, `77bda0`, `4cd920`): the
+existing Interactions owner now keeps live started state separately from the
+authored starts-on-spawn flag. Its Stop removes the same fake collision box,
+cancels pending animation/effect commands, stops the existing usable animation
+layer and removes its desired FX publication. The last submitted pose remains
+with the render placement; existing FX tails retain their actual source leases.
+The existing level-clear boundary invokes this Stop while collision, animation
+and effect owners are still alive and before FxSimulation shutdown. It also
+closes readable acquisition and clears pending read activation, preventing an
+outgoing UI result from publishing into the next world. Late shared animation
+acquisitions cannot reattach a stopped actor. Partially prepared worlds retire
+whichever backends were actually published. Prediction: unchanged active-world
+rendering and frame work except the started-state admission check; stopped
+actors make no new animation acquisition. No memory/time savings are claimed.
+No tests, build or runtime exercise was performed for this recovered slice.
+Runtime entity Stop dispatch and portable document rigid-body retirement still
+require the shared entity/five-factory physics-host integration; this does not
+claim those adapters are already connected.
+
+Component dispatcher recovery from checkpoint `2410aafb`: the existing
+ComponentRegistry now owns the `7ea870` stop/deinitialize/destroy drain,
+`7eac80`/`7eb060` entity-scoped teardown and `7ea6e0` update membership queues.
+Deinitialization and destruction remain separate reverse-priority passes,
+with the shared entity-event pump between completed batches. Checked handles
+retain their generation while an actual asynchronous Stop is pending. Host
+callback errors retain successful callback cursors and deferred queue entries;
+the existing `7ea340` startup path likewise resumes instead of replaying a
+finished initialization callback. The common owner performs actual roster
+remove/add callbacks and refuses to recycle slots still held by update queues.
+No second component pool, world or event dispatcher is added. Prediction:
+one existing callback per successfully completed phase, queue ownership retained
+through host errors, and no per-frame work until the real host requests an
+update membership change; the two 16-entry update queues add 256 bytes of
+initial pointer storage per registry. No memory/time improvement is claimed.
+The current-five-factory scene host is the integration consumer, owned by the
+coordinating entity-lifecycle slice; this commit alone does not claim successful
+runtime teardown. Existing fixture constructors receive only new-field defaults
+and the request-only fixture declares its absent execution callbacks; no tests
+were added or run. Compilation is reserved for the coordinated host batch.
+
+Singleton rigid-body mode recovery (`c86800`, `c87640`, `c90020`, `c92500`):
+the canonical WorldStorage now retains the actual body while switching a
+singleton between static and keyframed motion or refreshing its collision
+filter. Static conversion releases its last motion through the existing
+deactivation/motion owners; static-to-keyframe computes the real retained
+mass frame and attaches a zero-inverse-mass motion. The separate world+8a0
+motion-kind observer and general transform observer retain their source order.
+Per-operation cursors retain partially finished activation/attachment callbacks
+and reject a conflicting request until completion. Compound splitting remains
+an explicit admission error; there is no fabricated alternate body/world.
+Prediction: no additional resources or frame work before a real mode-change
+request, unchanged body/broadphase identity, and one motion allocation only
+for static-to-motion-backed conversion. This is a prerequisite for the portable
+document pickup callbacks, not a claim those consumers are connected yet.
+Source/whitespace review only; no builds, tests or runtime exercise performed.
+
 
 ### Host archive-session teardown
+
+Hidden rigid render predicate correction (2026-11-14). `140808880` tests
+`140878c60`/`140878d10` before reading a parent binding: either real entity
+render flag returns true, while an ordinary null binding returns false.
+The portable pickup owner already sets those entity bits and projects hiding
+into the actual render sources. The rigid movement adapter now follows that
+predicate rather than rejecting hidden queued actors. The existing `140753c10`
+kernel continues its body/entity PublishedFrame update before skipping only
+the additional render pose publication. A scale-owner check likewise stays
+at the actual visible scale setter, not the common entity lookup. Prediction:
+hidden queued frames complete normally with zero added ModelPose updates;
+visible null-bound frames and body/task identities are unchanged, with no new
+allocations, asset reads or GPU work. Source/whitespace review only; no tests,
+builds or runtime exercise performed for this correction.
+
+Ordinary rigid actor publication prediction (2026-11-14). The installed
+`140806de0` movement vtable at `141c74798` selects `140808e30` (active-body
+predicate), `140809ab0` (desired-motion route), `14080a5f0`/`14080b7c0` (body-origin
+frame/velocity publication), and `140808880` (render flags/binding predicate).
+Connect the already owned post task to the existing `140753c10` kernel for the
+admitted null-parent document bodies. Read their canonical BodyStorage and
+collision velocity payload; keep the independent entity PublishedFrame.
+Publish rigid deltas through the existing ModelPoseUpdates owner so colour,
+both shadows, model bounds/lighting and query placement share the same update.
+Expect zero new assets, mesh copies, worlds or source reads. Work is proportional
+to actual queued actors; the null-parent traversal reuses its one worker path
+instead of allocating a Vec per actor. Only changed render poses enter the
+existing upload path. Unsupported binding, desired-motion and deferred-render
+branches remain explicit admission errors, not fabricated callbacks. No measured
+performance improvement or runtime verification is claimed before integration.
+
+Recovered adapter: `physics_scene::rigid_actor` resolves each queued reference
+through the existing actor/body pool, validates the actual managed hierarchy,
+reads the canonical body transform and motion centre, and shifts the collision
+payload's requested velocities to the body origin with the existing `80b7c0`
+kernel. A detached embedded body uses its already ported BasicBody interface;
+other body classes are not substituted. The entity's previous PublishedFrame
+remains separate from the actor's current cache. Real render flags and null
+bindings select the ordinary branch, with unsupported branches rejected.
+Changed render frames produce only the existing rigid ModelPose delta; authored
+render scale/shear is preserved. The post phase advances its original two-stamp
+epoch, uses one actual host worker, and skips the physics lock for an empty
+batch. Its reusable traversal path and bounded task retire with PhysicsScene.
+The root's interaction slice owns field/admission/launch integration; this leaf
+does not claim that registration or runtime acceptance is already complete.
+Source/whitespace review only; no tests or builds were run.
+
+Rigid-body Start publication recovery prediction (2026-11-14). Original
+`140c85860` updates the existing body/motion transform and ordered observers;
+`140c8e930` publishes that same body into the broadphase and activates actual
+overlaps/constraint neighbors. Restore the checkpoint's retained transform and
+single-body static/dynamic publication cursors in the canonical WorldStorage.
+Expect no additional source reads, body/motion identities, duplicate world, or
+per-frame work before a real Start/transform request. Scratch overlap storage
+grows only for the first/largest request and retires with the world; completed
+callbacks are not replayed after a host error. Source payload and normal
+publication order must remain unchanged. No speedup or runtime acceptance is
+claimed; compilation remains reserved for the coherent root integration batch.
+
+Recovered implementation: `set_body_transform`, `add_static_body_resumable` and
+`add_dynamic_body_resumable` retain their request identity, source-order phase,
+overlap traversal and activation cursor on the same WorldStorage. Attachment
+distance (`140c88440`) and constraint-neighbor (`140c932d0`) traversal now accept
+retained cursors, while existing callers retain the same one-shot entry points.
+The world fences unrelated mutation/retirement until that request finishes;
+component rollback finishes an entered publication before unpublishing it.
+The existing unsupported published-static transform branch still rejects
+before mutation because its actual overlap-activation owner is not supplied by
+this slice. Unpublished static and dynamic Start paths use actual shape bounds,
+motion, constraint and broadphase owners. Broken tree/attachment invariants are
+fatal admission errors rather than replayed structural insertions. No extra
+source conversion, source cache, query world or callback dispatcher was added.
+Source review used checkpoint `2410aafb` and the existing saved decompilation;
+no tests, build, or runtime exercise were performed for this follow-up.
+
+Canonical motion-owner recovery prediction (2026-11-14). Original world
+construction `140c8c250` owns `140ca5510`/`140ca5550` motion properties initialized
+from the authored gravity vector. GameLocal `1400932d0` creates two timespaces
+and `140092c30` derives five initial profiles in each, with reciprocal mappings.
+Recover those owners in the existing WorldStorage, not a parallel world.
+Expect five base plus ten derived live records after game-world initialization
+(16 retained 64-byte slots with the existing growth policy), no source reads,
+and no new per-frame work until an actual component requests a mapping or body.
+The acoustic world receives its own five constructor profiles but no game
+timespaces. Component-disabled creation follows `140c8e5b0`/`140c92be0` on the
+same buffers; its generation-keyed cursor retains one body/motion reservation
+through host callback errors and releases partial reservations on explicit
+abort. Shape/declaration leases stay with the real component until completion
+or abort. No performance improvement or runtime acceptance is claimed before
+the coordinated compile and production exercise.
+
+Recovered leaf implementation: `WorldStorage::new` owns the existing profile
+library, rejects an unresolved external library, and preserves the constructor's
+gravity magnitude arithmetic. `initialize_game_timespaces` is an explicit
+GameLocal-only phase; the component factory must call it before resolving its
+authored timespace. The shared removal signal clears reciprocal profile maps
+before recycling a profile. Unfinished removals fence subsequent mutation.
+Disabled component-body requests retain their exact component/generation key,
+body/motion IDs, attachment phase and entered observer cursor. The component
+must abort before retiring its source geometry, with uninitialized reservations
+returned directly and initialized objects using the real destruction observers.
+Mutation fences reject overlapping world operations; a different component can
+never resume or cancel the request. All tables/cursors are world-owned Rust
+storage and retire with that same canonical world; no process cache, duplicate
+world, new asset format, or per-frame acquisition is introduced. Source review
+used checkpoint `2410aafb` and the saved decompilation at `140c8c250`,
+`140ca5550`, `140092c30`, `1400932d0`, `140c8e5b0`, and `140c92be0`.
+Scene factory/start/stop integration belongs to the interaction recovery slice;
+this leaf does not claim that runtime integration has already succeeded.
+No tests, build, or runtime exercise were performed for this leaf.
 
 The desktop launch now holds an explicit catalog-session root around the
 application. Its teardown releases the static shared catalog reference on
@@ -5208,7 +5710,7 @@ Original provenance: arkDeclMidnightScene ctor140193a10 and declaration registry
 
 ### Player Midnight sound-event ownership follow-up (2026-11-09)
 
-Audit correction: the earlier sound-event owner integration missed player Midnight prepare_sounds, which directly read declarations and parsed IDs once per scene. The music Definition parser also has a direct ID reader, but no production caller currently constructs that definition; it is not claimed as an integrated music lifecycle. Original SFX constructor140188470 and copy140188490 retain the declaration pointer at+8 (reflection1415c4ff0); sound-event registration141352070 and common lookup1400607f0 establish its shared identity.
+Audit correction: the earlier sound-event owner integration missed player Midnight prepare_sounds, which directly read declarations and parsed IDs once per scene. At this audit stage the music Definition parser had no production caller; its completed live ownership and compact event references are recorded in the 2026-11-15 music section. Original SFX constructor140188470 and copy140188490 retain the declaration pointer at+8 (reflection1415c4ff0); sound-event registration141352070 and common lookup1400607f0 establish its shared identity.
 
 Prediction before implementation: route production player scene sound resolution through assets::wwise::event_resources, preserving its existing per-scene ID table, cast filtering, key schedule and copied playback IDs. Repeated paths already present in that owner should require no additional source reads or declaration decodes; new paths acquire one immutable scoped generation. Original resources have no inherited sound-event sources in the installed inventory. No per-frame work, voice lifetime or bank/media change, and no CPU speed claim without release measurement. Compare actual requested reference/ID sequences in the windowless player preparation, with the former direct resolver selected in the same executable. Mutable overlays retain the owner's existing bypass. Existing pure format-reader callers remain available for offline inspection.
 
@@ -5450,6 +5952,3448 @@ Installed acquisition acceptance (c98c8ec6). Four clean same-build windowless Eo
 
 ### Compiled world UV staging
 
-The BWM v21 reader (140296240) consumes a 20-byte vertex attribute stream with an authored half2 UV0. The forward mesh already uses half2. Keeping the source representation in staging removes the widen/narrow pair and four CPU bytes per staged vertex, while the baked shear and diagnostic float output still widen when required.
+The original dispatcher 140295fa0 routes the installed BWM version word 0x00010015 to 1402974c0. Its earlier-version path is 140296240. The v21 reader uploads the section buffers through 1402d3550/1402d3aa0 using a stream view or reusable TAG_TEMP scratch, and uses vertex declaration 8 for the mesh descriptors. The installed 20-byte vertex attribute stream contains authored half2 UV0. The forward mesh already uses half2. Keeping the source representation in staging removes the widen/narrow pair and four CPU bytes per staged vertex, while the baked shear and diagnostic float output still widen when required.
 
 Installed acceptance (380bade5). EotW/Dust/EotW prepared and uploaded 18,848,218 world mesh UV pairs that match their installed half bits, with no mismatch. EotW UV0 staging uses 20,585,928 instead of 41,171,856 bytes; Dust uses 20,869,224 instead of 41,738,448. Uploaded and retired GPU asset counts, static-model UV observations and material fingerprints match the previous installed route. Both routes return to 11,075,584 live device bytes and 201,326,592 reserved bytes on every unload. These are CPU staging capacities, with no permanent world-geometry CPU copy or gameplay timing claim. Evidence: DH2-fx-resources/artifacts/packed-world-uvs-20261110-comparison.json. No game window or test suite ran.
+
+
+### Scene worker cancellation
+
+Prediction before change. The host's existing audio-session close gate stops map parsing between phases. After the last parsing checkpoint, the real worker enters ScenePreparation and continues until scene materials, meshes, reflections and base images have all been prepared. The latest installed windowless sample spent 5.934 seconds in the EotW setup span and 7.308 seconds in Dust in the dev build. Extend the existing close signal into scene preparation, including the world and placed model loops, cube acquisition and base image reads. The signal belongs to the terminal host session, so abandoned entity reservations belong only to the retiring world. No partially prepared assets or commands may publish; drop them using the existing asset and command queue destructors. An archive read already running may finish. The expected result is fewer acquisitions and a shorter wait when the window closes during these stages. Successful sessions retain the same load and render behavior. Original world and resource retirement are 1408a4830 and 1400410f0; cancellation checkpoints are a host worker mechanism. Do not infer live close timings from a windowless successful preparation.
+
+
+### Stream compiled world geometry into shared sections
+
+Prediction before change. The installed BWM v21 dispatcher 140295fa0 calls 1402974c0, which uploads position, attribute and index sections through 1402d3550 / 1402d3aa0 before reading the ranged mesh descriptors. The EotW archive member is 122,270,692 stored bytes and expands to 203,394,146 bytes. The previous rewrite kept the whole expanded member while also copying each mesh's geometry. All 36 installed index records are compressed. Existing EotW, menu and tutorial mesh tables show contiguous stride-aligned ranges covering the geometry sections. Stream the installed member through the existing Catalog reader into one owned typed backing per geometry section, preserving the two half-float UVs and other packed attributes. Each mesh then holds ranges into that backing. Read the small record tail separately and discard it after parsing. Expect no whole decoded member allocation alongside the geometry, no repeated per-mesh geometry allocations and no geometry backing after GPU preparation. Preserve material, visibility, indices and vertex data. Confirm read/decode and geometry signatures, actual setup cycles, asset counts and retirement before acceptance. This is a host staging layout for the installed BWM v21 data.
+
+
+### Packed mesh position staging
+
+Prediction before change. Installed world/model geometry remains game-space data; the Bevy mesh has the existing view-space axis conversion. The packed builder currently allocates a Vec<Vec3> of converted vertices, then copies those same values into the position attribute's Vec<[f32; 3]>. Feed the converted values directly into the final attribute allocation. The existing EotW shared world meshes submit 6,112,973 packed position/UV pairs, so expect to avoid one short-lived position array per packed mesh, accounting for 73,355,676 cumulative temporary bytes over those world meshes, plus applicable placed models. Peak saving is bounded by the largest individual mesh. Preserve the exact coordinate conversion, index winding, baked shear and float-layout diagnostic. No live CPU/GPU memory or frame-time change is predicted. Compare installed uploaded counts and position signatures before acceptance.
+
+### Vertex probe upload staging
+
+The installed PNW reader 1402b15e0 supplies typed probe records. The host combines their typed SRV equivalents into one WGSL storage buffer. The previous host route grew a Vec<u32>, serialized those words, and copied the resulting bytes into the ShaderBuffer. Write the same record sequence straight into the final upload backing with the same offsets and GPU layout. ShaderBuffer still owns the normal Bevy transfer and retirement.
+
+Installed acceptance (14b6a153). Four same-build windowless Edge of the World and Dust District observations matched the full encoded buffer size and CRC in both modes (227,179,736 bytes / bbc9941d and 302,742,124 bytes / 4fa1e3b9). All material signatures, uploaded asset counts and device retirement records match. The direct path removes a 435,159,184-byte or 589,459,960-byte word capacity in the two maps, and removes the separate serialized-to-asset copy. Final upload capacity equals payload size. Affected preparation cycles were 727–851 million -> 273–295 million in EotW, and 1,198–1,375 million -> 349–376 million in Dust. These are dev acquisition spans and allocation capacities, with no peak RSS, steady GPU memory or gameplay FPS claim. Evidence: DH2-fx-resources/artifacts/vertex-probe-upload-backing-v2-20261110-comparison.json. No visible game or test suite ran.
+
+### World geometry release before base textures
+
+Prediction before change. After water publishes the required game-space attributes, all world geometry consumers either own their prepared mesh data or use object, visibility and matrix metadata. The installed world upload path 1402974c0 uses a direct stream view or temporary scratch for each source section. The host retained them until the end of setup, overlapping the entire base texture acquisition phase. Drop the shared source section backing at the last CPU consumer. The installed Edge of the World and Dust District geometry sections total 194,098,770 and 195,731,094 bytes respectively. Expect this backing to be absent before base image reads, without changing prepared mesh or image data, reservations or gameplay lifetime. Peak process memory reduction requires measurement because unrelated allocations contribute to the peak.
+
+Probe record acquisition and namespace prediction (2026-11-10). Original 1402b15e0 acquires ordered probe sources, 1402b99a0 decodes each PRB record, and 140060180 purges the corresponding resource scope. The four installed patch indexes select 71,594 .bprobe members, all compressed and at most 42,048 decoded bytes. The host reads each complete member into a new allocation before typed parsing. Keep one reusable decoded buffer for each probe-set acquisition using the same archive reader and exact length checks. Expect one buffer growth per new record-size maximum, no change to decoder inputs, parsed fields, ordering, prepared query geometry or GPU data, and zero scratch retention after acquisition. Also retire EnvProbe read credit when the last set of its own Catalog releases it; an independent catalog must retain its own credit. Compare the ordered probe and geometry signatures, affected read cycles and cross-catalog retirement counts on installed levels.
+
+### Probe vertex source retirement
+
+Prediction before change. The installed PNW reader at 1402b15e0 supplies separate runtime tetrahedron positions and shader vertex positions. The host CPU query selects a runtime tetrahedron, uses its own positions for barycentrics and reads four packed weights from each referenced shader vertex. Only GPU packing and standalone audit output read the shader vertex positions. Split the parsed shader vertices into position and weight arrays and drop the former after successful upload backing construction, along with the unconsumed cell-to-probe source table. The decoded weights and runtime query algorithm stay intact. The EotW/Dust GPU descriptors imply 205,467/167,413 shader vertices, predicting 2,465,604/2,008,956 position bytes released. The table saving depends on the installed row count. The temporary standalone tooling uses both original arrays before release. Expect identical GPU bytes and material/query results, no added per-query branch and no new source reads. Compare complete installed PNW fingerprints, encoded GPU CRCs and post-retirement material signatures. Retain control is DH2_DEBUG_RETAIN_VERTEX_PROBE_SOURCES.
+
+Installed acceptance (eef2b201). Same-build windowless retain/release acquisitions matched the full PNW source fingerprints, all 227,179,736 / 302,742,124 upload bytes by CRC, material handoff signatures, GPU asset counts and retirement in Edge of the World and Dust District. The released source capacities were 2,465,604 position bytes + 1,502,592 table bytes and 2,008,956 position bytes + 2,295,792 table bytes, respectively. The setup trace reported those capacities before drop. CPU queries still read the runtime tetrahedron positions and packed weights. No gameplay frame timing or process peak is inferred. Evidence: DH2-fx-resources/artifacts/probe-source-retirement-20261110-{retain,release}/stderr.log.
+
+Installed acceptance (fdd41322). The streamed reader opened all 36 indexed worlds, matched their indexed decoded lengths, the independently decoded raw geometry signatures for Edge of the World, the menu and tutorial, and the separate Dust District section and record counts. Two same-executable buffered/streamed pairs per map matched geometry counts and CRCs. The streamed path avoids a whole-member allocation of 203,394,146 bytes in Edge of the World and 209,366,676 in Dust District. Read and parse spans were 656–674 to 616–624 ms and 675–696 to 647–650 ms, respectively, in the dev observer. These are archive read and parse durations, with no frame-time or peak process RAM claim. The real windowless D3D12 asset preparation and removal matched material signatures, upload counts, and the post-removal device allocator record. All 12,735,245 observed position and UV pairs matched their source-derived bits. The geometry release checkpoint precedes base image acquisition, and the CPU backing is no longer required by any later setup consumer. This verifies normal preparation and GPU asset retirement. Live close timing and draw output were outside this observation. Evidence: DH2-scene-shutdown/artifacts/world-section-streaming-v3-20261110-comparison.json.
+
+Installed BWM capture and audit consumers now use the same bounded archive loader. The F8 report retains only the nearest-hit data after the ray query, releasing the temporary geometry before collecting the other diagnostics. The predicted capture-only saving is the same avoided whole-member allocation as level loading, with the existing ray query and report fields preserved. Tools that explicitly read a local BWM or export source bytes retain their file-input paths.
+
+### Retire collision acquisition staging at its last consumer
+
+Prediction before change. The installed compiled physics decoder owns independent triangles and material mappings after reading .bphysworld. The host currently retains the decoded archive member and geometry metadata while copying all world triangles into an intermediate position/filter tuple vector, then constructing the final query index. The installed Edge of the World and Dust District files decode to 37,930,026 and 46,325,954 bytes. Their 1,479,026 and 1,590,070 world triangles create 70,993,248 and 76,323,360 bytes of 48-byte intermediate tuples. Retire archive bytes and unused extraction metadata immediately after shape decoding and feed the same transformed triangles and filters directly into the existing index constructor. The final decoded geometry, original shape-tag handling (140853b80), query order, material indices, owner IDs and runtime query implementation are unchanged. Expect the intermediate tuple allocation to be absent and the source allocations to have shorter lifetimes. Compare the existing installed-map acquisition and query observations before integration. No gameplay CPU or peak process memory claim is predicted.
+The installed-data observer can run the prior tuple allocation with DH2_DEBUG_STAGE_COLLISION_TRIANGLES=1. DH2_DEBUG_PHYSICS_SIGNATURES=1 reports the retained archive and tuple capacities, CPU thread cycles around construction, and a checksum of every final triangle's vertices, bounds, owner, material and filter. The checksum runs after the cycle counter and before any mutable interaction boxes are installed. Both modes use the same collision index and actual installed source files.
+Probe-record acquisition and catalog retirement acceptance (b5122f2d). Windowless DX12 loading of Edge of the World and Dust District matched both source CRCs, probe network and plane/sample input records, vertex probe buffers, material inputs and GPU asset counts. The 6,352 source reads used 9 buffer growths instead of 6,352 separate allocations. The largest live record was 18,264 bytes in both modes. Scoped acquisition cycles were 924,742,173 with separate buffers and 838,009,179 with reusable scratch. In the two-catalog observation, dropping the first probe owner released 3,312 histories (237,842 path bytes) while all 2,825 of the second catalog's histories remained. Its own owner then released those histories (148,648 path bytes). Evidence: DH2-screen-shadow-retirement/artifacts/probe-record-acquisition-20261110-comparison.json.
+
+Skeletal history scope prediction (2026-11-10). The original 140060180 purges by resource class and marker. The BMD6 reader 14025aa00 and skeleton reader 14024f2a0 produce separate resource identities, and 1401c9630 resolves MD6 declaration metadata. The host currently sweeps all catalogs for baseModel, skeleton and md6Def when the last skeletal level scope in the process retires. Use catalog-local scopes for baseModel and skeleton and make MD6 declaration retirement preserve attempted, present headers that survived the existing marker/lease sweep. Drop read records from the compatibility mesh resolver that do not have such an owner. Expect exact retirement in each catalog, with zero invalidation of live declaration credits and unchanged model, skeleton and upload inputs. Scope changes occur at level boundaries only. Observe actual installed members, both catalogs' read credits, and the normal three-map GPU publication route.
+
+Catalog-scoped level and skeletal history acceptance (e3521b67). Two live catalogs independently retired static-model, material, Havok shape, BMD6 and skeleton reads. The first retained its resident common static model. An acquired MD6 declaration kept its read credit across marker purge while a raw compatibility read in the same catalog was released; the second catalog's raw credit survived until its own purge. The EotW / Dust / EotW windowless DX12 route matched all 11,845 packed image records, scene and GPU asset counts, common-image readiness and material signatures. It removed 2,649 / 2,574 / 2,649 names across the five model/material/shape/skeletal classes at the three retirements, accounting for 276,051 / 261,439 / 276,051 path bytes before table storage. This measures retirement and payload equivalence, without a gameplay frame-time or RSS claim. Evidence: DH2-fx-level-lifetime/artifacts/catalog-scoped-level-resources-fixed-20261110-comparison.json.
+
+FX read-history ownership prediction (2026-11-10). Original 1400607f0/14005feb0 acquires a resource class/path, 140060180 purges by marker, and the parameter-block parser at 14098cdd0 and PMODEL reader at 140232220 supply separate typed payloads. Each supported class already has a Catalog registry that retires its exact read credit. The old process-wide history leases duplicate that ownership and can clear a valid credit in another catalog after a failed or short-lived unshared read. Remove the broad leases. Admit editable and diagnostic particle generations through the same exact history owner while keeping them independently decoded, uncached and unpinned. Keep weak generation bookkeeping only for the rare unshared route. Predict no extra shared payload, read, decode or per-frame lookup, two fewer broad particle history leases and one fewer parameter-block lease per active acquisition batch, and retention of each live generation's credit until its own marker and consumers retire. Compare the real installed FX acquisition paths and independent catalog markers.
+
+FX read-history ownership acceptance (2b288c20). The installed two-catalog observation kept two separate particle/model generations and a live parameter block in the first catalog across marker purge, then removed each exact read record after its last lease and subsequent purge. The second catalog's shared records and payloads survived until its own purge. All four production CPU preparation records matched the accepted shared reference, including 87/101/87/0 declaration reads, 26/11/24/0 PMODEL reads, 7/4/7/0 field reads, effects, failures and event fingerprints. Both commands exited zero. This verifies scope retirement and unchanged acquisition counts. Evidence: DH2-scene-shutdown/artifacts/fx-read-history-owner-20261110-comparison.json and DH2-interactions/artifacts/particle-owner-scopes-comparison-20261109.json.
+
+Editable typed-resource history prediction (2026-11-10). Sound event, auxiliary bus and RTPC declarations, difficulty manager/presets, compiled Havok mass properties and Kiscule graphs already use the same installed registration and 1400607f0/14005feb0/140060180 registry scopes. Their separate acquisition route (editable archives or the existing diagnostic switch) bypasses the registry, so an unlisted successful read can survive its map and a live generation is invisible during retirement. Use the existing particle registry's weak separate-generation path for these typed readers. Expect every request to decode the same edited source with no cached payload or failure, an exact scope record while the generation is live, and release at its catalog's next eligible purge. Immutable shared output and read counts, dependency parsing, game behavior and the sample/voice/update paths remain unchanged. Compare the installed typed acquisition and purge traces through normal and forced-separate preparation.
+
+Contact and camera session acceptance (bd07175a, f718f748). The EotW / Dust / EotW CPU route matched earlier contact source counts and signatures (9,346 / 389 / 382 reads). The two-map DX12 run matched packed images, GPU publication, common texture readiness and material inputs; both level retirements kept all 63 camera materials. The corrected two-catalog observer loaded identical 9,009-entry common tables, 63 camera materials and 7,407 contact mappings, then reused the first Catalog's exact objects. Contact archive reads were 9,391 / 9,391 / 382 on A/B/A, avoiding the 9,009 common reads on A's return. First-catalog retirement freed 381 map paths (40,448 path bytes) while preserving an owned sound event and the second catalog. Both shared and uncached sound generations passed. Evidence: DH2-collision-staging/artifacts/contact-text-catalog-20261110-comparison.json and DH2-scene-shutdown/artifacts/editable-typed-resource-history-20261110-comparison.json.
+
+Editable typed-resource acceptance (f718f748). An isolated real mounted sound event rejected a malformed declaration, then published IDs 41001 and 41002 from successive file edits. The earlier generation remained valid, and map purge removed the read record only after both generations released. Three normal and three forced-separate installed CPU preparations matched all difficulty, options, audio control and particle graph inputs and the sound, mass and Kiscule signatures. Normal sharing decoded 246 of 326 event requests and 81 of 83 graph requests; separate mode decoded all. This checks acquisition and scoped release, without a gameplay-time or memory-saving claim. Evidence: DH2-scene-shutdown/artifacts/editable-typed-resource-history-20261110-comparison.json.
+
+Physics-system and ragdoll registry prediction (2026-11-10). Original 1401c9630 acquires physSystem from 142bf86f0 through 1400607f0; 14076abc0 instantiates independent bodies, and 14008d7b0 destroys the decoded Havok object. 14009a3c0 resolves the generated ragdoll identity, read at 14009a530/14009a670. Neither class is in the 142280ee0 heap-1 promotion table. Register selected init/common and map headers, promote bootstrap to marker 2, and demand-decode through the shared scoped registry. Editable files remain independently decoded. Keep the existing packed Arc slice for ragdoll mappings and distinguish absent, I/O and malformed inputs. Expect the same per-map cable read counts and typed body/mapping inputs, exact map history retirement and reuse of an actually requested bootstrap identity across map releases. The nineteen listed common identities remain lazy; existing cable observations do not imply cross-map reuse. A catalog registry may retain one decoded system per used path until its actual marker purge. Measure its bytes and scoped acquisition before claiming an improvement. No body, solver or skinning work is added to frames.
+
+Physics-system and ragdoll registry acceptance (b7bacad0). The four installed CPU loads matched all twelve admitted machinery recipes and generated ragdoll mappings. Shared acquisition read 10 of 24 requests (108,640 bytes), matching the former preparation cache's ten reads; forced separate acquisition read all 24 (260,736 bytes). Affected dev acquisition spans totaled 2,687,440 and 6,389,845 thread cycles respectively, a comparison against forced separate acquisition rather than the former shared owner. The Dust District scope observation registered seven common system and twelve common ragdoll headers with zero decoded payloads. It preserved a live cable system/mapping through marker purge, then released their credits. A requested music-box system (243 payload bytes) and Emily mapping (1,176 bytes) survived the map purge and reacquired without IO, then retired after their catalog and final leases closed. One separately attempted character physics system remains outside the existing parser's supported inputs; its failure was preserved. No gameplay body, solver or frame-time claim is made. Evidence: DH2-fx-level-lifetime/artifacts/physics-system-resource-scopes-20261110-comparison.json.
+
+### Direct acquisition of separately streamed mips
+
+Separate mip read history prediction (2026-11-10). The installed map preloader at 140066ac0–140066b8c excludes resources with index flag 0x20 (loaded at 140068800), and the separate mip reader at 14030e840/14030f030 hands the payload to its texture owner. All 16,393 selected installed separate mip records are image entries with this flag. The host already excludes them from requested loading progress and still retains each successful read as an owned path in the catalog's loading history. Omit that history insertion for flagged separate image mips while preserving an opt-in diagnostic control, with no change to the archive read, texture streaming, GPU upload, base image credit or progress. Predict one fewer history lookup per successful selected mip read and one fewer owned path per distinct inserted mip until catalog retirement (at most 1,630,454 path bytes across the installation, before hash slots). Compare the history record counts, affected history cycles, exact image fingerprints and preload progress through the same installed map route. Evidence: DH2-collision-staging/artifacts/streamed-mip-credit-census-20261110.json.
+
+Prediction before change. All 16,393 selected installed .bimage7_mip members exceed the existing archive buffer size, with 10,059 compressed and 6,334 stored directly. Decoded member extents run from 65,556 to 16,777,236 bytes. Original 14030e840 reads the five header words and hands the still-open stream to the upload worker via 14030f030. The host worker currently allocates and reads the whole member, then copies its payload into the completed queue entry. Preserve the authored header validation and read directly into the existing queue-owned payload allocation. Expect one fewer temporary decoded member per requested mip, with identical bytes, dimensions, next-suffix selection and queue handoff. No change to demand, GPU submission, or resident byte budgets is predicted. Compare scoped acquisition cycles and exact output on a matched installed inventory across all four suffixes and both archive storage modes before integration.
+
+Installed acceptance (b482d770). The optimized game-feature tools build completed unchanged. The source census independently read all 16,393 indexed separate headers and 8,126 base images, finding contiguous suffixes and dimensions and matching all indexed extents. Four same-build acquisitions covered 70 independent raw payload samples across all four suffixes and all five packed formats, including all six members of the rarest format. Each run matched every payload CRC, extent and descriptor. The 70 requests cover 81,593,720 decoded member bytes, up to 16,777,236 for one member. The exact acquisition path uses a bounded archive stream and the final upload allocation. Total affected CPU cycles were 312.6–315.6 million buffered and 262.9–264.4 million streamed, with improvements for both compressed and stored members. The observation exercises the same payload owner called by the gameplay worker. Demand selection, asynchronous completion and GPU publication are unchanged and were outside this observation. Evidence: DH2-scene-shutdown/artifacts/separate-mip-streaming-20261110-comparison.json and separate-mip-header-census-20261110.json.
+Separate mip read history acceptance (893624f2). Same-binary windowless DX12 Edge of the World and Dust District runs matched all 8,129 packed image fingerprints, 5,831 separate member acquisitions, GPU publication/retirement counts and requested/precredited loading snapshots. In the instrumented Edge of the World repeat, the rewrite skipped 2,987 loading-history calls and 2,987 insertions, removing 285,811 bytes of owned mip path text before hash-table storage. Scoped read-history cycles were 164,812,305 with credit retention and 143,692,099 without it. Both modes packed the same 4,152 images. This measures path storage and history operations, independent of payload decoding, uploaded texture bytes and frame time. Evidence: DH2-collision-staging/artifacts/streamed-mip-history-20261110-comparison.json and streamed-mip-history-metrics-20261110-comparison.json.
+
+Initial image staging window prediction (2026-11-10). The installed 1400661e0 admission orders common/init before map records; image acquisition 1402ea140 / 1402e9ff0 submits a texture's authored records before releasing its source. The current host decodes every scene base image before publication, keeping 383,316,552 payload bytes (4,141 images) in Edge of the World and 352,016,912 bytes (3,969 images) in Dust District at once. Largest individual payloads were 16,777,216 and 1,048,576 bytes. Keep the current identities, shared views, source readers and Bevy upload owner. Let the already-running map acquisition thread feed budget-sized batches by a rendezvous handoff, with one batch being read while the preceding batch is uploaded. Preserve complete common GPU readiness before submitting map batches. Keep the gameplay camera gated through the final map batch and the existing mesh/buffer/pipeline readiness. Expect roughly two budget windows of outstanding authored payload, plus an oversize item in either window, with the same prepared descriptors and upload bytes. Compare peak source payload, upload completions and elapsed acquisition through the production coordinator. No per-frame work after play and no change to streamed mip selection are expected. Baseline: DH2-scene-shutdown/artifacts/initial-texture-staging-baseline-20261110.json.
+
+Initial image staging window preliminary observation (879849e0). The same dev executable ran the initial texture coordinator against the real DX12 asset schedule in Edge of the World and Dust District. All authored image fingerprints, scene counts and GPU upload/removal counts matched. Initial authored payload staging fell from 383,316,552 and 352,016,912 bytes before publication to zero at that boundary. The adjacent submitted and reader batch sizes bound outstanding authored payload at 22,620,632 and 9,231,752 bytes respectively; this excludes other asset staging and device allocations. Base preparation plus GPU gate time was 5.482 to 4.243 s and 5.140 to 4.031 s in the two windowless dev samples. This host did not register the common path list, so it exercised the common gate with an empty phase. The separate production-scope reuse route remains necessary before integration. Evidence: DH2-fx-level-lifetime/artifacts/bounded-initial-images-20261110-comparison.json.
+
+Initial separate mip staging prediction (2026-11-10). The worker's exact mip path now uses the original 14030e840 / 14030f030 header-and-stream boundary, but a packed initial view still reads each selected separate member into a temporary vector and copies its payload into the final upload chain. Use the same bounded archive reader to append those authored bytes to the final chain, reserving the expected full chain after reading its top header. Preserve the existing format, suffix, extent and contiguous-dimension validation, the buffered control and overlay path, and the final packed byte order. An unsuccessful read must roll back the partial append. Predict no whole-member overlap for any separate mip in the initial chain, with the same separate archive reads and texture upload identities. Measure actual member sizes, scoped acquisition cycles and exact prepared texture fingerprints on installed scenes. No steady-state frame cost change is expected.
+
+Initial separate mip staging acceptance (e6e51e98). Same-binary windowless DX12 Edge of the World and Dust District acquisitions with the installed separate chain selected at DH2_TEXTURE_MIP=2 matched all 8,129 packed image fingerprints, resource mip and suffix selection, scene counts and GPU asset counts through upload and retirement. Both modes read the same 5,831 separate members, covering 1,728,563,084 decoded member bytes across the route. The direct mode streamed every member into the final chain; the largest removed whole-member allocation was 2,097,172 bytes. Affected read and append cycles were 15,654,036,932 buffered and 10,127,369,138 streamed. Both observations exited zero with no graphics validation errors. These are scoped dev acquisition cycles and temporary member sizes, without a process-peak RAM, gameplay FPS or rendered-output claim. Evidence: DH2-screen-shadow-retirement/artifacts/initial-separate-mip-staging-20261110-comparison.json.
+
+Initial texture close prediction (2026-11-10). Original 1408a4830 stops world owners before 1400410f0 purges resources. The host rendezvous can hold a decoded batch while waiting for the render gate. Close the published receiver during the existing acquisition shutdown and drop any unpublished scene result channel after the terminal audio/session signal. The reader should stop after its current member or failed send, and ordinary scene retirement should remove only handles owned by the outgoing level. A windowless stop after the first real batch should join the existing reader and clear the scene without admitting the remaining image batches. No gameplay update work or regular upload change is expected.
+
+Initial image staging and shutdown acceptance (ef54c390). The same dev executable ran the staged and bounded coordinators with real DX12 asset epochs and the installed init/common ownership list. Edge of the World, Dust District and Edge of the World matched every texture fingerprint, prepared asset count and GPU upload/removal count. Common views ready before image reads were 0, 201 and 224, and the completed common phases had 224, 216 and 224 views in both modes. Simultaneous prepared payloads were 383,316,552, 339,618,776 and 369,520,320 bytes in the staged route. The adjacent-batch bounds were 23,607,536, 8,860,432 and 23,607,536 bytes in the bounded route. Base preparation plus GPU gate time was 5.391 / 4.809 / 5.246 s staged and 4.413 / 3.748 / 4.093 s bounded in this windowless dev comparison. The close route uploaded only its first 4,213,184-byte common batch (64 texture IDs), joined the reader through the production acquisition close boundary, and returned meshes, buffers and sky materials to their pre-load counts. No graphics validation errors occurred. These are authored staging bounds and scoped loading observations; process peak RAM, visible shutdown and gameplay frame time are outside this route. Evidence: DH2-fx-level-lifetime/artifacts/bounded-initial-images-final-20261110-comparison.json.
+
+Secondary reflection probe retirement and cube acquisition result (be645f19). The installed reader 1402d2740 validates the authored cube records, and 1402e9ff0/1402f5500 upload their blocks. The host finishes consuming its decoded secondary probe records after building the reflection array, plane buffer and water inputs. Retiring them releases 104,832 + 17,952 bytes in Edge of the World and 111,888 + 14,857 bytes in Dust District, measured as record-vector and name capacity. Both modes matched all 215 cube payload CRCs, plane buffer words, material source handoffs and GPU asset counts with no validation errors. The direct cube reader removed the largest 525,158-byte temporary member, but its measured acquisition span was 149,453,605 versus 140,431,375 thread cycles. Integrate the verified secondary record retirement and keep the established buffered cube reader. This result concerns authored payloads, release and scoped loading cost. Evidence: DH2-collision-staging/artifacts/reflection-cube-staging-20261110-comparison.json.
+
+### Retire replaced scene images after the last view owner
+
+Prediction before change. Original 1402df8c0 leases the current SRV through 1402bd380 and stores it in the named wrapper. Publication at 1402f5530 can replace the current view while that wrapper still holds its snapshot. The previous host scene commit removed the CPU descriptor after updating material slots even when a snapshot still leased the asset. The vendored render extractor retains the GPU texture until AssetEvent::Unused. Drop only the scene handle at the existing commit point so the descriptor follows the same last-handle lifetime as the GPU view. The shared registry and particle consumers already update current views independently. Unleased descriptors and textures retire through Assets::track_assets and the existing render removal events. No new registry, pin, GPU copy or per-frame scan is needed. The game-feature compilation check passed on 61cf1407. This is source and compile verification of handle ownership. Live UI replacement was outside the observation. Evidence: DH2-interactions/artifacts/scene-image-leases-20261110-check-provenance.json.
+
+### Keep collision decoder detail on its audit callers
+
+Prediction before change. Original compiled physics registration is 141388640, with shape-key and material lookup at 1400922d0 and 140853b80. The host retains the current decoded runtime triangle index for query cost. During level preparation the existing decoder also saves every convex vertex vector, transformed compressed-shape bounds and reverse shape-to-body list, although the client only uses triangles and summary counts. The existing installed loads generate 82,846 and 107,123 convex records and 1,132 and 1,457 compressed records in Edge of the World and Dust District. The convex records alone occupy at least 2,651,072 and 3,427,936 bytes of 32-byte record storage, excluding vertices and reserve capacity. Count successful shapes in the navigation acquisition and release per-shape scratch after triangulation. Keep full audit output for explicit shape inspection. Decode, failure rollback, triangle order, authored filter/material assignment and runtime queries must match. Compare the same installed levels with and without the detail tables, measure capacities and decode-thread cycles, and compare all final triangle data. No frame-time or process-peak claim is predicted.
+
+The optimized same-executable comparison (`d69007b6`) matched every final
+triangle signature, material table and navigation count in both orders on
+Edge of the World and Dust District. The direct path has no retained source
+member at index construction (formerly 37,930,027 and 46,325,955 bytes of
+capacity) and no transformed tuple staging (70,993,248 and 76,323,360 bytes).
+It also omits 15,479,532 and 17,700,024 bytes of extraction-detail capacity.
+These counters measure different stages and are not additive peak RAM.
+Decode plus index cycles averaged 2,885.3 to 2,915.4 million in Edge of the
+World (+1.0%) and 2,179.4 to 2,003.1 million in Dust District (-8.1%). Paired
+samples varied in both directions, with index-only means 3.1% and 2.5%
+higher, respectively. Runtime queries and frame timings were outside this
+acquisition comparison. Evidence: DH2-collision-staging/artifacts/collision-lifetimes-20261110-comparison.json.
+
+Palace convex extraction prediction. The buffered high-chaos Palace run
+spent 1,223,622,028,106 thread cycles in shape extraction. A sample of the
+same executable's direct run located 9,209 instruction-pointer samples in
+the five instructions of the convex horizon's reversed-edge linear search
+(RVA 0x34f2704–0x34f2714). The large horizon path will index edge positions,
+preserving the first reversed match, swap-removal order and emitted triangles.
+Small horizons keep the linear scan. Expect the large-horizon search to
+cease dominating Palace decode cycles, with unchanged triangle identity and
+no extra allocations on the small-horizon path. Original 14127f590 dispatches
+the authored primitive. Hull triangulation here supplies the host query
+representation. Compare same-build extraction cycles and exact collision
+signatures before integration.
+
+Installed collision acceptance. The menu and high-chaos Palace comparison
+(`d69007b6`) matched all geometry signatures, material tables and navigation
+counts. The Palace path no longer constructs the 190,361,808-byte tuple
+vector or retains the 23,525,626-byte decoded member at index construction.
+It also omits 13,547,616 bytes of audit detail capacity. The old linear hull
+search dominated Palace in both ownership modes. In the unchanged optimized
+executable `c9ada5e4`, the indexed and linear searches produced the same
+triangle signatures as the preceding builds, with matching authored counts,
+placed collision, materials and navigation counts. Palace extraction cycles
+fell from 1,345.58 billion to 6.82 billion (about 197 times lower). Edge of
+the World measured 1.28 billion to 0.98 billion, with one run per setting.
+Palace index construction stayed at 1.55–1.56 billion cycles. These are
+windowless acquisition measurements, without gameplay CPU or peak RAM
+claims. Evidence: DH2-collision-staging/artifacts/collision-lifetime-extremes-20261110-comparison.json
+and DH2-collision-staging/artifacts/convex-horizon-20261110-comparison.json.
+
+Placed model mesh preparation prediction. The host shares a nondeforming
+BMD6 mesh by model, surface, mirrored winding and skin influence count.
+Its rest palette is shared by model, and `apply_rest_pose` uses no placement
+transform for model-local meshes. The current setup still builds the four
+skin input arrays and applies the same rest pose again for each handle reuse.
+Move those writes to creation of the mesh. Baked and deforming meshes keep
+per-placement preparation, and vegetation still admits its channels by the
+actual material. Static BML1 shadow positions likewise attach at mesh creation.
+Expect one fewer initialization per shared handle hit, with identical final
+vertex and index bytes. This is a host consequence of preparing the shared
+geometry from the BMD6 source (14025aa00); it does not move runtime skinning
+or change GPU residency. Measure the affected setup work before integration.
+
+Installed acceptance (`a813a5bf`). Two pairs of optimized runs from the same
+executable matched final vertex/index fingerprints, instances and mesh counts.
+Edge of the World dropped from 6,259 to 908 initializations and from
+136.8–138.7 million to 131.8–133.4 million affected cycles. Dust District
+dropped from 5,313 to 961 initializations and from 137.5–139.4 million to
+121.9–123.2 million affected cycles. These are mesh initialization counts and
+scoped setup cycles. Frame timing and live GPU memory were outside this
+observation. Evidence:
+`DH2-collision-staging/artifacts/placed-model-mesh-v2-20261110-comparison.json`.
+
+### Direct acquisition of whole inline image payloads
+
+Prediction before change. In the recorded Edge of the World / Dust District / Edge of the World acquisition, 11,838 whole-image reads used only indexed inline records; 7,421 of those members exceeded the archive stream's 65,536-byte buffer. The largest indexed member was 16,777,298 bytes. The current 2D resident path reads each complete member and copies its records into a second Bevy Image allocation. Original 1402e9ff0 sends authored mip records to 1402f5500. For large inline-only resident images, validate the same headers and read the authored bytes into their final upload allocation. Expect no full decoded member allocation on that route, lower or unchanged affected CPU cycles, and matching upload CRCs, descriptors and GPU retirement. The stream scratch bounds temporary member staging; the required Image allocation remains. Compare scoped acquisition cycles and output in the same executable before integrating. No gameplay or process peak claim is predicted.
+
+Optimized acceptance rejected the read-direct variant (0ae65b15). Four same-executable observations matched 8,129 whole-image acquisitions and all mip descriptors, payload CRCs, material handoffs and GPU asset counts. The streamed reader avoided full-member temporaries but consumed 2,482–2,764 million versus 2,000–2,057 million affected cycles in Edge of the World, and 2,099–2,137 million versus 1,804–1,824 million in Dust District. Retain the faster archive acquisition call. Prediction for the replacement: validate the same indexed mip payload ranges, then compact the owned member in place using the same range compaction as layered images. This removes a second full-sized allocation, preserves one payload move, and avoids the per-image buffered decoder and output initialization of the rejected variant. Header slack is bounded by 62 + 20 times the mip count (plus archive read capacity). Keep the same large inline-only scope and baseline for a matched repeat. Evidence: DH2-fx-resources/artifacts/resident-inline-image-streaming-20261110-comparison.json.
+
+Installed compaction acceptance (99ea2165). Four same-executable optimized acquisitions matched all 8,129 prepared image payloads, format/extent/mip selection and CRC, material handoffs, and GPU upload/retirement counts. The 5,039 eligible inline reads per two-map route reuse the decoded member allocation as the upload allocation, removing a second overlapping buffer. The largest eligible member was 16,777,298 bytes; the old separate payload was 16,777,216 bytes. Affected Edge of the World cycles were 1,894–1,899 million buffered and 1,818–1,839 million compacted. Dust District measured 1,707–1,720 million buffered and 1,670–1,739 million compacted. The two-map acquisition total fell 1.7% and 2.5% in the two paired observations. Individual Dust samples vary around parity. These are scoped acquisition cycles and temporary allocation capacities, with no frame-time or peak RAM claim. Evidence: DH2-fx-resources/artifacts/resident-inline-image-compaction-20261110-comparison.json.
+
+### Runtime material batch publication
+
+Prediction before change. The host resolves material identity and purge through
+1400607f0 and 140060180. Its exclusive publication currently snapshots all live
+leases for rollback, yet a failure after an earlier binding cannot undo edits
+to a shared material asset. Resolve the complete slot, image, material and
+dependency mapping before any live asset or cache changes. Then publish the
+same ordered batch. Failed preparation should leave the preceding bindings
+and owners intact, and successful preparation should stop cloning their
+rollback snapshots. This is host transaction ownership. The installed
+dynamic FX route is needed to measure the affected publication work.
+
+Installed usable-family acquisition (`ff26580f`): all 12 declarations under
+`models/effects/usable/` resolved. Only the toilet flush acquired a particle
+model. Its authored programs are `particle/add_default` and
+`particle/dist_blur`, which keep it on the particle renderer, and none of the
+12 declarations has a decal group. Edge of the World and Dust District both
+reference the flush and sink definitions. These are candidates for observing
+particle image, model and sound release. A world-material or decal batch needs
+an installed definition with the corresponding dependency. No live usable
+activation, proxy publication or image retirement is established by this
+acquisition. Evidence:
+`DH2-interactions/artifacts/runtime-fx-installed-usable-sources-20261110.json`.
+
+Named acquisition (`a813a5bf`) found two installed inputs for the remaining
+publication observation. `dirt_flies_few.fx` acquired two model resources and
+one particle material. Its mesh declaration pairs `dirt_flies_body.pmodel`
+with an `arkDefault` material. `blood_splat_01.fx` resolved a projected decal
+definition. Sword impacts and the other sampled model candidates are weaker
+inputs because they acquired no model records. These are acquisition results.
+Publication, pending-image failure, and final release are still separate
+observations. Evidence: `DH2-interactions/artifacts/runtime-fx-model-stage-source-acquisition-20261110.json`
+and `runtime-fx-material-route-source-acquisition-20261110.json`.
+
+The windowless runtime FX observer requests installed sources in a prepared
+level and drives the existing material coordinator, texture read worker,
+upload mailbox and asset retirement systems. The input is a resource request,
+with no interaction or simulation. It identifies FX-only GPU images and
+meshes, and newly published decal material assets. Expect those identities to
+retire after both request leases end, while the loaded level stays alive. A
+camera-specific decal pipeline, active effect tails, and failure recovery are
+outside this observation.
+
+The first run (`cce7d92d`) resolved one world mesh and four decal material
+requests in both maps, then the production coordinator reported that the
+scene catalog was absent. Setup had moved the only `SceneData` reference into
+the texture worker, although late FX requests still use `SceneData`.
+Keep the scene lease and give the worker a clone of the same Catalog Arc.
+This should restore late acquisition with no second index, archive cache,
+or payload read. Both leases end at their existing level-owner boundaries.
+
+Installed publication and retirement (`f136cef7`): both EotW and Dust
+published four blood-splatter decal materials through the runtime coordinator.
+EotW published and retired seven FX-only GPU images. Dust published and
+retired six and reused one existing scene image. Both reused the dirt-fly mesh
+already owned by their scene. A Dunwall Tower request for `stink_bug_running_sub.fx`
+created and retired one new world mesh and two GPU images. The trace observed
+the proxy and its world material binding retire before those image slots. All
+runs exited successfully after release. They exercise actual successful
+publication, sharing, and disposal of the observed assets. They do not cover
+failed input, in-flight read cancellation, or camera-specific material readiness.
+Evidence: `DH2-fx-resources/artifacts/runtime-fx-publication-v2-20261110-comparison.json`
+and `runtime-fx-publication-v2-20261110-tower-stinkbug/result.json`.
+
+### Runtime FX image binding retirement
+
+Prediction before change. A dynamic material proxy retires after its final effect or tail lease, under the map material identity/release boundaries 1400607f0 and 140060180. RuntimeMaterialCoordinator publishes only the surviving surfaces to DynamicWorldMaterials. The host image synchronization previously removed absent bindings only inside its replacement-image readiness gate. While an unrelated image read is pending or fails, the stale world_materials entry can hold the old image's Arc and prevent its streaming slot and GPU lease from retiring. Drop absent dynamic bindings on the new surface revision, independently of incoming-image readiness. Existing tail and render-frame leases still defer the actual slot release, and startup keys are excluded from the dynamic entry set. Incoming binding publication retains its readiness gate. Expect the expired binding to release before a new pending/failed read completes, with the same ready materials and no new work on unchanged revisions. Live cancellation and tail evidence remain required; the runtime trace reports the binding release and the existing image-slot retirement.
+
+### Abandoned runtime texture reads
+
+Prediction before change. The original image owner limits residency by live resource demand and releases it through 140060180; its mip budgeting path is 14030f3d0. The host tracks FX-only slot leases separately from the shared scene. Before this change an orphan slot waited for its read, but the completed read still created an image and enqueued GPU upload. Cancel queued reads for FX-only slots once their final effect or tail lease ends. For a blocking read that already started, keep the slot assigned until its completion is acknowledged, discard the payload outside the upload budget and release the outstanding read reservation. A revived consumer of the same slot before completion may still use the result. Ordinary scene slots and already submitted GPU work keep their current ownership. Expect no new upload for a read abandoned before submission, with unchanged live texture output and no read cancellation based only on camera motion. Live FX tracing is still required for this ownership edge.
+
+Collision cancellation prediction. The closing audio session waits for the
+map worker's lease, and the former checks bracket the whole collision phase.
+An interrupted map should stop visiting authored shapes and placed bodies,
+or building the host cell index, at their next work boundary. No partial
+world may publish. Ordinary loads must preserve the recorded triangles and
+materials, with no checks on gameplay queries. An archive read already in
+progress can finish. This bounds host worker retirement at the map lifetime
+boundary (1408a4830). Measure the cancellation span separately from ordinary
+load costs.
+
+The optimized installed-data observer at c40dcdbe requested cancellation
+during shape extraction, placed-body acquisition and index construction in
+high-chaos Palace. Each used the same preparation cancellation callback at
+its 64th checkpoint. Time from the stop signal to a returned cancellation
+was 93.894, 110.464 and 118.288 ms respectively, including disposal of the
+unpublished partial data. All three observed the subsequent catalog purge,
+with no prepared world returned. Ordinary EotW/Dust preparations retained
+the recorded triangle signatures. The observer did not close a live window
+or measure a blocked archive read. Evidence: DH2-scene-shutdown/artifacts/collision-close-and-motion-20261110-comparison.json.
+
+Autonomous motion event ownership. The host now borrows the selected event
+node, its parameters and its ports from the loaded graph while mutating
+only the playback, motor and variable owners. This removes one temporary
+definition copy per dispatched event. The original keyframe action
+140533460 reads its authored declaration identity and stores a separate
+playback handle at +0x30. The existing node lookup order and dispatch rules
+are preserved. The same-executable comparison observed 36 dispatch steps
+in eight graphs across EotW and Dust in every mode. Definition and initial
+pose signatures, per-graph event and error counts, and collision signatures
+matched. Scoped dispatch totals were 740,880–746,550 cycles with copies and
+547,680–555,905 with borrowed nodes. This measures those startup dispatches,
+without a gameplay frame-time claim. The source was c40dcdbe and the same
+comparison artifact records both batches.
+
+Static model acquisition prediction. The original BML1 loader 14026a5a0
+feeds the model stream to 140259d50 and closes it after constructing the
+surfaces. The host currently inflates the entire member while also building
+the typed position, packed attribute and index arrays. Use the Catalog
+stream for installed members of at least 256 KiB, with 64 KiB of archive
+buffering and an 8 KiB stack block. Expect to remove one member-sized heap
+allocation per qualifying cold acquisition. Keep small and editable sources
+on the buffered route and keep packed channels, geometry, bounds, bindings
+and reuse policy unchanged. Compare decoded fields and acquisition costs on
+installed models before integrating the change.
+
+Installed static model comparison (`fb704c39`). The independent index and
+layout census found 102 qualifying BML1 members, all compressed, with 258
+surfaces and 1,315,706 vertices. The optimized tool compared buffered and
+streamed decoding twice and matched all model fields in all 102 resources,
+with no unsupported members. The largest decoded member was 2,226,130
+bytes. It no longer overlaps the typed mesh arrays as a whole-file buffer.
+Scoped elapsed read/parse totals were 138.686–142.428 ms buffered and
+129.899–131.034 ms streamed. Both routes use the same model parser. The
+comparison does not measure peak process memory, whole-map load time or
+rendered output. Evidence: `DH2/artifacts/static-model-stream-index-20261110.json`
+and `DH2-fx-level-lifetime/artifacts/static-model-stream-20261110-comparison.json`.
+
+Shared point-query owner acceptance (91584611). A windowless production
+scene observation prepared Edge of the World, Dust District and Edge of the
+World again. Gameplay and the particle query publication acquired the same
+level owner in all three preparations. The geometry held 332/259/332 bodies,
+256 tree nodes and 640 leaf blocks per map, with 332/259/332 shape records.
+Frame publication now passes a lease instead of copying these inputs. Body
+centre wind/water/ray queries produced identical signatures on both visits
+to Edge of the World. All three scenes retired through the trigger and
+acoustic shape teardown paths. This observes the shared path and repeat
+acquisition. A direct comparison with the removed snapshot, active observer
+detach, frame timing and rendered particle output were outside the observation.
+Evidence: artifacts/shared-level-point-queries-20261110-comparison.json.
+
+Ocean height readback prediction. The selected-slot consumer 140304c40
+waits, maps, copies straight into the persistent CPU ring, then unmaps.
+The host's asynchronous callback currently allocates a temporary vector and
+the consumer copies it into the persistent ring. Keep the existing queued
+mapping and exact slot selection, but let the callback publish readiness
+only. Read the mapped prefix into the existing CPU allocation and unmap it
+on consumption, ring reuse or owner teardown. Expect zero transient sample
+allocations and one CPU copy per consumed sample, with no new GPU work or
+wait. A dropped owner must cancel pending maps without publishing results.
+
+Level cleanup after an FX shutdown error. The host's 1408a4830 transition
+returned immediately if a particle chain reported an invalid handle. That
+skipped entity and asset release, the publication reset and 1400410f0's
+resource purge. Preserve the first FX error and the existing abort of the
+destination load, but run both player and world shutdown and always release
+the outgoing owners. Expect the same order and no additional work on a
+successful transition. This covers fallible teardown, without trying to
+restore gameplay after a corrupted chain.
+
+Packed skeletal UV prediction. The installed BMD6 loader 14025aa00 calls
+140259960 for the authored vertex streams. Declarations 9 and 10 use two
+half-float UV sets. Host decode kept UV1 packed but widened UV0, which the
+normal mesh builder immediately packed again. Keep UV0 packed in ModelInfo
+and pass it through the existing packed mesh builder for placed and arm
+models. Predict four fewer bytes per decoded vertex and no UV0 widen/pack
+round trip for ordinary meshes. The sheared and diagnostic float layouts
+still widen at their consumers. Preserve the established decoded signatures
+and compare the installed GPU attribute bits and acquisition costs.
+
+Packed skeletal UV acceptance (`97dc2212`). Windowless scene preparation
+matched the previous complete vertex/index fingerprints for 908 placed
+meshes in Edge of the World and 961 in Dust District, including their packed
+UV bytes. The parser now retains four fewer bytes per decoded vertex.
+Normal arm preparation calls the same packed mesh builder. Arm draw output,
+scoped UV decode timing and peak RAM were outside this observation.
+Evidence: `DH2-collision-staging/artifacts/view-and-model-resources-20261110-model-comparison.json`.
+
+Screen-shadow publication prediction. The host level teardown corresponds
+to 1408a4830 and the 1400410f0 resource purge. The standard Bevy extractor
+copies the optional ScreenShadowFrame when present but leaves the render
+copy in place when the main-world source disappears. That copy holds the
+outgoing visibility output, cloud and optional AO depth image handles even
+after ScreenGpu releases its cached bindings. Withdraw the main publication
+when its camera stops and remove the extracted frame when its source is
+absent. Expect one fewer outgoing frame lease and retirement of its private
+output before the next map's acquisition. Shared resident images remain
+with their own owners. The ordinary changed-frame extraction stays the same.
+
+Screen-shadow publication acceptance (`84c3fbe7`). On one windowless DX12
+host, Edge of the World, Dust District and Edge of the World each extracted
+the authored screen-shadow frame and uploaded its private output. All
+three releases removed the render-world frame and the exact CPU and GPU
+image identities. No GPU validation errors were reported. This observes
+the real setup and removal owners using the prepared 1×1 output. An active
+full-size draw and live handoff timing were outside this observation.
+Evidence: `DH2-screen-shadow-retirement/artifacts/screen-shadow-retirement-20261110-comparison.json`.
+
+Owned declaration text extension. The 140135f70 lexer treats signed bytes
+as unquoted whitespace and preserves quoted/commented bytes. The measured
+contact-only handoff already avoids copying ASCII source. Extend ownership
+transfer to installed declaration consumers that already own their archive
+read. Normalize in that allocation and transfer it into the String when
+UTF-8 validates. Malformed quoted bytes keep the existing replacement
+behavior. Expect one fewer whole-text allocation for valid owned reads
+and matching parsed definitions, with no new retained source owner.
+
+Installed decoder comparison (`a7043617`). The previous decoder and both
+new entry points produced identical text for 1,593 installed declarations
+sampled across 511 index kind names. The sample includes 24 non-ASCII
+members and three whose decoded bytes changed from the source. Owned
+decoding kept the input allocation for 1,590 members covering 7,056,074
+cumulative source bytes. This isolates the decoder and does not measure
+full loading time or retained process memory. Evidence:
+`DH2-fx-resources/artifacts/owned-declaration-layout-20261110.json`.
+
+Camera depth owner acceptance (`e40c02cf`). Two windowless DX12 observations
+released the 1920×1080 opacity image, reduction pyramid, coarse output,
+constants and four staging slots with a readback map outstanding. The callback
+had zero leases after cancellation. The fence left one 65,536-byte coarse
+output and one 65,536-byte staging allocation in submitted device work.
+The next empty submission and drain retired both. Live allocations then
+returned to the same 655,360 bytes of labeled wgpu device resources on both
+samples, with no validation errors. The allocator reserved 268,435,456 bytes
+after warmup. This observes ownership and queue retirement, without measuring
+active rendering cost. Evidence:
+`DH2-collision-staging/artifacts/camera-depth-allocation-labels-20261110-comparison.json`.
+
+Projected decal replacement prediction. The effect chain releases its final
+tail through 140199df0 and the resource purge follows 140060180. The host
+coordinator already removes expired decals, but the prior publication and
+proxy set still hold the same materials and images while a replacement is
+waiting for its reads. Withdraw expired entries from that publication on
+the retirement revision and let the proxy owner prune without admitting
+new decals. Keep all surviving effects and tails. Expect the retired image
+and geometry leases to end even if an unrelated replacement has not reached
+readiness. No change to decal program, sampling, geometry or draw ordering.
+
+Projected decal replacement acceptance (`e8697d4f`). The installed
+Dunwall Escape blood effect published four material variants, ten receiver
+proxies and seven new image slots. The material worker had a different
+installed effect pending when all ten outgoing proxies and all four
+prepared materials released. Superseding that pending generation discarded
+its result. Final release left zero of the tracked assets and all seven
+slots were free. The windowless observer used the actual publication and
+removal systems with cameras inactive. It did not measure active decal draw
+appearance or the duration of rendered tails. Evidence:
+`DH2-fx-resources/artifacts/decal-replacement-retirement-20261110-comparison.json`.
+
+Loading fade prediction. The installed executable tests the initial-load
+flag at `1408aabff`, reads one declaration pointer and its duration from
+`+0x3b8/+0x3c0` or `+0x3c8/+0x3d0`, and submits only that selection to
+`140166f60`. The host worker decoded both curves before making this choice,
+then retained them after playback. Prepare only the phase selected by the
+existing loader state and drop it after its last sample. The archived Edge
+of the World load decoded the same declaration twice, for 4- and 2-second
+durations. Expect one declaration read and decode per load, the same
+phase-specific duration and samples, and no retained curve during play.
+This changes loading ownership, with no gameplay timing gain predicted.
+
+Map source history prediction. The map owns its BWM, entity, Tome and
+physics companions from acquisition until teardown (`1408a4830` /
+`1400410f0`). The host releases their payloads but the generic archive read
+history still retains the old paths. Retire the exact map identities, using
+their indexed kinds, after the prepared or published level is dropped.
+Keep the dedicated probe declaration lease and all shared histories with
+their current owners. Predict one retired read entry per acquired companion,
+no additional file I/O and unchanged acquisition on return to a map.
+This corrects loading coverage and has no measurable gameplay memory target.
+
+Placed static model staging prediction. The BML1 loader retires its input at
+14026a5a0 and releases dispensable triangle arrays through 140278df0. The host
+needs decoded level triangles while resolving placements in authored order.
+The last placement that uses each source is known before setup. Record it in
+the same source table and drop level triangles after that placement, leaving
+session sources with the catalog. The archived Edge of the World load kept
+30,145,962 bytes of combined static and skeletal geometry until the end of
+setup. Expect lower peak live static geometry within this scope, one source
+acquisition per path, identical mesh bytes and placement order, and no change
+to gameplay CPU. Compare the placement loop including the new table pass.
+
+Placed static model staging acceptance (`c285c906`). Two optimized
+retain/early-release pairs matched all prepared vertex and index bytes
+and their ordered mesh references. Each map decoded the same source count
+and byte total. Peak static CPU staging fell from 20,588,490 to 4,298,220
+bytes in Edge of the World and from 20,741,684 to 6,323,080 in Dust
+District. Both released paths had zero static staging left at loop exit.
+The affected placement span averaged 3.292B cycles with retention and
+3.286B with early release across both maps. Individual Dust runs varied
+in both directions. No frame timing was measured. Evidence:
+`DH2-collision-staging/artifacts/static-model-last-use-20261110-comparison.json`.
+
+Common model scope follow-up. The installed Edge of the World / Dust
+District / Edge of the World publication requested 13 / 11 / 13 common
+model sources. Adjacent maps shared nine identities and 483,146 bytes of
+decoded source geometry. Their session union was 15 sources and 800,242
+bytes. These are CPU source sizes, not GPU buffer sizes. The host mutates
+mesh vertex layouts for vegetation during preparation and packs world
+meshes into shared GPU slabs. Extending these mesh handles across maps
+would need an immutable layout key and separately scoped slab allocation.
+The current host keeps CPU source reuse and per-map GPU retirement until
+that separate layout and allocation path is measured. Evidence:
+`DH2-fx-level-lifetime/artifacts/loading-manifest-publication-20261110.log`.
+
+Runtime material snapshot prediction. Material lookup 1402d49b0 and release
+140060180 keep the registered material separate from the task that resolves
+it. The host worker clones existing material values to resolve a request.
+Its completed batch only publishes newly reserved values and reads existing
+values from the live world. Drop the worker's cloned values after resolution,
+before image admission or a wait for publication. This releases their image
+and buffer references while preserving live material IDs and their resolved
+roles. The empty projected-decal scene also clears the previous projection
+lighting rows while keeping reusable device buffers. No gameplay sampling,
+archive re-read, additional GPU allocation or frame timing gain is predicted.
+
+Probe index upload backing prediction. The installed PNW loader 1402b15e0
+passes packed shader reference words to the GPU buffer constructor. The
+host now streams the archive, but it still builds a typed index array and
+copies it into a separate WGSL byte buffer. Installed acquisition reports
+54,300,976 index words in Edge of the World and 73,538,998 in Dust District.
+Read their little-endian bytes into the eventual upload allocation. Reserve
+the prefix from the already loaded world instance count and the suffix
+from the PNW tables. Use the actual parsed offset count for the header and
+relocate in place if it differs. Expect removal of 217,203,904 and
+294,155,992 overlapping index bytes, with matching full upload CRCs and
+unchanged runtime query data. Compare the affected read/pack cost and
+asset removal. This changes host staging, not the WGSL layout.
+
+Probe index upload backing acceptance (`eb285fd3`). Two windowless DX12
+copy/direct pairs matched PNW fingerprints and full upload CRCs `bbc9941d`
+and `4fa1e3b9`. Direct transfer reused the full backing on both maps, avoiding
+217,203,904 B of overlapping index storage in Edge of the World and
+294,155,992 B in Dust District. The measured upload packing step fell from
+142.5–152.7M to 6.6–7.1M cycles and from 182.4–187.8M to 6.1–6.4M cycles,
+respectively. PNW input CPU samples overlapped or differed by one scheduler
+tick. Both maps returned to 15 GPU images, four meshes and zero buffers after
+retirement. No frame timings were measured. Evidence:
+`DH2-scene-shutdown/artifacts/probe-index-upload-backing-20261110-comparison.json`.
+
+Screen-shadow binding replacement prediction. The original visibility and
+bilateral tasks bind the active view resources and reuse compiled programs
+(`14032c7f0`/`1402fcff0`, installed screenshadows and PostFX_DWAOBlur).
+The host visibility bind groups also hold the parallel-sampling buffer and
+AO scratch view. Include both identities in invalidation so replacements
+release the previous bindings and cannot keep sampling an old buffer. Keep
+one compiled pair per device owner for the last producer state and depth
+format. A resize, level change or input swap with identical formats and
+state should recreate only the dependent bindings. The AO and depth-unhack
+owners also compile when replaced. Their independent reuse needs separate
+format and program ownership evidence.
+
+Renderer owner acceptance (`b1309447`). The windowless DX12 readback used
+the gameplay staging owner. Five selected-slot results matched the direct
+map result, the four staging buffers totalled 65,536 bytes, and the queued
+callback held no lease after cancellation. Installed Edge of the World,
+Dust District and Edge of the World retained both visibility pipeline IDs
+across the owner release call. All three scenes completed ordinary FX
+shutdown and released the extracted screen-shadow image again. Active
+particle shutdown errors, live resize and replacement binding draws were
+outside the observation. Evidence: `DH2-fx-resources/artifacts/render-owner-batch-20261110-comparison.json`.
+
+Map request table retirement follow-up. The original 1400661e0 frees its
+assembled request table at the end of loading. The host drops its loading
+lease there, but an unused inventory snapshot kept a second LevelList Arc
+in the session. The archived EotW release line reports 46,546 entries,
+8,628,721 logical bytes across the three sections and two strong owners.
+Remove the unused snapshot and its candidate scan. Initial inventory and
+readables still use the selected collection declaration, and discovered
+journal items retain their own identities. Expect one loading owner before
+play, zero surviving request-table owners after the gate, and release of
+the map-only descriptor section. Init/common still have their own owners.
+
+Windowless publication exposed an additional observer lease. The timing
+coverage reporter had stored a separate map-list reference for its PostUpdate
+report, while this acquisition observation calls the play gate directly. All
+three publications dropped from two owners to one. Route the same coverage
+calculation through the request list retired at play start and remove the
+independent timing acquisition. Expect one to zero owners with timing enabled
+and the same report content for the reads recorded before handoff. The isolated
+map sections measured 4,562,689 bytes in Edge of the World and 4,508,068 in
+Dust District. This counts descriptor ownership, rather than process memory.
+
+Instance probe record residency prediction. The original indirect-lighting
+owner retires buffer backing in 14035bca0. The host currently preserves
+the complete serialized probe buffer for byte comparisons on moving
+models and arms. Those writers use only records appended after static
+world geometry. Keep that contiguous writable tail with exact initial
+values and let extraction take the complete upload allocation. Keep the
+same asset ID, GPU bytes and patch order. Expect to release the static
+prefix after upload, with the same per-record compare and writes as the
+previous path. The existing EotW and Dust full CPU copies are 14,902,560
+and 21,835,296 bytes. Measure the actual retained tail and output CRC.
+
+Instance probe record residency acceptance (`acca51c7`). Installed Edge of
+the World and Dust District produced the same full upload CRCs `089f05a5`
+and `d496779e`, with unchanged GPU buffer lengths. CPU backing went from
+14,902,560 to 902,592 bytes and from 21,835,296 to 766,368 bytes. The
+main-world asset retained no serialized upload payload after extraction;
+the separate mutable tails remain on the model lighting owner. Both maps
+returned to zero GPU buffers after release. Active motion and arm patches
+were traced in source and were outside the windowless observations.
+Evidence: `DH2-screen-shadow-retirement/artifacts/probe-record-residency-20261110-comparison.json`.
+
+Named UI image release prediction. The installed named wrapper keeps its
+SRV through 1402df8c0 and binds it through 1410150f0. In the host, the
+extracted frame already holds that snapshot's scene asset handle. Flash
+also cloned the GPU texture and view into its bitmap cache, where a frame
+with no draw batches or no camera could leave a retired named view pinned.
+Bind named images from the existing GPU asset, so only the wrapper, frame
+and submitted GPU work own that snapshot. Keep the bitmap, glyph and ramp
+cache for textures Flash creates. Expect unchanged view/sampler selection,
+no extra upload and no named-view cache entry or per-batch name allocation.
+
+Named UI image acceptance (`a6db27a8`). The game-feature Tools build
+completed, and the real UI image owner used the committed view for both
+installed resources observed. A second wrapper request reused the first
+snapshot after replacement. The old wrapper had zero owners after release,
+and a later request received the new view. The fixed authored mip view and
+its payload CRC also matched the previous acquisitions on both resources.
+The renderer binds from the extracted handle and retains no named cache
+entry. These observations cover wrapper identity and CPU view selection.
+Active movie drawing was outside the windowless observation. Evidence:
+`DH2-screen-shadow-retirement/artifacts/ui-registered-image-leases-20261110-comparison.json`.
+
+Fog and shadow extraction prediction. Level destruction at 1408a4830 and
+resource purge at 1400410f0 separate world views from device programs. The
+host removes FogMaterialResources and both shadow sampling resources from
+the gameplay world, but Bevy's standard extraction keeps the last render
+copy when a source disappears. These copies hold exact map-owned image and
+shader-buffer handles, including the fog attachments. Extend the existing
+screen-shadow absence handoff to these three sources. Expect their extracted
+copies and private handles to retire after map clear while still forwarding
+changed bindings during play. No texture upload or draw-path change.
+
+Verified combined fog, fade and map-source retirement at 05e8fbad. The windowless DX12 route acquired Edge of the World, Dust District and Edge of the World in one host and exited zero without validation errors. Each publication acquired five fog/sampling images and four buffers. Each withdrawal removed all nine identities from CPU and GPU asset stores and cleared the three extracted owners. The screen-shadow image also released on all three transitions. Exactly five map-source history entries retired per transition. The installed fade acquisition returned one declaration per load, using the four-second initial fade and the two-second subsequent fade on both transitions. The route observes resource preparation and removal. On-screen fade playback and fog draw output were outside its scope. Evidence: DH2-screen-shadow-retirement/artifacts/fog-fade-map-source-ownership-20261110-comparison.json.
+
+Particle scene-image retirement prediction. Original image publication
+1402f5530 and residency 14030f3d0 own the active texture independently of
+particle bindings. The host GPU particle cache retained a strong reference
+to the previous map of scene image handles and its view objects. The final
+effect can end with no draws, bypassing image synchronization until a later
+effect starts. Track publication identity weakly and remove absent views
+when the particle pass is idle or preparing a changed publication. Active
+materials and submitted work keep their own leases. Retained path view
+changes still use the existing GPU-ready synchronization. Expect no uploads
+or view rebuilds for unchanged publications and no retired handles pinned
+by an idle particle pass.
+
+Probe sample staging prediction. PRB result reader 1402b8b30 reads 128
+samples per record. The installed Voronoi query 140382d90/140383d80 uses
+samples attached to its primary cell. The host builds equivalent query
+quads, then discards the samples. Resolve cells by their installed probe
+names before loading and build each cell while its primary PRB is in scope.
+Preserve cell order and first occurrence matching for duplicate probe names.
+Skip sample decode for secondary and alternate results where no query reads
+those arrays, and skip materializing strings in already ignored record lists.
+The prior route held 20,348,928 and 17,356,800 primary sample bytes in Edge
+of the World and Dust District. Expect at most one primary sample vector
+live in this part of setup, identical query geometry bits and lighting
+uploads, and lower scoped CPU cost from removing the per-cell linear scan.
+The standalone complete PRB/PNW readers still expose their full records.
+
+Integrated ownership acceptance (`116a0d59`). Windowless Edge of the World,
+Dust District and Edge of the World each transferred the final manifest
+lease from one owner to zero while retaining the coverage report. Their
+map-only descriptor capacities were 4,562,689, 4,508,068 and 4,562,689 bytes.
+An installed FX publication supplied seven committed scene image views to
+the idle particle cache. It retained zero after withdrawal and had no
+strong owner of the old handle table. The actual FX release also removed
+all seven GPU image assets and returned their slots. No active particle
+draw was observed. The decal replacement repeated the ten-proxy release
+result. Both FX preparations had zero existing material values in their
+worker snapshots, so they exercise batch handoff but do not quantify the
+snapshot fix for a cache hit.
+
+Two paired optimized acquisitions matched full probe cell geometry CRCs
+`714c76bc` / `d39ec98e`, vertex upload CRCs `bbc9941d` / `4fa1e3b9`, and
+instance records `089f05a5` / `d496779e`. The primary sample vectors held
+20,348,928 / 17,356,800 bytes at the old loop exit and zero after the
+change. Mean affected CPU cycles fell from 511.1M to 454.6M and 484.9M
+to 448.6M respectively. No frame timing was measured. All seven scoped
+observations exited successfully without reported graphics validation errors.
+Evidence: `DH2-collision-staging/artifacts/resource-ownership-integration-20261110-comparison.json`.
+
+All-level follow-up (`116a0d59`). The same optimized Tools binary completed
+all 36 installed CPU preparation and release phases in a single catalog.
+The 36 ordered probe acquisition records match the earlier full route,
+including primary, secondary and rejected counts. Geometry and GPU upload
+byte parity remain measured on Edge of the World and Dust District.
+Evidence: `DH2-collision-staging/artifacts/integrated-all-level-acquisition-20261110.json`.
+
+World environment declaration acquisition prediction (2026-11-10). The game owns an idDeclEnv with a default blend duration at 140017b30, and its environment stack at 14088e220 consumes the authored world and area assignments. The host reads each ancestor twice while preparing the world environment and normalizes the same source separately for lighting, render parameters, inheritance and duration. Build one ordered profile per installed world load from a single pass over the inheritance chain. Expect one read rather than two per ancestor, one normalization per visited source, unchanged order and exact typed lighting/parameter/duration values. Release source text at each iteration. Area profiles should also share one normalization for their parameter and parent readers. Preserve the lossy UTF-8 behavior of the current text path, depth 16, missing parents, cycle stopping, and fresh overlay reads on each acquisition. No new retained source cache or frame work is expected.
+
+Tiled-light publication prediction. Original `140371750` owns the
+1,152,000 four-byte light-node links and the lighting records. The host
+releases its view-scoped TLF pass at the render handoff, but the forward
+area-light publisher still holds the outgoing records, list heads and node
+pool. Save the forward renderer's initial empty bindings and restore them
+at the existing release boundary with a disabled grid. At 1920×1080 and
+16-pixel tiles the three outgoing buffers total 4,788,736 logical bytes.
+Expect their allocations to retire after submitted GPU work drains. The
+shared texture array and device pipelines remain with their own owners.
+No additional upload, draw work or per-frame reference clone is expected.
+
+Tiled-light retirement observation (964f7f2a). Windowless DX12 created the production 1920x1080 tiled-light pass, published the buffers through the forward publisher, and dropped the pass. Its forward bindings alone kept the light-node pool (4,653,056 allocated bytes), lighting records (65,536) and per-type list heads (131,072) live. The normal area-light level release restored the exact empty binding identities and removed all three allocator entries after queue drain. Their logical buffer size was 4,788,736 bytes and their reported allocations totaled 4,849,664 bytes. The observer exited zero with no validation errors. It did not submit gameplay draws or measure frame time. Evidence: DH2-fx-level-lifetime/artifacts/area-light-tile-retirement-20261110-comparison.json.
+
+Runtime FX image identity prediction (2026-11-10). Original image lookup 1400607f0 / 14005feb0 shares one registered path identity; release follows final resource demand at 140060180. The host can acquire distinct ParticleImage identities for an editable source while still addressing the same streaming slot by path. The slot records one weak identity and counts its registered consumer lease. When that identity loses its external consumer, another live identity cannot keep the slot or its pending read alive. Keep weak aliases for distinct identities only, leaving the shared installed case allocation-free. Expect one streaming slot and unchanged read/upload counts while any of the two owners is live, followed by release after the last owner. If retirement occurs before read publication, preserve the existing queued cancellation and running-read acknowledgement. No change to image bytes or active rendering.
+
+Installed 2D image staging prediction (2026-11-10). The original hands each installed record to the upload routine at 1402e9ff0 / 1402f5500. The Ward lookup and shared 2D material reader still allocate and fill a second full chain after reading the member, although the scene reader already supports in-place header removal. Reuse the scene reader's compaction. Each installed read should lose one full-payload staging allocation and retain exactly the same descriptor and payload bytes, with unused capacity bounded by the member's headers and original allocation slack. The particle field reader validates every record but samples only the base RG8 mip (particle field sampling 214160). It should lose the temporary packed chain while keeping the same base pixel allocation. No changed uploads, decode format, texture residency policy or per-frame work are expected.
+
+Visibility workspace acceptance (0c9345b2). Five changing camera angles in each installed Edge of the World and Dust District scene produced identical selected instance indices with fresh and reused scratch. One allocation remained stable throughout each reuse sweep (100,169 and 148,800 bytes). Withdrawing the camera viewport left zero visible instances and retained the same scratch allocation until map release. Both maps completed their normal release. The former two buffers requested 200,338 and 297,600 temporary bytes respectively per successful query. The new route retains one map-owned allocation and performs no further scratch allocation in the sweep. No gameplay frame timing or rendering comparison was performed. Evidence: DH2-fx-resources/artifacts/visibility-scratch-20261110-comparison.json.
+
+Combined installed resource acceptance (341badc5, 2026-11-10). The compiled windowless resource observer completed all three routes without validation errors. The Ward lookup retained exactly 32,768 original payload bytes, reusing the 32,851-byte member allocation in place of a separate 32,768-byte chain allocation. Eight indexed RG8 vector-field assets produced identical base pixels and material chain bytes. Their reader eliminated 1,146,880 cumulative bytes of temporary packed-chain capacity across the samples, with unchanged base capacities. The sampled assets each have one mip. The reader still validates every authored mip.
+
+All 36 indexed maps yielded 26 distinct world environment names. The combined acquisition matched lighting values, ordered parameter layers and blend duration bits for all 121 indexed environment declarations. It resolved 300 layers. Two separate walkers issued 358 ancestor requests across those declarations, including 70 across the world subset. The one-chain reader needs 179 and 35 respectively. No per-frame timing was measured.
+
+Windowless DX12 Dunwall Tower acquired two distinct descriptions of the same installed FX image. The existing streaming slot and committed image survived the first owner's removal and the second owner's tail, then the slot released after the final owner dropped. The ordinary effect then published two images and one mesh, removed all three, returned both slots, and submitted zero requests for freed slots. This observes identity and withdrawal, with active gameplay draws and cancellation during the archive read outside the route. Evidence: DH2-fx-resources/artifacts/installed-resource-payloads-integrated-20261110-comparison.json.
+
+Runtime FX image admission prediction (2026-11-10). The original image registry 1400607f0 / 14005feb0 resolves active resource identities and 140060180 releases them. The host derives cancellation in PostUpdate before runtime material coordination. A material batch can withdraw its last image lease later in that same schedule, leaving the next Update with stale read or upload demand. Revalidate leases of the appended FX-only slots at read admission and completion, leaving ordinary scene slots on the existing fast path and retaining the cancellation acknowledgement for active reads. Expect the same frame schedule and latency for live images. An installed read completed before the coordinator withdraws its final lease should release its payload and reservation without creating a GPU upload, including when the previous slot sync still marked it wanted. Already submitted GPU uploads still use their normal acknowledgement.
+
+Runtime FX admission acceptance (ce7bdec5). The windowless Dunwall Tower run withdrew the only owner after slot sync. It suppressed the stale read request. A second run through that same slot admitted a real archive read while live, then withdrew its owner before the texture streamer consumed the completion. The streamer discarded all 21,840 payload bytes, cleared the reservation and left no pending or committed GPU image. The next live alias run reused that slot, preserved its committed image through the remaining owner's tail and released it. The normal installed effect then published two images and one mesh, released them, returned two slots and requested no freed slot. The run exited zero without graphics validation errors. In-progress decompression cancellation and gameplay timing were outside this observation. Evidence: DH2-fx-resources/artifacts/fx-image-admission-20261110-comparison.json.
+
+Wwise property staging acceptance (6481a8bc). Both installed bank census outputs were byte-identical to the previous audit executable, covering 2,332 and 492 Play actions and 70 and 43 Set State actions in the common and game-1 default SFX packages. Separate fly Play, object Stop and global State inspections matched byte for byte, including the 200 ms Stop transition and both State assignments. All five observations exited zero. The reference is the prior local audit executable. These checks compare inspected output, without a playback or scoped timing measurement. Evidence: DH2-scene-shutdown/artifacts/wwise-property-slices-20261110-comparison.json.
+
+Unpublished map resource rollback prediction (2026-11-10). The original world shutdown 1408a4830 precedes resource-class purge 1400410f0, which distinguishes current-level marker 0, conditional persistent-map marker 1 and bootstrap marker 2. The host registers the destination before its prepared batch can publish. A cancellation or preparation failure drops that batch without creating a LevelLifetime; catalog headers and promoted payloads remain until a later purge or session destruction. Give the unpublished batch responsibility for its exact Catalog. Drop its resources and pending publications first, then reuse the existing level and persistent-map sweeps and clear the failed map's preload marker. Keep bootstrap entries and successful same-map reuse. Successful windowless observations that intentionally stop before publication can explicitly retain the registered reuse state, then run their existing level purge. Expect cancellation to retire marker 0 and marker 1 before same-catalog retry, without adding frame work, changing a successful acquisition, or touching GPU resources that never published.
+
+Unpublished layered image rollback acceptance (c61187ef). The installed Dust District ocean cube and caustics array released 33,555,663 and 1,402,559 bytes of staging capacity when their unpublished batch dropped. Neither reached GPU upload. An already-published Edge of the World cube kept its identity, and both discarded names reacquired through the same registry. A separate windowless DX12 Edge of the World, Dust District, Edge of the World route completed normal uploads and map release. The Dust cube retained 33,554,400 payload bytes and CRC aab42164, the Edge of the World cube 524,256 bytes and CRC 3c706fd1, and the caustics array 1,398,016 bytes and CRC 4953878e, matching the earlier installed uploads. No graphics validation errors were reported. Gameplay drawing and frame time were outside the observation. Evidence: DH2-fx-resources/artifacts/layered-image-rollback-20261110-comparison.json.
+
+Unpublished 2D image rollback acceptance (7f877958). The installed-image observation acquired a named UI wrapper before its reserved scene image published. Dropping the actual batch invalidated that wrapper. Reacquiring the same name returned a new published asset with identical payload hash and preserved an unrelated committed image. Edge of the World and Dust District also completed their normal scene preparation, publication and release with 28/29 images, 9,783/8,985 meshes and 68/74 buffers in the prepared batches. Both commands exited zero. The observation exercises registry and asset ownership without a visible loading movie or gameplay timing. Evidence: DH2-fx-resources/artifacts/discarded-scene-images-20261110-comparison.json.
+
+Unpublished map rollback acceptance (b0582a32). Windowless Edge of the World preparation cancelled during collision index construction after registering the persistent map. The batch discarded 46,546 acquisition descriptors and the marker-1 registry sweep removed 2,318 observed headers across particle, audio, mass and FX graph classes while leaving bootstrap records available. Two subsequent preparations completed in the same catalog, and the normal Edge of the World and Dust District scene publication and release route completed without an unpublished rollback. Both commands exited zero. The observed boundary is CPU preparation cancellation and successful scene publication, with actual window close and GPU display outside the route. Evidence: DH2-fx-resources/artifacts/unpublished-level-rollback-20261110-comparison.json.
+
+Cancelled image acquisition history acceptance (62d5caa4). The installed stink-bug diffuse image was credited when staged, then lost its credit and unpublished UI binding when the scene image batch dropped. An independently loaded normal map and the same diffuse path in a separate catalog retained their credit. Retry restored credit with a fresh handle and the same BLAKE3 payload. The windowless DX12 Edge of the World, Dust District, Edge of the World route also published and released all three scenes. The installed ocean cube and caustics upload sizes and CRCs matched the layered rollback observation. Both commands exited zero with no graphics validation errors. Gameplay rendering and frame time were outside this observation. Evidence: DH2-fx-resources/artifacts/abandoned-image-read-history-20261110-comparison.json.
+
+Installed manifest acceptance at 41581736. The interleaved catalog
+observation matched 1,774 init, 24,419 common and 20,353 level descriptors.
+Each bootstrap source was read once per catalog, the first catalog reused
+its manifest on return, and both scopes retired independently. Windowless
+EotW and Dust preparations matched the reference progress, image packing,
+material handoffs, scene preparation and GPU ownership records.
+Evidence: DH2-collision-staging/artifacts/catalog-manifest-cache-20261110-comparison.json.
+
+Installed map-info acceptance at 8d6b3196. All 36 installed world labels
+and full selected declarations matched the reference scan. The indexed
+route read 60 members and 185,956 decoded bytes, compared with 573 members
+and 2,186,370 decoded bytes in the reference route. The interleaved
+catalog observation matched declaration bytes, shared the low/high alias,
+reused the first catalog's entry on return and retired each catalog
+independently. Evidence:
+DH2-scene-shutdown/artifacts/map-info-catalog-cache-20261110-comparison.json.
+
+
+
+### Parsed Iggy worker ownership
+
+Prediction before implementation. The current thread-local table discards all
+entries from a different catalog on each acquisition, and never explicitly
+retires the final catalog's parsed files. Give each UI worker a catalog-scoped
+lease and each installed player a short lease for callers outside that worker.
+Keep the current gameplay worker's across-open reuse. Two independent live
+catalogs should each parse a requested file once in an interleaved A/B/A route.
+After A's final lease ends, A's file should be reclaimable as soon as its
+last consumer releases it. B's lease must still reuse its own file. Editable
+overlays remain uncached. Expect identical Iggy bytes, imports, bitmap payloads,
+and runtime representation. The same source reader (141093380), resident
+identity lookup (1400607f0 / 14005feb0), and release boundary (140060180) apply.
+Scope leases are host integration for worker-local Rc objects. Measure source
+identity, bytes and retirement using installed movies; no frame-time claim.
+
+Installed parsed Iggy acceptance. The combined windowless build at
+5a218eb1 parsed the 518,171-byte Corvo pause source once per catalog in an
+interleaved A/B/A observation. A's file survived until its consumer released
+it and B reused its own independent copy. Loading and pause matched all
+bitmap counts, payload sizes and signatures, including 290 transferred
+loading images and 408 overlapping pause images. This verifies source
+reuse, withdrawal and bitmap inputs. Evidence:
+DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-ui-comparison.json.
+
+
+### Vorbis decoder cache keys
+
+Prediction before implementation. The original streams the installed Vorbis
+format (1411614e0, 141161240); the rewrite's host cache shares the decoded
+setup required by lewton. Both host header lookups currently allocate and
+copy the entire setup packet before checking for a hit. Use the existing
+numeric format discriminators and look up the complete key
+by borrowed bytes. Expect no packet-key allocation on a hit and one owned
+byte slice on a new entry. Exact byte equality, independent sample-rate
+identities, setup sharing across rates and session retirement remain the
+same. This does not change the existing cold setup reconstruction, source
+metadata or PCM. Observe avoided key allocations and bytes in the real
+resident/streamed acquisition route and compare source fingerprints and
+retirement. Original memory-tag evidence is the installed EotW budget and
+the existing per-source acquisition comparison.
+
+Installed Vorbis key comparison at 5a218eb1. Copy-key control and borrowed
+lookups matched all media and stream fingerprints, encoded residency,
+package read counts and final header/setup retirement. Across the
+Edge of the World, Dust District, Edge of the World route the control
+copied 1,235,787 packet-key bytes during lookup and the borrowed path
+copied zero. The median for Wwise header hits was 3,150 versus 2,730
+thread cycles in this dev observation. The parallel runs did not produce
+identical lookup counters. There were four more Wwise hits in the borrowed
+run and two of the 29 decoder lookups were misses instead of hits.
+Published source fingerprints and retirement counts were identical.
+This measures the affected lookup only and does not measure walking or
+audio mixing. Cold setup reconstruction still uses the existing converter.
+Evidence: DH2-fx-level-lifetime/artifacts/iggy-vorbis-ownership-20261110-audio-comparison.json.
+
+
+### Installed localization dictionary lifetime
+
+Prediction before implementation. Original 1400a3ed0 clears the shared
+dictionary before loading a new language. 1400a43c0 and 140164a30 load
+its installed .lang member and release the member after parsing. Lookups
+1401653e0 and 140165420 use that single dictionary. The rewrite currently
+holds every opened language in a thread-local table, discards unrelated
+catalog entries on acquisition, and ignores subsequent edits to an
+overlay. Keep one current installed dictionary in each catalog. Shared
+movie leases let an already opened player finish using its dictionary
+during a language switch, while older dictionaries retire once those
+leases close. The editable .lang route reads fresh and takes no catalog
+lease. Predict one parse per active installed language, unchanged keys,
+text, fallbacks and Iggy imports, and release of inactive dictionaries
+after the last movie closes. Compare both lookup forms and installed
+content before claiming parity. The host wrapper costs one Arc per
+dictionary and preserves the existing thread-local player API.
+
+Installed localization acceptance at b6e68a2b. The two catalog scopes read
+one and two installed members. Both lookup forms matched for all 6,226
+Russian entries. The first catalog reused its Russian table after the
+second loaded one, and switching the first to English left its old
+dictionary usable only while its existing consumer held it. The current
+dictionary likewise released after catalog and consumer retirement.
+Loading and pause bitmap payloads matched the preceding Iggy build.
+This covers installed immutable dictionaries and the source lifetime.
+Evidence: DH2-collision-staging/artifacts/catalog-language-dictionary-20261110-comparison.json.
+
+
+### Cancelled texture acquisition
+
+Prediction before implementation. The installed image loader 1402ea140
+and streamed-mip reader 14030e840/14030f030 feed the image owner, and
+140060180 releases the outgoing map registry. The rewrite closes the
+texture request queue and waits for its reader to acknowledge withdrawal.
+A worker that already started an archive member currently decodes it in
+full, even though the outgoing scene will discard the result. Let the
+existing scene cancellation reach the bounded member reader, including
+separate mip payloads. Keep current member validation and archive read
+credit for successful reads. A cancelled read must drop partial output
+and release its archive lease without publishing or crediting a partial
+resource. The worker still acknowledges retirement before map purge.
+Ordinary camera changes and FX-only slot revivals retain their current
+behavior. Predict no decoded output past the next bounded read after
+whole-scene cancellation, the same payloads for completed reads, and
+unchanged ownership and GPU submissions. Compare installed interrupted
+member reads and retry signatures, then observe normal scene publication
+and retirement. This is host cancellation, not an original decoder port.
+
+Installed cancellation acceptance at 822faa90. Both archive read routes
+stopped after a partial read of the compressed 16,777,298-byte Edge of
+the World sky member and a stored and compressed 16,777,236-byte
+separate mip. Cancelled members had no read credit or retained payload.
+Both successful retry paths matched the full reference bytes. The normal
+Edge of the World and Dust District windowless publication matched the
+image payload, material handoff and GPU ownership records. Dunwall Tower
+admitted an actual texture request and settled the outgoing worker before
+purge. The forced partial-read route and the normal worker gate are
+separate observations. No interruption of a blocking operating-system
+read or gameplay frame-time gain is claimed. Evidence:
+DH2-scene-shutdown/artifacts/texture-read-cancellation-retry-20261110-comparison.json.
+
+
+### Usable rig and LOD0 acquisition
+
+Prediction before implementation. Installed 1401c9630 admits the MD6
+declaration metadata and 14025aa00 reads the selected compiled model.
+The usable worker already owns the complete immutable MD6 inheritance
+chain through its rig, but ModelSources rereads that chain to find LOD0.
+Retain only the token index for the existing mesh-name selection in
+each admitted declaration and use those generations when the same rig
+requests its compiled mesh. The worker should issue zero redundant
+declaration reads for usable models with an already admitted LOD0 mesh.
+Editable catalogs and missing usable LOD0 metadata retain the existing
+resolver. The model payload, cache scope, rig, playback, GPU inputs
+and runtime release remain unchanged. Compare the actual installed
+usable owners with and without the declaration handoff and count the
+avoided reads and bytes separately from the model decode.
+
+Installed usable-mesh acceptance at de4eda22. The Edge of the World,
+Dust District, Edge of the World route matched all 840 prepared
+instances, 63 model paths, model payload fingerprints and existing
+failures. Each of 140 LOD0 requests reused its admitted declaration,
+eliminating 140 reads and 101,781 decoded source bytes. The same-build
+LOD0-selection spans measured 6,306,227 versus 234,979 thread cycles
+in the dev observation. This covers archive selection and prepared
+geometry. It does not measure walking or animation playback. Evidence:
+DH2-fx-level-lifetime/artifacts/usable-rig-mesh-source-20261110-comparison.json.
+
+
+### Runtime skin publication ownership
+
+Prediction before implementation. Original 14025e4d0 publishes the
+selected skin streams and per-surface matrix offset, and 14076d640
+applies physics joint modifications. The rewrite's shared skin publisher
+copies every changed palette into its last-pose state while handing the
+same matrices to the shadow owner. It also allocates transformed vertex
+arrays and an aggregate array solely to reduce placement bounds. Share
+one immutable palette publication and reduce bounds directly in vertex
+order. Expect one palette allocation per published pose instead of two,
+no temporary bounds arrays, and identical position, palette and bounds
+values. The unchanged-pose comparison keeps its own last publication,
+including when a placement alternates between physics and usable animation.
+Observe installed physics poses through the real windowless publisher,
+compare bounds with the previous reduction, and count the affected
+temporary bytes. The first publication also builds its GPU palette
+twice. Reuse the allocation passed to Assets::add for that first pose,
+avoiding one converted 48-byte matrix per joint and a redundant asset
+modification. Existing buffer updates keep their current publication.
+No whole-frame speed or RAM claim is predicted.
+
+Installed skin publication acceptance at 368e0c50. Four Edge of the
+World placements and three Dust District placements published 1,485
+vertices with the same bounds and palette buffer bytes. Removing the
+previous bounds arrays avoided 53,460 bytes of temporary capacity
+across these seven publications. Shared poses avoided 4,704 bytes of
+CPU palette copies and initial buffer creation avoided a second
+4,704-byte converted palette. Direct versus copied bounds arithmetic
+used 47,950 versus 62,440 thread cycles in this dev observation. The
+unchanged pose reused its identity, and all observed pose leases
+released at level withdrawal. This measures the publisher, with no
+claim about whole-frame or gameplay rendering. Evidence:
+DH2-screen-shadow-retirement/artifacts/skin-publication-ownership-20261111-comparison.json.
+
+
+### Usable animation skin-source storage
+
+Prediction before implementation. Original 14025aa00 consumes the
+compiled MD6 model and 14025e4d0 selects the streams and offset for a
+skin surface. The usable worker has already-published render meshes.
+Its CPU pose only needs bind positions, packed normal/tangent
+channels, joint indices/weights and the matrix offset. The worker
+currently assembles and retains a second UV0 and triangle-index copy.
+Decode through the same member and structural checks, keeping only
+the needed arrays for this owner. Expect four bytes per vertex and
+two bytes per index of unused allocation removed, with unchanged
+source bytes, skin fields, render meshes and actor behavior. The
+normal model reader and physics owners retain their existing payload.
+Compare capacities and the affected acquisition spans using installed
+usable models and a full-data reference in the same build.
+
+Installed usable skin source acceptance at a9fd5eeb. Edge of the
+World, Dust District, Edge of the World matched all 140 skin source
+acquisitions, 63 unique models, compiled member fingerprints and
+prepared instances. The full decode allocated 1,352,190 bytes for
+UV0 and indices, matching four bytes per 119,931 vertices and two
+bytes per 436,233 indices. The skin-only decode allocated zero bytes
+for those arrays. The scoped read/decode counters were 57.11 and
+57.72 million dev thread cycles respectively. This is an allocation
+result with no measured speedup or gameplay frame-time claim.
+Evidence: DH2-fx-level-lifetime/artifacts/usable-skin-source-20261111-comparison.json.
+
+
+### Runtime particle acquisition cancellation
+
+Prediction before implementation. Original 1400607f0/14005feb0 resolve
+the declaration and model records, 140232220 reads PMODEL, and
+140060180 releases the registered scope. The host can stop a runtime
+FX job between effects and groups, but its current group still admits
+all particle dependencies after the last requester leaves. Propagate the
+existing stop signal through the declaration, field and PMODEL readers
+and check it between material acquisitions. A stopped load must not
+publish its partial value or memoize its error as an immutable resource
+failure. Completed dependencies retain their normal registry scope.
+Expect a later request in the same catalog and worker cache to recover
+the same asset, with the same ordinary load output. Observe cancellation
+after reading an installed declaration, successful same-owner retry, and
+normal FX publication and retirement. This is host worker cancellation.
+
+Installed particle cancellation acceptance at 72b08270. The installed
+empty particle declaration reached its archive read, stopped without
+publishing a cached value or failure, and decoded on the next request
+from the same owner. The subsequent lookup reused that generation and
+map withdrawal released it. Ordinary Edge of the World and Dust
+District preparation matched their declaration/model/field counts and
+effect event fingerprints. The real Dunwall Tower FX request drained
+at level withdrawal along with its other workers. This verifies a
+forced declaration withdrawal and the normal worker gate separately.
+Evidence: DH2-collision-staging/artifacts/particle-acquisition-cancellation-20261111-comparison.json.
+
+
+### Usable animation read withdrawal
+
+Prediction before implementation. Original 1407e5190 resolves AnimBasic
+items, 140257330 acquires animation records, and 14025aa00 consumes
+the compiled model. The rewrite's background usable task only checks
+close before and after building a full rig and its clips, then reads the
+model without another checkpoint. Carry the existing level signal to
+the clip reader and compiled mesh read, checking between AnimBasic
+items and MD6 surfaces. A stopped clip must leave its resource header
+retryable, preserving any earlier decoded generation. The load gate
+still waits for worker retirement before map purge. Ordinary callers
+keep their existing loaders, data and ownership. Observe an installed
+clip interrupted before decode and retried in the same catalog, plus
+the actual usable worker retirement path and unchanged prepared data.
+
+Installed usable-read cancellation acceptance at 54dc48d9. The
+fountain handle Edge clip and compiled fountain mesh each stopped
+after the archive read and subsequently acquired in the same catalog.
+The retry matched clip metadata and the full CPU skin inputs. The
+normal Edge of the World worker withdrawal drained the rig request
+before purge, and the three-map CPU acquisition fingerprints matched
+the compact usable-skin build. The forced read interruptions and the
+normal worker retirement gate are separate observations.
+Evidence: DH2-scene-shutdown/artifacts/usable-animation-cancellation-20261111-comparison.json.
+
+
+### Wwise Vorbis setup packet acquisition
+
+Prediction before implementation. Original 1411614e0 takes installed
+Vorbis metadata and 141161240 feeds installed packets. The host already
+decodes those packets in place. On a header miss it still copies the
+RIFF prefix, emits three synthetic Ogg header pages and parses their
+page table just to supply lewton the identification and setup packets.
+Give the pinned, BSD-licensed ww2ogg setup writer a raw-packet output
+and feed it the borrowed installed setup record. Construct the 30-byte
+identification packet from the same RIFF fields on the stack. Keep the
+existing setup reconstruction, shared setup/cache retirement and legacy
+full-file reader for layouts outside the installed packet path. Expect
+zero RIFF copies and zero Ogg pages for that path, with identical header
+packets and decoded samples. Compare raw packets to the converter's
+reference and record scoped cold acquisition work before integrating.
+The decoder bridge is host integration, not an original codec port.
+
+Installed Vorbis setup acceptance at c9e2429c. All 34 compared
+identification and setup packet pairs matched the converter, and all
+32 decoded PCM sample fingerprints matched. The conversion control
+recorded 13,755 bytes copied into RIFF staging and 107,432 bytes
+generated as Ogg pages. The direct path recorded zero bytes for both.
+Edge of the World, Dust District, and the return to Edge of the World
+matched media, streams, residency and retirement. The observer's cache
+miss counts differed, so its acquisition cycle totals do not establish
+a speedup.
+Evidence: DH2-fx-level-lifetime/artifacts/vorbis-packet-setup-20261111-comparison.json.
+
+
+### Raw declaration buffer handoff
+
+Prediction before implementation. The installed resource identity and
+release boundaries are 1400607f0 and 140060180. Four host readers still
+copy a valid UTF-8 archive buffer into a String before its only parser
+uses it. Move the existing allocation into the string for placed light,
+area environment, pause environment and fallback MD6 declarations.
+Preserve the current byte-for-byte lossy UTF-8 semantics, including
+invalid bytes, and keep the lexer-normalized readers on their existing
+route. The prior Edge of the World and Dust District light comparison
+read 56,215 and 67,341 bytes per load. Expect those source bytes to
+require no second copy when valid, with no read-count or runtime
+ownership change. Compare actual buffer adoption and installed outputs
+in the same build. This is a host acquisition change, without a
+steady-state memory or frame-time prediction.
+
+Installed declaration handoff acceptance at 71a4c2c5. In the same
+development executable, 304 acquisitions across light, area-environment,
+MD6 and pause-environment readers adopted 284,590 bytes of existing
+archive buffers in Edge of the World and Dust District. The control
+copied the same bytes. The scoped handoff recorded 958,615 versus
+384,580 aggregate thread cycles. Exact text fingerprints, scene and
+GPU preparation signatures, and initial texture and material handoff
+outputs matched. This measures the declaration handoff, not a frame
+timing or peak-memory result.
+Evidence: DH2-collision-staging/artifacts/raw-declaration-buffer-handoff-20261111-comparison.json.
+
+
+### Iggy string buffer ownership
+
+Prediction before implementation. Iggy 141093380 loads serialized
+sections, and the import path at 141023b00 consumes the installed names.
+The rewrite already owns each source section but copies UTF-16 units
+to a temporary vector before decoding the result. Find the terminator
+within the borrowed section and decode directly into the resulting
+string, preserving invalid-unit replacement and the exact out-of-range
+offset when a terminator is missing. The byte-string reader can borrow
+its range as well. Expect the same decoded strings and installed movie
+inputs, with no separate UTF-16 buffer per wide-string read. Compare
+actual loading, pause and Journal acquisition output in the same build.
+This is a host representation change with no frame-time prediction.
+
+Installed Iggy string acceptance at 6a190f9c. Both paths decoded the
+same 22,505 strings and 622,190 UTF-16 code units from loading, pause
+and Journal resources. Temporary UTF-16 buffer capacity fell from
+1,691,464 cumulative bytes to zero. Scoped string decoding recorded
+71,412,129 versus 34,067,916 thread cycles in this dev comparison.
+All string fingerprints, movie bitmap records and numeric Journal
+font raster outputs matched. The observation covers resource
+decoding and software raster output.
+Evidence: DH2-screen-shadow-retirement/artifacts/iggy-string-buffer-borrow-20261111-comparison.json.
+
+
+### Edge clip joint weight backing
+
+Prediction before implementation. The original loader 14024adf0 owns
+one compressed blob in TAG_ANIMATION. Sampler 1412e2c30 takes the
+weight pointer from blob+0x30 and copies the authored weights into
+its output pose. The host already holds the full blob but also
+allocates a second Vec for the same immutable bytes. Store the
+checked range and borrow the bytes when the existing pose code
+needs them. Expect one fewer allocation and exactly the authored
+joint-weight count in fewer copied bytes per weighted clip decode.
+Absent weights and short masks keep their existing pose behavior.
+There is no change to archive bytes, clip identity, sampling math,
+pose allocation, or release policy. Compare the authored mask bytes
+and production acquisition and retirement before integrating.
+
+Installed Edge joint-weight acceptance at 4f17827f. The three-map CPU
+preparation route matched all 903 clip acquisitions, prepared usable
+instances and three retirement checkpoints. An independent read of the
+installed archives matched mask lengths and CRCs for all 335 unique
+decoded clips. The 569 decodes included 75 weighted clips, avoiding
+1,500 cumulative bytes of duplicate mask allocation. Across all
+acquisition records, the smaller header and borrowed masks accounted
+for 9,324 fewer retained bytes summed over requests. That sum includes
+reuse and does not measure concurrent or peak RAM.
+Evidence: DH2-scene-shutdown/artifacts/edge-clip-weight-storage-20261111-comparison.json.
+
+
+### Physics material packing constants
+
+Prediction before implementation. The material record and distance packer
+140c9c210 / 140ae3630 use the executable's constant data, including
+141e9b130 and 141ad3814. The host currently reads and verifies the complete
+41,134,632-byte installed executable independently for every trigger world
+and acoustic world. Share the existing small typed constants through their
+Catalog, acquiring on first use and releasing with that Catalog and the
+last material-library lease. Retry failed acquisition. Preserve the complete
+version check and each world's independent mutable material records.
+On EotW / Dust / EotW, expect six constants reads to become one, avoiding
+205,673,160 cumulative bytes read and hashed in this function. The source
+buffer still retires immediately after parsing. Measure constants
+acquisition and compare exact constants, prepared world inputs and
+acoustic publication and release in one executable.
+
+Installed material constants acceptance at 5e602b70. The same dev
+executable completed EotW / Dust / EotW preparation with separate and
+shared constants. Six acquisitions read the executable six times
+(246,807,792 bytes) in the control and once (41,134,632 bytes) with
+Catalog reuse. All six constants signatures and all 645 selected
+preparation records matched. Constants acquisition recorded
+435,938,440 versus 81,848,165 aggregate thread cycles. The shared
+path used one identity and destroyed it after final ownership ended;
+the control destroyed its six independent identities. No preparation
+error was reported. This measures metadata acquisition and ownership.
+Evidence: DH2-fx-level-lifetime/artifacts/physics-material-constants-20261111-comparison.json.
+
+
+### Component class metadata session ownership
+
+Prediction before implementation. The installed class registration and
+hierarchy initialization (1401990d0 / 140199530 / 1401995f0) and generated
+factory registration (140946640) provide shared initialized metadata.
+The host PhysicsScene currently rereads the executable, scans constructors
+and reconstructs the same immutable ComponentTypes on every map.
+Keep the prepared class/factory/dependency metadata in its Catalog and
+let each PhysicsScene lease it. Mutable pools, entities, declarations,
+world storage and capacity settings remain constructed for each map.
+On EotW / Dust / EotW, expect three metadata acquisitions to perform one
+41,134,632-byte read/scan and two reuse hits. No executable buffer is
+retained. Reuse the existing setup-local name map so this change adds no
+per-frame name lookup. Verify the complete named class/type ranges,
+factory descriptors, dependency inputs and installed map outputs.
+The final Catalog and scene lease release must destroy the metadata.
+
+The first metadata comparison exposed allocation-dependent numeric IDs
+in one of the three independently rebuilt registries. 1990d0 sorts
+registered names by their NameId addresses, and the host allocator can
+place a later name block at a different address. Source inspection
+confirmed that component admission and dependency expansion use each
+registry's own class ranges. The comparison now records the raw
+numeric ranges separately and checks the complete named acceptance
+matrix, source metadata, factory/definition tables and resolved ranks.
+No class registration or runtime range algorithm was changed.
+
+Installed component metadata acceptance at f2620b67. The same dev
+executable completed EotW / Dust / EotW with three independent metadata
+owners and one Catalog owner. All 1,904 named classes, their complete
+acceptance relations and source fields, all 350 factory/type/definition
+descriptors and initialization ranks matched. This repeat also matched
+raw numeric ID ranges. All 645 selected preparation records matched.
+Metadata source reads fell from three (123,403,896 bytes) to one
+(41,134,632 bytes), and affected acquisition recorded 970,111,240
+versus 323,649,025 aggregate thread cycles. Three control owners and
+the one shared owner all reached final destruction. This verifies
+metadata construction and map preparation, with gameplay timings
+outside the observation.
+Evidence: DH2-collision-staging/artifacts/component-metadata-relations-20261111-comparison.json.
+
+
+### Typed physics material resource ownership
+
+Prediction before implementation. Registration 141352520 and material
+construction 14008b640 join the shared resource registry 1400607f0.
+The conditional heap-1 table at 142280ee0 includes physicsMaterial.
+Current world collision, placed-model collision, constrained machinery
+and trigger/water material-library startup reuse source text but resolve
+the same complete material independently. Introduce one typed Catalog
+registry and lease its immutable values from those consumers. Register
+selected headers lazily, promote bootstrap records, preserve explicit
+map/persistent markers and immutable failures, bypass sharing for editable
+overlays, and release identities at the existing marker/session boundaries.
+Keep each world's mutable numeric material library and stable local slots.
+
+Expect unchanged material values, collision filters, navigation signatures,
+body mass and constraint inputs. Typed decode count should fall to requested
+distinct immutable names per owning scope. The registry adds header and
+failure metadata, so measure storage and source/parse counts instead of
+assuming a total memory saving. Existing inherited-field parsing still
+flattens transient source syntax into the complete typed value. It does
+not retain a second generic tree or parent payload beside every child.
+Archive history sweeping must preserve live typed resource records.
+Compare normal and forced separate acquisition through installed map
+preparation and independently observe bootstrap/map/final release.
+
+The collision query owner keeps its existing contiguous runtime material
+snapshot. Its query indexing therefore has the same layout and expressions.
+The shared definition supplies the snapshot during preparation, while
+world material libraries retain the actual Arc generation. This intentional
+host projection preserves the existing query representation and does not
+add resource lookup or reference counting to walking queries.
+
+Physics material contact-consumer sweep. ContactSounds::Definitions still
+rebuilds a separate material_chain from source text on first contact. The
+original 140002c60 traverses the same material ancestry used by physical
+declaration identities. Extend the shared typed definition with the compact
+ordered names visited by its existing inherited-field reader. Contact FX
+then leases that definition and supplies its stored chain directly to the
+unchanged database lookup. Keep common source text available for inherited
+decoding of new map declarations. Expect zero separate contact-chain parses
+for already decoded materials, identical ancestry for every installed
+material, and identical physical values. Measure the extra retained names
+rather than treating the compact chain as free storage.
+
+### Contact preparation catalog context
+
+The scene acquisition worker owns the exact Catalog and archived map
+companions. ContactSounds previously reopened Catalog::shared and selected
+the process-global current_map while consuming that scene's PhysicsSeed.
+That can combine source caches from one namespace with declarations and
+resource leases from another during explicit catalog preparation. Pass
+the preparing Catalog and actual entities companion through AudioPreparation
+to the contact loader. The plugin's standalone initialization retains its
+existing shared-installation lookup. Expect contact owner identity to equal
+the preparing scene's identity for each independent catalog, unchanged
+declaration and sound-event data, and independent final lease release.
+This adds one Arc lease per prepared contact owner and no frame work.
+
+Installed typed physics material and contact acceptance at ae50334e.
+EotW / Dust / EotW matched all 221 acquisition signatures, 20 selected
+preparation and recipe records, and three navigation collision signatures.
+Forced separate acquisition decoded 221 values; shared acquisition
+decoded 53. Scoped dev acquisition recorded 18,598,217 versus 6,722,414
+aggregate thread cycles. There were no failed material acquisitions.
+At catalog retirement the shared registry reported 52,403 bytes of
+requested record storage and 12,384 bytes of live typed payload,
+including retained ancestry. These exclude hash control bytes and
+allocator rounding; no total RAM saving is claimed.
+
+All 314 selected installed physics materials matched the prior value
+reader and all 1,321 contact ancestry names matched material_chain.
+The independent archive ancestry census also found 314 materials,
+1,321 ancestry entries, a maximum chain of seven and no empty parents.
+Separate scope observations preserved a live map read through purge,
+released it after its last lease, reused bootstrap identity, purged a
+persistent material and destroyed final session/consumer leases.
+Two independent contact preparations matched 9,398 source records and
+database/material inputs, used their supplied catalogs, and released
+one catalog without affecting the other, then released the second.
+This observes installed resource acquisition, preparation and ownership;
+active sound playback and gameplay timings remain outside the route.
+Evidence: DH2-fx-level-lifetime/artifacts/physics-material-contact-context-20261111-comparison.json
+and physics-material-installed-ancestry-20261111.json.
+
+
+### Audio preparation source context
+
+Original bank selection 1400bd510 / 1400c0cb0 loads the preparing map's
+packages, and declaration acquisition 1400607f0 uses its resource manager.
+The host AudioPreparation already receives the scene Catalog/map for
+contacts, but bank selection, engine controls, bus setup and listed sound
+events still rediscover the installation or global current_map. Pass that
+same source context to those existing owners. Startup fallbacks obtain
+their source from the published LevelSourceReads. Preserve the session
+bank/package/output owners and all selected payload formats. Expect the
+same package names, bank/media/event fingerprints and streaming totals
+on ordinary maps, with source identities tied to the preparing Catalog.
+No gameplay query, mixer callback, per-voice decode or GPU work changes.
+
+
+Audio context acceptance (2a04e459, 2026-11-11). The clean dev tools build
+completed the corrected bank inventory for all 36 installed maps. Package
+names, bank IDs and shared-package/bank selections match the independently
+parsed wwisedescription.txt in every map. The saved actual EotW/Dust/EotW
+preparation/publication comparison matches all 27,177 prepared-media records,
+5,837 stream records, three encoded-residency snapshots and nine scene
+preparation records, with no acquisition errors. Only the inventory observer
+changed after that acquisition capture; its exact source diff and executable
+provenance were checked before reuse. Normal audio preparation now receives
+the scene's explicit Catalog and entities companion instead of rediscovering
+global installation/map state. This is source-context correctness, with no
+CPU-speed, gameplay playback or GPU upload claim. No tests or visible game
+launches were used. Evidence:
+DH2-fx-level-lifetime/artifacts/audio-acquisition-context-v3-20261111-comparison.json.
+
+
+Fade resource lifetime prediction (2026-11-11). Original declaration
+registration 141351cd0 uses the shared registry 1400607f0; fade is in the
+36-kind conditional heap-1 table at 142280ee0. The host loading controller
+currently reads/parses its selected declaration directly and drops its curve
+when complete, leaving the catalog read credit without a resource owner.
+Route that same typed parser through the existing scoped Registry. Register
+selected lazy headers, promote bootstrap identities, retain immutable failures,
+bypass sharing for editable sources, and retire map/persistent read credits
+only after the last curve lease. Keep each loading controller's duration and
+elapsed time independent. Expect identical selected curve samples and no frame
+lookup/locking; repeated requests within a live scope should parse once.
+Header/shared payload retention can increase between fades, so this is a
+lifecycle/reuse correction, not a predicted RAM or frame-time reduction.
+Observe every installed fade and the actual bootstrap/map/final lease boundaries.
+
+
+Decal declaration lifetime prediction (2026-11-11). Registration141351b80
+uses the common registry1400607f0; decal is in heap-1 promotion table142280ee0.
+The existing per-particle-table Weak cache shares overlapping consumers only
+inside one table and does not own selected headers, immutable failures or
+purged read credits. Move that identity ownership to Catalog's existing scoped
+Registry, retaining the public acquisition facade and exactly the same four
+resolved material references. Descriptor animation, mutable pool slots,
+material/image acquisition, draw submission and GPU retirement stay in their
+existing owners. Expect identical installed references, shared identity across
+independent acquisition tables, immutable miss/error reuse, and retirement at
+bootstrap/map/final-consumer boundaries. No frame work or CPU/RAM saving is
+predicted: retained headers and scoped immutable data have a storage cost.
+
+
+Fade/decal acceptance at8b5b244d. The clean dev build passed actual
+windowless EotW/Dust/EotW preparation/publication: all27,177 prepared-media
+records,5,837 stream records, three encoded-residency snapshots, nine scene
+preparation records and three selected load-fade records match the saved
+reference. All seven installed fade definitions retain their complete curve
+bits. All25 decal declarations retain their100 ordered material references.
+Independent acquisition tables in one Catalog share one decal generation;
+independent Catalogs remain separate. Both owners preserve a live map lease
+through purge, retire it after the final lease, preserve promoted bootstrap
+identity, honor explicit heap-1 overrides and destroy final session ownership.
+The controlled scope observations use real installed payloads and explicit
+registry phases; they do not stand in for gameplay or active decal draws.
+
+Actual preload selection now includes both types in the manifest discovery
+filter. All36 map snapshots match independently parsed primary AND reuse
+manifests, resource IDs, global layer masks and index stream flags. The first
+comparison used only primary manifests and reported extra headers; the reuse
+census accounts for every extra without changing production selection. The
+census found three common fade headers and19 common decal headers, plus map
+selections. All selected payloads remain lazy. At the three-map Catalog's
+retirement, fades report837 record-storage bytes and252 live payload bytes;
+decals report3,832 record-storage bytes and zero live payload bytes. These
+requested sizes exclude hash controls and allocation rounding, and are not
+RAM savings. GPU material/image ownership and per-frame paths are unchanged.
+
+Evidence: DH2-fx-level-lifetime/artifacts/fade-decal-resource-lifetime-v3-20261111-comparison.json,
+its referenced v2 acquisition/owner report, the primary manifest census in
+DH2-collision-staging/artifacts/fade-decal-installed-header-census-20261111.json,
+and the independent installed-reuse census. The v3 report explicitly records
+the saved reference log's source/binary provenance; the v2 reference binary
+field names the immediately preceding build, not that earlier saved log.
+No tests, visible launches, gameplay appearance or frame-time claims.
+
+
+Particle model stream prediction (2026-11-11). Original140232220 opens
+PMODEL, validates its two magic words, reads the count and fills the final
+32-byte vertex records directly from the stream. The host currently holds
+a full decoded archive member beside the typed vertex array. The independent
+installed index census found473 models/19,889,068 source bytes, eight at
+least256KiB and a maximum969,740 bytes. Apply the existing large-model
+stream policy to PMODEL: retain small/editable buffered acquisition and
+use the Catalog's bounded reader plus an8KiB stack block for larger immutable
+members. Preserve every float bit, all20 attribute bytes, vertex order and
+opaque-tail length. Cancellation continues through the same Catalog reader;
+identity/reuse and GPU owners do not change. Expect one fewer full-member
+heap buffer per qualifying cold read, with no larger retained representation
+or per-frame work. Compare original packed vertex bytes for all473 members
+and affected read/parse cost for both modes in an optimized build before
+acceptance. No total RSS or gameplay frame-time gain is predicted.
+
+
+Particle model streaming acceptance at e74780d9. The optimized model-audit
+build compared all473 installed models/621,356 vertices with their original
+packed vertex bytes. Buffered parsing, forced stream parsing and the actual
+production selector match every float bit, all20 attribute bytes, vertex
+order, count and opaque-tail length. Eight members qualify for streaming.
+Alternating256 affected read/parse samples per mode recorded211,777us buffered
+versus184,308us streamed (about13% lower), with the same reader pool and
+warm installed files. The largest removed full-member heap buffer is969,740
+bytes; the stream decoder uses an8,192-byte stack block beside the unchanged
+final vertex array and existing archive buffering. This is a scoped acquisition
+result, not a whole-map loading, RSS, walking CPU or FPS claim.
+
+The coherent dev integration build completed buffered and streamed actual
+EotW/Dust/EotW preparation/publication with exit0. Prepared media, stream
+records, encoded residency, all scene preparation records and selected fades
+matched exactly. Resource identity, cancellation, map/session ownership and
+GPU paths are unchanged. No tests or visible launches were used. Evidence:
+DH2-fx-level-lifetime/artifacts/particle-model-streams-20261111-comparison.json
+and DH2/artifacts/particle-model-buffer-census-20261111.json.
+
+
+Allocation provenance review (2026-11-11). The completed tagged shutdown
+observation retained256 bytes under sound graph after actual audio tables
+retired. Source review of the diagnostic allocator found record_big captures
+stacks and grows its process-wide metadata while the allocating resource tag
+is still active. RECORDING prevents recursive stack capture but does not
+exclude those bookkeeping allocations from resource byte totals. Attribute
+the profiler's own allocations to untagged, preserving the original tag on
+the measured block. Prediction: actual resource allocations, output and total
+requested bytes do not change; only profiler metadata moves out of incidental
+resource/phase categories. In particular the256-byte sound residue may move
+if it belongs to this owner; that attribution must be observed rather than
+assumed. Keep a same-binary former-attribution control. No game-performance
+or RAM-reduction claim; the diagnostic feature is disabled in ordinary builds.
+
+
+Allocation attribution observation at13602a43. Same-binary EotW/Dust
+preparation/publication completed in both diagnostic modes, with identical
+scene asset/preparation and encoded-residency records. Final placed-model
+phase attribution changed8,400 ->64 bytes; the profiler's table/stack
+allocations are now charged to untagged. Other small residual categories vary,
+including sound graph0/256 bytes, so that256-byte value is not established as
+profiler metadata or a resource leak. This is an attribution correction with
+no actual RAM-saving claim. The broader route published and retired nine
+levels, then correctly failed on Curator's compressed-image extent rejection;
+no final-session/all-map acceptance is claimed from that failed route.
+Evidence: DH2-fx-level-lifetime/artifacts/all-level-resource-lifetimes-20261111-comparison.json.
+
+
+Inline compressed extent correction prediction (2026-11-11). The broader
+actual scene-publication route stopped in Curator with an inline BIM dimension
+rejection. Independent header reads of all14,885 selected BIM resources found
+16 two-dimensional base images whose stored record dimensions are rounded to
+BC block boundaries, including the512x2 Ashworth-device lookup stored512x4.
+Original1402f4060 rounds compressed width/height to four pixels before filling
+the D3D texture descriptor;1402e9ff0 applies the same bounds before record
+upload, and1402f50c0 copies complete blocks. Port that storage-extent rule.
+Preserve logical header parsing, compressed formats, payload bytes, mip order
+and scope owners. Validate record block coverage against each storage mip and
+use the actual storage dimensions for allocation/upload. No RGBA expansion,
+resampling, extra pass or GPU-load increase is expected. The legacy BC3/BC7
+inline accessors require the same rule. Preserve exact extents for uncompressed
+formats and attach source paths to resident-image acquisition errors.
+Verify installed records and actual Curator publication/GPU upload before
+continuing the all-level lifecycle pass.
+
+Inline block-storage acceptance (2026-11-11,0d8a6320). The clean dev game/tools
+build completed; Tools SHA256 c5c22302a94b17ce27828bb8e41156959d91b82ba414da01178da1f784f68910.
+All11,885 installed2D BIM resources matched their serialized mip payloads
+(1,242,141,788 bytes);16 required original block-rounded storage extents.
+No format expansion, cropping, resampling or additional payload allocation was
+introduced. The actual Curator GPU route acquired4,365 images/13,240 meshes/
+76 buffers/one sky material, then returned to15 bootstrap images/four meshes/
+zero buffers/zero skies. The complete36-map production CPU preparation,
+publication and retirement route passed, with Catalog remaining_consumers=0.
+All named typed resource owners returned to zero. The diagnostic phase tags
+still retain602,650 bytes after publication and332,900 after physics, plus
+smaller phase balances and4,372,297 untagged bytes; those are not certified as
+resource leaks or harmless process metadata. GPU evidence covers Curator
+asset upload/removal, not all36 maps or gameplay draws. The wider audit remains
+open for remaining attribution and supported owner obligations.
+Evidence: DH2-fx-level-lifetime/artifacts/inline-block-storage-20261111-comparison.json.
+
+Shader-buffer serialized staging prediction (2026-11-11). The host patched
+ShaderBuffer::from encodes its existing ShaderType into an owned byte vector,
+then Self::new copies that entire vector into a second allocation. set_data
+already transfers wrapper.into_inner directly. Use that same ownership transfer
+for construction. This is a bevy_backend lifetime optimization of already
+serialized host upload data; it does not change any installed resource format,
+parsed values, shader layout or native mechanic. The original static upload/
+staging retirement boundaries remain140259d50/14026a240; host shader-buffer
+creation and data encase encoding are not claimed to be native serializers.
+Expect one fewer allocation and one removed full-payload copy per From call,
+with unchanged byte content, retained capacity, GPU descriptors and lifetimes.
+Compare actual installed scene publication in both modes in the same binary;
+record serialized/retained capacities and complete published buffer hashes.
+The expected gain is temporary allocation/copy volume, not a walking/FPS claim.
+
+Small allocation attribution prediction (2026-11-11). The complete36-map run
+ends with zero named resource owners and no Catalog consumers, but retains
+602,650 publication-phase bytes and332,900 physics-phase bytes. The existing
+one-MiB backtrace threshold cannot identify those blocks. Add opt-in64-byte
+sampling only for the six nonzero named phase contexts, configured outside
+the allocator before acquisition. Keep bookkeeping untagged and report the
+live callers only after actual host/audio/Catalog retirement. This is diagnostic
+attribution, with no expected memory or CPU saving and no normal-build code.
+Use the callers to identify real owners before changing residency policies.
+
+Heap report snapshots are also charged to the diagnostic context before taking
+the name-table lock. With small-block tracing enabled, retaining a resource
+phase here would both misattribute the snapshot and recursively acquire the
+same lock while recording its allocation.
+
+Cube face-count correction prediction (2026-11-11). The original BIM reader
+1402d2740 and GPU allocator1402f4060 interpret a cube's stored layer-count1
+as six face records. The host accepts only literal6 and rejects three real
+installed resources: the BC6 black/invalid cubes and the template cube. All
+three contain six ordered faces per mip (42/42/30 records respectively).
+Normalize that descriptor in the single layered-image reader; preserve all
+packed bytes, formats, mip ordering and ownership. Expected gain is supported
+acquisition of these three resources, with no added decode, upload or runtime
+work for previously accepted cubes. Verify the full installed cube/array/volume
+inventory through the production readers before integration.
+
+Independent layered-record inventory (2026-11-11). Reading the installed members
+without the rewrite parser verified125,639 ordered records/1,743,628,016 payload
+bytes across2,897 cubes,102 volumes and one32-layer array. All dimensions,
+record lengths, mip/slice order and source extents follow1402d2740 and the
+1402c2e30 block-size rules. The three stored-layer1 cubes contain42/42/30 face
+records; no member conversion or extraction was performed. This establishes
+the installed format census, not acceptance of the changed rewrite reader.
+Evidence: DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
+
+Layered format acceptance (2026-11-11,ff4c7aea). Clean dev game/tools build
+SHA256007aa7d4562b1e2953117912b366e51307f4a183b6939e7399d8e76fd1497816
+acquired every selected installed layered image through the production owned
+readers:2,897 cubes,102 volumes,one32-layer array,1,743,628,016 payload bytes.
+Full serialized-record ordering, format/dimensions, depth/layers and payload
+hashes matched. All three layer-count1 cubes retained six faces per mip.
+Together with the accepted2D inventory, this covers all14,885 selected BIM
+members. The GPU heap regression in the same report belongs to the separate
+unmerged common-mesh feature and does not invalidate this format acquisition.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json
+and DH2-collision-staging/artifacts/installed-layered-records-20261111.json.
+
+Common static-model GPU lifetime prediction (2026-11-11). Model lookup
+1400607f0 and bootstrap promotion140060b60 retain common resource identities;
+static surface upload140259d50 and release14026a240 belong to that identity.
+The host already reuses requested init/common CPU model sources, but builds
+and uploads new immutable meshes after each map change. Add a device/asset-
+store-scoped common mesh owner for non-sheared BML1 surfaces only. Key by
+Catalog identity, source path/surface, winding and required vegetation layout;
+leave skeletal, mutable, baked and editable meshes with their current owner.
+Publish cache residency only with the batch that owns each prepared asset,
+so cancelled preparation cannot preserve an uncreated GPU identity.
+
+A persistent handle alone would pin map-sized buffers. Use a separate allocator
+layout domain for persistent mesh vertices/indices so their slabs cannot share
+with map allocations. No buffer ABI or vertex/index data changes. Keep actual
+scene readiness references, map-scoped materials/transforms and query inputs.
+Expect repeated common surfaces to keep their GPU identities and skip mesh
+construction/upload, and outgoing map allocations to retire independently.
+Session GPU residency increases by the actual shared geometry/slab footprint;
+measure that tradeoff and compare complete consumed mesh data before acceptance.
+No per-frame cache lookup or new rendering pass is planned.
+
+Common-model publication also defers Catalog namespace replacement until the
+successful publication callback. Preparing a different Catalog cannot evict
+committed handles or borrow their meshes before that replacement is accepted;
+cancelled preparation leaves the existing session cache intact.
+
+Common-model first observation (2026-11-11,260489e2). Same-device EotW/Dust/
+EotW comparisons preserve all three placed-mesh content signatures and actual
+GPU residency. Fresh common meshes fall20/16/20 to20/2/0;22 final common meshes
+share two disjoint buffers and the owner releases at host shutdown. However,
+2,162,688 additional live GPU allocation bytes pin a268,435,456-byte later
+heap (reserved201,326,592 ->469,762,048). Do not accept this memory regression.
+The comparison script also mistakenly required six mesh observation records;
+only the enabled placed-mesh observer emitted three, all of which matched.
+No mesh data mismatch occurred; cancellation had not run when that guard stopped.
+
+Heap-placement correction prediction. Existing bootstrap heap0 has ample free
+space, but transaction commit iterates all map/common slab creations together.
+Commit newly added common meshes before ordinary map meshes, preserving the
+separate layout domains and all packed bytes. Expect the two small persistent
+buffers in the bootstrap heap, no extra256-MiB reserved heap after map release,
+and unchanged20/2/0 preparation, content, cancellation and final owner release.
+Only additions of common meshes split the transaction; ordinary modified-mesh
+frames retain the single transaction. This ports the persistent resource
+identity through a host allocation-order change, not a GPU pass or draw change.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-20261111-comparison.json.
+
+Common-mesh heap correction follow-up (2026-11-11,ff4c7aea). The narrower split
+inside the ordinary mesh allocator did not change the measured reserved heap:
+it still grew201,326,592 ->469,762,048 bytes. All bytes,20/2/0 reuse, owner release
+and disjoint buffers still matched. Therefore that prediction was wrong; the
+asset preparation stage can upload map images/storage before the mesh allocator.
+Move only immutable common additions to an explicit extraction-to-preparation
+boundary before ALL map assets. Leave ordinary additions/changes in the normal
+allocator; exclude modified common IDs from the early path so their existing
+free/rebuild semantics remain intact. Record the heap immediately before/after
+early allocation, and require no reserved-heap regression after map retirement.
+The failed v2 report establishes no cancellation or residual-caller acceptance,
+since its heap guard stopped before those steps. Layered image acquisition did
+pass all3,000 installed members/1,743,628,016 payload bytes, including all three
+single-cube descriptors; that result is independent of the heap failure.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v2-20261111-comparison.json.
+
+Common-mesh and shader-staging acceptance (2026-11-11,ed664b55). Clean dev
+Tools SHA256257af879a6c8ec4716b958a2680e37130d4f17175e7bf7404d63308fedf5d273
+passed same-device EotW/Dust/EotW separate/shared comparisons. All three placed
+mesh signatures match; common construction/uploads fall20/16/20 ->20/2/0.
+The22 resident common meshes occupy two disjoint buffers (2,097,184 logical
+buffer bytes;2,162,688 actual allocator bytes), release at host destruction,
+and do not retain map buffers. Early upload now keeps reserved driver heaps
+at201,326,592 bytes in both modes after every map, fixing the rejected256-MiB
+heap pin. A cancelled preparation built one mesh, promoted none, and the retry
+built20 fresh valid meshes. This verifies asset content/upload ownership and
+resource reuse, not gameplay draw timing or a whole-frame speed claim.
+
+ShaderBuffer::from same-build publication preserved207 complete buffer hashes
+and all serialized/retained capacities across198 calls, removing449,280 total
+transient copied bytes (largest102,464). No rendered data or GPU descriptors
+change; no RSS or CPU-time gain is asserted from these dev observations.
+
+The64-byte caller trace also completed all36 CPU publication/retirement routes.
+It attributes260,304 physics-phase bytes to class/name metadata and many
+publication-phase balances to AssetHandleProvider/embedded shader loads in
+successive fresh Bevy hosts (notably35-fold counts). Small persistent task,
+weak-index and singleton balances are also recorded. These are identified
+callers, not a certification that every retained block is harmless. Investigate
+the shader-load host shutdown before closing that remaining lifetime obligation.
+Evidence: DH2-fx-level-lifetime/artifacts/common-model-meshes-v3-20261111-comparison.json.
+
+FX declaration remaining-scope review (2026-11-11). Registration1413630d0
+constructs idDeclFX, inherited acquisition140022fd0 uses1400607f0, and destruction
+1401c5990 releases its typed payload. fx is present in the actual36-kind
+conditional promotion table142280ee0. Current assets::fx::declaration::read
+shares source text but returns a fresh generic syntax tree for every caller;
+there is no FX typed header/purge owner. The three direct Catalog consumers
+are world_sources, screen_effects::sources and pause_fx; audio::contacts uses
+the same inherited reader with its prepared text provider. This is a real
+remaining class-lifecycle gap, not a request to cache the already prepared
+world effect wholesale.
+
+WorldEffectDefinition contains resolved ParticleMaterial images, fields and
+decal references. Those are derived consumers with separate image/particle/
+material lifetimes; retaining the whole prepared effect in Catalog would pin
+them across levels. The intended owner must retain only immutable typed FX
+descriptors, then leave world/screen material/image preparation with existing
+map/runtime owners. Live instances keep independent clocks, queues and random
+state. Existing constructor/default/descriptor parsers are the source of typed
+data; no new generic Value-tree cache or eager decode of the entire library.
+Mutable overlays and cancelled acquisition require the existing separate-
+generation and nonpublication rules. Native parent resource scopes must be
+accounted for without retaining duplicate resolved syntax after preparation.
+
+Installed census:8,909 FX declarations/3,824,720 source bytes,7,095 inheritance
+references to1,347 distinct parents. The full raw inventory and inheritance
+shape are in DH2-collision-staging/artifacts/fx-declaration-installed-census-20261111.json.
+Predicted outcome is one lazy selected header/typed identity per requested
+immutable declaration, shared across world/screen/pause/contact consumers;
+bootstrap/map/persistent purge follows the existing registry. No byte or CPU
+saving is claimed until actual consumer acquisition is measured. Preserve
+all enabled/disabled descriptor admission and deferred error boundaries.
+
+FX owner implementation in progress (2026-11-11). The candidate now has a
+Catalog-owned typed registry, selected lazy headers, bootstrap promotion and
+map/persistent purge. Inherited syntax is still temporary, immutable failures
+share a generation, cancellation does not promote a new value/error, and
+editable generations bypass sharing. World/screen/pause/contact consumers and
+parent read-history ownership still need integration and actual acquisition
+comparison; this branch is not accepted or merged. All header/typed-body
+allocations use the explicit FX declaration resources context. No incomplete
+nested-storage estimator is reported as a full payload-byte measurement.
+Shader-library lifetime root cause/prediction (2026-11-11). The live caller
+trace's35-fold AssetHandleProvider balances come from bevy_shader0.19.1's
+load_shader_library macro: it explicitly mem::forgets each loaded strong
+handle to work around missing dependency tracking. This is not merely an
+unfinished resource observation; those handles cannot drop with their App.
+Keep the same workaround's live retention in an application-owned World service
+instead. A non-send service is sufficient because embedded_asset already
+requires mutable App access on the main thread; no new ECS dependency or
+runtime system is needed. The owner is a bevy_backend shader-library lifetime,
+not a port of original compiled-renderProg bank contents. Preserve every path,
+source, load setting, import, handle and GPU behavior while the App lives.
+Expect all library weak leases to remain live during host work and retire after
+host destruction; the former forgotten mode should retain them. Observe actual
+fresh hosts and compare unchanged acquisition output before integration. No
+normal gameplay CPU, FPS or large resident-memory saving is predicted: the
+main client has one App, while repeated diagnostic hosts exposed the leak.
+
+Shader-buffer module sweep prediction (2026-11-11). set_data allocates a new
+byte vector even for a same-sized update of the level's wind instance words
+(14077fbc0 windInfo/140339160 samples, forward vegetation674e25d0 family).
+Reuse the prior serialization backing only when its capacity equals the exact
+new ShaderType size; changed sizes preserve the old allocation policy. Clear
+its length before writing so padding is initialized identically. Expect one
+fewer allocation per unchanged-size update, identical serialized words/capacity,
+and no extra retained memory or changed GPU uploads. Observe256 calls per
+installed level using its actual published wind words; do not claim frame
+or release CPU timings from that acquisition diagnostic.
+
+The same module unconditionally grows SHADER_BUFFER_UPLOADS and takes its
+mutex on each upload. Its only readers are benchmark_frames, which clears
+at measured-frame start and prints at exit. Gate collection by the existing
+benchmark launch option or an explicit diagnostic override. Expect no table
+entries/locking in normal gameplay, preserved benchmark counters and identical
+GPU resources. Existing source serialization, GPU extraction copies required
+by concurrent frame ownership, staging-belt submission and descriptor/resize
+semantics remain unchanged. No new shader pass or draw is introduced.
+
+Common-mesh acceptance correction (2026-11-11). The v3 report's reserved-heap
+and handle checks passed, but its records show buffers=0 for resident common
+meshes. That invalidates the GPU-buffer portion of the preceding acceptance;
+CPU content/reuse and host-owner release alone did not prove valid GPU backing.
+Root cause: the existing free_meshes deliberately retires removed, modified
+AND added IDs to handle re-extraction. Early common upload was followed by this
+normal free stage, which destroyed its new buffers; the later domain correctly
+skipped uploading them again. Free the complete outgoing generation before
+early upload, then skip that second free stage. Other additions/changes still
+allocate in the ordinary stage. Require vertex ranges for every nonempty common
+mesh and index ranges for every indexed common mesh, in addition to RenderMesh
+presence, disjoint buffers, content and retirement. Re-run actual GPU ownership
+before accepting the repaired scheduling or claiming heap placement success.
+The shader buffer publication/serialization result in v3 is independent of this
+missing common mesh backing; its hashes do not verify mesh drawing.
+
+Corrected GPU backing/ownership acceptance (2026-11-11,2d666eb6). Clean dev
+Tools SHA25658070307aa072e0b8f1ec5e1b075e782b0650e60963be62cf3870b5b93c69e6b
+passed strict vertex/index range checks for every nonempty/indexed common mesh
+in separate/shared EotW/Dust/EotW routes AND the normal path without CPU debug
+mesh copies. All three mesh fingerprints and207 complete shader-buffer hashes
+match, with unchanged serialized capacities. Common preparation remains20/2/0;
+cold common backing is two buffers/2,097,184 bytes and becomes four buffers/
+4,194,368 bytes after Dust's two additional surfaces. All are disjoint from
+map buffers and survive only their intended host scope. The extra pair is
+explained by the existing per-map seal discarding persistent slab lookup lists;
+reuse those lists next rather than treating the slack as unexplained.
+Reserved heaps remain201,326,592 bytes in both modes after all three maps.
+Cancellation built one unpublished mesh, retained none, and retry built20.
+This supersedes the invalid v3 GPU-backing claim; metadata presence alone was
+insufficient. Actual gameplay draw timings are not claimed by these routes.
+
+Same-sized ShaderBuffer updates using actual published112-byte wind words
+kept the same allocation for all768 observed calls, versus zero reuse before,
+with identical bytes and capacities. These initial words are not a moving-wind
+CPU timing result. Normal upload statistics retain zero entries versus31
+benchmark entries after207 uploads; actual GPU acquisition/retirement is
+unchanged. ShaderBuffer::from still removes449,280 transient copied bytes in
+198 constructors with207 matched published hashes.
+
+Each fresh graphics host owns67 shader-library handles. Both modes kept all67
+live during host work; the former forgotten mode retained67 after EACH host
+drop, whereas application ownership released all67 after EACH drop. The normal
+GPU route also released all67. The patch preserves sources/imports/settings and
+has no normal frame system; no gameplay FPS or large RAM saving is claimed.
+Evidence: DH2-fx-level-lifetime/artifacts/resource-ownership-v5-20261111-comparison.json.
+
+All-level GPU acquisition/release acceptance (2026-11-11). The windowless
+production owner observed all36 installed level selections in one reused
+App/device, including initial image streaming, actual GPU uploads and complete
+map removal. Source2d666eb6, tools SHA256
+58070307aa072e0b8f1ec5e1b075e782b0650e60963be62cf3870b5b93c69e6b.
+Every removal retained only four bootstrap meshes plus the intentional common
+model cache; map shader buffers and sky materials reached zero. Actual common
+vertex/index ranges remained complete, with no map/common slab mixing. The
+common cache grew from12 to41 meshes over the full selection; persistent image
+owners remained intentional (159 to454 images), not classified as map leaks.
+All67 shader-library handles remained live during the host and zero after
+shutdown. Catalog identity matched and remaining consumers reached zero.
+This verifies acquisition, initial streaming, upload and removal only: it is
+not evidence for gameplay frame timing, active FX tails or menu transitions.
+Evidence: DH2-fx-level-lifetime/artifacts/all-level-gpu-lifetimes-20261111-comparison.json.
+
+FX demand-decoding refinement (2026-11-11, unverified branch only). Pure
+typed child families now stage lazily by consumer: contacts/pause request
+common groups, world requests particles/decals/admission, screen requests
+particles/quads. A new family on an existing identity rereads temporary inherited
+syntax once, then discards it; already-decoded families remain shared. This
+avoids eagerly decoding unused visual descriptors when resolving a sound.
+Cancellation stages every new family before publishing any, and never retains
+generic Value trees. Prediction: repeated same-role requests parse no FX syntax;
+first request of another role parses only its previously absent typed families.
+Production consumer wiring and unchanged-output/lifetime observation remain
+unfinished; no performance saving or accepted implementation is claimed yet.
+Persistent mesh-pool lookup prediction (2026-11-11). The corrected normal
+EotW/Dust/EotW route retains2,097,184 common buffer bytes after the first map
+but4,194,368 after Dust adds only two meshes. The map seal clears every slab
+lookup list, including the explicit long-lived domain, so those two surfaces
+cannot use the first common buffers' free ranges. Keep persistent-domain pool
+lookups across a map seal while sealing all ordinary/bootstrap layouts as
+before. Expect two persistent buffers/2,097,184 bytes after both maps, eliminating
+the second pair's2,162,688 allocator bytes and two buffer creations. No original
+mesh payload, GPU address already in use, draw policy or frame system changes.
+Normal removals still free empty slabs; a changed Catalog drops its old handles.
+MeshAllocator previously forwarded sealing through Deref; its explicit method
+now selects the actual lifetime domains in the existing generic slab table.
+Verify cached vertex/index ranges and content, actual live allocations,
+cancellation and the normal path without debug mesh copies before acceptance.
+
+Persistent mesh pool acceptance (2026-11-11). Source02200717, tools SHA256
+dffc2ecf2deafd102830ca2e5fc2f5d13bec940b11984b091eae25897d085857.
+Same-binary installed Edge/Dust/Edge acquisition/upload/removal preserved all
+three mesh-content signatures and complete actual vertex/index ranges. Free
+persistent slab lookup lists now survive ordinary map sealing: common mesh
+buffers remain two /2,097,184 logical bytes /2,162,688 allocator bytes instead
+of four /4,194,368 logical bytes after Dust. The normal path with CPU mesh
+observations disabled independently retained the same two valid buffers.
+Reserved driver heap remains201,326,592 bytes; final host releases the cache.
+This removes the predicted redundant pair of persistent allocations without
+changing ordinary map sealing. No gameplay CPU/GPU timing claim is made.
+Evidence: artifacts/persistent-mesh-pools-20261111-comparison.json.
+
+FX consumer integration (2026-11-11, pending compilation/acquisition evidence).
+World particles/decals, player screen effects, pause and contact sound effects
+now acquire pure typed FX identities from the Catalog owner; each retains a
+root generation lease until its derived state is dropped. Particle/quad/decal
+descriptors share Arc backing, while material/image bindings and playback
+clocks stay with their former consumers. Scalar timing ranges are Copy values.
+Screen-quad envelope parsing now borrows filtered fields instead of deep
+cloning their generic syntax, and environment/quad blend definitions share Arc
+backing rather than requiring copied curves. No decoded material/image or
+GPU handles enter the Catalog FX owner. Deferred unsupported-family admission
+retains its original small results and diagnostic sizes, never source trees.
+Inherited source paths remain with each flattened typed generation; purge and
+contact history release retain credits only for a live direct identity or
+source dependency. This explicitly marks the host's flattened inheritance
+representation instead of claiming an extra original typed parent instance.
+Selected headers, bootstrap promotion, map and conditional persistent purge
+use the shared1400607f0/1400661e0/140060b60 registry phases. Prediction: repeated
+same-role acquisitions perform zero FX parses; adding a new consumer role
+parses only missing child families, while final scope release retires all map
+typed payloads and orphaned inherited source credits. Normal gameplay clocks,
+render passes and emitter simulation are unchanged. Verification outstanding.
+
+FX source sweep: removed the obsolete world-only descriptor-syntax helper and
+copy-mode branch once all production requests moved to the asset owner. Scope
+observations report direct headers, live typed generations and inherited source
+credits. Those scans run only at resource release; normal emitter ticks acquire
+no new locks or reference counts for this change. The contact history sweep
+builds one dependency set rather than traversing every live FX per source path.
+
+Component metadata residual attribution (2026-11-11). The historical small-
+caller report groups260,304 bytes/2,457 blocks below ClassDeclarations::parse,
+but its leading recorded_bounds frame cannot be a literal class-parser call
+(the bounds reader is a Tome consumer). Source review also disproves the
+previous unconfirmed process-global NameId explanation: ClassRegistry owns its
+NamePool blocks, and Catalog owns ComponentTypes; the only static name bytes
+are the single-byte empty name. Do not classify those sampled blocks as a
+verified class leak or intentional global retention on that stack alone.
+Before changing ownership, attribute the existing ComponentTypes cold load
+and construction with a distinct diagnostic tag. Prediction: the real class/
+factory/name-pool owner bytes reach zero after Catalog and its last physics
+consumer drop; diagnostic symbol/cache balances can remain under other tags.
+Original class registration1990d0 and name pool131bb0/131f90 remain unchanged.
+The attribution compiles out without debug_allocations, adds no resource
+storage or normal frame work, and claims no memory/performance improvement.
+
+FX owner source-review follow-up: cold acquisition now reuses the same
+borrowed group descriptors for common and requested family parsing, avoiding a
+second outer-array temporary introduced by the first owner draft. World family
+admission now borrows the immutable root generation by its authored group
+index; it no longer clones the compact family names/errors into each derived
+consumer. Disabled source groups retain their indices. These remove draft-only
+duplication, not previously measured baseline memory, and remain part of the
+unverified coherent FX branch. No active-frame allocation or lock is added.
+
+FX first integrated observation (2026-11-11, source239e5aba; feature not yet
+merged). Clean dev game/tools compilation and same-binary separate/shared
+Edge/Dust/Edge preparation completed. All324 reported acquisition/group/source
+shapes and world effect results matched; shared acquisition decoded318 bodies
+and reused six, versus324 separate parses. The full36-level shared preparation
+completed2,193 acquisitions,2,081 cold decodes and112 cache hits. Both FX
+resource/source allocation contexts reached zero after each full session; no
+new contact/audio acquisition errors were recorded. Scoped debug cycles are
+diagnostic only, not a release CPU or walking-frame performance claim. This
+route did not exercise warm addition of a different family role. Source-review
+follow-ups that borrow admission metadata and reuse the cold traversal require
+their final coherent build before acceptance. Evidence:
+DH2-fx-level-lifetime/artifacts/fx-declaration-lifetimes-20261111-comparison.json.
+
+Wind scratch audit correction: current instance_words returns a stack array;
+only its caller allocates one combined Vec per actual update. The earlier
+opportunity wording could be read as one heap allocation per source and is
+corrected in optimization-opportunities.md. No implementation or performance
+claim depends on that mistaken count, and no speculative scratch cache was
+added. This does not alter the already accepted shader-buffer backing reuse.
+
+FX owner integration acceptance (2026-11-11). Final source51c3f58b compiled
+cleanly with dev game/debug_allocations tools; executable SHA256
+d53bedbd9eddba3984e447e57b3a81a21005ec9cc9c557dae0f3074e2311f236.
+The final separate/shared Edge/Dust/Edge observations preserve all324 reported
+FX acquisition/group/source shapes and world results. Shared preparation
+performs318 cold decodes versus324 separate, with six hits; both FX resource
+and source tag balances reach zero after each session. This confirms the
+source-review follow-ups that borrow compact admission and reuse the cold
+group traversal. The earlier239e5aba route covers all36 installed levels,
+2,193 requests and112 cache hits; source-review changes preserve parser and
+material binding inputs. Debug acquisition cycles are not gameplay timings.
+
+The final windowless runtime resource route in Edge of the World requests
+installed dirt flies and blood splatter, publishes one proxy/seven added
+images/four decal materials, then releases all FX-only images, meshes and
+decal materials while the map remains loaded. Final typed/source tag balances
+are zero and there are no contact/audio acquisition failures. This observes
+resource publication and retirement, not visible draw correctness or active
+emitter tails. No tests, visible launches or visual inspection were used.
+The canonical owner's warm additional-family role is implemented but was not
+requested on these observed production routes; do not report it as measured.
+Evidence: DH2-fx-level-lifetime/artifacts/fx-declaration-final-20261111-comparison.json.
+
+Component attribution result: all three final processes retain exactly332,724
+bytes under the new cold-acquisition context after session destruction. This
+contradicts the zero-context-byte prediction; it does not by itself establish
+a ComponentTypes leak. Installed iced-x861.21.0 decoder/handlers/tables.rs
+initializes a lazy_static TABLES during Decoder::with_ip, and decoder/table_de/
+mod.rs allocates permanent handlers using Box::into_raw. Both component reader
+constructor paths use that decoder. This proves there is process-lifetime host
+decoder storage inside the broad context; the next attribution must isolate
+its bytes from actual class/factory/name-pool owners before changing lifetime.
+No performance improvement or complete explanation of all332,724 bytes is
+claimed from source correlation alone.
+
+Executable-decoder attribution prediction (2026-11-11). Component cold load
+currently owns a332,724-byte final acquisition-context balance in all three
+51c3f58b processes. iced-x861.21.0 initializes decoder::handlers::tables::TABLES
+inside Decoder::with_ip; table_de::box_opcode_handler uses Box::into_raw and
+its handler references are static. The two constructor sites in the installed
+component-definition reader therefore charge library-lifetime state to the
+broad class acquisition context. Wrap those existing constructor calls only
+with the diagnostic Host executable decoder metadata tag. Do not add another
+decoder call, weaken instruction support, preconvert game data, change decoder
+settings, retain the executable, or alter any metadata owner. Predict the same
+332,724 bytes move to that host context while Component metadata resources
+reach zero after the last Catalog/physics owner drops. If any class-context
+bytes remain, their ownership still needs investigation. Same three-map
+production acquisition and existing metadata signatures will distinguish a
+retained library table from a class-resource leak. Normal builds compile out
+these tags; no normal-frame or CPU/RAM optimization is claimed.
+
+Shared-registry warm cancellation prediction (2026-11-11). The original
+1400607f0 lookup and140060180 scope sweep establish the resource identity/
+retirement boundary; queued-worker cancellation is an explicit host contract.
+Registry::acquire_when currently reassigns resident=Some(value.clone()) on
+every successful weak upgrade, without consulting its publication predicate.
+After purge removed the registry pin, an old live consumer can still supply
+that weak generation; a withdrawn worker then restores a resident pin even
+though it must not publish one. Restore a missing pin only when publish()
+permits it; leave an existing pin untouched. Keep returning the same leased
+generation so the caller can perform its normal cancellation handling. No
+source reload, output, marker selection, failure cache, or ordinary resident
+lifetime changes. Predict no restored pin for a cancelled retired generation,
+and one fewer strong-reference increment/decrement pair on every ordinary
+warm hit that already has a resident pin. The cancellation predicate is only
+consulted when a missing pin would be restored, so normal warm hits add no
+cancellation read. This is a host ownership correction; no gameplay timing or
+byte saving is claimed without an actual matching route.
+
+Executable decoder attribution acceptance (2026-11-11). Source31aae72d
+compiled dev game/debug_allocations tools, SHA256
+d48bb45cf4aa70a958c4b080632a04f2947eb33b05033cb30612bf58123dd1d6.
+The actual Edge/Dust/Edge scene preparation acquired the same one shared
+metadata identity:1,904 classes/350 factories and named-relation/factory
+signature3807458bddecf414fe60263c35d5ef1578545f28a7f70cb871e009b3610c9926,
+matching the earlier installed executable comparison atf2620b67. It read the
+41,134,632-byte executable once, then reused the metadata twice. Its one
+owner retired, Catalog remaining consumers reached zero, and Component
+metadata resources reached zero bytes. Exactly332,724 bytes moved to Host
+executable decoder metadata, matching the prediction and identifying the
+previous retained acquisition balance in full. Those are iced-x86's permanent
+process opcode tables, not class/factory/name-pool generations. This is
+correct attribution, not a claimed RAM saving or instruction-decoder lifetime
+change. There are no acquisition errors. Evidence:
+DH2-fx-level-lifetime/artifacts/decoder-metadata-ownership-20261111-comparison.json.
+
+Disabled-diagnostic guard review (2026-11-11). allocation_tags documents
+that without debug_allocations tag() is free and report() is empty, but Guard
+Drop still accesses CURRENT TLS after tag() returns its disabled Guard(0),
+and report() still locks the empty label table. Gate those existing bodies
+with cfg(debug_allocations), preserving the enabled implementation exactly.
+Predict zero TLS restoration and zero report-table locks in normal builds by
+compile-time exclusion, unchanged feature-enabled owner accounting, no asset
+or output change, and no new state. This closes a possible normal-build cost
+from the new decoder attribution and all existing tag call sites. Validate
+both the ordinary game compile and feature-enabled acquisition; no per-frame
+timing improvement or RAM reduction is claimed from this source correction.
+
+Shared registry retirement acceptance (2026-11-11). Source54f94344 compiled
+and ran the existing windowless production acquisition commands successfully.
+All seven fades and25 decals/100 material references preserve their installed
+content and independent catalog/bootstrap/persistent/final-consumer scopes.
+The catalog-history observation retires five map-only kinds independently,
+protects the common model, and preserves/then releases live MD6 generations.
+The installed empty particle declaration observes cancellation after source
+read, no publication, a fresh retry, subsequent identity reuse and final
+retirement. Edge/Dust/Edge reports the same world FX results as51c3f58b; FX
+resource/source and component metadata balances are zero after the session,
+while only the separately attributed332,724-byte decoder table balance remains.
+Catalog remaining consumers are zero. The precise retired-weak-generation
+cancellation branch is established by source review: resident assignment now
+requires a missing pin and a successful publication predicate; a false
+predicate cannot restore it. The existing production routes do not specifically
+force that rare interleaving, and no timing/byte saving for it is claimed.
+Evidence: DH2-fx-level-lifetime/artifacts/resource-retirement-final-20261111-comparison.json.
+
+Disabled allocation diagnostics compilation acceptance (2026-11-11). Source
+c2687c91 passes the ordinary game check (game feature, client binary), the
+default library check (no game/debug allocation feature), and the dev
+game/debug_allocations tools build. Feature-enabled tools SHA256
+9d0b999ddac1e33b81f1c932eb832714be788093f0e2c8f46504c89c50867fcb.
+The enabled Guard restoration/report implementation is unchanged; compile-time
+cfg removes both TLS restoration and the report mutex when tracking is off.
+No rendered-output, format, allocation-owner or frame scheduling code changes.
+An initial command asking for the game-only binary without its required game
+feature was a diagnostic invocation mistake, corrected to the default library
+check; it was not a source compilation failure. Evidence:
+DH2-fx-level-lifetime/artifacts/allocation-diagnostics-modes-20261111-comparison.json
+and default-library-mode-20261111-comparison.json.
+
+Remaining owner-policy review after this integration: the ledger's110-kind/
+family table has63 entries with implemented owners and47 unimplemented entries.
+The all36-level acquisition/upload/removal work and the fixes above do not
+close the explicit native registry-scope differences of motion scenes, static
+blueprint expansion and physhape preparation. Their current transient/level
+ownership already releases backing, but their init/common/same-map reuse and
+purge policies still require an original-backed decision: implement missing
+identity/scope handling where useful, or demonstrate that the transient host
+representation saves memory without extra acquisition work for supported
+consumers. Do not add a raw-source pin merely to turn a ledger label green.
+The overall resource-lifecycle goal remains active.
+
+Blueprint lifetime decision/prediction (2026-11-11). The independent installed
+primary/reuse census finds49 blueprints/161,070 serialized bytes, with no init
+or common blueprint references. Blueprint is absent from the36-kind conditional
+marker-1 promotion table142280ee0; its native assembly definitions are map-scoped
+(1413517a0,1401c10d0/1401c1270,1401bc1f0). Production requests occur in static
+placement expansion and on-demand diagnostic geometry reconstruction. Typed
+child paths/transforms already coalesce inside each expansion batch and retire
+after expansion. Retaining those definitions for the whole map would not save
+normal supported requests, so preserve the cheaper transient representation.
+
+The missing phase is read-history retirement: no blueprint owner currently
+releases successful acquisition credits when its map ends. Add the existing
+CatalogHistoryScopes lease pattern to the blueprint owner, expansion Sources
+and the published level, keeping the lease last in Sources so cached values
+drop first. Hold the level lease through the normal render acknowledgement and
+consumer teardown. Predict the same placements, reads and transient descriptor
+retirement, no per-frame work or extra source retention, and exact namespace-
+local blueprint history release after the last batch/level scope. A standalone
+expansion retires its own history after its descriptor data is no longer used.
+Extend only the existing production catalog-scope observation to include this
+real installed kind. The absence of common blueprints is installed-data scope,
+not an object-name exception or a claim about future dynamic entity spawning.
+Census: artifacts/motion-blueprint-shape-installed-20261111.json.
+
+Entity lifetime recovery (main-based integration, 2026-11-14):
+- `gameplay/entity_lifetime.rs` is the one generation-bearing managed-name,
+  spawn-tag, hierarchy, context/update and removal-queue owner recovered from
+  checkpoint2410aafb. Original registration/name lookup:140657ae0,
+  1407b5e30,1408a7d90/140143650; remove admission:1408794b0;
+  batched release:1408ab380; child/component release:1408791f0.
+- `gameplay/entity_release.rs` retains request and retire cursors across host
+  suspension, and separates whole-world retirement from ordinary removal.
+  `entity_events.rs` retains the sole normal/post-removal queue ordering
+  (140810000/140810200/140810410) and listener mutation rules
+  (140810430/140810550). Payloads without an integrated domain owner remain
+  in the recovery checkpoint instead of retaining unsupported resource trees.
+- `assets/entities/processed_decl.rs` retains source ranges only during
+  preparation, and implements inherited edit-list processing/inline writing
+  (1400fe1f0/140154100/1407040f0). Map parsing separates the outer literal-
+  backslash lexer (1400acba0) from reflected declaration text (1400a9c50).
+  Its strict unsupported-syntax errors are preserved; it is not yet a blanket
+  component-admission API. `parse_preparation` is opt-in, so ordinary readers
+  do not retain the entire source for an unused identity calculation.
+- Status: source ports and current-five-factory lifecycle adapters implemented;
+  coordinated compilation and production retirement observations remain pending.
+  This does not claim full GameLocal support for the56-class checkpoint.
+  Source ranges die with preparation; no unmeasured performance gain is claimed.
+
+### Canonical trigger body retirement (2026-11-14)
+
+- **Prediction before implementation:** supported trigger Stop/deinitialize will
+  return their existing body and final motion slots to their owning free lists,
+  destroy per-body event chains, and unregister mutable-shape observers. No body,
+  geometry or query-world copy is introduced. This is a missing lifetime path;
+  no per-frame CPU/GPU improvement or byte saving is claimed before measurement.
+- **Original evidence:** `140779a40` detaches the actor, calls `140c8f080`, removes
+  the contact callback, then calls common component Stop. `140779910` clears
+  dependency references, calls `140c8f6b0`, invalidates the body handle, and calls
+  common deinitialization. `140c8f080` cancels queued additions, notifies removal,
+  updates islands/active lists, removes broadphase entries and reconciles motions.
+  `140c8f6b0` then notifies destruction, releases `140ceab10` property chains and
+  `140cdffd0` mutable-shape registrations, detaches motions through `140c927c0`,
+  and returns slots through `140caea70` / `140cd7310`.
+- **ported:** `gameplay::physics_world::{storage,publication,events}` now expose
+  those operations on the canonical `WorldStorage`; `trigger_body::startup`
+  supplies Stop/deinitialize adapters. `broadphase::HybridTree::remove_body`
+  ports `14128fbd0` and the layer owner ports `1412862b0`. Body IDs keep their
+  generation checks and shape resources remain in their existing resource owner.
+- **host:** fallible Rust observer dispatch retains a cursor and teardown phase
+  after a callback error, so successful prior callbacks and actor detachment are
+  not replayed. Reusable level-owned removal scratch retires with `WorldStorage`.
+  No new resource format conversion or background task is added.
+- **Integration boundary:** the current five-factory scene host must call these
+  adapters in its component drain and dispatch real observers. Dynamic island
+  contact-maintenance queues remain owned by the simulation; adding an API does
+  not establish parity for unsupported dynamic collision simulation. This slice
+  does not import the old 56-factory host or claim all entity classes supported.
+- **Validation:** source checked against saved decompilation
+  `analysis/decompiled/chunk_000309.c` and `chunk_000587.c`; Rust syntax parsed
+  and `git diff --check` passed. No tests were added/run. Full compilation and
+  the scene-host acquisition/release observation await the coordinated build.
+
+- **Failure review:** resumable observer traversal is limited to removal,
+  destruction and motion destruction, whose body IDs/mode and phase are held
+  by `WorldStorage`. Existing Added/Created dispatch keeps its previous protocol
+  rather than retaining an unowned retry. A second destruction cannot adopt an
+  unfinished Stop request. Destroying an interrupted signal cancels its cursor
+  before its property slot can be reused; legacy emission rejects such a mixed
+  host-error suspension while preserving normal native nested emission flags.
+Five-factory physics host integration: `PhysicsScene` now creates managed
+identities for its actual trigger/water/wind/reference-actor/audio entity hosts,
+advances their initialization/spawn stages after their real component batch,
+and publishes the same `LiveEntities` owner with the prepared level. It does
+not register unsupported render-only entities as fully spawned actors.
+`LevelPointQueries` remains the only owner of its body slots/broadphase/shapes.
+Host synchronization uses its existing shared lease plus an `RwLock`: mutation
+is exclusive, and the particle simulation takes one shared guard for its
+whole batch. This changes neither body output nor resource representation and
+adds no copy of the world. Prediction: unchanged body/shape residency and one
+small guard cost per query batch; no timing improvement is claimed. Component
+retirement uses this mutable owner through `physics_scene::lifetime`.
+The shared component metadata owner keeps one monotonic runtime-name subowner;
+registered class spellings reuse their existing identities. It survives map
+replacement with the existing catalog owner, rather than converting immutable
+class tables back into per-level metadata copies merely to intern `MAIN`.
+
+The current-five-factory app adapter now runs Stop/deinitialize/pool release
+against the canonical query/body owner before resource destruction. Trigger
+retirement uses140779a40/140779910 body unpublication/destruction, water/wind headers
+unlink through7e7530, and audio object retirement follows708620/c7ab0 before
+its pool slot is recycled. Registry stop/release and body mutation cursors
+survive Pending/errors; the loading screen polls them without dropping the
+sole owners. A source-backed five-factory entity frame getter exposes actual
+reference-actor poses and refuses stale managed generations. Unsupported
+render-only actors do not acquire fabricated live poses. Source review also
+fixed previously ignored common Start scheduling results for audio/wind/actor
+pool rosters, necessary for matching Stop membership. This host slice is not
+a claim that the broader checkpoint's56-class migration is complete.
+The audio retirement boundary is pollable so the audio-clock owner can retain
+accepted work and acknowledge its final object release before component reuse.
+
+Faction declarations/components: Catalog owns the canonical
+`SessionFactionRegistry` and its resource-marker registry. Class entries are
+weak; matrix snapshots and concrete components retain the actual leases.
+`FactionManager` owns directional baseline/current relationships and member
+state (604dc0,605c20,605990,6073e0); `FactionComponent` implements
+5bd9a0/5bda20/5bdad0 initialize/start/stop with managed generations.
+Declaration/source-parent projection is shared and lazy. Notifications require
+the actual entity/graph callback owner; no no-op is substituted. Concrete
+portable factories use this owner; the broader checkpoint is not imported.
+
+### Autonomous skeletal scene recovery (2026-11-14)
+
+`assets::entities::scene_motion` now retains supported skeletal plus motion definitions as shared `Arc<AnimatedMotionClip>` values. `gameplay::scene_motion` starts only the authored LoadingEnd-connected, single-scene infinite loops without later Stop/Break Loop inputs. `app::machinery` acquires rig, compressed clip and skin-only model leases only for their actually started groups during level preparation. A temporary asset map shares identical rig/scene/group bindings; it retires after preparation. Scene skins retain those leases until machinery/map retirement, without retaining source syntax, render-only model arrays, a second full rig, or a second animation cache. Existing model preparation gives these placements independent mutable meshes. Main's publication owner still owns the GPU palette and submits the same pose to colour, shadow and bounds.
+
+The sampler reuses the existing player blend kernels and the selected AnimSet's borrowed marker records. Original source: marker construction `14018e5a0` / `14018e620`, marker interval mapping `14018fdd0`, animation-tree composition `1406fea90` / `1406ff870`, and animation LOD admission `14054b430`. A live usable lower pose is composed before scene sampling and physics joint overrides, with one final scene publication before caster collection. LOD >= 6 skips evaluation while the scene clock keeps advancing. Current player movement, hand selection and player Midnight scheduling are unchanged. Host scope: acquisition/publication use the existing Rust owners and Bevy backend; generic cinematic transitions and dynamic scene restarts are not admitted by this startup owner. Source recovery has not yet been compiled or observed in gameplay; coordinated build is pending. No performance gain or original-output verification is claimed for this feature addition.
+### Canonical Midnight declaration owner (2026-11-14)
+
+Owner: `assets::midnight_scene`, shared by player preparation, autonomous motion and skeletal scene acquisition. The declaration's immutable identity follows `140193a10`; keyframe action/playback copies are distinct (`1405329c0` / `140533460`). Registration and selected-header markers use the existing `Registry` implementation of `1400607f0` / `14005feb0`; bootstrap promotion is `140060b60`; map admission and the 36-kind persistent-marker table at `142280ee0` are consumed by `1400661e0`; marker retirement is `140060180`. The saved installed census contains 2,137 sources / 97.8 MB of source data, with 618 common and zero init headers (`DH2-collision-staging/artifacts/motion-blueprint-shape-installed-20261111.json`). Those source totals are an inventory, not the owner's retained-memory size.
+
+Prediction before implementation: registering common/init headers causes zero source reads and zero projection parses. Each requested immutable projection reads/parses at most once per canonical generation, and repeated acquisitions reuse its typed data and live view identity. Returning to a map reuses still-resident common/persistent projections. Unrequested views retain zero parsed payloads; no source text or generic `Value` trees remain in the owner. Player binding also borrows selected animation-key arrays rather than cloning keys/curves into preparation staging. No frame-time benefit is predicted: acquisition reads, parses, definition copies and requested storage are the affected quantities. The new owner adds compact identity/view metadata; no MB or CPU-speed saving is claimed without the pending source observations.
+
+Host representation: player graphs, supported motion loops and supported skeletal loops currently have different admission/track coverage. They are lazy typed projections of one canonical identity, rather than eagerly parsing all three or introducing a second cinematic runtime. A `SceneView<T>` holds the typed `Arc<T>` and its canonical `Arc<Definition>`; the definition caches typed payloads and only weak view wrappers. This has no reference cycle. A live view keeps the registry's weak canonical generation alive across marker purge, protecting the one shared source-history entry until every view retires. Rig-resolved clips, skeletons, model skins, playback clocks and GPU state remain with their existing runtime owners; none enter the declaration registry. Playback directly dereferences its typed Arc without locking or registry lookup.
+
+Preload registration, bootstrap promotion, map and persistent purge, and Catalog retirement are connected. Mutable overlay/diagnostic generations bypass immutable sharing and cached failures. Motion projection errors and absent declarations preserve the prior omission policy; archive errors and cancellation still propagate. Player acquisition remains strict. Worker cancellation is passed from `level_prepare` into machinery and from `setup` through player preparation; archive cancellation and the final projection/residency publication gates use that actual callback. Withdrawn work publishes neither decoded data nor immutable failure. Unsupported dynamic cinematic tracks remain unsupported; this owner does not fabricate them.
+
+Observations prepared, not yet run: `inspect-scene-publication --midnight-resource-scopes <scene>` exercises the real acquisition wrappers, same-view reuse, bootstrap-to-persistent marker override, live cross-view history and final retirement. `--midnight-read-cancellation <scene>` withdraws after the actual archive read is credited, then reacquires through the same owner. Ordinary scene preparation with `DH2_DEBUG_LOAD_TIMING=1` emits `MIDNIGHT_VIEW_DECODE` source hashes/read/parse cycles, `MIDNIGHT_VIEW_ACQUIRE` identities, `MIDNIGHT_OWNER_STORAGE` projection counts, and `RESOURCE_STORAGE` requested-storage counts. Parsing/retirement verification is pending the single coordinated build; no tests, gameplay launches or benchmark runs were performed in this change.
+
+Related scene-publisher review: render-source indices are validated and reused; immutable physics-skin indices are captured at load. Scene publication calls the existing `publish_target` with the already resolved source, avoiding two per-placement source scans and a physics-skin scan in the frame path. Prediction is removal of those lookups only; no measured CPU claim. Integration must clear `UsableAnimations::Placement.local_pose` in its existing `stop` helper alongside `animation_pose`; root owns that shared interaction merge.
+Usable component host integration (2026-11-14): the supported UsableWithStateList family now acquires its real installed factory/pool and is linked to the existing Actor state/animation/effect backend. Full authored scheduling survives the typed declaration projection rather than being reduced to starts-on-spawn. Shared managed identities are allocated only for actually constructed usable components, joined with already admitted audio/trigger identities where present. The existing ordered registry runs Initialize/Start and Stop/deinitialize/pool release; Stop reaches the same collision box, animation and FX owners before the entity identity retires. Bulk partial-level cleanup runs after the typed drain, and stopped actors are idempotent. This preserves the existing navigation fake-box backend (host integration), without claiming those boxes have become canonical rigid bodies. Static usable and portable rigid/pickable additions are separate remaining consumers. Prediction: no duplicate usable state or asset source, one small common owner header per supported usable component; no performance gain is claimed. Source/whitespace review only; no tests/build/run.
+Entity metadata remains demand-driven: ordinary `entities::parse` consumes
+layer/group tokens without allocating their unused names or metadata lists;
+`parse_map` and `parse_preparation` retain them only for actual admission
+consumers. Prediction: ordinary readers perform zero layer/group String
+allocations, with the same entity fields and token traversal. This avoids
+introducing temporary work through the recovered parser; no measured CPU or
+resident-memory saving is claimed.
+
+
+### Ordered sound-object return and acknowledgement (2026-11-14)
+
+- **Prediction before implementation:** accepted FX tickets remain in their
+  existing queue while media is pending, submit before the object's return,
+  and retain their declaration/source leases until actual voice or delayed
+  action completion. The object and its acoustic/spatial/history state survive
+  the return marker until the output consumer acknowledges idle. No audio-world
+  copy, format conversion, output stream or GPU work is added. Counts change
+  only on voice insertion/removal; idle objects add no per-block voice scans.
+- **Original evidence:** `1400c7a20` calls `1400c4230` and enqueues deferred
+  return via `1400c8150`; `1400c8320` requeues objects while `1400c3e00`
+  reports callback/playing ownership, then calls `1400c7be0` to unregister.
+  `1400c4230(�,1)` issues the actual stop through `1400c5db0`. The component
+  path is `140709020 ->140709c00 /140708620 ->1400c7ab0`. Accepted event IDs
+  and final callbacks are owned by `1410c96c0 /1410e0fe0 /1410e1290`.
+- **host:** `world_sounds` retains accepted tickets and their object through
+  the existing FX submission consumer. `app::audio` uses one shared message
+  cursor for normal frames and exclusive lifecycle advancement. The output
+  owner consumes an ordered return marker, stops the object's actual voices
+  and delayed actions, and signals idle when its counted voice owners leave.
+  Stop/State actions now retain the existing event ticket while delayed.
+- **host:** component Stop remains pending until this acknowledgement and event
+  leases retire; deinitialization/pool release preserve the component generation
+  until then and forget the completed acknowledgement after actual slot return.
+  The output clock and all unrelated/menu objects remain in the same owner.
+  A failed output reports an error instead of disappearing markers being
+  mistaken for acknowledgement. A diagnostic owner with no output/voices
+  consumes its marker synchronously through the same producer/consumer path.
+- `LevelLifetime` must begin/poll this return after releasing FX handles and
+  before dropping support owners. Normal loading yields across host frames;
+  windowless acquisition can drain finite no-output progress, never busy-wait
+  for the audio callback. The five-factory host restores scene resources before
+  invoking the consumer, and shares its generation-checked ownership.
+- **Validation status:** saved decompilation checked (`chunk_000032.c`,
+  `chunk_000033.c`, `chunk_000291.c`), source syntax and whitespace checked.
+  No tests/builds/launches were run for this source slice. Coordinated full
+  compilation and production retirement observations remain required; no byte
+  saving, CPU timing gain or runtime acceptance is claimed yet.
+
+Level teardown now retains every supporting resource through component/audio
+acknowledgement and FX shutdown; successful phases are recorded before polling
+the next one. The two source-acquisition diagnostic clear callers use the same
+production sound FIFO without installing an output device: a further pass is
+allowed only after strictly advancing real finite retirement cursors. They
+never ignore Pending, run a game/application schedule, fabricate completion or
+wait by spinning on an audio callback. `RESOURCE_SCENE_RETIREMENT phase=complete`
+is emitted only after the actual clear has finished. Failure or Pending in the
+production clear leaves all sole owners present; repeated completed clear is
+idempotent. This is lifecycle correctness, not a CPU-performance claim.
+Readable Pickable component recovery (2026-11-14): supported READ_NOTE declarations now retain a shared typed PickableDefinition, the original Interactable flags/UID, complete scheduling, and begin-pickup SoundEvent lease through the existing Catalog sound-event owner. Layer-prepared real readables acquire their inventory item through the same PickableSourceLease on the preparation worker, then enter the installed arkCpntPickable_Simple pool and existing ordered registry. Generic declaration trees remain preparation temporaries. Async read results retain EntityId plus ComponentHandle/generation and recheck the spawned/started owner before requesting player state or admitting inventory. The same deinitialize path drops item/reference/loot leases before unlinking and typed slot reuse. Prediction: no duplicate immutable item or sound-event decoder; one typed component per supported live readable; no frame-time or resident saving claimed. This completes read ownership/cancellation, not yet the portable rigid/hide/event callbacks, which depend on the separate canonical rigid resource and disabled-body creation slices. Source review only, no tests/build/run.
+Empty Loot factory recovery (2026-11-14): authored READ_NOTE entities now resolve actual cpntLoot declarations and share typed immutable tag/scheduling data by declaration identity. The real arkCpntLoot pool constructs +38=true, admits only the source's empty-list/null-map-owner branch (743af0/744b30/744f90), and runs common Stop then744ef0's zero-child deinitialize before releasing its typed slot. Nonempty authored lists remain an explicit error requiring child-spawn/attachment ownership, not a fabricated empty container. Temporary resolved Value trees drop after projection. Prediction: no child entity or extra body allocations for the admitted empty branch; two shared tag strings per declaration plus one common owner per actual Loot. No performance claim or tests/build/runtime exercise.
+
+
+### Rigid-body source leases and retireable geometry (2026-11-14)
+
+Prediction: admitted rigid components retain their actual primary/extra-HD
+shape, wrapper identities and resolved material table through body and callback
+retirement. The final lease releases the geometry slot without changing other
+body indices. Rejected/failed admissions release their unpublished resources.
+No steady-state decoding, additional GPU pass or CPU/FPS gain is predicted.
+
+Original808ea0 acquires primary through08c840/0607f0, optionally acquires
+extra-HD, resolves exactly the shape header's material count through807c80,
+then builds its ordered two-child compound.08c9a0 creates one scaled compound
+per compact alias;809bc0 unregisters listeners before destroying the body.
+Saved decomp: chunk_000024.c and chunk_000339.c. The current physics source
+owner supplies these direct installed HKX acquisitions and per-source history
+credits; this recovery preserves its demand-loaded bootstrap/map policy.
+
+Ported: rigid component resource/state owner, reflected rigid declaration
+projection, scaled alias and two-child query compound construction, shared
+material physics references, and stable retireable TriggerAssets slots.
+Host: Arc source/wrapper leases and Option/free-list slots replace native
+pointer ownership. Immutable trigger sources still retire after prepared query
+geometry/mass; admitted rigid sources retain their required identity/data until
+their final body lease ends. Main's probe uploads and renderer remain intact.
+Supported query roots remain Compound/Polytope; this slice does not import the
+checkpoint's unrelated compressed-mesh, deferred-convex or runtime-hull query
+algorithms. Unknown roots retain explicit admission errors. Source recovery
+awaits the coordinated complete-feature compilation and actual app factory
+integration; no tests, visual observations or measured savings are claimed.
+
+Standalone query trees retain an optional resource-lease sidecar, including
+both children of an extra-HD compound. This keeps root/wrapper userData
+identities alive through the final query consumer even if its component has
+already retired. Source records never point back to query trees, so no cycle
+is introduced. Trigger-only trees allocate no sidecar and retain their existing
+source retirement and geometry-only diagnostic fingerprints. Uncached convex
+mass remains an explicit unsupported calculation, rather than substituting a
+compound bounding-box mass for a convex shape. Alias compounds have no copied
+0xf100 property in08c9a0 and use the existing mode-zero compound calculator.
+
+Faction acquisition: `acquire_definition` registers before parsing and
+reuses source/ancestor leases in that same owner. `acquire_all_registered`
+drains reference-created placeholders before the matrix snapshot. Actual
+selected manifest header registration owns preload order and layer/container
+filtering; callers do not flatten and reserve every manifest entry again.
+Editable faction declarations reset parsed generations only at the explicit
+`begin_preparation` boundary after the outgoing snapshot retires. Installed
+sources keep normal reuse. No per-actor cache or faction-owned NPC reader is
+introduced.
+
+Retireable trigger geometry integration: the current typed scene now checks live Option slots for trigger placements, shape IDs and query resources instead of dereferencing retired arena entries. Trigger Deinitialize destroys the real body before retiring its placement/shape lease; all existing shape indices remain stable while live. The game-only WorldStorage constructor handoff now initializes the original two GameLocal timespaces once before component initialization; acoustic worlds retain their ordinary constructor setup. This composes the separate rigid-resource and motion-owner commits. No tests/build/run or measured savings.
+Singleton transition observer handoff: PublicationSignals now owns the actual distinct world+8a0 motion_type_changed signal (c892c0), and ComponentPublicationEvents dispatches it through the same real component observer host. The prior context trait boundary rejected every request; actual empty listener lists now naturally deliver no callbacks, while registered listeners execute and retain their resumable emission cursor. This does not replace the separate transform signal or silently swallow a missing handler. Source-only integration, no tests/build/runtime or performance claim.
+
+Standalone query trees retain an optional resource-lease sidecar, including
+both children of an extra-HD compound. This keeps root/wrapper userData
+identities alive through the final query consumer even if its component has
+already retired. Source records never point back to query trees, so no cycle
+is introduced. Trigger-only trees allocate no sidecar and retain their existing
+source retirement and geometry-only diagnostic fingerprints. Uncached convex
+mass remains an explicit unsupported calculation, rather than substituting a
+compound bounding-box mass for a convex shape. Alias compounds have no copied
+0xf100 property in08c9a0 and use the existing mode-zero compound calculator.
+
+Readable item generation handoff: UI requests now borrow the admitted Pickable component's actual item Arc instead of reacquiring a declaration from another I/O task. This preserves the instantiated editable generation and removes an unnecessary task/lock/source lookup from the interaction event; item acquisition still occurs on the existing preparation worker. Closing the level clears the one pending request immediately, with no reader to join. Prediction: zero extra resource read/parse/task submission per already-admitted read request, unchanged steady-state walking path; no CPU-time claim without measurement. Map-component Usable declarations now also reuse their immutable typed record when obsolete inline siblings are normalized away, matching00c710. Source syntax/whitespace review only, no tests/build/runtime exercise.
+
+
+### Session quit uses the canonical level retirement boundary (2026-11-14)
+
+- **Prediction before implementation:** a normal quit/close will request the
+  same component/FX/audio teardown as a map handoff, before Winit clears owners.
+  Every retained map reader must actually return and the outgoing render owner
+  must acknowledge release before the level drops. There is no new conversion,
+  worker, device or alternate shutdown implementation. Steady gameplay performs
+  only the host's exit-request checks; completion waits yield across host frames.
+- **Original evidence:** `1408a4830` enters the GameLocal context, invokes its
+  shutdown owner and releases its owned world; deleting destructor `1408a5f60`
+  calls it before freeing the GameLocal. `1400410f0` is the separate resource
+  purge boundary (also used by `140062bd0` transitions), not a substitute for
+  component destruction. Existing sound return/stream-device ownership remains
+  `1400c7a20 /1400c8320` then `1400bc8f0 /1410bf740`.
+- **Host defect:** Bevy0.19.1 `App::should_exit` observes AppExit after update;
+  Winit's `exiting` clears windows and the world before `App::run` returns. The
+  previous Last hook only closed acquisition admission and dropped the result
+  receiver; it never invoked the level's typed teardown. WindowPlugin's default
+  close also destroys its window before the outgoing render owner can retire.
+- **host:** `loading_screen::session_exit` captures exit requests after Last,
+  preserves Bevy's first-error precedence, closes admission, disables map
+  publication, and advances the existing `LevelLifetime::clear` only after
+  workers and the existing GPU phase3/4 handoff retire. The final AppExit is
+  emitted only after that acknowledgement. No new GameLocal/resource manager
+  or second component/audio shutdown path is added.
+- **host:** a real quit immediately releases cursor capture and hides the user's
+  window. The same window/device remain alive for cleanup. No focus/restore or
+  display-mode change occurs; the drain uses the existing unfocused game update
+  cadence, including when a benchmark had selected continuous hidden updates.
+- **host:** Acquisition now owns the actual map-thread JoinHandle, including
+  the initial texture reader that may continue after the prepared result was
+  sent. Map handoff and quit observe `is_finished` and join only finished
+  threads. Closing the existing result/rendezvous receivers cancels unpublished
+  work through its existing owners; a received setup result alone is not used
+  as evidence that the reader has ended.
+- **Failure:** a completed worker panic or teardown error records the precise
+  incomplete phase and emits an error exit; normal Rust owner destruction then
+  runs. That path is explicitly a failed clean shutdown, never a fabricated
+  acknowledgement or a hidden process left waiting indefinitely. No arbitrary
+  timeout converts valid pending work into success/failure.
+- **Validation status:** source checked against saved decompilation and local
+  Bevy runner/window/schedule source. Syntax/whitespace validation only; no tests,
+  builds, visible launches or runtime acceptance claim for this slice.
+
+### Canonical per-body activation wrapper (2026-11-14)
+
+- **Prediction before implementation:** added/removed/destroyed publication
+  updates one compact per-slot state. Only subscribed bodies allocate a signal;
+  body destruction drops that signal before the slot can be reused. Actual
+  active/inactive transitions notify the existing rigid component and update its
+  timespace velocity payload once. No second world, pose cache, resource read,
+  per-frame scan or GPU operation is added; no timing/byte saving is claimed.
+- **Original evidence:** `1400932d0` installs world callbacks before component
+  bodies initialize. `1400941e0` stores0/1 from the live active bit;
+  `140094130` emits only1->0, `140094280` prepares derived-timespace velocity
+  through `14018cf30` then emits only0->1, `140094460` stores2 on removal,
+  and `1400943d0` destroys the signal and stores3 on destruction. Saved
+  decompilation is `chunk_000025.c` / `chunk_000071.c`. The dump omits
+  `140094460`; its installed executable instructions were read directly and
+  confirm the low24 slot write of2, without a callback. Ghidra MCP had no active
+  project, so no project switch or extra JVM was started.
+- **ported:** `gameplay::physics_world::body_activation_events` owns those
+  transitions and weak component-generation identities. Publication forwards
+  the existing world's borrowed `MotionTimespaces` instead of copying a world
+  or guessing a factor. `CollisionVelocities::body_deactivated` preserves the
+  requested-linear flag lane and zero-factor behavior of `14018cf30`.
+- **host:** a failed listener retains the exact body/direction, preparation bit
+  and existing signal cursor. Earlier successful listeners and the velocity
+  preparation are not replayed, and a different request cannot consume a
+  suspended traversal. Destruction releases the signal before body-ID reuse.
+- **composition:** `physics_scene::startup::WorldActivationObserver` borrows
+  the real rigid pool, component registry and body-event owner. It validates
+  listener generation/body/entity before invoking its mandatory entity callback.
+  That callback must borrow the actual entityd4 flags and generation-aware
+  hierarchy update owner when calling `RigidBodyComponent::on_body_activation`;
+  no shadow flags vector or no-op hierarchy callback is provided. The ninth
+  factory owner installs these subscriptions and replaces publication-site
+  rejection callbacks as part of its coherent Rigid Start/Stop integration.
+- **Validation status:** source provenance, Rust syntax and whitespace checked.
+  Four existing context fixture constructors receive only `timespaces: None`
+  for compatibility; no assertions or tests were added/run. No builds/launches
+  or production acceptance claim before the coordinated factory integration.
+
+- **Batch retry review:** when an outer activation batch resumes after one
+  body's callback error, earlier already-transitioned bodies are skipped before
+  the retained body's listener cursor resumes. A new transition or direction
+  cannot consume that suspended signal; deactivation preparation remains once.
+Faction resource scopes: Catalog's OnceLock owns the canonical registry.
+Class entries keep Weak declarations. Existing resource_registry::Registry
+supplies header registration, inherited producer scope/bootstrap promotion and
+map/persistent marker purge (0607f0/0661e0/060b60/060180); selected manifest
+headers and Catalog release paths invoke these same owners. A live matrix pins
+its row namespace. After its consumers retire, dead class entries use0610d0's
+swap-removal rule; weak source/atomic-name metadata cannot pin parsed payloads.
+Editable declarations have a preparation-only lease until the matrix owns them,
+not an unconditional session payload pin. Source/parent leases contain no
+Catalog back-reference or Drop callback, so they cannot create a cycle or
+re-lock the owner during declaration destruction.
+Host: payload acquisition remains demand-driven, so opaque numeric faction
+ordinals need not equal original eager-parse ordinals. Current consumers bind
+canonical ResourceName: FactionComponent::initialize obtains index_of(name),
+Start verifies that same snapshot/name/index, manager entity queries use its
+own row map, and relationship targets are parsed as declaration names. There
+is no supported ABI/save/raw-original-faction-index input in this path;
+authored relationship enum0..3 remains unchanged. Numeric serialized faction
+IDs are not interpreted as these host ordinals. Purge/reload must rebuild and
+verify this same semantic namespace. No native ordinal replay or actual purge
+observation is claimed until the coordinated production acquisition run.
+Prediction: map-only parsed faction/source payloads release after matrix and
+component retirement, common/bootstrap identities survive map purge, and
+unchanged live requests reuse their exact leases without another archive read.
+
+### Admitted entity graph and pickup receiver ownership (2026-11-14)
+
+`gameplay::effects::instances::FxGraphInstances` remains the single manager for declaration instances and map FX. Actual spawned `LiveEntities` now admit entity-owned roots before startup; map roots whose gameplay host is absent retain the previous explicitly host-scoped FX filter in that same manager. Root ownership is deduplicated by the native entity name. Immutable definitions remain shared `Arc<FxGraph>` values; variables, gates, notification counts, bindings and queued actions belong to each instance. Reused slots receive new process-wide generations, and callbacks validate the packed slot/generation before delivery.
+
+Original ownership and ordering: `1407bc1d0` creates the entity's graph, `1407becf0` starts its instances, and `1407bf290` / `1407c10b0` own startup and alternating update queues. The source-backed `ManagerWork` queue is recovered from the preserved implementation. Setup prepares the existing `FxSimulation` with the actual spawned roster and acquired declarations; receiver registration precedes queued LoadingEnd callbacks. Preparation drains only the startup callbacks, leaving ordinary gameplay actions for the manager's live update. No second graph manager, synthesized EntityId, pickup-time binding, resource read in dispatch, or per-frame subscription polling is introduced. The original declaration expansion owner still acquires nested resources before manager admission.
+
+Pickup receivers use constructor/defaults `1407a47c0` / `1407a4800`, callback `1407ac360`, output count helper `1407a49b0`, and reverse snapshot dispatch `140883d10`. Enabled nodes resolve the actual admitted listened entity at startup/reset. `Picked Up` / `Picked Up Failed` precede `Out`; each connected output independently consumes the authored maximum count. Shadow-grapple filtering reads the authored/connected flag; the instigator uses the existing real-player reference resolver. Reset removes the previous binding before reevaluating its enabled target and clears its count without discarding the last instigator.
+
+Retirement follows `1407c0f30` and receiver destruction `140883760`: detach a complete declaration subtree's subscribed receivers, timers, queued actions and FX completion routes before releasing runtimes or reusing slots. Retiring a listened entity removes that entity's receiver list even when it owns no graph. Separately owned FX tails remain with the existing FX pool until its actual clear. Manager shutdown closes new work before fallible family cleanup so retries cannot resurrect graph actions. The app adapter `entity_graphs::retire(world, id)` must be invoked before shared identity retirement; interaction recovery owns those concrete PhysicsScene/pickup call sites.
+
+Scope limits remain explicit: a managed player slot and unsupported gameplay entity factories are not fabricated. A pickup listener naming the unadmitted player is reported and receives no placeholder binding. Root source acquisition covers admitted entity graphs present in the actual prepared entity document; the `FxSimulation::admit_entity_graph` API accepts later genuinely spawned owners and already acquired definitions. Other cinematic/menu/audio/inventory/trigger notification families are not imported. Reachable gameplay node classes outside the existing interpreter remain explicit errors, not no-op actions. This change restores the graph-owner and pickup delivery contract, not all game node semantics.
+
+Prediction: this is a missing lifecycle/behavior path, not a CPU optimization. Definitions are never deep-cloned in normal admission; receiver memory is proportional to enabled resolved listeners and retires with graph/target generations. Per-frame work adds an O(1) queue-phase transition; event dispatch allocates only the native listener snapshot. `DH2_DEBUG_LOAD_TIMING=1` emits `ENTITY_GRAPH_LIFETIME` root/definition/subscription/queued-work counts and `ENTITY_GRAPH_PICKUP` delivery counts. Source parsing and diff checks passed; no tests, builds, game frames, visible launches or performance measurements were run. Integration/build/appearance evidence remains pending.
+- **Batch retry review:** when an outer activation batch resumes after one
+  body's callback error, earlier already-transitioned bodies are skipped before
+  the retained body's listener cursor resumes. A new transition or direction
+  cannot consume that suspended signal; deactivation preparation remains once.
+
+Document factory composition (2026-11-14, source stage): inherited read-only Faction references acquire through the canonical session owner, all actually registered definitions resolve before the manager snapshot, and the real Faction pool runs5bd9a0/5bda20/5bdad0 lifecycle with the same shared EntityEvents queue. Typed Rigid metadata now shares its asset Definition Arc with the component owner; map/inline Faction identities remain explicitly unsupported rather than losing overrides. The world-wrapper's five activation subscriptions now dispatch through the real rigid/trigger pools and registry. Its d4 flags live in one authoritative per-entity array, and hierarchy requests retain actual actor generations in the existing bounded ObjectUpdateTask. No flag mirror, alternate query world or no-op activation callback was introduced. This stage reserves the Rigid factory but does not yet construct its bodies; concrete809d80/pickup integration follows before the coordinated build.
+
+Navigation pickup-filter projection:81a5f0 only AND-clears material-controlled bits, so projecting c87640's0820001f mask into existing primary/ExtraHD triangle filters is exact. The owner keeps geometry/materials/identity active; component fake boxes are separate. A compact12-byte owner-span locator enables ordinary contiguous-body updates without a full-world scan or per-triangle index; interleaved inputs retain an exact owner scan. Prediction: unchanged walking queries, one small locator per initial placed-collision owner and only that body's run touched at pickup. No measured performance or memory saving is claimed; no tests/build/run.
+
+
+### Body-owner interface integration correction (2026-11-14)
+
+The cohesive compilation exposed two source integration defects. Prediction:
+zero allocation/capacity change or altered floating arithmetic; the existing
+body retirement path compiles and clears exactly the removed body's pending
+mark. `1412862b0` explicitly ANDs the existing word with the inverse of that
+body's bit, so `BitField::reset` now provides that exact owner operation instead
+of calling a nonexistent method or rebuilding/clearing the field. The gravity
+initializer reuses the existing x86RSQRT estimate helper with visibility widened
+only to its gameplay ancestor; its estimate and refinement sequence are unchanged.
+Saved decompilation `chunk_000752.c` confirms the bit operation. Syntax and
+whitespace inspected; no test/build rerun here, pending the coordinated batch.
+### Document rigid component composition (2026-11-14)
+
+The ordinary readables' actual authored RigidBody records now instantiate the shared `808ea0`/`809d80` owner in PhysicsScene, using the same declaration Arc, standalone/alias/ExtraHD shape leases, canonical materials, motion properties, and world body. Initialize and Start retain publication cursors; `80a260` Stop unpublishes and detaches before `809bc0` destruction releases geometry and finally recycles the movement interface. Entity frame data is retained independently of the actor cache. Component update queues drain after startup before retirement can recycle slots. Expected ownership change: one body and one shape lease per actually admitted rigid declaration, retained until normal map retirement; no conversion or duplicate query-world construction. No CPU or byte-saving claim is made for this fidelity recovery. Source parsing/whitespace review only; root owns the coordinated compiler check and runtime observation. Dynamic simulation, authored wind/rotation-lock/critical-quality branches remain explicitly unsupported; this slice admits the existing static/keyframed, null-parent ordinary-document path. Portable pickedUp/hide integration is a separate pending consumer slice, not claimed complete here.
+
+
+### Portable readable consumers (2026-11-14)
+
+Sleeping readable rigid admission (2026-11-14): the read-only installed map
+metadata census `artifacts/readable-rigid-installed-20261114-v2.json` found 17
+authored dynamic document bodies (one Dunwall book and eight Institute notes
+in each chaos variant), all `m_startAsleep=true`. `809d80` publishes those
+bodies deactivated into the same world; `727a00` returns when their existing
+dynamic movement type already matches the authored type. Start and unpublished
+rollback now preserve that actual dynamic motion rather than rejecting loading
+or converting it to static/keyframed. Awake startup remains an explicit missing
+active-simulation host, not an approximate solver. The existing body, material,
+shape, listener and movement-interface retirement paths remain the owners.
+Prediction: 17 additional actual body admissions over the installed map census,
+no new per-frame work and no second world or shape conversion. Native evidence:
+`analysis/decompiled/chunk_000339.c` (`140809d80`) and
+`chunk_000297.c` (`140727a00`). Source review only; no build or tests run.
+
+Readable attachment lifecycle (2026-11-14): installed map metadata contains
+32 readable rigid parent attachments in 14 level variants, including three
+`glass_joint` attachments on the real Jindosh door PhysicsSystem model.
+Prepare only those actual ancestor identities from document class metadata;
+retain the original parent-first topology in LiveEntities and the same
+PhysicsActorLinks pool. No unrelated gameplay factory or placeholder entity is
+created. Binding initialization uses `752900`/`878fd0`; demanded tag/bone
+resolution and actual startup joint poses come from the shared JointFrames
+owner. Authored tags supply their offset/quaternion and replace the initial
+child world frame; a direct bone name retains the authored relative frame.
+`727a00` resolves the effective Start type through actual started ancestor
+interfaces, otherwise keyframing the bound child. The component retains that
+resolved type through interrupted Start/rollback, instead of reparsing a
+possibly changed hierarchy during cancellation.
+
+Portable pickup clears the bound bit, then follows `8762d0` -> `727450(null)`
+-> rigid virtual `727880`: restore dynamic mode through the canonical c86800
+cursor before removing parent references and doing the existing pickup
+keyframe/filter changes. The installed vtable slot was read directly from the
+PE image, without executing game code. Whole-world shutdown follows the distinct
+`8a4830` order: component Stop/deinit runs with topology intact, then entity
+destruction removes attachments before generation retirement. **host:** Rust
+keeps the same attached actor pool slots alive briefly after their component
+headers unlink, replacing the source allocator's address-stable freed slots.
+Only compact handles/generations live in Retirement; no alternate actor pool,
+body, shape or scheduler is created. A reclamation cursor drops those slots
+after the final reciprocal detach/identity retirement. Failed preparation uses
+the same teardown, retaining leases until callbacks complete. This is short
+teardown-only retention, not a RAM-saving claim.
+
+`808880` independently computes bound render frames from the actual parent
+render placement (or the actual entity frame if no render exists), the final
+phase3 bone and retained local binding. A demand-only pass runs after the
+existing physics/usable/scene pose producers, then uses the same model-motion
+publisher for color, shadows and placed-model queries. Ordinary unbound
+publication and interaction scheduling stay in place. Managed rigid children
+are removed from the earlier generic parent-delta propagation, avoiding a
+second conflicting transform. Unchanged frames queue nothing; the second thin
+publisher returns immediately on an empty queue. No physics-body transform or
+approximate world solver is substituted. General awake-world stepping and
+unhosted desired-motion callbacks remain explicit gameplay limitations; this
+change claims actual acquisition/Start/Stop/resource retirement and the
+source's independent render virtual, not a complete dynamic collision solver.
+
+Prediction before integration: admit the 32 demanded attachments plus their
+real ancestor headers, copy only demanded joint frames, and retain no rig-bound
+definition copies. Add bounded parent/frame comparisons for those bindings;
+no new animation evaluation, world/body duplication or per-draw work. No CPU
+speed or byte-saving claim. `DOCUMENT_HIERARCHY` prepared/retired records expose
+actual admission and final zero ownership for the coordinated production
+acquisitions. Native source: saved `analysis/decompiled/chunk_000303.c`
+(`752900`), `chunk_000339.c` (`809d80`, `808880`), `chunk_000359.c`
+(`8762d0`), and existing `gameplay/entity_release.rs` (`8a4830`). Installed
+evidence: ignored `artifacts/readable-rigid-installed-20261114-v3.json`.
+Rust parsing/whitespace review passed; no builds, tests or game launches run.
+
+`844bf0` now dispatches the real generation-scoped pickedUp graph notification before inventory admission. Accepted portable notes/books/maps retain their checked identity in a retryable callback cursor: `76e2b0` keyframes the same canonical body, masks its filter with `0x0820001f`, clears velocity through the existing `c85dc0` publication owner, resumes the real Pickable update owner and posts the retained begin-pickup sound through the existing PlayerBody backend. `76ec20` then hides the same render/shadow sources; it does not delete their resources or deactivate navigation geometry. Navigation projects the same filter mask into its existing triangles. Invalid/stale/hidden Pickables cannot be read again. Authored projectile/grenade/mine callbacks and bound subtree branches are rejected before inventory/graph side effects instead of being silently omitted. Graph receiver retirement precedes shared identity retirement. Actual initial rigid body transforms, rather than unnormalized render frames, seed post-physics mesh deltas. The canonical actor task adapter publishes through the existing model-motion owner. No tests/builds were run by this agent; root owns the whole interface check. Partial level-start failure cleanup remains an explicit integration task before this lifecycle can be considered complete.
+
+
+### Unpublished physics preparation cancellation (2026-11-14)
+
+- Owner: `app/physics_scene/preparation.rs`, borrowing the canonical scene,
+  component registry, managed identities and query world. Host boundary: original
+  synchronous Initialize/Start (`1407ea340`, rigid `140808ea0` / `140809d80`)
+  becomes fallible during installed-resource acquisition. Errors now restore the
+  real startup registry and unwind entered creation before geometry can drop.
+- `ported`: body reservations abort through `WorldStorage.abort_disabled_component_body`;
+  entered Start completes its exact transform/publication/motion cursor, then
+  unpublishes, unregisters actual entity/body listeners, detaches the movement
+  interface, destroys the body, and retires the registered shape lease. These
+  use the existing rigid rollback steps and source teardown `14080a260`,
+  `140809bc0`, world destruction `140c8f6b0`.
+- `host`: the existing `1407e72c0` / `1407ea870` registry drain accepts an explicit
+  unpublished context. Before publication there are no Engine emitters,
+  interaction actions or entity-graph instances; it does not fabricate audio
+  acknowledgements or construct another Bevy/physics world. Pools, immutable
+  prepared sources, unused movement slots and world profiles remain ordinary
+  scene-owned Rust allocations and drop after the typed drain. Managed identities
+  are recorded before fallible factory work and retired by the same owner.
+- Failure behavior: required physics preparation errors propagate to the loading
+  owner instead of publishing a level without physics under a misleading
+  'pending' message. A rollback failure preserves the primary error and reports
+  the precise incomplete phase; it does not report clean cancellation.
+- Prediction before implementation: no per-frame CPU/GPU work or residency
+  changes on success; failed preparation releases partial body/motion/shape and
+  identity ownership before scene source leases drop. PreparedLevel cancellation
+  invokes the same helper before clearing boxed resources and Catalog acquisitions. No timing or runtime parity
+  claim. Syntax-only Rust parsing and diff checks performed; no builds/tests run.
+
+- Cancellation ordering: the exact interrupted registry callback (or disabled
+  creation generation) unwinds first, because its retained publication cursor
+  excludes operations on previously initialized bodies. The remaining typed
+  owners follow only after that cursor is idle; no success callbacks are replayed.
+
+### Host preparation failure identity (2026-11-14)
+
+The existing Initialize/Start host boundary reports the actual component handle and authored entity name before canonical rollback retires them. This changes error context only: successful startup performs no report formatting, allocation or retained diagnostic storage; normal frame and resource admission rules are unchanged. No performance gain is claimed. The preceding dc9b74a5 installed Edge of the World acquisition failed at the explicit uncached-convex mass path after successful cleanup; it is not a completed level-publication result. The coherent game/default-library compilation and source acquisition observations will be repeated after the actual missing calculation is restored.
+
+### Modal movie retirement on level teardown (2026-11-14)
+
+`PauseMenu::begin_level` now sends the existing modal-worker `Clear` with the
+new world epoch, in addition to clearing the main-thread modal session. Previously
+its `Close` command released only the Pause movie, leaving Journal/readable
+movie VMs and their resource leases alive until another modal opened or AppExit.
+READ_NOTE exit `140790340 -> 140790ea0 -> 140788d70` is the source movie-exit
+path. Journal's `_C_SubscreenClosed` binding (`14078c830`) still resumes the same
+Journal instance when its readable subscreen closes normally. Ordinary Pause
+close does not clear these movies. The level-loading cancellation and deferred
+AppExit paths both call `begin_level`; worker shutdown additionally drops all
+remaining movie owners. Submitted frames and session-shared bitmap libraries
+retain their existing owners; persistent discovered-document inventory is intact.
+
+Prediction: prior-level modal VMs, movie-local draw caches and item snapshots
+release on the UI worker's FIFO teardown command instead of surviving the map
+transition. This adds no normal-frame, GPU or streaming work. Source review also
+confirmed Pickable shutdown clears its item/player/loot references before pool
+release, canceled interaction preparation clears pending activation, and normal
+readable close drops the movie. No builds, tests, launches or visual checks were
+performed for this narrow retirement correction; coordinated build remains with
+the integration owner.
+
+### Uncached spatial convex mass (2026-11-14)
+
+Prediction before integration: admitted spatial ConvexPolytope/Box resources
+without serialized0xf100 properties now complete the same original mass path
+instead of rejecting Initialize. Construction arenas and rounded-hull points
+retire before the principal frame returns. No persistent source/cache owner,
+per-frame work, extra archive read or GPU pass is added; this is completion
+of a missing acquisition calculation, not a measured speed or memory saving.
+
+Original cb95d0 and caf5c0 dispatch shape virtual+0xc8 when0xf100 is absent.
+Convex implementation ca38b0 calls ce1360: quantize/build a spatial hull,
+expand positive convex radius across faces/sharp edges/vertices (b8d4c0),
+rebuild, integrate signed volume and moments (b959f0/b916d0), diagonalize and
+publish the principal frame (ae04a0/aea690), then apply configured mass/density
+and inertia scale. The port recovers the existing checkpoint's native-backed
+Domain/Topology/Indices/Properties algorithms in assets::physworld::mass::convex;
+it does not import the full runtime query-hull builder or fabricate box inertia
+for a successful convex calculation. Only the original mass-failure result
+uses ca38b0's c96ab0 fallback. Invalid source/topology errors remain errors.
+
+Scope: currently admitted spatial Polytope/Box query roots. Generic ce1360's
+sphere/capsule/triangle and planar primitive dispatches belong to the separate
+query primitive owners, which this rewrite has not admitted here. Source shape
+paths are now attached to mass failures, using allocation only on error. This
+recovery has source/syntax review only; root owns the coordinated compilation
+and actual installed level publication. No tests or visible clients launched.
+
+
+### Supported sound-post cookie and playing-ID ownership (2026-11-14)
+
+Source: `1400c4550` reserves a cookie before posting and stores the actual `1410c95f0` playing ID; `1400c6030` exhausts at sixteen retained cookies per sound object; `1400c47a0` dispatches End before returning its cookie. Saved read-only evidence: `artifacts/audio-post-cookie-source-20261114.json` (ignored).
+
+Prediction before editing: ordinary and FX posts must each allocate one shared output playing ID, retain one object admission through queued actions, real source/output tails and consumed End, and reject a seventeenth retained post for the same emitter. Previously unwatched ordinary posts need bounded ticket bookkeeping; this is a fidelity/ownership change with no CPU-time or MB-saving claim. Object references become a direct count lookup instead of scanning every weak registration. The hash map count is the host representation of the embedded fixed cookie pool; callback range/duration/speech/game-defined branches are unchanged.
+
+Implemented in the existing `gameplay/sound/playing.rs` owner: real-ID registration, bounded per-emitter admission, and retained object counts removed only when End is consumed. The existing Engine ID allocator is shared with FX cold admission, and FX output consumes its already-assigned ticket ID instead of allocating a second identity. Ordinary posts now retain the ticket in the scheduled audio source, following the existing FX path; removing its ECS proxy cannot release its cookie before the actual output/stop tail. SourceReady comes from the real decoder processing boundary, instead of being synthesized when its proxy is spawned. Unwatched End packets cannot complete another watched post with the same event/emitter. Existing decode/source fences, ordered FIFO return markers, voice acknowledgement and per-component retirement are preserved. Static syntax and whitespace review only; no build/tests/launches or runtime timing measurements were run by this agent. Root owns the coordinated compiler/runtime validation.
+
+Deferred consumer evidence: current Rigid initialization/start registers numeric timespace/motion/impulse listeners, but the corresponding runtime message producers are not admitted. The checkpoint `app/entity_event_host.rs` and `app/physics_scene/placed_rigid.rs` retain the exact dispatcher/handler source for a future supported producer slice. No invented producer or blanket 56-class host was added.
+
+### Demanded attachment joint frames (2026-11-14)
+
+The installed readable-body census finds three tag-bound variants, all on the
+same MD6 PhysicsSystem parent class. `app::joint_frames` resolves actual MD6
+properties/joint names through the existing Rig owner (879930/25bfe0/256080),
+then retains only requested tag metadata and initial/current joint frames.
+Preparation samples the existing SystemSkin body/map/ancestor composition;
+an absent pose producer is an error, never a rest-pose substitution. Rigs used
+for lookup are temporary shared leases, not a second asset cache. The existing
+level resource owner retires the compact demand map with its consumers.
+
+Prediction: startup adds only dependency-driven tag resolution and a sample
+from already prepared physics skin data. Normal pose producers copy demanded
+raw matrices before inverse-bind; no new sampling, full-palette copy, archive
+read, lock, frame allocation, mesh, shader buffer or GPU pass is added. Empty
+maps exit before lookup. This is new faithful binding work, not a CPU/RAM
+saving claim. Physics, usable-over-physics and scene composition publish into
+one host projection; actual phase0 and phase3 frames stay distinct. The shared
+53d3f0 helper preserves model-scale offset arithmetic and53de90 basis
+normalization without constructing artificial remap vectors on each query.
+Source evidence: saved chunk000360879930, chunk000303752900/7506d0 and existing
+reference_frame::joints kernels. Full installed publication/retirement awaits
+the coordinated source batch; no tests, build, visual or speed acceptance is
+claimed by this source change alone.
+
+### Live detached-body motion restoration (2026-11-14)
+
+`WorldStorage::dynamic_single_body` extends the existing singleton mode cursor
+with c86800(type2). A keyframed body clears its keyframe flag before calling
+the existing c90a90 mass owner, restores the real retained shape's mass/inertia
+and preserves its motion identity. A static body uses the existing resumable
+motion allocation/attachment route with actual dynamic mass instead of zero
+inverse mass. Collision invalidation and body notification follow the native
+order. Same-type calls do nothing. This is the missing canonical leaf needed
+by8762d0 ->727450 ->727880 during a live bound pickup; it adds no simulation
+solver, duplicate body/world or archive owner.
+
+Prediction: work occurs only on an actual requested mode transition. Existing
+static/keyframe/filter paths and normal frame costs are unchanged; the new
+transition has the source-required mass recomputation and existing callback
+scratch. Source evidence is chunk000586c86800/c86ad0 and the already ported
+motion_mass::recompute_motion_mass (c90a90). No CPU/memory saving is claimed.
+Compilation and installed publication/retirement belong to the coherent batch.
+
+Convex mass source completion: the first coherent compiler report51119ad4 found two references to the missing shared midpoint-pivot helper. Restore the already source-backed checkpoint sorting primitive (bace30/b97e70), preserving equal-key swaps used by hull topology and face-area order; the existing idLib sorter remains unchanged. This repairs a missing dependency of the recovered mass calculator, with no new frame work, allocation or algorithm substitution.
+
+### Playback backend capability at acquisition (2026-11-14)
+
+Source4fe3d1dd compiled both targets and passed scene scope/cancellation/history
+observations. Actual Edge of the World publication reached retirement, where
+the outputless observer correctly rejected an accidentally created mixer.
+The source preparation path had built OutputAudio/DSP state even though its
+App deliberately had no Bevy AudioPlugin and therefore no decoder consumer.
+
+The existing audio owner now records that host capability at App initialization
+and carries it with AudioPreparation. Installed bank/event/mix acquisition
+still uses the same route; OutputAudio and its mixer are acquired only when
+a playback backend exists. Game Apps keep their existing enabled path. This
+is a host backend boundary, not an original sound-format change or a diagnostic
+retirement bypass: the actual FIFO retires objects through the existing
+no-output branch, without fake acknowledgements or advancing an audio clock.
+Prediction: no normal game output/frame work changes; source-only acquisition
+avoids unused DSP/output objects and can complete its real teardown. No CPU,
+RAM or GPU saving for gameplay is claimed. Coherent validation follows.
+
+### Usable pose acquisition for bound dependencies (2026-11-14)
+
+The completed47ed71f6 run compiled both targets, passed independent source
+scopes, and actually loaded/retired Edge of the World. Dust District then
+exposed a missing acquisition dependency: a tag parent with keyframed physics
+is driven by Usable AnimBasic, not the ambient dynamic PhysicsSystem owner.
+Installed metadata and77b3b0 (chunk000310:577) show an initial held transition
+frame: no idle animation plus transition index0 selects StayOnFirstFrame of
+open. A bare rest pose would be wrong, despite the absence of a looping clip.
+
+The existing UsableAnimations owner now prepares only actual requested parent
+dependencies during loading. It uses its ordinary shared Asset/BasicRig/node,
+the real Usable::initial command at dt0, and the same evaluated joint matrices.
+JointFrames borrows that exact rig identity and startup sample; it does not
+create another animation cache. The prepared owner/node moves into gameplay,
+where the ordinary publisher consumes the unchanged startup sample or advances
+that same node. Runtime placement registration preserves prepared slots and
+adds final render source indices once available. Stop releases pending samples
+and asset/node leases through the existing owner.
+
+Prediction: only tag-dependent parents acquire assets earlier; other levels
+return before scanning physics placements. No duplicate node/rig/mesh, second
+per-frame sampling pass, extra GPU pass, per-frame I/O or rest-pose substitution
+is introduced. Startup dependency work is fidelity work, not a speed claim.
+Source metadata/provenance: main artifacts/readable-door-owner-conclusion-20261114.json
+and its installed owner/animation captures. Coherent acquisition verifies it.
+
+
+### Batched component Stop acknowledgements (2026-11-14)
+
+- Owner: `gameplay/component_state/lifecycle.rs`, existing canonical component
+  registry. Native `1407e72c0` requests Stop before release; `1407ea870`
+  (saved `chunk_000334.c`, lines3091 onward) invokes virtual30 for the entire
+  reverse-sorted captured Stop prefix, retires that prefix and pumps events,
+  then invokes all virtual20 deinitializers before the virtual78 destructors.
+- `host`: the backend may finish an accepted Stop asynchronously. Previously
+  returning Pending from the first audio object suspended the native Stop
+  iteration itself, admitting one object's retirement FIFO request per pass.
+  The saved windowless EOTW baseline at source47ed71f6 records
+  `RESOURCE_SCENE_RETIREMENT phase=complete passes=1697 output=false` in
+  `artifacts/coherent-resource-owners-20261114-20261114T181846Z-7d65fb33/scene-shared.log:13591`.
+- The same Stop iteration now issues every captured callback once, retaining
+  Pending handle/generation identities in reusable batch scratch. A separate
+  poll cursor visits every outstanding acknowledgement in original issue
+  order and never repeats completed callbacks. It preserves the exact callback
+  on error; stale generations fail. Queue-prefix removal, event pumping and
+  every deinitializer/destructor remain behind the all-Stop-complete barrier.
+  Existing audio FIFO consumption and actual acknowledgement are unchanged.
+- Prediction recorded before implementation: EOTW component retirement requires
+  two passes rather than1697 (issue all requests, then consume acknowledged
+  completion); total LevelLifetime passes may be three if a separate final
+  FX/level-audio FIFO phase suspends. Pass count must be independent of audio
+  object count. No per-round allocations, no copied component/audio world and
+  no work added to ordinary gameplay updates. Scratch capacity grows once at
+  a new Stop batch and is retained for reuse. This is an owner-round count
+  prediction, not a CPU/frame-time claim.
+- Source-only verification: original callback order and error/retry invariants
+  reviewed; Rust syntax parsing and diff checks only. No tests, builds, game
+  launches or new measurements performed by this agent. Root will record the
+  actual shared-level owner result with the coherent combined build.
+
+### Header admission gate reconciliation (2026-11-14)
+
+The200df5cf paired observation exposes a prediction mismatch: midnightScene
+sharing reduces projection decodes from65 to39, but every physhape report has
+zero registered headers and no common source hits. Source review found a
+concrete wiring defect: physhape/cpntFaction registration arms existed
+downstream, while preload_declaration_kind rejected both before header
+selection and reuse resolution. Their lifecycle hooks could not run at all.
+
+Add those two existing supported owners to the same admission predicate used
+by primary/reuse/header-selection phases. This does not eagerly decode shapes
+or faction payloads. Prediction: selected bootstrap headers reach their real
+owners; only demanded common shapes become resident and subsequent same-session
+requests reuse them. The previously stated coin3-to-1 read example must be
+measured again rather than claimed from the old zero-header observation.
+Faction matrix semantics and shape content must remain unchanged; no frame
+work/GPU pass is added. Whole-map source comparisons and final release counts
+are repeated for the corrected gate. No CPU/RAM saving is claimed yet.
+### Hidden readable physical-resource descriptors (2026-11-14)
+
+Original `140808ea0` requires the entity's actual RenderModel descriptor
+(`entity+0xf0`) and reads its model name and entity scale for `14008c840` shape
+acquisition. Color visibility is not that descriptor's lifetime. The host
+had incorrectly required a color-render placement after its model collector
+had excluded authored `edit.flags.hide` entities. `assets/entities.rs` now
+factors the existing model field decoder: color collection retains its exact
+hide predicate, while the physical owner can read one requested definition's
+descriptor without cloning generic syntax or collecting another map of models.
+An actually absent or unsupported descriptor is still an error, with entity,
+component declaration and model/resource context.
+
+`RigidBodyComponent` retains prepared resources with an optional real render
+index; `None` denotes no color projection, rather than a synthetic slot zero.
+Body, material, shape and movement-interface ownership proceeds through the
+same Initialize/Start/Stop/deinitialize/cancellation paths. The entity's source
+hide flag remains set. Actor frame publication still uses the canonical body;
+its optional render callback returns no projection when one was never created.
+No hidden mesh, draw, material projection or GPU upload is fabricated. Method
+and field names now say prepared resources, matching that responsibility.
+Preparation resolves its entity through the already admitted Pickable handle
+and generation instead of repeatedly scanning all entity names. The native
+`8762d0` dormant joint index is ignored once its parent is null, preserving
+generation/attachment validation without mistaking an old index for a live
+owner.
+
+Installed all-36 metadata evidence is
+`artifacts/readable-rigid-installed-20261114-v4.json`: 25 hidden readable rigid
+instances in six level variants (Bunker high-chaos20, Bunker low-chaos1,
+Palace and Palace Streets high/low-chaos1 each). All are static HKT bodies with
+explicit model descriptors and `contactsystem/po.paper` override. One is
+parent-bound without a tag. The targeted descriptor census
+`artifacts/hidden-readable-model-descriptors-20261114.json` confirms authored
+positions and six matching compiled shape keys; it finds no new shape,
+dynamic, rotation-lock, wind or ExtraHD branch. The complete map-authored
+readable census remains876 instances/839 rigid components; it does not claim
+blueprint-expanded runtime counts.
+
+Prediction for the coordinated source acquisitions: admit the 25 physical
+resource consumers formerly blocked by hidden color projection, preserve color
+placement/mesh/GPU counts, reuse the existing six demanded shape identities,
+and retain no descriptor after prepared resources are handed off. There is no
+CPU-speed or byte-saving claim. `READABLE_RIGID_RESOURCES` (load diagnostics)
+reports descriptor-only versus real color projections. Source parsing and
+whitespace review passed; no builds, tests or game launches were run by this
+leaf. Actual all-level publication/upload/removal evidence remains pending.
+
+
+### Combined resource-owner acceptance, source371c6435 (2026-11-14)
+
+Completed report:
+`artifacts/coherent-resource-owners-20261114-20261114T193621Z-eaa6af67/result.json`.
+Exact source371c64355a212faf0ceb078b780e1d95919e9acd; tools SHA256
+1cd2a7843583b2d1618e727f545e556cf3545c0fb7b04d2342907741c99bb002.
+The dev game/tools build and default-library check pass. Independent scene
+scopes, read cancellation and Catalog history pass. Same-binary paired actual
+EotW/Dust/EotW acquisition, publication and retirement complete; all13 recorded
+source/output comparisons and graph/faction semantics match. Every level
+retirement completes in two passes in both modes, versus1697 in the recorded
+unbatched EotW baseline. The real audio acknowledgement/barrier is retained.
+
+The header-gate correction now exercises116 common physhape records rather
+than zero. Only the demanded common low-value coin payload is retained
+(11031 decoded payload bytes); unused common shape payloads stay unloaded.
+The low-value coin shape's archive reads change from1+1+1 to1+0+0 with two
+actual reuse hits; its content signature remains cfbdaa13. Other map-owned
+coin variants remain map-owned. Registry headers retire with the Catalog;
+final Catalog consumer count and common host payload count are zero. This
+confirms the read-count prediction without a whole-RAM or CPU-speed claim.
+
+Midnight projection decoding changes65 to39. Final graph definitions,
+instances, subscriptions and queued work are zero; readable hierarchy bindings,
+ancestors and joint frames retire. These asset-only observations do not
+certify live gameplay/appearance, audio playback, or GPU rendering. The all36
+publication and initial GPU acquisition/removal sweep is a separate remaining
+acceptance step. No tests or visible diagnostic launches were performed.
+
+
+### Managed parent reference admission (2026-11-14)
+
+Reflection1417f3bf0 declares bindParent as idManagedClassPtr<idEntity>.
+Callback140877370 resolves it through1406dc560 and invokes140875e80/140752900
+only for a non-null live target. Deleted/unresolved parents leave the child
+unbound, retaining its real rigid body and authored world frame. Names follow
+ASCII-insensitive lookup1408a7d90/140143650. The raw declaration reader remains
+unchanged; runtime hierarchy, tag requests, bound models, interaction parent
+lookup, machinery and FX frames share resolved_entity_binds. Its borrowed-name
+index is transient during preparation, with no new frame lookup/resident cache.
+
+All36 installed raw-reference census:
+artifacts/installed-bind-references-20261114.json records10884 exact edges,
+23 absent targets and two empty targets. Readable-reachable chains contain29
+real edges and four missing edges: Curator archive-note and Palace duke-note
+parents in both chaos variants. No case-only match or folded-name duplicate
+was found. Runtime consumes the final prepared Document including expanded
+entities; the census alone does not include blueprint expansion.
+
+Actual371c6435 publication inventory completed32 of36 installed map variants;
+the only four failures are those same dangling readable parents. The complete
+remaining26-map observations are artifacts/remaining-publications-20261114T195209Z/result.json.
+Source8831c4f1 implements the original null-target behavior consistently across
+attachment consumers. Prediction: those four readables admit standalone bodies
+and retire normally; no invented parent entity, tag rig, model or GPU upload;
+the29 real edges and three glass tags preserve their existing behavior. This
+is a missing behavior correction, with no CPU-speed or byte-saving claim.
+Compilation and final all36 production/GPU observation remain pending.
+
+
+### All36 owner retirement, source5302eabf (2026-11-14)
+
+Publication report:
+artifacts/coherent-all-level-lifetimes-20261114-20261114T201835Z-eff86fdf/result.json.
+Independent GPU report:
+artifacts/coherent-all-level-lifetimes-20261114-20261114T202921Z-4b303ca6/result.json.
+Both actual commands exit0 and complete36 begin/prepared/released phases.
+All36 graph closures and readable hierarchy retirements have zero remaining
+owners. GPU observations complete36 uploads/removals; every removal has zero
+map buffers/skies and exactly four host meshes plus intended common meshes.
+Final common host payloads and Catalog consumers are zero;67 device shader
+libraries release to zero live. These observations execute no gameplay frames,
+playback, tests or visible launch and make no gameplay CPU/RSS claim.
+
+The strict aggregate reports deliberately remain failed: four MD6 acquisition
+diagnostics expose skipped cloth-resource remapping, despite the correctly
+completed owner teardown. The required generated noncloth products do exist
+in the installed indexes. Source investigation traces the pre-existing gap
+to textual LOD selection bypassing native088c10/087820/087a20 before mesh load.
+No diagnostics have been suppressed or arbitrary file substitutions admitted;
+final acceptance waits for the source-backed format-selection fix.
+
+
+### Cloth-split MD6 selection and header ownership (2026-11-14)
+
+Source0c5a99b6 restores the prerequisite native088c10->087820/087a20 before
+1c8cf0 loads an MD6 mesh. Native088150 hashes the logical MD6 name then each
+selected-LOD compiled companion model pathname, writing1431a0 name hashes as
+little-endian32-bit words into existing10caf0/10c160 MD5. Source/setup ordering
+follows the16 native buckets1c5d60/1c89c0. Both direct acquisition and the
+admitted Rig ModelReference fast path select the actual generated noncloth
+base, using existing ModelSources and ordinary skinning. No filename scan,
+arbitrary replacement, extraction or generated disk cache is used.
+
+Native1356d10 registers arkCloth/bcloth/cloth. Its scoped metadata owner uses
+existing Catalog Registry header/bootstrap/map/persistent/session boundaries
+0607f0/05feb0/0661e0/060b60/060180. Immutable failures share their actual record;
+overlays bypass sharing; cancelled direct reads do not publish. Only a compact
+streaming prefix is read to validate five product names plus the40-byte mapping
+boundary; no Havok pack is fully decompressed or retained. The host projection
+retains only the currently consumed LOD0 product. Unused future LOD names are
+validated and discarded. The original full cloth payload/runtime is separate.
+
+Installed evidence: artifacts/md6-cloth-map-demands-20261114.json derives218
+direct map-authored MD6 names,331 inherited declarations,26 cloth-bearing local
+LOD0 layers and73 unique bcloth headers across36maps. Every derived header and
+all26 exact nocloth products exist, with zero derivation failures. The73 source
+cloth members total17682928 bytes, never retained/read whole by this projection.
+Their five-name inventory has36124 string bytes; only12311 are required for
+LOD0 selection, avoiding23813 unused string-content bytes. These are independent
+installed-name lengths, not runtime capacities, peak RAM or CPU measurements.
+Evidence: artifacts/cloth-md6-header-products-20261114.json and
+artifacts/cloth-header-projection-storage-20261114.json.
+
+Prediction before the coordinated source run: the four previous missing-raw-
+mesh diagnostics disappear, and demanded standard base geometry acquires.
+Header source loads are bounded by requested unique identities/scope; unused
+headers stay unloaded and map payloads retire. No cloth simulation state or
+extra cloth GPU objects are added. Source syntax/diff review passed; no tests
+were written/run. This fixes missing output and performs real newly-required
+acquisition; there is no startup CPU-speed claim. Separate cloth-only rendering
+explicitly reports its missing runtime rather than using an arbitrary mesh
+or applying an ordinary skeletal palette to cloth companions. Existing single
+selected LOD0/multi-mesh limitations remain explicit.
+
+
+### Final combined lifecycle acceptance, source021c7586 (2026-11-15)
+
+Exact owner source021c75862f188ad87f187daca7584e09fec24655. Tools SHA256
+5b639f4ddcd5ec169ac7a67f96ef12ed3ad032875a6fb17a583c032e96ecaf1f.
+Atomic aggregate: artifacts/final-resource-acceptance-20261114T205121Z/result.json.
+Paired report: artifacts/coherent-resource-owners-20261114-20261114T205122Z-b029c857/result.json.
+All36 report: artifacts/coherent-all-level-lifetimes-20261114-20261114T210550Z-51108984/result.json.
+Concise summary: artifacts/final-resource-acceptance-summary-20261114.json.
+
+The game/tools dev build and default-library check pass. Independent scene
+scope/read cancellation/Catalog-history observations pass. All13 paired
+source/output comparisons and graph/faction semantics match. Actual level
+publication/retirement and independent initial GPU upload/removal both
+complete every one of36 installed variants with no acquisition errors.
+Every outgoing graph/hierarchy closes; map buffers/skies/meshes return to the
+intended host/common baseline. Final Catalog consumers and common payloads
+are zero; all67 shader-library live handles release.
+
+The four missing-raw-mesh diagnostics are gone: each route selects four actual
+noncloth products and reads only five demanded compact cloth headers. Final
+arkCloth report has six remaining registered common headers but zero payloads
+and zero payload bytes; Catalog destruction releases those identities. The
+26 candidate metadata derivations do not become26 eager runtime loads. No
+cloth simulation/render companions are claimed by this metadata-only owner.
+
+This supersedes the earlier pending acceptance of the integrated recovery.
+It certifies supported resource acquisition, sharing and release, not every
+unimplemented game system, every active emitter/draw transition or live
+appearance. No tests were written/run and no visible game was launched.
+No whole-process RAM, walking CPU or FPS improvement is inferred from counts.
+
+
+Integration/cleanup (2026-11-15): the accepted owner source is merged into
+local main. The normal game configuration also passes
+`cargo check --locked --features game --bin dishonored2-rust --jobs 1`,
+without debug_allocations (artifacts/client-config-check-20261115.result.json);
+this is a compilation check, not a newly linked release executable. Completed
+agent work is committed; temporary agent/verification worktrees are removed.
+The final verification checkout's276 ignored evidence/runtime files
+(579337761 bytes) were moved on the same volume and exact paths/lengths verified
+in artifacts/worktree-archive-20261115/DH2-fx-level-lifetime/preservation-manifest.json.
+Its source remains reachable as
+refs/archive/worktree-cleanup-20261115/final-resource-verification. The active
+authoring checkout and external rendering checkout are retained. Protected
+older feature checkpoints remain preserved separately from completed work.
+
+
+### Reopened active lifecycle work (2026-11-15; runtime evidence pending)
+
+The initial021c all36 publication/removal acceptance is retained with its
+original scope. It does not certify live demand changes, accepted interactions,
+active output/tails or replacement. The whole audit is active again; current
+source changes below are not yet marked verified.
+
+- Ordinary audio admission/Stop/watch ownership (d11a8376): native0c4550/
+  0c6030 allocates the actual ID/cookie at accepted Post, before queued source
+  preparation. Native1127000->10e9950 Stop cancels pending actions as well as
+  voices;10e1290 releases End only after action/voice ownership finishes. The
+  host now transfers that same ticket through deferred queues, cancels prior
+  matching posts without waiting for IO, distinguishes watch generations and
+  matches actual End IDs. Prediction:16 accepted ordinary cookies occupy the
+  real object immediately; a17th is rejected against its actual existing count;
+  Stop withdraws pending clients in its consumer pass. No packet/PCM/readiness
+  algorithm or whole-frame CPU claim changes.
+- Accepted pickup teardown (3e8ffbca): native844bf0 completes76e2b0/76ec20
+  synchronously. One shared host cursor consumer now drains already accepted
+  work before typed component Stop; stage5 prevents sound/body replay and
+  inventory/pickedUp are never replayed. Empty queue adds no allocation.
+  Actual portable readable requests use their admitted item/entity/generation.
+- FX warm-role publication (920c8f88): fallible requested-family preparation
+  precedes restoring a purged live generation's registry pin. Read/parse
+  cancellation preserves existing consumer identity and leaves no newly
+  restored pin. Existing immutable failure and overlay policies remain. Genuine
+  current multi-role producer reachability is being reconciled independently
+  of same-WORLD overlap; no artificial role pairing is counted as gameplay.
+- Mutable-shape detach (7887ee3f): nativecdfcb0/ce03d0/ce04a0 visits active then
+  pooled registrations and unsubscribes both channels before clearing shape.
+  A Rust lookup/identity error now retains unfinished arrays/registrations and
+  ordering; shape=None is the completed-entry cursor. Borrowed release methods
+  preserve ownership on Err. Success frees list storage; no extra per-frame
+  field/allocation. Actual installed subscription counts are observed without
+  changing source flags. No supported mutation-event producer currently exists.
+
+Production observation adapters (host mechanisms, not alternate simulation):
+app/offscreen_runtime shares the normal launchbuilder and actual game/render/
+loading/retirement schedules; it creates only an Image presentation target and
+logical viewport metadata, with Winit/native windows/display changes disabled.
+The same actual output decoder has one real-time paced consumer thread pulling
+1024frames at its declared rate/channels and discarding PCM, without hardware
+playback, a second engine or fabricated callbacks. App/consumer teardown occurs
+before audio and Catalog session caches.
+
+Active FX observation drives actual installed EffectRequests and real App time
+through Start/overlap/view withdrawal/Stop/restart/native tails/map clear. A
+view gap must actually withdraw WaterSceneFrame, ParticleQueryFrame and final
+FX view publication, while keeping the same simulation/source leases; merely
+setting Camera.is_active=false is insufficient. The offscreen adapter retains
+and restores actual Camera3d components to exercise that production absence.
+Native223dd0/223f60/220520/230960/230980/2307e0/199df0 govern Stop and chains;
+persistent decal tails are not assigned an invented expiry.
+
+UI observation records real named-image requests/replies, actual waiting,
+movie Clear/Close/epoch acknowledgements, frame leases and worker join. Only
+bounded weak histories are retained. Source-backed named-view snapshot rules
+remain unchanged:1410150f0/14101d290/2df8c0/2f5530. Installed census finds215
+UI identities and zero cross-role matches across8036 entity/material/environment
+sources; no fabricated scene/UI alias is introduced to create a supposed bug.
+Actual worker interruption at Last precedes existing ExitDrain while First
+continues servicing replies.
+
+Live quality/resize retains the existing sevenstates and120ready frames, but
+now waits for real fog/camera/ocean render-world target identities and the
+existing postgraph submission fence at observation boundaries. Static distinct
+shadow roles, perallocation offsets and opt-in DX12 resource/heap create/free
+ranges distinguish real occupied heaps from empty/warm capacity. Opaque driver
+pipeline/descriptor bytes are explicitly unknown rather than reported as zero.
+No extra GPU pass/submission is added; normal output/target policy is unchanged.
+
+The central inspect-runtime-lifecycles command drives these real owners without
+a visible application, source-byte substitutes or manual completion credits.
+Streaming observations reuse saved camera input and record actual worker/queue/
+reservation/committed state; perread counters exist only in debug_allocations.
+They identify an active source-read interval, not a claimed byte offset; the
+existing archive member observer separately measures real partial-read
+cancellation. Runtime source/owner scenarios must finish before audit closure.
+No tests have been written/run and no build or runtime claim follows merely
+from source parsing.
+
+
+FX scenario applicability reconciliation (2026-11-15):
+artifacts/fx-current-consumer-role-census-20261115.json covers7407 contact FX
+names, the actual pause Common path, both player Screen-water paths and830
+possible current World FX names from5804 installed producer inputs plus
+sub-FX/inheritance closure, with zero read/closure errors. Every cross-role
+intersection is empty. Same-level live tails keep Sources wrappers, which
+UsableEffects reuses before any registry request. Marker0 releases only after
+actual outgoing workers/render/audio/FX/source retirement; marker1 follows
+completed teardown, and Catalog destruction cannot be reacquired. Thus warm
+additional-role and purged-but-live FX reacquisition are currently inapplicable
+production scenarios, rather than missing runtime observations. No manual
+purge holding a diagnostic lease or invented role pairing is used to claim
+gameplay coverage. The transactional API correction remains source-proven.
+
+Runtime follow-up (2026-11-15, source batch not yet verified):
+
+- The actual pending UI reply/quit route passes at a122a2ab, tools SHA256
+  58e8a3f0fa0e22d618a890608e1e70098d701d671c83fb78c40b6efb4bf205c3.
+  Evidence: artifacts/active-resource-build-20261114T231028Z-d2085b8e/result.json.
+  One real request/reply is consumed; worker start/exit/join are each1, with
+  no pending reply or retained observed leases. No movie was published before
+  this early quit, and cancellation_wakes=0: this is reply drain and joined
+  shutdown, not proof of destructor wake or live movie replacement.
+- Actual quality switching exposed a native viewport rejection in water-line
+  rendering. Original36f8a0 allocates alpha-div2 by full-view>>quality
+  (chunk126:3243-3274);2fdea0 allocates ceil(alpha-div2/2) for its mask and
+  retains full-view/4 viewport (chunk117:2692-2693,2754-2766). Native raster
+  clipping, also permitted by wgpu-core render.rs:2713-2753, handles the smaller
+  attachment. Remove only the invented attachment-bound rejection. Prediction:
+  q2 retains240x135 mask and480x270 viewport at1920x1080; no new allocation or
+  pass, unchanged numeric sampling; actual depth/colour completion recovers.
+  The failed wave is preserved in
+  artifacts/active-resource-runtime-20261114T232049Z-d1cf8126/aborted-wave.json.
+- The offline output consumer was first inserted after LevelLifetime::begin
+  and incorrectly retired with the map. Reserve its host slot before acquisition
+  and fill that same slot later. Prediction: one actual consumer survives live
+  map replacement and joins only at App destruction; no alternate audio clock.
+  Preserve the real terminal AppExit if a diagnostic finds a post-update error.
+- Optional F8 bloom history retained texture/exposure bind groups across map
+  loading. Release that history at the existing render retirement before its
+  acknowledgement. Already copied staging owns no source view and can finish.
+  Prediction: outgoing history references disappear at this boundary; current
+  captures, passes and copied pixel contents stay unchanged.
+- Complete target visitors now include both focus histories, alpha/low scratch,
+  fog lookup/mask/visibility, water/underwater/sun and fixed world-wave history.
+  They borrow textures without pinning them or adding GPU work. Each selected
+  quality/resize sequence must complete seven existing fenced samples;120
+  CPU/shadow-ready warmup updates do not mean120 fenced GPU frames.
+- Real UI replacement, screen-water transitions and normal coarse/ocean callback
+  Drop observations are added to close the remaining production paths. All weak
+  observation tables report overflow explicitly; overflow cannot certify release.
+  No synthetic camera, readback payload, clock or acknowledgement is used. The
+  older standalone synthetic GPU examples are not run as audit evidence.
+
+Further actual runtime evidence at cc9dca75 (2026-11-15):
+artifacts/active-resource-runtime-20261115T000412Z-dfa8d355/result.json records
+successful worker/publication/in-progress-read cancellation, readable quit,
+EotW/Dust/EotW live UI replacement, moving-view demand/pressure, real output
+audio, water screen enter/leave/reentry, and seven quality/resize samples on
+both maps. The stopped FX observation is explicitly incomplete; it acquired
+its source and particle prewarm but did not publish a first dynamic instance.
+Its remaining admission predicates are now recorded together, without forcing
+readiness. No successful FX tail claim follows from its interrupted process.
+
+The actual read cancellation snapshot has16 inflight requests,14 queued and
+one active source read (700 starts/699 returns), then canonical exit completes.
+The live UI worker survives both replacements with zero outgoing weak leases,
+then joins once at final host destruction. Water source contact and completed
+wave heights drive true/false/true/false screen transitions and canonical
+shutdown clears both particle heads/quads. The warm audio scenario admits16
+cookies/rejects17, completes the replacement watch and real finite FX EOF/End.
+It does not claim cold pending Stop coverage; the next observation uses an
+unplayed installed PlayerBody binding and real same-FIFO Post/Stop, requiring
+the actual cancellation transition and accepted message/ticket IDs.
+
+All36 actual mutable-shape snapshots report zero mutable shapes and zero
+mutation/destruction subscribers. There is no supported mutation emitter.
+The checked detach correction is source-backed but no fake source flag/event
+is used to manufacture a nonempty production case.
+
+Actual DX12 quality/resize attribution has1,118,986 creates and matching frees,
+zero unmatched/duplicate records and zero surviving resources after each host.
+Allocation extent totals are neither upload traffic nor concurrent memory.
+Luminance is a concrete owner bug within those balanced lifetimes: exposure
+kept startup quality while display used live quality, alternating one cache
+key twice per frame. EotW's seven-state route created485 luminance textures
+(1 initial,239/3/239/3 between affected sample pairs). Both consumers now use
+the same extracted current camera/lens publication (36f8a0/372db0), retaining
+the existing single owner and startup fallback only before that view exists.
+Prediction: initial plus four real quality changes, with additional creations
+only for genuine view changes; no new cache, pass or sampling approximation.
+The scoped creation-count observation remains pending for this source batch.
+
+The same actual frames exposed a supported scene skeleton layout error, not
+wrong resource identity: inverse bind banks pad to eight lanes, while the host
+evaluates logical joints. Native24c340/12e1d00 bank semantics and the existing
+usable/physics consumers establish a checked logical projection. Machinery
+scene publication and SceneAnimation palette generation now use it; short
+banks still fail explicitly. Prediction: the permanent palette-length failures
+disappear with no extra allocation or duplicate evaluation. Previously stopped
+animations resume their required work; no speed or memory saving is claimed.
+
+
+2026-11-15 focused follow-up (supersedes pending predictions above):
+
+- Actual ebad812b windowless quality/resize observations completed all seven
+  fenced states on EotW and Dust District. Evidence:
+  artifacts/active-resource-runtime-20261115T010155Z-08c70159/result.json and
+  artifacts/luminance-and-skin-runtime-comparison-20261115.json.
+  Quality-route luminance creations fell485→5 on both maps, exactly initial
+  plus four actual quality changes; resize stays7→7. Palette-length errors
+  fell33→0 and3→0 respectively. No whole-frame performance claim is made.
+- The proposed cold PlayerBody observation is inapplicable: current ordinary
+  production Posts are unwatched, while the asynchronous graph-preparation
+  branch requires a watched request. All watch producers are the observation
+  adapter. The selected current player bindings were already prepared. Remove
+  that diagnostic selector rather than evicting a real source or manufacturing
+  a producer. Native pending-ticket cancellation remains source-ported API
+  correctness; actual ordinary capacity/watch/End and FX decode/output coverage
+  is distinct. The earlier unsuccessful cold run remains preserved, not passed.
+- Actual FX admission acquired source/images/audio and CPU prewarm, but its
+  real world proxy never acquired a material pipeline. Host material, prepass
+  and shadow specialization retained other asynchronous prerequisites in their
+  existing pending queues, but silently discarded missing GPU meshes. Preserve
+  the same real entity in those queues until mesh preparation completes.
+  This host adapter stands in for native1fbad0/31ad30 prepared renderer surface
+  publication and PMODEL232220 acquisition; it does not invent readiness.
+  Prediction: the actual proxy obtains a real cached pipeline, existing GPU
+  prewarm completes, and Start/overlap/Stop/tails complete without forced ack.
+  Retry performs no additional steady-state work once resources are ready.
+  Runtime confirmation of this final source batch is still pending.
+
+
+2026-11-15 FX admission root-cause correction:
+
+The6e17 build passed all three configurations and actual early UI exit, but
+its focused FX run still timed out with proxy1100v0 pipeline=None. No missing
+GPU mesh retry receipt occurred. That proposed repair did not match its
+prediction and has been removed from all three Bevy material owners.
+Evidence: artifacts/active-resource-build-20261115T013532Z-c6a95bc3/result.json
+and active-resource-runtime-20261115T015245Z-96504593/result.json.
+
+Concrete host root: RenderVisibleEntitiesClass CPU pairs are sorted by
+MainEntity (visibility/mod.rs preparation), while entity_pair_is_visible
+binary-searched the whole(render_entity,main_entity) tuple. The two world
+allocators have independent order. Pending material prerequisites therefore
+lose their retry despite remaining visible. DirtySpecializations uses this
+membership check for both specialization and queuing. Search by the actual
+MainEntity sort key and still verify the matching render entity, just as
+its neighboring main-entity lookup already does. No visibility is forced,
+no new readiness signal or cache is added. Native1fbad0/31ad30 prepared
+surface publication and232220 acquisition remain the source behavior;
+this is an explicitly host-only lookup correction.
+
+Prediction: a genuinely visible pending proxy remains eligible after its
+material prerequisite is ready; existing pipeline/prewarm acknowledgment and
+actual Start/overlap/Stop/restart/tail paths then progress. Membership remains
+logarithmic, with no new storage or GPU work. Actual focused confirmation is
+pending; the failed prior observations are preserved unchanged.
+
+
+Thea693 coherent build also passed, but the focused actual FX run still had
+proxy1100v0 pipeline=None. It did not verify a runtime repair. Further source
+qualification matters: current3D CPU-visible pairs retain Entity::PLACEHOLDER
+in the render-entity slot, so their tuple order is already effectively the
+MainEntity order. The proposed generic keyed lookup has no measured gain on
+this producer and is reverted rather than presented as the stall fix.
+Evidence: active-resource-build-20261115T020354Z-4bbffc2a/result.json and
+active-resource-runtime-20261115T022717Z-06ec72a5/result.json. The one remaining
+FX admission investigation now joins every actual main/render visibility,
+mesh/material asset, dependency and pending-specialization gate in one bounded
+observation; it does not manufacture a pipeline, clock or acknowledgment.
+
+
+2026-11-15 actual FX owner handoff defect:
+
+The comprehensive dcd153dc observation resolves the stall without guessing:
+main proxy1100 is visible/mapped and its ordinary image plus eight shared
+buffers are CPU/GPU ready. vegetation_slots and vegetation_instances both
+instead reference the default UUID97128bb1-2588-480b-bdc6-87b4adbec477, absent
+from both owners. Material preparation cannot finish. Bevy mesh preparation
+(render/mesh.rs1426-1440) consequently defers its instance because the material
+binding is absent; missing mesh readiness was a consequence, not the cause.
+Evidence: active-resource-build-20261115T024448Z-fc193d78/result.json and
+active-resource-runtime-20261115T030808Z-ec19e877/result.json.
+
+setup took resolver.vegetation and shadow_materials before preparing world
+particle surfaces and projected decals. MaterialResolver copied the replaced
+Default storage-buffer handles into every new late probe material. Move both
+existing owner transfers after their final consumer, immediately before the
+runtime material/cache handoff. VegetationMaterials::new already supplies the
+canonical buffers; no dummy source, second allocation, lookup cache or fake
+acknowledgment is required. Native1fbad0/31ad30 full surface preparation and
+0607f0/05feb0 shared identity remain the behavior; the transfer is host-only.
+Prediction: the exact two dependency IDs reference the existing live buffers,
+GPU material and mesh preparation then complete, and actual FX Start/overlap/
+view-gap/Stop/restart/tail retirement progress through their existing owners.
+No additional resource, per-frame work or GPU pass is introduced. Actual
+confirmation of this coherent handoff batch remains pending.
+
+
+Final reopened-audit acceptance (2026-11-15): source3c1997d7 passes tools,
+default-library and normal-game compilation checks plus actual pending UI quit.
+The successful final FX result is
+artifacts/active-resource-runtime-20261115T033353Z-2b65f66b/result.json.
+It records real Start/overlap/view withdrawal/Stop/restart, shared immutable
+sources, natural particle drain, persistent decal tails and final pools/source
+leases0. The prior fly observation proves the WORLD material handoff repair
+but times out waiting for a sound that native Stop intentionally preserves;
+fly-retained-tail-native-disposition-20261115.json establishes that rule.
+Both final quality routes complete seven actual submission fences without
+renderer errors and retain the predicted five luminance textures each.
+All rejected mesh/visibility hypotheses remain reverted; no forced readiness,
+new dummy buffer or invented tail lifetime was introduced. Current status is
+in the top matrix and resource-lifetimes.md; older pending prose is historical.
+
+
+### Character-dependent startup object selection (2026-11-15)
+
+Host: assets::entities::character_selection folds deterministic authored
+LoadingEnd/declaration/TestBool/Destroy paths before placements and component
+acquisition. It uses actual Player->EntityToEntityDef->CompareEntityDef inputs,
+not note names, suffixes, map exceptions or a presumed Corvo/Emily file pairing.
+Native79bc20 compares declaration identity (null operands yield false),
+792f40 performs Destroy including the authored attached-object policy,
+7bb9d0 routes declaration entries/exits and7c0e30 dispatches branch/paired
+outputs. Existing canonical Kiscule declarations supply shared parsed sources.
+The installed test_player declaration and EotW script explicitly destroy the
+other avatar's newspaper on LevelLoadedFirstTime.
+
+Deliberate host optimization: fold this pure, character-dependent removal
+before rendering, collision, interaction and FX consumers acquire an object,
+instead of preparing both copies and destroying one after LoadingEnd. Temporary
+node projections/leases drop at acquisition completion; shared declarations
+retain their existing Catalog marker/purge policy. General mutable/quest-driven
+script execution is not inferred. Unknown nodes/inputs, mutable constants,
+spawn-tag destruction and detach-with-children cannot be folded and remain for
+their runtime owner. This is not a general script-runtime replacement.
+
+Prediction: EotW Corvo omits pickups_news_kg_ontherun_emily and retains the
+Corvo entity; Emily does the reverse. No retained source/payload/placement/body
+for the pruned entity is admitted by the level's document consumers. No
+additional frame work, cache or GPU pass is introduced. The installed-level
+observation will enumerate both selected rosters across all36 variants and
+print actual readable bindings. No byte, CPU-time or FPS claim is made before
+those observations; no tests or visible launches are used.
+
+
+Character-selection acceptance atfc80b475:
+artifacts/active-resource-build-20261115T035859Z-fd7d4e62/result.json passes
+tools/default-library/normal-game compilation and pending UI exit.
+artifacts/character-selection-20261115T041128Z-742442b8/result.json records
+all72 character/installed-level profiles without acquisition errors, plus
+both Corvo and Emily full-App EotW publication/exit with canonical closure.
+Its selection-summary.json records20 authored removals across16 profiles
+(eight variants); this includes non-readable objects selected by the same
+original character scripts, not a reading-material name exception.
+EotW Corvo retains only pickups_news_kg_ontherun_corvo with
+news_kg_ontherun_c.inventoryitem; Emily retains only the Emily entity and
+news_kg_ontherun_e.inventoryitem. Each excludes the opposite entity before
+placement/component admission. Other common readable bindings remain.
+These are installed ownership/admission observations, not tests, appearance
+checks, original-game live timing comparisons or measured RAM/CPU savings.
+Original source provenance is character-selection-source-evidence-20261115.json.
+
+
+## Music playback and gameplay owner (2026-11-15)
+
+`assets::wwise::PlaybackBanks` resolves music through its existing global
+actor namespace. Borrowed version-113 readers cover tracks, segments, switch
+containers and playlists (141159840, 141154620/141155700, 1411583d0,
+1411576a0). Prepared graph references are weak in the bank index; event
+preparations and active timelines retain the actual definitions. Mutable
+playlist cursors are per play; native step-selection history belongs to the
+bank actor and retires with that actor. Truncation clears map graph indices
+and removes history for unloaded actors.
+
+The installed census covers 176 banks in 82 packages, every language: 6,271
+segments, 7,767 tracks, 34 switches and 300 playlists. Every installed track
+has one source, one clip and normal playback; every segment has two markers.
+Every switch uses state groups, best-match mode and 100-percent tree
+probabilities. Track random/sequence/switch processors and object-scoped
+switch bindings remain explicit unsupported formats outside this installed
+census, rather than silently becoming ordinary layers.
+
+The sound owner schedules clips on its existing 48 kHz sample clock. Clip
+conversion preserves 1411588a0; meter inheritance/conversion and marker sync
+follow 141153f60, 141154250 and 141154e10. Decision traversal follows
+1410ee9a0; the native uninitialized-group None identity is retained
+(14115def0). Playlist traversal/loop counters follow 14115b650, 14115ba60,
+14115b4e0 and 14115c270. Source and destination transition offsets, relative
+position and pre/post-entry behavior follow 141152ee0, 14115caa0 and
+14115e910/14115f8b0. Automation uses engine-frame key positions
+(141159600) and per-clip PBI gain/filter values (14114e0e0).
+
+Music descriptors use the same bank/prefetch/package source acquisition as
+ordinary sounds. Encoded/prepared caches key music by track and source ID,
+including media extent, and retain only actors still owned by loaded banks.
+No additional output device, media conversion cache or music clock exists.
+Only admitted clip voices acquire packet readers; dormant branches retain
+shared bank metadata and encoded source/prefetch leases. Music Stop and
+worldspawn retirement cancel pending contexts, drop active readers and drain
+the same output and object-retirement owners before map-bank truncation.
+Preparation cancellation uses the existing audio session and bank-generation
+fences; an old worker cannot repopulate the next map's source cache.
+
+Host optimization prediction: caching unchanged nonspatial music controls
+should remove over 90 percent of `graph::Playing::update` CPU work on a stable
+music graph, with the same published gains, panning, filters and routes. It
+removes per-frame all-track route reconstruction/allocation; any parameter,
+threshold or propagated-send change invalidates the snapshot. Ordinary sound
+source rendering is unchanged. `DH2_DEBUG_MUSIC=1` records actual transitions,
+clip admission and scoped update CPU cycles;
+`DH2_DEBUG_REBUILD_MUSIC_CONTROLS=1` selects the uncached same-build path.
+Verified with the actual release-profile production owners, without windows,
+hardware audio or tests. Installed acquisition covered all 36 maps: 34 authored
+managers, 34 playable music routes, no failures; two maps admit no manager.
+The final app/session release reported `resident_sources={}`. Evidence:
+`artifacts/music-release-observation/final-resources.log`.
+
+Paired 40-second Edge of the World gameplay observations used the same optimized
+binary (LTO off, 16 codegen units for the observation; no checked-in profile
+changes), same offscreen view and source owners. The actual worldspawn manager
+started, exploration music selected and advanced between segments, and both
+runs completed the normal exit drain. Output reported zero voices, fallbacks,
+pending actions/plays, due actions, retiring objects and object voices, with no
+output error. The normal UI worker also released its submitted owners.
+`final-cached.log` and `final-rebuild.log` record these real production paths.
+The final source also passed `cargo check --no-default-features --lib`;
+the game library and both client/diagnostic executables compiled successfully.
+
+Scoped `graph::Playing::update`, 283 music sources: forced rebuilding used
+6,140,058,015 thread CPU cycles / 1,814 calls = 3,384,817 cycles/call; caching
+used 14,860,825 / 1,757 = 8,458 cycles/call, a 99.75% reduction. It rebuilt
+once instead of every call. The gain satisfies the >90% prediction. Published
+gain, panning, filter and route products had identical bitwise signatures
+`cb27bc04`. This is a changed-function result, not a whole-frame/FPS claim.
+Across both runs the bounded file decoder compared 110,585,560 samples with
+the existing resident decoder: zero differences, maximum error zero. These
+are stream/resident consistency observations, not a new live-game PCM oracle.
+
+Live gameplay observations cover level admission, exploration/continuation,
+environment ambiance and complete world/output retirement. Native threat,
+stress and stinger rules and their typed host inputs are implemented, but NPC
+perception/combat producers do not yet exist in this client; their delivery
+is a dependency of that feature, not a claimed live combat observation.
+
+Environment ambiance uses the existing completed camera-area collision query,
+not a second proximity test: 140806a40 consumes its first ordered ordinary
+profile and forwards idDeclEnv+90 (140017d10) to 1406640a0. The environment
+owner acquires compact `audioParms.soundEvent` identities during its existing
+preparation (140017f90); inheritance copies render parameters, not this field.
+No selected profile leaves the previous ambiance alone. These event identities
+and prepared playback routes retire with the same environment/map owners.
+The manager's compact references intentionally discard unused event metadata;
+encoded media and bank lifetime remain with the canonical sound owner.
+
+Music context fades use the shared 21-ms transition owner and speaker-product
+ramp (14114d880/14114daf0 ->1410efda0 ->141130c50; 14114d650/14114e0e0
+->14113ef50). Music playlist selection preserves its explicit use-weights bit
+(14115c270), including the two 15-bit draws for equal weighted entries;
+ordinary sound-container inference and selection remain unchanged.
+
+
+### Loading audio admission and paused music retirement (2026-11-15)
+
+Correction to the preceding live observation: exiting directly from running
+play did not cover exiting the real pause menu. Music must use 1411068e0's
+paused-PBI immediate retirement, as the existing ordinary continuation owner
+already does. Paused Stop now drops matching active/pending music contexts
+and publishes completion without waiting for its frozen output clock.
+The normal world/object/bank retirement fences remain authoritative.
+
+Loading's world-audio admission is separate from 788940 ->c7d30/c4300's
+snapshot pause (later menu/UI posts stay audible). Component and world-FX
+posts remain in their existing ordered queues and retain their existing
+leases until the loading input handoff; the level music owner starts at that
+handoff. Preparation/readiness still runs during loading. Stop/object retire
+and whole-session exit continue to consume/cancel the same queues, including
+exit while the loading movie awaits input. This host admission boundary
+implements the user's observed original-game silence before pressing a key,
+without a second mixer, discarded first posts or a blanket UI mute.
+
+Verified with the windowless production client (standard dev build): both
+`loading-audio` and `paused-exit` completed with exit code 0 and validated
+shutdown. At the actual loading input prompt: zero voices, zero pending
+plays/actions, zero nonzero output samples, and no world event admissions.
+The paused-exit observation opened the actual pause movie before requesting
+exit; all audio voices, pending actions and object retirements drained.
+Evidence: local `artifacts/loading-audio-fixed/{build-result.json,observations.json,
+loading-audio.log,paused-exit.log}`. These are behavior observations, not
+performance measurements; no CPU or memory improvement is claimed.
+Player F8 reporting now includes on-demand arm/body probe queries, SH and
+reflection inputs, material names, depth hacks and bounds. It does not
+change shading or add per-frame storage/work. Excess brightness is under
+investigation; no arbitrary first-person brightness multiplier was added.

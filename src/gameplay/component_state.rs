@@ -8,7 +8,9 @@ pub mod lifecycle;
 pub mod order;
 pub mod pool;
 pub mod roster;
+pub mod scoped_release;
 pub mod types;
+pub mod updates;
 
 /// Common component fields initialized by 7e71e0 and linked by 7e7210.
 /// Handles replace process pointers; the level owns the referenced values.
@@ -75,11 +77,26 @@ pub struct ComponentRegistry {
     pub pending_start: crate::storage::PointerList,
     pub pending_stop: crate::storage::PointerList,
     pub pending_release: crate::storage::PointerList,
+    /// 7eb390/7eb3e0: update-removal and update-addition batches.
+    pub pending_update_remove: crate::storage::PointerList,
+    pub pending_update_add: crate::storage::PointerList,
+    pub processed_update_remove_count: i32,
+    pub processed_update_add_count: i32,
+    /// Successful callbacks in a retained batch, for host-error retry.
+    pub update_remove_next: u32,
+    pub update_add_next: u32,
     /// Entries below this cursor are already being processed and cannot be
     /// cancelled by 7ec530. It is a signed source field, not an array index.
     pub processed_stop_count: i32,
     pub processed_initialization_count: i32,
     pub processed_start_count: i32,
+    /// A finished release batch must dispatch its entity events before the
+    /// next batch, including when the host returns an error and later retries.
+    pub release_events_pending: bool,
+    pub(crate) release_progress: lifecycle::ReleaseProgress,
+    pub(crate) scoped_release: Option<scoped_release::ScopedRelease>,
+    pub(crate) scoped_release_running: bool,
+    pub(crate) startup_progress: lifecycle::StartupProgress,
     pub queue_reset_count: i32,
 }
 impl ComponentRegistry {
@@ -93,9 +110,20 @@ impl ComponentRegistry {
             pending_start: crate::storage::PointerList::owned_with_capacity(64)?,
             pending_stop: crate::storage::PointerList::owned_with_capacity(64)?,
             pending_release: crate::storage::PointerList::owned_with_capacity(64)?,
+            pending_update_remove: crate::storage::PointerList::owned_with_capacity(16)?,
+            pending_update_add: crate::storage::PointerList::owned_with_capacity(16)?,
+            processed_update_remove_count: 0,
+            processed_update_add_count: 0,
+            update_remove_next: 0,
+            update_add_next: 0,
             processed_stop_count: 0,
             processed_initialization_count: 0,
             processed_start_count: 0,
+            release_events_pending: false,
+            release_progress: lifecycle::ReleaseProgress::default(),
+            scoped_release: None,
+            scoped_release_running: false,
+            startup_progress: lifecycle::StartupProgress::default(),
             queue_reset_count: 0,
         })
     }
@@ -182,7 +210,7 @@ impl ComponentRegistry {
                 let previous_flags = owner.flags;
                 owner.flags = (owner.flags & !8) | 4;
                 let previous_count = self.pending_start.count();
-                match self.pending_start.append(component as u64, grow_one_at_a_time) {
+                match self.pending_start.append_preserving(component as u64, grow_one_at_a_time) {
                     Ok(index) if index == previous_count && self.pending_start.count() == previous_count + 1 => {}
                     Ok(_) => {
                         owner.flags = previous_flags;
@@ -225,7 +253,7 @@ impl ComponentRegistry {
         owner.declaration = Some(declaration);
         owner.entity = Some(entity);
         let previous_count = self.registered.count();
-        let result = self.registered.append(component as u64, grow_one_at_a_time);
+        let result = self.registered.append_preserving(component as u64, grow_one_at_a_time);
         let index = match result {
             Ok(index) if index == previous_count && self.registered.count() == previous_count + 1 => index,
             Ok(_) => {
@@ -337,8 +365,10 @@ mod tests {
                 processed_stop_count: cursor,
                 processed_initialization_count: 0,
                 processed_start_count: 0,
+                release_events_pending: false,
                 queue_reset_count: 0,
                 pending_release: crate::storage::PointerList::owned_with_capacity(64).unwrap(),
+                ..super::ComponentRegistry::new().unwrap()
             };
             let mut owner = super::ComponentOwner {
                 flags,
@@ -381,8 +411,10 @@ mod tests {
                 processed_stop_count: 0,
                 processed_initialization_count: 0,
                 processed_start_count: 0,
+                release_events_pending: false,
                 queue_reset_count: 0,
                 pending_release: crate::storage::PointerList::owned_with_capacity(64).unwrap(),
+                ..super::ComponentRegistry::new().unwrap()
             };
             let count = words[3] as usize;
             let mut at = 4;

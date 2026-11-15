@@ -114,7 +114,7 @@ fn verify_tome_job_outputs(actual: &[tome::RenderQueryJob], expected: &[tome::Re
     );
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TomeRenderQueryKey {
     pub(super) camera_point: [u32; 3],
     pub(super) render_rows: [[u32; 4]; 4],
@@ -301,7 +301,7 @@ pub(super) fn begin_tome_query(
     early.pending = Some((key, tasks));
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct TomeRenderQueryCache {
     pub(super) key: Option<TomeRenderQueryKey>,
     pub(super) output: Option<tome::RenderQueryObjectOutput>,
@@ -319,25 +319,98 @@ impl TomeRenderQueryCache {
         result: &Result<Option<tome::RenderQueryObjectOutput>, String>,
         diagnostics: &[tome::RenderQueryJobDiagnostics],
     ) {
-        self.key = None;
+        let Ok(output) = result else {
+            *self = Self::default();
+            return;
+        };
         if diagnostics.iter().any(|job| job.error.is_some()) {
+            *self = Self::default();
             return;
         }
-        if let Ok(output) = result {
-            self.output = output.clone();
-            self.diagnostics = diagnostics.to_vec();
-            self.key = Some(key);
-        }
+        self.output = output.clone();
+        self.diagnostics = diagnostics.to_vec();
+        self.key = Some(key);
     }
 }
 
 /// Mirror only visibility membership, keeping the per-frame update scan off
 /// large mesh/material records. Pickup removal may leave an extra true bit;
 /// the next touched instance corrects it. Only this system makes bits true.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct VisibilityUpdateScratch {
     instance_buffer: usize,
     visible: Vec<bool>,
+    query_visible: Vec<bool>,
+}
+
+/// Run the installed map's visibility query without rendering a camera.
+pub(super) fn observe_query_scratch(world: &mut World) -> Result<(), String> {
+    use bevy::camera::RenderTargetInfo;
+    use crate::rendering::bevy_backend::fog::FogCamera;
+
+    let camera = world.query_filtered::<Entity, (With<Camera3d>, With<FogCamera>)>()
+        .single(world).map_err(|error| error.to_string())?;
+    let other_cameras: Vec<_> = world.query_filtered::<Entity, (With<Camera3d>, Without<FogCamera>)>()
+        .iter(world).collect();
+    let other_cameras: Vec<_> = other_cameras.into_iter().filter_map(|entity| {
+        world.entity_mut(entity).take::<Camera3d>().map(|component| (entity, component))
+    }).collect();
+    let initial_pose = *world.get::<Transform>(camera).ok_or("visibility camera has no pose")?;
+    let target = RenderTargetInfo { physical_size: UVec2::new(1366, 768), ..Default::default() };
+    let previous_target = world.get_mut::<Camera>(camera).ok_or("visibility camera is absent")?
+        .computed.target_info.replace(target);
+    let mut schedule = Schedule::default();
+    schedule.add_systems(stream_visible_models);
+    let mut reference = Vec::new();
+    let mut allocation = None;
+    let mut count = 0;
+    let mut visible_total = 0;
+    for reuse in [false, true] {
+        for (step, heading) in [-0.8f32, -0.4, 0.0, 0.4, 0.8].into_iter().enumerate() {
+            if !reuse {
+                world.resource_mut::<SceneRenderQueue>().tome_render_instances.updates.query_visible = Vec::new();
+            }
+            let mut pose = world.get_mut::<Transform>(camera).ok_or("visibility camera lost its pose")?;
+            *pose = initial_pose;
+            pose.rotation = Quat::from_rotation_y(heading) * pose.rotation;
+            schedule.run(world);
+            let scene = world.resource::<SceneRenderQueue>();
+            let scratch = &scene.tome_render_instances.updates.query_visible;
+            if scratch.len() != scene.instances.len() || scratch.is_empty() {
+                return Err("visibility sweep did not map the installed scene".into());
+            }
+            let selected: Vec<_> = scene.instances.iter().enumerate()
+                .filter_map(|(index, instance)| instance.visible.then_some(index)).collect();
+            if reuse {
+                if selected != reference[step] {
+                    return Err(format!("visibility changed at sweep step {step}"));
+                }
+                let current = (scratch.as_ptr(), scratch.capacity());
+                if *allocation.get_or_insert(current) != current {
+                    return Err("visibility scratch moved within one scene".into());
+                }
+                visible_total += selected.len();
+                count += 1;
+            } else {
+                reference.push(selected);
+            }
+        }
+    }
+    world.get_mut::<Camera>(camera).unwrap().computed.target_info = None;
+    schedule.run(world);
+    let scene = world.resource::<SceneRenderQueue>();
+    let scratch = &scene.tome_render_instances.updates.query_visible;
+    if allocation != Some((scratch.as_ptr(), scratch.capacity())) || scene.active != 0 || visible_total == 0 {
+        return Err("visibility withdrawal changed scratch ownership or left visible instances".into());
+    }
+    eprintln!("VISIBILITY_SCRATCH frames={count} capacity={} selected_total={visible_total} withdrawn={}",
+        scratch.capacity(), scene.active);
+    world.get_mut::<Camera>(camera).unwrap().computed.target_info = previous_target;
+    *world.get_mut::<Transform>(camera).unwrap() = initial_pose;
+    for (entity, component) in other_cameras {
+        world.entity_mut(entity).insert(component);
+    }
+    Ok(())
 }
 
 // The ordinary direct-Tome query selects mapped static BWM instances and
@@ -354,8 +427,6 @@ pub(super) fn stream_visible_models(
     mut timing: Option<ResMut<VisibilityElapsedTiming>>,
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     mut last_tome_error: Local<Option<String>>,
-    mut query_cache: Local<TomeRenderQueryCache>,
-    mut updates: Local<VisibilityUpdateScratch>,
     view_settings: Option<Res<ViewSettings>>,
     mut visible_instances: Option<ResMut<super::scene_queue::VisibleSceneInstances>>,
     profile: Option<Res<super::frame_profile::CpuFrameProfile>>,
@@ -367,9 +438,10 @@ pub(super) fn stream_visible_models(
 ) {
     let (arms, particle_images) = texture_consumers;
     if scene.is_added() {
-        *query_cache = Default::default();
-        *updates = Default::default();
+        scene.tome_render_instances.query_cache = Default::default();
+        scene.tome_render_instances.updates = Default::default();
     }
+    let scene = &mut *scene;
     let started = Instant::now();
     // Host render-to-main feedback. The persistent scene owner still performs
     // the original conditional consumption, scheduling and pressure policy.
@@ -385,7 +457,7 @@ pub(super) fn stream_visible_models(
 
     let mut early_jobs = early.as_deref_mut().and_then(|early| early.pending.take());
     if tome_world.as_ref().is_none_or(|world| world.is_changed()) {
-        *query_cache = TomeRenderQueryCache::default();
+        scene.tome_render_instances.query_cache = TomeRenderQueryCache::default();
     }
     // Every frame replaces these outputs, including frames without a usable
     // camera. Do not expose a previous view's cells or IDs to light selection.
@@ -420,9 +492,8 @@ pub(super) fn stream_visible_models(
     let mut shown = 0;
     let mut spawned = 0;
     let mut hidden = 0;
-    let mut tome_visibility = tome_world
-        .as_ref()
-        .map(|_| vec![false; scene.instances.len()]);
+    let mut query_visible = std::mem::take(&mut scene.tome_render_instances.updates.query_visible);
+    let mut query_mapped = false;
     if let (Some(tome_world), Some(camera), Some(transform), Some(projection)) =
         (tome_world.as_ref(), camera, transform, projection)
     {
@@ -430,6 +501,7 @@ pub(super) fn stream_visible_models(
             query_viewport = Some([viewport.x, viewport.y]);
             scene.texture_viewport_pixels = viewport.x.saturating_mul(viewport.y);
             let query_started = Instant::now();
+            let query_cache = &mut scene.tome_render_instances.query_cache;
             let query = tome_query_rows(transform, projection, viewport)
                 .and_then(|rows| {
                     query_rows = Some(rows);
@@ -495,17 +567,19 @@ pub(super) fn stream_visible_models(
                     merged_query_tile = output.state.as_ref().map(|state| state.viewport);
                     requested = output.indices().len();
                     accepted_sample.extend(output.indices().iter().take(16).copied());
-                    let mut visible = vec![false; scene.instances.len()];
+                    query_visible.clear();
+                    query_visible.resize(scene.instances.len(), false);
+                    let visible = query_visible.as_mut_slice();
                     let mapping = &scene.tome_render_instances;
                     let marked = {
                         let _span = profile.as_deref().map(|p| p.measure(45));
-                        mapping.mark_visible_instances(output.indices(), &mut visible)
+                        mapping.mark_visible_instances(output.indices(), visible)
                     };
                     let mapped = marked
                         .and_then(|()| {
                             let _span = profile.as_deref().map(|p| p.measure(46));
                             spatial_accepted = mapping
-                                .apply_spatial_queries(output.state.as_ref(), &mut visible)?;
+                                .apply_spatial_queries(output.state.as_ref(), visible)?;
                             Ok(())
                         })
                         .and_then(|()| {
@@ -580,23 +654,23 @@ pub(super) fn stream_visible_models(
                             let bwm_lod_before_suppression = scene.trace_bwm_lod.then(|| {
                                 bwm_lod_visibility_counts(
                                     &scene.world_lods_by_render_instance,
-                                    &visible,
+                                    visible,
                                 )
                             });
                             RenderSuppressionGroup::apply_all(
                                 &scene.visibility_suppression_groups,
-                                &mut visible,
+                                visible,
                             );
                             suppressed =
                                 mapped_count - visible.iter().filter(|&&visible| visible).count();
                             let bwm_lod_report = bwm_lod_before_suppression.map(|before| {
                                 let after = bwm_lod_visibility_counts(
                                     &scene.world_lods_by_render_instance,
-                                    &visible,
+                                    visible,
                                 );
                                 (before, after)
                             });
-                            tome_visibility = Some(visible);
+                            query_mapped = true;
                             if job_errors.is_empty() {
                                 status = "ok".to_owned();
                                 *last_tome_error = None;
@@ -678,7 +752,10 @@ pub(super) fn stream_visible_models(
     }
     let update_started = Instant::now();
     let mut active = scene.active;
-    let updates = &mut *updates;
+    if let Some(selection) = visible_instances.as_deref_mut() {
+        selection.begin(scene);
+    }
+    let updates = &mut scene.tome_render_instances.updates;
     let instance_buffer = scene.instances.as_ptr() as usize;
     if updates.instance_buffer != instance_buffer || updates.visible.len() != scene.instances.len()
     {
@@ -700,11 +777,9 @@ pub(super) fn stream_visible_models(
             "visibility membership missed a previously visible instance"
         );
     }
-    if let Some(selection) = visible_instances.as_deref_mut() {
-        selection.begin(&scene);
-    }
     // Most instances are neither visible now nor last frame: skip
     // 64-instance blocks where both lists are all false.
+    let tome_visibility = query_mapped.then_some(query_visible.as_slice());
     let instance_count = scene.instances.len();
     for block in (0..instance_count).step_by(64) {
         let block_end = (block + 64).min(instance_count);
@@ -852,6 +927,7 @@ pub(super) fn stream_visible_models(
             );
         }
     }
+    updates.query_visible = query_visible;
     scene.active = active;
     if let Some(diagnostics) = diagnostics.as_deref_mut() {
         diagnostics.frame += 1;

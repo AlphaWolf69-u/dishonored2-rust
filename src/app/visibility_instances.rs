@@ -15,6 +15,8 @@ pub(super) struct TomeRenderInstanceMap {
     pub(super) spatial_query_instances: Vec<SpatialQueryRenderInstance>,
     pub(super) zero_metric_instances: HashSet<usize>,
     pub(super) image_demands: Option<PreparedTextureDemands>,
+    pub(super) query_cache: super::visibility_queries::TomeRenderQueryCache,
+    pub(super) updates: super::visibility_queries::VisibilityUpdateScratch,
 }
 
 #[derive(Debug)]
@@ -62,6 +64,8 @@ impl TomeRenderInstanceMap {
             spatial_query_instances: Vec::new(),
             zero_metric_instances: HashSet::new(),
             image_demands: None,
+            query_cache: Default::default(),
+            updates: Default::default(),
         };
         for bwm_indices in tome_object_bwm_instances {
             map.empty_bwm_groups.push(bwm_indices.is_empty());

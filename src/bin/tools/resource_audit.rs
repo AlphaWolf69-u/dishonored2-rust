@@ -7,8 +7,83 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+fn observe_decal_leases(
+    catalog: &dishonored2_rust::archive::Catalog,
+    programs: &mut dishonored2_rust::shader_cache::ProgramLibrary,
+    effects: &[String],
+) -> Result<()> {
+    use dishonored2_rust::{assets::decal::DecalMaterials, rendering::particles::{
+        definition::ParticleResources, world_sources::WorldFxSources,
+    }};
+    use std::{collections::{BTreeMap, HashSet}, sync::{Arc, Weak}};
+
+    if effects.len() < 2 { return Err(invalid("decal lease observation requires two installed effects").into()); }
+    for share in [false, true] {
+        let mut level = ParticleResources::default();
+        let mut batches = Vec::new();
+        let mut declarations: BTreeMap<String, Vec<Weak<DecalMaterials<String>>>> = BTreeMap::new();
+        let mut signature = blake3::Hasher::new();
+        for name in effects {
+            let mut separate = ParticleResources::default();
+            let resources = if share { &mut level } else { &mut separate };
+            let batch = WorldFxSources::load_named_shared(vec![name.clone()], catalog, programs, resources);
+            let effect = batch.effects.get(name).ok_or("installed effect was not acquired")?
+                .as_ref().map_err(Clone::clone)?;
+            for decal in effect.groups.iter().flat_map(|group| &group.decals) {
+                let decal = decal.as_ref().map_err(Clone::clone)?;
+                for (path, declaration) in decal.asset.declarations.iter().zip(&decal.declarations) {
+                    let (Some(path), Some(declaration)) = (path, declaration) else { continue; };
+                    declarations.entry(path.clone()).or_default().push(Arc::downgrade(declaration));
+                    for text in [Some(name), Some(path), declaration.opaque.as_ref(),
+                        declaration.opaque_instanced.as_ref(), declaration.alpha.as_ref(), declaration.alpha_instanced.as_ref()] {
+                        let text = text.map_or(&[][..], |value| value.as_bytes());
+                        signature.update(&(text.len() as u64).to_le_bytes());
+                        signature.update(text);
+                    }
+                }
+            }
+            batches.push(batch);
+        }
+        if declarations.is_empty() { return Err(invalid("no installed decal declarations were admitted").into()); }
+        let distinct: usize = declarations.values().map(|references| {
+            references.iter().map(Weak::as_ptr).collect::<HashSet<_>>().len()
+        }).sum();
+        drop(batches);
+        level.retire_unused();
+        let retained = declarations.values().flatten().filter(|reference| reference.strong_count() != 0).count();
+        eprintln!("DECAL_LEASES shared={share} names={} references={} live_identities={distinct} retained_references={retained} signature={}",
+            declarations.len(), declarations.values().map(Vec::len).sum::<usize>(), signature.finalize());
+    }
+    Ok(())
+}
+
 pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
     match command {
+        "inspect-character-selection" => {
+            if args.is_empty() { return Err("inspect-character-selection requires installed level names".into()); }
+            for name in args {
+                let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+                let level = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, name)?;
+                let bytes = level.read_entities(&catalog)?.ok_or("level has no entity source")?;
+                let text = entities::declaration_text(&bytes);
+                for character in ["corvo", "emily"] {
+                    let mut document = entities::parse(&text)?;
+                    let before = document.definitions.iter().filter(|d| d.kind == "entity").count();
+                    let removed = entities::character_selection::prune(&catalog, &mut document, character)?;
+                    let placements = entities::render_placements(&document);
+                    let readables = entities::usable::readable_bindings(&catalog, &document)?;
+                    println!("CHARACTER_SELECTION level={name} character={character} entities_before={before} removed={} placements={} readables={}", removed.len(), placements.len(), readables.len());
+                    for entity in removed { println!("CHARACTER_REMOVED level={name} character={character} entity={entity}"); }
+                    for readable in readables { println!("CHARACTER_READABLE level={name} character={character} entity={} item={}", readable.entity, readable.item); }
+                }
+            }
+        }
+        "inspect-runtime-lifecycles" => {
+            #[cfg(feature = "game")]
+            dishonored2_rust::app::inspect_runtime_lifecycles(base, args)?;
+            #[cfg(not(feature = "game"))]
+            return Err("inspect-runtime-lifecycles requires the game feature".into());
+        }
         "inspect-scene-gpu-resources" => {
             #[cfg(feature = "game")]
             dishonored2_rust::app::inspect_scene_gpu_resources(base, args)?;
@@ -33,13 +108,111 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             #[cfg(not(feature = "game"))]
             return Err("inspect-cpu-preparation requires the game feature".into());
         }
+        "inspect-separate-mips" => {
+            use dishonored2_rust::{archive::Catalog, texture};
+            if args.is_empty() { return Err("inspect-separate-mips requires installed mip paths".into()); }
+            let catalog = Catalog::open(base)?;
+            for path in args {
+                let (stem, suffix) = path.rsplit_once("_mip").ok_or("expected a separate mip path")?;
+                let level = suffix.parse::<u32>()?;
+                let base = catalog.read_prefix(stem, 62)?.ok_or("missing base image")?;
+                let format = texture::BimageInfo::parse(&base)?.format;
+                let mip = texture::read_separate_mip(&catalog, path, level, format)?
+                    .ok_or("missing separate mip")?;
+                let mut crc = flate2::Crc::new();
+                crc.update(&mip.payload);
+                println!("BIMAGE_MIP path={path} size={}x{} format={format:?} payload_bytes={} crc={:08x}",
+                    mip.width, mip.height, mip.payload.len(), crc.sum());
+            }
+        }
+        "inspect-acoustics" => {
+            use dishonored2_rust::assets::{archive::Catalog, sound_propagation::Propagation};
+            let catalog = Catalog::open(base)?;
+            let (measure_routes, paths) = match args.split_first() {
+                Some((flag, paths)) if flag == "--routes" => (true, paths.to_vec()),
+                _ => (false, catalog.paths_with_suffix(".soundpropa")),
+            };
+            if paths.is_empty() { return Err(invalid("no acoustic resource paths selected").into()); }
+            for path in paths {
+                let graph = Propagation::load(&catalog, &path)?
+                    .ok_or_else(|| invalid(format!("indexed acoustic resource is absent: {path}")))?;
+                println!("ACOUSTIC_RESOURCE path={path} zones={} portals={} route_dimension={}",
+                    graph.zones.len(), graph.portals.len(), graph.routes.zone_count);
+                if measure_routes { graph.observe_route_lookups(&path)?; }
+            }
+        }
+        "inspect-inline-volumes" => {
+            use dishonored2_rust::{archive::Catalog, texture};
+            let catalog = Catalog::open(base)?;
+            let mut count = 0;
+            let mut payload_bytes = 0;
+            let mut copy_capacity = 0;
+            let mut retained_headers = 0;
+            let mut digest = blake3::Hasher::new();
+            for path in catalog.paths_with_suffix(".bimage7") {
+                let header = catalog.read_prefix(&path, 12)?.ok_or("indexed image is absent")?;
+                if header.get(8..12) != Some(1u32.to_le_bytes().as_slice()) {
+                    continue;
+                }
+                let bytes = catalog.read(&path)?.ok_or("indexed volume is absent")?;
+                let allocation = bytes.as_ptr();
+                let reference = texture::compressed_inline_volume(&bytes)
+                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+                let owned = texture::compressed_inline_volume_owned(bytes)
+                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+                if owned.info != reference.info || owned.depth != reference.depth
+                    || owned.payload != reference.payload || owned.payload.as_ptr() != allocation
+                {
+                    return Err(invalid(format!("inline volume staging mismatch: {path}")).into());
+                }
+                count += 1;
+                payload_bytes += owned.payload.len();
+                copy_capacity += reference.payload.capacity();
+                retained_headers += owned.payload.capacity() - owned.payload.len();
+                digest.update(path.as_bytes());
+                digest.update(blake3::hash(&owned.payload).as_bytes());
+            }
+            println!("BIMAGE_VOLUME count={count} payload_bytes={payload_bytes} copy_capacity={copy_capacity} retained_slack={retained_headers} signature={}", digest.finalize());
+        }
+        "inspect-world-geometry" => {
+            let catalog = dishonored2_rust::archive::Catalog::open(base)?;
+            let worlds = if args.is_empty() {
+                catalog.paths_with_suffix(".bwm")
+            } else {
+                args.to_vec()
+            };
+            for path in worlds {
+                let started = std::time::Instant::now();
+                let world = dishonored2_rust::world_mesh::load(&catalog, &path, || false)?;
+                let elapsed = started.elapsed();
+                let mut crc = flate2::Crc::new();
+                let mut vertices = 0;
+                let mut indices = 0;
+                for mesh in &world.meshes {
+                    vertices += mesh.positions().len();
+                    indices += mesh.indices().len();
+                    for value in mesh.positions().iter().flatten() {
+                        crc.update(&value.to_le_bytes());
+                    }
+                    for (uv, channels) in mesh.uvs().iter().zip(mesh.packed_channels()) {
+                        crc.update(&uv[0].to_le_bytes());
+                        crc.update(&uv[1].to_le_bytes());
+                        crc.update(channels);
+                    }
+                    for index in mesh.indices() { crc.update(&index.to_le_bytes()); }
+                }
+                println!(
+                    "BWM_GEOMETRY path={path} meshes={} objects={} vertices={vertices} indices={indices} crc={:08x} elapsed_ms={:.3}",
+                    world.meshes.len(), world.objects.len(), crc.sum(), elapsed.as_secs_f64() * 1000.0,
+                );
+            }
+        }
         "inspect-world-queries" => {
             let path = args.first().ok_or("inspect-world-queries requires a WORLD resource")?;
             let unshared = args.get(1).is_some_and(|value| value == "unshared");
             env::set_var("DH2_DEBUG_UNSHARED_WORLD_QUERIES", if unshared { "1" } else { "0" });
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
-            let bytes = catalog.read(path)?.ok_or("WORLD resource absent")?;
-            let world = dishonored2_rust::world_mesh::parse(&bytes)?;
+            let world = dishonored2_rust::world_mesh::load(&catalog, path, || false)?;
             let before = dishonored2_rust::platform::allocation_tags::report().into_iter()
                 .find(|(name, _)| *name == "WORLD spatial queries").map_or(0, |(_, bytes)| bytes);
             let mut owners = Vec::new();
@@ -300,6 +473,12 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
             };
             let catalog = dishonored2_rust::archive::Catalog::open(base)?;
             let named = command == "inspect-fx-definitions";
+            if named && args.first().is_some_and(|argument| argument == "--decal-leases") {
+                let mut programs = dishonored2_rust::shader_cache::ProgramLibrary::open(
+                    base, dishonored2_rust::shader_cache::ShaderCacheBackend::Pc, &catalog,
+                )?;
+                return observe_decal_leases(&catalog, &mut programs, &args[1..]);
+            }
             let (graphs, actors) = if named {
                 if args.is_empty() { return Err("inspect-fx-definitions requires installed FX names".into()); }
                 (Vec::new(), Vec::new())
@@ -364,14 +543,15 @@ pub fn run(command: &str, base: &Path, args: &[String]) -> Result<()> {
                 sources.effects.len(), sources.effects.values().filter(|effect| effect.is_err()).count());
             let graph_errors = instances.loading_end();
             let mut digest = blake3::Hasher::new();
-            for &(instance, node, port) in &instances.events {
-                digest.update(instances.owner(instance).as_bytes());
+            for event in instances.events.pending() {
+                    let dishonored2_rust::gameplay::effects::instances::GraphEvent::Action { graph: instance, node, port } = event else { continue };
+                digest.update(instances.owner(*instance).as_bytes());
                 digest.update(&node.to_le_bytes());
                 digest.update(&port.to_le_bytes());
             }
             println!(
                 "loading_events={} loading_errors={} event_hash={}",
-                instances.events.len(),
+                instances.events.pending().count(),
                 graph_errors.len(),
                 digest.finalize()
             );

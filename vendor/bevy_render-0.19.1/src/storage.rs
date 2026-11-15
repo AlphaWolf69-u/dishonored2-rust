@@ -89,7 +89,16 @@ impl ShaderBuffer {
         T: ShaderType + WriteInto,
     {
         let size = value.size().get() as usize;
-        let mut wrapper = encase::StorageBuffer::<Vec<u8>>::new(Vec::with_capacity(size));
+        // bevy_backend: same-sized updates can reuse their serialization
+        // backing. Different capacities retain the previous exact-size policy.
+        static SEPARATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let separate = *SEPARATE.get_or_init(|| std::env::var_os("DH2_DEBUG_SEPARATE_SHADER_BUFFER_UPDATES")
+            .is_some_and(|value| value == "1"));
+        let mut bytes = if separate { None } else { self.data.take() }
+            .filter(|bytes| bytes.capacity() == size).unwrap_or_else(|| Vec::with_capacity(size));
+        // Reinitialize padding just as a fresh serialization allocation does.
+        bytes.clear();
+        let mut wrapper = encase::StorageBuffer::<Vec<u8>>::new(bytes);
         wrapper.write(&value).unwrap();
         self.data = Some(wrapper.into_inner());
     }
@@ -127,7 +136,21 @@ where
         let size = value.size().get() as usize;
         let mut wrapper = encase::StorageBuffer::<Vec<u8>>::new(Vec::with_capacity(size));
         wrapper.write(&value).unwrap();
-        Self::new(wrapper.as_ref(), RenderAssetUsages::default())
+        // bevy_backend: transfer the serialized upload allocation instead of
+        // cloning it through Self::new. Shader layout and bytes are unchanged.
+        static OPTIONS: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (observe, copy) = *OPTIONS.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SHADER_BUFFER_PREPARATION").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_COPY_SHADER_BUFFER_STAGING").is_some_and(|value| value == "1"),
+        ));
+        let serialized = wrapper.into_inner();
+        let serialized_capacity = serialized.capacity();
+        let data = if copy { serialized.clone() } else { serialized };
+        if observe {
+            eprintln!("SHADER_BUFFER_PREPARATION copy={copy} bytes={} serialized_capacity={serialized_capacity} retained_capacity={}",
+                data.len(), data.capacity());
+        }
+        Self { data: Some(data), ..default() }
     }
 }
 
@@ -139,6 +162,11 @@ pub static SHADER_BUFFER_UPLOADS: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 fn record_upload(size: u64, reallocated: bool) {
+    // Only benchmark_frames consumes this process-wide diagnostic table.
+    // Normal gameplay must not lock/grow it for every storage upload.
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("DH2_BENCHMARK_SECONDS").is_some()
+        || std::env::var_os("DH2_DEBUG_SHADER_BUFFER_UPLOADS").is_some_and(|value| value == "1")) { return; }
     if let Ok(mut uploads) = SHADER_BUFFER_UPLOADS.lock() {
         let entry = uploads
             .get_or_insert_with(Default::default)

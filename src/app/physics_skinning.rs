@@ -109,7 +109,7 @@ impl SystemSkin {
     /// 14076d640 installs world-space modifications only for physics-driven
     /// joints; 14053bcd0 composes their untouched descendants from the active
     /// animation pose rather than resetting them to their bind pose.
-    fn current_with_animation(&self, world: &MachineryWorld, animation: Option<&[Affine]>) -> Result<Vec<Affine>, String> {
+    pub(super) fn current_with_animation(&self, world: &MachineryWorld, animation: Option<&[Affine]>) -> Result<Vec<Affine>, String> {
         let base = animation.filter(|pose| pose.len() == self.rest.len()).unwrap_or(&self.rest);
         let system = &world.systems[self.system];
         let entity = {
@@ -154,9 +154,13 @@ impl SystemSkin {
         Ok(out)
     }
 
-    pub(super) fn animated_palette(&self, world: &MachineryWorld, animation: &[Affine]) -> Result<Vec<Affine>, String> {
+    pub(super) fn skeleton(&self) -> &Arc<edge_skeleton::EdgeSkeleton> { &self.skeleton }
+
+    pub(super) fn animated_palette(&self, world: &MachineryWorld, animation: &[Affine],
+        joint_frames: Option<&mut super::joint_frames::JointFrames>) -> Result<Vec<Affine>, String> {
         if animation.len() != self.rest.len() { return Err("animation and physics skeleton joint counts differ".into()); }
         let current = self.current_with_animation(world, Some(animation))?;
+        if let Some(frames) = joint_frames { frames.publish(self.placement, &current); }
         edge_skeleton::skin_palette(&current, &self.skeleton.inverse_bind[..current.len()])
     }
 }
@@ -173,8 +177,11 @@ pub(super) fn pose_physics_systems(
     sources: &mut ModelShadowSources,
     placements: &RenderSourcePlacements,
     animated: Option<&super::usable_animation::UsableAnimations>,
+    scene_owned: impl Fn(usize) -> bool,
+    mut joint_frames: Option<&mut super::joint_frames::JointFrames>,
 ) {
     for skin in skins {
+        if scene_owned(skin.placement) { continue; }
         if animated.is_some_and(|animations| animations.combines_physics(skin.placement)) { continue; }
         let Some(placement) = placements.0.get(skin.placement) else {
             continue;
@@ -183,11 +190,12 @@ pub(super) fn pose_physics_systems(
             continue;
         };
         let current = skin.current(world);
+        if let Some(frames) = joint_frames.as_deref_mut() { frames.publish(skin.placement, &current); }
         let Ok(palette) = edge_skeleton::skin_palette(&current, &skin.skeleton.inverse_bind[..current.len()]) else {
             continue;
         };
         super::skin_publication::publish_target(
-            placement, source, &skin.model, palette, &mut skin.publication, meshes, buffers, queue,
+            placement, source, &skin.model.surfaces, palette, &mut skin.publication, meshes, buffers, queue,
         );
     }
 }

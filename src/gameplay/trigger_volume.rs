@@ -189,7 +189,7 @@ impl TriggerVolume {
         rotation: [[f32; 3]; 3],
     ) -> Result<Self, String> {
         Self::load_with_sources(catalog, id, model, position, rotation,
-            &mut Default::default(), physworld::source::ShapeUse::Area)
+            &mut physworld::source::ShapeSources::uncached(catalog), physworld::source::ShapeUse::Area)
     }
 
     pub(crate) fn load_with_sources(

@@ -291,6 +291,11 @@ impl<T: Copy> ObjectUpdateTask<T> {
     pub fn sentinel(&self) -> u32 {
         self.sentinel
     }
+    /// Entries only: an already running worker is owned by the scheduler.
+    pub fn queue_is_empty(&self) -> bool {
+        let [read, reserved, committed] = self.updates.queue.counters();
+        read == reserved && reserved == committed
+    }
     /// 751370 inserts one permanent sentinel per scheduled task worker.
     pub fn publish_sentinels(&self, count: u32) {
         if count as i32 <= 0 {

@@ -55,6 +55,37 @@ impl Default for HybridTree {
 }
 
 impl HybridTree {
+    /// 128fbd0 removes a body from its published leaf, preserving the order
+    /// of survivors. Empty leaves remain allocated for the existing tree.
+    pub(crate) fn remove_body(&mut self, id: u32, leaf: usize) -> Result<(), String> {
+        let node = self.nodes.get(leaf).ok_or("broadphase removal leaf is missing")?;
+        let PointNodeChildren::Leaf { block } = node.children else {
+            return Err("broadphase removal location is not a leaf".into());
+        };
+        let entries = self.blocks.get_mut(block).ok_or("broadphase removal block is missing")?;
+        let index = entries.iter().position(|entry| entry.index == id)
+            .ok_or("broadphase removal body is missing")?;
+        let removed = entries[index].bounds;
+        let bounds = node.bounds;
+        let touches = (0..3).any(|axis| removed.min[axis] == bounds.min[axis]
+            || removed.max[axis] == bounds.max[axis]);
+        let next_count = self.body_count.checked_sub(1).ok_or("broadphase body count underflow")?;
+        entries.remove(index);
+        self.body_count = next_count;
+        if touches || entries.is_empty() {
+            let mut bounds = QuantizedBounds { min: [u16::MAX; 3], max: [0; 3] };
+            for entry in entries.iter() {
+                for axis in 0..3 {
+                    bounds.min[axis] = bounds.min[axis].min(entry.bounds.min[axis]);
+                    bounds.max[axis] = bounds.max[axis].max(entry.bounds.max[axis]);
+                }
+            }
+            self.nodes[leaf].bounds = bounds;
+        }
+        Ok(())
+    }
+
+
     pub fn query_tree(&self) -> PointQueryTree<'_> {
         PointQueryTree {
             root: self.root,

@@ -2,6 +2,8 @@
 //! No window, renderer, input, audio playback or settings writes are created.
 //! This observes prepared CPU resources, not GPU publication or live gameplay.
 use crate::assets::{archive::Catalog, level::LevelResources};
+use super::level_prepare::CancellationPoint;
+use std::cell::Cell;
 use std::{path::Path, sync::Arc};
 
 /// Run complete CPU loading batches and release their real prepared owners.
@@ -11,6 +13,14 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
     -> Result<(), Box<dyn std::error::Error>>
 {
     if levels.is_empty() { return Err("inspect-cpu-preparation requires level names".into()); }
+    let cancellation = match std::env::var("DH2_DEBUG_CPU_CANCEL_COLLISION").as_deref() {
+        Ok("shapes") => Some(CancellationPoint::CollisionShapes),
+        Ok("placed") => Some(CancellationPoint::PlacedCollision),
+        Ok("index") => Some(CancellationPoint::CollisionIndex),
+        Err(std::env::VarError::NotPresent) => None,
+        _ => return Err("DH2_DEBUG_CPU_CANCEL_COLLISION expects shapes, placed, or index".into()),
+    };
+    let retry_cancelled = std::env::var_os("DH2_DEBUG_CPU_RETRY_CANCELLED").is_some_and(|value| value == "1");
     // CPU readers use the same task pools as the client. No application
     // runner or window/render plugin is installed.
     let mut task_host = bevy::prelude::App::new();
@@ -19,15 +29,36 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
     let _audio_session = super::audio::AudioSession::begin()?;
     let mut engine_controls = None;
     for (step, name) in levels.iter().enumerate() {
+        let cancellation = cancellation.filter(|_| !retry_cancelled || step == 0);
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let level = LevelResources::resolve(&catalog, name)?;
             if let Some(map) = level.entities.strip_suffix(".entities") {
                 crate::gameplay::map_info::set_current_map(&format!("{map}.map"));
             }
             eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=begin");
-            let mut prepared = super::level_prepare::prepare_level(
-                base.to_owned(), catalog.clone(), level, true, || false,
-            )?;
+            let checkpoints = Cell::new(0u32);
+            let requested = Cell::new(None);
+            let prepared = super::level_prepare::prepare_level(
+                base.to_owned(), catalog.clone(), level, true, step == 0, |point| {
+                    if requested.get().is_some() { return true; }
+                    if cancellation != Some(point) { return false; }
+                    checkpoints.set(checkpoints.get() + 1);
+                    if checkpoints.get() < 64 { return false; }
+                    requested.set(Some(std::time::Instant::now()));
+                    true
+                },
+            );
+            if let Some(point) = cancellation {
+                let requested = requested.get().ok_or("collision cancellation point was not reached")?;
+                let error = prepared.err().ok_or("cancelled collision preparation returned a world")?;
+                let release_ms = requested.elapsed().as_secs_f64() * 1000.0;
+                let error = error.to_string();
+                if !error.ends_with("cancelled") { return Err(error.into()); }
+                eprintln!("RESOURCE_COLLISION_CANCEL level={name} phase={point:?} checkpoints={} release_ms={release_ms:.3} result={error}",
+                    checkpoints.get());
+                return Ok(());
+            }
+            let mut prepared = prepared?;
             // AudioMix initializes these once per session after map preload.
             // Observe the same resource owner, without a device or audio output.
             if engine_controls.is_none()
@@ -50,7 +81,8 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 let interactions = prepared.get_resource::<super::interactions::Interactions>()
                     .ok_or("prepared interactions are absent")?;
                 let scene = prepared.get_resource::<super::SceneData>().ok_or("prepared scene is absent")?;
-                super::usable_animation::observe_resources(&catalog, interactions, &scene.placed_models);
+                let root_count = scene.expanded_placement_roots.unwrap_or(scene.placed_models.len());
+                super::usable_animation::observe_resources(&catalog, interactions, &scene.placed_models[..root_count]);
             }
             // This is the same body/setup acquisition used by setup::prepare.
             // Rendering arms, GPU uploads and frame updates are not exercised.
@@ -91,25 +123,26 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
                 );
                 let errors = instances.loading_end();
                 let mut digest = blake3::Hasher::new();
-                for &(instance, node, port) in &instances.events {
-                    digest.update(instances.owner(instance).as_bytes());
+                for event in instances.events.pending() {
+                    let crate::gameplay::effects::instances::GraphEvent::Action { graph: instance, node, port } = event else { continue };
+                    digest.update(instances.owner(*instance).as_bytes());
                     digest.update(&node.to_le_bytes()); digest.update(&port.to_le_bytes());
                 }
                 eprintln!("PARTICLE_CPU_PREPARATION step={step} level={name} declaration_requests={} declaration_reads={} model_reads={} field_reads={} effects={} failures={} events={} graph_errors={} event_hash={}",
                     resources.declaration_requests, resources.declaration_reads, resources.model_reads, resources.field_image_reads,
                     sources.effects.len(), sources.effects.values().filter(|effect| effect.is_err()).count(),
-                    instances.events.len(), errors.len(), digest.finalize());
+                    instances.events.pending().count(), errors.len(), digest.finalize());
                 resources.retire_unused();
             }
+            prepared.keep_registered_resources();
             drop(prepared);
-            if let Some(texts) = contact_texts { texts.release_level_history(); }
+            if let Some(texts) = contact_texts { texts.release_level_history(&catalog); }
             Ok(())
         })();
         // No renderer owns these unpublished CPU batches. Their consumers
         // above have already dropped, so use the live client's same purge.
         catalog.release_level_resources();
         crate::assets::render_parameter::report(&catalog, "level-released");
-        crate::edge_skeleton::release_unused();
         result?;
         eprintln!("RESOURCE_CPU_PREPARATION step={step} level={name} phase=released");
         if let Some((labels, bytes)) = crate::platform::allocation_tags::phase_label_storage() {
@@ -188,18 +221,51 @@ pub fn inspect_cpu_preparation(base: &Path, levels: &[String])
 }
 
 
+fn inspect_ui_file_scopes(base: &Path, movie: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::assets::{archive::Catalog, iggy::FileScope};
+    use std::rc::Rc;
+
+    let a = Catalog::open(base)?;
+    let b = Catalog::open(base)?;
+    let worker_a = FileScope::for_catalog(&a);
+    let worker_b = FileScope::for_catalog(&b);
+
+    let first = worker_a.acquire(&a, movie)?;
+    let other = worker_b.acquire(&b, movie)?;
+    let reopened = FileScope::for_catalog(&a).acquire(&a, movie)?;
+    let bytes = first.bytes().len();
+    let identical = first.bytes() == other.bytes();
+    let isolated = !Rc::ptr_eq(&first, &other);
+    let reused = Rc::ptr_eq(&first, &reopened);
+    let previous = Rc::downgrade(&first);
+    drop(first);
+    drop(worker_a);
+    let consumer_kept_file = previous.upgrade().is_some();
+    drop(reopened);
+    let retired = previous.upgrade().is_none();
+    let other_reused = Rc::ptr_eq(&other, &FileScope::for_catalog(&b).acquire(&b, movie)?);
+
+    println!("UI_FILE_SCOPES movie={movie} bytes={bytes} identical={identical} isolated={isolated} reused={reused} consumer_kept_file={consumer_kept_file} retired={retired} other_reused={other_reused}");
+    Ok(())
+}
+
 /// Acquire installed bitmap packs through the movie worker's owner and
 /// observe their leases without advancing a player or rendering a frame.
 pub fn inspect_ui_bitmap_ownership(base: &Path, movies: &[String])
     -> Result<(), Box<dyn std::error::Error>>
 {
     use crate::flash::{bitmap_resources::{MovieBitmaps, PackLifetime}, Player};
+    if movies.first().is_some_and(|arg| arg == "--file-scopes") {
+        let movie = movies.get(1).ok_or("provide an installed Iggy movie path")?;
+        return inspect_ui_file_scopes(base, movie);
+    }
     let loading_first = movies.first().is_some_and(|arg| arg == "--loading-first");
     let movies = &movies[usize::from(loading_first)..];
     if movies.is_empty() { return Err("provide at least one installed Iggy movie path".into()); }
     let mut task_host = bevy::prelude::App::new();
     task_host.add_plugins(bevy::app::TaskPoolPlugin::default());
     let catalog = crate::assets::archive::Catalog::shared(base)?;
+    let _files = crate::assets::iggy::FileScope::for_catalog(&catalog);
     let language = crate::assets::lang::read_text_language(base)?;
     let acquire = |movie: &str, phase: &str, lifetime| -> Result<Arc<MovieBitmaps>, String> {
         let (player, resources) = Player::load_installed(&catalog, language, movie)?;

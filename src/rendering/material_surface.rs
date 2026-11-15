@@ -105,6 +105,8 @@ pub struct Layer {
 
 #[derive(Debug, Clone)]
 pub struct Surface {
+    pub physics_material: Option<String>,
+    pub physics_material_preprocessing_required: bool,
     pub main_program: Option<String>,
     pub lightmap: String,
     pub filling_images: [String; 6],
@@ -145,6 +147,66 @@ pub struct Surface {
     pub vegetation_translucency_map: Option<String>,
 }
 
+fn fields_with_evidence(bytes: &[u8]) -> (HashMap<String, String>, bool) {
+    let mut result = HashMap::new();
+    let mut unsupported = false;
+    let mut depth = 0i32;
+    let mut preamble = true;
+    for raw in crate::entities::declaration_text(bytes).lines() {
+        let line = raw.split("//").next().unwrap_or("").trim();
+        if line.as_bytes().iter().any(|byte| matches!(*byte, b'#' | b'$'))
+            || line.contains("/*") || line.contains("*/") { unsupported = true; }
+        let at = line.find(char::is_whitespace);
+        let key = at.map(|at| line[..at].to_ascii_lowercase());
+        let reference = line.as_bytes().windows(b"m_physicsmaterial".len())
+            .any(|window| window.eq_ignore_ascii_case(b"m_physicsmaterial"));
+        if key.as_deref() == Some("inherit") { unsupported = true; }
+        if reference && (key.as_deref() != Some("m_physicsmaterial") || depth != 1 || !preamble) {
+            unsupported = true;
+        }
+        if key.as_deref() == Some("m_physicsmaterial") {
+            let value = at.map(|at| line[at..].trim()).unwrap_or("");
+            let supported = if let Some(value) = value.strip_prefix('"') {
+                value.strip_suffix('"').is_some_and(|value| !value.chars().any(|ch| matches!(ch, '"' | '\\')))
+            } else {
+                !value.is_empty() && !value.chars().any(|ch| ch.is_whitespace() || matches!(ch, ';' | '=' | '{' | '}'))
+            };
+            if !supported { unsupported = true; }
+        }
+        if depth == 1 {
+            if let Some(key) = key.as_deref() {
+                if !matches!(key, "version" | "m_physicsmaterial" | "options" | "state" | "parms" | "{" | "}") {
+                    preamble = false;
+                }
+            } else if !line.is_empty() && line != "{" && line != "}"
+                && !["version", "options", "state", "parms"].iter().any(|name| line.eq_ignore_ascii_case(name)) {
+                preamble = false;
+            }
+        }
+        if let (Some(at), Some(key)) = (at, key) { result.insert(key, line[at..].trim().to_owned()); }
+        let mut quoted = false;
+        let mut escaped = false;
+        for byte in line.bytes() {
+            if quoted && escaped { escaped = false; continue; }
+            if quoted && byte == b'\\' { escaped = true; continue; }
+            if byte == b'"' { quoted = !quoted; }
+            else if !quoted && byte == b'{' { depth += 1; }
+            else if !quoted && byte == b'}' { depth -= 1; }
+        }
+        if quoted || depth < 0 { unsupported = true; }
+    }
+    if depth != 0 { unsupported = true; }
+    (result, unsupported)
+}
+
+/// The 140807c80 material reference uses the existing last-authored-value rule.
+fn physics_material_field(values: &HashMap<String, String>) -> Option<String> {
+    values.get("m_physicsmaterial")
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL"))
+}
+
+#[cfg(test)]
 fn fields(bytes: &[u8]) -> HashMap<String, String> {
     crate::entities::declaration_text(bytes)
         .lines()
@@ -238,7 +300,7 @@ impl Surface {
     }
 
     pub fn parse(bytes: &[u8]) -> Self {
-        let v = fields(bytes);
+        let (v, physics_material_preprocessing_required) = fields_with_evidence(bytes);
         let layers = std::array::from_fn(|index| {
             let prefix = format!("layer{index}_");
             let key = |suffix: &str| format!("{prefix}{suffix}");
@@ -291,6 +353,8 @@ impl Surface {
             }
         });
         Self {
+            physics_material: physics_material_field(&v),
+            physics_material_preprocessing_required,
             // 1402d61ef supplies the arkDefault interned name when absent.
             main_program: Some(
                 v.get("mainprogram")

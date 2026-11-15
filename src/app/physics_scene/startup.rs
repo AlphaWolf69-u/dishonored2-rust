@@ -1,5 +1,8 @@
 //! Level declaration/ownership boundaries of trigger and water startup.
 use super::*;
+#[path = "activation_events.rs"]
+mod activation_events;
+pub(super) use activation_events::{install as install_activation_observers, WorldActivationObserver};
 use crate::gameplay::{
     body_activation::ActivationOwners,
     physics_world::PublicationEvent,
@@ -43,11 +46,12 @@ impl<F> TriggerLevelInitialization<TriggerAssets, F> for TriggerLevel<'_> {
             return Err("trigger shape owner differs from entity".into());
         }
         Ok(Some(LoadedTriggerShape {
-            shape: *geometry
+            shape: geometry
                 .shape_resources
                 .get(self.index)
+                  .copied().flatten()
                 .ok_or("trigger shape resource absent")?,
-            basis: geometry.placements[self.index].shape.basis,
+            basis: geometry.placements[self.index].as_ref().ok_or("trigger placement retired")?.shape.basis,
         }))
     }
     fn dependency(

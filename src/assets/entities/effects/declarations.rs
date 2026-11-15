@@ -85,20 +85,22 @@ fn acquire_declaration(catalog: &Catalog, name: &str, inherited_scope: u8)
     let shared = !catalog.has_overlays()
         && std::env::var("DH2_DEBUG_SEPARATE_GRAPH_RESOURCES").as_deref() != Ok("1");
     let trace = std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1");
-    if !shared {
-        if trace { eprintln!("FX_GRAPH_ACQUIRE path={path} decoded=true shared=false scope={inherited_scope}"); }
-        return read_declaration(catalog, name).map(|graph| (Arc::new(graph), inherited_scope));
-    }
     let mut registry = catalog.kiscule_resources.get_or_init(Default::default).lock()
         .map_err(|_| "Kiscule resource registry is poisoned")?;
     let mut decoded = false;
-    let value = registry.acquire(&path, inherited_scope, |_| {
+    let value = registry.acquire_with_sharing(&path, inherited_scope, shared, |_| {
         decoded = true;
         read_declaration(catalog, name).map(Arc::new)
     });
     let scope = registry.producer_scope(&path);
-    if trace { eprintln!("FX_GRAPH_ACQUIRE path={path} decoded={decoded} shared=true scope={scope}"); }
+    if trace { eprintln!("FX_GRAPH_ACQUIRE path={path} decoded={decoded} shared={shared} scope={scope}"); }
     value.map(|graph| (graph, scope))
+}
+
+/// Borrow the canonical map-scoped definition for acquisition-time projection;
+/// the same registry serves later runtime declaration instances.
+pub(crate) fn acquire_projection(catalog: &Catalog, name: &str) -> Result<Arc<FxGraph>, String> {
+    acquire_declaration(catalog, name, 0).map(|(graph, _)| graph)
 }
 
 pub(crate) fn register_preload(catalog: &Catalog, path: &str, marker: u8, persistent: bool) -> Result<(), String> {

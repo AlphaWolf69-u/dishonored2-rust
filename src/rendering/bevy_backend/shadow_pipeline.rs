@@ -260,6 +260,12 @@ pub fn shadow_comparison_descriptor() -> SamplerDescriptor<'static> {
 /// The 1x1 unavailable binding uses this too; sampling is disabled by the shared
 /// receiver header, rather than relying on Bevy's noncomparison fallback image.
 pub fn shadow_depth_image(size: Extent3d, format: TextureFormat) -> Result<Image, String> {
+    shadow_depth_image_named(size, format, "shadow sampled depth")
+}
+
+/// Stable role labels make live replacement distinguishable from allocator
+/// reserve capacity. No per-frame label strings or leaked names are needed.
+pub fn shadow_depth_image_named(size: Extent3d, format: TextureFormat, label: &'static str) -> Result<Image, String> {
     if size.width == 0
         || size.height == 0
         || size.depth_or_array_layers == 0
@@ -276,6 +282,7 @@ pub fn shadow_depth_image(size: Extent3d, format: TextureFormat) -> Result<Image
         format,
         RenderAssetUsages::default(),
     );
+    image.texture_descriptor.label = Some(label);
     image.texture_descriptor.usage = TextureUsages::RENDER_ATTACHMENT
         | TextureUsages::TEXTURE_BINDING
         | TextureUsages::COPY_SRC

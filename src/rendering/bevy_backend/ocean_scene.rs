@@ -161,6 +161,17 @@ pub struct OceanScene {
     head_queries: Option<head_queries::HeadQueries>,
 }
 impl OceanScene {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        self.waves.visit_owned_targets(visit);
+        if let Some(targets) = &self.colour_targets {
+            visit("ocean-foam-depth", targets.foam.texture());
+            let [(_, source), (_, colour)] = targets.hdr.capture_planes();
+            visit("ocean-refraction-source", source); visit("ocean-colour-hdr", colour);
+        }
+        if let Some(targets) = &self.underwater { visit("ocean-water-line", targets.line.texture()); }
+        // UnderwaterStencilPass borrows masks/attachments; it owns no texture.
+    }
     /// Borrow the actual gameplay simulation outputs only when F8 requests them.
     pub(super) fn capture_planes(&self) -> Vec<(&'static str, &Texture)> {
         let mut planes = vec![

@@ -12,6 +12,7 @@ mod motion_creation;
 pub use motion_creation::MotionCreationCallbacks;
 pub(crate) mod body_creation;
 pub(crate) mod storage;
+pub(crate) mod body_activation_events;
 #[cfg(test)]
 #[path = "physics_world/publication_tests.rs"]
 mod publication_tests;

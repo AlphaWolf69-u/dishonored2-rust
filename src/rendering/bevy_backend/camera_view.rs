@@ -79,6 +79,22 @@ pub struct CameraView {
     vertices: Buffer,
 }
 impl CameraView {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        visit("dof-focus-0", &self._focus[0]);
+        visit("dof-focus-1", &self._focus[1]);
+        visit("dof-half-colour", self.half_colour.texture());
+        visit("dof-far-colour", self.far_colour.texture());
+        self.masks.visit_owned_targets(visit);
+        if let Some(colours) = &self.colours {
+            visit("dof-near-colour", colours.near_colour_texture());
+            visit("dof-near-alpha", colours.near_alpha_texture());
+            visit("dof-low-colour", colours.low_colour_texture());
+            visit("dof-low-mask", colours.low_mask_texture());
+        }
+        if let Some((_, colours, _)) = &self.alpha_colours { colours.visit_owned_targets(visit); }
+        // CameraFuzziness/AlphaComposite/Blur hold pipelines/bindings, not textures.
+    }
     pub fn new(
         device: &RenderDevice,
         config: CameraViewConfig,

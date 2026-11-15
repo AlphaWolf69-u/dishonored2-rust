@@ -69,7 +69,6 @@ fn reduction_target(resident: DiffuseMipLevel, minimum: DiffuseMipLevel,
 /// sort only potentially eligible requests, reusing both scratch vectors.
 #[derive(Default)]
 pub(super) struct Pressure {
-    path_priority: Vec<u16>,
     keys: Vec<u64>,
     prepared_frame: u64,
     pub reductions: u64,
@@ -98,15 +97,12 @@ fn area_key(area: f32, mode: u16, age: u32, priority: u16, slot: usize) -> u64 {
 
 impl Pressure {
     fn prepare(&mut self, queue: &SceneRenderQueue) {
-        if self.prepared_frame == queue.texture_stream_frame && self.path_priority.len() == queue.diffuse_image_paths.len() { return; }
+        if self.prepared_frame == queue.texture_stream_frame && self.keys.len() == queue.diffuse_image_demands.len() { return; }
         self.prepared_frame = queue.texture_stream_frame;
-        if self.path_priority.len() != queue.diffuse_image_paths.len() {
-            self.path_priority = queue.diffuse_image_paths.iter().map(|p| path_priority(p)).collect();
-            self.keys.resize(self.path_priority.len(), 0);
-        }
+        self.keys.resize(queue.diffuse_image_demands.len(), 0);
         for (slot, demand) in queue.diffuse_image_demands.iter().enumerate() {
             let age = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
-            self.keys[slot] = area_key(demand.area(), demand.metadata(), age, self.path_priority[slot], slot);
+            self.keys[slot] = area_key(demand.area(), demand.metadata(), age, demand.path_priority(), slot);
         }
     }
 
@@ -116,14 +112,16 @@ impl Pressure {
         order.reserve(requested.len());
         // Zero-area images cannot pass 14030cce0 except with addAllMips. Base
         // acquisition is a separate load phase, but retain its fallback path.
+        // Empty reusable FX slots are no longer registered images.
         order.extend(requested.iter().enumerate().filter_map(|(slot, &needed)|
-            (all_mips || queue.diffuse_image_demands[slot].area() > 0.0
-                || (needed && queue.diffuse_mip_states[slot].resident.is_none())).then_some(slot)));
+            ((all_mips || queue.diffuse_image_demands[slot].area() > 0.0
+                || (needed && queue.diffuse_mip_states[slot].resident.is_none()))
+                && !queue.diffuse_image_paths[slot].is_empty()).then_some(slot)));
         order.sort_unstable_by(|&left, &right| self.keys[right].cmp(&self.keys[left]).then_with(|| left.cmp(&right)));
     }
 
     pub fn choose(
-        &mut self, queue: &SceneRenderQueue, worker: &TextureReadWorker,
+        &mut self, queue: &SceneRenderQueue, inflight: &[bool],
         images: &Assets<Image>, settings: settings::Settings, charged: u64,
     ) -> Option<Reduction> {
         if settings.frozen || pressure_bytes(settings, charged) <= 0 { return None; }
@@ -133,7 +131,7 @@ impl Pressure {
         for (slot, state) in queue.diffuse_mip_states.iter().enumerate() {
             let (Some(resident), Some(minimum)) = (state.resident, state.minimum) else { continue };
             if state.streamed_bytes == 0 || state.pending.is_some()
-                || queue.diffuse_image_pending[slot].is_some() || worker.inflight[slot] { continue; }
+                || queue.diffuse_image_pending[slot].is_some() || inflight[slot] { continue; }
             let Some(old) = queue.diffuse_image_handles[slot].as_ref().and_then(|h| images.get(h)) else { continue };
             let age = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
             let expired = age.saturating_add(1) > settings.unload_frames;
@@ -182,7 +180,7 @@ impl SharedImages {
         state.pending_reduction = false;
         if success {
             if let Some(registry) = registry {
-                registry.publish_view(&replacement.path, &replacement.handle, replacement.level, replacement.mip_count);
+                registry.publish_view(&replacement.path, Some(handle.id()), &replacement.handle, replacement.level, replacement.mip_count);
             }
             *handle = replacement.handle;
             state.resident = Some(replacement.level);

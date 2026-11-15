@@ -23,6 +23,12 @@ struct Entry {
     flags: u16,
 }
 
+impl Entry {
+    fn is_streamed(&self) -> bool {
+        self.flags & 0x20 != 0
+    }
+}
+
 /// Sorted strings packed into one buffer. The installed index lists about a
 /// million resource paths; as separate `String`s their headers and
 /// allocations cost more than their text.
@@ -33,10 +39,10 @@ struct Names {
 }
 
 impl Names {
-    fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+    fn new<S: AsRef<str>>(names: impl IntoIterator<Item = S>) -> Self {
         let mut packed = Self::default();
         for name in names {
-            packed.text.push_str(name);
+            packed.text.push_str(name.as_ref());
             packed.ends.push(packed.text.len() as u32);
         }
         packed.text.shrink_to_fit();
@@ -82,9 +88,22 @@ pub struct Catalog {
     pub(crate) md6_loading: std::sync::Mutex<()>,
     /// One resource-list identity owner for this catalog's animation clips.
     pub(crate) animation_resources: std::sync::Mutex<Option<crate::assets::edge_animation::residency::Registry>>,
+    /// Weak live skeleton identities for this archive namespace.
+    pub(crate) skeleton_resources: std::sync::OnceLock<std::sync::Arc<crate::assets::edge_skeleton::Registry>>,
     /// One lazy class owner shared by particle and material parameter blocks.
     pub(crate) parameter_blocks: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::parm_block::Registry>>>,
+    pub(crate) faction_registry: std::sync::OnceLock<crate::gameplay::faction_registry::SessionFactionRegistry>,
+    pub(crate) component_types: std::sync::Mutex<Option<std::sync::Arc<crate::gameplay::component_state::types::ComponentTypes>>>,
+    pub(crate) material_constants: std::sync::Mutex<Option<std::sync::Arc<crate::assets::physics_material::MaterialConstants>>>,
+    pub(crate) fx_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::definition::Definition>>>,
+    pub(crate) midnight_scenes: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::midnight_scene::Definition>>>,
+    pub(crate) fade_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::fx::fade::Fade>>>,
+    pub(crate) decal_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::decal::DecalMaterials<String>, crate::assets::decal::ResourceError>>>,
+    pub(crate) physics_material_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<crate::assets::entities::physics_material::resources::Definition>>>,
+    pub(crate) cloth_headers: std::sync::OnceLock<crate::assets::bmd6::cloth::Owner>,
+    pub(crate) physics_system_resources: std::sync::OnceLock<crate::assets::physworld::physics_system::Resources>,
     pub(crate) mass_resources: std::sync::OnceLock<std::sync::Mutex<crate::assets::resource_registry::Registry<Option<crate::assets::physworld::mass::PrincipalMassProperties>>>>,
+    pub(crate) shape_sources: std::sync::OnceLock<crate::assets::physworld::source::Owner>,
     pub(crate) common_models: std::sync::OnceLock<std::result::Result<crate::assets::bmodel::CommonModels, String>>,
     /// The beam noise permutation window, read from the executable once per
     /// session on the first beam definition with noise.
@@ -101,6 +120,11 @@ pub struct Catalog {
         crate::assets::shader_cache::ShaderCacheBackend, std::sync::Arc<crate::assets::shader_cache::ShaderIndex>>>>,
     /// Inventory/history leases can outlive a map's item acquisition table.
     pub(crate) pickable_sources: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<crate::assets::inventory_item::PickableSources>>>,
+    /// Prepared session resources resolved from installed declarations.
+    pub(crate) camera_blur: std::sync::Mutex<Option<std::sync::Arc<crate::assets::camera_blur::BlurResources>>>,
+    pub(crate) contact_database: std::sync::Mutex<Option<std::sync::Arc<crate::assets::entities::contacts::ContactDatabase>>>,
+    /// Installed init/common declaration texts for the current session language.
+    pub(crate) common_declaration_texts: std::sync::Mutex<Option<crate::assets::declaration_texts::SharedTexts>>,
     /// The index kinds (`image`, `material`, ...) of the entries.
     kinds: Vec<String>,
     base: PathBuf,
@@ -117,12 +141,16 @@ pub struct Catalog {
     containers: containers::Containers,
     /// 068c30/0658b0 primary header order, distinct from data archive slots.
     header_order: std::sync::OnceLock<std::result::Result<Box<[u8]>, String>>,
+    pub(crate) manifests: std::sync::OnceLock<crate::assets::map_resources::ManifestCache>,
+    pub(crate) map_info: std::sync::OnceLock<crate::gameplay::map_info::MapInfoCache>,
+    pub(crate) language_table: std::sync::Mutex<Option<crate::assets::lang::LoadedTable>>,
     pub(crate) preload_bootstrap: std::sync::OnceLock<std::result::Result<usize, String>>,
     pub(crate) preload_map: std::sync::Mutex<Option<Box<str>>>,
 }
 
 impl Drop for Catalog {
     fn drop(&mut self) {
+        self.faction_registry.take();
         if let Some(owner) = self.pickable_sources.get() {
             owner.lock().unwrap_or_else(|error| error.into_inner()).release_session(self);
         }
@@ -133,9 +161,24 @@ impl Drop for Catalog {
         if std::env::var_os("DH2_DEBUG_ANIMSET_LIFETIMES").is_some_and(|value| value == "1") {
             eprintln!("ANIMSET_SESSION_RELEASE catalog={}", self.identity);
         }
+        self.fx_resources.take();
+        crate::assets::fx::fade::report_retirement(self);
+        self.fade_resources.take();
+        crate::assets::midnight_scene::report_retirement(self);
+        self.midnight_scenes.take();
+        crate::assets::decal::report_retirement(self);
+        self.decal_resources.take();
+        crate::assets::entities::physics_material::resources::report_retirement(self);
+        self.physics_material_resources.take();
+        crate::assets::bmd6::cloth::report(self, "catalog-retiring");
+        self.cloth_headers.take();
+        crate::assets::physworld::physics_system::report_retirement(self);
+        self.physics_system_resources.take();
         crate::assets::physworld::mass::resources::report_retirement(self);
         crate::assets::wwise::event_resources::report_retirement(self);
         self.mass_resources.take();
+        crate::assets::physworld::source::report(self, "catalog-retiring");
+        self.shape_sources.take();
         crate::assets::wwise::auxiliary_resources::report_retirement(self);
         crate::assets::wwise::rtpc_resources::report_retirement(self);
         crate::assets::difficulty::report_retirement(self);
@@ -147,13 +190,23 @@ impl Drop for Catalog {
         self.kiscule_resources.take();
         self.particle_resources.take();
         crate::assets::render_parameter::report(self, "catalog-retiring");
-        self.render_parameters.take();
+        let parameters = usize::from(self.render_parameters.take().is_some_and(|mut owner| {
+            owner.shader_metadata.get_mut().unwrap_or_else(|error| error.into_inner()).take().is_some()
+        }));
         self.shader_indices.take();
         // Host read accounting belongs to this immutable archive namespace;
         // releasing it must not leave credits for a later Catalog identity.
         let animations = crate::assets::edge_animation::retire_catalog(
             self.animation_resources.get_mut().unwrap_or_else(|error| error.into_inner()).take());
-        crate::loading::retire_catalog(self.identity, animations);
+        let declarations = usize::from(self.common_declaration_texts.get_mut()
+            .unwrap_or_else(|error| error.into_inner()).take().is_some());
+        let blur = usize::from(self.camera_blur.get_mut()
+            .unwrap_or_else(|error| error.into_inner()).take().is_some());
+        let contacts = usize::from(self.contact_database.get_mut()
+            .unwrap_or_else(|error| error.into_inner()).take().is_some());
+        let manifests = self.manifests.take().map_or(0, |mut owner| owner.entry_count());
+        let map_info = self.map_info.take().map_or(0, |mut owner| owner.entry_count());
+        crate::loading::retire_catalog(self.identity, animations, declarations, blur, contacts, parameters, manifests, map_info);
     }
 }
 
@@ -202,6 +255,7 @@ impl Catalog {
     /// in the live client; this does not retire GPU resources on its behalf.
     pub(crate) fn release_level_resources(&self) {
         crate::edge_animation::release_level(self);
+        crate::edge_skeleton::release_unused(self);
         self.release_md6_level();
         self.release_animset_level();
         self.release_parameter_block_level();
@@ -211,8 +265,52 @@ impl Catalog {
         crate::assets::wwise::auxiliary_resources::release_marker(self, 0);
         crate::assets::wwise::rtpc_resources::release_marker(self, 0);
         crate::assets::difficulty::release_marker(self, 0);
+        crate::gameplay::faction_registry::release_marker(self, 0);
         crate::assets::physworld::mass::resources::release_marker(self, 0);
+        crate::assets::physworld::source::release_level(self);
+        crate::assets::fx::declaration::release_marker(self, 0);
+        crate::assets::fx::fade::release_marker(self, 0);
+        crate::assets::midnight_scene::release_marker(self, 0);
+        crate::assets::decal::release_marker(self, 0);
+        crate::assets::entities::physics_material::resources::release_marker(self, 0);
+        crate::assets::bmd6::cloth::release_marker(self, 0);
+        crate::assets::physworld::physics_system::release_marker(self, 0);
         self.release_pickable_level();
+    }
+
+    pub(crate) fn release_persistent_level_resources(&self) {
+        crate::gameplay::faction_registry::release_marker(self, 1);
+        crate::assets::parm_block::release_marker(self, 1);
+        crate::assets::fx::particle_resources::release_marker(self, 1);
+        crate::assets::wwise::event_resources::release_marker(self, 1);
+        crate::assets::wwise::auxiliary_resources::release_marker(self, 1);
+        crate::assets::wwise::rtpc_resources::release_marker(self, 1);
+        crate::assets::physworld::mass::resources::release_marker(self, 1);
+        crate::assets::fx::declaration::release_marker(self, 1);
+        crate::assets::fx::fade::release_marker(self, 1);
+        crate::assets::midnight_scene::release_marker(self, 1);
+        crate::assets::decal::release_marker(self, 1);
+        crate::assets::entities::physics_material::resources::release_marker(self, 1);
+        crate::assets::bmd6::cloth::release_marker(self, 1);
+        crate::assets::physworld::physics_system::release_marker(self, 1);
+        crate::assets::entities::effects::declarations::release_marker(self, 1);
+        crate::assets::inventory_item::configuration::release_persistent(self);
+        crate::edge_animation::release_marker(self, crate::edge_animation::PurgeMarker::PersistentHeap);
+        crate::assets::animation_rig::animset::release_scoped(self, crate::edge_animation::PurgeMarker::PersistentHeap);
+        crate::assets::animation_rig::declaration::release_marker(self,
+            crate::assets::animation_rig::declaration::PurgeMarker::PersistentHeap);
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn discard_unpublished_level(&self) {
+        let mut map = self.preload_map.lock().unwrap_or_else(|error| error.into_inner());
+        self.release_level_resources();
+        self.release_persistent_level_resources();
+        let discarded = map.take();
+        let descriptors = crate::loading::discard_level(self.identity());
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("UNPUBLISHED_LEVEL_RETIREMENT map={discarded:?} descriptors={descriptors}");
+        }
     }
     /// Trim dead level AnimSet identities without dropping the session root
     /// or declarations still retained by live model/scene owners.
@@ -227,7 +325,7 @@ impl Catalog {
     /// 140066ac0..140066b8c classifies these as streamed rather than map
     /// preload requests. The load-list reader already normalizes this path.
     pub(crate) fn preloads(&self, path: &str) -> bool {
-        let streamed = self.paths.search(path).ok().is_some_and(|index| self.entries[index].flags & 0x20 != 0);
+        let streamed = self.paths.search(path).ok().is_some_and(|index| self.entries[index].is_streamed());
         !streamed && ![".sbcm", ".tbcm", ".bwm"].iter().any(|suffix| path.contains(suffix))
     }
 
@@ -314,37 +412,39 @@ impl Catalog {
     }
 
     pub fn open(base: &Path) -> Result<Self> {
+        let retain_name_buffers = !std::env::var_os("DH2_DEBUG_SEPARATE_INDEX_NAMES").is_some_and(|v| v == "1");
+        let trace = std::env::var_os("DH2_DEBUG_CATALOG_INDEX_NAMES").is_some_and(|v| v == "1");
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let mut growths = [0usize; 3];
+        let mut rows = 0;
         let mut entries = Vec::new();
         let mut kinds: Vec<String> = Vec::new();
         let mut image_sources = Vec::new();
         for group in 1..=4 {
-            index::visit_group(base, group, |record| {
-                let index::IndexEntry {
-                    kind,
-                    mut source,
-                    mut path,
-                    offset,
-                    size,
-                    stored_size,
-                    archive_slot,
-                    flags,
-                    ..
-                } = record;
+            let mut capacities = [0; 3];
+            index::visit_group_records(base, group, |record| {
+                if trace {
+                    rows += 1;
+                    let read = [record.kind.capacity(), record.source.capacity(), record.path.capacity()];
+                    for index in 0..3 { growths[index] += usize::from(read[index] > capacities[index]); }
+                }
+                let mut path = std::mem::take(&mut record.path);
                 path.make_ascii_lowercase();
                 if path.contains('\\') {
                     path = path.replace('\\', "/");
                 }
-                if kind.eq_ignore_ascii_case("image") && path.ends_with(".bimage7") {
+                if record.kind.eq_ignore_ascii_case("image") && path.ends_with(".bimage7") {
+                    let mut source = std::mem::take(&mut record.source);
                     source.make_ascii_lowercase();
                     if source.contains('\\') {
                         source = source.replace('\\', "/");
                     }
                     image_sources.push((source, path.clone()));
                 }
-                let kind = match kinds.iter().position(|k| *k == kind) {
+                let kind = match kinds.iter().position(|kind| *kind == record.kind) {
                     Some(i) => i as u16,
                     None => {
-                        kinds.push(kind);
+                        kinds.push(std::mem::take(&mut record.kind));
                         (kinds.len() - 1) as u16
                     }
                 };
@@ -353,14 +453,16 @@ impl Catalog {
                     Entry {
                         group,
                         header_groups: 1 << (group - 1),
-                        offset,
-                        size,
-                        stored_size,
-                        slot: archive_slot,
+                        offset: record.offset,
+                        size: record.size,
+                        stored_size: record.stored_size,
+                        slot: record.archive_slot,
                         kind,
-                        flags,
+                        flags: record.flags,
                     },
                 ));
+                if !retain_name_buffers { *record = index::IndexEntry::default(); }
+                if trace { capacities = [record.kind.capacity(), record.source.capacity(), record.path.capacity()]; }
             })?;
         }
         // The original map overwrote duplicate paths as later index groups
@@ -401,18 +503,47 @@ impl Catalog {
         image_programs.sort();
         image_programs.dedup();
         let packed = |pairs: Vec<(String, usize)>| {
-            (Names::new(pairs.iter().map(|(name, _)| name.as_str())), pairs.iter().map(|&(_, i)| i as u32).collect())
+            let indices = pairs.iter().map(|&(_, i)| i as u32).collect();
+            let names = if retain_name_buffers {
+                Names::new(pairs.into_iter().map(|(name, _)| name))
+            } else {
+                Names::new(pairs.iter().map(|(name, _)| name.as_str()))
+            };
+            (names, indices)
         };
-        Ok(Self {
+        let paths = if retain_name_buffers {
+            Names::new(entries.iter_mut().map(|(path, _)| std::mem::take(path)))
+        } else {
+            Names::new(entries.iter().map(|(path, _)| path.as_str()))
+        };
+        let catalog = Self {
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             animset_declarations: Default::default(),
             md6_declarations: Default::default(),
             md6_loading: Default::default(),
+            manifests: Default::default(),
+            map_info: Default::default(),
+            language_table: Default::default(),
             preload_bootstrap: Default::default(),
             preload_map: Default::default(),
+            common_declaration_texts: Default::default(),
+            camera_blur: Default::default(),
+            contact_database: Default::default(),
             animation_resources: Default::default(),
+            skeleton_resources: Default::default(),
             parameter_blocks: Default::default(),
             mass_resources: Default::default(),
+            shape_sources: Default::default(),
+            faction_registry: Default::default(),
+            component_types: Default::default(),
+            material_constants: Default::default(),
+            physics_material_resources: Default::default(),
+            fx_resources: Default::default(),
+            fade_resources: Default::default(),
+            midnight_scenes: Default::default(),
+            decal_resources: Default::default(),
+            cloth_headers: Default::default(),
+            physics_system_resources: Default::default(),
             common_models: Default::default(),
             beam_noise: Default::default(),
             difficulty_definitions: Default::default(),
@@ -429,12 +560,46 @@ impl Catalog {
             header_order: Default::default(),
             kinds,
             base: base.to_path_buf(),
-            paths: Names::new(entries.iter().map(|(path, _)| path.as_str())),
+            paths,
             entries: entries.into_iter().map(|(_, entry)| entry).collect(),
             image_sources: packed(image_sources),
             image_programs: packed(image_programs),
             overlay: crate::platform::home::layers().files,
-        })
+        };
+        if trace {
+            let cycles = started.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("CATALOG_INDEX_NAMES retained_scratch={retain_name_buffers} rows={rows} kind_growths={} source_growths={} path_growths={} selected={} name_bytes={} cycles={cycles}",
+                growths[0], growths[1], growths[2], catalog.paths.len(), catalog.paths.text.len());
+            catalog.report_index_identity();
+        }
+        Ok(catalog)
+    }
+
+    fn report_index_identity(&self) {
+        let mut hash = blake3::Hasher::new();
+        let name = |hash: &mut blake3::Hasher, value: &str| {
+            hash.update(&(value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        };
+        for (path, entry) in self.paths.iter().zip(&self.entries) {
+            name(&mut hash, path);
+            name(&mut hash, &self.kinds[usize::from(entry.kind)]);
+            hash.update(&[entry.group, entry.header_groups]);
+            hash.update(&entry.offset.to_le_bytes());
+            hash.update(&entry.size.to_le_bytes());
+            hash.update(&entry.stored_size.to_le_bytes());
+            hash.update(&entry.slot.to_le_bytes());
+            hash.update(&entry.flags.to_le_bytes());
+        }
+        for (names, indices) in [&self.image_sources, &self.image_programs] {
+            hash.update(&(names.len() as u64).to_le_bytes());
+            for (source, &index) in names.iter().zip(indices) {
+                name(&mut hash, source);
+                hash.update(&index.to_le_bytes());
+            }
+        }
+        eprintln!("CATALOG_INDEX_IDENTITY digest={} image_aliases={} program_aliases={}",
+            hash.finalize(), self.image_sources.0.len(), self.image_programs.0.len());
     }
 
     /// The overlay file replacing `path`, if any.
@@ -569,32 +734,90 @@ impl Catalog {
     }
 
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        self.read_cancellable(path, None)
+    }
+
+    pub(crate) fn read_cancellable(&self, path: &str, cancelled: Option<&dyn Fn() -> bool>) -> Result<Option<Vec<u8>>> {
+        let mut output = Vec::new();
+        Ok(self.read_member(path, &mut output, cancelled)?.then_some(output))
+    }
+
+    /// Reuse the caller's decoded storage across independent member reads.
+    /// A missing or failed member leaves the buffer empty.
+    pub(crate) fn read_into(&self, path: &str, output: &mut Vec<u8>) -> Result<bool> {
+        self.read_member(path, output, None)
+    }
+
+    fn read_member(&self, path: &str, output: &mut Vec<u8>, cancelled: Option<&dyn Fn() -> bool>) -> Result<bool> {
+        output.clear();
+        check_read_cancelled(cancelled)?;
         let entry = self.entry(path);
         let result = if let Some(file) = self.overlay_file(path) {
-            Ok(Some(std::fs::read(file)?))
+            if output.capacity() == 0 && cancelled.is_none() {
+                *output = std::fs::read(file)?;
+                Ok(true)
+            } else {
+                read_member_bytes(&mut File::open(file)?, output, cancelled).map(|()| true).map_err(Into::into)
+            }
+        } else if let Some(entry) = entry {
+            let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
+            let length = reader.length;
+            read_file_into(&mut reader.file, length, path, entry, output, cancelled).map(|()| true)
         } else {
-            entry
-                .map(|entry| {
-                    let mut reader = self.containers.acquire(&self.base, entry.group, entry.slot)?;
-                    let length = reader.length;
-                    read_file(&mut reader.file, length, path, entry)
-                })
-                .transpose()
+            Ok(false)
         };
+        let result = result.and_then(|found| {
+            check_read_cancelled(cancelled)?;
+            Ok(found)
+        });
         // A failed acquisition cannot advance loading progress. Record only
         // actual payloads after archive/overlay IO and decompression succeed.
-        if matches!(&result, Ok(Some(_))) {
-            if let Some(entry) = entry {
-                crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
-            }
+        if matches!(&result, Ok(true)) {
+            self.record_payload_read(entry, path);
+        } else if result.is_err() {
+            output.clear();
         }
         result
+    }
+
+    fn record_payload_read(&self, entry: Option<&Entry>, path: &str) {
+        let Some(entry) = entry else { return };
+        let kind = &self.kinds[entry.kind as usize];
+        // The map preloader (140066ac0) excludes these mips. Their texture
+        // owner accounts for publication and eviction independently.
+        const MIP_EXTENSION: &str = "bimage7_mip";
+        if entry.is_streamed() && kind == "image"
+            && path.rsplit_once('.').and_then(|(_, extension)| extension.get(..MIP_EXTENSION.len()))
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(MIP_EXTENSION))
+        {
+            static RETAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if !*RETAIN.get_or_init(|| {
+                std::env::var_os("DH2_DEBUG_RETAIN_STREAMED_MIP_HISTORY").is_some_and(|value| value == "1")
+            }) {
+                return;
+            }
+        }
+        crate::loading::read_catalog(self.identity, kind, path);
     }
 
     /// Borrow a bounded, buffered stream over an installed member. The
     /// container lease remains owned here until the consumer returns, so a
     /// compressed member need not be expanded into a whole-file allocation.
     pub(crate) fn with_stream<T>(&self, path: &str, consume: impl FnOnce(&mut dyn Read, usize) -> std::result::Result<T, String>) -> std::result::Result<Option<T>, String> {
+        self.with_stream_cancellable(path, None, consume)
+    }
+
+    pub(crate) fn with_stream_cancellable<T>(&self, path: &str, cancelled: Option<&dyn Fn() -> bool>,
+        consume: impl FnOnce(&mut dyn Read, usize) -> std::result::Result<T, String>,
+    ) -> std::result::Result<Option<T>, String> {
+        check_read_cancelled(cancelled).map_err(|error| error.to_string())?;
+        let consume = |input: &mut dyn Read, size| {
+            if let Some(cancelled) = cancelled {
+                consume(&mut CancellableMember { input, cancelled }, size)
+            } else {
+                consume(input, size)
+            }
+        };
         let entry = self.entry(path);
         let value = if let Some(file) = self.overlay_file(path) {
             let input = File::open(file).map_err(|e| e.to_string())?;
@@ -613,6 +836,7 @@ impl Catalog {
             } else {
                 let mut input = std::io::BufReader::with_capacity(65536, ZlibDecoder::new(input));
                 let value = consume(&mut input, entry.size as usize)?;
+                check_read_cancelled(cancelled).map_err(|error| error.to_string())?;
                 // read_file probes beyond the indexed decoded size, forcing
                 // trailer validation and detecting oversized output.
                 let mut extra = [0u8; 1];
@@ -622,10 +846,8 @@ impl Catalog {
                 value
             }
         };
-        // Match read(): successful streaming acquisitions count toward loading.
-        if let Some(entry) = entry {
-            crate::loading::read_catalog(self.identity, &self.kinds[entry.kind as usize], path);
-        }
+        check_read_cancelled(cancelled).map_err(|error| error.to_string())?;
+        self.record_payload_read(entry, path);
         Ok(Some(value))
     }
 
@@ -676,6 +898,14 @@ fn validate_extent(path: &str, entry: &Entry, archive_size: u64) -> Result<()> {
 }
 
 fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    read_file_into(file, archive_size, path, entry, &mut output, None)?;
+    Ok(output)
+}
+
+fn read_file_into(file: &mut File, archive_size: u64, path: &str, entry: &Entry, output: &mut Vec<u8>,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<()> {
     validate_extent(path, entry, archive_size)?;
     file.seek(SeekFrom::Start(entry.offset))?;
     // Native worlds exceed 128 MiB. Bound reads by the indexed archive
@@ -683,18 +913,13 @@ fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> R
     // Stream decompression so loading a world does not retain a second
     // allocation for its entire compressed representation.
     let input = file.take(u64::from(entry.stored_size));
-    let mut output = Vec::new();
     // The decoded size plus the one probe byte that detects an oversized
     // stream, so read_to_end never regrows and copies the buffer.
     output.try_reserve_exact(entry.size as usize + 1)?;
     if entry.size == entry.stored_size {
-        input
-            .take(u64::from(entry.size) + 1)
-            .read_to_end(&mut output)?;
+        read_member_bytes(&mut input.take(u64::from(entry.size) + 1), output, cancelled)?;
     } else {
-        ZlibDecoder::new(input)
-            .take(entry.size as u64 + 1)
-            .read_to_end(&mut output)?;
+        read_member_bytes(&mut ZlibDecoder::new(input).take(u64::from(entry.size) + 1), output, cancelled)?;
     }
     if output.len() != entry.size as usize {
         return Err(invalid(format!(
@@ -705,7 +930,87 @@ fn read_file(file: &mut File, archive_size: u64, path: &str, entry: &Entry) -> R
         ))
         .into());
     }
-    Ok(output)
+    Ok(())
+}
+
+fn check_read_cancelled(cancelled: Option<&dyn Fn() -> bool>) -> io::Result<()> {
+    if cancelled.is_some_and(|cancelled| cancelled()) {
+        // read_exact and read_to_end retry ErrorKind::Interrupted.
+        return Err(io::Error::other("archive acquisition cancelled"));
+    }
+    Ok(())
+}
+
+struct CancellableMember<'a, R: Read + ?Sized> {
+    input: &'a mut R,
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl<R: Read + ?Sized> Read for CancellableMember<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        check_read_cancelled(Some(self.cancelled))?;
+        let size = output.len().min(64 * 1024);
+        self.input.read(&mut output[..size])
+    }
+}
+
+fn read_member_bytes(input: &mut impl Read, output: &mut Vec<u8>, cancelled: Option<&dyn Fn() -> bool>) -> io::Result<()> {
+    if let Some(cancelled) = cancelled {
+        CancellableMember { input, cancelled }.read_to_end(output)?;
+    } else {
+        input.read_to_end(output)?;
+    }
+    Ok(())
+}
+
+/// Interrupt both installed member readers before they can publish read
+/// history, then compare their successful output in a fresh lease.
+#[cfg(feature = "game")]
+pub(crate) fn observe_member_cancellation(base: &Path, path: &str) -> Result<()> {
+    use std::cell::Cell;
+    let catalog = Catalog::open(base)?;
+    let entry = catalog.entry(path).ok_or("installed member missing")?;
+    if entry.size <= 2 * 64 * 1024 || catalog.has_overlay_file(path) {
+        return Err("select a large installed archive member".into());
+    }
+    let kind = &catalog.kinds[entry.kind as usize];
+    let credited = || crate::loading::catalog_read_recorded(catalog.identity(), kind, path);
+    let checks = Cell::new(0);
+    let mut buffer = Vec::new();
+    let cancelled = catalog.read_member(path, &mut buffer, Some(&|| {
+        let next = checks.get() + 1;
+        checks.set(next);
+        next == 4
+    }));
+    let member_cancelled = cancelled.is_err_and(|error| error.to_string() == "archive acquisition cancelled");
+    let partial_discarded = buffer.is_empty();
+    let cancelled_before_credit = !credited();
+
+    let closed = Cell::new(false);
+    let prefix_bytes = 32 * 1024;
+    let streamed = catalog.with_stream_cancellable(path, Some(&|| closed.get()), |input, _| {
+        let mut prefix = vec![0; prefix_bytes];
+        input.read_exact(&mut prefix).map_err(|error| error.to_string())?;
+        closed.set(true);
+        let mut next = [0; 1];
+        input.read_exact(&mut next).map_err(|error| error.to_string())
+    });
+    let stream_cancelled = streamed.is_err_and(|error| error == "archive acquisition cancelled");
+    let stream_uncredited = !credited();
+    let control = catalog.read(path)?.ok_or("installed member disappeared")?;
+    let retry = catalog.read_cancellable(path, Some(&|| false))?.ok_or("retry lost member")?;
+    let streamed_retry = catalog.with_stream_cancellable(path, Some(&|| false), |input, size| {
+        let mut bytes = vec![0; size];
+        input.read_exact(&mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    })?;
+    let exact = retry == control && retry.len() == entry.size as usize
+        && streamed_retry.as_deref() == Some(retry.as_slice());
+    let retry_credited = credited();
+    let checksum = blake3::hash(&retry);
+    println!("ARCHIVE_MEMBER_CANCELLATION path={path} stored={} decoded={} prefix_bytes={prefix_bytes} check_count={} member_cancelled={member_cancelled} partial_discarded={partial_discarded} cancelled_before_credit={cancelled_before_credit} stream_cancelled={stream_cancelled} stream_uncredited={stream_uncredited} exact={exact} retry_credited={retry_credited} checksum={checksum}",
+        entry.stored_size, entry.size, checks.get());
+    Ok(())
 }
 
 #[cfg(test)]

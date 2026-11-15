@@ -19,9 +19,10 @@
 //! with the palette joint × inverse bind from `Player::arms()`, published
 //! each frame as the model's joint transforms.
 use crate::rendering::bevy_backend::asset_preparation::AssetWrite;
+use super::view_geometry::{source_mesh_from_uvs, MeshUvs};
 use super::{
     archive, bmd6, edge_skeleton, entities, material, model_motion,
-    player::PlayerState, render_model, shadow_preparation, source_mesh, view_to_game, MaterialHandle,
+    player::PlayerState, render_model, shadow_preparation, view_to_game, MaterialHandle,
     MaterialResolver, MeshTag, SceneData, ShaderBuffer,
 };
 use crate::gameplay::player::ArmRender;
@@ -100,11 +101,24 @@ pub(super) struct PlayerArms {
 
 impl PlayerArms {
     /// F8-only snapshot of the render owner's published arm state.
-    pub(super) fn diagnostic(&self) -> String {
+    pub(super) fn diagnostic(&self, probes: Option<&crate::probe_lighting::ProbeLightingSet>,
+        published: Option<&model_motion::ModelProbeLighting>, buffers: &Assets<ShaderBuffer>) -> String {
         let mut report: String = self.arms.iter().map(|arm| format!(
             "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
             arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
         )).collect();
+        // F8 only: replay the published model-bounds query, without changing
+        // its cache or adding work to skinning/lighting on ordinary frames.
+        for arm in &self.arms {
+            let sample = arm.world_bounds.map(|bounds| std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5));
+            let mut query = arm.lighting;
+            let lighting = probes.zip(sample).and_then(|(probes, sample)| probes.interpolate_query_sh(sample, &mut query));
+            report.push_str(&format!("  lighting model={} depth_hack={} query={:?} sample={sample:?} resolved={lighting:?}\n", arm.model, arm.depth_hack, arm.lighting));
+            for part in &arm.surfaces {
+                let record = published.and_then(|published| published.diagnostic_record(buffers, part.probe_index));
+                report.push_str(&format!("    surface={} probe_index={} source_material={} published_cpu_record={record:?}\n", part.source_index, part.probe_index, arm.info.surfaces[part.source_index].material_path));
+            }
+        }
         report.push_str(&format!("  renderer action history [mantle, catfall, swimming]={:?}\n", self.action_history));
         if self.capture_geometry {
             for (action, capture) in ["mantle", "catfall", "swimming"].into_iter().zip(&self.action_capture) {
@@ -211,7 +225,7 @@ pub(super) fn load_player_arms(
         Ok(catalog
             .read(path)
             .map_err(|e| e.to_string())?
-            .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+            .map(entities::owned_declaration_text))
     };
     let character = character_name(super::pause_menu::debug_character());
     let declarations = declarations_source.full(catalog, character)?;
@@ -286,7 +300,7 @@ pub(super) fn load_player_arms(
             // (decl 9: four, else eight), the stream the skinning reads.
             let influences = surface.skin_influences;
             let mut mesh =
-                source_mesh(&surface.positions, &surface.uvs, &surface.indices, &surface.packed_channels, false);
+                source_mesh_from_uvs(&surface.positions, MeshUvs::Packed(&surface.uvs), &surface.indices, &surface.packed_channels, false);
             bind_pose_skin(&mut mesh, surface, influences, palette.len())
                 .map_err(|error| format!("{model} surface {index}: {error}"))?;
             if model_depth_hack > 0.0 {
@@ -463,7 +477,7 @@ pub(super) fn update_player_arms(
     arms: Option<ResMut<PlayerArms>>,
     cameras: Query<(&Transform, &Projection), With<Camera3d>>,
     scene: Option<Res<SceneData>>,
-    probe_buffer: Option<Res<model_motion::ModelProbeLighting>>,
+    mut probe_buffer: Option<ResMut<model_motion::ModelProbeLighting>>,
     mut commands: Commands,
     mut inverse_bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     mut joint_transforms: Query<&mut GlobalTransform, Without<Mesh3d>>,
@@ -587,13 +601,12 @@ pub(super) fn update_player_arms(
             );
             arm.world_bounds = Some(bounds);
             let center = std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5);
-            if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_ref()) {
+            if let (Some(probes), Some(handle)) = (probes, probe_buffer.as_mut()) {
                 if let Some(lighting) = probes.interpolate_query_sh(center, &mut arm.lighting) {
                     let record = model_motion::probe_record_bytes(lighting.object_shader_record());
                     for part in &arm.surfaces {
                         if part.probe_index & 0x8000_0000 == 0 {
-                            let offset = part.probe_index as usize * record.len();
-                            patches.write(&mut buffers, &handle.0, offset, &record);
+                            handle.write(&mut patches, &mut buffers, part.probe_index, &record);
                         }
                     }
                 }

@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct IndexEntry {
     pub group: u8,
     pub id: u32,
@@ -48,24 +48,38 @@ fn be_u64(input: &mut impl Read) -> io::Result<u64> {
 }
 
 fn name(input: &mut impl Read) -> io::Result<String> {
+    let mut value = String::new();
+    read_name(input, &mut value)?;
+    Ok(value)
+}
+
+fn read_name(input: &mut impl Read, value: &mut String) -> io::Result<()> {
     let length = le_u32(input)? as usize;
     if length > 65_536 {
         return Err(invalid(format!("unreasonable string length: {length}")));
     }
-    let mut bytes = vec![0; length];
+    let mut bytes = if value.capacity() == 0 {
+        vec![0; length]
+    } else {
+        let mut bytes = std::mem::take(value).into_bytes();
+        bytes.resize(length, 0);
+        bytes
+    };
     input.read_exact(&mut bytes)?;
     if bytes.last() == Some(&0) {
         bytes.pop();
     }
-    String::from_utf8(bytes).map_err(|error| invalid(error.to_string()))
+    *value = String::from_utf8(bytes).map_err(|error| invalid(error.to_string()))?;
+    Ok(())
 }
 
+#[cfg(test)]
 fn parse_index(
     input: &mut (impl Read + Seek),
     group: u8,
-    visit: impl FnMut(IndexEntry),
+    mut visit: impl FnMut(IndexEntry),
 ) -> io::Result<u32> {
-    parse_selected_index(input, group, None, visit)
+    parse_selected_index(input, group, None, |record| visit(std::mem::take(record)))
 }
 
 fn skip_name(input: &mut (impl Read + Seek)) -> io::Result<()> {
@@ -76,7 +90,7 @@ fn skip_name(input: &mut (impl Read + Seek)) -> io::Result<()> {
 
 fn parse_selected_index(
     input: &mut (impl Read + Seek), group: u8, ids: Option<&HashSet<u32>>,
-    mut visit: impl FnMut(IndexEntry),
+    mut visit: impl FnMut(&mut IndexEntry),
 ) -> io::Result<u32> {
     if number::<4>(input)? != *b"\x05SER" {
         return Err(invalid("wrong index signature"));
@@ -87,6 +101,7 @@ fn parse_selected_index(
     if count > 1_000_000 {
         return Err(invalid(format!("unreasonable record count: {count}")));
     }
+    let mut record = IndexEntry::default();
     for _ in 0..count {
         let id = be_u32(input)?;
         if ids.is_some_and(|ids| !ids.contains(&id)) {
@@ -96,27 +111,18 @@ fn parse_selected_index(
             input.seek_relative(26)?;
             continue;
         }
-        let kind = name(input)?;
-        let source = name(input)?;
-        let path = name(input)?;
-        let offset = be_u64(input)?;
-        let size = be_u32(input)?;
-        let stored_size = be_u32(input)?;
+        record.group = group;
+        record.id = id;
+        read_name(input, &mut record.kind)?;
+        read_name(input, &mut record.source)?;
+        read_name(input, &mut record.path)?;
+        record.offset = be_u64(input)?;
+        record.size = be_u32(input)?;
+        record.stored_size = be_u32(input)?;
         let _unknown = number::<6>(input)?;
-        let flags = be_u16(input)?;
-        let archive_slot = be_u16(input)? >> 2;
-        visit(IndexEntry {
-            group,
-            id,
-            kind,
-            source,
-            path,
-            offset,
-            size,
-            stored_size,
-            flags,
-            archive_slot,
-        });
+        record.flags = be_u16(input)?;
+        record.archive_slot = be_u16(input)? >> 2;
+        visit(&mut record);
     }
     Ok(payload_size)
 }
@@ -161,6 +167,14 @@ pub fn visit_group(base: &Path, group: u8, visit: impl FnMut(IndexEntry)) -> Res
     visit_file(&base.join(format!("game{group}_patch.index")), group, visit)
 }
 
+/// The catalog takes only names that it retains. Remaining buffers stay
+/// available to the next row in this same installed index.
+pub(super) fn visit_group_records(
+    base: &Path, group: u8, visit: impl FnMut(&mut IndexEntry),
+) -> Result<()> {
+    visit_file_records(&base.join(format!("game{group}_patch.index")), group, None, visit)
+}
+
 /// The index file whose records describe archive `slot` of `group`
 /// (`archive_path`'s naming): its ids number that archive's resources.
 pub fn slot_index_path(base: &Path, group: u8, slot: u16) -> Result<PathBuf> {
@@ -183,12 +197,13 @@ pub fn visit_file_ids(path: &Path, group: u8, ids: &HashSet<u32>, visit: impl Fn
     visit_selected_file(path, group, Some(ids), visit)
 }
 
-fn visit_selected_file(path: &Path, group: u8, ids: Option<&HashSet<u32>>, visit: impl FnMut(IndexEntry)) -> Result<()> {
+fn visit_selected_file(path: &Path, group: u8, ids: Option<&HashSet<u32>>, mut visit: impl FnMut(IndexEntry)) -> Result<()> {
+    visit_file_records(path, group, ids, |record| visit(std::mem::take(record)))
+}
+
+fn visit_file_records(path: &Path, group: u8, ids: Option<&HashSet<u32>>, visit: impl FnMut(&mut IndexEntry)) -> Result<()> {
     let mut input = BufReader::new(File::open(path)?);
-    let payload_size = match ids {
-        Some(ids) => parse_selected_index(&mut input, group, Some(ids), visit)?,
-        None => parse_index(&mut input, group, visit)?,
-    };
+    let payload_size = parse_selected_index(&mut input, group, ids, visit)?;
     let consumed = input.stream_position()?;
     let actual = fs::metadata(path)?.len();
     if consumed != actual || actual.checked_sub(32) != Some(payload_size as u64) {

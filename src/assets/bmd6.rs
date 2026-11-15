@@ -4,26 +4,28 @@
 //! Field order follows the installed game's idMD6Model loader and BTRI v2
 //! reader (Ghidra functions 0x14025aa00, 0x140259960, 0x14025a040).
 
+pub(crate) mod cloth;
+
 // Host equivalent of the resource registry's scoped purge (140060180).
-static HISTORY_SCOPES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
-pub(crate) struct HistoryLease;
+static HISTORY_SCOPES: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
+
+pub(crate) struct HistoryLease(u64);
+
 impl HistoryLease {
-    pub(crate) fn acquire() -> std::sync::Arc<Self> {
-        *HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        std::sync::Arc::new(Self)
+    pub(crate) fn acquire(catalog: u64) -> Self {
+        HISTORY_SCOPES.acquire(catalog);
+        Self(catalog)
     }
 }
+
 impl Drop for HistoryLease {
     fn drop(&mut self) {
-        let mut scopes = HISTORY_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
-        *scopes -= 1;
-        if *scopes != 0 { return; }
-        for kind in ["baseModel", "md6Def"] {
-            let (count, bytes, slots, _) = crate::loading::retain_kind(kind, |_| false);
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                eprintln!("MEMORY {kind} history release: entries={count} path_capacity_bytes={bytes} slots={slots}");
+        HISTORY_SCOPES.release(self.0, || {
+            let (count, bytes, slots) = crate::loading::forget_catalog_kind(self.0, "baseModel").unwrap_or_default();
+            if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+                eprintln!("MEMORY baseModel history release: entries={count} path_capacity_bytes={bytes} slots={slots} catalog={}", self.0);
             }
-        }
+        });
     }
 }
 
@@ -82,7 +84,7 @@ pub struct SurfaceInfo {
     pub index_count: u32,
     pub attachment_count: u32,
     pub positions: Vec<[f32; 3]>,
-    pub uvs: Vec<[f32; 2]>,
+    pub uvs: Vec<[half::f16; 2]>,
     /// UV1 half2, normal/tangent SNORM8x4; declarations 9/10 have no COLOR0.
     pub packed_channels: Vec<[u8; 12]>,
     pub skin_influences: u8,
@@ -101,6 +103,10 @@ struct Reader<'a> {
 /// Resolve the LOD0 mesh named by a Void `.md6` declaration. The entity's
 /// declaration name and compiled mesh name are not always the same.
 pub fn compiled_mesh_path(declaration: &str) -> Option<String> {
+    compiled_mesh_resource(compiled_mesh_name(declaration)?)
+}
+
+pub(crate) fn compiled_mesh_name(declaration: &str) -> Option<&str> {
     let lod = declaration
         .split_once("lod 0")?
         .1
@@ -109,14 +115,30 @@ pub fn compiled_mesh_path(declaration: &str) -> Option<String> {
         .split_once('}')?
         .0;
     let after = lod.split_once("mesh \"")?.1;
-    let path = after.split_once('"')?.0;
-    let stem = path.strip_suffix(".md6mesh")?;
+    Some(after.split_once('"')?.0)
+}
+
+pub(crate) fn compiled_mesh_resource(name: &str) -> Option<String> {
+    let stem = name.strip_suffix(".md6mesh")?;
     Some(format!("generated/basemodel/{stem}.bmd6model"))
+}
+
+pub(crate) fn compiled_mesh_parent(declaration: &str) -> Option<&str> {
+    declaration.split_once("inherit \"")
+        .and_then(|(_, rest)| rest.split_once('"').map(|(path, _)| path))
 }
 
 pub fn resolve_compiled_mesh(
     compiled_guess: &str,
+    read_declaration: impl FnMut(&str) -> Option<String>,
+) -> Result<String, String> {
+    resolve_mesh_with(compiled_guess, read_declaration, |_, _, mesh| Ok(mesh))
+}
+
+fn resolve_mesh_with(
+    compiled_guess: &str,
     mut read_declaration: impl FnMut(&str) -> Option<String>,
+    mut select: impl FnMut(&str, &str, String) -> Result<String, String>,
 ) -> Result<String, String> {
     let mut declaration =
         declaration_path(compiled_guess).ok_or("not a compiled MD6 model path")?;
@@ -131,12 +153,9 @@ pub fn resolve_compiled_mesh(
             return Ok(compiled_guess.into());
         };
         if let Some(mesh) = compiled_mesh_path(&text) {
-            return Ok(mesh);
+            return select(&declaration, &text, mesh);
         }
-        let Some(inherited) = text
-            .split_once("inherit \"")
-            .and_then(|(_, rest)| rest.split_once('"').map(|(path, _)| path))
-        else {
+        let Some(inherited) = compiled_mesh_parent(&text) else {
             return Ok(compiled_guess.into());
         };
         let stem = inherited
@@ -349,6 +368,16 @@ impl Reader<'_> {
 }
 
 pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
+    inspect_model::<true>(bytes, None)
+}
+
+fn check_model_acquisition(cancelled: Option<&dyn Fn() -> bool>) -> Result<(), String> {
+    if cancelled.is_some_and(|stop| stop()) { return Err("compiled model acquisition cancelled".into()); }
+    Ok(())
+}
+
+fn inspect_model<const RENDER_DATA: bool>(bytes: &[u8], cancelled: Option<&dyn Fn() -> bool>) -> Result<ModelInfo, String> {
+    check_model_acquisition(cancelled)?;
     let mut input = Reader { bytes, at: 0 };
     if input.take(4)? != b"MM6B" {
         return Err("not an MM6B model".into());
@@ -376,6 +405,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
     }
     let mut surfaces = Vec::with_capacity(surface_count);
     for number in 0..surface_count {
+        check_model_acquisition(cancelled)?;
         let name = input.string()?;
         let material_path = input.string()?;
         input.take(4)?; // per-surface field at +0x30
@@ -438,7 +468,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
             .get(..(vertex_count as usize * 8))
             .ok_or("MD6 texture-coordinate stream truncated")?;
         let mut positions = Vec::with_capacity(vertex_count as usize);
-        let mut uvs = Vec::with_capacity(vertex_count as usize);
+        let mut uvs = if RENDER_DATA { Vec::with_capacity(vertex_count as usize) } else { Vec::new() };
         let mut packed_channels = Vec::with_capacity(vertex_count as usize);
         let mut skin_weights = Vec::with_capacity(vertex_count as usize);
         let mut skin_indices = Vec::with_capacity(vertex_count as usize);
@@ -463,13 +493,13 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
             // Live declarations 9/10: streams 0=position,1=UV0/UV1,
             // 2=normal,3=tangent,4=weights/indices (4 or 8 influences).
             let uv = &texcoord_stream[vertex_index * 8..vertex_index * 8 + 8];
-            let u = half::f16::from_bits(u16::from_le_bytes(uv[0..2].try_into().unwrap())).to_f32();
-            let v = half::f16::from_bits(u16::from_le_bytes(uv[2..4].try_into().unwrap())).to_f32();
+            let u = half::f16::from_le_bytes([uv[0], uv[1]]);
+            let v = half::f16::from_le_bytes([uv[2], uv[3]]);
             if !u.is_finite() || !v.is_finite() {
                 return Err(format!("surface {number} has non-finite UV0"));
             }
             if geometry_valid {
-                uvs.push([u, v]);
+                if RENDER_DATA { uvs.push([u, v]); }
                 let mut packed = [0; 12];
                 packed[..4].copy_from_slice(&uv[4..8]);
                 packed[4..8]
@@ -508,10 +538,11 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
                 return Err(format!("surface {number} index exceeds vertex count"));
             }
         }
-        let indices = indices
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes(pair.try_into().unwrap()))
-            .collect();
+        let indices = if RENDER_DATA {
+            indices.chunks_exact(2)
+                .map(|pair| u16::from_le_bytes(pair.try_into().unwrap()))
+                .collect()
+        } else { Vec::new() };
         input.take(28)?; // six bounds floats and one extent field
         let attachment_count = input.u32()?;
         if attachment_count > 100_000 {
@@ -542,6 +573,7 @@ pub fn inspect(bytes: &[u8]) -> Result<ModelInfo, String> {
             indices,
         });
     }
+    check_model_acquisition(cancelled)?;
     let bytes_after_surfaces = bytes.len() - input.at;
     let tail = if bytes_after_surfaces == 0 { None } else { Some(input.model_tail()?) };
     let margin = (0..3)
@@ -588,12 +620,13 @@ mod acquisition {
         *TRACE.get_or_init(|| std::env::var_os("DH2_DEBUG_MODEL_ACQUISITION").is_some_and(|v| v == "1"))
     }
 
-    pub(super) fn decoded(catalog: &crate::archive::Catalog, path: &str) -> Result<ModelInfo, String> {
+    pub(super) fn decoded<const RENDER_DATA: bool>(catalog: &crate::archive::Catalog, path: &str, cancelled: Option<&dyn Fn() -> bool>)
+        -> Result<ModelInfo, String> {
         let tracing = tracing();
         let cycles = tracing.then(crate::loading::thread_cycles).flatten();
-        let bytes = catalog.read(path).map_err(|error| error.to_string())?
+        let bytes = catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{path} is absent"))?;
-        let mut model = super::inspect(&bytes)?;
+        let mut model = super::inspect_model::<RENDER_DATA>(&bytes, cancelled)?;
         if model.tail.is_none() { return Err(format!("{path}: installed MD6 resource has no closing tail")); }
         let decode_cycles = cycles.zip(if tracing { crate::loading::thread_cycles() } else { None })
             .map(|(start, end)| end.saturating_sub(start));
@@ -614,7 +647,7 @@ mod acquisition {
             + model.surfaces.len() * std::mem::size_of::<super::SurfaceInfo>()
             + model.surfaces.iter().map(|surface| surface.name.len() + surface.material_path.len()
                 + surface.positions.len() * std::mem::size_of::<[f32; 3]>()
-                + surface.uvs.len() * std::mem::size_of::<[f32; 2]>()
+                + surface.uvs.len() * std::mem::size_of::<[half::f16; 2]>()
                 + surface.packed_channels.len() * std::mem::size_of::<[u8; 12]>()
                 + surface.skin_weights.len() * std::mem::size_of::<[u8; 8]>()
                 + surface.skin_indices.len() * std::mem::size_of::<[u8; 8]>()
@@ -656,7 +689,9 @@ mod acquisition {
                     surface.index_count, surface.attachment_count] { crc.update(&value.to_le_bytes()); }
                 crc.update(&surface.matrix_offset.to_le_bytes());
                 crc.update(&[surface.skin_influences]);
-                for value in surface.positions.iter().flatten().chain(surface.uvs.iter().flatten()) { crc.update(&value.to_bits().to_le_bytes()); }
+                for value in surface.positions.iter().flatten() { crc.update(&value.to_le_bytes()); }
+                // Keep the existing comparison signature in decoded float form.
+                for value in surface.uvs.iter().flatten() { crc.update(&value.to_f32().to_le_bytes()); }
                 for value in &surface.packed_channels { crc.update(value); }
                 for value in &surface.skin_weights { crc.update(value); }
                 for value in &surface.skin_indices { crc.update(value); }
@@ -669,6 +704,14 @@ mod acquisition {
             Arc::as_ptr(model), audit.map(|audit| audit.source_crc), audit.map(|audit| audit.source_bytes), crate::platform::performance_counter::counter().ok());
     }
 
+}
+
+/// Bind-pose streams for an already-published usable mesh. Render-only
+/// UV/index arrays are deliberately absent from this acquisition.
+pub(crate) struct SkinModel(std::sync::Arc<ModelInfo>);
+
+impl SkinModel {
+    pub(crate) fn surfaces(&self) -> &[SurfaceInfo] { &self.0.surfaces }
 }
 
 /// Preparation-scoped references to shared immutable MD6 models.
@@ -687,6 +730,32 @@ impl ModelSources {
     pub(crate) fn acquire(&mut self, catalog: &crate::archive::Catalog, resource: &str)
         -> Result<std::sync::Arc<ModelInfo>, String>
     {
+        self.acquire_resolved::<true>(catalog, resource, None, || None)
+    }
+
+    pub(crate) fn acquire_skin_for_rig(catalog: &crate::archive::Catalog, resource: &str,
+        rig: &crate::assets::animation_rig::Rig, cancelled: Option<&dyn Fn() -> bool>,
+    ) -> Result<SkinModel, String> {
+        static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+        let (full, separate) = *MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_KEEP_USABLE_MODEL_RENDER_DATA").is_some_and(|value| value == "1"),
+            std::env::var_os("DH2_DEBUG_SEPARATE_RIG_MESH_DECLARATION").is_some_and(|value| value == "1"),
+        ));
+        let admitted = || if separate { None } else { rig.model_reference().compiled_mesh() };
+        // This short scope cannot mix skin-only entries with render consumers.
+        let mut sources = Self::new(catalog);
+        let model = if full {
+            sources.acquire_resolved::<true>(catalog, resource, cancelled, admitted)
+        } else {
+            sources.acquire_resolved::<false>(catalog, resource, cancelled, admitted)
+        }?;
+        Ok(SkinModel(model))
+    }
+
+    fn acquire_resolved<const RENDER_DATA: bool>(&mut self, catalog: &crate::archive::Catalog, resource: &str,
+        cancelled: Option<&dyn Fn() -> bool>, admitted_mesh: impl FnOnce() -> Option<String>,
+    ) -> Result<std::sync::Arc<ModelInfo>, String> {
+        check_model_acquisition(cancelled)?;
         let started = acquisition::tracing().then(std::time::Instant::now);
         let cycles = acquisition::tracing().then(crate::loading::thread_cycles).flatten();
         if self.catalog != catalog.identity() {
@@ -701,10 +770,35 @@ impl ModelSources {
                 return Ok(model.clone());
             }
         }
-        let read = |decl: &str| {
-            catalog.read(decl).ok().flatten().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        let selection_start = started.and_then(|_| crate::loading::thread_cycles());
+        let mut declaration_reads = 0;
+        let mut declaration_bytes = 0;
+        let admitted = if self.share { admitted_mesh() } else { None };
+        let reused_declaration = admitted.is_some();
+        let path = match admitted {
+            Some(path) => path,
+            None => resolve_mesh_with(resource, |decl| {
+                catalog.read_cancellable(decl, cancelled).ok().flatten().map(|bytes| {
+                    if started.is_some() {
+                        declaration_reads += 1;
+                        declaration_bytes += bytes.len();
+                    }
+                    crate::assets::declaration_texts::adopt_utf8(bytes, "md6")
+                })
+            }, |declaration, source, mesh| {
+                let name = compiled_mesh_name(source).ok_or("selected MD6 mesh has no source name")?;
+                match cloth::select_base(catalog, declaration, source, name, 0, cancelled)? {
+                    None => Ok(mesh),
+                    Some(Some(base)) => Ok(base),
+                    Some(None) => Err(format!("{declaration}: cloth-only model requires the unimplemented cloth runtime; no standard skinned projection")),
+                }
+            })?,
         };
-        let path = resolve_compiled_mesh(resource, read)?;
+        if started.is_some() {
+            let cycles = selection_start.zip(crate::loading::thread_cycles())
+                .map_or(0, |(start, end)| end.saturating_sub(start));
+            eprintln!("MODEL_LOD_SOURCE resource={resource} path={path} reused={reused_declaration} reads={declaration_reads} bytes={declaration_bytes} cycles={cycles}");
+        }
         // A validated alias resolves to the same catalog identity despite
         // differences in ASCII case or slash direction (140140da0/140140de0).
         let key = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
@@ -722,7 +816,9 @@ impl ModelSources {
                 return Ok(model);
             }
         }
-        let model = acquisition::wrap(acquisition::decoded(catalog, &path)?);
+        let decoded = acquisition::decoded::<RENDER_DATA>(catalog, &path, cancelled)?;
+        check_model_acquisition(cancelled)?;
+        let model = acquisition::wrap(decoded);
         if self.share {
             let key = key.into_owned();
             self.models.insert(key.clone(), model.clone());
@@ -846,7 +942,7 @@ mod tests {
             let model = inspect(&bytes).unwrap();
             assert!(model.has_decoded_geometry);
             assert_eq!(model.surfaces[0].positions[1], [2.0, 0.0, 0.0]);
-            assert_eq!(model.surfaces[0].uvs[2], [0.0, 1.0]);
+            assert_eq!(model.surfaces[0].uvs[2].map(half::f16::to_f32), [0.0, 1.0]);
             assert_eq!(model.surfaces[0].indices, [0, 1, 2]);
             assert_eq!(model.surfaces[0].matrix_offset, 17);
         }

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "texture/volume.rs"]
 mod volume;
-pub use volume::{compressed_inline_volume, InlineVolumeChain};
+pub use volume::{compressed_inline_volume, compressed_inline_volume_owned, InlineVolumeChain};
 
 /// FUN_1402eab10: image priority is a monotonic byte maximum, not a
 /// replacement value. The owning material enumerator supplies the request.
@@ -262,7 +262,18 @@ pub struct BimageInfo {
     pub packed_format: u32,
     pub format: ImageFormat,
 }
+fn block_aligned_extent(width: u32, height: u32, block: u32) -> Result<(u32, u32), String> {
+    let align = |value: u32| value.checked_add(block - 1).map(|value| value / block * block)
+        .ok_or_else(|| "BIM storage extent overflow".to_string());
+    Ok((align(width)?, align(height)?))
+}
+
 impl BimageInfo {
+    ///1402f4060 keeps logical metadata but creates block-aligned GPU storage.
+    pub fn storage_info(mut self) -> Result<Self, String> {
+        (self.width, self.height) = block_aligned_extent(self.width, self.height, self.format.block_width())?;
+        Ok(self)
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
         if bytes.get(..3) != Some(b"BIM") {
             return Err("not a BIM image".into());
@@ -298,22 +309,88 @@ pub fn compressed_mip(
     level: u32,
     format: ImageFormat,
 ) -> Result<CompressedMip<'_>, String> {
-    let mip = BimageMipResource::parse(bytes)?;
-    if mip.mip_level != level {
-        return Err("bimage mip level differs from request".into());
-    }
-    let expected = format.mip_bytes(mip.width, mip.height);
-    if mip.payload.len() != expected {
-        return Err(format!(
-            "invalid {format:?} mip payload: expected {expected}, got {}",
-            mip.payload.len()
-        ));
-    }
+    let header = BimageMipHeader::parse(bytes, bytes.len())?;
+    header.validate_format(level, format)?;
     Ok(CompressedMip {
-        width: mip.width,
-        height: mip.height,
-        payload: mip.payload,
+        width: header.width,
+        height: header.height,
+        payload: &bytes[20..],
     })
+}
+
+pub struct OwnedCompressedMip {
+    pub width: u32,
+    pub height: u32,
+    pub payload: Vec<u8>,
+}
+
+/// Acquire the payload owned by one separate mip upload. Original 14030e840
+/// reads the five header words before handing the stream to 14030f030.
+pub fn read_separate_mip(
+    catalog: &super::archive::Catalog,
+    path: &str,
+    level: u32,
+    format: ImageFormat,
+) -> Result<Option<OwnedCompressedMip>, String> {
+    read_separate_mip_cancellable(catalog, path, level, format, None)
+}
+
+pub(crate) fn read_separate_mip_cancellable(
+    catalog: &super::archive::Catalog, path: &str, level: u32, format: ImageFormat,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<OwnedCompressedMip>, String> {
+    let mut payload = Vec::new();
+    Ok(append_separate_mip(catalog, path, level, format, &mut payload, |_, _| 0, cancelled)?
+        .map(|(width, height)| OwnedCompressedMip { width, height, payload }))
+}
+
+/// Append to the final upload chain so initial views need no temporary
+/// whole-member allocation either. A failed archive read leaves it intact.
+pub(crate) fn append_separate_mip(
+    catalog: &super::archive::Catalog,
+    path: &str,
+    level: u32,
+    format: ImageFormat,
+    payload: &mut Vec<u8>,
+    chain_capacity: impl FnOnce(u32, u32) -> usize,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<(u32, u32)>, String> {
+    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    let (buffered, trace) = *MODE.get_or_init(|| (
+        std::env::var_os("DH2_DEBUG_BUFFER_SEPARATE_MIPS").is_some_and(|value| value == "1"),
+        std::env::var_os("DH2_DEBUG_SEPARATE_MIP_ACQUISITION").is_some_and(|value| value == "1"),
+    ));
+    let streamed = !buffered && !catalog.has_overlays();
+    let start = trace.then(crate::loading::thread_cycles).flatten();
+    let offset = payload.len();
+    let reserve = |output: &mut Vec<u8>, width, height, bytes| {
+        let needed = if offset == 0 { chain_capacity(width, height).max(bytes) } else { bytes };
+        output.try_reserve_exact(needed).map_err(|error| error.to_string())
+    };
+    let result = if streamed {
+        catalog.with_stream_cancellable(path, cancelled, |input, size| {
+            let mut words = [0; 20];
+            input.read_exact(&mut words).map_err(|error| error.to_string())?;
+            let header = BimageMipHeader::parse(&words, size)?;
+            header.validate_format(level, format)?;
+            reserve(payload, header.width, header.height, header.payload_size)?;
+            payload.resize(offset + header.payload_size, 0);
+            input.read_exact(&mut payload[offset..]).map_err(|error| error.to_string())?;
+            Ok((header.width, header.height))
+        })
+    } else {
+        let Some(bytes) = catalog.read_cancellable(path, cancelled).map_err(|error| error.to_string())? else { return Ok(None) };
+        let mip = compressed_mip(&bytes, level, format)?;
+        reserve(payload, mip.width, mip.height, mip.payload.len())?;
+        payload.extend_from_slice(mip.payload);
+        Ok(Some((mip.width, mip.height)))
+    };
+    if result.is_err() { payload.truncate(offset); }
+    if let (Some(start), Ok(Some(_))) = (start, &result) {
+        let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+        eprintln!("MEMORY separate mip acquisition: path={path} streamed={streamed} member_bytes={} cycles={cycles}", payload.len() - offset + 20);
+    }
+    result
 }
 
 #[test]
@@ -359,7 +436,9 @@ pub struct InlineArrayChain {
 // in place instead of keeping another complete payload during preparation.
 fn layered_records(bytes: &[u8], cube: bool) -> Result<(BimageInfo, u32, Vec<std::ops::Range<usize>>), String> {
     let info = BimageInfo::parse(bytes)?;
-    let layers = word(bytes, 52)?;
+    let stored_layers = word(bytes, 52)?;
+    // 1402d2740 and1402f4060: a single cube descriptor owns six faces.
+    let layers = if cube && stored_layers == 1 { 6 } else { stored_layers };
     if cube {
         if word(bytes, 8)? != 2 || layers != 6 || info.width == 0 || info.width != info.height
             || info.mip_count == 0 || info.mip_count > 16 {
@@ -407,7 +486,7 @@ fn copy_layered(bytes: &[u8], ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
     payload
 }
 
-fn compact_layered(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
+fn compact_payload_ranges(mut bytes: Vec<u8>, ranges: &[std::ops::Range<usize>]) -> Vec<u8> {
     let mut written = 0;
     for range in ranges {
         bytes.copy_within(range.clone(), written);
@@ -424,7 +503,7 @@ pub fn compressed_inline_array(bytes: &[u8]) -> Result<InlineArrayChain, String>
 
 pub fn compressed_inline_array_owned(bytes: Vec<u8>) -> Result<InlineArrayChain, String> {
     let (info, layers, ranges) = layered_records(&bytes, false)?;
-    Ok(InlineArrayChain { info, layers, payload: compact_layered(bytes, &ranges) })
+    Ok(InlineArrayChain { info, layers, payload: compact_payload_ranges(bytes, &ranges) })
 }
 
 #[test]
@@ -488,7 +567,7 @@ pub fn compressed_inline_cube(bytes: &[u8]) -> Result<InlineCubeChain, String> {
 
 pub fn compressed_inline_cube_owned(bytes: Vec<u8>) -> Result<InlineCubeChain, String> {
     let (info, _, ranges) = layered_records(&bytes, true)?;
-    Ok(InlineCubeChain { info, payload: compact_layered(bytes, &ranges) })
+    Ok(InlineCubeChain { info, payload: compact_payload_ranges(bytes, &ranges) })
 }
 
 #[test]
@@ -591,7 +670,14 @@ pub fn compressed_inline_chain(bytes: &[u8]) -> Result<InlineCompressedChain, St
 /// 1402e9ff0 hands each record to 1402f5500; no intermediate packed copy is needed.
 pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, CompressedMip<'a>))
     -> Result<BimageInfo, String> {
-    let mut info = BimageInfo::parse(bytes)?;
+    visit_inline_ranges(bytes, |level, width, height, range| {
+        visit(level, CompressedMip { width, height, payload: &bytes[range] });
+    })
+}
+
+pub(crate) fn visit_inline_ranges(bytes: &[u8], mut visit: impl FnMut(u32, u32, u32, std::ops::Range<usize>))
+    -> Result<BimageInfo, String> {
+    let info = BimageInfo::parse(bytes)?.storage_info()?;
     if info.width == 0 || info.height == 0 || info.mip_count == 0 || info.mip_count > 16 {
         return Err("invalid BIM dimensions/mip count".into());
     }
@@ -602,31 +688,33 @@ pub fn visit_inline_mips<'a>(bytes: &'a [u8], mut visit: impl FnMut(u32, Compres
     let block = info.format.block_width();
     let mut at = 62usize;
     for level in 0..info.mip_count {
-        let width = (info.width >> level).max(1).div_ceil(block) * block;
-        let height = (info.height >> level).max(1).div_ceil(block) * block;
-        let header = bytes
-            .get(at..at + 20)
-            .ok_or("truncated inline mip header")?;
+        let width = (info.width >> level).max(1);
+        let height = (info.height >> level).max(1);
+        let start = at.checked_add(20).ok_or("inline mip size overflow")?;
+        let header = bytes.get(at..start).ok_or("truncated inline mip header")?;
         let size = word(header, 16)? as usize;
-        let end = at
-            .checked_add(20)
-            .and_then(|at| at.checked_add(size))
-            .ok_or("inline mip size overflow")?;
+        let end = start.checked_add(size).ok_or("inline mip size overflow")?;
         let record = bytes.get(at..end).ok_or("truncated inline mip payload")?;
         let mip = compressed_mip(record, level, info.format)?;
-        if (mip.width, mip.height) != (width, height) {
-            return Err("inline mip dimensions disagree with BIM header".into());
+        let block = info.format.block_width();
+        if mip.width.div_ceil(block) != width.div_ceil(block)
+            || mip.height.div_ceil(block) != height.div_ceil(block) {
+            return Err("inline mip block coverage disagrees with BIM storage".into());
         }
-        if level == 0 {
-            (info.width, info.height) = (width, height);
-        }
-        visit(level, mip);
+        visit(level, width, height, start..end);
         at = end;
     }
     if at != bytes.len() {
         return Err("inline mip chain size mismatch".into());
     }
     Ok(info)
+}
+
+pub(crate) fn compressed_inline_chain_owned(bytes: Vec<u8>) -> Result<InlineCompressedChain, String> {
+    let mut ranges = [const { 0..0 }; 16];
+    let info = visit_inline_ranges(&bytes, |level, _, _, range| ranges[level as usize] = range)?;
+    let payload = compact_payload_ranges(bytes, &ranges[..info.mip_count as usize]);
+    Ok(InlineCompressedChain { info, payload })
 }
 
 pub struct RgbaImage {
@@ -696,8 +784,16 @@ pub fn compressed_bc7_mip(
     })
 }
 
-impl<'a> BimageMipResource<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, String> {
+struct BimageMipHeader {
+    mip_level: u32,
+    header_flags: u32,
+    width: u32,
+    height: u32,
+    payload_size: usize,
+}
+
+impl BimageMipHeader {
+    fn parse(bytes: &[u8], resource_size: usize) -> Result<Self, String> {
         let mip_level = word(bytes, 0)?;
         let header_flags = word(bytes, 4)?;
         let width = word(bytes, 8)?;
@@ -709,16 +805,40 @@ impl<'a> BimageMipResource<'a> {
         let end = 20usize
             .checked_add(payload_size)
             .ok_or("bimage mip payload size overflow")?;
-        let payload = bytes.get(20..end).ok_or("truncated bimage mip payload")?;
-        if end != bytes.len() {
+        if end > resource_size {
+            return Err("truncated bimage mip payload".into());
+        }
+        if end != resource_size {
             return Err("bimage mip payload size mismatch".into());
         }
+        Ok(Self { mip_level, header_flags, width, height, payload_size })
+    }
+
+    fn validate_format(&self, level: u32, format: ImageFormat) -> Result<(), String> {
+        if self.mip_level != level {
+            return Err("bimage mip level differs from request".into());
+        }
+        let blocks_wide = self.width.div_ceil(format.block_width()) as usize;
+        let blocks_high = self.height.div_ceil(format.block_width()) as usize;
+        let expected = blocks_wide.checked_mul(blocks_high)
+            .and_then(|blocks| blocks.checked_mul(format.block_bytes()))
+            .ok_or("bimage mip payload size overflow")?;
+        if self.payload_size != expected {
+            return Err(format!("invalid {format:?} mip payload: expected {expected}, got {}", self.payload_size));
+        }
+        Ok(())
+    }
+}
+
+impl<'a> BimageMipResource<'a> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, String> {
+        let header = BimageMipHeader::parse(bytes, bytes.len())?;
         Ok(Self {
-            mip_level,
-            header_flags,
-            width,
-            height,
-            payload,
+            mip_level: header.mip_level,
+            header_flags: header.header_flags,
+            width: header.width,
+            height: header.height,
+            payload: &bytes[20..],
         })
     }
 }
@@ -742,11 +862,12 @@ pub fn image_sampling_priority(parameter: &str, alpha_test: bool) -> u8 {
 }
 
 /// Coherent material area, mode and sampling-role publication (14031a410).
-/// The request scheduler separately owns path priority and frame age.
+/// Path priority is fixed on slot admission. The scheduler owns frame age.
 #[derive(Debug)]
 pub struct ProjectedAreaDemand {
     demand: PackedTextureVisibilityDemand,
     image_priority: u8,
+    path_priority: u16,
 }
 
 impl Default for ProjectedAreaDemand {
@@ -755,8 +876,15 @@ impl Default for ProjectedAreaDemand {
 
 impl ProjectedAreaDemand {
     pub fn with_priority(image_priority: u8) -> Self {
-        Self { demand: Default::default(), image_priority }
+        Self { demand: Default::default(), image_priority, path_priority: 128 }
     }
+
+    pub(crate) fn with_path_priority(mut self, path_priority: u16) -> Self {
+        self.path_priority = path_priority;
+        self
+    }
+
+    pub(crate) fn path_priority(&self) -> u16 { self.path_priority }
 
     pub fn raise_priority(&mut self, priority: u8) {
         raise_image_priority(&mut self.image_priority, priority);
@@ -1325,8 +1453,7 @@ fn inline_layout(bytes: &[u8], selected_mip: usize) -> Result<(u32, u32, usize, 
     if bytes.get(0..3) != Some(b"BIM") {
         return Err("not a BIM image".into());
     }
-    let width = word(bytes, 0x18)?;
-    let height = word(bytes, 0x1c)?;
+    let (width, height) = block_aligned_extent(word(bytes, 0x18)?, word(bytes, 0x1c)?, 4)?;
     let mip_count = word(bytes, 0x2c)? as usize;
     if mip_count == 0 || mip_count > 16 {
         return Err("unsupported inline mip count".into());
@@ -1344,8 +1471,8 @@ fn inline_layout(bytes: &[u8], selected_mip: usize) -> Result<(u32, u32, usize, 
             .checked_mul(mip_height.div_ceil(4))
             .and_then(|blocks| blocks.checked_mul(16))
             .ok_or("inline mip size overflow")?;
-        if word(bytes, at + 8)? as usize != mip_width
-            || word(bytes, at + 12)? as usize != mip_height
+        if (word(bytes, at + 8)? as usize).div_ceil(4) != mip_width.div_ceil(4)
+            || (word(bytes, at + 12)? as usize).div_ceil(4) != mip_height.div_ceil(4)
             || word(bytes, at + 16)? as usize != size
         {
             return Err(format!("inline mip {mip} header disagrees with dimensions"));
@@ -1928,4 +2055,121 @@ mod tests {
         bytes.pop();
         assert!(inline_layout(&bytes, 1).is_err());
     }
+}
+
+
+/// Compare supported installed 2D inline storage with the serialized records.
+/// Expected extents follow1402f4060's block rounding; expected bytes are the
+/// actual member payloads, not a regenerated image or expanded colour data.
+#[cfg(feature = "game")]
+pub(crate) fn observe_inline_storage(base: &std::path::Path) -> Result<(), String> {
+    let catalog = crate::archive::Catalog::open(base).map_err(|error| error.to_string())?;
+    let mut count = 0;
+    let mut padded = 0;
+    let mut total_bytes = 0;
+    for path in catalog.paths_with_suffix(".bimage7") {
+        let prefix = catalog.read_prefix(&path, 62).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing BIM header {path}"))?;
+        if word(&prefix, 8)? != 0 || word(&prefix, 52)? != 1 { continue; }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?.ok_or("installed image missing")?;
+        let header = BimageInfo::parse(&bytes)?;
+        let block = header.format.block_width();
+        let expected_width = header.width.div_ceil(block) * block;
+        let expected_height = header.height.div_ceil(block) * block;
+        let mut at = 62;
+        let mut expected = blake3::Hasher::new();
+        let mut payload_bytes = 0;
+        for level in 0..header.mip_count {
+            let size = word(&bytes, at + 16)? as usize;
+            let end = at.checked_add(20).and_then(|start| start.checked_add(size)).ok_or("inline source extent overflow")?;
+            let payload = bytes.get(at + 20..end).ok_or("truncated installed mip payload")?;
+            if word(&bytes, at)? != level { return Err(format!("installed mip ordering differs: {path}")); }
+            expected.update(payload);
+            payload_bytes += size;
+            at = end;
+        }
+        if at != bytes.len() { return Err(format!("installed 2D mip records leave a tail: {path}")); }
+        let mut actual = blake3::Hasher::new();
+        let storage = visit_inline_mips(&bytes, |_, mip| { actual.update(mip.payload); })
+            .map_err(|error| format!("{path}: {error}"))?;
+        if storage.width != expected_width || storage.height != expected_height
+            || storage.format != header.format || storage.mip_count != header.mip_count
+            || actual.finalize() != expected.finalize() {
+            return Err(format!("inline storage differs from installed records: {path}"));
+        }
+        if (storage.width, storage.height) != (header.width, header.height) {
+            padded += 1;
+            eprintln!("INLINE_STORAGE_PADDED path={path} logical={}x{} storage={}x{} format={:?} mips={} bytes={payload_bytes} signature={}",
+                header.width, header.height, storage.width, storage.height, storage.format,
+                storage.mip_count, actual.finalize());
+        }
+        total_bytes += payload_bytes;
+        count += 1;
+    }
+    eprintln!("INLINE_STORAGE_INVENTORY images={count} padded={padded} payload_bytes={total_bytes}");
+    if count == 0 { return Err("no installed 2D inline images were observed".into()); }
+    Ok(())
+}
+
+/// Observe the actual installed layered payloads through their production
+/// readers. Expected bytes/order come from serialized records and1402d2740.
+#[cfg(feature = "game")]
+pub(crate) fn observe_layered_storage(base: &std::path::Path) -> Result<(), String> {
+    let catalog = crate::archive::Catalog::open(base).map_err(|error| error.to_string())?;
+    let mut counts = [0usize; 3];
+    let mut single_cubes = 0;
+    let mut total_bytes = 0usize;
+    for path in catalog.paths_with_suffix(".bimage7") {
+        let prefix = catalog.read_prefix(&path, 62).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("missing BIM header {path}"))?;
+        let kind = word(&prefix, 8)?;
+        let layers = word(&prefix, 52)?;
+        if kind == 0 && layers == 1 { continue; }
+        if kind > 2 { return Err(format!("unrecognized installed BIM kind {kind}: {path}")); }
+        let bytes = catalog.read(&path).map_err(|error| error.to_string())?.ok_or("installed image missing")?;
+        let header = BimageInfo::parse(&bytes)?;
+        let depth = word(&bytes, 40)?;
+        let faces = if kind == 2 && layers == 1 { 6 } else { layers };
+        let mut at = 62usize;
+        let mut expected = blake3::Hasher::new();
+        let mut payload_bytes = 0;
+        for level in 0..header.mip_count {
+            let slices = if kind == 1 { (depth >> level).max(1) } else { faces };
+            for slice in 0..slices {
+                let size = word(&bytes, at + 16)? as usize;
+                let end = at.checked_add(20).and_then(|start| start.checked_add(size)).ok_or("layered source extent overflow")?;
+                let payload = bytes.get(at + 20..end).ok_or("truncated installed layered payload")?;
+                if word(&bytes, at)? != level || word(&bytes, at + 4)? != slice {
+                    return Err(format!("installed layered record ordering differs: {path}"));
+                }
+                expected.update(payload);
+                payload_bytes += size;
+                at = end;
+            }
+        }
+        if at != bytes.len() { return Err(format!("installed layered records leave a tail: {path}")); }
+        let expected = expected.finalize();
+        let (info, payload) = match kind {
+            0 => { let chain = compressed_inline_array_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+                if chain.layers != layers { return Err(format!("array layer count changed: {path}")); }
+                (chain.info, chain.payload) }
+            1 => { let chain = compressed_inline_volume_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+                if chain.depth != depth { return Err(format!("volume depth changed: {path}")); }
+                (chain.info, chain.payload) }
+            _ => { let chain = compressed_inline_cube_owned(bytes).map_err(|error| format!("{path}: {error}"))?;
+                (chain.info, chain.payload) }
+        };
+        if info != header || payload.len() != payload_bytes || blake3::hash(&payload) != expected {
+            return Err(format!("layered storage differs from installed records: {path}"));
+        }
+        if kind == 2 && layers == 1 {
+            single_cubes += 1;
+            eprintln!("LAYERED_STORAGE_SINGLE_CUBE path={path} mips={} bytes={payload_bytes} signature={expected}", header.mip_count);
+        }
+        counts[kind as usize] += 1;
+        total_bytes += payload_bytes;
+    }
+    eprintln!("LAYERED_STORAGE_INVENTORY arrays={} volumes={} cubes={} single_cubes={single_cubes} payload_bytes={total_bytes}", counts[0], counts[1], counts[2]);
+    if counts.iter().any(|count| *count == 0) { return Err("installed layered image inventory incomplete".into()); }
+    Ok(())
 }

@@ -26,6 +26,7 @@ fn typed_actor_factory_matches_composed_game_calls() {
             processed_start_count: 0,
             queue_reset_count: 0,
             pending_release: crate::storage::PointerList::owned_with_capacity(64).unwrap(),
+            ..ComponentRegistry::new().unwrap()
         };
         for index in 0..steps {
             let slot = registry

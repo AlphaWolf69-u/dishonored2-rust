@@ -336,13 +336,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let filter = args.next();
-    let world_bytes = if std::path::Path::new(&world_path).is_file() {
-        fs::read(&world_path)?
+    let world = if std::path::Path::new(&world_path).is_file() {
+        world_mesh::parse(&fs::read(&world_path)?)?
     } else {
-        dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &world_path)?
-            .read_world(&catalog)?
+        let level = dishonored2_rust::assets::level::LevelResources::resolve(&catalog, &world_path)?;
+        world_mesh::load(&catalog, &level.world, || false)?
     };
-    let world = world_mesh::parse(&world_bytes)?;
     if filter.as_deref() == Some("--program-census") {
         let mut programs = BTreeMap::<String, (usize, Vec<String>)>::new();
         for object in &world.objects {
@@ -388,9 +387,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mesh = &world.meshes[object.mesh_index];
             for matrix_index in object.matrix_start..object.matrix_end {
                 let matrix = &world.matrices[matrix_index];
-                for face in mesh.indices.chunks_exact(3) {
+                for face in mesh.indices().chunks_exact(3) {
                     let triangle: [[f32; 3]; 3] = [face[0], face[1], face[2]].map(|index| {
-                        let point = mesh.positions[index as usize];
+                        let point = mesh.positions()[index as usize];
                         std::array::from_fn(|row| {
                             matrix[row * 4] * point[0]
                                 + matrix[row * 4 + 1] * point[1]
@@ -460,10 +459,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         {
             let mesh = &world.meshes[object.mesh_index];
             for matrix in &world.matrices[object.matrix_start..object.matrix_end] {
-                for face in mesh.indices.chunks_exact(3) {
+                for face in mesh.indices().chunks_exact(3) {
                     let triangle: [[f32; 3]; 3] = std::array::from_fn(|corner| {
                         let index = face[corner];
-                        let p = mesh.positions[index as usize];
+                        let p = mesh.positions()[index as usize];
                         std::array::from_fn(|row| {
                             matrix[row * 4] * p[0]
                                 + matrix[row * 4 + 1] * p[1]
@@ -497,7 +496,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for matrix in &world.matrices[object.matrix_start..object.matrix_end] {
                 let mut lo = [f32::INFINITY; 3];
                 let mut hi = [f32::NEG_INFINITY; 3];
-                for position in &mesh.positions {
+                for position in mesh.positions() {
                     let point: [f32; 3] = std::array::from_fn(|row| {
                         matrix[row * 4] * position[0]
                             + matrix[row * 4 + 1] * position[1]
@@ -512,7 +511,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "mesh={} tris={} bounds={lo:?}..{hi:?} {}",
                     object.mesh_index,
-                    mesh.indices.len() / 3,
+                    mesh.indices().len() / 3,
                     object.material_path
                 );
             }
@@ -529,7 +528,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for matrix in &world.matrices[object.matrix_start..object.matrix_end] {
                 let mut lo = [f32::INFINITY; 3];
                 let mut hi = [f32::NEG_INFINITY; 3];
-                for position in &mesh.positions {
+                for position in mesh.positions() {
                     let point: [f32; 3] = std::array::from_fn(|row| {
                         matrix[row * 4] * position[0]
                             + matrix[row * 4 + 1] * position[1]
@@ -570,7 +569,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mesh = &world.meshes[object.mesh_index];
             let mut lo = [f32::INFINITY; 3];
             let mut hi = [f32::NEG_INFINITY; 3];
-            for vertex in &mesh.positions {
+            for vertex in mesh.positions() {
                 for axis in 0..3 {
                     lo[axis] = lo[axis].min(vertex[axis]);
                     hi[axis] = hi[axis].max(vertex[axis]);
@@ -616,7 +615,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mesh = &world.meshes[object.mesh_index];
             let mut lo = [f32::INFINITY; 3];
             let mut hi = [f32::NEG_INFINITY; 3];
-            for vertex in &mesh.positions {
+            for vertex in mesh.positions() {
                 for axis in 0..3 {
                     lo[axis] = lo[axis].min(vertex[axis]);
                     hi[axis] = hi[axis].max(vertex[axis]);
@@ -626,7 +625,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .map(|axis| hi[axis] - lo[axis])
                 .fold(0.0f32, f32::max);
             let alpha_range = mesh
-                .packed_channels
+                .packed_channels()
                 .iter()
                 .map(|value| value[channel + 8])
                 .fold((u8::MAX, 0u8), |(lo, hi), value| {
@@ -708,7 +707,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let channels = (0..16)
                 .map(|channel| {
                     let values: HashSet<_> = mesh
-                        .packed_channels
+                        .packed_channels()
                         .iter()
                         .map(|packed| packed[channel])
                         .collect();
@@ -722,7 +721,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!(
                 "PACKED_CHANNELS mesh={} vertices={} {:?}",
                 object.mesh_index,
-                mesh.positions.len(),
+                mesh.positions().len(),
                 channels
             );
         }

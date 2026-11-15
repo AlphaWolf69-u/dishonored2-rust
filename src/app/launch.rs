@@ -24,7 +24,34 @@ impl Drop for CatalogSession {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum HostMode {
+    Window,
+    Offscreen { extent: UVec2 },
+}
+impl HostMode {
+    fn offscreen(self) -> bool { matches!(self, Self::Offscreen { .. }) }
+}
+
 pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(base) = crate::platform::game_folder::game_base_or_ask()? else {
+        crate::platform::client_diagnostics::record("No game folder chosen");
+        return Ok(());
+    };
+    let requested = env::args().nth(1)
+        .unwrap_or_else(|| crate::assets::level::DEFAULT_LEVEL.to_owned());
+    let mut runtime = build(base, requested, HostMode::Window)?;
+    if let bevy::app::AppExit::Error(code) = runtime.app.run() {
+        return Err(format!("Game runtime exited with error code {code}").into());
+    }
+    Ok(())
+}
+
+/// One production builder for the visible client and windowless observations.
+/// Host selection changes only presentation/input plumbing, never game systems.
+pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
+    -> Result<super::offscreen_runtime::Runtime, Box<dyn std::error::Error>> {
+
     let light_area_cull = env::var("DH2_LIGHT_AREA_CULL").as_deref() != Ok("0");
     println!(
         "Local-light culling: {} (initial map Umbra candidates + non-Umbra fallback; fallback minimum {:.0} px; DH2_LIGHT_AREA_CULL=0 disables)",
@@ -36,11 +63,6 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         LOCAL_LIGHT_MIN_AREA_PIXELS,
     );
     super::load_timing::mark("start");
-    // A first launch without a known installation asks for the game folder.
-    let Some(base) = crate::platform::game_folder::game_base_or_ask()? else {
-        crate::platform::client_diagnostics::record("No game folder chosen");
-        return Ok(());
-    };
     crate::platform::client_diagnostics::record_setup(&base);
     let base_for_loading = base.clone();
     let game_base = Some(base);
@@ -49,9 +71,6 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Drop App and its worker owners before audio caches, then the catalog.
     let _audio_session = super::audio::AudioSession::begin()?;
     super::load_timing::mark("catalog");
-    let requested = env::args()
-        .nth(1)
-        .unwrap_or_else(|| crate::assets::level::DEFAULT_LEVEL.to_owned());
     let level =
         crate::assets::level::LevelResources::resolve(catalog.as_ref().unwrap(), &requested)?;
     // The map beside the level's entities (`gameLocal.m_mapInfo` is the decl
@@ -146,8 +165,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     graphics.limits = limits;
     #[cfg(target_os = "windows")]
     crate::platform::host_graphics::prefer_installed_dxc(&mut graphics);
-    app.add_plugins(
-        DefaultPlugins
+    let mut plugins = DefaultPlugins
             .set(bevy::log::LogPlugin {
                 custom_layer: crate::platform::client_diagnostics::log_layer,
                 ..default()
@@ -159,7 +177,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             // DH2_DEBUG_BENCHMARK_AUDIO=1 keeps benchmark audio for level captures.
             .set(bevy::audio::AudioPlugin {
                 global_volume: bevy::audio::GlobalVolume::new(
-                    if (benchmark_resolution.is_some() || env::var("DH2_BENCHMARK_SECONDS").is_ok())
+                    if mode.offscreen() || (benchmark_resolution.is_some() || env::var("DH2_BENCHMARK_SECONDS").is_ok())
                         && env::var("DH2_DEBUG_BENCHMARK_AUDIO").as_deref() != Ok("1")
                         || env::var("DH2_DEBUG_MUTE").as_deref() == Ok("1")
                     {
@@ -171,7 +189,18 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ..default()
             })
             .set(bevy::window::WindowPlugin {
-                primary_window: Some({
+                // The loading owner drains the canonical level before the
+                // runner drops the world. Window close uses that same path.
+                close_when_requested: false,
+                primary_window: Some(if let HostMode::Offscreen { extent } = mode {
+                    bevy::window::Window {
+                        resolution: bevy::window::WindowResolution::new(extent.x, extent.y).with_scale_factor_override(1.0),
+                        mode: bevy::window::WindowMode::Windowed,
+                        visible: false,
+                        focused: false,
+                        ..default()
+                    }
+                } else {
                     // The cvars choose the window (display_settings).
                     let (window, state) =
                         super::display_settings::initial_window(bevy::window::Window {
@@ -218,8 +247,13 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     graphics,
                 )),
                 ..default()
-            }),
-    );
+            });
+    if mode.offscreen() {
+        plugins = plugins.disable::<bevy::winit::WinitPlugin>()
+            .disable::<bevy::audio::AudioPlugin>()
+            .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>();
+    }
+    app.add_plugins(plugins);
     if compute_threads.is_some() {
         println!(
             "Host compute workers: {}",
@@ -307,16 +341,26 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
     app.init_resource::<super::readable_movie::ReadableRequests>();
-    app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin)
-        .add_plugins(super::display_settings::DisplaySettingsPlugin(
+    app.add_plugins(crate::rendering::bevy_backend::flash_ui::FlashUiPlugin);
+    if !mode.offscreen() {
+        app.add_plugins(super::display_settings::DisplaySettingsPlugin(
             std::sync::Mutex::new(display_state.take()),
         ));
+    } else {
+        // No native display mode/presentation owner exists offscreen. Keep
+        // its ordinary wall-clock limiter, without rewriting viewport metadata.
+        app.init_resource::<super::display_settings::DisplaySettings>()
+            .add_systems(Last, super::display_settings::limit_frame_rate);
+    }
     // Host asset owners must collect dropped assets and process dependencies
     // even while map systems are suspended by the loading screen.
     app.add_plugins(MaterialPlugin::<ProbeMaterial>::default())
         .add_plugins(MaterialPlugin::<DecalMaterial>::default())
         .add_plugins(super::audio::AudioAssetsPlugin)
         .add_plugins(crate::rendering::bevy_backend::sky_mask::SkyAssetsPlugin);
+    if let HostMode::Offscreen { extent } = mode {
+        super::offscreen_runtime::install(&mut app, extent)?;
+    }
     let loading_schedules = super::loading_screen::Schedules::capture(&mut app);
     app.add_plugins(auto_exposure::ExposurePlugin)
         .add_plugins(super::audio::SoundPlugin)
@@ -379,6 +423,12 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .add_systems(
             PostUpdate,
+            super::physics_scene::rigid_actor::update_rigid_actors
+                .before(super::model_motion::publish_model_poses)
+                .run_if(super::pause_menu::game_not_paused),
+        )
+        .add_systems(
+            PostUpdate,
             super::model_motion::publish_model_poses
                 .before(bevy::transform::TransformSystems::Propagate)
                 .before(stream_visible_models)
@@ -400,6 +450,23 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .before(stream_visible_models)
             .before(shadow_updates::collect_model_casters)
             .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::machinery::pose_scene_systems
+            .after(super::usable_animation::advance)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::physics_scene::document_hierarchy::update_bound_renders
+            .after(super::machinery::pose_physics_systems)
+            .after(super::usable_animation::advance)
+            .after(super::machinery::pose_scene_systems)
+            .after(super::model_motion::publish_model_poses)
+            .before(super::model_motion::publish_bound_model_poses)
+            .run_if(super::pause_menu::game_not_paused)
+            .run_if(super::loading_screen::is_playing))
+        .add_systems(PostUpdate, super::model_motion::publish_bound_model_poses
+            .before(bevy::transform::TransformSystems::Propagate)
+            .before(stream_visible_models)
+            .before(shadow_updates::collect_model_casters))
         .add_systems(PostUpdate, (super::usable_effects::prepare_requests,
             super::runtime_fx_images::synchronize,
             super::runtime_materials::coordinate.run_if(super::runtime_materials::needs_update),
@@ -659,10 +726,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         base_for_loading,
     )?;
     super::load_timing::mark("app built");
-    if let bevy::app::AppExit::Error(code) = app.run() {
-        return Err(format!("Game runtime exited with error code {code}").into());
-    }
-    Ok(())
+    Ok(super::offscreen_runtime::Runtime::new(app, _audio_session, _catalog_session))
 }
 
 /// Original numeric quality -> the installed declaration's selected row.

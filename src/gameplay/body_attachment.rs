@@ -23,6 +23,80 @@ pub struct AttachmentSettings<'a> {
     pub packing: &'a PackedQuantization,
 }
 
+/// c92500's unpublished-body path. `step` belongs to the creation owner and
+/// prevents relinking the attachment ring after a later shape query fails.
+pub(crate) fn attach_unpublished_body_resumable(
+    bodies: &mut BodyStorage,
+    motions: &mut MotionStorage,
+    body_id: u32,
+    motion_id: u32,
+    orientation: Option<[f32; 4]>,
+    settings: &AttachmentSettings<'_>,
+    world: &mut impl AttachmentWorld,
+    step: &mut u8,
+) -> Result<(), String> {
+    if bodies.get(body_id).ok_or("attachment body ID is stale or missing")?.broadphase_id != u32::MAX {
+        return Err("resumable body attachment requires an unpublished body".into());
+    }
+    attach_body_motion_resumable(bodies, motions, body_id, motion_id, orientation, settings, world, step)
+}
+
+/// c92500 retains the same attachment cursor for a published motion-kind change.
+pub(crate) fn attach_body_motion_resumable(
+    bodies: &mut BodyStorage, motions: &mut MotionStorage, body_id: u32, motion_id: u32,
+    orientation: Option<[f32; 4]>, settings: &AttachmentSettings<'_>,
+    world: &mut impl AttachmentWorld, step: &mut u8,
+) -> Result<(), String> {
+    let body = bodies.get(body_id).ok_or("attachment body ID is stale or missing")?;
+    let flags = settings.qualities.get(body.quality_id)
+        .ok_or("body quality ID exceeds preset library")?.requested_flags;
+    if *step == 0 {
+        bodies.link_motion(body_id, motion_id, motions)?;
+        *step = 1;
+    }
+    let body = bodies.get_mut(body_id).ok_or("attached body disappeared")?;
+    let motion = motions.get_mut(motion_id).ok_or("attachment motion disappeared")?;
+    if *step == 1 {
+        if body.broadphase_id != u32::MAX && motion.solver_id == 0x7fff_ffff {
+            world.register_deactivation_body(body_id, motion_id)?;
+        }
+        if flags & 0x10000 != 0 {
+            let shape = body.selected_shape(2)?;
+            if world.shape_flags(shape)? & 2 != 0 {
+                let measure = world.rotation_limit_measure(shape)? * 0.5;
+                let minimum = f32::from_bits(0x3d4c_cccd);
+                let measure = if measure > minimum { measure } else { minimum };
+                let old = f32::from_bits(u32::from(motion.limits[1]) << 16);
+                let limit = if measure < old { measure } else { old };
+                motion.limits[1] = (limit.to_bits() >> 16) as u16;
+            }
+        }
+        let lookahead = body.transform[3][3];
+        if lookahead > 0. {
+            let old = f32::from_bits(u32::from(motion.limits[0]) << 16);
+            let limit = if old < lookahead { old } else { lookahead };
+            motion.limits[0] = (limit.to_bits() >> 16) as u16;
+        }
+        body.attach_motion_frame(&motion.pose, orientation);
+        *step = 2;
+    }
+    if *step == 2 {
+        if body.broadphase_id != u32::MAX {
+            body.try_update_swept_bounds(motion, flags, settings.tolerance, settings.step, settings.packing,
+                |shape, frame| world.shape_bounds(shape, frame))?;
+        }
+        let identity = [[1., 0., 0., 0.], [0., 1., 0., 0.],
+            [0., 0., 1., 0.], [0., 0., 0., 1.]];
+        let local_bounds = world.shape_bounds(body.selected_shape(3)?, identity)?;
+        body.update_motion_radius(motion.pose.center, local_bounds);
+        body.update_tim_distance(motion.linear_velocity, settings.step.contact_distance_scale[0], settings.step.duration[0]);
+        body.update_size_and_static_lod(settings.lod.body_is_big_threshold, true);
+        body.update_speed_lod(motion.linear_velocity, settings.lod.fast_to_slow_threshold, settings.lod.slow_to_fast_threshold);
+        *step = 3;
+    }
+    Ok(())
+}
+
 /// Complete c92500 sequencing. The world supplies its actual shape virtuals,
 /// solver-info values and deactivation registration through AttachmentWorld.
 pub fn attach_body_motion(
@@ -34,6 +108,10 @@ pub fn attach_body_motion(
     settings: &AttachmentSettings<'_>,
     world: &mut impl AttachmentWorld,
 ) -> Result<(), String> {
+    if bodies.get(body_id).ok_or("attachment body ID is stale or missing")?.broadphase_id == u32::MAX {
+        let mut step = 0;
+        return attach_unpublished_body_resumable(bodies, motions, body_id, motion_id, orientation, settings, world, &mut step);
+    }
     // Validate the preset before changing the attachment ring.
     let quality_id = bodies
         .get(body_id)

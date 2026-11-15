@@ -36,7 +36,7 @@ pub fn sample(animation: &EdgeAnimation, rest: &[JointRestPose], time: f32) -> R
         }
     }
     // Joints past a weighted clip's weight table are not part of its mask.
-    let weights = match &animation.joint_weights {
+    let weights = match animation.joint_weights() {
         Some(bytes) => (0..joints.len()).map(|i| bytes.get(i).copied().unwrap_or(0)).collect(),
         None => vec![255; joints.len()],
     };

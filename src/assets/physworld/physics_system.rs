@@ -2,6 +2,8 @@
 //! shape mass properties and hkpRagdollConstraintData constraint atoms.
 use super::{float, le32, mass, parse_embedded_havok, slice, PhysWorld};
 use crate::gameplay::constraint_solver::atom_stack::{AngularLimit, AtomStack, FrictionAtom};
+use crate::{archive::Catalog, assets::resource_registry::Registry};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
 pub struct SystemBody {
@@ -32,48 +34,170 @@ pub struct PhysicsSystem {
 /// Acquisition errors retain the caller's distinction between archive failures
 /// and malformed resources. 1401c9630 requests physSystem from the shared
 /// resource registry; 14009a3c0 resolves the related ragdoll map.
-pub(crate) enum AcquireError { Read(String), Parse(String) }
+#[derive(Clone, Debug)]
+pub(crate) enum AcquireError { Missing, Read(String), Parse(String) }
 
-/// The original registry shares immutable resources; the host holds these
-/// definitions only during preparation, with ragdoll leases retained by the
-/// live skinning instances. Mutable overlay files are acquired separately.
-pub(crate) struct SystemSources {
-    shared: bool,
-    systems: std::collections::HashMap<String, std::sync::Arc<PhysicsSystem>>,
-    ragdolls: std::collections::HashMap<String, std::sync::Arc<[RagdollEntry]>>,
+impl AcquireError {
+    fn storage_bytes(&self) -> usize {
+        match self { Self::Missing => 0, Self::Read(error) | Self::Parse(error) => error.capacity() }
+    }
 }
-impl SystemSources {
-    pub(crate) fn new(catalog: &crate::archive::Catalog) -> Self {
-        Self { shared: !catalog.has_overlays(), systems: Default::default(), ragdolls: Default::default() }
+
+/// Catalog resource identities. Live body/solver state never belongs here;
+/// recipes and skinning keep the immutable definition generations they use.
+#[derive(Default)]
+pub(crate) struct Resources {
+    systems: Mutex<Registry<PhysicsSystem, AcquireError>>,
+    ragdolls: Mutex<Registry<[RagdollEntry], AcquireError>>,
+}
+
+fn owner(catalog: &Catalog) -> &Resources {
+    catalog.physics_system_resources.get_or_init(Default::default)
+}
+
+fn acquire<T: ?Sized>(catalog: &Catalog, path: &str, registry: &Mutex<Registry<T, AcquireError>>,
+    parse: impl FnOnce(&[u8]) -> Result<Arc<T>, String>) -> Result<Arc<T>, AcquireError> {
+    let normalized;
+    let path = if path.bytes().all(|byte| byte != b'\\' && !byte.is_ascii_uppercase()) {
+        path
+    } else {
+        normalized = path.replace('\\', "/").to_ascii_lowercase();
+        &normalized
+    };
+    let trace = std::env::var_os("DH2_DEBUG_PHYSICS_SYSTEM_RESOURCES").is_some_and(|value| value == "1");
+    let start = trace.then(crate::loading::thread_cycles).flatten();
+    let shared = !catalog.has_overlay_file(path)
+        && std::env::var_os("DH2_DEBUG_SEPARATE_PHYSICS_SYSTEM_RESOURCES").is_none_or(|value| value != "1");
+    let mut read = false;
+    let mut source_bytes = 0;
+    let result = registry.lock().map_err(|_| AcquireError::Read("physics-system registry is poisoned".into()))?
+        .acquire_with_sharing(path, 0, shared, |_| {
+            read = true;
+            let bytes = catalog.read(path).map_err(|error| AcquireError::Read(error.to_string()))?
+                .ok_or(AcquireError::Missing)?;
+            source_bytes = bytes.len();
+            parse(&bytes).map_err(AcquireError::Parse)
+        });
+    if trace {
+        let cycles = start.zip(crate::loading::thread_cycles()).map_or(0, |(start, end)| end.saturating_sub(start));
+        eprintln!("PHYSICS_SYSTEM_ACQUIRE catalog={} path={path} shared={shared} read={read} bytes={source_bytes} cycles={cycles} success={}",
+            catalog.identity(), result.is_ok());
+    }
+    result
+}
+
+pub(crate) fn acquire_system(catalog: &Catalog, path: &str) -> Result<Arc<PhysicsSystem>, AcquireError> {
+    acquire(catalog, path, &owner(catalog).systems, |bytes| parse(bytes).map(Arc::new))
+}
+
+pub(crate) fn acquire_ragdoll(catalog: &Catalog, path: &str) -> Result<Arc<[RagdollEntry]>, AcquireError> {
+    acquire(catalog, path, &owner(catalog).ragdolls, |bytes| parse_ragdoll(bytes).map(Arc::from))
+}
+
+pub(crate) fn register_preload(catalog: &Catalog, kind: &str, path: &str, marker: u8) -> Result<(), String> {
+    if kind.eq_ignore_ascii_case("physSystem") {
+        owner(catalog).systems.lock().map_err(|_| "physics-system registry is poisoned")?
+            .register(path, marker, false);
+    } else {
+        owner(catalog).ragdolls.lock().map_err(|_| "ragdoll registry is poisoned")?
+            .register(path, marker, false);
+    }
+    Ok(())
+}
+
+pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
+    let Some(owner) = catalog.physics_system_resources.get() else { return Ok(()) };
+    owner.systems.lock().map_err(|_| "physics-system registry is poisoned")?.promote_bootstrap();
+    owner.ragdolls.lock().map_err(|_| "ragdoll registry is poisoned")?.promote_bootstrap();
+    Ok(())
+}
+
+impl Resources {
+    fn with_registries(&self, catalog: u64, marker: Option<u8>) {
+        let mut systems = self.systems.lock().unwrap_or_else(|error| error.into_inner());
+        let mut ragdolls = self.ragdolls.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(marker) = marker {
+            systems.release(catalog, "physSystem", marker);
+            ragdolls.release(catalog, "ragdoll", marker);
+        }
+        let phase = if marker.is_some() { "scope-released" } else { "catalog-retiring" };
+        systems.report_with(catalog, "physSystem", phase, |system| {
+            system.name.capacity()
+                + system.bodies.capacity() * std::mem::size_of::<SystemBody>()
+                + system.constraints.capacity() * std::mem::size_of::<SystemConstraint>()
+                + system.bodies.iter().map(|body| body.name.capacity()).sum::<usize>()
+                + system.constraints.iter().map(|constraint| constraint.name.capacity()).sum::<usize>()
+        }, AcquireError::storage_bytes);
+        ragdolls.report_with(catalog, "ragdoll", phase, |_| 0, AcquireError::storage_bytes);
+    }
+}
+
+pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
+    if let Some(owner) = catalog.physics_system_resources.get() {
+        owner.with_registries(catalog.identity(), Some(marker));
+    }
+}
+
+pub(crate) fn report_retirement(catalog: &Catalog) {
+    if let Some(owner) = catalog.physics_system_resources.get() {
+        owner.with_registries(catalog.identity(), None);
+    }
+}
+
+/// Observe installed bootstrap/map residency independently of runtime bodies.
+#[cfg(feature = "game")]
+pub(crate) fn observe_resource_scopes(base: &std::path::Path, map: &str) -> Result<(), String> {
+    const CABLE: &str = "generated/physsystem/models/environment/gameplay/speaker_01/cables_speaker/cable_01_rgdl.hkx";
+    const MAPPING: &str = "generated/models/environment/gameplay/speaker_01/cables_speaker/74d2e855.ragdoll";
+    let catalog = Catalog::open(base).map_err(|error| error.to_string())?;
+    let level = crate::assets::level::LevelResources::resolve(&catalog, map).map_err(|error| error.to_string())?;
+    let map = level.entities.trim_start_matches("maps/").trim_end_matches(".entities");
+    let language = crate::assets::lang::read_text_language(base)?;
+    let list = crate::assets::map_resources::acquire_level_list(base, &catalog, map, language)?;
+    list.register_preload_headers(&catalog, map, true)?;
+    let (system, system_path) = list.sections().take(2).flatten().filter(|r| r.kind == "physSystem")
+        .find_map(|r| acquire_system(&catalog, &r.path).ok().map(|value| (value, &r.path)))
+        .ok_or("no compatible installed bootstrap physics system")?;
+    let (mapping, mapping_path) = list.sections().take(2).flatten().filter(|r| r.kind == "ragdoll")
+        .find_map(|r| acquire_ragdoll(&catalog, &r.path).ok().map(|value| (value, &r.path)))
+        .ok_or("no compatible installed bootstrap ragdoll mapping")?;
+    if owner(&catalog).systems.lock().unwrap().producer_scope(system_path) != 2
+        || owner(&catalog).ragdolls.lock().unwrap().producer_scope(mapping_path) != 2 {
+        return Err("common physics resources did not receive the bootstrap scope".into());
     }
 
-    pub(crate) fn system(&mut self, catalog: &crate::archive::Catalog, path: &str)
-        -> Result<Option<std::sync::Arc<PhysicsSystem>>, AcquireError>
-    {
-        if self.shared {
-            if let Some(value) = self.systems.get(path) { return Ok(Some(value.clone())); }
-        }
-        let Some(bytes) = catalog.read(path).map_err(|error| AcquireError::Read(error.to_string()))? else {
-            return Ok(None);
-        };
-        let value = std::sync::Arc::new(parse(&bytes).map_err(AcquireError::Parse)?);
-        if self.shared { self.systems.insert(path.to_owned(), value.clone()); }
-        Ok(Some(value))
-    }
+    let cable = acquire_system(&catalog, CABLE).map_err(|error| format!("{error:?}"))?;
+    let cable_mapping = acquire_ragdoll(&catalog, MAPPING).map_err(|error| format!("{error:?}"))?;
+    let has_map_reads = || [("physSystem", CABLE), ("ragdoll", MAPPING)].map(|(kind, path)| {
+        crate::loading::catalog_read_recorded(catalog.identity(), kind, path)
+    });
+    let common_system = Arc::downgrade(&system);
+    let common_mapping = Arc::downgrade(&mapping);
+    drop((system, mapping));
+    catalog.release_level_resources();
+    if has_map_reads() != [true; 2] { return Err("a live map physics generation lost its credit".into()); }
+    drop((cable, cable_mapping));
+    catalog.release_level_resources();
+    if has_map_reads() != [false; 2] { return Err("map physics histories survived their final scope".into()); }
 
-    pub(crate) fn ragdoll(&mut self, catalog: &crate::archive::Catalog, path: &str)
-        -> Result<Option<std::sync::Arc<[RagdollEntry]>>, AcquireError>
-    {
-        if self.shared {
-            if let Some(value) = self.ragdolls.get(path) { return Ok(Some(value.clone())); }
-        }
-        let Some(bytes) = catalog.read(path).map_err(|error| AcquireError::Read(error.to_string()))? else {
-            return Ok(None);
-        };
-        let value: std::sync::Arc<[RagdollEntry]> = parse_ragdoll(&bytes).map_err(AcquireError::Parse)?.into();
-        if self.shared { self.ragdolls.insert(path.to_owned(), value.clone()); }
-        Ok(Some(value))
+    let again = acquire_system(&catalog, system_path).map_err(|error| format!("{error:?}"))?;
+    let again_mapping = acquire_ragdoll(&catalog, mapping_path).map_err(|error| format!("{error:?}"))?;
+    if !std::ptr::addr_eq(common_system.as_ptr(), Arc::as_ptr(&again))
+        || !std::ptr::addr_eq(common_mapping.as_ptr(), Arc::as_ptr(&again_mapping)) {
+        return Err("map retirement discarded the live bootstrap physics resources".into());
     }
+    let counts = (again.bodies.len(), again.constraints.len(), again_mapping.len());
+    drop(catalog);
+    if common_system.strong_count() != 1 || common_mapping.strong_count() != 1 {
+        return Err("closing the catalog did not release just its bootstrap lease".into());
+    }
+    drop((again, again_mapping));
+    if common_system.strong_count() != 0 || common_mapping.strong_count() != 0 {
+        return Err("compiled physics resources survived their final owners".into());
+    }
+    eprintln!("PHYSICS_SYSTEM_SCOPES common_system={system_path} common_ragdoll={mapping_path} bodies={} constraints={} mapping_entries={} map_retired=true session_retired=true",
+        counts.0, counts.1, counts.2);
+    Ok(())
 }
 
 fn string(world: &PhysWorld, bytes: &[u8], reference: u32) -> Result<String, String> {
@@ -274,7 +398,7 @@ pub fn parse_ragdoll(bytes: &[u8]) -> Result<Vec<RagdollEntry>, String> {
 }
 
 /// The MD5 the resource system uses for generated names (14010caf0/14010c160).
-fn md5(input: &[u8]) -> [u8; 16] {
+pub(crate) fn md5(input: &[u8]) -> [u8; 16] {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
         9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,

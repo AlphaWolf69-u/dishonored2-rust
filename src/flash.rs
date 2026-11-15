@@ -112,6 +112,7 @@ pub fn install(vm: &mut Vm) {
 pub struct Player {
     pub vm: Vm,
     pub state: Shared,
+    _file_scope: Option<Rc<crate::assets::iggy::FileScope>>,
 }
 
 impl Drop for Player {
@@ -131,7 +132,7 @@ impl Player {
         let stage_class = avm2::builtins::native_class(&vm, "flash.display", "Stage");
         let stage = vm.construct_class(&stage_class, &[])?;
         state.borrow_mut().stage = stage.as_object().cloned();
-        Ok(Player { vm, state })
+        Ok(Player { vm, state, _file_scope: None })
     }
 
     /// Register a library (`IggyLibraryCreateFromMemory`): its SymbolClass
@@ -206,31 +207,13 @@ impl Player {
         movie_path: &str,
     ) -> std::result::Result<(Player, Vec<(usize, String)>), String> {
         use crate::assets::lang;
-        thread_local! {
-            static STRINGS: RefCell<Option<(u64, std::collections::HashMap<String, Rc<lang::StringTable>>)>> = RefCell::new(None);
-        }
-        let read = |p: &str| crate::assets::iggy::acquire(catalog, p);
+        let file_scope = crate::assets::iggy::FileScope::for_catalog(catalog);
+        let read = |p: &str| file_scope.acquire(catalog, p);
         let movie = read(movie_path)?;
         let info = movie.movie().map_err(|e| e.to_string())?;
         let size = ((info.stage[2] - info.stage[0]) as f64, (info.stage[3] - info.stage[1]) as f64);
         let mut player = Player::new(size, info.frame_rate as f64).map_err(|e| format!("{e:?}"))?;
-        let cached = STRINGS.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.as_ref().is_none_or(|(identity, _)| *identity != catalog.identity()) {
-                // Active players keep their Rc; this registry holds only the current catalog.
-                *cache = Some((catalog.identity(), Default::default()));
-            }
-            cache.as_ref().unwrap().1.get(language).cloned()
-        });
-        let strings = match cached {
-            Some(s) => s,
-            None => {
-                let s = Rc::new(lang::StringTable::load(catalog, language)?);
-                STRINGS.with(|cache| cache.borrow_mut().as_mut().unwrap().1.insert(language.to_string(), s.clone()));
-                s
-            }
-        };
-        player.state.borrow_mut().strings = Some(strings);
+        player.state.borrow_mut().strings = Some(Rc::new(lang::StringTable::load(catalog, language)?));
         let library_language = lang::LANGUAGES.iter().position(|(n, _)| *n == lang::library_language(language)).unwrap_or(0);
         player.state.borrow_mut().font_aliases = text_engine::Fonts::language_aliases(library_language as u32);
         // Iggy resolves imported SymbolClass names from registered libraries
@@ -269,6 +252,7 @@ impl Player {
         player.load_shared_movie(movie).map_err(|e| format!("{movie_path}: {}", player.describe(&e)))?;
         player.initialize_sound_events().map_err(|e| format!("{movie_path} sound events: {}", player.describe(&e)))?;
         resources.push((player.state.borrow().libraries.len() - 1, movie_path.to_string()));
+        player._file_scope = Some(file_scope);
         Ok((player, resources))
     }
 

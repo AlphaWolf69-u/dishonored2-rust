@@ -519,7 +519,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let path = item?.path();
             if path.extension().is_none_or(|extension| extension != "pck") { continue; }
             let Ok(package) = Package::open(&path) else { continue };
-            for entry in package.media.iter().chain(&package.external_media).filter(|entry| entry.id == id) {
+            for entry in package.media().iter().chain(package.external_media()).filter(|entry| entry.id == id) {
                 println!("{} id={:#x} lang={} size={}", path.display(), entry.id, entry.language_id, entry.size);
             }
         }
@@ -658,21 +658,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     for language in &package.languages {
         println!("  {} = {}", language.id, language.name);
     }
-    println!("{} banks, {} media items, {} external media items", package.banks.len(), package.media.len(), package.external_media.len());
+    println!("{} banks, {} media items, {} external media items", package.banks.len(), package.media().len(), package.external_media().len());
     for entry in &package.banks {
         println!("  bank id={:#x} lang={} offset={:#x} size={}", entry.id, entry.language_id, entry.offset, entry.size);
     }
     if summary_only {
         return Ok(());
     }
-    for entry in package.media.iter().chain(&package.external_media) {
+    for entry in package.media().iter().chain(package.external_media()) {
         println!("  id={:#x} lang={} offset={:#x} size={}", entry.id, entry.language_id, entry.offset, entry.size);
     }
     let mut file = File::open(path)?;
     let mut package_media = std::collections::HashMap::new();
     if resolve_events {
         let language_id = package.banks.first().map_or(0, |bank| bank.language_id);
-        for item in package.media.iter().chain(&package.external_media)
+        for item in package.media().iter().chain(package.external_media())
             .filter(|item| item.language_id == language_id)
         {
             package_media.insert(item.id as u32, package.read_entry(&mut file, *item)?);
@@ -719,6 +719,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
     use dishonored2_rust::assets::wwise::{decode_wem_pcm, PlaybackNode};
     let indent = "  ".repeat(depth);
     let id = match node {
+        PlaybackNode::Music(graph) => graph.root,
         PlaybackNode::Unsupported { node, .. } | PlaybackNode::Missing { node } |
         PlaybackNode::Sound { node, .. } | PlaybackNode::Generator { node, .. } |
         PlaybackNode::Layer { node, .. } | PlaybackNode::NoSource { node, .. } => *node,
@@ -732,6 +733,7 @@ fn print_playback(node: &dishonored2_rust::assets::wwise::PlaybackNode, depth: u
         return Ok(());
     }
     match node {
+        PlaybackNode::Music(graph) => println!("{indent}Music actor {:#010x}: {} actors, {} sources", graph.root, graph.actors.len(), graph.media.len()),
         PlaybackNode::Unsupported { node, reason } => println!("{indent}Unsupported actor {node:#010x}: {reason}"),
         PlaybackNode::Switch(switch) => {
             println!("{indent}Switch {:#010x}: group_kind={}, group={:#010x}, default={:#010x}, continuous={}",

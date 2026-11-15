@@ -12,6 +12,19 @@ pub struct Loops {
 }
 
 impl Loops {
+    /// Music-playlist counter (14115b4e0): its signed, inclusive integer
+    /// randomization differs from ordinary container loop modifiers.
+    pub fn music(count: i16, minimum: i16, maximum: i16, mut random15: impl FnMut() -> u16) -> Self {
+        let count = count as u16;
+        let sampled = if count == 0 || (minimum == 0 && maximum == 0) { count }
+            else {
+                let first = (i32::from(count as i16) + i32::from(minimum)).max(1) as i16;
+                let last = maximum.wrapping_add(count as i16);
+                if first == last { count }
+                else { (i32::from(first) + i32::from(random15()) % (i32::from(last) - i32::from(first) + 1)) as u16 }
+            };
+        Self { remaining: (sampled != 0).then_some(sampled) }
+    }
     pub fn new(settings: &ContainerPlayback, mut random15: impl FnMut() -> u16) -> Self {
         let remaining = match settings.loop_count {
             0 => None,
@@ -112,8 +125,30 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// Music JumpTo uses the authored playlist-item path (14115bda0),
+    /// preserving its parent's following cursor/avoid state.
+    pub fn seek_music(&mut self, index: usize, avoid_repeat: u16) {
+        self.sequence.cursor = index as i32;
+        self.sequence.forward = true;
+        self.visited.insert(index);
+        self.history.push_back(index);
+        while self.history.len() > usize::from(avoid_repeat) { self.history.pop_front(); }
+    }
     pub fn next(&mut self, mode: SelectionMode, weights: &[u32], avoid_repeat: u16,
         restart_backward: bool, loops: Option<&mut Loops>) -> Option<usize>
+    {
+        self.select(mode, weights, avoid_repeat, restart_backward, loops, None,
+            || rand::random_range(0u16..=32767))
+    }
+    /// 14115c270 uses the playlist's explicit weighting flag, even when
+    /// every weight equals 50000. Ordinary actors infer that flag instead.
+    pub fn next_music(&mut self, mode: SelectionMode, weights: &[u32], avoid_repeat: u16,
+        loops: Option<&mut Loops>, use_weights: bool, random15: impl FnMut() -> u16) -> Option<usize>
+    {
+        self.select(mode, weights, avoid_repeat, false, loops, Some(use_weights), random15)
+    }
+    fn select(&mut self, mode: SelectionMode, weights: &[u32], avoid_repeat: u16,
+        restart_backward: bool, loops: Option<&mut Loops>, weighted: Option<bool>, mut random15: impl FnMut() -> u16) -> Option<usize>
     {
         if weights.is_empty() { return None; }
         if mode == SelectionMode::Sequence {
@@ -141,10 +176,10 @@ impl Selection {
         // not the default 50000. 14111aa00 uses rand() % eligible-count for
         // the default case; 14113dfb0 combines two MSVC 15-bit draws for the
         // weighted case. Preserve their finite range and modulo bias.
-        let weighted = weights.iter().any(|&weight| weight != 50000);
-        let draw = u64::from(rand::random_range(0u16..=32767));
+        let weighted = weighted.unwrap_or_else(|| weights.iter().any(|&weight| weight != 50000));
+        let draw = u64::from(random15());
         let mut pick = if weighted {
-            (draw * 32768 + u64::from(rand::random_range(0u16..=32767))) % total
+            (draw * 32768 + u64::from(random15())) % total
         } else {
             draw % (total / 50000) * 50000
         };

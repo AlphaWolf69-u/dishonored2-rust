@@ -130,6 +130,14 @@ impl<T> ComponentPool<T> {
             .ok_or("cannot schedule an unallocated component")?;
         self.roster.schedule(index)
     }
+
+    /// Borrow one live component and its existing roster together for a
+    /// source callback that schedules before continuing its own work.
+    pub(crate) fn component_and_roster_mut(&mut self, index: u16) -> Option<(&mut T, &mut ComponentRoster)> {
+        let slot = self.chunks.get_mut(index as usize / self.items_per_chunk)?
+            .get_mut(index as usize % self.items_per_chunk)?.as_mut()?;
+        Some((slot, &mut self.roster))
+    }
     pub fn unschedule(&mut self, index: u16) -> Result<(), String> {
         self.get(index)
             .ok_or("cannot unschedule an unallocated component")?;

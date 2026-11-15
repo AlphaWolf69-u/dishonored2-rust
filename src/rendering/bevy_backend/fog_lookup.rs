@@ -31,6 +31,10 @@ pub struct FogLookupPass {
     bindings: [Option<([TextureViewId; 5], BindGroup)>; 2],
 }
 impl FogLookupPass {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        for (curve, role) in self.curves.iter().zip(["fog-lookup-0", "fog-lookup-1", "fog-lookup-2"]) { visit(role, &curve.texture); }
+    }
     /// Source36d0c0 fills all three R16F banks with half-float one. The caller
     /// supplies its actual previous raw blend weight, separately from pixels.
     pub fn new(device: &RenderDevice, queue: &RenderQueue, previous_weight: f32) -> Self {

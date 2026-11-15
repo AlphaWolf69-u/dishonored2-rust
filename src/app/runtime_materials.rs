@@ -311,6 +311,15 @@ impl MaterialWork {
         let cache = std::mem::take(&mut resolver.cache);
         let image_paths = std::mem::take(&mut resolver.diffuse_image_paths);
         drop(resolver);
+        // Only the pending batches publish. Existing assets are resolved from
+        // the live world again, so their snapshot handles can retire here.
+        let probe_snapshots = std::mem::take(&mut self.assets.probes.existing);
+        let decal_snapshots = std::mem::take(&mut self.assets.decals.existing);
+        if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+            eprintln!("FX_LIFECYCLE material_snapshots_retired probe_values={} decal_values={}",
+                probe_snapshots.len(), decal_snapshots.len());
+        }
+        drop((probe_snapshots, decal_snapshots));
         let mut all_images = Vec::with_capacity(image_paths.len());
         for (slot, path) in image_paths.iter().enumerate() {
             check_active()?;
@@ -422,7 +431,29 @@ pub(super) struct RuntimeMaterialCoordinator {
 }
 impl Drop for RuntimeMaterialCoordinator {
     fn drop(&mut self) {
-        if let Some(task) = &self.task { task.superseded.store(true, Ordering::Release); }
+        self.cancel_acquisition();
+    }
+}
+
+impl RuntimeMaterialCoordinator {
+    fn cancel_acquisition(&self) {
+        // Dropping a task handle cannot stop synchronous archive or program
+        // work already running. Keep the slot until the worker returns.
+        if let Some(work) = &self.task {
+            work.superseded.store(true, Ordering::Release);
+        }
+    }
+
+    pub(super) fn retire_acquisition(&mut self) -> bool {
+        self.waiting = None;
+        self.cancel_acquisition();
+        let Some(work) = &mut self.task else { return true };
+        let task = work.task.get_mut().unwrap_or_else(|error| error.into_inner());
+        if bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)).is_none() {
+            return false;
+        }
+        self.task = None;
+        true
     }
 }
 
@@ -430,52 +461,75 @@ fn add_lease(leases: &mut Vec<SourceLease>, lease: &SourceLease) {
     if !leases.iter().any(|old| std::sync::Weak::ptr_eq(old, lease)) { leases.push(lease.clone()); }
 }
 
-fn material_bind(world: &mut World, state: &mut RuntimeMaterialCoordinator,
-    handle: super::MaterialHandle, images: &[(usize, crate::surface_gpu::ImageRole)],
-    sort: Option<Result<[u32; 2], String>>) -> Result<(), String> {
-    let resident: Vec<_> = {
+struct MaterialBinding {
+    handle: super::MaterialHandle,
+    resident: Vec<(usize, crate::surface_gpu::ImageRole, Handle<Image>)>,
+    sort: Option<Result<[u32; 2], String>>,
+}
+
+impl MaterialBinding {
+    fn prepare(world: &World, assets: &MaterialAssets, handle: super::MaterialHandle,
+        images: &[(usize, crate::surface_gpu::ImageRole)], sort: Option<Result<[u32; 2], String>>,
+    ) -> Result<Self, String> {
+        match &handle {
+            super::MaterialHandle::Probe(handle)
+                if assets.probes.pending.get(handle).is_some()
+                    || world.resource::<Assets<super::ProbeMaterial>>().get(handle).is_some() => {}
+            super::MaterialHandle::Decal(handle)
+                if assets.decals.pending.get(handle).is_some()
+                    || world.resource::<Assets<super::DecalMaterial>>().get(handle).is_some() => {}
+            _ => return Err("runtime material binding has no supported asset".into()),
+        }
         let queue = world.resource::<super::SceneRenderQueue>();
-        images.iter().map(|&(slot, role)| queue.diffuse_image_handles.get(slot)
-            .and_then(Option::as_ref).cloned().map(|image| (slot, role, image))
-            .ok_or_else(|| format!("runtime material image slot {slot} has no resident handle")))
-            .collect::<Result<_, _>>()?
-    };
-    {
-        let mut queue = world.resource_mut::<super::SceneRenderQueue>();
-        if !queue.material_images.contains_key(&handle) { state.owned_bindings.insert(handle.clone()); }
-        queue.material_images.entry(handle.clone()).or_insert_with(|| images.iter().map(|(slot, _)| *slot).collect());
-        if let Some(sort) = sort { queue.material_stage_sorts.entry(handle.clone()).or_insert(sort); }
-        for (slot, role, _) in &resident {
-            let binding = (handle.clone(), *role);
-            if !queue.diffuse_image_materials[*slot].contains(&binding) { queue.diffuse_image_materials[*slot].push(binding); }
-        }
+        let resident = images.iter().map(|&(slot, role)| {
+            if queue.diffuse_image_materials.get(slot).is_none() {
+                return Err(format!("runtime material image slot {slot} has no binding list"));
+            }
+            queue.diffuse_image_handles.get(slot).and_then(Option::as_ref).cloned()
+                .map(|image| (slot, role, image))
+                .ok_or_else(|| format!("runtime material image slot {slot} has no resident handle"))
+        }).collect::<Result<_, _>>()?;
+        Ok(Self { handle, resident, sort })
     }
-    match &handle {
-        super::MaterialHandle::Probe(handle) => {
-            let mut assets = world.resource_mut::<Assets<super::ProbeMaterial>>();
-            let Some(mut material) = assets.get_mut(handle) else { return Err("runtime probe material asset is absent".into()) };
-            for (_, role, image) in &resident {
-                if *role == crate::surface_gpu::ImageRole::occlusion() { material.base.occlusion_texture = Some(image.clone()); }
-                else {
-                    *material.extension.image_mut(*role) = Some(image.clone());
-                    if role.0 == 0 { material.base.base_color_texture = Some(image.clone()); }
+
+    fn publish(self, world: &mut World, state: &mut RuntimeMaterialCoordinator) {
+        let Self { handle, resident, sort } = self;
+        match &handle {
+            super::MaterialHandle::Probe(handle) => {
+                let mut assets = world.resource_mut::<Assets<super::ProbeMaterial>>();
+                let mut material = assets.get_mut(handle).expect("validated runtime probe material");
+                for (_, role, image) in &resident {
+                    if *role == crate::surface_gpu::ImageRole::occlusion() { material.base.occlusion_texture = Some(image.clone()); }
+                    else {
+                        *material.extension.image_mut(*role) = Some(image.clone());
+                        if role.0 == 0 { material.base.base_color_texture = Some(image.clone()); }
+                    }
                 }
             }
-        }
-        super::MaterialHandle::Decal(handle) => {
-            let mut assets = world.resource_mut::<Assets<super::DecalMaterial>>();
-            let Some(mut material) = assets.get_mut(handle) else { return Err("runtime decal material asset is absent".into()) };
-            for (_, role, image) in &resident {
-                if *role == crate::surface_gpu::ImageRole::occlusion() { material.base.occlusion_texture = Some(image.clone()); }
-                else {
-                    *material.extension.image_mut(*role) = Some(image.clone());
-                    if role.0 == 0 { material.base.base_color_texture = Some(image.clone()); }
+            super::MaterialHandle::Decal(handle) => {
+                let mut assets = world.resource_mut::<Assets<super::DecalMaterial>>();
+                let mut material = assets.get_mut(handle).expect("validated runtime decal material");
+                for (_, role, image) in &resident {
+                    if *role == crate::surface_gpu::ImageRole::occlusion() { material.base.occlusion_texture = Some(image.clone()); }
+                    else {
+                        *material.extension.image_mut(*role) = Some(image.clone());
+                        if role.0 == 0 { material.base.base_color_texture = Some(image.clone()); }
+                    }
                 }
             }
+            _ => unreachable!("validated runtime material binding type"),
         }
-        _ => return Err("runtime particle material has an unsupported binding type".into()),
+        {
+            let mut queue = world.resource_mut::<super::SceneRenderQueue>();
+            if !queue.material_images.contains_key(&handle) { state.owned_bindings.insert(handle.clone()); }
+            queue.material_images.entry(handle.clone()).or_insert_with(|| resident.iter().map(|(slot, _, _)| *slot).collect());
+            if let Some(sort) = sort { queue.material_stage_sorts.entry(handle.clone()).or_insert(sort); }
+            for (slot, role, _) in &resident {
+                let binding = (handle.clone(), *role);
+                if !queue.diffuse_image_materials[*slot].contains(&binding) { queue.diffuse_image_materials[*slot].push(binding); }
+            }
+        }
     }
-    Ok(())
 }
 
 fn refresh_images(world: &mut World, state: &RuntimeMaterialCoordinator) {
@@ -548,7 +602,7 @@ pub(super) fn coordinate(world: &mut World) {
             if let Some(request) = world.get_resource::<super::usable_effects::DynamicWorldMaterials>() { request.failed.store(generation, Ordering::Release); }
             if let Some(request) = world.get_resource::<super::usable_effects::DynamicDecalMaterials>() { request.failed.store(generation, Ordering::Release); }
         }
-        if let Some(task) = state.task.take() { task.superseded.store(true, Ordering::Release); }
+        state.cancel_acquisition();
         state.waiting = None;
         if world.get_resource::<super::runtime_fx_images::RuntimeFxImages>()
             .and_then(|images| images.failure.as_ref()).is_some_and(|(failed, _)| *failed == generation) {
@@ -602,7 +656,7 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
     let expired = state.pending_prune && state.leases.iter().any(|lease| lease.strong_count() == 0);
     let changed = state.revision != Some(generation) || retirement_changed || expired;
     if changed {
-        if let Some(task) = state.task.take() { task.superseded.store(true, Ordering::Release); }
+        state.cancel_acquisition();
         state.waiting = None;
         state.published_generation = None;
         for lease in leases.iter() { add_lease(&mut state.leases, lease); }
@@ -624,7 +678,19 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
                 world.despawn(surface.entity);
             }
         }
+        let previous_decals = state.decals.len();
         state.decals.retain(|key, _| decal_leases.contains_key(key));
+        {
+            let mut publication = world.resource_mut::<super::usable_effects::DynamicDecalMaterials>();
+            publication.prepared_generation = None;
+            if state.decals.len() != previous_decals {
+                // Withdraw dead leases independently of replacement readiness.
+                // This snapshot can only lose entries until publication below.
+                Arc::make_mut(&mut publication.prepared)
+                    .retain(|item| state.decals.contains_key(&(item.name.clone(), item.world)));
+                publication.prepared_revision = publication.prepared_revision.wrapping_add(1);
+            }
+        }
         for cached in state.cache.values_mut() {
             cached.leases.retain(|lease| lease.strong_count() != 0);
             for consumer in &cached.consumers {
@@ -647,11 +713,13 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         let task = work.task.get_mut().unwrap_or_else(|error| error.into_inner());
         if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
             let task_generation = work.generation;
+            let superseded = work.superseded.load(Ordering::Acquire);
             state.task = None;
-            let batch = result?;
-            if task_generation == generation {
-                state.waiting = Some(WaitingMaterialBatch { generation, batch });
+            if !superseded && task_generation == generation {
+                state.waiting = Some(WaitingMaterialBatch { generation, batch: result? });
                 refresh_images(world, state);
+            } else if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE material_discard generation={task_generation} current={generation} superseded={superseded}");
             }
         }
     }
@@ -728,7 +796,7 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         drop(ready);
         let mut decal = world.resource_mut::<super::usable_effects::DynamicDecalMaterials>();
         decal.prepared = Arc::new(state.decals.values().cloned().collect());
-        decal.prepared_generation = generation;
+        decal.prepared_generation = Some(generation);
         decal.prepared_revision = decal.prepared_revision.wrapping_add(1);
         state.published_generation = Some(generation);
     }
@@ -748,41 +816,37 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
 
 fn publish_batch(world: &mut World, state: &mut RuntimeMaterialCoordinator,
     batch: PreparedBatch, slots: &[usize]) -> Result<(), String> {
-    let old_surfaces: HashSet<_> = state.surfaces.keys().cloned().collect();
-    let old_decals: HashSet<_> = state.decals.keys().cloned().collect();
-    let old_cache: HashSet<_> = state.cache.keys().cloned().collect();
-    let old_leases: Vec<_> = state.cache.iter().map(|(key, value)| (key.clone(), value.leases.clone(), value.consumers.clone())).collect();
-    let mesh_ids = batch.assets.meshes.ids(|_| true);
-    let probe_ids = batch.assets.probes.pending.ids(|_| true);
-    let decal_ids = batch.assets.decals.pending.ids(|_| true);
-    let sky_ids = batch.assets.skies.ids(|_| true);
-    let buffer_ids = batch.assets.buffers.ids(|_| true);
-    let mut inserted = Vec::new();
-    let result = publish_batch_inner(world, state, batch, slots, &mut inserted);
-    if result.is_err() {
-        let surfaces: Vec<_> = state.surfaces.keys().filter(|key| !old_surfaces.contains(*key)).cloned().collect();
-        for key in surfaces { if let Some(surface) = state.surfaces.remove(&key) { world.despawn(surface.entity); } }
-        state.decals.retain(|key, _| old_decals.contains(key));
-        state.cache.retain(|key, _| old_cache.contains(key));
-        for (key, leases, consumers) in old_leases {
-            if let Some(cached) = state.cache.get_mut(&key) { cached.leases = leases; cached.consumers = consumers; }
-        }
-        for (name, geometry) in inserted { world.resource_mut::<RuntimeMaterialOwner>().cache.remove_dynamic(&name, geometry); }
-        release_bindings(world, state);
-        for id in mesh_ids { world.resource_mut::<Assets<Mesh>>().remove(id); }
-        for id in probe_ids { world.resource_mut::<Assets<super::ProbeMaterial>>().remove(id); }
-        for id in decal_ids { world.resource_mut::<Assets<super::DecalMaterial>>().remove(id); }
-        for id in sky_ids { world.resource_mut::<Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>>().remove(id); }
-        for id in buffer_ids { world.resource_mut::<Assets<ShaderBuffer>>().remove(id); }
-    }
-    result
-}
-
-fn publish_batch_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator,
-    batch: PreparedBatch, slots: &[usize], inserted: &mut Vec<MaterialKey>) -> Result<(), String> {
     let PreparedBatch { assets, surfaces, surface_images, decals, cache, image_paths: _, all_images, dependencies } = batch;
     if all_images.len() != slots.len() { return Err("runtime material slot mapping has the wrong length".into()); }
     let images_by_slot: HashMap<_, _> = slots.iter().copied().zip(all_images.iter().cloned()).collect();
+    let mapped = world.resource::<RuntimeMaterialOwner>().cache.map_dynamic(cache, slots)?;
+    let mapped = mapped.into_iter().map(|(name, geometry, material)| {
+        let key = (name, geometry);
+        if !dependencies.contains_key(&key) { return Err("runtime cached material has no traced request owner".into()); }
+        let binding = MaterialBinding::prepare(world, &assets, material.handle.clone(),
+            &material.images, Some(material.stage_sort.clone()))?;
+        Ok((key, material, binding))
+    }).collect::<Result<Vec<_>, String>>()?;
+    let surfaces = surfaces.into_iter().map(|surface| {
+        let roles = surface.images.iter().map(|(slot, role)| slots.get(*slot).copied()
+            .map(|slot| (slot, *role)).ok_or("runtime surface image mapping is incomplete"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let binding = MaterialBinding::prepare(world, &assets, super::MaterialHandle::Probe(surface.handle.clone()),
+            &roles, None)?;
+        Ok((surface, binding))
+    }).collect::<Result<Vec<_>, String>>()?;
+    let image_owner = world.resource::<super::runtime_fx_images::RuntimeFxImages>();
+    let decals = decals.into_iter().map(|decal| {
+        let roles = decal.images.iter().map(|(role, image)| image_owner.slot(&image.path)
+            .map(|slot| (slot, *role)).ok_or_else(|| format!("runtime decal image {} is not registered", image.path)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let binding = MaterialBinding::prepare(world, &assets, super::MaterialHandle::Decal(decal.handle.clone()),
+            &roles, None)?;
+        Ok((decal, binding))
+    }).collect::<Result<Vec<_>, String>>()?;
+
+    // Nothing in the exclusive world can replace these resolved dependencies
+    // between validation and publication. Unpublished batches drop normally.
     let lease_for = |consumer: &MaterialConsumer, source: &FxSources| match consumer {
         MaterialConsumer::Mesh(key) => source.world_meshes().iter().any(|(mesh, material, _)| mesh == &key.0 && material == &key.1),
         MaterialConsumer::Decal(key) => source.decal_materials().contains(key),
@@ -797,15 +861,13 @@ fn publish_batch_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator
             }
         }
     }
-    let mapped = world.resource_mut::<RuntimeMaterialOwner>().cache.merge_dynamic(cache, slots)?;
-    inserted.extend(mapped.iter().map(|(name, geometry, _)| (name.clone(), *geometry)));
     // Reserved identities become live before any proxy entity is spawned.
     assets.publish(world);
-    for (name, geometry, material) in mapped {
-        material_bind(world, state, material.handle.clone(), &material.images, Some(material.stage_sort.clone()))?;
+    for (key, material, binding) in mapped {
+        world.resource_mut::<RuntimeMaterialOwner>().cache.insert(key.0.clone(), key.1, Some(material.clone()));
+        binding.publish(world, state);
         let images = material.images.iter().filter_map(|(slot, _)| images_by_slot.get(slot).cloned()).collect();
-        let key = (name, geometry);
-        let consumers = dependencies.get(&key).ok_or("runtime cached material has no traced request owner")?;
+        let consumers = &dependencies[&key];
         let mut leases = Vec::new();
         for lease in &state.leases {
             if let Some(source) = lease.upgrade() {
@@ -814,26 +876,40 @@ fn publish_batch_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator
         }
         state.cache.insert(key, CacheLease { handle: material.handle, images, leases, consumers: consumers.clone() });
     }
-    for surface in surfaces {
+    for (surface, binding) in surfaces {
         let key = (surface.source.clone(), surface.material.clone());
         let images = surface_images.get(&surface.material).cloned().unwrap_or_default();
-        let roles = surface.images.iter().map(|(slot, role)| slots.get(*slot).copied()
-            .map(|slot| (slot, *role)).ok_or("runtime surface image mapping is incomplete"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let handle = super::MaterialHandle::Probe(surface.handle.clone());
-        material_bind(world, state, handle.clone(), &roles, None)?;
+        let handle = binding.handle.clone();
+        binding.publish(world, state);
         let entity = surface.publish(world);
         state.surfaces.insert(key, SurfaceLease { entity, handle, images });
     }
-    for decal in decals {
-        let roles = {
-            let image_owner = world.resource::<super::runtime_fx_images::RuntimeFxImages>();
-            decal.images.iter().map(|(role, image)| image_owner.slot(&image.path)
-                .map(|slot| (slot, *role)).ok_or_else(|| format!("runtime decal image {} is not registered", image.path)))
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        material_bind(world, state, super::MaterialHandle::Decal(decal.handle.clone()), &roles, None)?;
+    for (decal, binding) in decals {
+        binding.publish(world, state);
         state.decals.insert((decal.name.clone(), decal.world), decal);
     }
     Ok(())
+}
+
+
+/// Source-owned read-only worker/publication state for opt-in admission logs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CoordinatorSnapshot {
+    pub initialized: bool,
+    pub revision: Option<u64>,
+    pub published_generation: Option<u64>,
+    pub task_generation: Option<u64>,
+    pub waiting_generation: Option<u64>,
+    pub handled_image_failure: Option<u64>,
+    pub image_failure: Option<(u64, String)>,
+}
+pub(super) fn observe_coordinator(world: &World) -> Result<CoordinatorSnapshot, String> {
+    let state = world.get_resource::<RuntimeMaterialCoordinator>().ok_or("FX admission has no material coordinator")?;
+    let images = world.get_resource::<super::runtime_fx_images::RuntimeFxImages>().ok_or("FX admission has no runtime image owner")?;
+    Ok(CoordinatorSnapshot {
+        initialized: state.initialized, revision: state.revision, published_generation: state.published_generation,
+        task_generation: state.task.as_ref().map(|task| task.generation),
+        waiting_generation: state.waiting.as_ref().map(|waiting| waiting.generation),
+        handled_image_failure: state.handled_image_failure, image_failure: images.failure.clone(),
+    })
 }

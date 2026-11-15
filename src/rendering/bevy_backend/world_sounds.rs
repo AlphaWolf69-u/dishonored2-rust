@@ -26,6 +26,7 @@ pub(crate) struct SoundObject {
     pub audible_mask: u32,
     pub range: f32,
     events: Vec<(PlayingId, f32)>,
+    retiring: bool,
 }
 impl SoundObject {
     pub fn has_events(&self) -> bool { !self.events.is_empty() }
@@ -58,6 +59,7 @@ pub(crate) struct SoundState {
     pub queued: Vec<Ticket>,
     pub released: Vec<Emitter>,
     pub playing: PlayingEvents,
+    pub(crate) playing_ids: Option<crate::gameplay::sound::playing::PlayingIds>,
     pub notifications: Vec<Notification>,
     pub acoustics: Option<Arc<Mutex<AcousticWorld>>>,
     pub listeners: [Option<AdmissionListener>; 8],
@@ -107,7 +109,7 @@ impl SoundObjectWorld for WorldSounds {
             position, pending_position: position, front: context.axis.x_axis,
             pending_front: context.axis.x_axis, displacement: Vec3::ZERO,
             scale: 1.0, energy: None, source_occlusion: true, audible_mask: 0,
-            range: -1.0, events: Vec::new(),
+            range: -1.0, events: Vec::new(), retiring: false,
         });
         Ok(Some(emitter))
     }
@@ -115,6 +117,7 @@ impl SoundObjectWorld for WorldSounds {
         event: u32, _: &SoundFrame) -> Result<Option<PlayingId>, String>
     {
         let mut state = self.lock();
+        if state.objects.get(&object).is_some_and(|object| object.retiring) { return Err("FX sound object is retiring".into()); }
         let declaration = state.declarations.get(event as usize).and_then(Option::as_ref)
             .ok_or("FX sound declaration reference is absent")?.clone();
         let declaration = &declaration.declaration;
@@ -125,7 +128,9 @@ impl SoundObjectWorld for WorldSounds {
             && declaration.duration[1] <= 2.0
             && admission::motion_inaudible(source.position, source.displacement, declaration.max_distance, &state.motion)
         { return Ok(None); }
-        let ticket = state.playing.register(Event { object, declaration: event, callbacks: 0x8009 })?;
+        if !state.playing.can_register_object(object) { return Err("sound object cookie pool is full".into()); }
+        let playing_id = state.playing_ids.as_ref().ok_or("shared audio playing-ID owner is absent")?.allocate();
+        let ticket = state.playing.register_with_id(playing_id, Event { object, declaration: event, callbacks: 0x8009 })?;
         let id = ticket.id();
         let source = state.objects.get_mut(&object).ok_or("FX sound object was removed")?;
         source.events.push((id, declaration.max_distance));
@@ -137,11 +142,15 @@ impl SoundObjectWorld for WorldSounds {
     }
     fn release(&mut self, object: Emitter, stop: bool) -> Result<(), String> {
         let mut state = self.lock();
-        state.objects.remove(&object).ok_or("FX sound object released twice")?;
-        if stop {
-            state.queued.retain(|ticket| ticket.event().object != object);
-            state.released.push(object);
+        if !state.objects.contains_key(&object) || state.released.contains(&object) {
+            return Err("FX sound object released twice".into());
         }
+        if stop {
+            // Accepted tickets retain their object until submission and the
+            // ordered return marker; the audio consumer owns final removal.
+            state.objects.get_mut(&object).expect("validated sound object").retiring = true;
+            state.released.push(object);
+        } else { state.objects.remove(&object); }
         Ok(())
     }
     fn initialize_posted(&mut self, object: Emitter, _: &SoundFrame) -> Result<(), String> {

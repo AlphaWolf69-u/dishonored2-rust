@@ -2670,6 +2670,17 @@ impl crate::Device for super::Device {
     }
 
     fn generate_allocator_report(&self) -> Option<wgt::AllocatorReport> {
+        if std::env::var("DH2_DEBUG_DX12_ALLOCATION_LIFETIME").as_deref() == Ok("1") {
+            self.shared.heap_views.report_lifetime("shader-views");
+            self.shared.sampler_heap.report_lifetime();
+            self.rtv_pool.lock().report_lifetime("render-target-views");
+            self.dsv_pool.lock().report_lifetime("depth-stencil-views");
+            self.srv_uav_pool.lock().report_lifetime("cpu-shader-views");
+            let cache = self.sampler_index_buffers.lock();
+            log::warn!(target: "wgpu_hal::dx12::resource_lifetime",
+                "DX12_DEVICE_CACHE command_list_pairs={} sampler_index_keys={} sampler_index_live={} opaque_pipeline_driver_bytes=unknown",
+                self.shared.command_lists.lock().len(), cache.len(), cache.values().filter(|entry| entry.strong_count() != 0).count());
+        }
         Some(self.mem_allocator.generate_report())
     }
 

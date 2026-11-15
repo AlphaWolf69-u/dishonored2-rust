@@ -48,6 +48,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+mod faction_component;
 mod local_shadow_updates;
 mod fog_lights;
 mod area_lights;
@@ -57,15 +58,21 @@ mod model_motion;
 mod particle_view;
 mod particle_surface;
 mod machinery;
+mod joint_frames;
 mod load_timing;
 mod resource_diagnostics;
 mod preparation_diagnostics;
 mod scene_acquisition_diagnostics;
+mod runtime_lifecycle_diagnostics;
+mod fx_lifecycle_diagnostics;
+mod ui_lifecycle_diagnostics;
+pub use runtime_lifecycle_diagnostics::inspect_runtime_lifecycles;
 pub use scene_acquisition_diagnostics::{inspect_scene_preparation, inspect_scene_publication, inspect_scene_gpu_resources};
 pub use preparation_diagnostics::{inspect_cpu_preparation, inspect_ui_bitmap_ownership};
 mod level_lifetime;
 mod setup_commands;
 mod scene_preparation;
+mod common_model_meshes;
 mod loading_fade;
 pub use loading_screen::request_level;
 mod physics_skinning;
@@ -136,18 +143,18 @@ use visibility_instances::TomeRenderInstanceMap;
 mod view_geometry;
 use view_geometry::{
     apply_placed_model_queries, authored_area_light_transform, authored_light_cosines,
-    authored_mesh, authored_world_bounds, environment_sun_ray, expanded_model_placements,
+    authored_world_bounds, environment_sun_ray, expanded_model_placements,
     f8_camera_pose, f8_reference_fov, game_affine_to_view, game_to_view,
     initial_placed_model_query, light_backend_intensity, mean_game_position,
     view_distance_scale, needs_exact_world_mesh, light_distance,
     light_preset, light_volume_intersects_camera,
     local_light_clip_to_world, placed_direction, placed_transform, placed_vertex,
     preserved_half_point_angular_scale, reference_fov_from_projection, render_bounds,
-    retain_vegetation_channels, retain_world_shadow_channels, source_mesh,
+    retain_vegetation_channels, retain_world_shadow_channels,
     transformed, transformed_direction, view_of, view_to_game, Bounds,
 };
 #[cfg(test)]
-use view_geometry::static_model_collision;
+use view_geometry::{authored_mesh, source_mesh, static_model_collision};
 mod material_loading;
 mod runtime_materials;
 use material_loading::{material_option_overrides, MaterialResolver};
@@ -169,6 +176,7 @@ use light_culling::{
 mod performance;
 use performance::{benchmark_frames, finish_streaming_diagnostics, show_frame_rate};
 mod launch;
+mod offscreen_runtime;
 mod loading_screen;
 mod level_prepare;
 mod loading_movie;
@@ -191,3 +199,7 @@ pub fn main() {
 mod tests;
 
 mod projected_decals;
+
+mod rigid_body;
+
+mod entity_graphs;

@@ -121,6 +121,14 @@ pub struct FogPass {
 }
 
 impl FogPass {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        for (role, attachment) in [("fog-interior", &self.targets.interior), ("fog-depth", &self.targets.depth),
+            ("fog-canvas", &self.targets.canvas), ("fog-shadow", &self.targets.shadow),
+            ("fog-world", &self.targets.world), ("fog-filtered", &self.targets.filtered)] { visit(role, &attachment.texture); }
+        if let Some(canvas) = &self.light_canvas { visit("fog-light-canvas", &canvas.target.texture); }
+        if let Some(filter) = &self.ray_visibility { filter.visit_owned_targets(visit); }
+    }
     pub fn pipelines(&self) -> &FogPipelines {
         &self.pipelines
     }

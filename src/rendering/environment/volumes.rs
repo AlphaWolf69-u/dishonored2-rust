@@ -9,6 +9,7 @@ pub struct EnvironmentVolume {
     ///88e220 reads this nullable Material parameter from the selected water
     /// profile after ordinary environment tracking, without blending it.
     pub surface_material: Option<String>,
+    pub ambiance: Option<std::sync::Arc<crate::gameplay::music::Event>>,
 }
 
 /// The live physics and water owners need only these selected values.
@@ -17,6 +18,7 @@ pub(crate) struct RuntimeEnvironmentVolume {
     pub position: [f32; 3],
     pub is_water_volume: bool,
     pub surface_material: Option<String>,
+    pub ambiance: Option<std::sync::Arc<crate::gameplay::music::Event>>,
     // Diagnostic comparison keeps the preparation payload alive.
     pub _retained: Option<Box<EnvironmentVolume>>,
 }
@@ -37,6 +39,8 @@ fn resolve_with_cache(
     let trace = *TRACE.get_or_init(|| std::env::var("DH2_DEBUG_ENVIRONMENT_ACQUISITIONS").as_deref() == Ok("1"));
     let mut reads = 0usize;
     let mut decoded_bytes = 0usize;
+    let ambiance = entities::environment_sound_event(&placement.environment_decl)?
+        .map(|name| crate::gameplay::music::Event::acquire(catalog, &name)).transpose()?;
     let parameters = entities::environment_parameters_with_parent_cache(
         &placement.id,
         &placement.environment_decl,
@@ -45,7 +49,7 @@ fn resolve_with_cache(
                 .read(&format!("generated/decls/env/{parent}.decl"))
                 .map_err(|e| e.to_string())?;
             if trace { reads += 1; decoded_bytes += bytes.as_ref().map_or(0, Vec::len); }
-            Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+            Ok(bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "area-env")))
         }, cache,
     )?;
     // 342ce0's default argument is false in 88d060. Use the same parameter
@@ -77,6 +81,7 @@ fn resolve_with_cache(
         }
     }
     Ok(EnvironmentVolume {
+        ambiance,
         surface_material,
         placement,
         parameters,

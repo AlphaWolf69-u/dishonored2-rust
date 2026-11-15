@@ -10,20 +10,24 @@ pub struct FieldPixels {
 }
 impl FieldPixels {
     pub fn read(bytes: &[u8]) -> Result<Self, String> {
-        let chain = crate::assets::texture::compressed_inline_chain(bytes)?;
-        if chain.info.format != crate::assets::texture::ImageFormat::Rg8 {
+        let mut base = &[][..];
+        let info = crate::assets::texture::visit_inline_mips(bytes, |level, mip| {
+            if level == 0 {
+                base = mip.payload;
+            }
+        })?;
+        if info.format != crate::assets::texture::ImageFormat::Rg8 {
             return Err("particle vector field needs its authored two-channel byte image".into());
         }
-        let width = i32::try_from(chain.info.width)
+        let width = i32::try_from(info.width)
             .map_err(|_| "field texture width exceeds signed coordinates")?;
-        let height = i32::try_from(chain.info.height)
+        let height = i32::try_from(info.height)
             .map_err(|_| "field texture height exceeds signed coordinates")?;
         let size = (width as usize)
             .checked_mul(height as usize)
             .and_then(|n| n.checked_mul(2))
             .ok_or("field texture size overflow")?;
-        let rg = chain
-            .payload
+        let rg = base
             .get(..size)
             .ok_or("truncated particle field image")?
             .to_vec();

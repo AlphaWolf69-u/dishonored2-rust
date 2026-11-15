@@ -31,6 +31,7 @@ struct Triangle {
 /// The immutable level map: triangles, their broad phase and materials.
 /// Shared (`CollisionWorld::map`) with readers on other threads, such as the
 /// renderer's Havok particle collisions.
+#[derive(Clone)]
 pub struct CollisionMap {
     triangles: Vec<Triangle>,
     index: TriangleIndex,
@@ -48,10 +49,22 @@ pub struct CollisionWorld {
     owner_ids: HashMap<Arc<str>, Vec<u32>>,
     owner_names: Vec<Option<Arc<str>>>,
     owner_active: Vec<bool>,
+    /// Placed bodies normally occupy one contiguous triangle run. Keep one
+    /// compact locator per owner; arbitrary interleaved inputs retain a scan.
+    owner_spans: Vec<OwnerSpan>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum OwnerSpan {
+    #[default]
+    Empty,
+    Contiguous { start: u32, end: u32 },
+    Scattered,
 }
 
 /// Host broad phase replacing Havok's compressed-mesh tree. Once built, its
 /// lists are immutable: pack them without changing triangle/query order.
+#[derive(Clone)]
 enum TriangleIndex {
     Packed {
         cells: hashbrown::HashMap<(i32, i32, i32), std::ops::Range<usize>>,
@@ -66,7 +79,7 @@ enum TriangleIndex {
 #[derive(Clone, Copy, Debug)]
 pub struct ComponentBox { first: usize, owner: u32, generation: u32 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ExpandedIndex {
     /// foldhash (hashbrown's default): looked up per cell of every query.
     cells: hashbrown::HashMap<(i32, i32, i32), Vec<usize>>,
@@ -176,10 +189,21 @@ impl CollisionWorld {
         owners: Vec<String>,
         materials: Vec<PhysicsMaterial>,
     ) -> Self {
-        Self::with_quads(
+        Self::with_materials_until(source, owners, materials, || false)
+            .expect("uncancelled collision construction")
+    }
+
+    pub(crate) fn with_materials_until(
+        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32, u32)>,
+        owners: Vec<String>,
+        materials: Vec<PhysicsMaterial>,
+        cancelled: impl Fn() -> bool,
+    ) -> std::io::Result<Self> {
+        Self::with_quads_until(
             source.into_iter().map(|(triangle, owner, material, filter)| (triangle, owner, material, filter, false)),
             owners,
             materials,
+            cancelled,
         )
     }
 
@@ -190,6 +214,24 @@ impl CollisionWorld {
         owners: Vec<String>,
         materials: Vec<PhysicsMaterial>,
     ) -> Self {
+        Self::with_quads_until(source, owners, materials, || false)
+            .expect("uncancelled collision construction")
+    }
+
+    pub(crate) fn with_quads_until(
+        source: impl IntoIterator<Item = ([Vec3; 3], u32, u32, u32, bool)>,
+        owners: Vec<String>,
+        materials: Vec<PhysicsMaterial>,
+        cancelled: impl Fn() -> bool,
+    ) -> std::io::Result<Self> {
+        let check_cancelled = || {
+            if cancelled() {
+                Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "collision index construction cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
         let mut owner_ids = HashMap::<Arc<str>, Vec<u32>>::new();
         let mut owner_names = Vec::with_capacity(owners.len());
         for (index, id) in owners.into_iter().enumerate() {
@@ -205,8 +247,10 @@ impl CollisionWorld {
             index: TriangleIndex::Expanded(ExpandedIndex::default()),
             materials,
         };
+        let mut owner_spans = vec![OwnerSpan::Empty; owner_count];
         let mut previous = None;
-        for ([a, b, c], owner, material, filter, quad_second) in source {
+        for (source_index, ([a, b, c], owner, material, filter, quad_second)) in source.into_iter().enumerate() {
+            if source_index % 4096 == 0 { check_cancelled()?; }
             let first: Option<u32> = previous.take();
             if owner != u32::MAX && owner as usize >= owner_count {
                 continue;
@@ -225,6 +269,15 @@ impl CollisionWorld {
             let min = a.min(b).min(c);
             let max = a.max(b).max(c);
             let index = world.triangles.len();
+            if let Some(span) = owner_spans.get_mut(owner as usize) {
+                let index = u32::try_from(index).map_err(|_| std::io::Error::other("collision shape key exceeds u32"))?;
+                let end = index.checked_add(1).ok_or_else(|| std::io::Error::other("collision shape key exceeds u32"))?;
+                *span = match *span {
+                    OwnerSpan::Empty => OwnerSpan::Contiguous { start: index, end },
+                    OwnerSpan::Contiguous { start, end: previous } if previous == index => OwnerSpan::Contiguous { start, end },
+                    _ => OwnerSpan::Scattered,
+                };
+            }
             world.triangles.push(Triangle {
                 a,
                 b,
@@ -258,6 +311,7 @@ impl CollisionWorld {
                 }
             }
         }
+        check_cancelled()?;
         let expanded_bytes = world.triangles.capacity() * std::mem::size_of::<Triangle>()
             + build_index.large.capacity() * std::mem::size_of::<usize>()
             + build_index.cells.values().map(|v| v.capacity() * std::mem::size_of::<usize>()).sum::<usize>()
@@ -268,7 +322,8 @@ impl CollisionWorld {
             let count: usize = build_index.cells.values().map(Vec::len).sum();
             let mut indices = Vec::with_capacity(count);
             let mut cells = hashbrown::HashMap::with_capacity(build_index.cells.len());
-            for (cell, list) in build_index.cells {
+            for (cell_index, (cell, list)) in build_index.cells.into_iter().enumerate() {
+                if cell_index % 4096 == 0 { check_cancelled()?; }
                 let start = indices.len();
                 indices.extend(list.into_iter().map(|id| u32::try_from(id).expect("collision shape key exceeds u32")));
                 cells.insert(cell, start..indices.len());
@@ -290,7 +345,7 @@ impl CollisionWorld {
                 TriangleIndex::Packed { cells, .. } => cells.len(), TriangleIndex::Expanded(index) => index.cells.len(),
             });
         }
-        Self {
+        Ok(Self {
             map: Arc::new(world),
             component_triangles: Vec::new(),
             component_generations: Vec::new(),
@@ -300,7 +355,8 @@ impl CollisionWorld {
             owner_ids,
             owner_names,
             owner_active: vec![true; owner_count],
-        }
+            owner_spans,
+        })
     }
 
     /// The shared level map and the owners currently active.
@@ -318,8 +374,51 @@ impl CollisionWorld {
         true
     }
 
+    /// Project the canonical body's c87640 AND-mask into its existing static
+    /// navigation geometry. 81a5f0 material overrides only clear bits, so the
+    /// same mask commutes with the already-decoded primary/ExtraHD leaf filters.
+    /// This retains geometry, materials and owner identity; it does not create
+    /// another collider or disable unrelated component-owned interaction boxes.
+    pub(crate) fn mask_placed_owner_filter(&mut self, id: &str, mask: u32) -> bool {
+        let Some(owners) = self.owner_ids.get(id) else { return false; };
+        // Level preparation masks before the map is shared; a later call
+        // copies it rather than changing what readers already hold.
+        let map = Arc::make_mut(&mut self.map);
+        for &owner in owners {
+            match self.owner_spans.get(owner as usize).copied().unwrap_or_default() {
+                OwnerSpan::Empty => {},
+                OwnerSpan::Contiguous { start, end } => {
+                    for triangle in &mut map.triangles[start as usize..end as usize] { triangle.filter &= mask; }
+                },
+                OwnerSpan::Scattered => {
+                    for triangle in &mut map.triangles {
+                        if triangle.owner == owner { triangle.filter &= mask; }
+                    }
+                },
+            }
+        }
+        true
+    }
+
     pub fn triangle_count(&self) -> usize {
         self.map.triangles.len()
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn preparation_signature(&self) -> u32 {
+        let mut crc = flate2::Crc::new();
+        for triangle in &self.map.triangles {
+            let mut bytes = [0; 72];
+            let words = [triangle.a, triangle.b, triangle.c, triangle.min, triangle.max]
+                .into_iter()
+                .flat_map(|point| point.to_array().map(f32::to_bits))
+                .chain([triangle.owner, triangle.material, triangle.filter]);
+            for (target, word) in bytes.chunks_exact_mut(4).zip(words) {
+                target.copy_from_slice(&word.to_le_bytes());
+            }
+            crc.update(&bytes);
+        }
+        crc.sum()
     }
 
     pub fn large_triangle_count(&self) -> usize {

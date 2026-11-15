@@ -11,6 +11,7 @@
 use crate::edge_skeleton::JointRestPose;
 pub(crate) mod residency;
 pub use residency::acquire;
+pub(crate) use residency::acquire_cancellable;
 pub(crate) use residency::{find_existing, force_load, ResourceScope};
 pub(crate) use residency::{acquire_record, acquire_record_in_context, find_record, register_lazy_in_context, register_lazy_preload,
     force_load_in_context, mark_preload_persistent, promote_bootstrap, promote_existing_bootstrap,
@@ -35,7 +36,7 @@ const QUAT_OFFSET: f32 = -0.707_106_77;
 pub struct AnimationData {
     data: Vec<u8>,
     /// Per-joint blend weights (u16@0x28 bytes at u32@0x30), if present.
-    pub joint_weights: Option<Vec<u8>>,
+    joint_weights: std::ops::Range<usize>,
     /// Trailer `m_flags` (FUN_140240210): bit 0 additive, bits 1..3 remove
     /// root T.x/T.y/T.z, bit 4 remove root rotation.
     pub flags: u16,
@@ -134,9 +135,14 @@ impl EdgeAnimation {
         Ok(Self(std::sync::Arc::new(data)))
     }
 
+    /// The authored joint mask, borrowed from the compressed clip.
+    pub fn joint_weights(&self) -> Option<&[u8]> {
+        (!self.joint_weights.is_empty()).then(|| &self.data[self.joint_weights.clone()])
+    }
+
     fn retained_bytes(&self) -> usize {
         2 * std::mem::size_of::<usize>() + std::mem::size_of::<AnimationData>()
-            + self.data.capacity() + self.joint_weights.as_ref().map_or(0, Vec::capacity)
+            + self.data.capacity()
             + self.tables.iter().map(|table| table.capacity() * 2).sum::<usize>()
     }
 
@@ -177,10 +183,12 @@ impl EdgeAnimation {
             .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         let weight_count = u16_at(&data, 0x28)? as usize;
         let joint_weights = if weight_count > 0 {
-            let at = u32_at(&data, 0x30)? as usize;
-            Some(data.get(at..at + weight_count).ok_or("truncated Edge joint weights")?.to_vec())
+            let at = u32_at(data, 0x30)? as usize;
+            let end = at.checked_add(weight_count).ok_or("truncated Edge joint weights")?;
+            data.get(at..end).ok_or("truncated Edge joint weights")?;
+            at..end
         } else {
-            None
+            0..0
         };
         Ok((AnimationData {
             joint_weights,

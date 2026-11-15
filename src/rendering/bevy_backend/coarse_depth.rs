@@ -378,6 +378,22 @@ pub struct CoarseDepthReadback {
     slots: [StagingSlot; 4],
 }
 
+impl Drop for CoarseDepthReadback {
+    fn drop(&mut self) {
+        for slot in &self.slots {
+            let (mapping, ready) = {
+                let mut cpu = slot.cpu.lock().unwrap_or_else(|error| error.into_inner());
+                cpu.generation = cpu.generation.wrapping_add(1);
+                (std::mem::replace(&mut cpu.mapping, false),cpu.ready)
+            };
+            super::readback_lifecycle::owner_dropped(super::readback_lifecycle::Kind::CoarseDepth,&slot.cpu,mapping,ready);
+            if mapping {
+                slot.buffer.unmap();
+            }
+        }
+    }
+}
+
 /// Native read order, including wraparound. No oldest-completed or fixed-lag
 /// shortcut replaces the actual current, current-1, current-2, current-3 order.
 pub fn coarse_depth_read_order(current: u32) -> [usize; 4] {
@@ -400,13 +416,16 @@ impl CoarseDepthReadback {
                     usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
-                cpu: Arc::new(Mutex::new(CpuSlot {
+                cpu: { let cpu=Arc::new(Mutex::new(CpuSlot {
                     generation: 0,
                     mapping: false,
                     ready: false,
                     pixels: Box::new([[0.0; 2]; 4096]),
                     error: None,
-                })),
+                }));
+                    super::readback_lifecycle::register(super::readback_lifecycle::Kind::CoarseDepth,&cpu);
+                    cpu
+                },
                 metadata: None,
                 recorded: false,
             }),
@@ -565,9 +584,11 @@ impl CoarseDepthReadback {
                 state.generation
             };
             let buffer = slot.buffer.clone();
+            super::readback_lifecycle::map_started(super::readback_lifecycle::Kind::CoarseDepth,&cpu);
             slot.buffer
                 .slice(..)
                 .map_async(MapMode::Read, move |result| {
+                    super::readback_lifecycle::callback_completed(super::readback_lifecycle::Kind::CoarseDepth,&cpu,result.is_ok());
                     let Ok(mut cpu) = cpu.lock() else {
                         return;
                     };
@@ -694,6 +715,17 @@ pub(super) struct CoarseDepthGpu {
 }
 
 impl CoarseDepthGpu {
+    pub(super) fn release_level(world: &mut World) {
+        let Some(mut gpu) = world.get_resource_mut::<Self>() else { return };
+        if let Some(extent) = gpu.source_extent {
+            if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+                eprintln!("CAMERA_DEPTH_RELEASE owner=coarse extent={extent:?} staging_slots={}",
+                    gpu.readback.as_ref().map_or(0, |readback| readback.slots.len()));
+            }
+        }
+        *gpu = Self::default();
+    }
+
     /// Same-view reduction submitted earlier in this Core3d schedule. Water
     /// reflection shares its four mips instead of repeating the compute pass.
     pub(super) fn pyramid_for(&self, texture: TextureId) -> Option<&DepthPyramid> {
@@ -729,6 +761,81 @@ impl CoarseDepthGpu {
         self.last_published_sequence = 0;
         Ok(())
     }
+}
+
+/// Windowless observation of the same image owners and queued readback used
+/// by the camera. No gameplay camera is created and no view is drawn.
+pub(crate) fn observe_view_retirement(world: &mut World) -> Result<(), String> {
+    use super::alpha_depth_scene::AlphaGpu;
+    let device = world.resource::<RenderDevice>().clone();
+    let queue = world.resource::<RenderQueue>().clone();
+    let pipelines = <crate::tiled_lighting_gpu::TlfPipelines as bevy::prelude::FromWorld>::from_world(world);
+    world.init_resource::<AlphaGpu>();
+    world.init_resource::<CoarseDepthGpu>();
+    for sample in 0..2 {
+        observe_view_retirement_sample(world, &device, &queue, &pipelines, sample)?;
+    }
+    Ok(())
+}
+
+fn observe_view_retirement_sample(
+    world: &mut World,
+    device: &RenderDevice,
+    queue: &RenderQueue,
+    pipelines: &crate::tiled_lighting_gpu::TlfPipelines,
+    sample: usize,
+) -> Result<(), String> {
+    use super::alpha_depth_scene::AlphaGpu;
+    use bevy::render::render_resource::{CommandEncoderDescriptor, PollType};
+    let report = |phase| {
+        if let Some(allocations) = device.wgpu_device().generate_allocator_report() {
+            eprintln!("CAMERA_DEPTH_ALLOCATIONS phase={phase} sample={sample} live_bytes={} reserved_bytes={}",
+                allocations.total_allocated_bytes, allocations.total_reserved_bytes);
+            for allocation in allocations.allocations {
+                eprintln!("CAMERA_DEPTH_ALLOCATION phase={phase} sample={sample} label={:?} bytes={}",
+                    allocation.name, allocation.size);
+            }
+        }
+    };
+    report("before");
+    let extent = bevy::math::UVec2::new(1920, 1080);
+    let source = device.create_texture(&TextureDescriptor {
+        label: Some("observed camera depth source"),
+        size: Extent3d { width: extent.x, height: extent.y, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: TextureFormat::Depth32Float,
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    world.resource_mut::<AlphaGpu>().ensure_opacity(device, extent);
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+    let readback = {
+        let mut gpu = world.resource_mut::<CoarseDepthGpu>();
+        gpu.ensure(Entity::PLACEHOLDER, source.id(), &source, device, pipelines)?;
+        let CoarseDepthGpu { output, readback, .. } = &mut *gpu;
+        let readback = readback.as_mut().ok_or("coarse-depth observation has no staging")?;
+        readback.record_copy(&mut encoder, &output.as_ref().ok_or("missing coarse output")?.texture, false)?;
+        Arc::downgrade(&readback.slots[readback.current as usize].cpu)
+    };
+    drop(source);
+    let submitted = queue.submit([encoder.finish()]);
+    world.resource_mut::<CoarseDepthGpu>().readback.as_mut()
+        .ok_or("missing coarse readback")?.map_submitted()?;
+    let mapping = readback.upgrade().is_some_and(|slot| slot.lock().unwrap().mapping);
+    report("allocated");
+    AlphaGpu::release_level(world);
+    CoarseDepthGpu::release_level(world);
+    device.poll(PollType::Wait { submission_index: Some(submitted), timeout: None })
+        .map_err(|error| error.to_string())?;
+    report("released");
+    let settled = queue.submit([]);
+    device.poll(PollType::Wait { submission_index: Some(settled), timeout: None })
+        .map_err(|error| error.to_string())?;
+    report("settled");
+    eprintln!("CAMERA_DEPTH_OBSERVATION sample={sample} mapping_on_release={mapping} callback_leases={}", readback.strong_count());
+    Ok(())
 }
 
 /// Gameplay-camera producer for FUN_1402fc6a0's adaptive grid. It runs on

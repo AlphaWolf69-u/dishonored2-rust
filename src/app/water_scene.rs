@@ -30,6 +30,11 @@ pub(super) struct WaterScene {
     swimming_contacts:crate::rendering::environment_contacts::EnvironmentViewContacts,
 }
 impl WaterScene {
+    /// 140806a40 consumes the first ordinary profile in 88d060's ordered
+    /// camera query. Rendering and ambiance share this completed query.
+    pub(super) fn ambiance_environment(&self) -> Option<usize> {
+        self.contacts.selection.areas.first().copied()
+    }
     pub(super) fn swimming_current(&self) -> Option<[f32; 3]> {
         self.swimming_contacts.head_water_current
     }
@@ -385,19 +390,19 @@ pub(super) fn publish_water_frame(
     match result {
         Ok(frame) => {
             if let Some(physics) = physics.as_ref() {
-                match physics.query_snapshot() {
+                match physics.point_queries() {
                     Ok(world) => {
-                        queries.0 = Some(Arc::new(crate::rendering::bevy_backend::physics_queries::PhysicsQueryPublication {
+                        queries.0 = Some(crate::rendering::bevy_backend::physics_queries::PhysicsQueryPublication {
                             camera: frame.camera,
                             frame: frame.matrices.frame,
                             world,
                             collision: navigation.as_ref().map(|navigation| navigation.0.map()),
                             moving: machinery.as_ref().and_then(|machinery| machinery.moving_world()),
-                        }));
+                        });
                         *query_error = None;
                     }
                     Err(error) => {
-                        if query_error.as_ref() != Some(&error) {
+                        if query_error.as_deref() != Some(error.as_str()) {
                             warn!("Physics query publication pending: {error}");
                             *query_error = Some(error);
                         }

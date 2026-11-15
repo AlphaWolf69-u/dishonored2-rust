@@ -1,6 +1,7 @@
 //! BIM volume records: mip-major, then Z slices, with a two-dimensional
 //! payload header for each slice. Installed colour cubes use this layout.
-use super::{compressed_mip, word, BimageInfo};
+use super::{compact_payload_ranges, compressed_mip, word, BimageInfo};
+use std::ops::Range;
 
 pub struct InlineVolumeChain {
     pub info: BimageInfo,
@@ -9,6 +10,24 @@ pub struct InlineVolumeChain {
 }
 
 pub fn compressed_inline_volume(bytes: &[u8]) -> Result<InlineVolumeChain, String> {
+    let mut payload = Vec::new();
+    let (info, depth) = visit_volume_slices(bytes, |range| payload.extend_from_slice(&bytes[range]))?;
+    Ok(InlineVolumeChain { info, depth, payload })
+}
+
+/// Reuse the installed member allocation for the contiguous upload payload.
+/// The uploader needs the slice bytes in their authored order without headers.
+pub fn compressed_inline_volume_owned(bytes: Vec<u8>) -> Result<InlineVolumeChain, String> {
+    let mut ranges = Vec::new();
+    let (info, depth) = visit_volume_slices(&bytes, |range| ranges.push(range))?;
+    let payload = compact_payload_ranges(bytes, &ranges);
+    Ok(InlineVolumeChain { info, depth, payload })
+}
+
+fn visit_volume_slices(
+    bytes: &[u8],
+    mut visit: impl FnMut(Range<usize>),
+) -> Result<(BimageInfo, u32), String> {
     let info = BimageInfo::parse(bytes)?;
     // +32/+36 retain width/height fields; +40 is slice depth. Cubic colour
     // LUTs mask that distinction, while installed256x256x64 FX volumes do not.
@@ -29,36 +48,27 @@ pub fn compressed_inline_volume(bytes: &[u8]) -> Result<InlineVolumeChain, Strin
         return Err("truncated BIM volume slice records".into());
     }
     let mut at = 62usize;
-    let mut payload = Vec::new();
     for level in 0..info.mip_count {
         let width = (info.width >> level).max(1);
         let height = (info.height >> level).max(1);
         for slice in 0..(depth >> level).max(1) {
-            let header = bytes
-                .get(at..at + 20)
-                .ok_or("truncated volume slice header")?;
+            let start = at.checked_add(20).ok_or("volume slice record overflow")?;
+            let header = bytes.get(at..start).ok_or("truncated volume slice header")?;
             let size = word(header, 16)? as usize;
-            let end = at
-                .checked_add(20)
-                .and_then(|n| n.checked_add(size))
-                .ok_or("volume slice record overflow")?;
+            let end = start.checked_add(size).ok_or("volume slice record overflow")?;
             let record = bytes.get(at..end).ok_or("truncated volume slice payload")?;
             let mip = compressed_mip(record, level, info.format)?;
             if word(record, 4)? != slice || (mip.width, mip.height) != (width, height) {
                 return Err("volume slice/mip descriptor mismatch".into());
             }
-            payload.extend_from_slice(mip.payload);
+            visit(start..end);
             at = end;
         }
     }
     if at != bytes.len() {
         return Err("volume mip chain size mismatch".into());
     }
-    Ok(InlineVolumeChain {
-        info,
-        depth,
-        payload,
-    })
+    Ok((info, depth))
 }
 
 #[cfg(test)]

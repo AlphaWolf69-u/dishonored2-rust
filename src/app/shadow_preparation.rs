@@ -278,6 +278,8 @@ impl WorldShadowMeshSources {
         let trace_uv = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
         let mut uv_pairs = 0;
         let mut uv_mismatches = 0;
+        let mut position_count = 0;
+        let mut position_mismatches = 0;
         for (object_id, object) in world.objects.iter().enumerate() {
             let source = &world.meshes[object.mesh_index];
             let key = (object.mesh_index, object.flipped);
@@ -285,19 +287,29 @@ impl WorldShadowMeshSources {
                 (mesh.clone(), count.clone())
             } else {
                 let mut forward = source_mesh_from_uvs(
-                    &source.positions,
-                    MeshUvs::Packed(&source.uvs),
-                    &source.indices,
-                    &source.packed_channels,
+                    source.positions(),
+                    MeshUvs::Packed(source.uvs()),
+                    source.indices(),
+                    source.packed_channels(),
                     object.flipped,
                 );
                 if trace_uv {
+                    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+                        forward.attribute(Mesh::ATTRIBUTE_POSITION)
+                    {
+                        position_count += positions.len();
+                        position_mismatches += source.positions().len().abs_diff(positions.len())
+                            + source.positions().iter().zip(positions).filter(|(source, actual)| {
+                                let [x, y, z] = source.map(f32::to_bits);
+                                actual.map(f32::to_bits) != [x, z, y ^ (1 << 31)]
+                            }).count();
+                    }
                     if let Some(bevy::mesh::VertexAttributeValues::Float16x2(uvs)) =
                         forward.attribute(PACKED_UV_0)
                     {
                         uv_pairs += uvs.len();
-                        uv_mismatches += source.uvs.len().abs_diff(uvs.len())
-                            + source.uvs.iter().zip(uvs)
+                        uv_mismatches += source.uvs().len().abs_diff(uvs.len())
+                            + source.uvs().iter().zip(uvs)
                                 .filter(|(a, b)| a.map(half::f16::to_bits) != b.map(half::f16::to_bits))
                                 .count();
                     }
@@ -305,8 +317,8 @@ impl WorldShadowMeshSources {
                 // World shadow programs read the forward mesh's own position,
                 // NORMAL and COLOR; only vegetation and water meshes add
                 // game-space copies (retain_vegetation_channels, water_objects).
-                let raw_vertex_count = (forward.count_vertices() == source.positions.len())
-                    .then_some(source.positions.len())
+                let raw_vertex_count = (forward.count_vertices() == source.positions().len())
+                    .then_some(source.positions().len())
                     .ok_or_else(|| "world source/forward vertex counts disagree".to_string());
                 // Per-frame native program admission validates the original
                 // vertex ABI after render extraction as well as at startup.
@@ -331,7 +343,10 @@ impl WorldShadowMeshSources {
             });
         }
         if trace_uv {
-            let staged_pairs: usize = world.meshes.iter().map(|mesh| mesh.uvs.capacity()).sum();
+            eprintln!(
+                "MEMORY BWM packed position preparation: vertices={position_count} mismatches={position_mismatches}"
+            );
+            let staged_pairs: usize = world.meshes.iter().map(|mesh| mesh.uvs().len()).sum();
             eprintln!(
                 "MEMORY BWM packed UV preparation: pairs={uv_pairs} mismatches={uv_mismatches} staged_pairs={staged_pairs}"
             );
@@ -431,13 +446,9 @@ impl VegetationMeshInputs {
 }
 
 pub(super) fn retain_model_shadow_position(
-    meshes: &mut (impl AssetWrite<Mesh> + ?Sized),
-    handle: &Handle<Mesh>,
+    mesh: &mut Mesh,
     positions: &[[f32; 3]],
 ) {
-    let mut mesh = meshes
-        .get_mut(handle)
-        .expect("new native model Mesh retains its startup owner");
     if !mesh.contains_attribute(shadow_pass::VEGETATION_POSITION) {
         mesh.insert_attribute(shadow_pass::VEGETATION_POSITION, positions.to_vec());
     }
@@ -463,7 +474,7 @@ pub(super) fn rest_skinning(
             .read(path)
             .ok()
             .flatten()
-            .map(|bytes| entities::declaration_text(&bytes).into_owned())
+            .map(entities::owned_declaration_text)
     })?;
     let name = binding
         .as_ref()
@@ -685,6 +696,9 @@ pub(super) fn skin_streams(
 
 #[derive(Clone)]
 pub(super) struct CachedMaterial {
+    pub(super) physics_material: Option<std::sync::Arc<str>>,
+    pub(super) physics_material_source_present: bool,
+    pub(super) physics_material_preprocessing_required: bool,
     pub(super) handle: MaterialHandle,
     pub(super) diffuse_image_slot: Option<usize>,
     pub(super) images: Vec<(usize, surface_gpu::ImageRole)>,
@@ -822,13 +836,14 @@ impl ParallelShadowOwner {
         let target_image = if let Some(target) = retained_target {
             target
         } else {
-            images.add(shadow_pipeline::shadow_depth_image(
+            images.add(shadow_pipeline::shadow_depth_image_named(
                 bevy::render::render_resource::Extent3d {
                     width: dimensions.width,
                     height: dimensions.height,
                     depth_or_array_layers: dimensions.layers,
                 },
                 format,
+                "directional shadow atlas",
             )?)
         };
         Ok(Self {

@@ -93,7 +93,7 @@ impl<'a> Reader<'a> {
         Ok(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
 
-    fn string(&mut self) -> Result<String, String> {
+    fn string_bytes(&mut self) -> Result<&'a [u8], String> {
         let length = self.u32()? as usize;
         if length > 1 << 20 {
             return Err(format!(
@@ -101,8 +101,11 @@ impl<'a> Reader<'a> {
                 self.cursor - 4
             ));
         }
-        let bytes = self.take(length)?;
-        Ok(String::from_utf8_lossy(bytes).into_owned())
+        self.take(length)
+    }
+
+    fn string(&mut self) -> Result<String, String> {
+        Ok(String::from_utf8_lossy(self.string_bytes()?).into_owned())
     }
 
     fn count(&mut self) -> Result<usize, String> {
@@ -115,7 +118,7 @@ impl<'a> Reader<'a> {
 
     fn counted_strings(&mut self, count: usize, fixed_bytes: usize) -> Result<(), String> {
         for _ in 0..count {
-            self.string()?;
+            self.string_bytes()?;
             self.skip(fixed_bytes)?;
         }
         Ok(())
@@ -142,6 +145,14 @@ fn read_sh1(reader: &mut Reader<'_>) -> Result<[f32; 9], String> {
 
 /// Decode the version-14 PRB format used by all installed game probes.
 pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
+    parse_record(bytes, true, true)
+}
+
+pub(crate) fn parse_for_lighting(bytes: &[u8], primary_samples: bool) -> Result<Probe, String> {
+    parse_record(bytes, primary_samples, false)
+}
+
+fn parse_record(bytes: &[u8], primary_samples: bool, alternate_samples: bool) -> Result<Probe, String> {
     if bytes.len() < 12 || bytes.get(..3) != Some(b"PRB") {
         return Err("invalid or truncated PRB header".into());
     }
@@ -189,11 +200,11 @@ pub fn parse(bytes: &[u8]) -> Result<Probe, String> {
         samples,
         cubemap_name,
         virtual_planes,
-    } = read_results(&mut reader)?;
+    } = read_results(&mut reader, primary_samples)?;
     // 2b99a0 serializes one alternate result; its other allocation is runtime blend storage.
     let has_additional_results = reader.take(1)?[0] != 0;
     let alternate_results = if has_additional_results {
-        Some(Box::new(read_results(&mut reader)?))
+        Some(Box::new(read_results(&mut reader, alternate_samples)?))
     } else {
         None
     };
@@ -259,7 +270,7 @@ pub struct ProbeResults {
     pub virtual_planes: [[f32; 4]; 6],
 }
 
-fn read_results(reader: &mut Reader<'_>) -> Result<ProbeResults, String> {
+fn read_results(reader: &mut Reader<'_>, keep_samples: bool) -> Result<ProbeResults, String> {
     // FUN_1402b8b30 reads results_t metadata preceding its SH arrays and
     // m_samples at +0x750. Reflection metadata names the 32 bytes at +0x30:
     // static-light illuminance, sky-occlusion factor, sun-irradiance factor,
@@ -288,31 +299,12 @@ fn read_results(reader: &mut Reader<'_>) -> Result<ProbeResults, String> {
             "saved version-14 reader expects 128 samples, got {sample_count}"
         ));
     }
-    let mut samples = Vec::with_capacity(sample_count as usize);
-    for _ in 0..sample_count {
-        let mut position = [0.0; 3];
-        let mut direction = [0.0; 3];
-        for value in &mut position {
-            *value = reader.f32()?;
-        }
-        for value in &mut direction {
-            *value = reader.f32()?;
-        }
-        let mut values = [0.0; 5];
-        for value in &mut values {
-            *value = reader.f32()?;
-        }
-        let flags = [
-            u16::from_le_bytes(reader.take(2)?.try_into().unwrap()),
-            u16::from_le_bytes(reader.take(2)?.try_into().unwrap()),
-        ];
-        samples.push(Sample {
-            position,
-            direction,
-            values,
-            flags,
-        });
-    }
+    let samples = if keep_samples {
+        read_samples(reader, sample_count)?
+    } else {
+        reader.skip(sample_count as usize * (11 * 4 + 2 * 2))?;
+        Vec::new()
+    };
 
     // The saved reader stores these variable-size lists after the 128 samples.
     let emissive_count = reader.count()?;
@@ -320,10 +312,7 @@ fn read_results(reader: &mut Reader<'_>) -> Result<ProbeResults, String> {
     reader.skip(8)?; // Probe-list field and farthest-neighbor distance.
 
     let neighbor_count = reader.count()?;
-    for _ in 0..neighbor_count {
-        reader.string()?;
-        reader.skip(1 + 4 + 4 + 4 + 12 + 1)?;
-    }
+    reader.counted_strings(neighbor_count, 1 + 4 + 4 + 4 + 12 + 1)?;
 
     let voronoi_count = reader.count()?;
     reader.counted_strings(voronoi_count, 4 + 12 + 12 + 4 + 0x24 + 2)?;
@@ -355,4 +344,34 @@ fn read_results(reader: &mut Reader<'_>) -> Result<ProbeResults, String> {
         cubemap_name,
         virtual_planes,
     })
+}
+
+fn read_samples(reader: &mut Reader<'_>, sample_count: u32) -> Result<Vec<Sample>, String> {
+    let mut samples = Vec::with_capacity(sample_count as usize);
+    for _ in 0..sample_count {
+        let mut position = [0.0; 3];
+        let mut direction = [0.0; 3];
+        for value in &mut position {
+            *value = reader.f32()?;
+        }
+        for value in &mut direction {
+            *value = reader.f32()?;
+        }
+        let mut values = [0.0; 5];
+        for value in &mut values {
+            *value = reader.f32()?;
+        }
+        let flags = [
+            u16::from_le_bytes(reader.take(2)?.try_into().unwrap()),
+            u16::from_le_bytes(reader.take(2)?.try_into().unwrap()),
+        ];
+        samples.push(Sample {
+            position,
+            direction,
+            values,
+            flags,
+        });
+    }
+
+    Ok(samples)
 }

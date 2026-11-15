@@ -6,6 +6,7 @@ use crate::assets::{
     entities::physics_material::PhysicsMaterial, physics_material::MaterialConstants,
 };
 use std::sync::Arc;
+use crate::assets::entities::physics_material::resources::Definition;
 #[cfg(test)]
 mod tests;
 
@@ -14,7 +15,7 @@ mod tests;
 /// same library, including materials applied later by water startup.
 pub(crate) struct MaterialOwner<S, C> {
     pub library: MaterialLibrary<S, C>,
-    declarations: Vec<PhysicsMaterial>,
+    declarations: Vec<Arc<Definition>>,
     names: std::collections::HashMap<String, usize>,
 }
 impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
@@ -30,9 +31,9 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
         catalog: &crate::assets::archive::Catalog,
         name: &str,
     ) -> Result<usize, String> {
-        self.declaration_using(name, |path| {
-            crate::assets::declaration_texts::read_common_or_catalog(catalog, path)
-        })
+        self.declaration_using(name, || crate::assets::entities::physics_material::resources::acquire_with(
+            catalog, name, |path| crate::assets::declaration_texts::read_common_or_catalog(catalog, path),
+        ))
     }
     pub(crate) fn declaration_with_texts(
         &mut self,
@@ -40,26 +41,34 @@ impl<S: Copy + Eq, C: Copy + Eq> MaterialOwner<S, C> {
         name: &str,
         texts: &mut crate::assets::declaration_texts::PhysicsSeed,
     ) -> Result<usize, String> {
-        self.declaration_using(name, |path| texts.read(
-            catalog, path, crate::assets::declaration_texts::PhysicsUse::Runtime,
+        self.declaration_using(name, || crate::assets::entities::physics_material::resources::acquire_with(
+            catalog, name, |path| texts.read(catalog, path, crate::assets::declaration_texts::PhysicsUse::Runtime),
         ))
     }
     fn declaration_using(
         &mut self,
         name: &str,
-        read: impl FnMut(&str) -> Result<Option<String>, String>,
+        acquire: impl FnOnce() -> Result<Arc<Definition>, String>,
     ) -> Result<usize, String> {
         if let Some(&handle) = self.names.get(name) {
             return Ok(handle);
         }
-        let material = crate::assets::entities::physics_material::physics_material(name, read)?;
+        let material = acquire()?;
         let handle = self.declarations.len();
         self.declarations.push(material);
         self.names.insert(name.to_owned(), handle);
         Ok(handle)
     }
     pub fn get(&self, handle: usize) -> Option<&PhysicsMaterial> {
-        self.declarations.get(handle)
+        self.declarations.get(handle).map(|definition| definition.material())
+    }
+    /// c9c940 retains the declaration identity in the library record's +0x60.
+    pub(crate) fn material_for_id(&self, id: u16) -> Result<&PhysicsMaterial, String> {
+        let record = self.library.get(id).ok_or("material library ID absent")?;
+        let handle = u64::from(record.words[14]) | (u64::from(record.words[15]) << 32);
+        let handle = handle.checked_sub(1).ok_or("material declaration absent")?;
+        self.get(usize::try_from(handle).map_err(|_| "material declaration handle overflow")?)
+            .ok_or_else(|| "material declaration absent".into())
     }
     pub fn resolve(
         &mut self,

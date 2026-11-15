@@ -13,6 +13,16 @@ use super::{
     mpsc, render_state, surface_gpu, texture,
 };
 use bevy::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub(super) fn inspect_retired_slot_demand(queue: &SceneRenderQueue) -> (usize, usize, usize) {
+    let paths = &queue.diffuse_image_paths;
+    let mut order = Vec::new();
+    residency::Pressure::default().request_order(queue, &vec![false; paths.len()], true, &mut order);
+    let free = paths.iter().filter(|path| path.is_empty()).count();
+    let requested_free = order.iter().filter(|&&slot| paths[slot].is_empty()).count();
+    (free, order.len(), requested_free)
+}
 
 /// Immutable post-process images use the same installed-image reader and mip
 /// layout as streamed materials, with the complete initial chain resident.
@@ -46,6 +56,11 @@ pub(super) struct DiffuseMipState {
     pub(super) sampling_priority: u8,
     pub(super) idle_frames: u32,
     pub(super) path_priority: u16,
+}
+
+pub(super) fn image_demand(path: &str, sampling_priority: u8) -> texture::ProjectedAreaDemand {
+    texture::ProjectedAreaDemand::with_priority(sampling_priority)
+        .with_path_priority(residency::path_priority(path))
 }
 
 /// Explicit init/common image references survive world destruction. Capture
@@ -134,7 +149,7 @@ impl SharedImages {
             state.pending = None;
             state.pending_reduction = false;
             state.reserved_bytes = 0;
-            state.path_priority = residency::path_priority(path);
+            state.path_priority = queue.diffuse_image_demands[slot].path_priority();
             state.idle_frames = queue.texture_stream_frame.saturating_sub(queue.diffuse_image_last_visible[slot]).min(0xffff) as u32;
             self.resident
                 .insert(path.clone(), (queue.preferred_mip, handle.clone(), state));
@@ -153,7 +168,6 @@ pub(super) fn reuse_shared_image(
     shared: &mut SharedImages,
     slot: usize,
     queue: &mut SceneRenderQueue,
-    images: &mut Assets<Image>,
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
@@ -168,9 +182,8 @@ pub(super) fn reuse_shared_image(
     };
     attach_prepared_diffuse_image(
         slot,
-        handle.clone(),
+        handle,
         queue,
-        images,
         probe_materials,
         decal_materials,
         sky_materials,
@@ -227,17 +240,17 @@ pub(super) fn reserve_scene_images(world: &mut World) {
     let mut prepared = world.remove_resource::<PreparedBaseImages>().unwrap_or_default();
     with_scene_images(world, |scene, images, probes, decals, skies, shared| {
         for slot in 0..scene.diffuse_image_paths.len() {
-            if reuse_shared_image(shared, slot, scene, images, probes, decals, skies) {
+            if reuse_shared_image(shared, slot, scene, probes, decals, skies) {
                 continue;
             }
             if let Some(view) = prepared.views.remove(&slot) {
-                attach_prepared_diffuse_image(slot, view.handle.clone(), scene, images, probes, decals, skies);
+                attach_prepared_diffuse_image(slot, view.handle.clone(), scene, probes, decals, skies);
                 commit_prepared_diffuse_level(scene, slot, view.level, view.mip_count);
                 scene.diffuse_image_attempted[slot] = true;
                 continue;
             }
             let handle = images.reserve_handle();
-            attach_prepared_diffuse_image(slot, handle, scene, images, probes, decals, skies);
+            attach_prepared_diffuse_image(slot, handle, scene, probes, decals, skies);
         }
     });
     world.insert_resource(prepared);
@@ -287,19 +300,128 @@ pub(super) fn initialize_scene_images(
 pub(super) struct PreparedBaseImages {
     payloads: std::collections::HashMap<usize, StreamedDiffuse>,
     views: std::collections::HashMap<usize, Arc<super::resident_images::ResidentImage>>,
+    incoming: Option<Mutex<Receiver<Result<BaseImageBatch, String>>>>,
 }
 
-pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRenderQueue, shared: &SharedImages,
-    resident: &super::resident_images::ResidentImages, inline_slots: &std::collections::HashSet<usize>) -> Result<PreparedBaseImages, String> {
+struct BaseImageBatch {
+    common: bool,
+    last: bool,
+    images: Vec<(usize, StreamedDiffuse)>,
+}
+
+struct BaseImageRequest {
+    slot: usize,
+    path: String,
+    preferred: Option<u8>,
+}
+
+/// The map acquisition thread keeps reading after publishing scene metadata.
+/// The rendezvous channel bounds completed work to its current batch.
+pub(super) struct BaseImageReader {
+    catalog: Arc<archive::Catalog>,
+    budget: usize,
+    common: Vec<BaseImageRequest>,
+    map: Vec<BaseImageRequest>,
+    outgoing: mpsc::SyncSender<Result<BaseImageBatch, String>>,
+}
+
+impl BaseImageReader {
+    pub(super) fn read(self, cancelled: impl Fn() -> bool) {
+        for (common, requests) in [(true, self.common), (false, self.map)] {
+            let mut requests = requests.into_iter().peekable();
+            loop {
+                let mut bytes = 0;
+                let mut images = Vec::new();
+                while bytes < self.budget {
+                    if cancelled() { return; }
+                    let Some(request) = requests.next() else { break; };
+                    let result = read_resident_image(&self.catalog, &request.path, request.preferred, Some(&cancelled));
+                    if cancelled() { return; }
+                    let result = result.and_then(|image| image.ok_or_else(|| format!("resident image is absent: {}", request.path)));
+                    let mut image = match result {
+                        Ok(image) => image,
+                        Err(error) => { let _ = self.outgoing.send(Err(error)); return; }
+                    };
+                    image.pack_uploads();
+                    bytes += image.image.data.as_ref().map_or(0, Vec::len);
+                    images.push((request.slot, image));
+                }
+                let last = requests.peek().is_none();
+                if cancelled() || self.outgoing.send(Ok(BaseImageBatch { common, last, images })).is_err() { return; }
+                if last { break; }
+            }
+        }
+    }
+}
+
+/// Publish only one budget window at a time, retaining the reserved IDs
+/// established before the loading movie's first upload.
+pub(super) fn publish_initial_images(
+    world: &mut World, catalog: &archive::Catalog, common: bool,
+) -> Result<Option<(Vec<AssetId<Image>>, bool)>, String> {
+    let Some(receiver) = world.get_resource::<PreparedBaseImages>().and_then(|prepared| prepared.incoming.as_ref()) else {
+        return initialize_scene_images(world, catalog, common).map(|ids| Some((ids, true)));
+    };
+    let batch = match receiver.lock().unwrap().try_recv() {
+        Ok(result) => result?,
+        Err(mpsc::TryRecvError::Empty) => return Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => return Err("initial texture reader stopped before completing its batch".into()),
+    };
+    if batch.common != common { return Err("initial texture batch arrived out of phase".into()); }
+    let last = batch.last;
+    let ids = with_scene_images(world, |scene, images, probes, decals, skies, shared| {
+        let mut ids = Vec::with_capacity(batch.images.len());
+        let mut bytes = 0;
+        for (slot, image) in batch.images {
+            bytes += commit_resident_image(image, slot, scene, images, probes, decals, skies)?;
+            ids.push(scene.diffuse_image_handles[slot].as_ref().ok_or("initial texture handle missing")?.id());
+        }
+        if last {
+            // Include already-resident common/UI views, which had no read
+            // request but must satisfy the same GPU readiness gate.
+            ids.clear();
+            for (slot, path) in scene.diffuse_image_paths.iter().enumerate() {
+                if shared.paths.contains(path) != common { continue; }
+                if scene.diffuse_mip_states[slot].resident.is_none() {
+                    return Err(format!("initial texture was not published: {path}"));
+                }
+                ids.push(scene.diffuse_image_handles[slot].as_ref().ok_or("initial texture handle missing")?.id());
+            }
+        }
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+            eprintln!("INITIAL_TEXTURE_BATCH common={common} last={last} bytes={bytes} readiness_ids={}", ids.len());
+        }
+        Ok::<_, String>(ids)
+    })?;
+    if last && !common { world.remove_resource::<PreparedBaseImages>(); }
+    Ok(Some((ids, last)))
+}
+
+pub(super) fn prepare_base_images(catalog: &Arc<archive::Catalog>, queue: &SceneRenderQueue, shared: &SharedImages,
+    resident: &super::resident_images::ResidentImages,
+    inline_slots: &std::collections::HashSet<usize>,
+    batch_budget: Option<usize>,
+    check_cancelled: &impl Fn() -> Result<(), String>,
+) -> Result<(PreparedBaseImages, Option<BaseImageReader>), String> {
+    check_cancelled()?;
+    let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+    let started = trace.then(std::time::Instant::now);
     let mut result = PreparedBaseImages { payloads: Default::default(),
-        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip, inline_slots) };
+        views: resident.scene_views(catalog, &queue.diffuse_image_paths, queue.preferred_mip, inline_slots),
+        incoming: None };
+    let mut reader = batch_budget.map(|budget| {
+        let (outgoing, incoming) = mpsc::sync_channel(0);
+        result.incoming = Some(Mutex::new(incoming));
+        BaseImageReader { catalog: catalog.clone(), budget, common: Vec::new(), map: Vec::new(), outgoing }
+    });
     let mut reused_bytes = 0usize;
     let mut reused = 0;
     for (slot, path) in queue.diffuse_image_paths.iter().enumerate() {
+        check_cancelled()?;
         if shared.can_reuse(path, queue.preferred_mip) { continue; }
         if let Some(view) = result.views.get(&slot) {
             reused += 1;
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            if trace {
                 eprintln!("MEMORY scene registered view: path={path} level={:?} mips={}", view.level, view.mip_count);
             }
             reused_bytes += (0..view.mip_count).map(|mip| view.level.format.mip_bytes(
@@ -307,17 +429,24 @@ pub(super) fn prepare_base_images(catalog: &archive::Catalog, queue: &SceneRende
             continue;
         }
         let preferred = if inline_slots.contains(&slot) { None } else { queue.preferred_mip };
-        let mut streamed = read_resident_diffuse_image(catalog, path, preferred)?
-            .ok_or_else(|| format!("resident image is absent: {path}"))?;
-        if !streamed.uploads.is_empty() {
-            streamed.image.data = Some(std::mem::take(&mut streamed.uploads).into_iter().flat_map(|mip| mip.payload).collect());
+        if let Some(reader) = &mut reader {
+            let requests = if shared.paths.contains(path) { &mut reader.common } else { &mut reader.map };
+            requests.push(BaseImageRequest { slot, path: path.clone(), preferred });
+            continue;
         }
+        let acquired = read_resident_image(catalog, path, preferred, Some(&|| check_cancelled().is_err()));
+        check_cancelled()?;
+        let mut streamed = acquired?.ok_or_else(|| format!("resident image is absent: {path}"))?;
+        streamed.pack_uploads();
         result.payloads.insert(slot, streamed);
     }
-    if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+    if let Some(started) = started {
         eprintln!("MEMORY scene registered views: reused={reused} reused_bytes={reused_bytes} prepared={}", result.payloads.len());
+        let bytes: usize = result.payloads.values().filter_map(|image| image.image.data.as_ref()).map(Vec::len).sum();
+        eprintln!("INITIAL_TEXTURE_PREPARED bytes={bytes} images={} elapsed_ms={:.3}",
+            result.payloads.len(), started.elapsed().as_secs_f64() * 1000.);
     }
-    Ok(result)
+    Ok((result, reader))
 }
 
 pub(super) struct StreamedDiffuse {
@@ -326,11 +455,40 @@ pub(super) struct StreamedDiffuse {
     pub(super) level: DiffuseMipLevel,
 }
 
+impl StreamedDiffuse {
+    pub(super) fn pack_uploads(&mut self) {
+        let uploads = std::mem::take(&mut self.uploads);
+        if !uploads.is_empty() {
+            let mut data = Vec::with_capacity(uploads.iter().map(|mip| mip.payload.len()).sum());
+            for mip in uploads {
+                data.extend_from_slice(&mip.payload);
+            }
+            self.image.data = Some(data);
+        }
+    }
+}
+
 pub(super) struct CompressedMipUpload {
     pub(super) mip_level: u32,
     pub(super) width: u32,
     pub(super) height: u32,
-    pub(super) payload: Vec<u8>,
+    pub(super) payload: MipPayload,
+}
+
+pub(super) enum MipPayload {
+    Owned(Vec<u8>),
+    Member(Arc<Vec<u8>>, std::ops::Range<usize>),
+}
+
+impl std::ops::Deref for MipPayload {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Member(bytes, range) => &bytes[range.clone()],
+        }
+    }
 }
 
 // Registered executable defaults: r_textureStreamingPerFrameBudgetKB and
@@ -364,6 +522,16 @@ pub(super) enum GpuMipCopy {
 
 #[derive(Resource, Clone, Default)]
 pub(super) struct PreparedImageMailbox(pub(super) Arc<Mutex<PreparedImageState>>);
+
+impl PreparedImageMailbox {
+    pub(super) fn retire(&self) {
+        let mut state = self.0.lock().unwrap();
+        let generation = state.generation.wrapping_add(1);
+        let outgoing = std::mem::replace(&mut *state, PreparedImageState { generation, ..Default::default() });
+        drop(state);
+        drop(outgoing);
+    }
+}
 
 #[derive(Default)]
 pub(super) struct UploadStats {
@@ -433,8 +601,8 @@ pub(super) fn report_prepared_diffuse_images(
                     pending.len(), waiting.len(), completed.len(), failed.len(),
                     waiting_growth_frames, completed_growth_frames, failed_growth_frames, separate);
             }
-            // A mailbox reset follows outgoing-render acknowledgement. These
-            // empty vectors are map scratch, so do not retain peak capacity.
+            // A mailbox reset retires the outgoing generation. These vectors
+            // are map scratch, so do not retain their peak capacity.
             *pending = Vec::new();
             *waiting = Vec::new();
             *completed = Vec::new();
@@ -488,6 +656,15 @@ pub(super) fn report_prepared_diffuse_images(
         }
     }
     let mut state = mailbox.0.lock().unwrap();
+    if *generation != Some(state.generation) {
+        // The main world retired this batch while the renderer held it.
+        // Never append outgoing work or its completions to the next level.
+        drop(state);
+        waiting.clear();
+        completed.clear();
+        failed.clear();
+        return;
+    }
     // Older deferred jobs precede jobs staged while this batch ran.
     waiting.append(&mut state.pending);
     if *timing {
@@ -649,14 +826,42 @@ type TextureReadRequest = (usize, String, TextureReadTarget);
 struct TextureReadQueue {
     pending: VecDeque<TextureReadRequest>,
     reading: bool,
-    cancelled: bool,
+}
+
+#[derive(Default)]
+struct TextureReadJobs {
+    queue: Mutex<TextureReadQueue>,
+    cancelled: AtomicBool,
+    #[cfg(feature = "debug_allocations")]
+    active_slot: std::sync::atomic::AtomicUsize,
+    #[cfg(feature = "debug_allocations")]
+    source_reads: std::sync::atomic::AtomicU64,
+    #[cfg(feature = "debug_allocations")]
+    source_returns: std::sync::atomic::AtomicU64,
+}
+
+struct ActiveTextureRead<'a> {
+    queue: &'a Mutex<TextureReadQueue>,
+    #[cfg(feature = "debug_allocations")]
+    active_slot: &'a std::sync::atomic::AtomicUsize,
+    released: bool,
+}
+
+impl Drop for ActiveTextureRead<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            #[cfg(feature = "debug_allocations")]
+            self.active_slot.store(0, Ordering::Release);
+            self.queue.lock().unwrap_or_else(|error| error.into_inner()).reading = false;
+        }
+    }
 }
 
 #[derive(Resource)]
 pub(super) struct TextureReadWorker {
-    catalog: Arc<archive::Catalog>,
-    queue: Arc<Mutex<TextureReadQueue>>,
-    completed_tx: mpsc::Sender<TextureReadResult>,
+    requests: TextureReadRequests,
+    frame: FrameRequests,
+    closing: bool,
     pub(super) completed: Mutex<Receiver<TextureReadResult>>,
     pub(super) ready: VecDeque<TextureReadResult>,
     pub(super) inflight: Vec<bool>,
@@ -666,29 +871,64 @@ pub(super) struct TextureReadWorker {
     pub(super) initial_failures: std::collections::HashMap<usize, InitialTextureFailure>,
 }
 
+struct TextureReadRequests {
+    catalog: Arc<archive::Catalog>,
+    jobs: Arc<TextureReadJobs>,
+    completed_tx: mpsc::Sender<TextureReadResult>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TextureReadObservation {
+    pub queued: usize,
+    pub task_running: bool,
+    pub closing: bool,
+    pub active_slot: Option<usize>,
+    pub source_reads: u64,
+    pub source_returns: u64,
+    pub inflight: usize,
+    pub ready: usize,
+    pub ready_bytes: usize,
+}
+
 impl Drop for TextureReadWorker {
     fn drop(&mut self) {
-        // Map teardown cancels queued acquisitions. A blocking archive read
-        // already executing can finish, but may neither publish nor start
-        // another outgoing-map request after the owner has been released.
-        let mut queue = self.queue.lock().unwrap();
-        queue.cancelled = true;
-        queue.pending.clear();
+        self.close_acquisitions();
     }
 }
 
 impl TextureReadWorker {
+    /// Host-only runtime observation. Normal builds keep no per-read counters;
+    /// these snapshots never drain results or supply worker/GPU completion.
+    pub(super) fn observe(&self) -> TextureReadObservation {
+        let queue = self.requests.jobs.queue.lock().unwrap_or_else(|error| error.into_inner());
+        let mut snapshot = TextureReadObservation {
+            queued: queue.pending.len(), task_running: queue.reading, closing: self.closing,
+            inflight: self.inflight_count, ready: self.ready.len(),
+            ready_bytes: self.ready.iter().filter_map(|(_,_,result)| result.as_ref().ok()?.as_ref())
+                .map(|image| image.image.data.as_ref().map_or(0, Vec::len)
+                    + image.uploads.iter().map(|mip| mip.payload.len()).sum::<usize>()).sum(),
+            ..Default::default()
+        };
+        #[cfg(feature = "debug_allocations")]
+        {
+            let jobs = &self.requests.jobs;
+            snapshot.active_slot = jobs.active_slot.load(Ordering::Acquire).checked_sub(1);
+            snapshot.source_reads = jobs.source_reads.load(Ordering::Relaxed);
+            snapshot.source_returns = jobs.source_returns.load(Ordering::Relaxed);
+        }
+        snapshot
+    }
     /// The installed archives, for on-demand diagnostic reads.
     pub(super) fn catalog(&self) -> &archive::Catalog {
-        &self.catalog
+        &self.requests.catalog
     }
 
     pub(super) fn new(catalog: Arc<archive::Catalog>, image_count: usize) -> Self {
         let (completed_tx, completed) = mpsc::channel();
         Self {
-            catalog,
-            queue: Arc::default(),
-            completed_tx,
+            requests: TextureReadRequests { catalog, jobs: Arc::default(), completed_tx },
+            frame: FrameRequests::default(),
+            closing: false,
             completed: Mutex::new(completed),
             ready: VecDeque::new(),
             inflight: vec![false; image_count],
@@ -697,10 +937,41 @@ impl TextureReadWorker {
         }
     }
 
+    pub(super) fn close_acquisitions(&mut self) {
+        if self.closing { return; }
+        self.closing = true;
+        let mut queue = self.requests.jobs.queue.lock().unwrap();
+        self.requests.jobs.cancelled.store(true, Ordering::Relaxed);
+        queue.pending.clear();
+        drop(queue);
+        self.ready.clear();
+    }
+
+    pub(super) fn retire_acquisitions(&mut self) -> bool {
+        let reading = self.requests.jobs.queue.lock().unwrap().reading;
+        self.completed.get_mut().unwrap_or_else(|error| error.into_inner()).try_iter().for_each(drop);
+        !reading
+    }
+
+    /// Remove an unpublished read without reusing its index if the reader
+    /// already took it. The caller still owns the slot in that case.
+    pub(super) fn cancel_queued(&mut self, slot: usize) -> bool {
+        let mut queue = self.requests.jobs.queue.lock().unwrap();
+        let Some(index) = queue.pending.iter().position(|request| request.0 == slot) else {
+            return false;
+        };
+        drop(queue.pending.remove(index));
+        self.inflight[slot] = false;
+        self.inflight_count -= 1;
+        true
+    }
+}
+
+impl TextureReadRequests {
     /// Queues a read; `Err` returns the request when the queue is full.
     fn request(&self, request: TextureReadRequest) -> Result<(), TextureReadRequest> {
-        let mut queue = self.queue.lock().unwrap();
-        if queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
+        let mut queue = self.jobs.queue.lock().unwrap();
+        if self.jobs.cancelled.load(Ordering::Relaxed) || queue.pending.len() >= TEXTURE_READ_QUEUE_CAPACITY {
             return Err(request);
         }
         queue.pending.push_back(request);
@@ -708,26 +979,45 @@ impl TextureReadWorker {
             return Ok(());
         }
         drop(queue);
-        let (catalog, queue, completed_tx) = (
+        let (catalog, jobs, completed_tx) = (
             self.catalog.clone(),
-            self.queue.clone(),
+            self.jobs.clone(),
             self.completed_tx.clone(),
         );
         bevy::tasks::IoTaskPool::get()
             .spawn(async move {
                 let _tag = crate::platform::allocation_tags::tag("texture worker");
+                let cancelled = || jobs.cancelled.load(Ordering::Relaxed);
+                let mut lease = ActiveTextureRead { queue: &jobs.queue,
+                    #[cfg(feature = "debug_allocations")]
+                    active_slot: &jobs.active_slot,
+                    released: false };
                 loop {
                     let Some((slot, stem, target)) = ({
-                        let mut queue = queue.lock().unwrap();
-                        if queue.cancelled { return; }
+                        let mut queue = jobs.queue.lock().unwrap();
+                        if cancelled() { return; }
                         let next = queue.pending.pop_front();
-                        queue.reading = next.is_some();
+                        if next.is_none() {
+                            queue.reading = false;
+                            // Another task may be admitted after this unlock.
+                            lease.released = true;
+                        }
                         next
                     }) else {
                         return;
                     };
-                    let result = read_streamed_diffuse_at_target(&catalog, &stem, target);
-                    if queue.lock().unwrap().cancelled { return; }
+                    #[cfg(feature = "debug_allocations")]
+                    {
+                        jobs.active_slot.store(slot + 1, Ordering::Release);
+                        jobs.source_reads.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let result = read_diffuse_image(&catalog, &stem, target, false, Some(&cancelled));
+                    #[cfg(feature = "debug_allocations")]
+                    {
+                        jobs.source_returns.fetch_add(1, Ordering::Relaxed);
+                        jobs.active_slot.store(0, Ordering::Release);
+                    }
+                    if cancelled() { return; }
                     if completed_tx.send((slot, target, result)).is_err() {
                         return;
                     }
@@ -736,6 +1026,15 @@ impl TextureReadWorker {
             .detach();
         Ok(())
     }
+}
+
+/// Queue a real level image for the windowless map-retirement observation.
+pub(super) fn observe_level_acquisition(world: &World) -> bool {
+    let (Some(worker), Some(scene)) = (world.get_resource::<TextureReadWorker>(),
+        world.get_resource::<SceneRenderQueue>()) else { return false };
+    let Some((slot, path)) = scene.diffuse_image_paths.iter().enumerate()
+        .find(|(_, path)| path.ends_with(".bimage7")) else { return false };
+    worker.requests.request((slot, path.clone(), TextureReadTarget::Initial(scene.preferred_mip))).is_ok()
 }
 
 pub(super) fn read_streamed_diffuse_image(
@@ -755,19 +1054,26 @@ pub(super) fn read_streamed_diffuse_at_target(
     stem: &str,
     target: TextureReadTarget,
 ) -> Result<Option<StreamedDiffuse>, String> {
-    read_diffuse_image(catalog, stem, target, false)
+    read_diffuse_image(catalog, stem, target, false, None)
 }
 
 /// Whole-image consumers own one final packed payload; streamed jobs above
 /// retain independent mip buffers for their cross-thread queue uploads.
 pub(super) fn read_resident_diffuse_image(catalog: &archive::Catalog, stem: &str,
     preferred: Option<u8>) -> Result<Option<StreamedDiffuse>, String> {
+    read_resident_image(catalog, stem, preferred, None)
+}
+
+fn read_resident_image(catalog: &archive::Catalog, stem: &str, preferred: Option<u8>,
+    cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<StreamedDiffuse>, String> {
     static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     let (split, trace) = *MODE.get_or_init(|| (
         std::env::var("DH2_DEBUG_SPLIT_RESIDENT_MIPS").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_IMAGE_PACKING").as_deref() == Ok("1"),
     ));
-    let result = read_diffuse_image(catalog, stem, TextureReadTarget::Initial(preferred), !split)?;
+    let result = read_diffuse_image(catalog, stem, TextureReadTarget::Initial(preferred), !split, cancelled)
+        .map_err(|error| format!("{stem}: {error}"))?;
     if trace {
         if let Some(image) = &result {
             let mut crc = flate2::Crc::new();
@@ -778,16 +1084,23 @@ pub(super) fn read_resident_diffuse_image(catalog: &archive::Catalog, stem: &str
                 image.uploads.iter().map(|mip|mip.payload.len()).sum()
             };
             let descriptor = &image.image.texture_descriptor;
-            eprintln!("MEMORY image packing: path={stem} preferred={preferred:?} mip_buffers={} mip_buffer_bytes={} final_bytes={bytes} extent={}x{} mips={} format={:?} checksum={:08x}",
+            eprintln!("MEMORY image packing: path={stem} preferred={preferred:?} mip_buffers={} mip_buffer_bytes={} final_bytes={bytes} extent={}x{} mips={} format={:?} checksum={:08x} resource_mip={:?} next_separate_suffix={:?}",
                 image.uploads.len(), image.uploads.iter().map(|mip|mip.payload.len()).sum::<usize>(),
-                descriptor.size.width, descriptor.size.height, descriptor.mip_level_count, descriptor.format, crc.sum());
+                descriptor.size.width, descriptor.size.height, descriptor.mip_level_count, descriptor.format, crc.sum(),
+                image.level.resource_mip, image.level.next_separate_suffix);
         }
     }
     Ok(result)
 }
 
+pub(super) fn initial_separate_mip(catalog: &archive::Catalog, stem: &str, preferred: Option<u8>) -> Option<u8> {
+    preferred.and_then(|preferred| (0..=preferred).rev()
+        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))))
+}
+
 fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureReadTarget,
-    packed: bool) -> Result<Option<StreamedDiffuse>, String> {
+    packed: bool, cancelled: Option<&dyn Fn() -> bool>,
+) -> Result<Option<StreamedDiffuse>, String> {
     if let Some(payload) = material::intrinsic_image_pixels(stem) {
         if matches!(target, TextureReadTarget::Exact(..)) {
             return Err("intrinsic image has no streamed finer mip".into());
@@ -795,7 +1108,7 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         let mut image = empty_streamed_image(16, 16, 1, TextureFormat::Rgba8Unorm);
         image.texture_descriptor.label = Some("intrinsic image");
         let uploads = if packed { image.data = Some(payload); Vec::new() }
-            else {vec![CompressedMipUpload {mip_level: 0, width: 16, height: 16, payload}]};
+            else {vec![CompressedMipUpload {mip_level: 0, width: 16, height: 16, payload: MipPayload::Owned(payload)}]};
         return Ok(Some(StreamedDiffuse {
             image,
             uploads,
@@ -810,15 +1123,14 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     }
     if let TextureReadTarget::Exact(mip, format) = target {
         let path = format!("{stem}_mip{mip}");
-        let Some(bytes) = catalog.read(&path).map_err(|error| error.to_string())? else {
+        let Some(compressed) = texture::read_separate_mip_cancellable(catalog, &path, u32::from(mip), format, cancelled)? else {
             return Ok(None);
         };
-        let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
         let uploads = vec![CompressedMipUpload {
             mip_level: 0,
             width: compressed.width,
             height: compressed.height,
-            payload: compressed.payload.to_vec(),
+            payload: MipPayload::Owned(compressed.payload),
         }];
         return Ok(Some(StreamedDiffuse {
             image: empty_streamed_image(
@@ -837,16 +1149,83 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             },
         }));
     }
-    let Some(bytes) = catalog.read(stem).map_err(|error| error.to_string())? else {
-        return Err(format!("missing base BIM format descriptor {stem}"));
-    };
-    // Host cross-thread buffers still own their bytes. Borrow validated source
-    // records instead of first building and then splitting a packed payload.
-    static STAGING: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
-    let (copy_inline, report_staging) = *STAGING.get_or_init(|| (
+    static STAGING: std::sync::OnceLock<(bool, bool, bool, bool)> = std::sync::OnceLock::new();
+    let (copy_inline, report_staging, buffer_resident, copy_worker_inline) = *STAGING.get_or_init(|| (
         std::env::var("DH2_DEBUG_COPY_INLINE_MIPS").as_deref() == Ok("1"),
         std::env::var("DH2_DEBUG_IMAGE_STAGING").as_deref() == Ok("1"),
+        std::env::var("DH2_DEBUG_BUFFER_RESIDENT_IMAGES").as_deref() == Ok("1"),
+        std::env::var_os("DH2_DEBUG_COPY_WORKER_INLINE_MIPS").is_some_and(|value| value == "1"),
     ));
+    let highest_separate = (0..=15)
+        .rev()
+        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
+    let selected_separate = match target {
+        TextureReadTarget::Initial(preferred) => initial_separate_mip(catalog, stem, preferred),
+        TextureReadTarget::Exact(_, _) => unreachable!(),
+    };
+    let compact_inline = packed && !copy_inline && selected_separate.is_none();
+    let acquisition_start = if report_staging && compact_inline {
+        crate::loading::thread_cycles()
+    } else {
+        None
+    };
+    let Some(bytes) = catalog.read_cancellable(stem, cancelled).map_err(|error| error.to_string())? else {
+        return Err(format!("missing base BIM format descriptor {stem}"));
+    };
+    // Match the large-image acquisition scope of the buffered comparison.
+    let member_bytes = bytes.len();
+    let compact_inline = compact_inline && member_bytes > 65_536;
+    let report_acquisition = |compacted: bool| {
+        if let Some(start) = acquisition_start.filter(|_| compact_inline) {
+            let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            eprintln!("MEMORY resident image acquisition: path={stem} compacted={compacted} member_bytes={member_bytes} cycles={cycles}");
+        }
+    };
+    if compact_inline && !buffer_resident {
+        let chain = texture::compressed_inline_chain_owned(bytes)?;
+        let info = chain.info;
+        let mut image = empty_streamed_image(info.width, info.height, info.mip_count, gpu_image_format(info.format));
+        image.data = Some(chain.payload);
+        report_acquisition(true);
+        return Ok(Some(StreamedDiffuse {
+            image,
+            uploads: Vec::new(),
+            level: DiffuseMipLevel {
+                resource_mip: None,
+                next_separate_suffix: highest_separate,
+                width: info.width,
+                height: info.height,
+                format: info.format,
+            },
+        }));
+    }
+    if !packed && !copy_inline && !copy_worker_inline && selected_separate.is_none() {
+        let mut records = [const { None }; 16];
+        let info = texture::visit_inline_ranges(&bytes, |mip, width, height, range| {
+            records[mip as usize] = Some((mip, width, height, range));
+        })?;
+        let bytes = Arc::new(bytes);
+        let mut uploads = Vec::with_capacity(info.mip_count as usize);
+        uploads.extend(records.into_iter().flatten().map(|(mip_level, width, height, range)| {
+            CompressedMipUpload { mip_level, width, height, payload: MipPayload::Member(bytes.clone(), range) }
+        }));
+        if report_staging {
+            let inline_bytes = uploads.iter().map(|mip| mip.payload.len()).sum();
+            report_image_staging(stem, target, info.packed_format, &uploads, inline_bytes, 0, member_bytes);
+        }
+        return Ok(Some(StreamedDiffuse {
+            image: empty_streamed_image(info.width, info.height, info.mip_count, gpu_image_format(info.format)),
+            uploads,
+            level: DiffuseMipLevel {
+                resource_mip: None,
+                next_separate_suffix: highest_separate,
+                width: info.width,
+                height: info.height,
+                format: info.format,
+            },
+        }));
+    }
+    // The worker and separate-mip consumers still need individual authored records.
     let copied = if copy_inline { Some(texture::compressed_inline_chain(&bytes)?) } else { None };
     let mut inline_mips = [None; 16];
     let inline = if let Some(chain) = &copied {
@@ -865,16 +1244,6 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         texture::visit_inline_mips(&bytes, |index, mip| inline_mips[index as usize] = Some(mip))?
     };
     let format = inline.format;
-    let highest_separate = (0..=15)
-        .rev()
-        .find(|mip| catalog.contains(&format!("{stem}_mip{mip}")));
-    let selected_separate = match target {
-        TextureReadTarget::Initial(None) => None,
-        TextureReadTarget::Initial(Some(preferred)) => (0..=preferred)
-            .rev()
-            .find(|mip| catalog.contains(&format!("{stem}_mip{mip}"))),
-        TextureReadTarget::Exact(_, _) => unreachable!(),
-    };
     let mut uploads = Vec::new();
     let mut top = None;
     let mut previous: Option<(u32, u32)> = None;
@@ -882,37 +1251,37 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
     let total_levels = inline.mip_count + selected_separate
         .map_or(0, |selected| u32::from(highest_separate.unwrap() - selected) + 1);
     let mut packed_payload = Vec::new();
-    let mut emit = |mip_level: u32, width: u32, height: u32, payload: &[u8]| {
-        if packed {
-            if packed_payload.capacity() == 0 {
-                let bytes = (0..total_levels).map(|level|
-                    format.mip_bytes((width >> level).max(1), (height >> level).max(1))).sum();
-                packed_payload.reserve_exact(bytes);
-            }
-            packed_payload.extend_from_slice(payload);
-        } else {
-            uploads.push(CompressedMipUpload {mip_level, width, height, payload: payload.to_vec()});
-        }
+    let chain_capacity = |width: u32, height: u32| {
+        (0..total_levels).map(|level|
+            format.mip_bytes((width >> level).max(1), (height >> level).max(1))).sum()
     };
     if let Some(selected) = selected_separate {
         let last = highest_separate.ok_or("selected image mip has no lower levels")?;
         for mip in selected..=last {
             let path = format!("{stem}_mip{mip}");
-            let bytes = catalog
-                .read(&path)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("missing authored lower mip {path}"))?;
-            let compressed = texture::compressed_mip(&bytes, u32::from(mip), format)?;
+            let (mip_width, mip_height) = if packed {
+                texture::append_separate_mip(catalog, &path, u32::from(mip), format, &mut packed_payload, chain_capacity, cancelled)?
+                    .ok_or_else(|| format!("missing authored lower mip {path}"))?
+            } else {
+                let compressed = texture::read_separate_mip_cancellable(catalog, &path, u32::from(mip), format, cancelled)?
+                    .ok_or_else(|| format!("missing authored lower mip {path}"))?;
+                uploads.push(CompressedMipUpload {
+                    mip_level: mip_count,
+                    width: compressed.width,
+                    height: compressed.height,
+                    payload: MipPayload::Owned(compressed.payload),
+                });
+                (compressed.width, compressed.height)
+            };
             if let Some((width, height)) = previous {
-                if compressed.width != (width / 2).max(1)
-                    || compressed.height != (height / 2).max(1)
+                if mip_width != (width / 2).max(1)
+                    || mip_height != (height / 2).max(1)
                 {
                     return Err("authored separate mip dimensions are not contiguous".into());
                 }
             }
-            top.get_or_insert((compressed.width, compressed.height));
-            previous = Some((compressed.width, compressed.height));
-            emit(mip_count, compressed.width, compressed.height, compressed.payload);
+            top.get_or_insert((mip_width, mip_height));
+            previous = Some((mip_width, mip_height));
             mip_count += 1;
         }
     }
@@ -922,26 +1291,33 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
         }
     }
     top.get_or_insert((inline.width, inline.height));
-    for (index, mip) in inline_mips.iter().flatten().enumerate() {
-        emit(mip_count + index as u32, mip.width, mip.height, mip.payload);
+    if packed {
+        if packed_payload.is_empty() {
+            packed_payload.reserve_exact(chain_capacity(inline.width, inline.height));
+        }
+        for mip in inline_mips.iter().flatten() {
+            packed_payload.extend_from_slice(mip.payload);
+        }
+    } else {
+        for (index, mip) in inline_mips.iter().flatten().enumerate() {
+            uploads.push(CompressedMipUpload {
+                mip_level: mip_count + index as u32,
+                width: mip.width,
+                height: mip.height,
+                payload: MipPayload::Owned(mip.payload.to_vec()),
+            });
+        }
     }
-    drop(emit);
     mip_count += inline.mip_count;
     if report_staging && !packed {
-        use std::hash::{Hash, Hasher};
-        let mut checksum = std::hash::DefaultHasher::new();
-        inline.packed_format.hash(&mut checksum);
-        for mip in &uploads {
-            (mip.mip_level, mip.width, mip.height).hash(&mut checksum);
-            mip.payload.hash(&mut checksum);
-        }
         let inline_bytes = inline_mips.iter().flatten().map(|mip| mip.payload.len()).sum::<usize>();
-        eprintln!("MEMORY image staging: path={stem} target={target:?} inline_bytes={inline_bytes} redundant_copy_bytes={} upload_bytes={} mips={} checksum={:016x}",
-            if copy_inline {inline_bytes} else {0}, uploads.iter().map(|mip|mip.payload.len()).sum::<usize>(), uploads.len(), checksum.finish());
+        report_image_staging(stem, target, inline.packed_format, &uploads, inline_bytes,
+            if copy_inline { inline_bytes } else { 0 }, 0);
     }
     let (width, height) = top.ok_or("authored image has no mip payload")?;
     let mut image = empty_streamed_image(width, height, mip_count, gpu_image_format(format));
     if packed { image.data = Some(packed_payload); }
+    report_acquisition(false);
     Ok(Some(StreamedDiffuse {
         image,
         uploads,
@@ -961,6 +1337,23 @@ fn read_diffuse_image(catalog: &archive::Catalog, stem: &str, target: TextureRea
             format,
         },
     }))
+}
+
+fn report_image_staging(stem: &str, target: TextureReadTarget, format: u32,
+    uploads: &[CompressedMipUpload], inline_bytes: usize, redundant_bytes: usize, archive_bytes: usize,
+) {
+    use std::hash::{Hash, Hasher};
+    let mut checksum = std::hash::DefaultHasher::new();
+    format.hash(&mut checksum);
+    for mip in uploads {
+        (mip.mip_level, mip.width, mip.height).hash(&mut checksum);
+        (*mip.payload).hash(&mut checksum);
+    }
+    eprintln!("MEMORY image staging: path={stem} target={target:?} inline_bytes={inline_bytes} redundant_copy_bytes={redundant_bytes} upload_bytes={} mips={} checksum={:016x}",
+        uploads.iter().map(|mip| mip.payload.len()).sum::<usize>(), uploads.len(), checksum.finish());
+    if archive_bytes != 0 {
+        eprintln!("MEMORY image worker member: path={stem} archive_bytes={archive_bytes} borrowed_inline_bytes={inline_bytes}");
+    }
 }
 
 pub(super) use crate::rendering::bevy_backend::image_formats::gpu_image_format;
@@ -1088,7 +1481,6 @@ pub(super) fn attach_prepared_diffuse_image(
     slot: usize,
     handle: Handle<Image>,
     queue: &mut SceneRenderQueue,
-    images: &mut Assets<Image>,
     probe_materials: &mut Assets<ProbeMaterial>,
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
@@ -1131,9 +1523,9 @@ pub(super) fn attach_prepared_diffuse_image(
             }
         }
     }
-    if let Some(old) = queue.diffuse_image_handles[slot].replace(handle) {
-        images.remove(old.id());
-    }
+    // 1402df8c0 holds a snapshot of the prior view while its named wrapper
+    // survives. Bevy retires the asset after all strong handles are dropped.
+    queue.diffuse_image_handles[slot] = Some(handle);
 }
 
 /// Create the authored initial mip chain before any caster can reference it.
@@ -1172,9 +1564,7 @@ fn commit_resident_image(
     decal_materials: &mut Assets<DecalMaterial>,
     sky_materials: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>,
 ) -> Result<usize, String> {
-    if !streamed.uploads.is_empty() {
-        streamed.image.data = Some(streamed.uploads.into_iter().flat_map(|mip| mip.payload).collect());
-    }
+    streamed.pack_uploads();
     let bytes = streamed.image.data.as_ref().map_or(0, Vec::len);
     let mip_count = streamed.image.texture_descriptor.mip_level_count;
     if let Some(handle) = &queue.diffuse_image_handles[slot] {
@@ -1189,7 +1579,6 @@ fn commit_resident_image(
             slot,
             handle,
             queue,
-            images,
             probe_materials,
             decal_materials,
             sky_materials,
@@ -1225,7 +1614,9 @@ pub(super) fn commit_prepared_diffuse_level(
 }
 
 /// Host scratch belongs to the loaded world's streaming jobs, not one frame.
-pub(super) struct FrameRequests {
+struct FrameRequests {
+    instance_slots: InstanceImageSlots,
+    initial_view_ready: bool,
     flags: Vec<bool>,
     order: Vec<usize>,
     allocate_each_frame: bool,
@@ -1244,6 +1635,7 @@ pub(super) struct FrameRequests {
 impl Default for FrameRequests {
     fn default() -> Self {
         Self { flags: Vec::new(), order: Vec::new(), flag_growth_frames: 0, order_growth_frames: 0, pressure: Default::default(),
+            instance_slots: Default::default(), initial_view_ready: false,
             collect_completions: std::env::var("DH2_DEBUG_COLLECT_TEXTURE_COMPLETIONS").as_deref() == Ok("1"),
             completion_batches: 0, completion_items: 0, completion_temp_bytes: 0,
             clone_completion_paths: std::env::var("DH2_DEBUG_CLONE_TEXTURE_COMPLETION_PATHS").as_deref() == Ok("1"),
@@ -1258,6 +1650,9 @@ impl Drop for FrameRequests {
             eprintln!("MEMORY texture completion map release: collect={} batches={} items={} temporary_capacity_bytes={} path_clones={} path_clone_bytes={}",
                 self.collect_completions, self.completion_batches, self.completion_items, self.completion_temp_bytes,
                 self.completion_path_clones, self.completion_path_bytes);
+            eprintln!("MEMORY texture request map release: flags={} order={} instance_ranges={} instance_slots={}",
+                self.flags.capacity(), self.order.capacity(), self.instance_slots.ranges.capacity(),
+                self.instance_slots.slots.capacity());
         }
     }
 }
@@ -1266,13 +1661,13 @@ impl Drop for FrameRequests {
 /// view. This also handles a UI acquisition racing an in-flight base read.
 fn reuse_runtime_fx_view(slot: usize, queue: &mut SceneRenderQueue,
     catalog: &archive::Catalog, registry: &super::resident_images::ResidentImages,
-    images: &mut Assets<Image>, probes: &mut Assets<ProbeMaterial>,
+    probes: &mut Assets<ProbeMaterial>,
     decals: &mut Assets<DecalMaterial>, skies: &mut Assets<crate::rendering::bevy_backend::sky_mask::SkyMaterial>) -> bool {
     if queue.diffuse_image_handles[slot].is_some() || queue.diffuse_mip_states[slot].resident.is_some() { return false; }
     let paths = [queue.diffuse_image_paths[slot].clone()];
     let mut views = registry.scene_views(catalog, &paths, queue.preferred_mip, &Default::default());
     let Some(view) = views.remove(&0) else { return false };
-    attach_prepared_diffuse_image(slot, view.handle.clone(), queue, images, probes, decals, skies);
+    attach_prepared_diffuse_image(slot, view.handle.clone(), queue, probes, decals, skies);
     commit_prepared_diffuse_level(queue, slot, view.level, view.mip_count);
     queue.diffuse_image_attempted[slot] = true;
     true
@@ -1292,9 +1687,6 @@ pub(super) fn stream_visible_textures(
     mut diagnostics: Option<ResMut<StreamingDiagnostics>>,
     owners: (Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::resident_images::ResidentImages>>,
         Option<Res<super::runtime_fx_images::RuntimeFxImages>>),
-    mut instance_slots: Local<InstanceImageSlots>,
-    mut scratch: Local<FrameRequests>,
-    mut initial_view_ready: Local<bool>,
     mut settings: Local<settings::SettingsCache>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
     mut shared_images: Option<ResMut<SharedImages>>,
@@ -1303,18 +1695,16 @@ pub(super) fn stream_visible_textures(
     let Some(mut worker) = worker else {
         return;
     };
+    if worker.closing { return; }
     let settings = settings.get(adapter.as_deref());
-    if queue.is_added() {
-        *initial_view_ready = false;
-        *instance_slots = Default::default();
-        *scratch = Default::default();
-    }
+    let worker = &mut *worker;
     queue.texture_stream_frame += 1;
     let frame = queue.texture_stream_frame;
-    let FrameRequests { flags: requested, order: request_order, allocate_each_frame, timing,
+    let FrameRequests { instance_slots, initial_view_ready, flags: requested, order: request_order, allocate_each_frame, timing,
         flag_growth_frames, order_growth_frames, collect_completions, completion_batches,
         completion_items, completion_temp_bytes, clone_completion_paths, completion_path_clones,
-        completion_path_bytes, pressure } = &mut *scratch;
+        completion_path_bytes, pressure } = &mut worker.frame;
+    let requests = &worker.requests;
     if *allocate_each_frame { *requested = Vec::new(); *request_order = Vec::new(); }
     let flag_capacity = requested.capacity();
     let order_capacity = request_order.capacity();
@@ -1419,13 +1809,13 @@ pub(super) fn stream_visible_textures(
                 .unwrap_or(0);
             let image_id = handle.id();
             let resident_before = queue.diffuse_mip_states[slot].resident;
+            let replaced_view = queue.diffuse_image_handles[slot].as_ref().map(Handle::id);
             // 14030d1e0 finishes admitted work; pressure owns later eviction.
             {
                 attach_prepared_diffuse_image(
                     slot,
                     handle,
                     &mut queue,
-                    &mut images,
                     &mut probe_materials,
                     &mut decal_materials,
                     &mut sky_materials,
@@ -1433,7 +1823,7 @@ pub(super) fn stream_visible_textures(
                 if let Some(level) = prepared_level {
                     commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
                     if let Some(registry) = registry.as_deref() {
-                        registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                        registry.publish_view(&queue.diffuse_image_paths[slot], replaced_view, queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
                     }
                 }
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
@@ -1481,7 +1871,6 @@ pub(super) fn stream_visible_textures(
         }
     }
     let completion_count = {
-        let worker = &mut *worker;
         let receiver = worker.completed.lock().unwrap();
         let incoming = std::iter::from_fn(|| receiver.try_recv().ok());
         if *collect_completions {
@@ -1506,6 +1895,27 @@ pub(super) fn stream_visible_textures(
             eprintln!("MEMORY texture completion batches: frames={frame} collect={} batches={} items={} temporary_capacity_bytes={}",
                 collect_completions, completion_batches, completion_items, completion_temp_bytes);
         }
+    }
+    let dynamic_images = runtime_fx_images.as_deref().filter(|owner| owner.has_owned_slots());
+    if let Some(owner) = dynamic_images {
+        let (ready, inflight, inflight_count) =
+            (&mut worker.ready, &mut worker.inflight, &mut worker.inflight_count);
+        ready.retain(|(slot, target, _)| {
+            if !owner.read_abandoned(*slot, &queue.diffuse_image_paths[*slot]) {
+                return true;
+            }
+            inflight[*slot] = false;
+            *inflight_count -= 1;
+            queue.diffuse_mip_states[*slot].reserved_bytes = 0;
+            // A new consumer can revive this slot before PostUpdate retires it.
+            if matches!(target, TextureReadTarget::Initial(_)) {
+                queue.diffuse_image_attempted[*slot] = false;
+            }
+            if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
+                eprintln!("FX_LIFECYCLE scene_image_read_discarded slot={slot}");
+            }
+            false
+        });
     }
     let mut budget = texture::MipUploadBudget::new(settings.upload_kb);
     while budget.allows_next_upload() {
@@ -1565,7 +1975,7 @@ pub(super) fn stream_visible_textures(
         if matches!(target, TextureReadTarget::Initial(_))
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
-                worker.catalog(), registry, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+                &requests.catalog, registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_reuse_after_read slot={slot}");
             }
@@ -1641,14 +2051,13 @@ pub(super) fn stream_visible_textures(
                 slot,
                 handle,
                 &mut queue,
-                &mut images,
                 &mut probe_materials,
                 &mut decal_materials,
                 &mut sky_materials,
             );
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
             if let Some(registry) = registry.as_deref() {
-                registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                registry.publish_view(&queue.diffuse_image_paths[slot], previous, queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
             }
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
                 let path = path_copy.as_deref().unwrap_or(&queue.diffuse_image_paths[slot]);
@@ -1662,7 +2071,7 @@ pub(super) fn stream_visible_textures(
     if let Some(shared) = shared_images.as_deref_mut() { shared.age(); }
     let inactive_bytes = shared_images.as_deref().map_or(0, |shared| shared.charged_bytes());
     let mut charged = residency::charged_bytes(&queue) + inactive_bytes;
-    let mut reduction = pressure.choose(&queue, &worker, &images, settings, charged);
+    let mut reduction = pressure.choose(&queue, &worker.inflight, &images, settings, charged);
     if let Some(shared) = shared_images.as_deref_mut() {
         if let Some(released) = shared.reduce(&mut images, prepared_images.as_deref(), settings, charged, reduction.as_ref().map(|r| r.key)) {
             charged -= released;
@@ -1687,10 +2096,10 @@ pub(super) fn stream_visible_textures(
                 id: handle.id(), previous: Some(previous), copy: GpuMipCopy::Reduce { dropped }, uploads: Vec::new(),
             });
         } else {
-            attach_prepared_diffuse_image(slot, handle, &mut queue, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials);
+            attach_prepared_diffuse_image(slot, handle, &mut queue, &mut probe_materials, &mut decal_materials, &mut sky_materials);
             commit_prepared_diffuse_level(&mut queue, slot, level, mip_count);
             if let Some(registry) = registry.as_deref() {
-                registry.publish_view(&queue.diffuse_image_paths[slot], queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
+                registry.publish_view(&queue.diffuse_image_paths[slot], Some(previous), queue.diffuse_image_handles[slot].as_ref().unwrap(), level, mip_count);
             }
         }
         charged -= released_bytes;
@@ -1713,10 +2122,13 @@ pub(super) fn stream_visible_textures(
     let request_count = request_order.len();
     for &slot in request_order.iter() {
         if charged > residency::budget_bytes(settings) { break; }
+        if dynamic_images.is_some_and(|owner| owner.read_abandoned(slot, &queue.diffuse_image_paths[slot])) {
+            continue;
+        }
         if !worker.inflight[slot] && queue.diffuse_image_pending[slot].is_none()
             && runtime_fx_images.as_deref().is_some_and(|owner| owner.requested.contains(&slot))
             && registry.as_deref().is_some_and(|registry| reuse_runtime_fx_view(slot, &mut queue,
-                worker.catalog(), registry, &mut images, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
+                &requests.catalog, registry, &mut probe_materials, &mut decal_materials, &mut sky_materials)) {
             if crate::rendering::bevy_backend::world_effects::trace_lifecycle() {
                 eprintln!("FX_LIFECYCLE scene_image_reuse_before_read slot={slot}");
             }
@@ -1784,7 +2196,7 @@ pub(super) fn stream_visible_textures(
             }
             TextureReadTarget::Initial(queue.preferred_mip)
         };
-        match worker.request((slot, queue.diffuse_image_paths[slot].clone(), target)) {
+        match requests.request((slot, queue.diffuse_image_paths[slot].clone(), target)) {
             Ok(()) => {
                 if let Some(diagnostics) = diagnostics.as_deref_mut() {
                     diagnostics.texture_event(format_args!(
@@ -1840,7 +2252,7 @@ pub(super) fn stream_visible_textures(
 /// built and instances are only appended, so each instance is resolved once
 /// instead of hashing its material for every visible instance every frame.
 #[derive(Default)]
-pub(super) struct InstanceImageSlots {
+struct InstanceImageSlots {
     instances: usize,
     ranges: Vec<(u32, u32)>,
     slots: Vec<u32>,

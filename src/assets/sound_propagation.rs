@@ -38,6 +38,21 @@ pub struct Route {
     pub portals: Vec<u16>,
 }
 
+pub(crate) struct RouteView<'a> {
+    pub cost_millimetres: u32,
+    portal_words: &'a [u8],
+}
+
+impl RouteView<'_> {
+    pub(crate) fn portals(&self, reverse: bool) -> impl ExactSizeIterator<Item = u16> + '_ {
+        let count = self.portal_words.len() / 2;
+        (0..count).map(move |step| {
+            let index = 2 * if reverse { count - 1 - step } else { step };
+            u16::from_le_bytes(self.portal_words[index..index + 2].try_into().unwrap())
+        })
+    }
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -53,56 +68,172 @@ fn u16le(reader: &mut Cursor<&[u8]>) -> io::Result<u16> {
 fn u32le(reader: &mut Cursor<&[u8]>) -> io::Result<u32> {
     Ok(u32::from_le_bytes(raw(reader)?))
 }
-fn u64le(reader: &mut Cursor<&[u8]>) -> io::Result<u64> {
-    Ok(u64::from_le_bytes(raw(reader)?))
+enum Source<'a> {
+    Slice(&'a [u8]),
+    Stream { reader: &'a mut dyn Read, scratch: Vec<u8> },
 }
-fn take<'a>(reader: &mut Cursor<&'a [u8]>, length: u64) -> io::Result<&'a [u8]> {
-    let start =
-        usize::try_from(reader.position()).map_err(|_| invalid("acoustic offset overflow"))?;
-    let length = usize::try_from(length).map_err(|_| invalid("acoustic length overflow"))?;
-    let end = start
-        .checked_add(length)
-        .ok_or_else(|| invalid("acoustic offset overflow"))?;
-    let bytes = reader
-        .get_ref()
-        .get(start..end)
-        .ok_or_else(|| invalid("truncated acoustic resource"))?;
-    reader.set_position(end as u64);
-    Ok(bytes)
+
+struct Input<'a> {
+    source: Source<'a>,
+    remaining: usize,
+}
+
+impl Input<'_> {
+    fn consume(&mut self, length: u64) -> io::Result<usize> {
+        let length = usize::try_from(length).map_err(|_| invalid("acoustic length overflow"))?;
+        self.remaining = self.remaining.checked_sub(length)
+            .ok_or_else(|| invalid("truncated acoustic resource"))?;
+        Ok(length)
+    }
+
+    fn bytes(&mut self, length: u64) -> io::Result<&[u8]> {
+        let length = self.consume(length)?;
+        match &mut self.source {
+            Source::Slice(bytes) => Ok(split_bytes(bytes, length)),
+            Source::Stream { reader, scratch } => {
+                if scratch.len() < length { scratch.resize(length, 0); }
+                let bytes = &mut scratch[..length];
+                reader.read_exact(bytes)?;
+                Ok(bytes)
+            }
+        }
+    }
+
+    fn route_bytes(&mut self, length: u64) -> io::Result<Vec<u8>> {
+        let length = self.consume(length)?;
+        match &mut self.source {
+            Source::Slice(bytes) => Ok(split_bytes(bytes, length).to_vec()),
+            Source::Stream { reader, .. } => {
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes)?;
+                Ok(bytes)
+            }
+        }
+    }
+
+    fn u16(&mut self) -> io::Result<u16> { Ok(u16::from_le_bytes(self.bytes(2)?.try_into().unwrap())) }
+    fn u32(&mut self) -> io::Result<u32> { Ok(u32::from_le_bytes(self.bytes(4)?.try_into().unwrap())) }
+    fn u64(&mut self) -> io::Result<u64> { Ok(u64::from_le_bytes(self.bytes(8)?.try_into().unwrap())) }
+}
+
+fn split_bytes<'a>(bytes: &mut &'a [u8], length: usize) -> &'a [u8] {
+    let (head, tail) = bytes.split_at(length);
+    *bytes = tail;
+    head
 }
 
 impl Propagation {
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {
-        let mut reader = Cursor::new(bytes);
-        let version = u64le(&mut reader)?;
+        Self::read(&mut Input { source: Source::Slice(bytes), remaining: bytes.len() })
+    }
+
+    pub fn load(catalog: &super::archive::Catalog, path: &str) -> Result<Option<Self>, String> {
+        let trace = std::env::var_os("DH2_DEBUG_ACOUSTIC_STAGING").is_some_and(|v| v == "1");
+        let buffered = std::env::var_os("DH2_DEBUG_BUFFER_ACOUSTICS").is_some_and(|v| v == "1");
+        // The archive reader allocates a 64 KiB buffer. Small members are
+        // cheaper to borrow whole, including menu and Void acoustic files.
+        if !buffered && catalog.resource_size(path).is_some_and(|bytes| bytes > 2 * 65_536) {
+            return catalog.with_stream(path, |reader, size| {
+                let mut input = Input { source: Source::Stream { reader, scratch: Vec::new() }, remaining: size };
+                let graph = Self::read(&mut input).map_err(|error| error.to_string())?;
+                if trace {
+                    let Source::Stream { scratch, .. } = &input.source else { unreachable!() };
+                    graph.report_staging(path, size, 65_536 + scratch.capacity(), true);
+                }
+                Ok(graph)
+            });
+        }
+        let Some(bytes) = catalog.read(path).map_err(|error| error.to_string())? else { return Ok(None) };
+        let graph = Self::parse(&bytes).map_err(|error| error.to_string())?;
+        if trace { graph.report_staging(path, bytes.len(), bytes.capacity(), false); }
+        Ok(Some(graph))
+    }
+
+    fn report_staging(&self, path: &str, member_bytes: usize, staging_bytes: usize, streamed: bool) {
+        let mut digest = blake3::Hasher::new();
+        for zone in &self.zones { digest.update(format!("{zone:?}").as_bytes()); }
+        for portal in &self.portals { digest.update(format!("{portal:?}").as_bytes()); }
+        digest.update(&self.routes.zone_count.to_le_bytes());
+        digest.update(&self.routes.bytes);
+        eprintln!("ACOUSTIC_STAGING path={path} streamed={streamed} member_bytes={member_bytes} staging_bytes={staging_bytes} route_bytes={} signature={}",
+            self.routes.bytes.len(), digest.finalize());
+    }
+
+    /// Measure only route lookup and reading its records over the real zones.
+    pub fn observe_route_lookups(&self, path: &str) -> io::Result<()> {
+        for borrowed in [false, true, true, false] {
+            let mut signature = 0u64;
+            let mut routes = 0;
+            let mut portals = 0;
+            let mut allocations = 0;
+            let started = crate::loading::thread_cycles();
+            for (index, zone) in self.zones.iter().enumerate() {
+                for other in &self.zones[index..] {
+                    let reverse = zone.id > other.id;
+                    let mut append = |cost, ids: &mut dyn Iterator<Item = u16>| {
+                        routes += 1;
+                        signature = signature.rotate_left(7) ^ u64::from(cost);
+                        for id in ids {
+                            portals += 1;
+                            signature = signature.rotate_left(7) ^ u64::from(id);
+                        }
+                    };
+                    if borrowed {
+                        for route in self.routes.views(zone.id, other.id)? {
+                            append(route.cost_millimetres, &mut route.portals(reverse));
+                        }
+                    } else {
+                        let paths = self.routes.between(zone.id, other.id)?;
+                        allocations += usize::from(paths.capacity() != 0);
+                        for route in paths {
+                            allocations += usize::from(route.portals.capacity() != 0);
+                            let mut ids = route.portals.into_iter();
+                            if reverse {
+                                append(route.cost_millimetres, &mut ids.rev());
+                            } else {
+                                append(route.cost_millimetres, &mut ids);
+                            }
+                        }
+                    }
+                }
+            }
+            let cycles = started.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start));
+            eprintln!("ACOUSTIC_ROUTE_LOOKUPS path={path} borrowed={borrowed} routes={routes} portals={portals} allocations={allocations} signature={signature:016x} cycles={cycles:?}");
+        }
+        Ok(())
+    }
+
+    fn read(reader: &mut Input<'_>) -> io::Result<Self> {
+        let version = reader.u64()?;
         if version != 13 {
             return Err(invalid(format!(
                 "unsupported sound propagation version {version}"
             )));
         }
-        let count = u32le(&mut reader)? as usize;
-        if count > bytes.len() / 30 {
+        let count = reader.u32()? as usize;
+        if count > reader.remaining / 30 {
             return Err(invalid("invalid acoustic zone count"));
         }
         let mut zones = Vec::with_capacity(count);
         for index in 0..count {
             // 1400b9eb0 allocates this many portal slots; portal references
             // themselves are rebuilt from the portal endpoints after loading.
-            let portal_capacity = u32le(&mut reader)?;
-            let id = u16le(&mut reader)?;
-            let length = u32le(&mut reader)?;
-            let name = take(&mut reader, u64::from(length))?;
+            let portal_capacity = reader.u32()?;
+            let id = reader.u16()?;
+            let length = reader.u32()?;
+            let name = reader.bytes(u64::from(length))?;
             let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
             let auxiliary_bus = std::str::from_utf8(name)
                 .map_err(|error| invalid(error.to_string()))?
                 .to_owned();
             let properties = [
-                u32le(&mut reader)?,
-                u32le(&mut reader)?,
-                u32le(&mut reader)?,
+                reader.u32()?,
+                reader.u32()?,
+                reader.u32()?,
             ];
-            let length = u64le(&mut reader)?;
-            let shape = take(&mut reader, length)?;
+            let length = reader.u64()?;
+            let shape = reader.bytes(length)?;
             let geometry = physworld::parse_embedded_havok(shape)
                 .and_then(|world| world.query_shapes(shape, 1))
                 .map_err(|error| invalid(format!("acoustic zone {index} (ID {id}): {error}")))?;
@@ -114,18 +245,18 @@ impl Propagation {
                 geometry,
             });
         }
-        let count = u32le(&mut reader)? as usize;
-        if count > (bytes.len() - reader.position() as usize) / 116 {
+        let count = reader.u32()? as usize;
+        if count > reader.remaining / 116 {
             return Err(invalid("invalid acoustic portal count"));
         }
         let mut portals = Vec::with_capacity(count);
         for _ in 0..count {
+            let record = reader.bytes(116)?;
+            let mut record = Cursor::new(record);
             let mut geometry = [0; 27];
-            for value in &mut geometry {
-                *value = u32le(&mut reader)?;
-            }
-            let endpoints = [u16le(&mut reader)?, u16le(&mut reader)?];
-            let properties = [u16le(&mut reader)?, u16le(&mut reader)?];
+            for value in &mut geometry { *value = u32le(&mut record)?; }
+            let endpoints = [u16le(&mut record)?, u16le(&mut record)?];
+            let properties = [u16le(&mut record)?, u16le(&mut record)?];
             if endpoints
                 .iter()
                 .any(|&zone| usize::from(zone) >= zones.len())
@@ -138,11 +269,11 @@ impl Propagation {
                 properties,
             });
         }
-        let zone_count = u16le(&mut reader)?;
-        let length = u64le(&mut reader)?;
+        let zone_count = reader.u16()?;
+        let length = reader.u64()?;
         let routes = Routes {
             zone_count,
-            bytes: take(&mut reader, length)?.to_vec(),
+            bytes: reader.route_bytes(length)?,
         };
         let count = usize::from(zone_count);
         if routes.bytes.len() < count * (count + 1) / 2 * 4 {
@@ -151,7 +282,7 @@ impl Propagation {
         if zones.iter().any(|zone| zone.id >= zone_count) {
             return Err(invalid("acoustic zone ID exceeds route table"));
         }
-        if reader.position() != bytes.len() as u64 {
+        if reader.remaining != 0 {
             return Err(invalid("trailing acoustic resource bytes"));
         }
         Ok(Self {
@@ -167,20 +298,8 @@ impl Routes {
     /// authored from lower to higher zone ID; the caller reverses it when
     /// traversing from the higher ID toward the lower ID.
     pub fn between(&self, first: u16, second: u16) -> io::Result<Vec<Route>> {
-        let count = usize::from(self.zone_count);
-        let low = usize::from(first.min(second));
-        let high = usize::from(first.max(second));
-        if high >= count {
-            return Err(invalid("acoustic route zone ID out of bounds"));
-        }
-        let index = high + (count - 1) * low - low * low.saturating_sub(1) / 2;
-        let mut reader = Cursor::new(self.bytes.as_slice());
-        reader.set_position((index * 4) as u64);
-        let offset = u32le(&mut reader)?;
-        if offset == 0 {
-            return Ok(Vec::new());
-        }
-        reader.set_position(u64::from(offset));
+        let Some(bytes) = self.encoded_routes(first, second)? else { return Ok(Vec::new()); };
+        let mut reader = Cursor::new(bytes);
         let count = u16le(&mut reader)?;
         let mut routes = Vec::with_capacity(usize::from(count));
         for _ in 0..count {
@@ -196,4 +315,48 @@ impl Routes {
         }
         Ok(routes)
     }
+
+    fn encoded_routes(&self, first: u16, second: u16) -> io::Result<Option<&[u8]>> {
+        let count = usize::from(self.zone_count);
+        let low = usize::from(first.min(second));
+        let high = usize::from(first.max(second));
+        if high >= count {
+            return Err(invalid("acoustic route zone ID out of bounds"));
+        }
+        let index = high + (count - 1) * low - low * low.saturating_sub(1) / 2;
+        let at = index * 4;
+        let offset = self.bytes.get(at..at + 4).ok_or_else(truncated_routes)?;
+        let offset = u32::from_le_bytes(offset.try_into().unwrap()) as usize;
+        if offset == 0 { return Ok(None); }
+        self.bytes.get(offset..).map(Some).ok_or_else(truncated_routes)
+    }
+
+    /// Validate the complete list up front. An early successful admission
+    /// must not hide a later truncated record in the same installed list.
+    pub(crate) fn views(&self, first: u16, second: u16) -> io::Result<impl Iterator<Item = RouteView<'_>>> {
+        let (count, bytes) = match self.encoded_routes(first, second)? {
+            Some(bytes) => {
+                let (count, bytes) = bytes.split_at_checked(2).ok_or_else(truncated_routes)?;
+                (u16::from_le_bytes(count.try_into().unwrap()), bytes)
+            }
+            None => (0, &[][..]),
+        };
+        let mut rest = bytes;
+        for _ in 0..count { read_route_view(&mut rest)?; }
+        let mut rest = bytes;
+        Ok((0..count).map(move |_| read_route_view(&mut rest).expect("validated acoustic route")))
+    }
+}
+
+fn truncated_routes() -> io::Error {
+    io::Error::new(io::ErrorKind::UnexpectedEof, "truncated acoustic routes")
+}
+
+fn read_route_view<'a>(bytes: &mut &'a [u8]) -> io::Result<RouteView<'a>> {
+    let (header, rest) = bytes.split_at_checked(4).ok_or_else(truncated_routes)?;
+    let header = u32::from_le_bytes(header.try_into().unwrap());
+    let (portal_words, rest) = rest.split_at_checked((header >> 24) as usize * 2)
+        .ok_or_else(truncated_routes)?;
+    *bytes = rest;
+    Ok(RouteView { cost_millimetres: header & 0x00ff_ffff, portal_words })
 }

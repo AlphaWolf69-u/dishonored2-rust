@@ -1,5 +1,5 @@
 //! Level-owned readable and usable component instances.
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use bevy::prelude::*;
 use crate::{archive::Catalog, entities::{self, Document}, gameplay::{navigation, usable::Usable}};
 
@@ -9,6 +9,8 @@ pub(super) struct Actor {
     pub state: Option<Usable>,
     pub frame: crate::gameplay::reference_frame::ReferenceFrame,
     pub fake_box: Option<navigation::ComponentBox>,
+    pub started: bool,
+    pub scheduling: crate::gameplay::component_state::declaration::DeclarationScheduling,
     last_delta: Option<[[f32; 4]; 3]>,
 }
 
@@ -26,16 +28,28 @@ pub(super) struct Interactions {
     parent: HashMap<String, String>,
     pub pending: Vec<PendingChange>,
     selected: Option<(bool, usize, usize)>,
-    pending_read: Option<std::sync::Mutex<bevy::tasks::Task<Result<ReadResult, String>>>>,
+    pending_read: Option<ReadResult>,
     pending_activation: Option<(ReadResult, Arc<crate::gameplay::player::read_note::Presentation>)>,
     item_sources: crate::assets::inventory_item::PickableSourceLease,
-    pub retire: Vec<String>,
+    pub(super) acquisitions_closed: Arc<AtomicBool>,
+    retire: Vec<PendingPickup>,
+}
+
+struct PendingPickup {
+    entity: String,
+    identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent),
+    step: u8,
 }
 
 struct ReadResult {
     entity: String,
+    identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent),
     path: String,
     item: Arc<crate::assets::inventory_item::PickableItem>,
+}
+
+impl Drop for Interactions {
+    fn drop(&mut self) { self.close_acquisitions(); }
 }
 
 pub(super) struct PendingChange {
@@ -60,19 +74,16 @@ pub(super) fn effect_spawn(state: &Usable, path: &str) -> EffectSpawn {
 }
 
 impl Interactions {
-    pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str,
-        loadout: &[(String, u32)], list: &crate::assets::map_resources::LevelList) -> Result<Self, String> {
+    pub fn load(catalog: Arc<Catalog>, document: &Document, character: &str) -> Result<Self, String> {
         let read = |path: &str| -> Result<Option<String>, String> {
             Ok(catalog.read(path).map_err(|e| e.to_string())?
-                .map(|bytes| entities::declaration_text(&bytes).into_owned()))
+                .map(entities::owned_declaration_text))
         };
         let sensor = entities::usable::player_sensor(&catalog, character)?;
         let bindings = entities::usable::bindings(document, |path| read(path))?;
-        let readable = entities::usable::readable_bindings(document, |path| read(path))?;
+        let readable = entities::usable::readable_bindings(&catalog, document)?;
         super::pause_menu::trace_readable_ui(|| format!("READ_NOTE declarations admitted={} character={character}", readable.len()));
-        let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character,
-            readable.iter().map(|binding| binding.item.clone()).chain(loadout.iter().map(|(path, _)| path.clone()))
-                .chain(list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned)))?);
+        let limits = Arc::new(crate::assets::inventory_item::ReadableLimits::load(&catalog, character)?);
         let definitions: HashMap<&str, &entities::Definition> = document.definitions.iter()
             .filter(|d| d.kind == "entity").map(|d| (d.id.as_str(), d)).collect();
         let mut actors = Vec::new();
@@ -88,12 +99,14 @@ impl Interactions {
                     Ok(state) => Some(state),
                     Err(error) => { bevy::log::warn!("Usable {}: {error}", binding.entity); continue; }
                 } };
-            actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, last_delta: None });
+            let started = binding.definition.starts_on_spawn;
+            actors.push(Actor { entity: binding.entity, definition: binding.definition, state, frame, fake_box: None, started,
+                scheduling: binding.scheduling, last_delta: None });
         }
         let actor_by_entity = actors.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
         let readable_by_entity = readable.iter().enumerate().map(|(i, a)| (a.entity.clone(), i)).collect();
         let breakable = entities::usable::breakable_entities(document)?;
-        let parent = entities::entity_binds(document).into_iter().map(|bind| (bind.entity_id, bind.parent)).collect();
+        let parent = entities::resolved_entity_binds(document).into_iter().map(|bind| (bind.entity_id, bind.parent)).collect();
         let pending = actors.iter().enumerate().filter_map(|(actor, value)| {
             if !value.definition.starts_on_spawn { return None; }
             let state = value.state.as_ref()?;
@@ -103,16 +116,47 @@ impl Interactions {
         }).collect();
         let item_sources = crate::assets::inventory_item::PickableSourceLease::for_catalog(&catalog)?;
         Ok(Self { catalog, limits, sensor, actors, readable, actor_by_entity, readable_by_entity,
-            casts: Default::default(), breakable, parent, pending, selected: None, pending_read: None, pending_activation: None, item_sources, retire: Vec::new() })
+            casts: Default::default(), breakable, parent, pending, selected: None, pending_read: None, pending_activation: None,
+            item_sources, acquisitions_closed: Arc::default(), retire: Vec::new() })
+    }
+
+    pub(super) fn close_acquisitions(&self) {
+        self.acquisitions_closed.store(true, Ordering::Release);
+    }
+
+    pub(super) fn retire_acquisition(&mut self) -> bool {
+        self.pending_read = None;
+        true
+    }
+
+    pub(super) fn request_readable(&mut self, index: usize,
+        identity: (crate::gameplay::entity_lifetime::EntityId, crate::gameplay::pickable_component::CheckedComponent),
+        declaration: Arc<crate::assets::inventory_item::PickableItem>) {
+        if self.acquisitions_closed.load(Ordering::Acquire)
+            || self.pending_read.is_some() || self.pending_activation.is_some() { return; }
+        let item = self.readable[index].item.clone();
+        super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
+        let entity = self.readable[index].entity.clone();
+        // The admitted component already owns the exact item generation.
+        // Reacquiring here could select a different editable generation.
+        self.pending_read = Some(ReadResult { entity, identity, path: item, item: declaration });
     }
 
     pub fn limits(&self) -> Arc<crate::assets::inventory_item::ReadableLimits> { self.limits.clone() }
+
+    /// The same declaration source used by async reads; called only by the
+    /// level preparation worker when admitting a real Pickable component.
+    pub(super) fn acquire_readable_item(&self, path: &str)
+        -> Result<Arc<crate::assets::inventory_item::PickableItem>, String> {
+        self.item_sources.0.lock().map_err(|_| "readable item source is poisoned")?
+            .acquire(&self.catalog, path)
+    }
 
     /// Start the same fake bodies used by the original component. Their owner
     /// is the level collision world and the actor retains only its handle.
     pub fn start_boxes(&mut self, world: &mut navigation::CollisionWorld) {
         for actor in &mut self.actors {
-            if !actor.definition.starts_on_spawn || !actor.definition.fake_collision { continue; }
+            if !actor.started || !actor.definition.fake_collision || actor.fake_box.is_some() { continue; }
             let corners = entities::usable::fake_box_corners(&actor.frame, &actor.definition).map(super::game_to_view);
             actor.fake_box = Some(world.add_interaction_box(&actor.entity, corners));
         }
@@ -123,6 +167,51 @@ impl Interactions {
             world.remove_interaction_box(handle);
         }
     }
+
+    /// 77b610/4cd920 detach the same usable collision and animation owners.
+    /// The published last pose remains with its render placement until that
+    /// placement retires; stopping does not hide or destroy the entity.
+    pub(super) fn stop_actor(&mut self, index: usize,
+        collision: &mut navigation::CollisionWorld,
+        animations: &mut super::usable_animation::UsableAnimations,
+        effects: &mut super::usable_effects::UsableEffects) {
+        let actor = &mut self.actors[index];
+        if !actor.started { return; }
+        actor.started = false;
+        if let Some(handle) = actor.fake_box.take() { collision.remove_interaction_box(handle); }
+        self.pending.retain(|change| change.actor != index);
+        animations.stop_actor(index);
+        effects.stop_usable(index);
+        self.selected = None;
+    }
+}
+
+/// Called after render acknowledgement, before supporting level resources
+/// disappear. No outgoing async read may reopen a note or restart a usable.
+pub(super) fn stop_level(world: &mut World) {
+    if !world.contains_resource::<Interactions>() { return; }
+    world.resource_scope(|world, mut interactions: Mut<Interactions>| {
+        interactions.close_acquisitions();
+        interactions.pending_activation = None;
+        interactions.retire.clear();
+        interactions.selected = None;
+        // Partially prepared levels may not have published these backends.
+        for (index, actor) in interactions.actors.iter_mut().enumerate() {
+            actor.started = false;
+            if let Some(handle) = actor.fake_box.take() {
+                if let Some(mut navigation) = world.get_resource_mut::<super::NavigationWorld>() {
+                    navigation.0.remove_interaction_box(handle);
+                }
+            }
+            if let Some(mut effects) = world.get_resource_mut::<super::usable_effects::UsableEffects>() {
+                effects.stop_usable(index);
+            }
+        }
+        if let Some(mut animations) = world.get_resource_mut::<super::usable_animation::UsableAnimations>() {
+            animations.stop_all();
+        }
+        interactions.pending.clear();
+    });
 }
 
 fn interaction_type(name: Option<&str>) -> i32 {
@@ -145,6 +234,11 @@ fn interaction_type(name: Option<&str>) -> i32 {
 pub(super) fn focus_and_interact(
     interactions: Option<ResMut<Interactions>>,
     world: Option<Res<super::NavigationWorld>>,
+    physics: Option<Res<super::physics_scene::PhysicsScene>>,
+    mut effects: Option<ResMut<crate::rendering::bevy_backend::camera_scene::FxSimulation>>,
+    sources: Res<super::shadow_updates::ModelShadowSources>,
+    placements: Res<super::RenderSourcePlacements>,
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>,
     camera: Query<&Transform, With<Camera3d>>,
     input: Res<super::player::PlayerInput>,
     mut player: Option<ResMut<super::player::PlayerState>>,
@@ -175,12 +269,42 @@ pub(super) fn focus_and_interact(
         let result = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()).and_then(|player| player.take_read_note_result());
         if let Some(result) = result {
             let (read, expected) = interactions.pending_activation.take().expect("retained read activation");
+            if !read_is_live(&read, physics.as_deref(), live.as_deref()) { return; }
             if result.is_err() { warn!("READ_NOTE activation was rejected or cancelled"); }
             if let Ok(presentation) = result {
                 if !Arc::ptr_eq(&presentation, &expected) { warn!("READ_NOTE activation descriptor differs"); return; }
                 let Some(requests) = requests.as_deref_mut() else { warn!("Reading UI request owner is absent"); return };
                 let maximum = interactions.limits.maximum(&read.path);
                 use crate::assets::inventory_item::{PickableReadable, PickableOtherKind};
+                let portable = match &read.item.readable {
+                    Some(PickableReadable::Note(note) | PickableReadable::Other(note,_)) => note.can_be_picked_up,
+                    Some(PickableReadable::Map(map)) => map.can_be_picked_up,
+                    None => false,
+                };
+                if portable {
+                    let Some(scene) = physics.as_deref() else { return; };
+                    let Some(live) = live.as_deref() else { return; };
+                    let Some(&binding_index) = interactions.readable_by_entity.get(&read.entity) else { return; };
+                    let binding = &interactions.readable[binding_index];
+                    if interactions.parent.contains_key(&read.entity) || !binding.unsupported_pickup_components.is_empty() {
+                        warn!("document pickup requires actual bound/projectile callbacks: {} {:?}",read.entity,binding.unsupported_pickup_components);
+                        return;
+                    }
+                    if let Err(error) = scene.preflight_document_pickup(live,read.identity.1,&sources,&placements) {
+                        warn!("document pickup preflight: {error}"); return;
+                    }
+                    if let Err(error) = interactions.retire.try_reserve(1) {
+                        warn!("document pickup queue: {error}"); return;
+                    }
+                }
+                // 844bf0 notifies pickedUp before applying the inventory read
+                // result, including notes which remain in the world.
+                let (Some(effects), Some(live)) = (effects.as_deref_mut(),live.as_deref()) else { return; };
+                match effects.dispatch_picked_up(read.identity.0,true,false,live) {
+                    Ok(errors) if errors.is_empty() => {},
+                    Ok(errors) => { warn!("document pickedUp: {}",errors.join("; ")); return; },
+                    Err(error) => { warn!("document pickedUp: {error}"); return; },
+                }
                 let (accepted, portable) = match &read.item.readable {
                     Some(PickableReadable::Note(note)) => {
                         let id = if note.title.is_empty() { 0 } else { crate::assets::lang::key_id(&note.title) };
@@ -202,17 +326,16 @@ pub(super) fn focus_and_interact(
                     },
                     None => { warn!("READ_NOTE item has no presentation"); return; },
                 };
-                if accepted && portable { interactions.retire.push(read.entity); }
+                if accepted && portable { interactions.retire.push(PendingPickup { entity: read.entity, identity:read.identity, step:0 }); }
                 super::pause_menu::trace_readable_ui(|| format!("READ_NOTE activation accepted inventory={accepted} portable={portable}"));
                 requests.open.push_back(presentation);
             }
         }
     }
-    if let Some(task) = interactions.pending_read.as_mut() {
-        if let Some(result) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task.get_mut().unwrap_or_else(|error| error.into_inner()))) {
-            interactions.pending_read = None;
-            match result.and_then(|read| super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation))) {
+    if let Some(read) = interactions.pending_read.take() {
+            match super::pause_menu::readable_presentation(&read.item).map(|presentation| (read,presentation)) {
                 Ok((read,presentation)) => {
+                    if !read_is_live(&read, physics.as_deref(), live.as_deref()) { return; }
                     super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item acquired path={}", read.path));
                     if let Some(player) = player.as_deref_mut().and_then(|runtime| runtime.player.as_mut()) {
                         if player.read_note_state_allowed() == Some(true) && player.request_read_note(presentation.clone()) {
@@ -223,7 +346,6 @@ pub(super) fn focus_and_interact(
                 },
                 Err(error) => warn!("Readable item unavailable: {error}"),
             }
-        }
     }
     let eye = camera.translation;
     let forward = camera.forward().as_vec3();
@@ -250,7 +372,7 @@ pub(super) fn focus_and_interact(
                     interactions.readable[index].allowed_swimming)
             } else if let Some(index) = actor {
                 let Some(state) = interactions.actors[index].state.as_ref() else { continue };
-                if !state.definition.starts_on_spawn { continue; }
+                if !interactions.actors[index].started { continue; }
                 let step = state.state;
                 let entry = &state.definition.steps[step];
                 (false, index, step, if entry.overrides_interaction { entry.maximum_distance } else { state.definition.maximum_distance },
@@ -305,17 +427,13 @@ pub(super) fn focus_and_interact(
     if !pressed || focused.current.as_ref().is_none_or(|prompt| prompt.locked) { return; }
     let Some((is_readable, index, _)) = selected else { return };
     if is_readable {
-        if interactions.pending_read.is_none() && interactions.pending_activation.is_none() {
-            let item = interactions.readable[index].item.clone();
-            super::pause_menu::trace_readable_ui(|| format!("READ_NOTE item requested path={item}"));
-            let entity = interactions.readable[index].entity.clone();
-            let catalog = interactions.catalog.clone();
-            let sources = interactions.item_sources.clone();
-            interactions.pending_read = Some(std::sync::Mutex::new(bevy::tasks::IoTaskPool::get().spawn(async move {
-                let declaration = sources.0.lock().map_err(|_| "readable item source is poisoned")?.acquire(&catalog, &item)?;
-                Ok(ReadResult { entity, path: item, item: declaration })
-            })));
-        }
+        let identity = physics.as_deref().zip(live.as_deref()).and_then(|(scene, live)| {
+            match scene.readable_item(&interactions.readable[index].entity, live) {
+                Ok(value) => value,
+                Err(error) => { warn!("Readable identity unavailable: {error}"); None }
+            }
+        });
+        if let Some((identity, item)) = identity { interactions.request_readable(index, identity, item); }
     } else {
         let changes = {
             let actor = &mut interactions.actors[index];
@@ -331,6 +449,12 @@ pub(super) fn focus_and_interact(
         // A state may change the authored prompt without a camera movement.
         interactions.selected = None;
     }
+}
+
+fn read_is_live(read: &ReadResult, physics: Option<&super::physics_scene::PhysicsScene>,
+    live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> bool {
+    physics.zip(live).is_some_and(|(scene, live)|
+        scene.readable_identity(&read.entity, live).is_ok_and(|current| current == Some(read.identity)))
 }
 
 /// 14077be20 follows the owning entity pose. Unchanged owners do not touch the
@@ -359,16 +483,137 @@ pub(super) fn sync_boxes(
 /// world stays readable even when a duplicate can no longer enter inventory.
 pub(super) fn retire_admitted_pickups(
     interactions: Option<ResMut<Interactions>>,
-    world: Option<ResMut<super::NavigationWorld>>,
+    navigation: Option<ResMut<super::NavigationWorld>>,
+    physics: Option<ResMut<super::physics_scene::PhysicsScene>>,
+    live: Option<ResMut<crate::gameplay::entity_lifetime::LiveEntities>>,
     placements: Res<super::RenderSourcePlacements>,
+    mut sources: ResMut<super::shadow_updates::ModelShadowSources>,
     mut retired: ResMut<super::interaction_focus::RetiredPlacements>,
+    mut sounds: MessageWriter<super::audio::SoundEvent>,
 ) {
-    let (Some(mut interactions), Some(mut world)) = (interactions, world) else { return };
-    if interactions.retire.is_empty() { return; }
-    for entity in interactions.retire.drain(..) {
-        world.0.set_owner_active(&entity, false);
-        for (index, placement) in placements.0.iter().enumerate() {
-            if placement.id == entity { retired.0.insert(index); }
-        }
+    let (Some(mut interactions),Some(mut navigation),Some(mut scene),Some(mut live)) =
+        (interactions,navigation,physics,live) else { return; };
+    if let Err(error) = drain_accepted_pickups(&mut interactions,&mut scene,&mut live,&mut navigation,
+        &mut sources,&placements,&mut retired, |event| { sounds.write(event); }) {
+        warn!("document pickup callback pending: {error}");
     }
+}
+
+/// 844bf0 completes 76e2b0/76ec20 before returning. The host's deferred
+/// callback must reach that same boundary before any component Stop, including
+/// a map request which has already gated its normal PostUpdate consumer.
+fn drain_accepted_pickups(interactions: &mut Interactions,
+    scene: &mut super::physics_scene::PhysicsScene,
+    live: &mut crate::gameplay::entity_lifetime::LiveEntities,
+    navigation: &mut super::NavigationWorld,
+    sources: &mut super::shadow_updates::ModelShadowSources,
+    placements: &super::RenderSourcePlacements,
+    hidden: &mut super::interaction_focus::RetiredPlacements,
+    mut post: impl FnMut(super::audio::SoundEvent)) -> Result<(),String> {
+    while let Some(pending) = interactions.retire.first_mut() {
+        if live.get(pending.identity.0).is_none() { return Err("document pickup identity retired before callback".into()); }
+        if let Some(sound) = scene.begin_document_pickup(live,pending.identity.1,&mut pending.step)? {
+            // bevy_backend: PlayerBody is the existing player Audio host. Its
+            // FIFO and ordinary retirement own the accepted sound request.
+            post(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
+                event:sound.id,emitter:crate::gameplay::sound::Emitter::PlayerBody }));
+        }
+        navigation.0.mask_placed_owner_filter(&pending.entity,0x0820_001f);
+        scene.finish_document_pickup(live,pending.identity.1,sources,placements,hidden)?;
+        interactions.retire.remove(0);
+    }
+    Ok(())
+}
+
+/// Drain only already accepted work: never repeat pickedUp or inventory
+/// admission, and retain every cursor/resource when a body callback fails.
+pub(super) fn finish_accepted_pickups(world: &mut World) -> Result<(),String> {
+    if world.get_resource::<Interactions>().is_none_or(|owner| owner.retire.is_empty()) { return Ok(()); }
+    let mut state = bevy::ecs::system::SystemState::<(
+        ResMut<Interactions>, ResMut<super::physics_scene::PhysicsScene>,
+        ResMut<crate::gameplay::entity_lifetime::LiveEntities>, ResMut<super::NavigationWorld>,
+        ResMut<super::shadow_updates::ModelShadowSources>, Res<super::RenderSourcePlacements>,
+        ResMut<super::interaction_focus::RetiredPlacements>, MessageWriter<super::audio::SoundEvent>,
+    )>::new(world);
+    let result = (|| {
+        let (mut interactions,mut scene,mut live,mut navigation,mut sources,placements,mut hidden,mut sounds) =
+            state.get_mut(world).map_err(|error| format!("accepted pickup retirement owner absent: {error}"))?;
+        drain_accepted_pickups(&mut interactions,&mut scene,&mut live,&mut navigation,&mut sources,
+            &placements,&mut hidden,|event| { sounds.write(event); })
+    })();
+    state.apply(world);
+    result
+}
+
+/// Real retained queue state for phase observers. This never admits a pickup
+/// or manufactures a nonempty cursor for an otherwise idle world.
+pub(super) fn accepted_pickup_progress(world: &World) -> Vec<(String,u8)> {
+    world.get_resource::<Interactions>().map(|owner| owner.retire.iter()
+        .map(|pending| (pending.entity.clone(),pending.step)).collect()).unwrap_or_default()
+}
+
+/// Request the same action as a focused real readable. Phase observers use
+/// installed bindings and admitted generations, then let ordinary App frames
+/// perform READ_NOTE, pickedUp, inventory admission and movie publication.
+pub(super) fn request_admitted_readable(world: &mut World) -> Result<Option<(usize,String)>,String> {
+    if !world.contains_resource::<Interactions>() { return Ok(None); }
+    world.resource_scope(|world, mut interactions: Mut<Interactions>| {
+        if interactions.acquisitions_closed.load(Ordering::Acquire) {
+            return Err("readable observation cannot admit into a closing level".into());
+        }
+        if interactions.pending_read.is_some() || interactions.pending_activation.is_some()
+            || !interactions.retire.is_empty() {
+            return Err("readable observation already has an unfinished action".into());
+        }
+        let scene = world.get_resource::<super::physics_scene::PhysicsScene>()
+            .ok_or("readable observation has no admitted component owner")?;
+        let live = world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
+            .ok_or("readable observation has no live entity owner")?;
+        let sources = world.get_resource::<super::shadow_updates::ModelShadowSources>()
+            .ok_or("readable observation has no render source owner")?;
+        let placements = world.get_resource::<super::RenderSourcePlacements>()
+            .ok_or("readable observation has no model placements")?;
+        let mut selected = None;
+        for (index,binding) in interactions.readable.iter().enumerate() {
+            // These are the same source-family exclusions as the normal
+            // focused action, not a diagnostic-only admission path.
+            if binding.locked || !binding.component.usable_by_player
+                || interactions.parent.contains_key(&binding.entity) || !binding.unsupported_pickup_components.is_empty() { continue; }
+            let Some((identity,item)) = scene.readable_item(&binding.entity,live)? else { continue; };
+            let portable = match &item.readable {
+                Some(crate::assets::inventory_item::PickableReadable::Note(note)
+                    | crate::assets::inventory_item::PickableReadable::Other(note,_)) => note.can_be_picked_up,
+                Some(crate::assets::inventory_item::PickableReadable::Map(map)) => map.can_be_picked_up,
+                None => false,
+            };
+            if !portable { continue; }
+            if let Err(error) = scene.preflight_document_pickup(live,identity.1,sources,placements) {
+                eprintln!("READABLE_ACTION_UNAVAILABLE entity={} reason={error}",binding.entity);
+                continue;
+            }
+            selected = Some((index,binding.entity.clone(),identity,item));
+            break;
+        }
+        let Some((index,entity,identity,item)) = selected else { return Ok(None); };
+        interactions.request_readable(index,identity,item);
+        if !interactions.pending_read.as_ref().is_some_and(|read| read.identity == identity) {
+            return Err("the real readable action did not accept its request".into());
+        }
+        Ok(Some((index,entity)))
+    })
+}
+
+#[derive(Clone,Copy,Debug)]
+pub(super) struct ReadActionProgress {
+    pub pending_read: bool,
+    pub pending_activation: bool,
+    pub accepted_pickups: usize,
+    pub acquisitions_closed: bool,
+}
+
+pub(super) fn read_action_progress(world: &World) -> Option<ReadActionProgress> {
+    let owner = world.get_resource::<Interactions>()?;
+    Some(ReadActionProgress { pending_read: owner.pending_read.is_some(),
+        pending_activation: owner.pending_activation.is_some(), accepted_pickups: owner.retire.len(),
+        acquisitions_closed: owner.acquisitions_closed.load(Ordering::Acquire) })
 }

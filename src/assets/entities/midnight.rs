@@ -33,12 +33,20 @@ pub struct AnimKey {
     pub start_offset: i32,
     pub end_offset: i32,
     pub markers: usize,
+    pub marker_values: Result<Vec<SceneMarker>, String>,
     /// md6WeightGroup_t; only MD6_WEIGHTGROUP_ANIM_EXPORT_MASK (7) occurs in
     /// the installed player scenes.
     pub body_part: u8,
     pub main_clip: bool,
     pub stretched: bool,
     pub curve: Option<FloatCurve>,
+}
+
+/// A named animation marker and its time in the Midnight clip (14018e620).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneMarker {
+    pub name: String,
+    pub time_ms: i32,
 }
 
 /// An EMTT_EVENT EMKT_POINT key (arkMidnightKeyPropEvent).
@@ -166,6 +174,36 @@ fn curve(key: &Fields) -> Result<Option<FloatCurve>, String> {
     }
 }
 
+/// Decode a single anim-track key. Shared by player and world scenes.
+pub(super) fn anim_key(key: &Fields) -> Result<AnimKey, String> {
+    let prop = object(child(key, "m_keyProp"));
+    let body_part = match atom(prop, "m_bodyPart").unwrap_or("MD6_WEIGHTGROUP_ANIM_EXPORT_MASK") {
+        "MD6_WEIGHTGROUP_ANIM_EXPORT_MASK" => 7,
+        other => return Err(format!("midnight body part {other} is not decoded")),
+    };
+    let marker_fields = child(prop, "m_lMarker");
+    let markers = items(marker_fields)
+        .map(|marker| Ok(SceneMarker {
+            name: atom(marker, "m_name").ok_or("missing animation marker name")?.to_owned(),
+            time_ms: int(marker, "m_time", 0)?,
+        }))
+        .collect::<Result<Vec<_>, String>>();
+    Ok(AnimKey {
+        start_ms: int(key, "m_startTime", 0)?,
+        duration_ms: int(key, "m_duration", 0)?,
+        priority: int(key, "m_priority", 0)?,
+        anim: atom(prop, "m_AnimName").unwrap_or("").to_owned(),
+        start_offset: int(prop, "m_startOffset", 0)?,
+        end_offset: int(prop, "m_endOffset", 0)?,
+        markers: int(marker_fields, "num", 0)? as usize,
+        marker_values: markers,
+        body_part,
+        main_clip: boolean(prop, "m_isMainClip"),
+        stretched: boolean(prop, "m_isStretched"),
+        curve: curve(key)?,
+    })
+}
+
 pub fn parse(text: &str) -> Result<MidnightScene, String> {
     let fields = parse_declaration(text)?;
     let edit = child(&fields, "edit");
@@ -199,23 +237,7 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
                     }
                     match track_type {
                         Some("EMTT_ANIM") => {
-                            let body_part = match atom(prop, "m_bodyPart").unwrap_or("MD6_WEIGHTGROUP_ANIM_EXPORT_MASK") {
-                                "MD6_WEIGHTGROUP_ANIM_EXPORT_MASK" => 7,
-                                other => return Err(format!("midnight body part {other} is not decoded")),
-                            };
-                            group.anim_keys.push(AnimKey {
-                                start_ms: int(key, "m_startTime", 0)?,
-                                duration_ms: int(key, "m_duration", 0)?,
-                                priority: int(key, "m_priority", 0)?,
-                                anim: atom(prop, "m_AnimName").unwrap_or("").to_owned(),
-                                start_offset: int(prop, "m_startOffset", 0)?,
-                                end_offset: int(prop, "m_endOffset", 0)?,
-                                markers: int(child(prop, "m_lMarker"), "num", 0)? as usize,
-                                body_part,
-                                main_clip: boolean(prop, "m_isMainClip"),
-                                stretched: boolean(prop, "m_isStretched"),
-                                curve: curve(key)?,
-                            });
+                            group.anim_keys.push(anim_key(key)?);
                         }
                         Some("EMTT_EVENT") => group.events.push(EventKey {
                             time_ms: int(key, "m_startTime", 0)?,

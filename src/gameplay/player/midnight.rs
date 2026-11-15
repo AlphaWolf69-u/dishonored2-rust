@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// A scene decl with its anim names resolved to body clips.
 #[derive(Debug)]
 pub struct PreparedScene {
-    pub decl: MidnightScene,
+    pub decl: Arc<crate::assets::midnight_scene::PlayerScene>,
     /// Per (scene index, key index) of the player group: the body clip.
     pub clips: Vec<Vec<usize>>,
     /// The same for the PlayerLeftArm / PlayerRightArm groups: arm clips.
@@ -65,7 +65,7 @@ pub(crate) fn prepare_sounds_owned(
     if std::env::var("DH2_DEBUG_SEPARATE_MIDNIGHT_SOUND_EVENTS").as_deref() == Ok("1") {
         return prepare_sounds(decl, casting, |path| {
             Ok(catalog.read(path).map_err(|error| error.to_string())?
-                .map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+                .map(crate::entities::owned_declaration_text))
         });
     }
     prepare_sounds_using(decl, casting, |name| {
@@ -243,7 +243,7 @@ pub struct Midnight {
 }
 
 /// FUN_14018fe90 with KeyCurve_Float slot 13 (FUN_140182e00).
-fn weight(curve: &Option<FloatCurve>, x: i32) -> f32 {
+pub(crate) fn weight(curve: &Option<FloatCurve>, x: i32) -> f32 {
     let Some(c) = curve else { return 1.0 };
     let n = c.times.len();
     if n == 0 {

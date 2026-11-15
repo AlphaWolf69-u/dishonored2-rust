@@ -6,6 +6,7 @@ use super::constraint_solver::reciprocal;
 #[path = "deactivation/islands.rs"]
 mod islands;
 pub use islands::{BodyActivationCommand, DeactivatedIsland, DeactivationWorld, IslandCacheLink};
+pub(crate) use islands::ActivationNotifyProgress;
 #[path = "deactivation/contacts.rs"]
 mod contacts;
 pub use contacts::prepare_contacts;

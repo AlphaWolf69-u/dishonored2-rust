@@ -1578,6 +1578,8 @@ session allocation between levels; measure its owned capacities and the changed
 acquisition function in a same-executable comparison. No frame-time or RSS
 saving is predicted, and no tests or visual inspection are needed.
 
+Camera material history still rebuilds a temporary name set at level retirement. The 63 prepared variants each generate a path string even though the session table is immutable. Reuse exact packed Catalog path identities or another borrowed representation if it removes these allocations without a larger resident cache or extra lookups for every material. This affects only the retire span, with no frame-time prediction. Keep the existing path set until a measured replacement preserves all 63 credits.
+
 ### Declaration-history membership lookup: prediction before implementation
 
 The first complete scope scan retired 536 map names / 55,498 String-capacity
@@ -2219,7 +2221,7 @@ recoverable capacity is bounded by the roughly1GiB reservation growth on this
 route, not a predicted guaranteed saving; no compaction change was made.
 
 
-Autonomous motion event dispatch (2026-11-09): RunningGraph::execute clones the complete selected Node (parameters/ports/links) to separate its borrow from mutable variables/playback. The estimated removable work is one owned node-tree clone per dispatched graph event; SceneMotion::step performs none of these copies, so no steady per-frame gain is predicted. This remains deferred while the current batch corrects actual source ownership: safely splitting immutable graph access from mutable state would widen that change, and its event-frequency/copy-size cost has not been measured. Scene source-key parsing now borrows parameters instead of a throwaway to_vec; immutable curves are leased across graph/playback. No remaining per-frame resource acquisition/upload was found in this motion owner.
+Autonomous motion event dispatch (2026-11-10): RunningGraph::execute cloned the selected Node (parameters, ports and links) before dispatch. Borrow the node from the immutable graph field while updating the instance's separate runtime fields. Expect one fewer node-tree clone per dispatched event and one fewer temporary name allocation per named-variable write. SceneMotion::step did not perform these copies. Compare actual motion definitions, initial poses and event output before claiming any runtime gain. The original keyframe action 140533460 reads its declaration identity, with mutable playback stored separately.
 
 
 Shader admission metadata (2026-11-09): ProgramLibrary caches admitted/unsupported shadow sources by program+variant signature. Different signatures can still reference the same UCD stage, and water/boat checksum admission can request stages repeatedly. Full stage bytes currently retire immediately, so this is repeated preparation work rather than a resident-byte leak. A future measured metadata cache could keep validated extent/checksum facts per stage ID without pinning unpacked DXBC. Estimated removable work is (stage requests minus unique requested IDs) source reads/decompressions in the admission functions; no steady per-frame gain is predicted for already prepared materials. Wait for actual material-admission request/ID and affected-function cost measurements before adding storage; the windowless CPU preparation route does not exercise the complete renderer admission path. Keep bytecode identity checks and explicit export intact, and remove any cache that supplies no measured reuse. Native stage loading1402ca440; source/include checking and native GPU bank publication are separate unsupported owner roles.
@@ -2228,3 +2230,116 @@ Shader admission metadata (2026-11-09): ProgramLibrary caches admitted/unsupport
 Mixed-lifetime mesh slabs (2026-11-09): actual windowless EotW/Dust upload/removal leaves the same four host meshes (4/24/4/4 vertices) that existed before map preparation. One four-vertex host mesh shares a slab that grows from1048608 to40312752 buffer bytes during map upload. Its remaining lease prevents that live buffer from retiring after map meshes disappear; device-reported live allocation increases by39256064 bytes for that slab. This is different from the already-recorded D3D12 reserved-heap fragmentation. Separating long-lived bootstrap geometry or carefully compacting at a quiescent boundary could recover most of that capacity. Wait for a complete allocation-domain and fence design plus affected upload/allocation measurements; globally disabling resident-slab growth can increase active-level fragmentation and new buffer allocations. Current maps otherwise release their actual GPU asset identities. Evidence: artifacts/render-asset-lifetimes-v5-20261109-observation/stderr.log. The measured bootstrap-only separation is now implemented. The same-build EotW/Dust observation reclaimed 39,256,064 bytes of live allocations after teardown in both maps. Dust active allocations were 8,978,432 bytes higher in that sample. This leaves the separate driver-heap fragmentation question open.
 
 Shader stage admission follow-up: the implemented level-local checksum cache avoided 992 of 1,070 actual cached-stage reads/inflations over EotW and Dust preparation. The two dev samples recorded 130.8M -> 13.8M thread cycles in the affected calls. Ordered stage identities and resolved material fingerprints match. See the resource parity ledger for scope and retained metadata cost.
+
+World particle surface submission (`bevy_backend/particle_meshes`): active frames still group borrowed draws by model/material in a temporary map with one vector per active key. Removing that grouping could save one map allocation and at least one vector allocation per active key, with unchanged proxy ordering and lighting-record indices. Measure the active-key count and the grouping span on real particle frames before changing the grouping. Empty publications now bypass this work.
+
+Iggy section residency (2026-11-10). The installed Iggy reader 141093380 executes relocation programs for the section mask 0x102 supplied by 141028ea0. The host retains the serialized member and resolves section-relative pointers in place. An index census of all 55 selected installed .iggy paths found 90,786,940 member bytes, of which 90,457,592 are the loaded sections. The 15 sampled paths from the loading/pause trace and the named HUD/Journal entries account for 7,332,452 source bytes and at most 74,040 removable bytes, including 46,160 relocation bytes. This is a maximum for that sampled set, not an estimate of a session's resident heap. Compaction would copy the data sections or require an additional selective archive reader and a change to the complete-file byte interface. Keep the source-backed format on this evidence. The existing owner already reuses Iggy/ABC identities and reads the selected language on demand. Relocation lookup metadata is a separate cost. Evidence: DH2-collision-staging/artifacts/iggy-payload-census-20261110.json.
+
+The Edge channel indices (+0x60, accessed by 1412e6a70 and its channel
+functions) are currently decoded once into u16 arrays as well as
+retained in the clip. A source-backed view could eliminate up to two
+bytes per channel plus the eight Vec headers per clip. Unlike the
+joint-weight slice this view would replace a hot per-channel iterator.
+Keep the arrays until same-build installed pose sampling shows that
+checked little-endian source iteration does not cost more in playback.
+
+
+The retained host table is 524 typed bytes, plus its Arc allocation header.
+Its Catalog adds one mutex-protected optional Arc. In the ordinary level
+both world libraries share that table. Between levels the Catalog keeps
+the small table rather than the executable bytes. A failed source read
+leaves the owner empty so the next request can retry. The adjacent component
+metadata work is also implemented: ComponentTypes::acquire shares the immutable
+class hierarchy, factory descriptors and dependency plan through Catalog.
+The installed EotW/Dust/EotW comparison reduced three executable reads to one;
+all named class relations, factory/definition descriptors and 645 selected
+preparation records matched, and final owner destruction was observed.
+See component-metadata-relations-20261111-comparison.json and its acceptance
+entry in the resource parity ledger. No walking CPU timing is inferred.
+
+Wind update source scratch (2026-11-11; allocation model corrected).
+update_vegetation_wind allocates ONE Vec for the whole update, with capacity
+28 * max(source_count,1) words, then appends stack-returned [u32;28] records.
+It does not allocate one Vec per source. A retained scratch could remove one
+allocation per active update, at112 * max(source_count,1) resident bytes.
+Alternatively, writing those already-encoded words directly into the existing
+ShaderBuffer byte backing could remove both the temporary allocation and its
+second copy without retaining a separate scratch, but needs an explicit
+runtime-array ABI/write contract and affected-function evidence. The current
+serializer backing already reuses exact-sized storage. Do not claim a saving
+for this unimplemented opportunity or multiply allocation counts by source
+count. Playback values, upload scheduling and GPU work must stay unchanged.
+
+
+- World FX timer iteration (`world_particle_state::advance`) still moves out its timer Vec and pushes surviving callbacks into a new Vec. Reusing two callback buffers should remove allocation proportional to active timer frames while preserving native callback insertion order. This predates the graph-owner recovery; no gain is claimed without an isolated active-timer observation. It is left separate from the required subscription/startup/retirement contract.
+
+
+Host benchmark camera replay (2026-11-15): controls::camera_controls currently
+rebuilds its segment-length Vec each replay frame. A prepared segment table
+would avoid one allocation and the repeated distance calculations for an
+unchanged path (storage proportional to path segments). This exists only in
+the explicit benchmark driver, not ordinary player movement. It is outside
+the current correctness repairs and must be measured in that function before
+claiming or implementing an improvement; no FPS/CPU gain is claimed here.
+
+
+Stock GPU clustering buffer reuse (2026-11-15; host backend opportunity).
+`vendor/bevy_pbr-0.19.1/src/cluster/gpu.rs::prepare_clusters_for_gpu_clustering`
+constructs a new `ViewClusterBindings` and `ViewGpuClusteringBuffers` for each
+view on every preparation, then replaces the view components. The completed
+seven-state EotW quality observation recorded these five allocation labels:
+
+| Buffer label/type | Creations | Cumulative allocation extents (bytes) | Maximum live extents (bytes) |
+|---|---:|---:|---:|
+| `StorageBuffer<GpuClusterableObjectIndexListsStorage>` | 2,409 | 631,504,896 | 1,048,576 |
+| `StorageBuffer<GpuClusterOffsetsAndCountsStorage>` | 2,409 | 223,674,368 | 524,288 |
+| `UninitBufferVec<ClusterableObjectZSlice>` | 2,409 | 157,876,224 | 262,144 |
+| `clustering Z slicing metadata buffer` | 2,409 | 157,876,224 | 262,144 |
+| `UninitBufferVec<[UVec4; 2]>` (scratch offsets/counts) | 2,409 | 223,674,368 | 524,288 |
+
+Total: 12,045 creations and 1,394,606,080 cumulative allocation bytes. These
+are DX12 allocation extents (including allocation granularity), not uploaded
+payload bytes, bus traffic, or concurrent residency. Individual label peaks
+are not necessarily simultaneous. Every recorded creation was freed; this is
+balanced per-frame streaming, not missing ownership or a demonstrated leak.
+Evidence: `artifacts/quality-dx12-label-churn-20261115.json`, derived from the
+completed `active-resource-runtime-20261115T000412Z-dfa8d355/10-quality-eotw_p_lowchaos/runtime.log`.
+
+Proposal: preserve buffers in their existing per-view components and update
+contents/reserve capacity rather than replace all five owners each frame.
+Prediction, conditional on stable capacities: avoid four or five fixed GPU
+allocations per view preparation; growth and actual view replacement still
+allocate, and view retirement must still release the same owners. No CPU,
+GPU-time, FPS, or steady-state memory improvement has been measured. This is
+a host backend optimization, not a claim that the original uses Bevy's cluster
+algorithm or buffers.
+
+Why it waits: reuse requires explicit initialization/reset of scratch counts,
+metadata and indirect arguments, capacity/growth and binding replacement,
+plus proof that pending GPU metadata readbacks remain associated with the
+correct view generation and submitted contents. Current ownership is balanced.
+An isolated affected-function/allocation observation must preserve clustering
+output, resizing, asynchronous readback ordering and final retirement before
+this separate optimization is accepted. Do not duplicate the cluster pipeline
+or introduce another resource cache to reduce this count.
+
+## Music output batching (2026-11-15)
+
+Host: the canonical output engine currently pulls one frame at a time;
+Wwise walks music contexts and automation once per 1024-frame quantum.
+The new scheduler uses that existing engine rather than allocating another
+mixer/output device. Context-fade targets are constant within each quantum,
+but their inexpensive evaluation and segment/clip admission checks currently
+run through the frame pull. At most eight overlapping ordinary music clips
+would produce 384,000 such checks per second at 48 kHz. Expected benefit of
+batching: reduce scheduler-only checks by up to 1024 times; no prediction is
+made for total audio CPU, which includes decoding, filtering and bus effects.
+This waits for a separate scoped output-render observation and a shared
+block-pull API preserving sample-offset actions, starvation, pause, ramps,
+bus activity and stream retirement. It is not a reason to add another player.
+
+The unchanged shared spatial adapter also returns a small parameter Vec per
+Playing::update. The music cache avoids hundreds of route/product rebuilds
+but still uses that one small canonical input list. A borrowed/small-buffer
+API would affect ordinary sounds too; its remaining allocation benefit must
+be measured across those callers before changing their common interface.

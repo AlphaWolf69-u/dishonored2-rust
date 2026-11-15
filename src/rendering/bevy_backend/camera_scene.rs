@@ -38,7 +38,6 @@ pub(crate) struct FxSimulation {
     screen_state: super::screen_effects::ScreenEffectState,
     particle_systems: super::particle_systems::ParticleSystems,
     pub(super) world_particles: super::world_particle_state::WorldParticleState,
-    screen_sources: Option<std::sync::Arc<super::screen_effects::ScreenEffectSources>>,
 }
 impl Default for FxSimulation {
     fn default() -> Self {
@@ -46,18 +45,60 @@ impl Default for FxSimulation {
         Self {
             generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             screen_state: Default::default(), particle_systems: Default::default(),
-            world_particles: Default::default(), screen_sources: None,
+            world_particles: Default::default(),
         }
     }
 }
 
 impl FxSimulation {
-    /// World FX manager shutdown (199df0), after actual entity/component and
-    /// graph retirement. Repeating a completed shutdown is harmless.
-    pub(crate) fn shutdown_world_effects(&mut self) -> Result<(), String> {
-        self.world_particles.shutdown(&mut self.particle_systems)
+    pub(crate) fn prepare_entity_graphs(&mut self,
+        definitions: &super::world_effects::WorldEffectDefinitions,
+        sources: &crate::rendering::particles::world_sources::WorldFxSources,
+        live: Option<&crate::gameplay::entity_lifetime::LiveEntities>) -> Result<(), String> {
+        self.world_particles.prepare_graphs(definitions, &sources.declarations, live)
+    }
+    /// Admit an actual dynamically spawned owner using already acquired
+    /// declarations; graph construction never does archive IO on this thread.
+    pub(crate) fn admit_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        graph: std::sync::Arc<crate::assets::entities::effects::FxGraph>,
+        declarations: &crate::assets::entities::effects::declarations::FxDeclarations,
+        live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<u64, String> {
+        self.world_particles.admit_entity_graph(entity, graph, declarations, live)
+    }
+    pub(crate) fn retire_entity_graph(&mut self, entity: crate::gameplay::entity_lifetime::EntityId) -> Result<(), String> {
+        self.world_particles.retire_entity_graph(entity)
+    }
+    pub(crate) fn dispatch_picked_up(&mut self, entity: crate::gameplay::entity_lifetime::EntityId,
+        successful: bool, from_grapple: bool, live: &crate::gameplay::entity_lifetime::LiveEntities) -> Result<Vec<String>, String> {
+        self.world_particles.dispatch_picked_up(entity, successful, from_grapple, live)
+    }
+    /// Diagnostic snapshots borrow the actual manager without starting or
+    /// advancing another simulation. No ordinary-frame observer is installed.
+    pub(crate) fn observe_started_fx(&self) -> Vec<String> {
+        self.world_particles.observe_started_fx()
+    }
+    pub(crate) fn observe_fx_owner(&self, owner: &str) -> super::world_particle_state::OwnerSnapshot {
+        self.world_particles.observe_owner(owner)
+    }
+    pub(crate) fn observe_fx_pools(&self) -> (usize, usize, u16, u16, u16) {
+        let (instances, pending, sounds, decals) = self.world_particles.observe_pool_counts();
+        (instances, pending, self.particle_systems.allocated_count(), sounds, decals)
     }
 
+    pub(crate) fn observe_screen_fx(&self) -> super::screen_effects::ScreenLifecycleSnapshot {
+        self.screen_state.lifecycle_snapshot()
+    }
+
+    /// End the player chains, then retire the world FX manager (199df0).
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        let trace = super::world_effects::trace_lifecycle();
+        if trace { eprintln!("SCREEN_FX_LIFETIME phase=shutdown-begin snapshot={:?} shared_particle_slots={}", self.observe_screen_fx(), self.particle_systems.allocated_count()); }
+        let screen = self.screen_state.shutdown(&mut self.particle_systems);
+        let world = self.world_particles.shutdown(&mut self.particle_systems);
+        let result = screen.and(world);
+        if trace { eprintln!("SCREEN_FX_LIFETIME phase=shutdown-end ok={} snapshot={:?} shared_particle_slots={}", result.is_ok(), self.observe_screen_fx(), self.particle_systems.allocated_count()); }
+        result
+    }
 }
 
 #[derive(Resource, Default)]
@@ -90,6 +131,11 @@ pub(super) struct ParticlePublicationFrame {
 /// Particle state remains exclusively in the gameplay world.
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct FxPublication(pub(super) Option<std::sync::Arc<FxFrame>>);
+impl FxPublication {
+    /// Read-only lifecycle diagnostic; absence is published by the ordinary
+    /// view producer, never manufactured by the observer.
+    pub(crate) fn has_view(&self) -> bool { self.0.is_some() }
+}
 pub(super) struct FxFrame {
     pub camera: Entity,
     pub frame: u32,
@@ -268,7 +314,7 @@ impl CameraGpu {
     }
 }
 pub(super) fn register(app: &mut App) {
-    app.init_resource::<FxSimulation>().init_resource::<FxPublication>();
+    app.init_resource::<FxPublication>();
     app.add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<FxPublication>::default());
     app.init_resource::<super::particle_pass::ParticleMaterialSampler>();
     app.init_resource::<super::particle_images::SceneParticleImages>()
@@ -401,7 +447,7 @@ fn render_particles(
     water: Res<WaterSceneFrame>,
     fog_frame: Res<FogSceneFrame>,
     fog: Res<FogGpu>,
-    shared: Res<super::fog_material::FogMaterialResources>,
+    shared: Option<Res<super::fog_material::FogMaterialResources>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
@@ -451,6 +497,7 @@ fn render_particles(
             crate::loading::complete(PARTICLE_GATE);
             let prewarm = &lighting_scene.prewarm;
             let CameraGpu { particles, particle_images, .. } = &mut *gpu;
+            particle_images.retire_scene_views(&lighting_scene.scene_images);
             if let Some(particles) = particles.as_mut() {
                 if particles.retirement != prewarm.retirement {
                     particles.pass.retire_unused_materials();
@@ -617,6 +664,7 @@ fn render_particles(
         if draws.is_empty() {
             return Ok(());
         }
+        let shared = shared.as_deref().ok_or("particle fog resource owner unavailable")?;
         let adaptation = buffers
             .get(&exposure.0)
             .ok_or("particle adaptation awaits preparation")?;
@@ -935,6 +983,7 @@ pub(crate) struct FxUpdateInputs<'w> {
     world_sounds: Res<'w, super::world_sounds::WorldSounds>,
     decals: Res<'w, super::projected_decals::DecalScene>,
     swimming_surface: Res<'w, super::water_scene::SwimmingSurfaceMailbox>,
+    live: Option<Res<'w, crate::gameplay::entity_lifetime::LiveEntities>>,
 }
 
 /// Gameplay owns the sole world/player FX simulation and particle pool. The
@@ -946,28 +995,23 @@ pub(crate) fn simulate_effects(
     queries: Res<super::physics_queries::PhysicsQueryFrame>,
     particle_view: Res<super::particle_systems::ParticleQueryFrame>,
     fog_frame: Res<FogSceneFrame>,
-    mut simulation: ResMut<FxSimulation>,
+    simulation: Option<ResMut<FxSimulation>>,
     mut published: ResMut<FxPublication>,
     mut last_error: Local<Option<String>>,
     mut particle_error: Local<Option<String>>,
     mut world_error: Local<Option<String>>,
     mut decal_error: Local<Option<String>>,
 ) {
-    let Some(water) = water.0.as_ref() else {
-        if simulation.screen_sources.is_some() { *simulation = FxSimulation::default(); }
-        published.0 = None;
-        return;
-    };
-    let Some(sources) = sources.0.as_ref() else {
-        if simulation.screen_sources.is_some() { *simulation = FxSimulation::default(); }
-        published.0 = None;
-        return;
-    };
-    if simulation.screen_sources.as_ref().is_none_or(|previous| !std::sync::Arc::ptr_eq(previous, sources)) {
-        *simulation = FxSimulation::default();
-        simulation.screen_sources = Some(sources.clone());
-    }
     let trace = super::world_effects::trace_lifecycle();
+    if trace && (water.0.is_none() || sources.0.is_none()) {
+        eprintln!("SCREEN_FX_LIFETIME phase=input-gap water_present={} sources_present={} snapshot={:?}", water.0.is_some(), sources.0.is_some(), simulation.as_ref().map(|owner| owner.observe_screen_fx()));
+    }
+    let (Some(water), Some(sources), Some(mut simulation)) = (water.0.as_ref(), sources.0.as_ref(), simulation) else {
+        // A missing view withdraws the draw data. LevelLifetime owns the
+        // simulation and retires it after the outgoing GPU publication.
+        published.0 = None;
+        return;
+    };
     let started = trace.then(std::time::Instant::now);
     let cycles = if trace { crate::loading::thread_cycles() } else { None };
     let (surface, prepared_ocean) = fx.swimming_surface.fx_inputs();
@@ -986,14 +1030,30 @@ pub(crate) fn simulate_effects(
         ],
     };
     let FxSimulation { screen_state, particle_systems, .. } = &mut *simulation;
+    // Reuse the existing opt-in lifecycle trace gate. With tracing disabled
+    // there are no new snapshots, allocations, counters or frame systems.
+    let screen_before = trace.then(|| screen_state.lifecycle_snapshot());
     let screen = screen_state.advance(sources, particle_systems, water.matrices.frame,
         water.delta_seconds, underwater, camera_frame);
+    if let Some(before) = screen_before {
+        let after = screen_state.lifecycle_snapshot();
+        if before.ownership_changed(after) || screen.is_err() {
+            let phase = if before.underwater != after.underwater { "transition" } else { "tail-change" };
+            eprintln!("SCREEN_FX_LIFETIME phase={phase} ok={} input_frame={} camera_z={} contact_plane={:?} completed_head={:?} selected_head={head:?} input_underwater={underwater} delta={} before={before:?} after={after:?}",
+                screen.is_ok(), water.matrices.frame, water.matrices.current.position[2], water.head_water_surface, surface.and_then(|surface| surface.head), water.delta_seconds);
+        }
+    }
     if let Some(inputs) = queries.0.as_ref().filter(|q| q.camera == water.camera && q.frame == water.matrices.frame) {
         let FxSimulation { world_particles, particle_systems, .. } = &mut *simulation;
         particle_systems.collision = inputs.collision.clone();
         particle_systems.moving = inputs.moving.clone();
-        match world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
-            particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater, &inputs.world) {
+        // The frame retains the authoritative shared query owner. Hold its
+        // actual read lease through this FX batch; never clone a physics world.
+        let result = inputs.world.read().map_err(|_| "level physics query owner is poisoned".to_owned())
+            .and_then(|world| world_particles.advance(&fx.world_graphs, &fx.world_sources.0, &fx.dynamic, &fx.world_frames,
+                particle_systems, &fx.world_sounds, &fx.decals, water.matrices.frame, camera_frame, underwater,
+                &world, fx.live.as_deref()));
+        match result {
             Ok(()) => *world_error = None,
             Err(error) if world_error.as_ref() != Some(&error) => {
                 warn!("World particle preparation pending: {error}");
@@ -1011,7 +1071,9 @@ pub(crate) fn simulate_effects(
                     let view = particle_view.0.as_ref()
                         .filter(|view| view.camera == water.camera && view.frame == water.matrices.frame)
                         .ok_or("particle visibility awaits the current camera frame")?;
-                    simulation.particle_systems.simulate(water.matrices.frame, &q.world, ocean_height,
+                    // One shared read lease covers the complete particle batch.
+                    let query_world = q.world.read().map_err(|_| "level physics query owner is poisoned")?;
+                    simulation.particle_systems.simulate(water.matrices.frame, &query_world, ocean_height,
                         &water.matrices.current, view.state.as_ref(), &view.wind)
                 });
             let publication = publish_particles(&mut simulation.particle_systems, water,
@@ -1322,4 +1384,21 @@ fn render_camera<const PREPARE_ALPHA: bool>(
             }
         }
     }
+}
+
+/// Scalar target provenance only, inspected after ordinary graph execution.
+pub(crate) fn observe_target_resources(world: &World) -> (bool, Vec<String>) {
+    let Some(gpu) = world.get_resource::<CameraGpu>() else { return (false, vec!["readiness owner=camera input=missing".into()]); };
+    let Some(water) = world.get_resource::<super::water_scene::WaterSceneFrame>().and_then(|frame| frame.0.as_ref()) else { return (false, vec!["readiness owner=camera input=missing".into()]); };
+    let skipped = world.get_resource::<super::display_scene::DisplaySceneFrame>().and_then(|frame| frame.0.as_ref())
+        .and_then(|frame| frame.lens.as_ref()).is_some_and(|lens| lens.settings.skip_post_process);
+    let expected = (water.camera, water.matrices.frame);
+    let mut rows = vec![format!("owner=camera expected={expected:?} completed={:?} skipped={skipped}", gpu.completed)];
+    if let Some((camera, view)) = &gpu.current {
+        view.visit_owned_targets(&mut |role, texture| {
+            rows.push(format!("owner=camera camera={camera:?} role={role} texture={:?} size={:?} format={:?} mips={} samples={}", texture.id(), texture.size(), texture.format(), texture.mip_level_count(), texture.sample_count()));
+        });
+    }
+    rows.push(format!("readiness owner=camera completed_matches={} skipped={skipped}", gpu.completed == Some(expected)));
+    (skipped || gpu.completed == Some(expected), rows)
 }

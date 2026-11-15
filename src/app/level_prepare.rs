@@ -6,13 +6,14 @@ use super::{
     StreamingDiagnostics, TomeWorld, ViewSettings, archive,
     entities, env, expanded_model_placements, game_affine_to_view, game_settings, game_to_view,
     navigation, physworld, placed_transform, placed_vertex, probe_lighting, render_light,
-    shader_cache, shadow_target_dimensions, tome, transformed, view_to_game, world_mesh,
+    shader_cache, shadow_target_dimensions, tome, transformed, view_to_game,
 };
 use bevy::prelude::*;
+use std::sync::Arc;
 
 /// Hold shape acquisition history until the published world retires.
 #[derive(Resource)]
-struct ShapeHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::physworld::source::ShapeHistoryLease>);
+pub(super) struct ShapeHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::physworld::source::ShapeHistoryLease>);
 
 /// Keep static model history until preparation and renderer ownership stop.
 #[derive(Resource)]
@@ -22,17 +23,21 @@ pub(super) struct ModelHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::bm
 #[derive(Resource)]
 pub(super) struct MaterialHistoryScope(#[allow(dead_code)] std::sync::Arc<crate::material::MaterialHistoryLease>);
 
+/// Blueprint construction credits outlive transient expansion descriptors.
+#[derive(Resource)]
+pub(super) struct BlueprintHistoryScope(#[allow(dead_code)] std::sync::Arc<entities::blueprint::HistoryLease>);
+
 /// Keep skeletal acquisitions through preparation and render-world retirement.
 #[derive(Resource)]
 pub(super) struct SkeletalHistoryScope {
-    _models: std::sync::Arc<crate::bmd6::HistoryLease>,
-    _skeletons: std::sync::Arc<crate::edge_skeleton::HistoryLease>,
+    _models: crate::bmd6::HistoryLease,
+    _skeletons: crate::edge_skeleton::HistoryLease,
 }
 impl SkeletalHistoryScope {
-    fn new() -> Self {
+    pub(super) fn new(catalog: &archive::Catalog) -> Self {
         Self {
-            _models: crate::bmd6::HistoryLease::acquire(),
-            _skeletons: crate::edge_skeleton::HistoryLease::acquire(),
+            _models: crate::bmd6::HistoryLease::acquire(catalog.identity()),
+            _skeletons: crate::edge_skeleton::HistoryLease::acquire(catalog.identity()),
         }
     }
 }
@@ -40,33 +45,76 @@ impl SkeletalHistoryScope {
 #[derive(Resource)]
 pub(super) struct PreparedPhysicsTexts(pub(crate) crate::assets::declaration_texts::PhysicsSeed);
 
+/// The archived companions belong to this map, even when preparation fails.
+#[derive(Resource)]
+pub(super) struct LevelSourceReads {
+    catalog: Arc<archive::Catalog>,
+    level: crate::assets::level::LevelResources,
+}
+
+impl LevelSourceReads {
+    pub(super) fn acquisition_source(&self) -> (&Arc<archive::Catalog>, &str) {
+        (&self.catalog, &self.level.entities)
+    }
+}
+
+impl Drop for LevelSourceReads {
+    fn drop(&mut self) {
+        let level = &self.level;
+        let mut retired = 0;
+        for path in [level.world.as_str(), level.entities.as_str(), level.tome.as_str()]
+            .into_iter().chain(level.physics.as_deref()).chain(level.probe_network.as_deref())
+        {
+            if let Some(kind) = self.catalog.kind(path) {
+                retired += usize::from(crate::loading::forget(self.catalog.identity(), kind, path).is_some());
+            }
+        }
+        if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
+            eprintln!("LEVEL_SOURCE_HISTORY world={} retired={retired}", level.world);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CancellationPoint {
+    General,
+    CollisionShapes,
+    PlacedCollision,
+    CollisionIndex,
+}
+
 pub(super) fn prepare_level(
     base: PathBuf,
     catalog: std::sync::Arc<archive::Catalog>,
     level: crate::assets::level::LevelResources,
     needs_initial_inventory: bool,
-    cancelled: impl Fn() -> bool,
+    initial_load: bool,
+    cancelled: impl Fn(CancellationPoint) -> bool,
 ) -> Result<super::loading_screen::PreparedLevel, Box<dyn std::error::Error>> {
     // Host worker shutdown: stop between acquisition phases instead of
     // loading the remaining map after its presentation owner has closed.
     // The caller owns cancellation; resource readers and gameplay are unchanged.
-    let check_cancelled = || -> Result<(), std::io::Error> {
-        if cancelled() {
+    let check_at = |point| -> Result<(), std::io::Error> {
+        if cancelled(point) {
             Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "level acquisition cancelled"))
         } else {
             Ok(())
         }
     };
+    let check_cancelled = || check_at(CancellationPoint::General);
     check_cancelled()?;
     let profile = env::var("DH2_PERF_PROFILE").as_deref() == Ok("1");
     let startup = Instant::now();
+    let level_reads = LevelSourceReads { catalog: catalog.clone(), level };
+    let level = &level_reads.level;
     let path = PathBuf::from(&level.world);
     let game_base = Some(base);
-    let catalog = Some(catalog);
     let mut app = super::loading_screen::PreparedLevel::default();
-    app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire()));
-    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire()));
-    app.insert_resource(SkeletalHistoryScope::new());
+    app.insert_resource(ModelHistoryScope(crate::bmodel::ModelHistoryLease::acquire(&catalog)));
+    app.insert_resource(MaterialHistoryScope(crate::material::MaterialHistoryLease::acquire(&catalog)));
+    app.insert_resource(SkeletalHistoryScope::new(&catalog));
+    app.insert_resource(BlueprintHistoryScope(entities::blueprint::HistoryLease::acquire(catalog.identity())));
+    let catalog = Some(catalog);
     let map = level
         .entities
         .trim_start_matches("maps/")
@@ -81,32 +129,36 @@ pub(super) fn prepare_level(
     )
     .map_err(std::io::Error::other)?;
     crate::loading::begin_level(list.clone(), catalog.as_ref().unwrap());
+    app.own_preload(catalog.as_ref().unwrap().clone());
     let persistent_heap = crate::platform::console::shared().read().cvars
         .int("com_usePersistentHeap").ok_or("com_usePersistentHeap is not registered")? != 0;
     list.register_preload_headers(catalog.as_ref().unwrap(), map, persistent_heap)
         .map_err(std::io::Error::other)?;
+    let faction_session = crate::gameplay::faction_registry::SessionFactionRegistry::acquire(catalog.as_ref().unwrap())
+        .map_err(std::io::Error::other)?;
+    faction_session.begin_preparation(catalog.as_ref().unwrap()).map_err(std::io::Error::other)?;
     let mut physics_texts = crate::assets::declaration_texts::PhysicsSeed::new(
         catalog.as_ref().unwrap(), language,
     );
-    let bytes = level.read_world(catalog.as_ref().unwrap())?;
-    let world =
-        world_mesh::parse(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-    // `run` lasts the whole session; the installed file is parsed.
-    drop(bytes);
+    let world_started = profile.then(Instant::now);
+    let world = level.load_world(catalog.as_ref().unwrap(), || cancelled(CancellationPoint::General))
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     super::load_timing::mark("world mesh");
     check_cancelled()?;
-    if profile {
-        println!(
-            "PERF world mesh parse: {:.3}s",
-            startup.elapsed().as_secs_f64()
-        );
+    if let Some(started) = world_started {
+        println!("PERF world mesh read and parse: {:.3}s", started.elapsed().as_secs_f64());
     }
+    let character = super::player::character_name(super::pause_menu::debug_character());
     let (player_start, placed_models, entity_document) =
         match level.read_entities(catalog.as_ref().unwrap())? {
             Some(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                let document =
+                let mut document =
                     entities::parse(&text).map_err(|error| format!("entity parse: {error}"))?;
+                let removed = entities::character_selection::prune(catalog.as_ref().unwrap(), &mut document, character)?;
+                if !removed.is_empty() {
+                    println!("Character startup selection: character={character} removed={} entities={removed:?}", removed.len());
+                }
                 (
                     entities::player_start(&document),
                     entities::render_placements(&document),
@@ -115,12 +167,10 @@ pub(super) fn prepare_level(
             }
             None => (None, Vec::new(), None),
         };
-    let character = super::player::character_name(super::pause_menu::debug_character());
     let loadout = if !needs_initial_inventory { None } else { match crate::assets::inventory_item::default_loadout(catalog.as_ref().unwrap(), character) {
         Ok(loadout) => Some(loadout),
         Err(error) => { eprintln!("Initial inventory loadout unavailable: {error}"); None }
     }};
-    let entries = loadout.as_deref().unwrap_or(&[]);
     // The existing UI worker owns these concrete game-logic state backends;
     // register only those implementations, then use the authored transition matrix.
     if let Some(document) = entity_document.as_ref() {
@@ -139,7 +189,7 @@ pub(super) fn prepare_level(
         .map_err(std::io::Error::other)?);
     let mut interactions = match entity_document.as_ref() {
         Some(document) => match super::interactions::Interactions::load(
-            catalog.as_ref().unwrap().clone(), document, character, entries, &list,
+            catalog.as_ref().unwrap().clone(), document, character,
         ) {
             Ok(interactions) => Some(interactions),
             Err(error) => { eprintln!("Interaction declarations unavailable: {error}"); None }
@@ -149,16 +199,13 @@ pub(super) fn prepare_level(
     let limits = if let Some(interactions) = interactions.as_ref() {
         Some(interactions.limits())
     } else {
-        match crate::assets::inventory_item::ReadableLimits::load(catalog.as_ref().unwrap(), character,
-            entries.iter().map(|(path, _)| path.clone()).chain(
-                list.iter().filter_map(super::interaction_focus::registered_item_path).map(str::to_owned))) {
+        match crate::assets::inventory_item::ReadableLimits::load(catalog.as_ref().unwrap(), character) {
             Ok(limits) => Some(std::sync::Arc::new(limits)),
             Err(error) => { eprintln!("Inventory collection unavailable: {error}"); None }
         }
     };
     let initial_inventory = loadout.as_ref().zip(limits.as_ref()).map(|(loadout, limits)|
         loadout.iter().map(|(path, quantity)| (path.clone(), *quantity, limits.maximum(path))).collect());
-    let registered = limits.as_ref().map(|limits| super::interaction_focus::RegisteredItems::new(list.clone(), limits.clone()));
     let initial_inventory = initial_inventory.map(|entries: Vec<(String, u32, u32)>| entries.into_iter()
         .map(|(path, quantity, maximum)| {
             let modifiers = crate::assets::inventory_item::modifiers(catalog.as_ref().unwrap(), &path)
@@ -350,7 +397,7 @@ pub(super) fn prepare_level(
                 let bytes = catalog.read(resource).map_err(|error| error.to_string())?;
                 light_source_reads += 1;
                 light_source_bytes += bytes.as_ref().map_or(0, Vec::len);
-                Ok(bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+                Ok(bytes.map(|bytes| crate::assets::declaration_texts::adopt_utf8(bytes, "light")))
             }, reuse_light_sources)
         })
         .transpose()?
@@ -363,46 +410,7 @@ pub(super) fn prepare_level(
         .as_ref()
         .and_then(entities::world_environment);
     let environment_data = match (world_environment.as_deref(), catalog.as_ref()) {
-        (Some(environment), Some(catalog)) => {
-            let resource = format!("generated/decls/env/{environment}.decl");
-            catalog
-                .read(&resource)?
-                .map(|bytes| {
-                    let source = String::from_utf8_lossy(&bytes).into_owned();
-                    let lighting =
-                        entities::environment_lighting_with_inheritance(&source, |parent| {
-                            let parent_resource = format!("generated/decls/env/{parent}.decl");
-                            catalog
-                                .read(&parent_resource)
-                                .map(|bytes| {
-                                    bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                                })
-                                .map_err(|error| error.to_string())
-                        })
-                        .map_err(std::io::Error::other)?;
-                    let render_parameters =
-                        entities::environment_render_parameters_with_inheritance(
-                            environment,
-                            &source,
-                            |parent| {
-                                let parent_resource = format!("generated/decls/env/{parent}.decl");
-                                catalog
-                                    .read(&parent_resource)
-                                    .map(|bytes| {
-                                        bytes.map(|bytes| {
-                                            String::from_utf8_lossy(&bytes).into_owned()
-                                        })
-                                    })
-                                    .map_err(|error| error.to_string())
-                            },
-                        )
-                        .map_err(std::io::Error::other)?;
-                    let duration = entities::environment_blend_duration(&source)
-                        .map_err(std::io::Error::other)?;
-                    Ok::<_, std::io::Error>((lighting, render_parameters, duration))
-                })
-                .transpose()?
-        }
+        (Some(environment), Some(catalog)) => entities::load_world_environment(catalog, environment)?,
         _ => None,
     };
     let (environment_lighting, environment_render_parameters, environment_blend_duration) =
@@ -451,7 +459,7 @@ pub(super) fn prepare_level(
     let mut environment_probes = match (catalog.as_ref(), path.file_stem().and_then(|s| s.to_str()))
     {
         (Some(catalog), Some(_)) => {
-            probe_lighting::load_for_world(catalog, &path.to_string_lossy())
+            probe_lighting::load_for_rendered_world(catalog, &path.to_string_lossy(), world.matrices.len())
                 .map_err(std::io::Error::other)?
         }
         _ => None,
@@ -607,22 +615,38 @@ pub(super) fn prepare_level(
     super::load_timing::mark("tome");
     check_cancelled()?;
     if let Some(physics_bytes) = level.read_physics(catalog.as_ref().unwrap())? {
+        check_cancelled()?;
         let physics_start = std::time::Instant::now();
+        let stage_triangles = env::var_os("DH2_DEBUG_STAGE_COLLISION_TRIANGLES").is_some_and(|value| value == "1");
+        let keep_details = env::var_os("DH2_DEBUG_KEEP_COLLISION_DETAILS").is_some_and(|value| value == "1");
+        let trace_physics = env::var_os("DH2_DEBUG_PHYSICS_SIGNATURES").is_some_and(|value| value == "1");
         let physics = physworld::parse(&physics_bytes)?;
-        let geometry = physics.collision_shapes(&physics_bytes)?;
-        if profile {
+        let (world_triangles, retained_source) = {
+            let shape_cycles = trace_physics.then(crate::loading::thread_cycles).flatten();
+            let geometry = physics.collision_for_navigation(&physics_bytes, keep_details,
+                &|| cancelled(CancellationPoint::CollisionShapes))?;
+            if let Some(start) = shape_cycles {
+                let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+                eprintln!("MEMORY collision extraction: details={keep_details} detail_capacity_bytes={} cycles={cycles}",
+                    geometry.detail_capacity_bytes());
+            }
+            let retained_source = stage_triangles.then_some(physics_bytes);
+            if profile {
+                println!(
+                    "PERF authored physics parse and decode: {:.3}s",
+                    physics_start.elapsed().as_secs_f64()
+                );
+            }
             println!(
-                "PERF authored physics parse and decode: {:.3}s",
-                physics_start.elapsed().as_secs_f64()
+                "Authored collision: {} convex shapes, {} compressed meshes, {} triangles; {} compressed meshes remain undecoded",
+                geometry.convex_count(),
+                geometry.compressed_count(),
+                geometry.triangles.len(),
+                geometry.compressed_decode_failures.len()
             );
-        }
-        println!(
-            "Authored collision: {} convex shapes, {} compressed meshes, {} triangles; {} compressed meshes remain undecoded",
-            geometry.convex.len(),
-            geometry.compressed.len(),
-            geometry.triangles.len(),
-            geometry.compressed_decode_failures.len()
-        );
+            (geometry.triangles, retained_source)
+        };
+        check_cancelled()?;
         let model_start = std::time::Instant::now();
         let model_collision = if let Some(catalog) = catalog.as_ref() {
             let bodies = entity_document
@@ -631,8 +655,9 @@ pub(super) fn prepare_level(
                 .unwrap_or_default();
             let collision = super::view_geometry::acquire_static_model_collision_with_texts(
                 catalog, &placed_models, &bodies, &mut physics_texts,
-            );
-            if env::var("DH2_DEBUG_PHYSICS_SIGNATURES").as_deref() == Ok("1") {
+                || check_at(CancellationPoint::PlacedCollision),
+            )?;
+            if trace_physics {
                 let mut crc = flate2::Crc::new();
                 crc.update(format!("{:?}", collision.materials).as_bytes());
                 eprintln!("MEMORY model collision materials: count={} signature={:08x}", collision.materials.len(), crc.sum());
@@ -665,12 +690,12 @@ pub(super) fn prepare_level(
                     catalog.as_ref().unwrap(), path,
                     crate::assets::declaration_texts::PhysicsUse::World,
                 );
-                entities::physics_material::physics_material(name, read).map_err(|error| {
+                entities::physics_material::resources::acquire_with(catalog.as_ref().unwrap(), name, read).map_err(|error| {
                     missing_materials.push(error);
                 })
             })
             .collect();
-        if env::var("DH2_DEBUG_PHYSICS_SIGNATURES").as_deref() == Ok("1") {
+        if trace_physics {
             let mut crc = flate2::Crc::new();
             for (name, material) in physics.materials.iter().zip(&materials) {
                 crc.update(name.as_bytes());
@@ -682,7 +707,7 @@ pub(super) fn prepare_level(
         if !missing_materials.is_empty() {
             println!("Physics materials unresolved: {missing_materials:?}");
         }
-        let mut resolved: Vec<_> = materials.iter().flatten().cloned().collect();
+        let mut resolved: Vec<_> = materials.iter().flatten().map(|material| material.material().clone()).collect();
         let slot: Vec<u32> = materials
             .iter()
             .scan(0u32, |next, material| {
@@ -695,7 +720,9 @@ pub(super) fn prepare_level(
                 })
             })
             .collect();
+        check_cancelled()?;
         let index_start = std::time::Instant::now();
+        let index_cycles = trace_physics.then(crate::loading::thread_cycles).flatten();
         // FUN_140853b80 hands each world-table tag's material block flags to
         // the triangle's filter word; an unresolved declaration keeps the
         // arkCollisionSettings_t default.
@@ -709,60 +736,75 @@ pub(super) fn prepare_level(
                 )
         };
         let mut undecoded_filters = 0usize;
-        let level_triangles: Vec<_> = geometry
-            .triangles
-            .iter()
-            .map(|triangle| {
-                let material = triangle
-                    .material
-                    .and_then(|index| slot.get(index as usize).copied())
-                    .unwrap_or(navigation::NO_MATERIAL);
-                let filter = match triangle.body_material {
-                    Some(body_material) => {
-                        let (filter, decoded) = physworld::shape_tag_filter(
-                            body_material,
-                            triangle.body_filter,
-                            &triangle.shape_tags,
-                            &physics.material_map,
-                            block_flags,
-                        );
-                        undecoded_filters += usize::from(!decoded);
-                        filter
-                    }
-                    None => triangle.body_filter,
+        let mut resolve_triangle = |triangle: &physworld::MeshTriangle| {
+            let material = triangle
+                .material
+                .and_then(|index| slot.get(index as usize).copied())
+                .unwrap_or(navigation::NO_MATERIAL);
+            let filter = match triangle.body_material {
+                Some(body_material) => {
+                    let (filter, decoded) = physworld::shape_tag_filter(
+                        body_material,
+                        triangle.body_filter,
+                        &triangle.shape_tags,
+                        &physics.material_map,
+                        block_flags,
+                    );
+                    undecoded_filters += usize::from(!decoded);
+                    filter
+                }
+                None => triangle.body_filter,
+            };
+            (triangle.vertices.map(game_to_view), u32::MAX, material, filter, triangle.quad_second)
+        };
+        let model_material_base = resolved.len() as u32;
+        resolved.extend(model_collision.materials);
+        let placed_triangles = model_collision.triangles.into_iter().map(
+            |(triangle, owner, material, filter)| {
+                let material = if material == navigation::NO_MATERIAL {
+                    material
+                } else {
+                    model_material_base + material
                 };
-                (
-                    triangle.vertices.map(game_to_view),
-                    u32::MAX,
-                    material,
-                    filter,
-                    triangle.quad_second,
-                )
-            })
-            .collect();
+                (triangle, owner, material, filter, false)
+            },
+        );
+        let (mut world, staging_bytes) = if stage_triangles {
+            // Retain the previous borrowed-input allocation for measurement.
+            let staged: Vec<_> = world_triangles.iter().map(&mut resolve_triangle).collect();
+            let bytes = staged.capacity() * std::mem::size_of::<([Vec3; 3], u32, u32, u32, bool)>();
+            (
+                navigation::CollisionWorld::with_quads_until(
+                    staged.into_iter().chain(placed_triangles), model_collision.owners, resolved,
+                    || cancelled(CancellationPoint::CollisionIndex),
+                )?,
+                bytes,
+            )
+        } else {
+            let level_triangles = world_triangles.into_iter().map(|triangle| resolve_triangle(&triangle));
+            (
+                navigation::CollisionWorld::with_quads_until(
+                    level_triangles.chain(placed_triangles), model_collision.owners, resolved,
+                    || cancelled(CancellationPoint::CollisionIndex),
+                )?,
+                0,
+            )
+        };
+        let retained_source_bytes = retained_source.as_ref().map_or(0, Vec::capacity);
+        drop(retained_source);
+        drop(physics);
+        drop(materials);
+        check_cancelled()?;
+        if let Some(start) = index_cycles {
+            let cycles = crate::loading::thread_cycles().unwrap_or(start).saturating_sub(start);
+            eprintln!("MEMORY collision staging: staged={stage_triangles} source_capacity_bytes={retained_source_bytes} tuple_capacity_bytes={staging_bytes} cycles={cycles} signature={:08x}",
+                world.preparation_signature());
+        }
         if undecoded_filters > 0 {
             println!(
                 "Collision filters: {undecoded_filters} triangles keep a partly decoded shape-tag path"
             );
         }
-        let model_material_base = resolved.len() as u32;
-        resolved.extend(model_collision.materials);
-        let mut world = navigation::CollisionWorld::with_quads(
-            level_triangles
-                .into_iter()
-                .chain(model_collision.triangles.into_iter().map(
-                    |(triangle, owner, material, filter)| {
-                        let material = if material == navigation::NO_MATERIAL {
-                            material
-                        } else {
-                            model_material_base + material
-                        };
-                        (triangle, owner, material, filter, false)
-                    },
-                )),
-            model_collision.owners,
-            resolved,
-        );
         if let Some(interactions) = interactions.as_mut() {
             interactions.start_boxes(&mut world);
         }
@@ -773,7 +815,7 @@ pub(super) fn prepare_level(
             );
         }
         super::load_timing::mark("physics and collision");
-    check_cancelled()?;
+        check_cancelled()?;
         println!(
             "Navigation collision index: {} nondegenerate triangles",
             world.triangle_count()
@@ -919,19 +961,49 @@ pub(super) fn prepare_level(
         // must not depend on which window has focus.
         app.insert_resource(bevy::winit::WinitSettings::continuous());
     }
-    let machinery = super::machinery::AmbientMachinery::load_with_texts(
-        catalog.as_ref().unwrap(),
+    let mut placed_models = placed_models;
+    let catalog_for_machinery = catalog.as_ref().unwrap();
+    let separate_placements = catalog_for_machinery.has_overlays()
+        || env::var_os("DH2_DEBUG_SEPARATE_BLUEPRINT_PLACEMENTS").is_some_and(|v| v == "1")
+        || env::var_os("DH2_DEBUG_RETAIN_PLACEMENT_STAGING").is_some_and(|v| v == "1");
+    let expanded_placement_roots = (!separate_placements).then_some(placed_models.len());
+    if !separate_placements {
+        super::view_geometry::expand_model_placements(&mut placed_models, catalog_for_machinery);
+    }
+    let machinery_placements = (separate_placements && entity_document.is_some())
+        .then(|| expanded_model_placements(&placed_models, catalog_for_machinery));
+    let machinery = super::machinery::AmbientMachinery::load_with_texts_cancellable(
+        catalog_for_machinery,
         entity_document.as_ref(),
-        &placed_models,
+        machinery_placements.as_deref().unwrap_or(&placed_models),
         &mut physics_texts,
         &mut shape_sources,
+        Some(&|| cancelled(CancellationPoint::General)),
     )
     .map_err(std::io::Error::other)?;
+    drop(machinery_placements);
+    let joint_requests = match entity_document.as_ref() {
+        Some(document) => super::physics_scene::document_hierarchy::joint_requests(document, interactions.as_ref(), &placed_models)
+            .map_err(std::io::Error::other)?,
+        None => Vec::new(),
+    };
+    let usable_animations = super::usable_animation::UsableAnimations::prepare_dependencies(
+        catalog_for_machinery, interactions.as_ref(), &placed_models, &joint_requests, &machinery,
+        || cancelled(CancellationPoint::General))
+        .map_err(std::io::Error::other)?;
+    let joint_frames = super::joint_frames::JointFrames::prepare(catalog_for_machinery, &placed_models, &joint_requests, &machinery, &usable_animations)
+        .map_err(std::io::Error::other)?;
     app.insert_resource(machinery);
     app.insert_resource(super::model_motion::BoundModels::new(
         entity_document
             .as_ref()
-            .map(crate::entities::entity_binds)
+            .map(|document| crate::entities::resolved_entity_binds(document).into_iter().filter(|binding| {
+                // These real rigid components own808880 attachment publication
+                // after the final joint pose. Do not also apply the old rigid
+                // parent delta to them before that sampled frame exists.
+                !interactions.as_ref().is_some_and(|interactions| interactions.readable.iter()
+                    .any(|readable| readable.entity == binding.entity_id && readable.rigid.is_some()))
+            }).collect())
             .unwrap_or_default(),
     ));
     app.insert_resource(
@@ -945,29 +1017,32 @@ pub(super) fn prepare_level(
             .unwrap_or(&level.entities)
             .strip_suffix(".entities")
             .ok_or("physics entity resource has no map name")?;
-        match super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources)
-        {
-            Ok(physics) => {
-                app.insert_resource(physics);
-            }
-            Err(error) => eprintln!("Level physics publication pending: {error}"),
+        let mut live = crate::gameplay::entity_lifetime::LiveEntities::default();
+        let mut entity_events = crate::gameplay::entity_events::EntityEvents::default();
+        let physics = super::physics_scene::PhysicsScene::load(catalog, document, map, &environment_volumes, &mut physics_texts, &mut shape_sources, &mut live, interactions.as_ref(), &mut entity_events, &placed_models, &joint_frames)
+            .map_err(std::io::Error::other)?;
+        app.insert_resource(live);
+        app.insert_resource(entity_events);
+        app.insert_resource(physics);
+        if let Some(music) = super::audio::music::Music::load(catalog, document).map_err(std::io::Error::other)? {
+            app.insert_resource(music);
         }
         app.insert_resource(
             super::audio::level::LevelAudio::load(
                 catalog,
                 &level.entities,
-                game_base.as_deref().unwrap(),
             )
             .map_err(std::io::Error::other)?,
         );
     }
+    app.insert_resource(joint_frames);
     if let Some(interactions) = interactions {
         app.insert_resource(interactions);
     }
     app.insert_resource(super::interaction_focus::FocusedInteraction::default());
-    app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory, registered });
+    app.insert_resource(super::interaction_focus::InitialInventory { items: initial_inventory });
     app.insert_resource(super::interaction_focus::RetiredPlacements::default());
-    app.insert_resource(super::usable_animation::UsableAnimations::default());
+    app.insert_resource(usable_animations);
     app.insert_resource(super::usable_effects::EffectRequests::default());
     app.insert_resource(super::usable_effects::UsableEffects::default());
     app.insert_resource(super::usable_effects::DynamicWorldMaterials::default());
@@ -984,6 +1059,10 @@ pub(super) fn prepare_level(
     app.insert_resource(super::fog_scene::FogMotion::load().map_err(std::io::Error::other)?);
     super::load_timing::mark("machinery and wind");
     check_cancelled()?;
+    let graph_definitions = entity_document.as_ref().map(|document|
+        crate::assets::entities::effects::load_with_entities(document,
+            app.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()))
+        .transpose().map_err(std::io::Error::other)?.unwrap_or_default();
     app.insert_resource(ProgramCacheSource(std::sync::Arc::new(std::sync::Mutex::new(program_cache))))
         // The original clears the lit HDR target to zero before the opaque
         // pass (Karnaca fish-market capture, event 157); pixels no opaque
@@ -1004,14 +1083,7 @@ pub(super) fn prepare_level(
         )
         .insert_resource(
             crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions {
-                graphs: std::sync::Arc::new(
-                    entity_document
-                        .as_ref()
-                        .map(crate::assets::entities::effects::load)
-                        .transpose()
-                        .map_err(std::io::Error::other)?
-                        .unwrap_or_default(),
-                ),
+                graphs: std::sync::Arc::new(graph_definitions),
                 actors: std::sync::Arc::new(
                     entity_document
                         .as_ref()
@@ -1027,13 +1099,14 @@ pub(super) fn prepare_level(
                     .map_err(std::io::Error::other)? as u64,
             },
         )
-        .insert_resource(super::loading_fade::LoadingFade::load(catalog.as_ref().unwrap(), entity_document.as_ref())
+        .insert_resource(super::loading_fade::LoadingFade::load(catalog.as_ref().unwrap(), entity_document.as_ref(), initial_load)
             .map_err(std::io::Error::other)?)
         .insert_resource(SceneData {
             source_path: path.clone(),
             world,
             player_start,
             placed_models,
+            expanded_placement_roots,
             placed_lights,
             environment_lighting,
             environment_render_parameters,
@@ -1057,5 +1130,6 @@ pub(super) fn prepare_level(
     app.insert_resource(ViewSettings(view_settings));
     app.insert_resource(StreamingDiagnostics::new(&path));
     drop(entity_document);
+    app.insert_resource(level_reads);
     Ok(app)
 }

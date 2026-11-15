@@ -38,6 +38,12 @@ pub struct SunRays {
     turbulence: bool,
 }
 impl SunRays {
+    /// Host diagnostic: borrowed inventory only; creates no GPU resources.
+    pub(super) fn visit_owned_targets(&self, visit: &mut impl FnMut(&'static str, &Texture)) {
+        visit("sun-ray-depth-pyramid", self.depth.texture());
+        visit("sun-ray-colour", &self.colour.texture);
+        visit("sun-ray-visibility", &self.visibility.texture);
+    }
     pub fn new(
         device: &RenderDevice,
         programs: &super::tiled_lighting_gpu::TlfPipelines,

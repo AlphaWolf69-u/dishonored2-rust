@@ -1,5 +1,5 @@
 //! Active-emitter propagation results (1400b7830/1400b8e00/1400b5350).
-use crate::assets::sound_propagation::{Propagation, Route};
+use crate::assets::sound_propagation::{Propagation, RouteView};
 use bevy_math::Vec3;
 
 #[derive(Clone, Copy)]
@@ -274,7 +274,7 @@ pub fn unpropagated(graph: &Propagation, query: &Query) -> Result<Results, Strin
 fn portal_path(
     graph: &Propagation,
     query: &Query,
-    route: &Route,
+    route: &RouteView<'_>,
 ) -> Result<Option<(Path, u16)>, String> {
     if !(route.cost_millimetres as f32 <= query.range * 1000.0) {
         return Ok(None);
@@ -289,7 +289,9 @@ fn portal_path(
         .ok_or("missing listener zone")?
         .id
         < graph.zones.get(zone).ok_or("missing source zone")?.id;
-    if route.portals.is_empty() {
+    let portals = route.portals(reverse);
+    let portal_count = portals.len();
+    if portal_count == 0 {
         return Err("acoustic route has no portal".into());
     }
     let mut path = Path::default();
@@ -299,13 +301,8 @@ fn portal_path(
     let mut bends = 0.0;
     let mut occlusion_sum = occlusion(graph, Some(zone))? * query.source_occlusion_scale;
     let mut last_portal = 0;
-    for step in 0..route.portals.len() {
-        let index = if reverse {
-            route.portals.len() - 1 - step
-        } else {
-            step
-        };
-        last_portal = route.portals[index];
+    for (step, portal_id) in portals.enumerate() {
+        last_portal = portal_id;
         let portal = graph
             .portals
             .get(usize::from(last_portal))
@@ -360,7 +357,7 @@ fn portal_path(
         zone: listener_zone,
         distance: final_distance,
     });
-    path.zone_count = (route.portals.len() + 1).min(4);
+    path.zone_count = (portal_count + 1).min(4);
     Ok(Some((path, last_portal)))
 }
 
@@ -412,7 +409,7 @@ pub fn evaluate(graph: &Propagation, query: &Query) -> Result<Results, String> {
     results.portal_paths = portal_paths;
     for route in graph
         .routes
-        .between(source.id, listener.id)
+        .views(source.id, listener.id)
         .map_err(|error| error.to_string())?
     {
         let Some((path, portal)) = portal_path(graph, query, &route)? else {

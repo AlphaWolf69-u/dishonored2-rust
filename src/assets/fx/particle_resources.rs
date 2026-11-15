@@ -56,28 +56,37 @@ pub(crate) fn promote_bootstrap(catalog: &Catalog) -> Result<(), String> {
 pub(crate) fn release_marker(catalog: &Catalog, marker: u8) {
     if let Some(owner) = catalog.particle_resources.get() { owner.release(catalog.identity(), marker); }
 }
-pub(crate) fn declaration(catalog: &Catalog, path: &str, shared: bool,
+pub(crate) fn declaration(catalog: &Catalog, path: &str, shared: bool, cancelled: Option<&dyn Fn() -> bool>,
     load: impl FnOnce(u8) -> Result<Arc<ParticleDeclaration>, String>) -> Result<Arc<ParticleDeclaration>, String> {
-    // Editable generations remain exclusively leased by their actual users;
-    // neither their successful payload nor an earlier error is cached here.
-    if !share(catalog, shared) { return load(0); }
     // FX descriptors store suffixless declaration names; preload manifests
     // carry archive paths. Both must address the exact same header/history key.
     let resource = format!("generated/decls/particledt/{}.decl", key(path));
-    owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?.acquire(&resource, 0, load)
+    let mut declarations = owner(catalog).declarations.lock().map_err(|_| "particle declaration registry is poisoned")?;
+    if share(catalog, shared) {
+        declarations.acquire_when(&resource, 0, load, || !cancelled.is_some_and(|stop| stop()))
+    } else {
+        declarations.acquire_with_sharing(&resource, 0, false, load)
+    }
 }
-pub(crate) fn model(catalog: &Catalog, path: &str, marker: u8, shared: bool,
+pub(crate) fn model(catalog: &Catalog, path: &str, marker: u8, shared: bool, cancelled: Option<&dyn Fn() -> bool>,
     load: impl FnOnce() -> Result<Arc<ParticleModel>, String>) -> Result<Arc<ParticleModel>, String> {
-    if !share(catalog, shared) { return load(); }
-    owner(catalog).models.lock().map_err(|_| "particle model registry is poisoned")?.acquire(&key(path), marker, |_| load())
+    let resource = key(path);
+    let mut models = owner(catalog).models.lock().map_err(|_| "particle model registry is poisoned")?;
+    if share(catalog, shared) {
+        models.acquire_when(&resource, marker, |_| load(), || !cancelled.is_some_and(|stop| stop()))
+    } else {
+        models.acquire_with_sharing(&resource, marker, false, |_| load())
+    }
 }
-pub(crate) fn field(catalog: &Catalog, path: &str, shared: bool,
+pub(crate) fn field(catalog: &Catalog, path: &str, shared: bool, cancelled: Option<&dyn Fn() -> bool>,
     load: impl FnOnce() -> Result<Arc<super::particle_field::FieldPixels>, String>)
     -> Result<Arc<super::particle_field::FieldPixels>, String> {
     if !share(catalog, shared) { return load(); }
     let mut fields = owner(catalog).fields.lock().map_err(|_| "particle field registry is poisoned")?;
     if let Some(value) = fields.get(path).and_then(Weak::upgrade) { return Ok(value); }
     let value = load()?;
-    fields.insert(path.to_owned(), Arc::downgrade(&value));
+    if !cancelled.is_some_and(|stop| stop()) {
+        fields.insert(path.to_owned(), Arc::downgrade(&value));
+    }
     Ok(value)
 }

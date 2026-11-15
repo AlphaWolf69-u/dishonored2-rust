@@ -10,6 +10,9 @@ pub struct MotionPropertiesLibrary<S, C> {
     records: Vec<MotionProfile>,
     free_head: i32,
     pub added: Signal<S, C>,
+    pub changed: Signal<S, C>,
+    pub removed: Signal<S, C>,
+    pending_removal: Option<u16>,
 }
 
 impl<S, C> Default for MotionPropertiesLibrary<S, C> {
@@ -18,6 +21,9 @@ impl<S, C> Default for MotionPropertiesLibrary<S, C> {
             records: Vec::new(),
             free_head: -1,
             added: Signal::default(),
+            changed: Signal::default(),
+            removed: Signal::default(),
+            pending_removal: None,
         }
     }
 }
@@ -26,6 +32,8 @@ impl<S, C> MotionPropertiesLibrary<S, C> {
     pub fn get(&self, id: u16) -> Option<&MotionProfile> {
         self.records.get(usize::from(id))
     }
+    pub(crate) fn slot_count(&self) -> usize { self.records.len() }
+    pub(crate) fn removal_idle(&self) -> bool { self.pending_removal.is_none() }
 
     ///18d020 resolves the current body's motion and its property-table ID.
     /// A missing owner/record is an error rather than an assumed unit scale.
@@ -49,6 +57,37 @@ impl<S, C> MotionPropertiesLibrary<S, C> {
 }
 
 impl<S: Copy + Eq, C: Copy + Eq> MotionPropertiesLibrary<S, C> {
+    /// 140ca5840 emits removal before returning the record to the free list.
+    /// The signal cursor retains the same ID if a real observer fails.
+    pub(crate) fn remove(&mut self, id: u16,
+        mut dispatch: impl FnMut(&mut Signal<S, C>, S, C, u16) -> Result<(), String>) -> Result<(), String> {
+        if self.pending_removal.is_some_and(|pending| pending != id) {
+            return Err("another motion-property removal is incomplete".into());
+        }
+        let slot = self.records.get(usize::from(id)).ok_or("motion-property slot is missing")?;
+        if slot.words[14] & 0xff == 0xff { return Err("motion-property slot is already free".into()); }
+        self.pending_removal = Some(id);
+        self.removed.emit_resumable(&id, |signal, subscriber, callback, &id| dispatch(signal, subscriber, callback, id))?;
+        let mut free = MotionProfile::from_words([0; 16]);
+        free.configure(1, f32::from_bits(0x411c_f5c3));
+        free.words[0] = self.free_head as u32;
+        free.words[14] = (free.words[14] & 0xffff_ff00) | 0xff;
+        self.records[usize::from(id)] = free;
+        self.free_head = i32::from(id);
+        self.pending_removal = None;
+        Ok(())
+    }
+    /// 140ca5750 replaces the complete record only on a bitwise change and
+    /// emits the library's existing changed-signal domain afterward.
+    pub(crate) fn replace(&mut self, id: u16, profile: MotionProfile,
+        mut dispatch: impl FnMut(&mut Signal<S, C>, S, C, u16)) -> Result<(), String> {
+        if self.pending_removal.is_some() { return Err("motion-property removal must finish before replacement".into()); }
+        let slot = self.records.get_mut(usize::from(id)).ok_or("motion-property slot is missing")?;
+        if *slot == profile { return Ok(()); }
+        *slot = profile;
+        self.changed.emit(&id, |signal, subscriber, callback, &id| dispatch(signal, subscriber, callback, id));
+        Ok(())
+    }
     /// ca5b90 doubles the retained slot count, adding at least8. Each new free
     /// record starts with profile1 and checksFF; word0 links the ascending chain.
     fn grow(&mut self) -> Result<(), String> {
@@ -85,6 +124,7 @@ impl<S: Copy + Eq, C: Copy + Eq> MotionPropertiesLibrary<S, C> {
         profile: MotionProfile,
         mut dispatch: impl FnMut(&mut Signal<S, C>, S, C, u16),
     ) -> Result<u16, String> {
+        if self.pending_removal.is_some() { return Err("motion-property removal must finish before addition".into()); }
         if profile.sharing() == 0 {
             if let Some(index) = self.records.iter().position(|record| *record == profile) {
                 return Ok(index as u16);
@@ -113,6 +153,7 @@ impl<S: Copy + Eq, C: Copy + Eq> MotionPropertiesLibrary<S, C> {
         gravity: f32,
         mut dispatch: impl FnMut(&mut Signal<S, C>, S, C, u16),
     ) -> Result<(), String> {
+        if self.pending_removal.is_some() { return Err("motion-property removal must finish before initialization".into()); }
         self.records.clear();
         self.free_head = -1;
         for kind in 0..5 {
@@ -131,6 +172,19 @@ pub struct MotionProfile {
 }
 
 impl MotionProfile {
+    /// 140ca5c80 derives a timespace-specific profile from the original
+    /// immutable profile. The source retains its sharing word and marks the
+    /// copied flags before scaling gravity, velocity limits and damping.
+    pub(crate) fn with_timespace_scale(self, scale: f32) -> Self {
+        let mut result = self;
+        result.words[1] |= 0x0400_0000;
+        result.words[3] = scale.to_bits();
+        result.words[2] = multiply(multiply(scale, f32::from_bits(self.words[2])), scale).to_bits();
+        for index in [4, 5, 6, 7] {
+            result.words[index] = multiply(scale, f32::from_bits(self.words[index])).to_bits();
+        }
+        result
+    }
     pub fn from_words(words: [u32; 16]) -> Self {
         Self { words }
     }

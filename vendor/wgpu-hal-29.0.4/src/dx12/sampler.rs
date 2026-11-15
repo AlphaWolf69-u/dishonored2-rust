@@ -101,6 +101,15 @@ pub(crate) struct SamplerHeap {
 }
 
 impl SamplerHeap {
+    pub(super) fn report_lifetime(&self) {
+        use windows::core::Interface;
+        let state = self.state.lock();
+        let desc = unsafe { self.heap.GetDesc() };
+        let refs: u64 = state.mapping.values().map(|entry| u64::from(entry.ref_count)).sum();
+        log::warn!(target: "wgpu_hal::dx12::resource_lifetime",
+            "DX12_DESCRIPTOR_HEAP role=samplers heap={:#x} capacity={} used={} refs={refs} descriptor_stride={} driver_bytes=unknown",
+            self.heap.as_raw() as usize, desc.NumDescriptors, state.mapping.len(), self.descriptor_stride);
+    }
     pub fn new(
         device: &ID3D12Device,
         private_caps: &super::PrivateCapabilities,

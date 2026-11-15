@@ -221,17 +221,15 @@ pub(crate) fn set_common_texts(catalog: u64, common: Option<std::sync::Arc<crate
 /// Retire host session caches when their archive namespace ends, then remove
 /// its diagnostic read identities. This does not run on ordinary map unload:
 /// 1400661e0's init/common resources remain available across those transitions.
-pub(crate) fn retire_catalog(catalog: u64, animations: usize) {
+pub(crate) fn retire_catalog(
+    catalog: u64, animations: usize, declarations: usize, blur: usize, contacts: usize,
+    parameters: usize, manifests: usize, map_info: usize,
+) {
     // Each owner removes only cache references for this exact identity. Live
     // actor/movie/render leases keep their immutable payload until final use.
     // Do not hold STATE while dropping owners: release diagnostics can use it.
-    let blur = crate::assets::camera_blur::retire_catalog(catalog);
-    let contacts = crate::assets::entities::contacts::retire_catalog(catalog);
-    let declarations = crate::assets::declaration_texts::retire_catalog(catalog);
-    let parameters = crate::assets::shader_cache::retire_catalog(catalog);
+    let parameters = parameters + crate::assets::shader_cache::retire_indices();
     let bitmaps = crate::flash::bitmap_resources::retire_catalog(catalog);
-    let manifests = crate::assets::map_resources::retire_catalog(catalog);
-    let map_info = crate::gameplay::map_info::retire_catalog(catalog);
     if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
         eprintln!("MEMORY catalog cache retirement: catalog={catalog} animations={animations} blur={blur} contacts={contacts} declarations={declarations} parameters={parameters} bitmap_libraries={bitmaps} manifests={manifests} map_info={map_info}");
     }
@@ -351,49 +349,70 @@ pub(crate) fn forget(catalog: u64, kind: &str, path: &str) -> Option<usize> {
     })
 }
 
-/// Family owners call this after releasing their last scope across catalogs.
-pub(crate) fn forget_kind(kind: &str) -> Option<(usize, usize, usize)> {
+/// Release a family whose last scope in this archive namespace has closed.
+pub(crate) fn forget_catalog_kind(catalog: u64, kind: &str) -> Option<(usize, usize, usize)> {
     with(|s| {
-        let mut removed = None;
-        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
-            let Some(paths) = history.loaded.remove(kind) else { continue };
-            let totals = removed.get_or_insert((0, 0, 0));
-            totals.0 += paths.len();
-            totals.1 += paths.iter().map(|path| path.len()).sum::<usize>();
-            totals.2 += paths.capacity();
-        }
-        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
-        removed
+        let active = s.catalog == Some(catalog);
+        let history = if active { &mut s.history } else { s.other_histories.get_mut(&catalog)? };
+        let paths = history.loaded.remove(kind)?;
+        if active { s.acquired = s.acquired_by(catalog); }
+        Some((paths.len(), paths.iter().map(|path| path.len()).sum(), paths.capacity()))
     })
 }
 
-/// Family owners aggregate all live resource identities. Keep each catalog's
-/// independent history and adjust only the active level's acquisition count.
-pub(crate) fn retain_kind(kind: &str, mut keep: impl FnMut(&str) -> bool) -> (usize, usize, usize, usize) {
-    with(|s| {
+/// Several loaders may lease one family in the same catalog. Serialize
+/// retirement with admission so a new lease never observes a stale purge.
+pub(crate) struct CatalogHistoryScopes(Mutex<Option<HashMap<u64, usize>>>);
+
+impl CatalogHistoryScopes {
+    pub(crate) const fn new() -> Self { Self(Mutex::new(None)) }
+
+    pub(crate) fn acquire(&self, catalog: u64) {
+        let mut scopes = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        *scopes.get_or_insert_with(HashMap::new).entry(catalog).or_default() += 1;
+    }
+
+    pub(crate) fn release(&self, catalog: u64, retire: impl FnOnce()) {
+        let mut scopes = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let owners = scopes.as_mut().expect("history scopes missing");
+        let count = owners.get_mut(&catalog).expect("history lease catalog missing");
+        *count -= 1;
+        if *count != 0 { return; }
+        owners.remove(&catalog);
+        if owners.is_empty() { *scopes = None; }
+        retire();
+    }
+}
+
+pub(crate) fn retain_catalog_kind(catalog: u64, kind: &str, mut keep: impl FnMut(&str) -> bool)
+    -> (usize, usize, usize, usize) {
+    with(|state| {
+        let active = state.catalog == Some(catalog);
+        let history = if active { Some(&mut state.history) } else { state.other_histories.get_mut(&catalog) };
+        let Some(paths) = history.and_then(|history| history.loaded.get_mut(kind)) else { return (0, 0, 0, 0); };
+        let before = paths.capacity();
         let mut removed = 0;
         let mut bytes = 0;
-        let mut slots_before = 0;
-        let mut slots_after = 0;
-        for history in std::iter::once(&mut s.history).chain(s.other_histories.values_mut()) {
-            let Some(paths) = history.loaded.get_mut(kind) else { continue };
-            slots_before += paths.capacity();
-            paths.retain(|path| {
-                if keep(path) { return true; }
-                removed += 1;
-                bytes += path.len();
-                false
-            });
-            slots_after += paths.capacity();
-        }
-        if let Some(catalog) = s.catalog { s.acquired = s.acquired_by(catalog); }
-        (removed, bytes, slots_before, slots_after)
+        paths.retain(|path| {
+            if keep(path) { return true; }
+            removed += 1;
+            bytes += path.len();
+            false
+        });
+        let after = paths.capacity();
+        if active { state.acquired = state.acquired_by(catalog); }
+        (removed, bytes, before, after)
     })
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn catalog_read_recorded(catalog: u64, kind: &str, path: &str) -> bool {
+    with(|state| state.history_for(catalog).is_some_and(|history| history.contains(kind, path)))
 }
 
 /// The level is shown: later first reads are late loads.
 pub fn play_started() {
-    with(|s| {
+    let coverage = with(|s| {
         s.playing = true;
         let (separate, trace) = history_modes();
         if trace {
@@ -403,30 +422,68 @@ pub fn play_started() {
         }
         // 1400661e0 frees the temporary acquisition table after loading.
         // Progress is now 1; late-load reporting only needs the read registry.
+        let timing = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1");
+        let report_coverage = timing && !s.required.is_empty();
         if std::env::var("DH2_DEBUG_RETAIN_LEVEL_MANIFESTS").as_deref() != Ok("1") {
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+            if timing {
                 eprintln!("MEMORY loading descriptor release: entries={} logical_section_bytes={} owners={} index_capacity={}",
                     s.required.len(), s.required.logical_descriptor_bytes(),
                     std::sync::Arc::strong_count(&s.required), s.required_heads.capacity() + s.required_next.capacity());
             }
-            s.required = Default::default();
+            let list = std::mem::take(&mut s.required);
             s.required_heads = Default::default();
             s.required_next = Default::default();
+            report_coverage.then_some(list)
+        } else {
+            report_coverage.then(|| s.required.clone())
         }
     });
+    // Report from the retired acquisition list while it is still in scope.
+    // A diagnostic has no independent map-list owner during loading or play.
+    if let Some(list) = coverage {
+        let report = report_iter(list.iter());
+        let (listed, loaded) = report.iter().fold((0, 0), |a, c| (a.0 + c.listed, a.1 + c.loaded));
+        eprintln!("LOAD coverage: {loaded} of {listed} listed resources loaded");
+        for c in report.iter().filter(|c| c.listed > 0 || c.unlisted > 0) {
+            eprintln!("LOAD coverage {}: {} of {} listed, {} unlisted", c.kind, c.loaded, c.listed, c.unlisted);
+        }
+    }
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn observe_descriptor_release() {
+    let (list, map_bytes) = with(|s| (std::sync::Arc::downgrade(&s.required), s.required.map_descriptor_bytes()));
+    let owners_before = list.strong_count();
+    play_started();
+    eprintln!("LEVEL_MANIFEST_RETIREMENT map_bytes={map_bytes} owners_before={owners_before} owners_after={}",
+        list.strong_count());
 }
 
 /// Re-arm per-world readiness while retaining the session acquisition registry.
 pub fn restart_level() {
+    with(reset_level);
+}
+
+fn reset_level(s: &mut State) {
+    s.playing = false;
+    s.required = Default::default();
+    s.required_heads.clear();
+    s.required_next.clear();
+    s.acquired = 0;
+    s.requested = 0;
+    for (_, ready) in &mut s.gates { *ready = false; }
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn discard_level(catalog: u64) -> usize {
     with(|s| {
-        s.playing = false;
-        s.required = Default::default();
-        s.required_heads.clear();
-        s.required_next.clear();
-        s.acquired = 0;
-        s.requested = 0;
-        for (_, ready) in &mut s.gates { *ready = false; }
-    });
+        if s.catalog != Some(catalog) { return 0; }
+        let count = s.required.len();
+        reset_level(s);
+        s.required_heads = Default::default();
+        s.required_next = Default::default();
+        count
+    })
 }
 
 /// Start the map resource phase while keeping registry/resident identities.

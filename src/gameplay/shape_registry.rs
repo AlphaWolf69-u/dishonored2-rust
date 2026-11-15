@@ -38,6 +38,18 @@ pub(crate) struct ShapeRegistry {
     pending: bool,
 }
 impl ShapeRegistry {
+    pub(crate) fn owner(&self) -> usize { self.owner }
+    pub(crate) fn validate_body_removal(&self, shape: usize, body: u32,
+        signals: &mut impl ShapeSignalStore) -> Result<(), String> {
+        let entry = self.active.iter().copied()
+            .find(|&entry| self.registrations[entry].shape == Some(shape))
+            .ok_or("removed body has no shape registration")?;
+        let bodies = &self.registrations[entry].bodies;
+        if !bodies.contains(&body) { return Err("removed body is missing from its shape registration".into()); }
+        if bodies.len() == 1 { signals.signals_mut(shape)?; }
+        Ok(())
+    }
+
     /// cdfc70. The owner key replaces this manager's process-pointer identity.
     pub fn new(owner: usize) -> Self {
         Self {
@@ -68,11 +80,13 @@ impl ShapeRegistry {
         body: u32,
         signals: &mut impl ShapeSignalStore,
     ) -> Result<(), String> {
-        let entry = if let Some(&entry) = self
+        let existing = self
             .active
             .iter()
             .find(|&&i| self.registrations[i].shape == Some(shape))
-        {
+            .copied();
+        if existing.is_none() { signals.signals_mut(shape)?; }
+        let entry = if let Some(entry) = existing {
             entry
         } else {
             let entry = if let Some(entry) = self.recycled.pop() {
@@ -115,9 +129,11 @@ impl ShapeRegistry {
             .iter()
             .position(|&id| id == body)
             .ok_or("removed body is missing from its shape registration")?;
-        self.registrations[entry].bodies.swap_remove(body_index);
-        if self.registrations[entry].bodies.is_empty() {
+        if self.registrations[entry].bodies.len() == 1 {
+            // Resolve the actual signal owner before removing its last body.
+            // A failed lookup must leave the registration retryable.
             let pair = signals.signals_mut(shape)?;
+            self.registrations[entry].bodies.swap_remove(body_index);
             self.detach(
                 ShapeObserver {
                     owner: self.owner,
@@ -129,6 +145,8 @@ impl ShapeRegistry {
             )?;
             self.active.swap_remove(active_index);
             self.recycled.push(entry);
+        } else {
+            self.registrations[entry].bodies.swap_remove(body_index);
         }
         Ok(())
     }
@@ -173,24 +191,39 @@ impl ShapeRegistry {
     }
     /// cdfcb0/ce03d0 release active entries, then pooled entries. The resource
     /// owner supplies each live shape's signal pair before dropping that shape.
-    pub fn release(mut self, signals: &mut impl ShapeSignalStore) -> Result<(), String> {
-        let order: Vec<usize> = self.active.iter().chain(&self.recycled).copied().collect();
-        for entry in order {
-            if let Some(shape) = self.registrations[entry].shape {
-                let pair = signals.signals_mut(shape)?;
-                self.detach(
-                    ShapeObserver {
-                        owner: self.owner,
-                        entry,
-                    },
-                    shape,
-                    &mut pair.mutated,
-                    &mut pair.destroyed,
-                )?;
+    pub fn release(&mut self, signals: &mut impl ShapeSignalStore) -> Result<(), String> {
+        self.detach_all(signals).map(|_| ())
+    }
+
+    pub fn detach_all(&mut self, signals: &mut impl ShapeSignalStore) -> Result<usize, String> {
+        let mut released = 0;
+        // cdfcb0 visits active entries before pooled entries in source order.
+        // Host lookups can fail where native ce03d0 is infallible. Keep both
+        // lists and every registration until the complete drain succeeds.
+        for pooled in [false, true] {
+            let count = if pooled { self.recycled.len() } else { self.active.len() };
+            for index in 0..count {
+                let entry = if pooled { self.recycled[index] } else { self.active[index] };
+                let shape = self.registrations.get(entry)
+                    .ok_or("shape release registration is missing")?.shape;
+                if let Some(shape) = shape {
+                    let pair = signals.signals_mut(shape)?;
+                    self.detach(ShapeObserver { owner: self.owner, entry }, shape,
+                        &mut pair.mutated, &mut pair.destroyed)?;
+                    // ce04a0 cleared this shape only after both unsubscriptions.
+                    // That None is the completed-prefix cursor on retry: never
+                    // replay a successful detach or discard a failing owner.
+                    released += 1;
+                }
             }
-            self.registrations[entry].bodies.clear();
         }
-        Ok(())
+        // Keep the former successful-release allocation policy; only the
+        // error path retains the lists for its original owner and order.
+        self.active = Vec::new();
+        self.recycled = Vec::new();
+        self.registrations.clear();
+        self.pending = false;
+        Ok(released)
     }
 }
 

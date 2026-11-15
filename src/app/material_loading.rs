@@ -624,10 +624,10 @@ impl MaterialResolver<'_> {
             || self.vegetation.parameters.contains_key(material)
     }
 
-    pub(super) fn upload_probe_records(&mut self) {
-        if let Some(mut buffer) = self.probe_sh_buffers.get_mut(&self.probe_sh_buffer) {
-            buffer.set_data(std::mem::take(&mut self.probe_sh_records));
-        }
+    pub(super) fn upload_probe_records(&mut self, writable_start: usize) -> Option<super::model_motion::ModelProbeLighting> {
+        let buffer = self.probe_sh_buffers.get_mut(&self.probe_sh_buffer)?;
+        buffer.set_data(std::mem::take(&mut self.probe_sh_records));
+        Some(super::model_motion::ModelProbeLighting::new(self.probe_sh_buffer.clone(), writable_start, buffer))
     }
 
     pub(super) fn register_image(&mut self, name: &str) -> Option<usize> {
@@ -694,6 +694,7 @@ impl MaterialResolver<'_> {
                 .ok()
                 .flatten()
         }));
+        let physics_material_source_present = bytes.is_some();
         let bytes = bytes.as_deref().unwrap_or(&[]);
         self.cache.record_source(path, bytes, None);
         if material::is_screen_gate_impostor(path, bytes) {
@@ -1527,6 +1528,9 @@ impl MaterialResolver<'_> {
         });
         self.shadow_materials.0.insert(handle.clone(), shadow);
         let cached = CachedMaterial {
+            physics_material: surface.physics_material.as_deref().map(Into::into),
+            physics_material_source_present,
+            physics_material_preprocessing_required: surface.physics_material_preprocessing_required,
             handle,
             diffuse_image_slot,
             images,

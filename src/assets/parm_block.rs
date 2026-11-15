@@ -9,32 +9,6 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-// 140060180 purges resource identities only after their owners retire.
-static HISTORY_SCOPES: Mutex<usize> = Mutex::new(0);
-struct HistoryLease;
-impl HistoryLease {
-    fn acquire() -> Arc<Self> {
-        *HISTORY_SCOPES
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) += 1;
-        Arc::new(Self)
-    }
-}
-impl Drop for HistoryLease {
-    fn drop(&mut self) {
-        let mut scopes = HISTORY_SCOPES
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        *scopes -= 1;
-        if *scopes == 0 {
-            let (count, bytes, slots, _) = crate::loading::retain_kind("pblock", |_| false);
-            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                eprintln!("MEMORY pblock history release: entries={count} path_capacity_bytes={bytes} slots={slots}");
-            }
-        }
-    }
-}
-
 pub(crate) enum ParmValue {
     Words([u32; 4]),
     /// Preserve null distinctly; interpretation depends on the registered
@@ -52,15 +26,14 @@ pub(crate) struct ParmBlock {
     /// Kept in authored order; the original compaction retains the last
     /// assignment to a duplicate parameter (140343670).
     pub assignments: Vec<Assignment>,
-    _history: Option<Arc<HistoryLease>>,
     // A weak back-reference lets a caller-local hit rejoin a record whose
     // native marker was purged while this exact generation remained leased.
-    header: Weak<Mutex<Entry>>,
+    header: Option<Weak<Mutex<Entry>>>,
 }
 
 impl Drop for ParmBlock {
     fn drop(&mut self) {
-        if self._history.is_some()
+        if self.header.is_some()
             && std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|value| value == "1") {
             eprintln!("PBLOCK_RELEASE identity={:p} assignments={}", self, self.assignments.len());
         }
@@ -273,15 +246,13 @@ fn parse(
     let Some(edit) = scope(&root, "edit")? else {
         return Ok(ParmBlock {
             assignments: Vec::new(),
-            _history: None,
-            header: Weak::new(),
+            header: None,
         });
     };
     let Some(list) = scope(edit, "m_pblock")? else {
         return Ok(ParmBlock {
             assignments: Vec::new(),
-            _history: None,
-            header: Weak::new(),
+            header: None,
         });
     };
     let count = field(list, "num")
@@ -315,8 +286,7 @@ fn parse(
     }
     Ok(ParmBlock {
         assignments,
-        _history: None,
-        header: Weak::new(),
+        header: None,
     })
 }
 
@@ -464,7 +434,6 @@ pub(crate) struct ParmBlockSources {
     catalog: u64,
     registry: Arc<Mutex<Registry>>,
     entries: HashMap<String, Weak<ParmBlock>>,
-    history: Option<Arc<HistoryLease>>,
 }
 impl ParmBlockSources {
     pub(crate) fn new(catalog: &Catalog) -> Self {
@@ -472,7 +441,6 @@ impl ParmBlockSources {
             catalog: catalog.identity(),
             registry: catalog.parameter_blocks.get_or_init(Default::default).clone(),
             entries: HashMap::new(),
-            history: None,
         }
     }
     pub(crate) fn acquire(
@@ -485,7 +453,6 @@ impl ParmBlockSources {
         let started = trace.then(crate::loading::thread_cycles).flatten();
         if self.catalog != catalog.identity() {
             self.entries.clear();
-            self.history = None;
             self.catalog = catalog.identity();
             self.registry = catalog.parameter_blocks.get_or_init(Default::default).clone();
         }
@@ -493,7 +460,7 @@ impl ParmBlockSources {
         let shared = !catalog.has_overlays();
         if shared {
             if let Some(block) = self.entries.get(&resource).and_then(Weak::upgrade) {
-                let header = block.header.upgrade().ok_or("parameter-block record is absent")?;
+                let header = block.header.as_ref().and_then(Weak::upgrade).ok_or("parameter-block record is absent")?;
                 header.lock().map_err(|_| "parameter-block record is poisoned")?.retain_acquired(&block);
                 if trace {
                     let cycles = started.zip(crate::loading::thread_cycles())
@@ -527,9 +494,6 @@ impl ParmBlockSources {
                 return Ok(block);
             }
         }
-        // Protect the read while it is in flight, but do not leave the cache
-        // owning an otherwise unused scope if IO or parsing fails.
-        let history = self.history.clone().unwrap_or_else(HistoryLease::acquire);
         let loaded = (|| {
             let bytes = catalog.read(&resource).map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("parameter block absent: {resource}"))?;
@@ -547,9 +511,7 @@ impl ParmBlockSources {
                 .map_or(0, |(start, end)| end.saturating_sub(start));
             eprintln!("MEMORY particle parameter block: reused=0 source_bytes={source_bytes} assignments={} cycles={cycles}", block.assignments.len());
         }
-        self.history.get_or_insert_with(|| history.clone());
-        block._history = Some(history);
-        block.header = Arc::downgrade(&header);
+        block.header = Some(Arc::downgrade(&header));
         let block = Arc::new(block);
         if trace { eprintln!("PBLOCK_LEASE catalog={} path={resource} identity={:p} reused=false shared_class=true", self.catalog, Arc::as_ptr(&block)); }
         let previous = std::mem::replace(&mut entry.current, Arc::downgrade(&block));
@@ -566,11 +528,7 @@ impl ParmBlockSources {
     pub(crate) fn retire_unused(&mut self) -> bool {
         self.entries.retain(|_, value| value.strong_count() != 0);
         self.registry.lock().unwrap_or_else(|error| error.into_inner()).retire_unused(self.catalog);
-        if self.entries.is_empty() {
-            self.history = None;
-            return true;
-        }
-        false
+        self.entries.is_empty()
     }
 }
 

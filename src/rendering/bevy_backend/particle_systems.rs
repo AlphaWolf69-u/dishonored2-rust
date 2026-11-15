@@ -195,7 +195,7 @@ impl ParticleSystems {
     pub fn simulate(
         &mut self,
         frame: u32,
-        world: &crate::gameplay::world_point_query::snapshot::PointQuerySnapshot,
+        world: &crate::gameplay::world_point_query::level::LevelPointQueries,
         ocean_height: Option<f32>,
         view: &crate::rendering::view_history::ViewMatrices,
         visibility: Option<&crate::tome::RenderQueryState>,

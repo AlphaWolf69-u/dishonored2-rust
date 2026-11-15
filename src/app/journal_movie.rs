@@ -2,7 +2,7 @@
 use super::interaction_focus::{DocumentEntry, JournalItem};
 use crate::assets::inventory_item::{self, ReadableKind};
 use crate::{
-    assets::{archive::Catalog, installation, lang},
+    assets::lang,
     flash::{Player, bitmap_resources::MovieBitmaps, render},
     gameplay::pause_state,
     platform::bindings::{self, Keyboard},
@@ -96,9 +96,8 @@ impl Movie {
         powers: Option<PowerData>,
         gameflow: Option<crate::gameplay::gameflow::State>,
     ) -> Result<Self, String> {
-        let base = installation::game_base().map_err(|e| e.to_string())?;
-        let catalog = Catalog::shared(&base).map_err(|e| e.to_string())?;
-        let language = lang::read_text_language(&base)?;
+        let catalog = super::pause_menu::installed_catalog()?;
+        let language = lang::read_text_language(catalog.base())?;
         let path = super::pause_menu::state_movie(
             &catalog,
             "gamelogicstatejournal",

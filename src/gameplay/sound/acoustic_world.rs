@@ -52,6 +52,10 @@ pub struct AdmissionListener {
 
 impl AcousticWorld {
     pub fn new(graph: Propagation, game_base: &Path) -> Result<Self, String> {
+        Self::with_material_constants(graph, Arc::new(MaterialConstants::load(game_base)?))
+    }
+
+    pub(crate) fn with_material_constants(graph: Propagation, constants: Arc<MaterialConstants>) -> Result<Self, String> {
         // ca4dc0 defaults with exactly the overrides in 1400b7960. This
         // world has one permanent static motion and no dynamic motions.
         let info = WorldInfo {
@@ -63,7 +67,7 @@ impl AcousticWorld {
             simulation_type: 0,
             ..WorldInfo::default()
         };
-        let materials = MaterialOwner::new(Arc::new(MaterialConstants::load(game_base)?), 0)?;
+        let materials = MaterialOwner::new(constants, 0)?;
         let mut world = WorldStorage::new(info, 0, materials)?;
         let mut signals = (0..graph.zones.len())
             .map(|_| ShapeSignals::default())
@@ -184,10 +188,26 @@ impl AcousticWorld {
     }
 
     pub fn release(mut self) -> Result<(), String> {
-        self.world.release(&mut Geometry {
+        self.detach_shape_observers().map(|_| ())
+    }
+
+    fn detach_shape_observers(&mut self) -> Result<usize, String> {
+        self.world.detach_shape_observers(&mut Geometry {
             graph: &self.graph,
             signals: &mut self.signals,
         })
+    }
+}
+
+impl Drop for AcousticWorld {
+    fn drop(&mut self) {
+        match self.detach_shape_observers() {
+            Ok(released) if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") => {
+                eprintln!("SHAPE_OBSERVERS_RELEASE owner=acoustics registrations={released}");
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("Acoustic shape observer retirement failed: {error}"),
+        }
     }
 }
 

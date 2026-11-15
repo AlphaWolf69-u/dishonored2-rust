@@ -11,6 +11,7 @@ use bevy::{
         render_resource::*,
         renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery},
         storage::{GpuShaderBuffer, ShaderBuffer},
+        sync_world::MainEntity,
         view::{ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
         Render, RenderApp, RenderStartup, RenderSystems,
     },
@@ -203,6 +204,7 @@ fn retire_views(
 fn expose(
     view: ViewQuery<(
         &ViewUniformOffset,
+        &MainEntity,
         &ViewTarget,
         &ExposureParameters,
         &bevy::render::camera::ExtractedCamera,
@@ -216,6 +218,7 @@ fn expose(
     uniforms: Res<ViewUniforms>,
     globals: Res<GlobalsBuffer>,
     quality: Res<DownsampleQuality>,
+    display: Option<Res<super::display_scene::DisplaySceneFrame>>,
     pyramid_programs: Res<LuminancePipelines>,
     mut pyramids: ResMut<LuminanceViews>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
@@ -223,7 +226,19 @@ fn expose(
     mut context: RenderContext,
 ) {
     let entity = view.entity();
-    let (offset, target, settings, camera, material_exposure) = view.into_inner();
+    let (offset, main, target, settings, camera, material_exposure) = view.into_inner();
+    // 36f8a0/372db0 own one quality-dependent luminance chain per view.
+    // Display uses this same extracted lens publication. A startup-only quality
+    // here would replace its chain twice each frame after a live quality change.
+    let downsample = match display.as_deref().and_then(|display| display.0.as_ref()) {
+        Some(frame) => {
+            if frame.camera != main.id() { return; }
+            let Some(lens) = frame.lens.as_ref() else { return; };
+            lens.settings.downsample
+        }
+        // Before the authored view exists, retain the startup exposure path.
+        None => quality.0,
+    };
     assert!(
         camera.hdr,
         "exposure requires an HDR camera before display tonemapping"
@@ -278,7 +293,7 @@ fn expose(
         target.main_texture().height(),
     );
     let pyramid = pyramids
-        .prepare(&device, &queue, entity, full, quality.0)
+        .prepare(&device, &queue, entity, full, downsample)
         .unwrap_or_else(|error| panic!("luminance allocation failed: {error}"));
     pyramid.record(
         &device,

@@ -100,12 +100,14 @@ pub struct MusicFade {
     pub curve: u32,
     pub offset_ms: i32,
 }
+#[derive(Clone, Debug)]
 pub struct SourceTransition {
     pub fade: MusicFade,
     pub sync: u32,
     pub cue_filter: u32,
     pub play_post_exit: bool,
 }
+#[derive(Clone, Debug)]
 pub struct DestinationTransition {
     pub fade: MusicFade,
     pub cue_filter: u32,
@@ -114,6 +116,7 @@ pub struct DestinationTransition {
     pub play_pre_entry: bool,
     pub match_source_cue_name: bool,
 }
+#[derive(Clone, Debug)]
 pub struct TransitionSegment {
     pub segment: u32,
     pub fade_in: MusicFade,

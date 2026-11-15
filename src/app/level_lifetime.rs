@@ -15,6 +15,9 @@ pub(super) struct LevelLifetime {
     resources: Vec<ComponentId>,
     /// Keep the exact archive namespace that prepared this level.
     catalog: Option<std::sync::Arc<crate::assets::archive::Catalog>>,
+    effects_retired: bool,
+    audio_retirement_started: bool,
+    cleared: bool,
 }
 
 impl LevelLifetime {
@@ -24,8 +27,8 @@ impl LevelLifetime {
         (
             Self {
                 host_entities,
-                resources: Vec::new(),
                 catalog: Some(catalog),
+                ..Self::default()
             },
             resources,
         )
@@ -39,19 +42,36 @@ impl LevelLifetime {
             .collect();
     }
 
-    pub fn clear(&mut self, world: &mut World) -> Result<(), String> {
-        // bevy_backend: retire the currently hosted FX chains while their
-        // support owners are still present. The caller has acknowledged the
-        // outgoing render publication. This does not replace the GameLocal
-        // component/entity/graph shutdown phases still being integrated.
-        if let Some(mut effects) = world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>() {
-            effects.shutdown_world_effects()?;
+    pub fn clear(&mut self, world: &mut World) -> Result<bool, String> {
+        if self.cleared { return Ok(true); }
+        // The source read callback is synchronous. Finish its already accepted
+        // host cursor while the real components and render/audio owners remain.
+        super::interactions::finish_accepted_pickups(world)?;
+        // Poll while all actual support owners remain published. Pending and
+        // errors preserve the sole registry, component pools and body world.
+        if !super::physics_scene::lifetime::poll(world)? { return Ok(false); }
+        super::interactions::stop_level(world);
+        // Keep accepted FX/audio tickets and their resource owners alive
+        // through the real consumer's acknowledgement. Successful shutdown is
+        // never replayed if a later phase suspends or fails.
+        if !self.effects_retired {
+            world.get_resource_mut::<crate::rendering::bevy_backend::camera_scene::FxSimulation>()
+                .map_or(Ok(()), |mut effects| effects.shutdown())?;
+            self.effects_retired = true;
         }
+        if !self.audio_retirement_started {
+            super::audio::begin_level_retirement(world)?;
+            self.audio_retirement_started = true;
+        }
+        if !super::audio::poll_level_retirement(world)? { return Ok(false); }
         // Resource removal order is arbitrary; hold the model scope until all
         // level consumers have been dropped after the render acknowledgement.
         let model_history = world.remove_resource::<super::level_prepare::ModelHistoryScope>();
         let material_history = world.remove_resource::<super::level_prepare::MaterialHistoryScope>();
         let skeletal_history = world.remove_resource::<super::level_prepare::SkeletalHistoryScope>();
+        let shape_history = world.remove_resource::<super::level_prepare::ShapeHistoryScope>();
+        let blueprint_history = world.remove_resource::<super::level_prepare::BlueprintHistoryScope>();
+        let level_reads = world.remove_resource::<super::level_prepare::LevelSourceReads>();
         if let Some(mut patches) = world.get_resource_mut::<crate::rendering::bevy_backend::shader_buffer_patches::ShaderBufferPatches>() {
             patches.release_level();
         }
@@ -96,23 +116,91 @@ impl LevelLifetime {
                 }
             }
         }
+        // A quality change can create an owner that was absent when
+        // published() recorded the startup resources.
+        world.remove_resource::<super::ParallelShadowOwner>();
+        world.remove_resource::<super::local_shadow_updates::LocalShadowOwner>();
+        world.remove_resource::<crate::rendering::bevy_backend::camera_scene::FxSimulation>();
         let _reset = super::load_timing::Span::new("scene publication reset");
         reset_scene_publications(world);
-        if let (Some(images), Some(shared)) = (
+        if let (Some(catalog), Some(images), Some(shared)) = (
+            self.catalog.as_ref(),
             world.get_resource::<super::resident_images::UiImages>(),
             world.get_resource::<super::texture_streaming::SharedImages>(),
         ) {
-            images.release_read_history(shared, world.get_resource::<Assets<Image>>());
+            images.release_read_history(catalog.identity(), shared, world.get_resource::<Assets<Image>>());
         }
         drop(model_history);
         drop(material_history);
         drop(skeletal_history);
+        drop(shape_history);
+        drop(blueprint_history);
+        drop(level_reads);
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();
         }
-        crate::edge_skeleton::release_unused();
-        Ok(())
+        self.cleared = true;
+        Ok(true)
     }
+
+    /// Source-acquisition observers have no output device or application
+    /// schedule. Advance the actual retirement FIFO synchronously only when
+    /// each pass demonstrably finishes another finite owner transition.
+    pub(super) fn clear_without_output(&mut self, world: &mut World) -> Result<(), String> {
+        if super::audio::has_output(world) { return Err("windowless retirement cannot drive an active output stream".into()); }
+        let mut previous = None;
+        let mut passes = 0usize;
+        loop {
+            passes += 1;
+            if self.clear(world)? {
+                eprintln!("RESOURCE_SCENE_RETIREMENT phase=complete passes={passes} output=false");
+                return Ok(());
+            }
+            let progress = (self.effects_retired, self.audio_retirement_started,
+                super::physics_scene::lifetime::retirement_progress(world));
+            if previous.is_some_and(|previous| progress <= previous) {
+                return Err(format!("windowless retirement made no synchronous owner progress: {progress:?}"));
+            }
+            previous = Some(progress);
+            // Same production consumer/cursor as gameplay. With no output
+            // object there is no callback thread to await or substitute.
+            super::audio::poll_object_retirements(world)?;
+        }
+    }
+}
+
+pub(super) fn close_level_acquisitions(world: &mut World) {
+    // Release a blocked base-image handoff before joining the map reader.
+    world.remove_resource::<super::texture_streaming::PreparedBaseImages>();
+    if let Some(effects) = world.get_resource::<super::usable_effects::UsableEffects>() {
+        effects.close_acquisitions();
+    }
+    if let Some(interactions) = world.get_resource::<super::interactions::Interactions>() {
+        interactions.close_acquisitions();
+    }
+    if let Some(mut textures) = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>() {
+        textures.close_acquisitions();
+    }
+    if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
+        mailbox.retire();
+    }
+}
+
+/// Called while the loading screen is active, before purging map identities.
+/// Outgoing decoders can still own source data or write catalog entries after
+/// their results are no longer wanted. Observe their retirement before purge.
+pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
+    let sources = world.get_resource_mut::<super::usable_effects::UsableEffects>()
+        .is_none_or(|mut effects| effects.retire_acquisitions());
+    let materials = world.get_resource_mut::<super::runtime_materials::RuntimeMaterialCoordinator>()
+        .is_none_or(|mut materials| materials.retire_acquisition());
+    let readable = world.get_resource_mut::<super::interactions::Interactions>()
+        .is_none_or(|mut interactions| interactions.retire_acquisition());
+    let usable_animations = world.get_resource_mut::<super::usable_animation::UsableAnimations>()
+        .is_none_or(|mut animations| animations.retire_acquisitions());
+    let textures = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>()
+        .is_none_or(|mut textures| textures.retire_acquisitions());
+    sources && materials && readable && usable_animations && textures
 }
 
 /// Plugin registration creates these empty owners before the first map.
@@ -179,7 +267,6 @@ fn reset_scene_publications(world: &mut World) {
         backend::particle_pass::ParticleMaterialSampler,
         backend::particle_images::SceneParticleImages,
         backend::particle_systems::ParticleQueryFrame,
-        backend::camera_scene::FxSimulation,
         backend::camera_scene::FxPublication,
         backend::physics_queries::PhysicsQueryFrame,
         backend::shadow_pass::ShadowSceneFrame,
@@ -195,8 +282,6 @@ fn reset_scene_publications(world: &mut World) {
     );
     super::audio::begin_level(world);
     if let Some(mailbox) = world.get_resource::<super::PreparedImageMailbox>() {
-        let mut state = mailbox.0.lock().unwrap();
-        let generation = state.generation.wrapping_add(1);
-        *state = super::texture_streaming::PreparedImageState { generation, ..Default::default() };
+        mailbox.retire();
     }
 }

@@ -6,6 +6,28 @@ use super::{PlacedModel, Value, field, float, parse_declaration, scope, vector};
 use crate::archive::Catalog;
 use std::collections::HashMap;
 
+// Host: expanded instances need their construction credit until the map ends,
+// although their unused assembly descriptors can retire earlier than the native
+// map-scoped declaration (1401c1270 / 140060180).
+static HISTORY: crate::loading::CatalogHistoryScopes = crate::loading::CatalogHistoryScopes::new();
+pub(crate) struct HistoryLease(u64);
+impl HistoryLease {
+    pub(crate) fn acquire(catalog: u64) -> std::sync::Arc<Self> {
+        HISTORY.acquire(catalog);
+        std::sync::Arc::new(Self(catalog))
+    }
+}
+impl Drop for HistoryLease {
+    fn drop(&mut self) {
+        HISTORY.release(self.0, || {
+            let (entries, bytes, _) = crate::loading::forget_catalog_kind(self.0, "blueprint").unwrap_or_default();
+            if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
+                eprintln!("BLUEPRINT_HISTORY_RELEASE catalog={} entries={entries} path_capacity_bytes={bytes}", self.0);
+            }
+        });
+    }
+}
+
 struct Child {
     resource_path: String,
     translation: [f32; 3],
@@ -129,11 +151,14 @@ pub struct Sources<'a> {
     reads: usize,
     trace: bool,
     separate: bool,
+    // Drop cached descriptor data before releasing its acquisition history.
+    _history: std::sync::Arc<HistoryLease>,
 }
 impl<'a> Sources<'a> {
     pub fn new(catalog: &'a Catalog) -> Self {
         Self {
             catalog,
+            _history: HistoryLease::acquire(catalog.identity()),
             definitions: HashMap::new(),
             requests: 0,
             reads: 0,

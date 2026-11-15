@@ -9,6 +9,8 @@ use std::path::Path;
 mod bank;
 mod vorbis;
 pub use vorbis::VorbisCursor;
+#[cfg(feature = "game")]
+pub(crate) use vorbis::observe_header_samples;
 pub(crate) use vorbis::{release_unused_headers, retire_headers};
 mod declaration;
 pub mod event_resources;
@@ -16,6 +18,8 @@ pub mod auxiliary_resources;
 pub mod rtpc_resources;
 pub mod engine_controls;
 mod playback;
+mod music_playback;
+pub use music_playback::{MusicGraph, MusicActor, MusicKind, MusicMedia, MusicAutomation, MusicRule};
 mod property_chains;
 pub(crate) use property_chains::capture as capture_property_chains;
 pub(crate) use property_chains::retire_diagnostics as retire_property_diagnostics;
@@ -496,11 +500,16 @@ pub struct Entry {
 pub struct Package {
     pub languages: Vec<Language>,
     pub banks: Vec<Entry>,
-    pub media: Vec<Entry>,
-    pub external_media: Vec<Entry>,
+    media: Vec<Entry>,
+    external_media: Vec<Entry>,
+    ordered_media: bool,
     pub data_offset: u64,
     file_size: u64,
 }
+
+static PACKAGE_LOOKUP_MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+static PACKAGE_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PACKAGE_LOOKUP_CYCLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Package {
     pub fn file_size(&self) -> u64 {
@@ -568,7 +577,9 @@ impl Package {
             parse_entries(&external_bytes, EntryTable::External)?
         };
 
-        let package = Self { languages, banks, media, external_media, data_offset, file_size };
+        let ordered = |entries: &[Entry]| entries.is_sorted_by_key(|entry| (entry.id, entry.language_id));
+        let ordered_media = ordered(&media) && ordered(&external_media);
+        let package = Self { languages, banks, media, external_media, ordered_media, data_offset, file_size };
         for entry in package.banks.iter().chain(&package.media).chain(&package.external_media) {
             let end = entry.offset.checked_add(entry.size).ok_or_else(|| invalid("Wwise entry range overflow"))?;
             if entry.offset < data_offset || end > file_size {
@@ -588,9 +599,44 @@ impl Package {
         self.languages.iter().find(|language| language.name.eq_ignore_ascii_case(name)).map(|language| language.id)
     }
 
+    pub fn media(&self) -> &[Entry] { &self.media }
+    pub fn external_media(&self) -> &[Entry] { &self.external_media }
+
     pub fn media_file(&self, id: u64, language_id: u32) -> Option<Entry> {
-        self.media.iter().chain(&self.external_media).copied()
-            .find(|entry| entry.id == id && entry.language_id == language_id)
+        use std::sync::atomic::Ordering::Relaxed;
+        let &(scan, trace) = PACKAGE_LOOKUP_MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SCAN_WWISE_PACKAGE_MEDIA").is_some_and(|v| v == "1"),
+            std::env::var_os("DH2_DEBUG_WWISE_MEDIA_SECTIONS").is_some_and(|v| v == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        // 1400caec0 / 1400caf40 search the authored (id, language) order.
+        let key = (id, language_id);
+        let key_of = |entry: &Entry| (entry.id, entry.language_id);
+        let found = if self.ordered_media && !scan {
+            let lookup = |entries: &[Entry]| entries.get(entries.partition_point(|entry| key_of(entry) < key))
+                .filter(|entry| key_of(entry) == key).copied();
+            lookup(&self.media).or_else(|| lookup(&self.external_media))
+        } else {
+            self.media.iter().chain(&self.external_media).copied().find(|entry| key_of(entry) == key)
+        };
+        if trace {
+            PACKAGE_LOOKUPS.fetch_add(1, Relaxed);
+            if let Some(cycles) = started.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start)) {
+                PACKAGE_LOOKUP_CYCLES.fetch_add(cycles, Relaxed);
+            }
+        }
+        found
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn report_media_lookup() {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(&(scan, true)) = PACKAGE_LOOKUP_MODE.get() {
+            let lookups = PACKAGE_LOOKUPS.swap(0, Relaxed);
+            let cycles = PACKAGE_LOOKUP_CYCLES.swap(0, Relaxed);
+            println!("WWISE_PACKAGE_LOOKUP linear_control={scan} lookups={lookups} cycles={cycles}");
+        }
     }
 
     fn seek_entry<R: Seek>(&self, reader: &mut R, entry: Entry) -> io::Result<usize> {
@@ -611,7 +657,7 @@ impl Package {
         Ok(bytes)
     }
 
-    /// The resident bank and its embedded media share this allocation.
+    /// Read a bank or resident media item into its final shared allocation.
     pub(crate) fn read_resident_entry<R: Read + Seek>(
         &self, reader: &mut R, entry: Entry,
     ) -> io::Result<MediaBytes> {
@@ -673,6 +719,7 @@ pub fn event_commands_with(
 pub fn flatten_playback_actions(actions: Vec<PlaybackCommand>) -> io::Result<Vec<EventCommand>> {
     fn flatten(node: PlaybackNode) -> io::Result<Vec<MediaGroup>> {
         match node {
+            PlaybackNode::Music(_) => Err(invalid("music actors require sample-clock playback")),
             PlaybackNode::Unsupported { node, reason } => Err(invalid_owned(format!("Wwise actor {node:#010x}: {reason}"))),
             PlaybackNode::Switch(switch) => Err(invalid_owned(format!(
                 "Wwise switch actor {:#010x} requires live selection and controller playback", switch.node))),
@@ -746,6 +793,7 @@ pub enum PlaybackCommand {
 
 #[derive(Clone, Debug)]
 pub enum PlaybackNode {
+    Music(std::sync::Arc<MusicGraph>),
     /// Preserve a known actor whose processor has not been hosted. This is
     /// distinct from a missing global actor and must not alter selection weights.
     Unsupported { node: u32, reason: String },
@@ -810,11 +858,9 @@ pub struct MediaGroup {
 #[derive(Clone, Debug)]
 pub struct MediaVariant {
     pub media: MediaBytes,
-    /// The package media id of a streamed source (stream type 2), which the
-    /// original reads through its stream manager while it plays instead of
-    /// keeping it resident. A prefetched source keeps its bank prefix and
-    /// streams the continuation when using the extent-aware provider.
-    pub streamed: Option<u32>,
+    /// The owning bank index and package media ID of a streamed source.
+    /// A prefetched source keeps its bank prefix and streams the continuation.
+    pub streamed: Option<(usize, u32)>,
     pub weight: u32,
     pub properties: MediaProperties,
 }
@@ -998,38 +1044,103 @@ pub(crate) fn retire_stream_diagnostics() {
     }
 }
 
+const BANK_MEDIA_RECORD_BYTES: usize = 12;
+type BankMediaRecord = [u8; BANK_MEDIA_RECORD_BYTES];
+
+#[derive(Clone, Copy)]
+struct BankMediaIndex<'a> {
+    bytes: &'a [u8],
+    ordered: bool,
+}
+
+static BANK_INDEX_MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+static BANK_INDEX_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static BANK_INDEX_CYCLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl<'a> BankMediaIndex<'a> {
+    fn id(record: &BankMediaRecord) -> u32 {
+        u32::from_le_bytes(record[..4].try_into().unwrap())
+    }
+
+    fn ordered(bytes: &[u8]) -> bool {
+        let (rows, remainder) = bytes.as_chunks::<BANK_MEDIA_RECORD_BYTES>();
+        remainder.is_empty() && rows.is_sorted_by_key(Self::id)
+    }
+
+    fn entry(self, id: u32) -> Option<&'a BankMediaRecord> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let &(scan, trace) = BANK_INDEX_MODE.get_or_init(|| (
+            std::env::var_os("DH2_DEBUG_SCAN_WWISE_BANK_MEDIA").is_some_and(|v| v == "1"),
+            std::env::var_os("DH2_DEBUG_WWISE_MEDIA_SECTIONS").is_some_and(|v| v == "1"),
+        ));
+        let started = trace.then(crate::loading::thread_cycles).flatten();
+        let (rows, _) = self.bytes.as_chunks::<BANK_MEDIA_RECORD_BYTES>();
+        let result = if self.ordered && !scan {
+            rows.get(rows.partition_point(|row| Self::id(row) < id)).filter(|row| Self::id(row) == id)
+        } else {
+            rows.iter().find(|row| Self::id(row) == id)
+        };
+        if trace {
+            BANK_INDEX_LOOKUPS.fetch_add(1, Relaxed);
+            if let Some(cycles) = started.zip(crate::loading::thread_cycles())
+                .map(|(start, end)| end.saturating_sub(start)) {
+                BANK_INDEX_CYCLES.fetch_add(cycles, Relaxed);
+            }
+        }
+        result
+    }
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn report_bank_index_lookup() {
+    use std::sync::atomic::Ordering::Relaxed;
+    if let Some(&(scan, true)) = BANK_INDEX_MODE.get() {
+        let lookups = BANK_INDEX_LOOKUPS.swap(0, Relaxed);
+        let cycles = BANK_INDEX_CYCLES.swap(0, Relaxed);
+        println!("WWISE_BANK_INDEX_LOOKUP linear_control={scan} lookups={lookups} cycles={cycles}");
+    }
+}
+
 fn media_from_sound(
     sound: &[u8],
-    chunks: &std::collections::HashMap<[u8; 4], &[u8]>,
+    media_index: Option<BankMediaIndex<'_>>,
+    media_data: Option<&[u8]>,
     package_media: &mut impl FnMut(u32, u8) -> io::Result<Option<MediaBytes>>,
     hold_bank: impl Fn(&[u8]) -> MediaBytes,
 ) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
     if sound.len() < 13 { return Ok(None); }
     let media_id = read_u32_slice(sound, 9)?;
+    media_from_descriptor(media_id, sound[8], media_index, media_data, package_media, hold_bank)
+}
+
+/// Both Sound (141122400) and music-track (141159840) sources use the
+/// standard source descriptor and the same bank/prefetch/package ownership.
+fn media_from_descriptor(media_id: u32, stream_type: u8,
+    media_index: Option<BankMediaIndex<'_>>, media_data: Option<&[u8]>,
+    package_media: &mut impl FnMut(u32, u8) -> io::Result<Option<MediaBytes>>,
+    hold_bank: impl Fn(&[u8]) -> MediaBytes,
+) -> io::Result<Option<(MediaBytes, Option<u32>)>> {
     // Streamed and prefetched sources use the full package file. DIDX may
     // contain only a prefetch prefix, which must not replace the full media.
-    if sound[8] != 0 {
-        if let Some(mut media) = package_media(media_id, sound[8])? {
+    if stream_type != 0 {
+        if let Some(mut media) = package_media(media_id, stream_type)? {
             let (track, metrics) = stream_diagnostic_mode();
+            let prefetched = stream_type == 1 && media.is_stream_header();
+            let entry = if track || prefetched { media_index.and_then(|index| index.entry(media_id)) } else { None };
             if metrics {
                 use std::sync::atomic::Ordering::Relaxed;
                 STREAM_DIAGNOSTIC_REQUESTS.fetch_add(1, Relaxed);
                 let signature = (u64::from(media_id) << 32) ^ (media.source_size() as u64)
-                    ^ (u64::from(sound[8]) << 56);
+                    ^ (u64::from(stream_type) << 56);
                 STREAM_DIAGNOSTIC_SIGNATURE.fetch_add(signature, Relaxed);
             }
             if track {
-                let prefix = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
-                    .find(|record| read_u32_slice(record, 0).ok() == Some(media_id))
-                    .and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize)));
-                STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (sound[8], media.source_size(), prefix));
+                let prefix = entry.and_then(|record| read_u32_slice(record, 8).ok().map(|size| size as usize));
+                STREAMED_MEDIA.lock().unwrap_or_else(|e| e.into_inner()).insert(media_id, (stream_type, media.source_size(), prefix));
                 if metrics { STREAM_DIAGNOSTIC_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
             }
-            let prefetched = sound[8] == 1 && media.is_stream_header();
             if prefetched {
-                let entry = chunks.get(b"DIDX").and_then(|didx| didx.chunks_exact(12)
-                    .find(|record| read_u32_slice(record, 0).ok() == Some(media_id)));
-                let bank_prefix = entry.zip(chunks.get(b"DATA")).map(|(entry, data)| {
+                let bank_prefix = entry.zip(media_data).map(|(entry, data)| {
                     let start = read_u32_slice(entry, 4)? as usize;
                     let end = start.checked_add(read_u32_slice(entry, 8)? as usize).ok_or_else(|| invalid("prefetch range overflow"))?;
                     let bytes = data.get(start..end).ok_or_else(|| invalid("prefetch outside bank DATA"))?;
@@ -1040,19 +1151,18 @@ fn media_from_sound(
                     None => package_media(media_id, 2)?.ok_or_else(|| invalid("prefetch source has no package continuation"))?,
                 };
             }
-            return Ok(Some((media, (sound[8] == 2 || prefetched).then_some(media_id))));
+            return Ok(Some((media, (stream_type == 2 || prefetched).then_some(media_id))));
         }
     }
-    if let (Some(didx), Some(data)) = (chunks.get(b"DIDX"), chunks.get(b"DATA")) {
-        if didx.len() % 12 != 0 { return Err(invalid("invalid Wwise DIDX size")); }
-        for record in didx.chunks_exact(12) {
-            if read_u32_slice(record, 0)? != media_id { continue; }
+    if let (Some(index), Some(data)) = (media_index, media_data) {
+        if index.bytes.len() % BANK_MEDIA_RECORD_BYTES != 0 { return Err(invalid("invalid Wwise DIDX size")); }
+        if let Some(record) = index.entry(media_id) {
             let start = read_u32_slice(record, 4)? as usize;
             let end = start.checked_add(read_u32_slice(record, 8)? as usize).ok_or_else(|| invalid("Wwise media range overflow"))?;
             return Ok(Some((hold_bank(data.get(start..end).ok_or_else(|| invalid("Wwise media outside DATA chunk"))?), None)));
         }
     }
-    Ok(package_media(media_id, sound[8])?.map(|media| (media, None)))
+    Ok(package_media(media_id, stream_type)?.map(|media| (media, None)))
 }
 
 /// List event object IDs in the HIRC chunk for building an installed-bank index.

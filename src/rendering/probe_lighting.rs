@@ -188,23 +188,28 @@ pub struct ProbeLighting {
 // Only probe sets own gameplay EnvProbe identities. Keep their shared read
 // history while any set or in-flight load is alive, and retire it when the
 // final owner releases its data (140060180's map resource boundary).
-static PROBE_OWNERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static PROBE_OWNERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, usize>>> =
+    std::sync::LazyLock::new(Default::default);
 #[derive(Debug)]
-struct ProbeLease;
+struct ProbeLease(u64);
 impl ProbeLease {
-    fn acquire() -> std::sync::Arc<Self> {
-        *PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        std::sync::Arc::new(Self)
+    fn acquire(catalog: u64) -> std::sync::Arc<Self> {
+        let mut owners = PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+        *owners.entry(catalog).or_default() += 1;
+        std::sync::Arc::new(Self(catalog))
     }
 }
 impl Drop for ProbeLease {
     fn drop(&mut self) {
         let mut owners = PROBE_OWNERS.lock().unwrap_or_else(|e| e.into_inner());
-        *owners -= 1;
-        if *owners == 0 {
-            if let Some((entries, string_bytes, slots)) = crate::loading::forget_kind("EnvProbe") {
-                if std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1") {
-                    eprintln!("MEMORY probe history release: entries={entries} path_capacity_bytes={string_bytes} table_capacity={slots}");
+        let count = owners.get_mut(&self.0).expect("probe lease has no catalog scope");
+        *count -= 1;
+        if *count == 0 {
+            owners.remove(&self.0);
+            if owners.is_empty() { *owners = Default::default(); }
+            if let Some((entries, string_bytes, slots)) = crate::loading::forget_catalog_kind(self.0, "EnvProbe") {
+                if std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1") {
+                    eprintln!("MEMORY probe history release: catalog={} entries={entries} path_capacity_bytes={string_bytes} table_capacity={slots}", self.0);
                 }
             }
         }
@@ -288,12 +293,27 @@ pub fn load_for_world(
     catalog: &archive::Catalog,
     world: &str,
 ) -> Result<Option<ProbeLightingSet>, String> {
+    load_world_probes(catalog, world, None, true)
+}
+
+#[cfg(feature = "game")]
+pub(crate) fn load_for_rendered_world(
+    catalog: &archive::Catalog, world: &str, instances: usize,
+) -> Result<Option<ProbeLightingSet>, String> {
+    let copy = std::env::var_os("DH2_DEBUG_COPY_PROBE_INDICES").is_some_and(|v| v == "1");
+    let retain_samples = std::env::var_os("DH2_DEBUG_RETAIN_PROBE_SAMPLES").is_some_and(|v| v == "1");
+    load_world_probes(catalog, world, (!copy).then_some(instances), retain_samples)
+}
+
+fn load_world_probes(
+    catalog: &archive::Catalog, world: &str, instances: Option<usize>, retain_samples: bool,
+) -> Result<Option<ProbeLightingSet>, String> {
     let level = crate::assets::level::LevelResources::resolve(catalog, world)
         .map_err(|error| error.to_string())?;
     let Some(network_resource) = level.probe_network else {
         return Ok(None);
     };
-    let lease = ProbeLease::acquire();
+    let lease = ProbeLease::acquire(catalog.identity());
     // 1402b15e0 consumes the network from its input stream. Parse in the
     // same order from the archive decoder, keeping only the required tables.
     let probe_cpu_start = (std::env::var("DH2_DEBUG_PNW_CPU").as_deref() == Ok("1"))
@@ -303,7 +323,7 @@ pub fn load_for_world(
     let (names, secondary_resources, spatial, vertex_references) = catalog
         .with_stream(&network_resource, |source, size| {
             if size != expected_size { return Err(format!("probe network size changed: {size} vs {expected_size}")); }
-            pnetwork::read_stream(source, size)
+            pnetwork::read_stream(source, size, instances)
         })?
         .ok_or_else(|| format!("missing probe network {network_resource}"))?;
     if let Some(start) = probe_cpu_start {
@@ -322,41 +342,84 @@ pub fn load_for_world(
     }
     let mut probes = Vec::with_capacity(names.len());
     let mut reflection_probes = Vec::with_capacity(secondary_resources.len());
+    let separate = std::env::var_os("DH2_DEBUG_SEPARATE_PROBE_RECORDS").is_some_and(|v| v == "1");
+    let trace_records = std::env::var_os("DH2_DEBUG_PROBE_RECORD_ACQUISITION").is_some_and(|v| v == "1");
+    let mut scratch = Vec::new();
+    let mut acquisitions = 0;
+    let mut growths = 0;
+    let mut peak = 0;
+    let mut read_cycles = 0u64;
+    let mut source_crc = flate2::Crc::new();
+    let mut read_probe = |path: &str, keep_samples| {
+        if separate { scratch = Vec::new(); }
+        let before = scratch.capacity();
+        let started = trace_records.then(crate::loading::thread_cycles).flatten();
+        if !catalog.read_into(path, &mut scratch).map_err(|error| error.to_string())? {
+            return Err(format!("missing probe resource {path}"));
+        }
+        if trace_records {
+            acquisitions += 1;
+            growths += usize::from(scratch.capacity() > before);
+            peak = peak.max(scratch.capacity());
+            if let Some((start, end)) = started.zip(crate::loading::thread_cycles()) {
+                read_cycles = read_cycles.saturating_add(end.saturating_sub(start));
+            }
+            source_crc.update(path.as_bytes());
+            source_crc.update(&scratch);
+        }
+        if retain_samples { bprobe::parse(&scratch) } else { bprobe::parse_for_lighting(&scratch, keep_samples) }
+    };
+    let sample_start = trace_staging.then(crate::loading::thread_cycles).flatten();
+    let mut cells_by_probe = std::collections::HashMap::new();
+    let mut next_cell = Vec::new();
+    let mut built_cells = Vec::new();
+    if !retain_samples {
+        next_cell.resize(spatial.cells.len(), usize::MAX);
+        built_cells.resize_with(spatial.cells.len(), || None);
+        // Preserve the first matching probe even if the ordered list contains
+        // repeats. A probe may supply geometry to multiple cells.
+        for (index, cell) in spatial.cells.iter().enumerate().rev() {
+            if let Some(next) = cells_by_probe.insert(cell.probe_name.as_str(), index) {
+                next_cell[index] = next;
+            }
+        }
+    }
     for name in &secondary_resources {
         let path = format!("{name}.bprobe");
-        let bytes = catalog
-            .read(&path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("missing reflection probe {path}"))?;
-        reflection_probes
-            .push(bprobe::parse(&bytes).map_err(|e| format!("reflection probe {path}: {e}"))?);
+        reflection_probes.push(read_probe(&path, false).map_err(|error| format!("reflection probe {path}: {error}"))?);
     }
     let rejected_resources = Vec::new();
     for name in names {
         let resource = format!("{name}.bprobe");
-        let parsed = catalog
-            .read(&resource)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("PNW references missing probe resource {resource}"))
-            .and_then(|bytes| bprobe::parse(&bytes).map_err(|error| error.to_string()));
+        let first_cell = cells_by_probe.remove(name.as_str());
+        let parsed = read_probe(&resource, first_cell.is_some());
         match parsed {
-            Ok(probe) => probes.push(ProbeLighting {
-                resource,
-                position: probe.position,
-                static_lights_illuminance: probe.static_lights_illuminance,
-                sky_occlusion_factor: probe.sky_occlusion_factor,
-                sun_irradiance_factor: probe.sun_irradiance_factor,
-                illuminance_estimate: probe.illuminance_estimate,
-                cubemap_name: probe.cubemap_name,
-                sources:probe.sources,
-                samples:probe.samples,
-                render_lighting_sh:probe.static_lighting_sh,
-                static_lighting_sh: probe.static_lighting_sh,
-                sun_factor_sh: probe.sun_factor_sh,
-                filtered_sun_factor_sh: probe.filtered_sun_factor_sh,
-                sky_occlusion_sh: probe.sky_occlusion_sh,
-                filtered_sky_occlusion_sh: probe.filtered_sky_occlusion_sh,
-            }),
+            Ok(probe) => {
+                let mut index = first_cell.unwrap_or(usize::MAX);
+                while index != usize::MAX {
+                    built_cells[index] = Some(query::geometry(
+                        probe.position, &probe.samples, &spatial.cells[index].occluder_samples,
+                    )?);
+                    index = next_cell[index];
+                }
+                probes.push(ProbeLighting {
+                    resource,
+                    position: probe.position,
+                    static_lights_illuminance: probe.static_lights_illuminance,
+                    sky_occlusion_factor: probe.sky_occlusion_factor,
+                    sun_irradiance_factor: probe.sun_irradiance_factor,
+                    illuminance_estimate: probe.illuminance_estimate,
+                    cubemap_name: probe.cubemap_name,
+                    sources: probe.sources,
+                    samples: if retain_samples { probe.samples } else { Vec::new() },
+                    render_lighting_sh: probe.static_lighting_sh,
+                    static_lighting_sh: probe.static_lighting_sh,
+                    sun_factor_sh: probe.sun_factor_sh,
+                    filtered_sun_factor_sh: probe.filtered_sun_factor_sh,
+                    sky_occlusion_sh: probe.sky_occlusion_sh,
+                    filtered_sky_occlusion_sh: probe.filtered_sky_occlusion_sh,
+                });
+            }
             // FUN_1402b15e0:160-166 writes a slot for every primary name.
             // Compacting failed decodes shifts every later native tetra ID.
             // An unsupported required probe must fail loading, not become a
@@ -364,20 +427,28 @@ pub fn load_for_world(
             Err(error) => return Err(format!("required primary probe {resource}: {error}; native ordered probe IDs cannot be compacted")),
         }
     }
-    let mut cell_geometry = Vec::with_capacity(spatial.cells.len());
-    for cell in &spatial.cells {
-        let name = format!("{}.bprobe", cell.probe_name);
-        let probe = probes
-            .iter()
-            .find(|p| p.resource == name)
-            .ok_or_else(|| format!("missing CPU Voronoi probe {name}"))?;
-        cell_geometry.push(query::geometry(
-            probe.position,
-            &probe.samples,
-            &cell.occluder_samples,
-        )?);
+    drop(scratch);
+    if trace_records {
+        eprintln!("PROBE_RECORD_ACQUISITION separate={separate} reads={acquisitions} growths={growths} peak_scratch_bytes={peak} read_cycles={read_cycles} source_crc={:08x}", source_crc.sum());
     }
+    let cell_geometry = if retain_samples {
+        spatial.cells.iter().map(|cell| {
+            let name = format!("{}.bprobe", cell.probe_name);
+            let probe = probes.iter().find(|probe| probe.resource == name)
+                .ok_or_else(|| format!("missing CPU Voronoi probe {name}"))?;
+            query::geometry(probe.position, &probe.samples, &cell.occluder_samples)
+        }).collect::<Result<Vec<_>, _>>()?
+    } else {
+        built_cells.into_iter().zip(&spatial.cells).map(|(geometry, cell)| {
+            geometry.ok_or_else(|| format!("missing CPU Voronoi probe {}.bprobe", cell.probe_name))
+        }).collect::<Result<Vec<_>, _>>()?
+    };
     if trace_staging {
+        let cycles = sample_start.zip(crate::loading::thread_cycles())
+            .map_or(0, |(start, end)| end.saturating_sub(start));
+        let retained = probes.iter().map(|probe| probe.samples.capacity()).sum::<usize>() * size_of::<bprobe::Sample>();
+        eprintln!("PROBE_SAMPLE_STAGING retain={retain_samples} retained_primary_bytes={retained} geometry_crc={:08x} cycles={cycles}",
+            query::geometry_crc(&cell_geometry));
         let mut crc = flate2::Crc::new();
         for probe in &probes { crc.update(probe.resource.as_bytes()); crc.update(&[0]); }
         for name in &secondary_resources { crc.update(name.as_bytes()); crc.update(&[0]); }
@@ -397,7 +468,44 @@ pub fn load_for_world(
     }))
 }
 
+fn shader_word_bytes(words: &[u32]) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: u32 has no padding and the immutable byte view spans only
+        // initialized values whose memory order matches WGSL.
+        std::borrow::Cow::Borrowed(unsafe {
+            std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size_of_val(words))
+        })
+    }
+    #[cfg(target_endian = "big")]
+    std::borrow::Cow::Owned(words.iter().flat_map(|word| word.to_le_bytes()).collect())
+}
+
 impl ProbeLightingSet {
+    /// Reflection preparation has consumed the secondary records. Runtime
+    /// queries still use primary probes and the spatial reflection indices.
+    #[cfg(feature = "game")]
+    pub(crate) fn release_reflection_preparation(&mut self) {
+        let retain = std::env::var_os("DH2_DEBUG_RETAIN_REFLECTION_PROBE_SOURCES").is_some_and(|v| v == "1");
+        let trace = std::env::var_os("DH2_DEBUG_LOAD_TIMING").is_some_and(|v| v == "1");
+        let capacity = |set: &Self| {
+            let records = set.reflection_probes.capacity() * size_of::<bprobe::Probe>();
+            let names = set.secondary_resources.capacity() * size_of::<String>()
+                + set.secondary_resources.iter().map(String::capacity).sum::<usize>()
+                + set.reflection_probes.iter().map(|probe| probe.cubemap_name.capacity()).sum::<usize>();
+            (records, names)
+        };
+        let before = trace.then(|| capacity(self));
+        if !retain {
+            self.reflection_probes = Vec::new();
+            self.secondary_resources = Vec::new();
+        }
+        if let Some((records, names)) = before {
+            let (remaining_records, remaining_names) = capacity(self);
+            eprintln!("REFLECTION_PROBE_SOURCES retain={retain} records_bytes={records} names_bytes={names} remaining_records={remaining_records} remaining_names={remaining_names}");
+        }
+    }
+
     /// Host queries use the prepared quads, in place of reading PRB samples
     /// through 382d90/383d80 at runtime. Retire superseded preparation backing;
     /// retain the complete parsed representation for standalone asset readers.
@@ -452,15 +560,55 @@ impl ProbeLightingSet {
         }
     }
 
-    /// Repack the native typed SRVs into one read-only WGSL word buffer.
-    /// The layout changes; the indices and 24/16/4-byte native records do not.
+    /// Repack the installed typed SRVs into one read-only WGSL word buffer.
+    /// The layout changes; the indices and 24/16/4-byte records do not.
+    fn vertex_shader_layout(&self) -> ([u32; 10], usize) {
+        let refs = &self.vertex_references;
+        let instances = refs.instance_offsets.len();
+        let indices = refs.tetrahedron_indices.len();
+        let tetrahedra = self.spatial.tetrahedra.len();
+        let vertices = self.spatial.vertex_positions.len();
+        let probes = self.probes.len();
+        let instance_start = 10;
+        let index_start = instance_start + instances;
+        let tetrahedron_start = index_start + indices;
+        let vertex_start = tetrahedron_start + tetrahedra * 6;
+        let reflection_start = vertex_start + vertices * 4;
+        let word_count = reflection_start + probes * 2;
+        let header = [
+            instance_start, index_start, tetrahedron_start, vertex_start,
+            instances, indices, tetrahedra, vertices, reflection_start, probes,
+        ].map(|word| u32::try_from(word).expect("PNW GPU word count"));
+        (header, word_count)
+    }
+
+    fn write_vertex_shader_tail(&self, mut append: impl FnMut(&[u32])) {
+        for tetra in &self.spatial.tetrahedra {
+            append(&tetra.vertex_indices);
+            append(&[
+                u32::from(tetra.probe_indices[0]) | u32::from(tetra.probe_indices[1]) << 16,
+                u32::from(tetra.probe_indices[2]) | u32::from(tetra.probe_indices[3]) << 16,
+            ]);
+        }
+        for (position, weights) in self.spatial.vertex_positions.iter().zip(&self.spatial.vertex_probe_weights) {
+            append(&position.map(f32::to_bits));
+            append(&[u32::from_le_bytes(*weights)]);
+        }
+        for probe in 0..self.probes.len() {
+            let (index, luminance) = self.reflection_info(probe);
+            append(&[index, luminance.to_bits()]);
+        }
+    }
+
+    /// Diagnostic control for the host's former word staging and serialization.
     pub fn vertex_shader_words(&self) -> Vec<u32> {
         let refs = &self.vertex_references;
         let mut words = vec![0u32; 10];
         words[0] = words.len().try_into().expect("PNW GPU word count");
         words.extend_from_slice(&refs.instance_offsets);
         words[1] = words.len().try_into().expect("PNW GPU word count");
-        words.extend_from_slice(&refs.tetrahedron_indices);
+        words.extend(refs.tetrahedron_indices.bytes().chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())));
         words[2] = words.len().try_into().expect("PNW GPU word count");
         for tetra in &self.spatial.tetrahedra {
             words.extend_from_slice(&tetra.vertex_indices);
@@ -468,9 +616,9 @@ impl ProbeLightingSet {
             words.push(u32::from(tetra.probe_indices[2]) | u32::from(tetra.probe_indices[3]) << 16);
         }
         words[3] = words.len().try_into().expect("PNW GPU word count");
-        for vertex in &self.spatial.vertices {
-            words.extend(vertex.position.map(f32::to_bits));
-            words.push(u32::from_le_bytes(vertex.probe_weights));
+        for (position, weights) in self.spatial.vertex_positions.iter().zip(&self.spatial.vertex_probe_weights) {
+            words.extend(position.map(f32::to_bits));
+            words.push(u32::from_le_bytes(*weights));
         }
         words[4] = refs
             .instance_offsets
@@ -490,7 +638,7 @@ impl ProbeLightingSet {
             .expect("PNW tetrahedron count");
         words[7] = self
             .spatial
-            .vertices
+            .vertex_positions
             .len()
             .try_into()
             .expect("PNW vertex count");
@@ -500,6 +648,30 @@ impl ProbeLightingSet {
             words.extend(record);
         }
         words
+    }
+
+    pub fn vertex_shader_bytes(&self) -> Vec<u8> {
+        let (header, word_count) = self.vertex_shader_layout();
+        let mut data = Vec::with_capacity(word_count * size_of::<u32>());
+        data.extend_from_slice(shader_word_bytes(&header).as_ref());
+        data.extend_from_slice(shader_word_bytes(&self.vertex_references.instance_offsets).as_ref());
+        data.extend_from_slice(self.vertex_references.tetrahedron_indices.bytes());
+        self.write_vertex_shader_tail(|words| data.extend_from_slice(shader_word_bytes(words).as_ref()));
+        data
+    }
+
+    #[cfg(feature = "game")]
+    pub(crate) fn take_vertex_shader_bytes(&mut self) -> (Vec<u8>, bool) {
+        let (header, word_count) = self.vertex_shader_layout();
+        let refs = &mut self.vertex_references;
+        let index_start = header[1] as usize * size_of::<u32>();
+        let (mut data, direct) = std::mem::take(&mut refs.tetrahedron_indices)
+            .into_upload(index_start, word_count * size_of::<u32>());
+        let header_end = size_of_val(&header);
+        data[..header_end].copy_from_slice(shader_word_bytes(&header).as_ref());
+        data[header_end..index_start].copy_from_slice(shader_word_bytes(&refs.instance_offsets).as_ref());
+        self.write_vertex_shader_tail(|words| data.extend_from_slice(shader_word_bytes(words).as_ref()));
+        (data, direct)
     }
 
     /// Use the game shader's tetrahedron and per-vertex packed-probe-weight
@@ -547,7 +719,7 @@ impl ProbeLightingSet {
 
             let mut probe_weights = [0.0; 4];
             for (vertex, barycentric) in tetrahedron.vertex_indices.iter().zip(barycentrics) {
-                let packed = self.spatial.vertices[*vertex as usize].probe_weights;
+                let packed = self.spatial.vertex_probe_weights[*vertex as usize];
                 for probe in 0..4 {
                     probe_weights[probe] += barycentric * (packed[probe] as f32 / 255.0);
                 }
@@ -817,19 +989,21 @@ mod tests {
             let mesh = &world.meshes[object.mesh_index];
             for instance in object.matrix_start..object.matrix_end {
                 let offset = set.vertex_references.instance_offsets[instance] as usize;
-                let end = offset.checked_add(mesh.positions.len()).unwrap();
+                let end = offset.checked_add(mesh.positions().len()).unwrap();
                 let references = set
                     .vertex_references
                     .tetrahedron_indices
-                    .get(offset..end)
+                    .bytes()
+                    .get(offset * 4..end * 4)
                     .unwrap_or_else(|| panic!("instance{instance} reference range{offset}..{end}"));
-                for &tetrahedron in references {
+                for record in references.chunks_exact(4) {
+                    let tetrahedron = u32::from_le_bytes(record.try_into().unwrap());
                     assert!(
                         (tetrahedron as usize) < set.spatial.tetrahedra.len(),
                         "instance{instance} invalid tetrahedron{tetrahedron}"
                     );
                 }
-                vertices += references.len();
+                vertices += references.len() / 4;
             }
         }
         eprintln!("Validated {vertices} BWM instance-vertex references against PNW tetrahedra");

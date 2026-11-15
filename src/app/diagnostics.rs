@@ -80,9 +80,9 @@ pub(super) fn sightline_world_surface(
         let mesh = &world.meshes[object.mesh_index];
         for matrix_index in object.matrix_start..object.matrix_end {
             let matrix = &world.matrices[matrix_index];
-            for face in mesh.indices.chunks_exact(3) {
+            for face in mesh.indices().chunks_exact(3) {
                 let triangle = [face[0], face[1], face[2]]
-                    .map(|index| transformed(matrix, mesh.positions[index as usize]));
+                    .map(|index| transformed(matrix, mesh.positions()[index as usize]));
                 let Some(distance) = ray_triangle(origin, direction, triangle) else {
                     continue;
                 };
@@ -299,7 +299,7 @@ pub(super) fn collision_report(
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
     (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
-    (display_capture, rendered_arms): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>),
+    (display_capture, rendered_arms, arm_lighting, shader_buffers): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::model_motion::ModelProbeLighting>>, Res<Assets<super::ShaderBuffer>>),
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -314,13 +314,9 @@ pub(super) fn collision_report(
     };
     // Setup releases the world's vertex data after upload; the report reads
     // the installed world again instead of keeping it resident.
-    let world = reader.as_ref().ok_or("texture reader owns no catalog".to_string()).and_then(|reader| {
-        let path = scene.source_path.to_string_lossy();
-        let bytes = reader.catalog().read(&path).map_err(|e| e.to_string())?.ok_or(format!("{path} is not installed"))?;
-        crate::world_mesh::parse(&bytes).map_err(|e| e.to_string())
-    });
-    let visual = world.as_ref().ok().and_then(|world| {
-        sightline_world_surface(world, camera.translation, direction, distance_limit)
+    let visual = reader.as_ref().and_then(|reader| {
+        let world = world_mesh::load(reader.catalog(), &scene.source_path.to_string_lossy(), || false).ok()?;
+        sightline_world_surface(&world, camera.translation, direction, distance_limit)
     });
     let visual_text = match &visual {
         Some((distance, mesh, matrix, material)) => format!(
@@ -469,13 +465,14 @@ pub(super) fn collision_report(
             }
             report.push_str(&format!("  model={} visible={} joints={} in_front={} camera_bounds={:?}..{:?}\n", arm.model, arm.visible, arm.joints.len(), in_front, min, max));
             report.push_str(&format!("    published_pose_crc={:08x} first_joint={:?}\n", pose_crc.sum(), arm.joints.first()));
+            report.push_str(&format!("    published_joint_matrices={:?}\n", arm.joints));
         }
         report.push_str(&format!("  pose errors={:?} midnight_handle={:?} midnight_drives=[{}, {}, {}]\n",
             player.arm_pose_errors(), player.body.midnight.playing(), player.body.midnight.drives(0),
             player.body.midnight.drives(1), player.body.midnight.drives(2)));
         report.push_str(&format!("  action history [mantle, catfall]={:?}\n", player.arm_action_history()));
         report.push_str(&format!("  latest midnight start error={:?}\n", player.body.midnight.last_start_error));
-        if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic()); }
+        if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic(scene.environment_probes.as_deref(), arm_lighting.as_deref(), &shader_buffers)); }
     }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
@@ -592,7 +589,7 @@ fn swimming_clip_aliases(
     let name = rig.decl("locomotionDecl").ok_or("body has no locomotion declaration")?;
     let fields = crate::entities::player::resolved_decl("playerlocomotion", &name, |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| crate::entities::declaration_text(&bytes).into_owned()))
+            .map(crate::entities::owned_declaration_text))
     })?;
     let decls = crate::gameplay::player::decls::loco_stances(&fields, ["Empty"; 2])?;
     let entries = decls.iter().find(|(name, _)| name == "Swimming").map(|(_, entries)| entries);

@@ -574,12 +574,12 @@ fn collision_material_slot(
     texts: &mut crate::assets::declaration_texts::PhysicsSeed,
 ) -> Option<u32> {
     *slots.entry(name.to_owned()).or_insert_with(|| {
-        match entities::physics_material::physics_material(name, |path| {
+        match entities::physics_material::resources::acquire_with(catalog, name, |path| {
             texts.read(catalog, path, crate::assets::declaration_texts::PhysicsUse::Model)
         }) {
             Ok(material) => {
                 let slot = materials.len() as u32;
-                materials.push(material);
+                materials.push(material.material().clone());
                 Some(slot)
             }
             Err(error) => {
@@ -607,7 +607,8 @@ pub(super) fn acquire_static_model_collision_with_texts(
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
     texts: &mut crate::assets::declaration_texts::PhysicsSeed,
-) -> ModelCollision {
+    check_cancelled: impl Fn() -> std::io::Result<()>,
+) -> std::io::Result<ModelCollision> {
     let roots: HashMap<_, _> = placements
         .iter()
         .map(|placement| (placement.id.as_str(), placement))
@@ -622,6 +623,7 @@ pub(super) fn acquire_static_model_collision_with_texts(
     let mut matched = 0usize;
     let mut failed = 0usize;
     for body in bodies {
+        check_cancelled()?;
         let Some(&placement) = roots.get(body.entity_id.as_str()) else {
             continue;
         };
@@ -744,7 +746,7 @@ pub(super) fn acquire_static_model_collision_with_texts(
         )));
         extra_hd += 1;
     }
-    ModelCollision { triangles, owners, materials, matched, failed, extra_hd, extra_hd_failed }
+    Ok(ModelCollision { triangles, owners, materials, matched, failed, extra_hd, extra_hd_failed })
 }
 
 #[cfg(test)]
@@ -753,7 +755,8 @@ pub(super) fn static_model_collision(
     placements: &[entities::PlacedModel],
     bodies: &[entities::RigidBodySettings],
 ) -> (Vec<([Vec3; 3], u32, u32)>, Vec<String>, usize, usize) {
-    let result = acquire_static_model_collision_with_texts(catalog, placements, bodies, &mut Default::default());
+    let result = acquire_static_model_collision_with_texts(catalog, placements, bodies, &mut Default::default(), || Ok(()))
+        .expect("uncancelled static-model collision acquisition");
     (result.triangles.into_iter().map(|(vertices, owner, _, filter)| (vertices, owner, filter)).collect(),
      result.owners, result.matched, result.failed)
 }
@@ -837,6 +840,7 @@ impl MeshUvs<'_> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn authored_mesh<const N: usize>(
     points: &[Vec3],
     uvs: &[[f32; 2]],
@@ -929,18 +933,18 @@ fn packed_view_direction(x: u8, y: u8, z: u8, w: u8) -> [i8; 4] {
 /// The installed vertex in view axes: float positions, half-float UVs,
 /// SNORM8x4 normal/tangent and UNORM8x4 colour. The bitangent is
 /// derived in the vertex shader (DH2_DERIVED_BITANGENT) from the same values
-/// `authored_mesh` takes it from, cross(N, T) * sign.
+/// the float mesh builder uses, cross(N, T) * sign.
 fn packed_authored_mesh<const N: usize>(
-    points: &[Vec3],
+    positions: Vec<[f32; 3]>,
     uvs: MeshUvs<'_>,
     indices: &[u16],
     packed: &[[u8; N]],
 ) -> Mesh {
-    assert_eq!(points.len(), packed.len(), "authored vertex channel count");
+    assert_eq!(positions.len(), packed.len(), "authored vertex channel count");
     assert!(N == 12 || N == 16);
     let snorm = |b: u8| ((b as i8 as f32) / 127.0).max(-1.0);
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, points.iter().map(|p| p.to_array()).collect::<Vec<_>>())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(PACKED_UV_0, bevy::mesh::VertexAttributeValues::Float16x2(uvs.packed()))
         .with_inserted_attribute(PACKED_UV_1, bevy::mesh::VertexAttributeValues::Float16x2(
             packed.iter().map(|p| [half::f16::from_le_bytes([p[0], p[1]]), half::f16::from_le_bytes([p[2], p[3]])]).collect()))
@@ -974,12 +978,14 @@ pub(super) fn source_mesh_from_uvs<const N: usize>(
     packed: &[[u8; N]],
     flipped: bool,
 ) -> Mesh {
-    let points: Vec<Vec3> = positions.iter().copied().map(game_to_view).collect();
     // Diagnostic A/B: DH2_DEBUG_FLOAT_VERTICES=1 builds the expanded float layout.
     if std::env::var_os("DH2_DEBUG_FLOAT_VERTICES").is_some_and(|v| v == "1") {
+        let points: Vec<_> = positions.iter().copied().map(game_to_view).collect();
         return mirrored_render_mesh(authored_mesh_from_uvs(&points, uvs, indices, packed, |n| game_to_view(n.to_array())), indices, flipped);
     }
-    mirrored_render_mesh(packed_authored_mesh(&points, uvs, indices, packed), indices, flipped)
+    // Transfer the converted positions straight into the packed mesh asset.
+    let view_positions = positions.iter().copied().map(|p| game_to_view(p).to_array()).collect();
+    mirrored_render_mesh(packed_authored_mesh(view_positions, uvs, indices, packed), indices, flipped)
 }
 
 /// VS14200 consumes original game-local POSITION, SNORM NORMAL.xy and UNORM

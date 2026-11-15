@@ -4,23 +4,22 @@ use super::definition::ParticleDefinition;
 use crate::{
     archive::Catalog,
     assets::{
-        entities::{effects::FxGraph, Value},
+        entities::effects::FxGraph,
         fx::EffectGroupAsset,
     },
-    gameplay::options::decl::{atom, list_items, scope},
     shader_cache::ProgramLibrary,
 };
 use hashbrown::HashMap;
 use std::sync::Arc;
 
 pub struct WorldEffectGroup {
-    pub asset: EffectGroupAsset,
+    pub asset: Arc<EffectGroupAsset>,
     pub particles: Vec<Result<ParticleDefinition, String>>,
     pub sounds: Vec<WorldSoundDefinition>,
     pub decals: Vec<Result<Arc<crate::assets::fx::decal::DecalDefinition>, String>>,
-    /// Deferred admission of other families, in authored order. Keep parsing
-    /// errors until activation, without retaining their generic syntax trees.
-    pub other_families: Vec<(String, Result<bool, String>)>,
+    /// Index in the shared source generation, including disabled source groups.
+    /// Deferred admission borrows that generation rather than copying names.
+    source_group: usize,
 }
 
 pub struct WorldSoundDefinition {
@@ -65,33 +64,15 @@ impl WorldSoundEvent {
 }
 
 pub struct WorldEffectDefinition {
+    pub(crate) source: Arc<crate::assets::fx::definition::Definition>,
     pub groups: Vec<WorldEffectGroup>,
 }
 
-/// FX arrays retain constructor defaults for slots omitted by partial edits.
-/// Reuse the shared descriptor-array decoder rather than enumerate only the
-/// serialized item records and lose default groups or enabled descriptors.
-pub(crate) fn descriptor_fields(
-    fields: &[(String, Value)],
-) -> Result<Vec<std::borrow::Cow<'_, [(String, Value)]>>, String> {
-    let mut items = Vec::new();
-    crate::assets::fx::descriptor_list(&mut items, fields, |fields| Ok(std::borrow::Cow::Borrowed(fields)))?;
-    static MODE: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
-    let (copy, trace) = *MODE.get_or_init(|| (
-        std::env::var("DH2_DEBUG_COPY_FX_DESCRIPTORS").as_deref() == Ok("1"),
-        std::env::var("DH2_DEBUG_LOAD_TIMING").as_deref() == Ok("1"),
-    ));
-    let bytes = trace.then(|| items.iter().map(|fields|
-        fields.len() * std::mem::size_of::<(String, Value)>()
-            + fields.iter().map(|(key, value)| key.len() + cloned_value_bytes(value)).sum::<usize>()).sum::<usize>());
-    if copy {
-        for fields in &mut items { *fields = std::borrow::Cow::Owned(fields.to_vec()); }
+impl WorldEffectDefinition {
+    pub(crate) fn other_families(&self, group: &WorldEffectGroup) -> &[(String, Result<bool, String>)] {
+        &self.source.groups[group.source_group].world_other_families.get()
+            .expect("world FX families acquired").families
     }
-    if let Some(bytes) = bytes {
-        eprintln!("MEMORY FX descriptor fields: entries={} selected_tree_bytes={bytes} copied_tree_bytes={} metadata_bytes={}",
-            items.len(), if copy {bytes} else {0}, items.capacity() * std::mem::size_of::<std::borrow::Cow<'_, [(String, Value)]>>());
-    }
-    Ok(items)
 }
 
 #[derive(Default)]
@@ -102,14 +83,6 @@ pub struct WorldFxSources {
     /// compact replacement. Excludes allocator bookkeeping in both figures.
     pub deferred_syntax_bytes: usize,
     pub deferred_admission_bytes: usize,
-}
-
-fn cloned_value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Atom(value) => value.len(),
-        Value::Scope(fields) => fields.len() * std::mem::size_of::<(String, Value)>()
-            + fields.iter().map(|(key, value)| key.len() + cloned_value_bytes(value)).sum::<usize>(),
-    }
 }
 
 /// The surface source naming a shared sprite grid level.
@@ -210,7 +183,7 @@ impl WorldFxSources {
                         let levels = if 0. < sprite.tessellation_distance { 0..=5 } else { 0..=0 };
                         for level in levels {
                             pairs.entry((sprite_grid_source(level), material.clone())).or_insert_with(|| {
-                                Arc::new(crate::assets::particle_model::ParticleModel { history: None, vertices: Vec::new(), bytes_after_vertices: 0 })
+                                Arc::new(crate::assets::particle_model::ParticleModel { vertices: Vec::new(), bytes_after_vertices: 0 })
                             });
                         }
                     }
@@ -318,7 +291,7 @@ impl WorldFxSources {
         if let Ok(effect) = std::env::var("DH2_DEBUG_PLAY_FX") {
             names.push(effect);
         }
-        result.load_named_into(names, catalog, library, resources);
+        result.load_named_into(names, catalog, library, resources, None);
         result
     }
 
@@ -331,8 +304,22 @@ impl WorldFxSources {
         resources: &mut super::definition::ParticleResources,
     ) -> Self {
         let mut result = Self::default();
-        result.load_named_into(names, catalog, library, resources);
+        result.load_named_into(names, catalog, library, resources, None);
         result
+    }
+
+    pub(crate) fn load_named_cancellable(
+        names: Vec<String>,
+        catalog: &Catalog,
+        library: &mut ProgramLibrary,
+        resources: &mut super::definition::ParticleResources,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Self, String> {
+        let mut result = Self::default();
+        if !result.load_named_into(names, catalog, library, resources, Some(&cancelled)) {
+            return Err("effect acquisition cancelled".into());
+        }
+        Ok(result)
     }
 
     fn load_named_into(
@@ -341,15 +328,17 @@ impl WorldFxSources {
         catalog: &Catalog,
         library: &mut ProgramLibrary,
         resources: &mut super::definition::ParticleResources,
-    ) {
+        cancellation: Option<&dyn Fn() -> bool>,
+    ) -> bool {
+        let cancelled = || cancellation.is_some_and(|stop| stop());
         let result = self;
         let trace = std::env::var_os("DH2_TRACE_WORLD_FX").is_some();
         let mut sound_events = HashMap::new();
-        let mut decal_resources = crate::assets::decal::DecalResources::default();
         // Sub-FX declarations (m_subFXs) are loaded as further effects, in
         // reference order after the declarations that name them.
         let mut next = 0;
         while next < names.len() {
+            if cancelled() { return false; }
             let name = names[next].clone();
             let name = &name;
             next += 1;
@@ -358,14 +347,13 @@ impl WorldFxSources {
             }
             let mut children = Vec::new();
             let mut load = || -> Result<Arc<WorldEffectDefinition>, String> {
-                let fields = crate::assets::fx::declaration::read(catalog, name)?;
+                let source = crate::assets::fx::declaration::acquire(catalog, name,
+                    crate::assets::fx::definition::Consumer::World, cancellation)?;
                 let mut groups = Vec::new();
-                let group_fields = descriptor_fields(scope(&fields, "m_groups").unwrap_or(&[]))?;
-                for fields in &group_fields {
-                    let asset = crate::assets::fx::effect_group(fields)?;
-                    if !asset.enabled {
-                        continue;
-                    }
+                for (source_group, group) in source.groups.iter().enumerate() {
+                    if cancelled() { return Err("effect acquisition cancelled".into()); }
+                    let asset = group.asset.clone();
+                    if !asset.enabled { continue; }
                     let sounds = asset
                         .sounds
                         .iter()
@@ -391,46 +379,31 @@ impl WorldFxSources {
                             })
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    let particle_fields =
-                        descriptor_fields(scope(fields, "m_particleSystems").unwrap_or(&[]))?;
-                    let particles = particle_fields
-                        .iter()
-                        .filter(|fields| atom(fields, "m_enabled") != Some("false"))
-                        .map(|fields| {
-                            ParticleDefinition::load(fields, catalog, library, resources)
-                        })
-                        .collect::<Vec<_>>();
-                    let decals = match descriptor_fields(scope(fields, "m_decals").unwrap_or(&[])) {
-                        Ok(descriptors) => descriptors.iter()
-                            .filter(|fields| atom(fields, "m_enabled") != Some("false"))
-                            .map(|fields| crate::assets::fx::decal::DecalDefinition::load(fields, catalog, &mut decal_resources).map(Arc::new))
-                            .collect(),
-                        Err(error) => vec![Err(error)],
+                    let particle_assets = group.particles.get().expect("world FX families acquired")
+                        .as_ref().map_err(Clone::clone)?;
+                    let mut particles = Vec::with_capacity(particle_assets.len());
+                    for asset in particle_assets {
+                        if cancelled() { return Err("effect acquisition cancelled".into()); }
+                        particles.push(asset.as_ref().map_err(Clone::clone).and_then(|asset|
+                            ParticleDefinition::from_asset_cancellable(asset.clone(), catalog, library, resources, cancellation)));
+                    }
+                    if cancelled() { return Err("effect acquisition cancelled".into()); }
+                    let decals = match group.decals.get().expect("world FX families acquired") {
+                        Ok(descriptors) => {
+                            let mut decals = Vec::with_capacity(descriptors.len());
+                            for asset in descriptors {
+                                if cancelled() { return Err("effect acquisition cancelled".into()); }
+                                decals.push(asset.as_ref().map_err(Clone::clone).and_then(|asset|
+                                    crate::assets::fx::decal::DecalDefinition::from_asset(asset.clone(), catalog,
+                                        &mut resources.decal_resources).map(Arc::new)));
+                            }
+                            decals
+                        }
+                        Err(error) => vec![Err(error.clone())],
                     };
-                    let other_families = fields
-                        .iter()
-                        .filter(|(field, value)| {
-                            field != "m_particleSystems"
-                                && field != "m_sounds"
-                                && field != "m_decals"
-                                && field != "m_subFXs"
-                                && matches!(value, Value::Scope(_))
-                                && scope(fields, field).is_some_and(|entries| {
-                                    !list_items(entries).is_empty()
-                                        || atom(entries, "num").is_some_and(|count| count != "0")
-                                })
-                        })
-                        .map(|(family, value)| {
-                            let Value::Scope(fields) = value else { unreachable!() };
-                            let admission = descriptor_fields(fields).map(|descriptors|
-                                descriptors.iter().any(|fields| atom(fields, "m_enabled") != Some("false")));
-                            result.deferred_syntax_bytes += std::mem::size_of::<(String, Value)>()
-                                + family.len() + cloned_value_bytes(value);
-                            result.deferred_admission_bytes += std::mem::size_of::<(String, Result<bool, String>)>()
-                                + family.len() + admission.as_ref().err().map_or(0, |error| error.capacity());
-                            (family.clone(), admission)
-                        })
-                        .collect();
+                    let admission = group.world_other_families.get().expect("world FX families acquired");
+                    result.deferred_syntax_bytes += admission.syntax_bytes;
+                    result.deferred_admission_bytes += admission.payload_bytes;
                     children.extend(
                         asset
                             .sub_effects
@@ -445,12 +418,13 @@ impl WorldFxSources {
                         particles,
                         sounds,
                         decals,
-                        other_families,
+                        source_group,
                     });
                 }
-                Ok(Arc::new(WorldEffectDefinition { groups }))
+                Ok(Arc::new(WorldEffectDefinition { source, groups }))
             };
             let loaded = load().map_err(|error| format!("{name}: {error}"));
+            if cancelled() { return false; }
             if trace {
                 match &loaded {
                     Ok(definition) => eprintln!("World FX definition acquired: {name} groups={}", definition.groups.len()),
@@ -460,5 +434,6 @@ impl WorldFxSources {
             result.effects.insert(name.clone(), loaded);
             names.extend(children);
         }
+        !cancelled()
     }
 }

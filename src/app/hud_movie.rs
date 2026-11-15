@@ -83,7 +83,7 @@ fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
     use crate::assets::entities::Value;
     let state = crate::assets::entities::player::resolved_decl("gamelogicstateingame", "ui/gamelogic/state_ingame.gamelogicstateingame", |path| {
         Ok(catalog.read(path).map_err(|error| error.to_string())?
-            .map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
+            .map(crate::assets::entities::owned_declaration_text))
     })?;
     // arkDeclGameLogicStateInGame constructor 14078abd0 initializes the
     // duration at +0x130 to zero before the declaration is applied.
@@ -95,7 +95,7 @@ fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
     let hud_elements = scope(&state, "m_hudElements").ok_or("in-game state has no HUD elements")?;
     let mana_name = atom(hud_elements, "enumItem[ARK_HUD_ELEMENT_MANA]").ok_or("in-game state has no mana HUD")?;
     let mana = crate::assets::entities::player::resolved_decl("ui_hudelementmana", mana_name, |path| {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
+        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(crate::assets::entities::owned_declaration_text))
     })?;
     // 140674be0 initializes this to 0.5; the live declaration agrees.
     let low = match atom(&mana, "m_lowLevel") {
@@ -104,7 +104,7 @@ fn mana_config(catalog: &Catalog) -> Result<(f32, Vec<String>, f64), String> {
     };
     let entity = format!("models/characters/player/{}/body.def", super::player::character_name(super::pause_menu::debug_character()));
     let component = crate::assets::entities::player::entity_component(&entity, "cpntplayeroutsidermark", |path| {
-        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(|bytes| crate::assets::entities::declaration_text(&bytes).into_owned()))
+        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(crate::assets::entities::owned_declaration_text))
     })?.ok_or("player has no outsider-mark component")?;
     let powers = scope(&component, "m_startingPowers").map(|list| list_items(list).into_iter().filter_map(|v| match v {
         Value::Atom(path) => Some(unquote(path).to_owned()), _ => None,
