@@ -10,6 +10,12 @@ pub struct PickableItem {
     pub path: Arc<str>,
     pub readable: Option<PickableReadable>,
     pub modifiers: ItemModifiers,
+    /// 1415a7730 maps this to arkDeclInventoryItem +0x80. Equipment
+    /// component metadata, including slot, belongs to the spawned entity.
+    pub equipment: Option<String>,
+    pub type_number: u32,
+    pub consumable: Consumable,
+    pub hud_index: i32,
     item_type: Option<String>,
     audio: Option<(String, String)>,
     pub audiograph_card: Option<String>,
@@ -148,12 +154,17 @@ impl PickableSources {
         else if let Some(map) = crate::assets::interactive_map::resolve_fields(catalog, &key, &fields)? { Some(PickableReadable::Map(map)) }
         else { other_readable_fields(&fields)?.map(|(readable, kind)| PickableReadable::Other(readable, match kind {
             "TYPE_INTERACTIVE_MAP" | "24" => PickableOtherKind::Map,
-            "TYPE_AUDIOGRAPH" => PickableOtherKind::Audiograph,
+            "TYPE_AUDIOGRAPH" | "13" => PickableOtherKind::Audiograph,
             _ => PickableOtherKind::Item,
         })) };
-        let audio = (atom(&fields, "m_type") == Some("TYPE_AUDIOGRAPH")).then(||
+        let audio = matches!(atom(&fields, "m_type"), Some("TYPE_AUDIOGRAPH" | "13")).then(||
             (atom(&fields, "m_name").unwrap_or("").to_owned(), atom(&fields, "m_description").unwrap_or("").to_owned()));
         let item = Arc::new(PickableItem { path: key.clone(), readable, modifiers: modifiers_fields(&key, &fields)?,
+            equipment: atom(&fields, "m_equipment").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("NULL")).map(str::to_owned),
+            type_number: item_type_number(atom(&fields, "m_type").unwrap_or("TYPE_MISC"))?,
+            consumable: consumable_fields(&fields)?,
+            hud_index: crate::assets::power_journal::hud_index(atom(&fields, "m_uiIndex").unwrap_or("0"))
+                .ok_or_else(|| format!("unknown inventory HUD item index for {key}"))?,
             item_type: atom(&fields, "m_type").map(str::to_owned), audio,
             audiograph_card: atom(&fields, "m_audiographCard").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned),
             pickup_image: atom(&fields, "m_pickupLogImage").filter(|name| !name.is_empty() && *name != "NULL").map(str::to_owned), _source: fields.source.clone() });

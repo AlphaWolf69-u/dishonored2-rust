@@ -9602,3 +9602,58 @@ mission. Consequently HUD task/portrait appearance remains unverified in
 actual gameplay. Changing load flags or producing story events needs the
 corresponding campaign/cinematic implementation and original-code evidence;
 this batch does not fabricate those inputs to make a check succeed.
+
+Inventory gameplay owner extension (2026-11-15): prediction before implementation:
+retain each collection item through the existing PickableSources owner and keep
+quantity, modifier events, equipment selection and currency in the existing
+DiscoveredDocuments session owner. Preparation should acquire a collection once;
+quantity/equip/use operations should perform no catalog reads or declaration
+parsing. This is a behavior/lifetime prediction, not a measured performance claim.
+No build, tests, visible launch or performance measurement was run in this change.
+
+`inventoryitem`: assets/inventory_item.rs and its existing sources.rs remain the
+only item declaration owner. ported: 1419fe7e0's 28 item type values, 1415a7730's
+m_equipment (+80), m_consumable (+78), m_uiIndex (+c0), and 141705ee0's signed
+m_healthQuantity/m_manaQuantity fields. Consumable constructor defaults are zero
+(63c510). Existing acquisition, inherited read-generation leases, preload markers
+and release paths remain in sources.rs; collection and session records retain
+Arc leases, including zero-quantity records (63c630). No renderer or upload path
+was added. host: Arc leases implement identity lifetime across the backend's map
+retirement. blocked: original memory-tag byte/cost comparison requires matched
+original/rewrite captures; no memory, startup-time or frame-time gain is claimed.
+
+Inventory gameplay: src/app/inventory.rs extends DiscoveredDocuments rather than
+adding another resource/quantity cache. ported algorithm: 63c9f0 addition,
+63c800/6147f0 removal with signed +168 ammo lock; 63cbe0 maximum/clamp and
+63cc00/618de0 assignment; 613ff0 retained loadout clear and allow-auto-equip flags;
+615620/614670/614d40 currency counters; 6156e0 coin/painting value, duplicate
+blueprint conversion and raw-whale-bone callback; 615840 player consumable
+health/mana branches and random bolt/bullet pack adjustments. Pickup callback
+contracts require the actual health/mana/crafting components, black-market
+conversion value and shared game-local random stream. Health callback applies
+71a140; mana applies 7467d0, including target accumulation. These effects are not
+reimplemented as an inventory-local health/mana cache. Consumption and pickup
+results preserve native zero-return immediate consumables and currency return
+quantities. Source: canonical analysis/decompiled/chunk_000252.c,
+chunk_000253.c, chunk_000258.c, chunk_000294.c, chunk_000301.c,
+chunk_001021.c, chunk_001045.c and chunk_001132.c.
+
+ported selection bookkeeping: 614b20's 16 slots, same-selection equip message,
+replacement callback payload and 619640/619740 unequip destroy-vs-deactivate
+choice. blocked integration: caller must create m_equipment entity using 619380,
+resolve its actual cpntEquipment declaration (nonzero archetype +11c, slot +68
+below 16), dispatch activation/deactivation/entity retirement and game messages.
+Equipment slot is never guessed from inventory type. The shared declaration
+exposes equipment path; equipment/render owners own component/entity resources.
+The change queue is a host adapter to native message delivery, not a claim that
+an equipment activation or animation has executed.
+
+blocked app/input integration: prepare ReadableLimits::acquire_items once,
+register each retained item with its first-entry collection maximum, then connect
+actual world pickup eligibility/retirement, equipment input and use-state events
+to pickup/equip/consume. Dedicated potion drinking state, autoequip arbitration,
+all-registered collection discovery, save-game serialization, crafting callbacks
+and HUD inventory movie are not completed by these owner APIs. Existing reading,
+character eligibility, Journal history and timed/suppressed modifiers are kept.
+Next step is wire each gameplay producer to these methods and validate against
+original runtime captures when user-authorized gameplay is available.

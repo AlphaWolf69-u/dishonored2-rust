@@ -1,5 +1,8 @@
 //! Focused world interaction consumed by the gameplay and HUD owners.
 use bevy::prelude::Resource;
+#[path = "inventory.rs"]
+mod inventory;
+pub(super) use inventory::{InventoryChange, InventoryRecord, InventoryPickupEffects, PickupAttributes};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct InteractionPrompt {
@@ -117,6 +120,15 @@ pub(super) struct DiscoveredDocuments {
     initialized: bool,
     modifier_changes: std::collections::VecDeque<ModifierChange>,
     enhancements: Vec<OwnedEnhancement>,
+    /// Metadata for the same quantity records, retaining the declaration
+    /// identity across level retirement (63c630). No quantities live here.
+    records: std::collections::HashMap<String, InventoryRecord>,
+    equipped: [Option<String>; 16],
+    changes: std::collections::VecDeque<InventoryChange>,
+    ammo_consumption_locks: i32,
+    coins: i32,
+    consumed_coins: i32,
+    allow_auto_equip: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct DocumentEntry {
@@ -143,20 +155,22 @@ impl DiscoveredDocuments {
     pub fn maps(&self) -> &[JournalItem] { &self.maps }
     pub fn audiographs(&self) -> &[JournalItem] { &self.audiographs }
     pub fn is_initialized(&self) -> bool { self.initialized }
+    pub fn quantity_snapshot(&self) -> std::collections::HashMap<String, u32> { self.quantities.clone() }
     /// The same session inventory owns power items and readable items.
     pub fn quantity(&self, path: &str) -> u32 {
-        if path.bytes().all(|byte| !byte.is_ascii_uppercase()) {
+        if path.bytes().all(|byte| !byte.is_ascii_uppercase() && byte != b'\\') {
             self.quantities.get(path).copied().unwrap_or(0)
         } else {
-            self.quantities.get(&path.to_ascii_lowercase()).copied().unwrap_or(0)
+            self.quantities.get(&inventory::key(path)).copied().unwrap_or(0)
         }
     }
 
     /// Add up to the authored maximum and report the quantity admitted.
     pub fn add_item(&mut self, path: &str, quantity: u32, maximum: u32) -> u32 {
-        let key = path.to_ascii_lowercase();
+        let key = inventory::key(path);
         let current = self.quantities.get(&key).copied().unwrap_or(0);
         let admitted = quantity.min(maximum.saturating_sub(current));
+        if let Some(record) = self.records.get_mut(&key) { record.is_new = current == 0 && admitted > 0; }
         if admitted != 0 { self.quantities.insert(key, current + admitted); }
         admitted
     }
@@ -172,12 +186,13 @@ impl DiscoveredDocuments {
 
     pub fn remove_with_modifiers(&mut self, path: &str, quantity: u32,
         modifiers: &crate::assets::inventory_item::ItemModifiers) -> u32 {
-        let key = path.to_ascii_lowercase();
+        let key = inventory::key(path);
         let current = self.quantities.get(&key).copied().unwrap_or(0);
         let removed = quantity.min(current);
         if removed == current { self.quantities.remove(&key); }
-        else if removed != 0 { self.quantities.insert(key, current - removed); }
+        else if removed != 0 { self.quantities.insert(key.clone(), current - removed); }
         if removed != 0 {
+            if let Some(record) = self.records.get_mut(&key) { record.is_new &= current > removed; }
             self.modifier_changes.push_back(ModifierChange::Quantity { path: path.to_owned(), modifiers: modifiers.clone(), added: false, count: removed });
         }
         removed
@@ -223,6 +238,7 @@ impl DiscoveredDocuments {
     /// invoke this only after the gameplay inventory admits the item.
     pub fn admit(&mut self, path: String, item_id: u32, kind: crate::assets::inventory_item::ReadableKind,
         maximum: u32, declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
+        self.register_item(declaration.clone(), maximum);
         if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
         if self.items.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) { return true; }
         self.items.push(DocumentEntry { declaration, path, item_id, kind, is_new: true });
@@ -231,6 +247,7 @@ impl DiscoveredDocuments {
 
     pub fn admit_map(&mut self, path: String, item_id: u32, maximum: u32,
         declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
+        self.register_item(declaration.clone(), maximum);
         if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
         if !self.maps.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) {
             self.maps.push(JournalItem { declaration, path, item_id, is_new: true });
@@ -240,6 +257,7 @@ impl DiscoveredDocuments {
 
     pub fn admit_audiograph(&mut self, path: String, item_id: u32, maximum: u32,
         declaration: std::sync::Arc<crate::assets::inventory_item::PickableItem>) -> bool {
+        self.register_item(declaration.clone(), maximum);
         if self.add_with_modifiers(&path, 1, maximum, &declaration.modifiers) == 0 { return false; }
         if !self.audiographs.iter().any(|item| item.path.eq_ignore_ascii_case(&path)) {
             self.audiographs.push(JournalItem { declaration, path, item_id, is_new: true });
