@@ -414,6 +414,7 @@ impl Body {
     pub fn replace_equipment_tree(&mut self, side: usize, tree: Option<super::equipment::EquipmentTree>) -> Option<super::equipment::EquipmentTree> {
         assert!(side < self.equipment.len(), "equipment side must be left or right");
         self.midnight.retire_target(side + 3);
+        self.midnight.set_equipment_entity(side, tree.as_ref().and_then(|tree| tree.managed_entity));
         std::mem::replace(&mut self.equipment[side], tree)
     }
 

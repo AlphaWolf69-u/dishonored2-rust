@@ -10347,3 +10347,27 @@ Projectile flight entity frames remain in the existing Z-up gameplay/WorldStorag
   sixteen nodes; host validation rejects a repeated conditional node.
 - Validation: source and installed declaration inspection plus whitespace
   checking only. No builds, tests, visible launches or visual measurements.
+
+### Actual equipment audio casting (2026-11-15)
+
+- Owners: existing player Midnight, equipment tree/entity binding and sound
+  component owners. `ported`: cast `1408542b0` records the actual equipment
+  managed identity; scheduled sound posts, graph continuation and flagged
+  interruption stops (`1408279c0`) retain that identity instead of resolving a
+  reusable hand slot after a switch. The stable emitter preserves its source
+  cast bit for target retirement.
+- `ported`: `visit_equipment_audio_frames` exposes the actual sound settings
+  and pre-model entity binding frame of active and body-bound inactive owned
+  actors. The frame is computed beside the existing arm/equipment render
+  publication, before the equipment's local joint pose. Prediction: no extra
+  pose evaluation, model acquisition or camera-control vector per audio
+  query; one retained frame vector reuses capacity. Not a measured speedup.
+- `ported`: ranged component registration starts default ammunition for every
+  actual owned component before selection (`140639f00`, subclass `+100`);
+  selection reuses the existing component magazine and attachment owner.
+- Dependencies: equipment acquisition sets the real managed identity and
+  resolves equipped/unequipped attachment bindings from canonical rigs;
+  host sound spatial publication consumes the callback with the actual clock
+  rate. No synthetic component handle or first-joint root frame is created.
+- Validation: source review and whitespace checking only; no builds, tests,
+  visible launches or visual/performance measurements.

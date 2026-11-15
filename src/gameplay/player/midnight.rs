@@ -8,10 +8,9 @@
 //!
 //! The cast (FUN_1408542b0) puts PlayerBody / PlayerCamera on the player
 //! entity (mask bit 1) and PlayerLeftArm / PlayerRightArm on the arm
-//! entities (bits 2 and 4); each group writes its own entity tree's
-//! midnight node. Weapon and dummy groups have no trees in the rewrite.
-//! SFX tracks post to the cast emitters; barks and timed events are not
-//! ported.
+//! entities (bits 2 and 4) and actual equipment entities (bits 8 and 16).
+//! Each group writes its own tree's midnight node. SFX tracks retain the
+//! actual cast entity's emitter through scheduling and interruption.
 use super::animation::{blend_add, blend_lerp, sample, Pose};
 use crate::edge_animation::EdgeAnimation;
 use crate::edge_skeleton::JointRestPose;
@@ -223,6 +222,7 @@ struct Instance {
     events: Vec<(crate::entities::midnight::EventKey, usize)>,
     sounds: Vec<ScheduledSound>,
     playing_sounds: std::collections::HashMap<(u32, Emitter), bool>,
+    equipment_emitters: [Option<Emitter>; 2],
     parts: u8,
     /// The cast trees' md6s (body, left arm, right arm) for CONDMD6.
     md6: [String; TARGETS],
@@ -252,6 +252,7 @@ pub struct Midnight {
     instances: Vec<Instance>,
     next_handle: u32,
     sound_requests: Vec<SoundRequest>,
+    equipment_emitters: [Option<Emitter>; 2],
     point_events: Vec<PointEvent>,
     nodes: [Node; TARGETS],
     /// m_midnightWeight: the largest full-body clip weight.
@@ -303,6 +304,14 @@ pub struct PointEvent {
 }
 
 impl Midnight {
+    /// 8542b0 casts the actual inventory entity. A scene keeps that binding
+    /// even when a later equipment change reuses the same hand slot.
+    pub fn set_equipment_entity(&mut self, side: usize, entity: Option<crate::gameplay::entity_lifetime::EntityId>) {
+        if let Some(emitter) = self.equipment_emitters.get_mut(side) {
+            *emitter = entity.map(|entity| Emitter::Equipment { entity, part: 1 << (side + 3) });
+        }
+    }
+
     /// 8542b0 casts actual entity trees, not a reusable equipment slot's
     /// skeleton. Host slot replacement retires the outgoing entity's target
     /// before installing another rig; its snapshot and clip indices cannot
@@ -332,9 +341,17 @@ impl Midnight {
         std::mem::take(&mut self.sound_requests)
     }
 
-    fn schedule_sounds(prepared: &PreparedScene, index: usize, parts: u8) -> Vec<ScheduledSound> {
+    fn schedule_sounds(prepared: &PreparedScene, index: usize, parts: u8, equipment_emitters: [Option<Emitter>; 2]) -> Vec<ScheduledSound> {
         prepared.sounds[index].iter().filter(|s| s.emitter.player_part() & parts != 0)
-            .cloned().map(|sound| ScheduledSound { sound, fired: false }).collect()
+            .filter_map(|source| {
+                let mut sound = source.clone();
+                sound.emitter = match sound.emitter {
+                    Emitter::PlayerLeftEquipment => equipment_emitters[0]?,
+                    Emitter::PlayerRightEquipment => equipment_emitters[1]?,
+                    emitter => emitter,
+                };
+                Some(ScheduledSound { sound, fired: false })
+            }).collect()
     }
 
     /// Track initialization 1407dfbd0 selects point keys at zero and clips
@@ -498,10 +515,11 @@ impl Midnight {
             self.stop(handle);
         }
         self.next_handle = self.next_handle.wrapping_add(1).max(1);
-        let sounds = Self::schedule_sounds(prepared, index, parts);
+        let sounds = Self::schedule_sounds(prepared, index, parts, self.equipment_emitters);
         let mut inst = Instance {
             handle: self.next_handle, scene: prepared.clone(), current: index, time, abs: 0, carry: 0.0, rate,
             clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.map(str::to_owned),
+            equipment_emitters: self.equipment_emitters,
         };
         Self::initial_sounds(&mut inst, &mut self.sound_requests);
         Self::initial_events(&inst, &mut self.point_events);
@@ -588,7 +606,7 @@ impl Midnight {
                     let inst = &mut self.instances[i];
                     (inst.current, inst.time, inst.clips, inst.events) = (index, 0, clips, events);
                     inst.abs = 0;
-                    inst.sounds = Self::schedule_sounds(&prepared, index, inst.parts);
+                    inst.sounds = Self::schedule_sounds(&prepared, index, inst.parts, inst.equipment_emitters);
                     Self::initial_sounds(inst, &mut self.sound_requests);
                     Self::initial_events(inst, &mut self.point_events);
                 }

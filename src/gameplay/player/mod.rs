@@ -177,6 +177,7 @@ pub struct Player {
     animation_events: Vec<AnimationEvent>,
     equipment_action_handles: [Option<u32>; 2],
     equipment_frames: [Option<(Vec3, Mat3)>; 2],
+    equipment_audio_frames: Vec<(crate::gameplay::sound::Emitter, Vec3, Mat3, crate::gameplay::sound::component::Settings)>,
     equipment_archetypes: [Option<u32>; 2],
 }
 
@@ -243,20 +244,26 @@ impl Player {
     pub fn install_animation_scenes(&mut self, scenes: Scenes) { self.scenes.extend(scenes); }
     pub fn equip_ranged(&mut self, identity: &str, settings: std::sync::Arc<weapons::Ranged>, inventory: &dyn weapons::AmmunitionInventory) -> Result<(), String> {
         if self.weapon_identity.as_deref() == Some(identity) { return Ok(()); }
-        let mut runtime = match self.holstered_weapons.remove(identity) {
-            Some(runtime) => runtime,
-            None => {
-                let total = inventory.quantity(&settings.ammunition.first().ok_or("ranged equipment has no ammunition")?.item);
-                let capacity = settings.capacity(0, &self.attributes);
-                weapons::Runtime::new(settings, capacity, total, 3)?
-            }
-        };
+        self.register_ranged(identity, settings, inventory)?;
+        let mut runtime = self.holstered_weapons.remove(identity).ok_or("registered ranged component is absent")?;
         runtime.refresh_attributes(&self.attributes);
         runtime.update_inventory(inventory.quantity(&runtime.ammunition().item));
         self.unequip_ranged();
         self.weapon = Some(runtime);
         self.weapon_identity = Some(identity.to_owned());
         Ok(())
+    }
+    /// 639f00 starts each actual owned component before selection, choosing
+    /// its first ammunition and initializing the subclass attachment callback.
+    pub fn register_ranged(&mut self, identity: &str, settings: std::sync::Arc<weapons::Ranged>, inventory: &dyn weapons::AmmunitionInventory) -> Result<(), String> {
+        if self.registered_ranged(identity).is_some() { return Ok(()); }
+        let total = inventory.quantity(&settings.ammunition.first().ok_or("ranged equipment has no ammunition")?.item);
+        let capacity = settings.capacity(0, &self.attributes);
+        self.holstered_weapons.insert(identity.to_owned(), weapons::Runtime::new(settings, capacity, total, 3)?);
+        Ok(())
+    }
+    pub fn registered_ranged(&self, identity: &str) -> Option<&weapons::Runtime> {
+        if self.weapon_identity.as_deref() == Some(identity) { self.weapon.as_ref() } else { self.holstered_weapons.get(identity) }
     }
     pub fn unequip_ranged(&mut self) {
         if let Some(mut weapon) = self.weapon.take() {
@@ -568,6 +575,7 @@ impl Player {
             animation_events: Vec::new(),
             equipment_action_handles: [None; 2],
             equipment_frames: [None; 2],
+            equipment_audio_frames: Vec::new(),
             equipment_archetypes: [None; 2],
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
@@ -1069,34 +1077,33 @@ impl Player {
         // arm shoulder controls have already carried the hand's attachment tag;
         // applying those controls again would rotate a held weapon twice.
         self.equipment_frames = [None; 2];
+        self.equipment_audio_frames.clear();
         let equipment_poses: [_; 2] = {
             let Body { equipment, midnight, .. } = &mut self.body;
             std::array::from_fn(|side| equipment[side].as_ref().map(|tree| tree.pose(midnight, side + 3)))
         };
         for (side, pose) in equipment_poses.into_iter().enumerate() {
-            let Some(Ok(pose)) = pose else { continue };
             let Some(tree) = &self.body.equipment[side] else { continue };
-            let frame = match tree.binding {
-                equipment::EquipmentBinding::Body => {
-                    if tree.bind_joint >= self.pose.positions.len() { continue; }
-                    let (p, r) = self.pose.joint_with_controls(tree.bind_joint, body_controls);
-                    Some((position + axis * p, axis * r))
-                }
-                equipment::EquipmentBinding::Arm(owner) => self.body.arms.get(owner).and_then(|arm|
-                    render.iter().find(|entry| entry.model == arm.model)).and_then(|entry| entry.joints.get(tree.bind_joint)).map(|rows| {
-                        (Vec3::new(rows[0][3], rows[1][3], rows[2][3]), Mat3::from_cols(
-                            Vec3::new(rows[0][0], rows[1][0], rows[2][0]), Vec3::new(rows[0][1], rows[1][1], rows[2][1]), Vec3::new(rows[0][2], rows[1][2], rows[2][2])))
-                    }),
-            };
-            let Some((p, r)) = frame else { continue };
-            let (p, r) = (p + r * tree.bind.0, r * tree.bind.1);
+            let Some((p, r)) = self.equipment_root_frame(tree, body_controls, &render) else { continue };
             self.equipment_frames[side] = Some((p, r));
+            if let (Some(entity), Some(settings)) = (tree.managed_entity, tree.sound_settings) {
+                self.equipment_audio_frames.push((crate::gameplay::sound::Emitter::Equipment { entity, part: 1 << (side + 3) }, p, r, settings));
+            }
+            let Some(Ok(pose)) = pose else { continue };
             let joints = pose.into_iter().map(|(local_p, local_r)| {
                 let (p, r) = (p + r * local_p, r * local_r);
                 std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
             }).collect();
             render.push(ArmRender { model: tree.model.clone(), joints,
                 visible: tree.visible && self.body.arms_shown[side] });
+        }
+        for target in self.equipment_changes.inactive_targets() {
+            let Some(tree) = &target.tree else { continue };
+            let Some(part) = (match target.equipment.slot { 1 => Some(8), 0 => Some(16), _ => None }) else { continue };
+            if let (Some(entity), Some(settings), Some((p, r))) = (tree.managed_entity, tree.sound_settings,
+                self.equipment_root_frame(tree, body_controls, &render)) {
+                self.equipment_audio_frames.push((crate::gameplay::sound::Emitter::Equipment { entity, part }, p, r, settings));
+            }
         }
         // The body entity's own model: hidden-legs materials (nothing drawn)
         // unless the legs are visible (FUN_140776e60).
@@ -1148,6 +1155,32 @@ impl Player {
         (root, frames)
     }
 
+    /// The bound entity frame precedes the model's local animation pose. This
+    /// is shared by rendering and audio/entity publication, not inferred from
+    /// a model's first joint or the camera.
+    fn equipment_root_frame(&self, tree: &equipment::EquipmentTree, controls: &[camera::JointControl], render: &[ArmRender]) -> Option<(Vec3, Mat3)> {
+        let (p, r) = match tree.binding {
+            equipment::EquipmentBinding::Body => {
+                if tree.bind_joint >= self.pose.positions.len() { return None; }
+                let (p, r) = self.pose.joint_with_controls(tree.bind_joint, controls);
+                (self.physics.position() + self.physics.axis() * p, self.physics.axis() * r)
+            }
+            equipment::EquipmentBinding::Arm(owner) => {
+                let arm = self.body.arms.get(owner)?;
+                let rows = render.iter().find(|entry| entry.model == arm.model)?.joints.get(tree.bind_joint)?;
+                (Vec3::new(rows[0][3], rows[1][3], rows[2][3]), Mat3::from_cols(
+                    Vec3::new(rows[0][0], rows[1][0], rows[2][0]), Vec3::new(rows[0][1], rows[1][1], rows[2][1]), Vec3::new(rows[0][2], rows[1][2], rows[2][2])))
+            }
+        };
+        Some((p + r * tree.bind.0, r * tree.bind.1))
+    }
+
+    /// Publish every actual owned equipment audio component from its entity
+    /// binding. Inactive actors remain bound to their authored body tag.
+    pub fn visit_equipment_audio_frames(&self, mut visit: impl FnMut(crate::gameplay::sound::Emitter, Vec3, Mat3, crate::gameplay::sound::component::Settings)) {
+        for &(emitter, p, r, settings) in &self.equipment_audio_frames { visit(emitter, p, r, settings); }
+    }
+
     pub fn sound_rate(&self, emitter: crate::gameplay::sound::Emitter, clock_rate: f32) -> Option<f32> {
         use crate::gameplay::sound::Emitter;
         let settings = match emitter {
@@ -1156,6 +1189,9 @@ impl Player {
             Emitter::PlayerRightArm => self.body.arms.get(1)?.sound_settings?,
             Emitter::PlayerLeftEquipment => self.body.equipment[0].as_ref()?.sound_settings?,
             Emitter::PlayerRightEquipment => self.body.equipment[1].as_ref()?.sound_settings?,
+            Emitter::Equipment { entity, .. } => self.body.equipment.iter().flatten()
+                .chain(self.equipment_changes.inactive_targets().filter_map(|target| target.tree.as_ref()))
+                .find(|tree| tree.managed_entity == Some(entity))?.sound_settings?,
             Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         Some(settings.rate(clock_rate))
@@ -1187,6 +1223,9 @@ impl Player {
             Emitter::PlayerRightArm => 1,
             Emitter::PlayerLeftEquipment => return self.equipment_frames[0],
             Emitter::PlayerRightEquipment => return self.equipment_frames[1],
+            Emitter::Equipment { entity, .. } => return self.equipment_audio_frames.iter()
+                .find(|(emitter, ..)| matches!(emitter, Emitter::Equipment { entity: owner, .. } if *owner == entity))
+                .map(|(_, p, r, _)| (*p, *r)),
             Emitter::Menu | Emitter::Effect(_) | Emitter::Component { .. } => return None,
         };
         let arm = self.body.arms.get(side)?;
