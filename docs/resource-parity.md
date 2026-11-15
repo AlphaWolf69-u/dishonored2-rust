@@ -9312,8 +9312,38 @@ threshold or propagated-send change invalidates the snapshot. Ordinary sound
 source rendering is unchanged. `DH2_DEBUG_MUSIC=1` records actual transitions,
 clip admission and scoped update CPU cycles;
 `DH2_DEBUG_REBUILD_MUSIC_CONTROLS=1` selects the uncached same-build path.
-Runtime/resource observations and measured results will be recorded before
-this feature change is merged into main.
+Verified with the actual release-profile production owners, without windows,
+hardware audio or tests. Installed acquisition covered all 36 maps: 34 authored
+managers, 34 playable music routes, no failures; two maps admit no manager.
+The final app/session release reported `resident_sources={}`. Evidence:
+`artifacts/music-release-observation/final-resources.log`.
+
+Paired 40-second Edge of the World gameplay observations used the same optimized
+binary (LTO off, 16 codegen units for the observation; no checked-in profile
+changes), same offscreen view and source owners. The actual worldspawn manager
+started, exploration music selected and advanced between segments, and both
+runs completed the normal exit drain. Output reported zero voices, fallbacks,
+pending actions/plays, due actions, retiring objects and object voices, with no
+output error. The normal UI worker also released its submitted owners.
+`final-cached.log` and `final-rebuild.log` record these real production paths.
+The final source also passed `cargo check --no-default-features --lib`;
+the game library and both client/diagnostic executables compiled successfully.
+
+Scoped `graph::Playing::update`, 283 music sources: forced rebuilding used
+6,140,058,015 thread CPU cycles / 1,814 calls = 3,384,817 cycles/call; caching
+used 14,860,825 / 1,757 = 8,458 cycles/call, a 99.75% reduction. It rebuilt
+once instead of every call. The gain satisfies the >90% prediction. Published
+gain, panning, filter and route products had identical bitwise signatures
+`cb27bc04`. This is a changed-function result, not a whole-frame/FPS claim.
+Across both runs the bounded file decoder compared 110,585,560 samples with
+the existing resident decoder: zero differences, maximum error zero. These
+are stream/resident consistency observations, not a new live-game PCM oracle.
+
+Live gameplay observations cover level admission, exploration/continuation,
+environment ambiance and complete world/output retirement. Native threat,
+stress and stinger rules and their typed host inputs are implemented, but NPC
+perception/combat producers do not yet exist in this client; their delivery
+is a dependency of that feature, not a claimed live combat observation.
 
 Environment ambiance uses the existing completed camera-area collision query,
 not a second proximity test: 140806a40 consumes its first ordered ordinary
