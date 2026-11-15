@@ -49,6 +49,7 @@ impl StateId {
     pub const WALLCROUCH: Self = Self(11);
     pub const BLINKING: Self = Self(12);
     pub const USE_POWER: Self = Self(63);
+    pub const USE_WINDBLAST: Self = Self(71);
     pub const DEAD: Self = Self(15);
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
@@ -596,11 +597,11 @@ impl StateDecl {
                     exclusive_body_parts: 2, breakable: true, ..flags };
                 (StateId::RELOAD_WEAPON, 0.0)
             }
-            Kind::UsePower(_) => {
+            Kind::UsePower(power) => {
                 // 1408560c0: action state owns the left hand.
                 flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
                     exclusive_body_parts: 2, ..flags };
-                (StateId::USE_POWER, 0.0)
+                (if power.windblast { StateId::USE_WINDBLAST } else { StateId::USE_POWER }, 0.0)
             }
             Kind::Blinking => {
                 // 140857150: secondary BODY state; no navigation defaults.

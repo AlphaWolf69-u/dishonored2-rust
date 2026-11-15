@@ -547,7 +547,7 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
 
 #[derive(Clone, Copy)]
 enum SupportedDefaultState {
-    Dead, ReadNote, UsePower, Blinking, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
+    Dead, ReadNote, UsePower, UseWindblast, Blinking, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
     FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Block,
     EquipChange, DrawEquipment, Undraw,
@@ -567,6 +567,7 @@ fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
         "playerstaterequestreloadweapon" => SupportedDefaultState::RequestReloadWeapon,
         "playerstatereloadweapon" => SupportedDefaultState::ReloadWeapon,
         "playerstateusepower" => SupportedDefaultState::UsePower,
+        "playerstateusewindblast" => SupportedDefaultState::UseWindblast,
         "playerstateblinking" => SupportedDefaultState::Blinking,
         "playerstaterunning" => SupportedDefaultState::Running,
         "playerstatesneaking" => SupportedDefaultState::Sneaking,
@@ -628,7 +629,10 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             SupportedDefaultState::CancelFireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CancelFireWeapon)) => Kind::CancelFireWeapon,
             SupportedDefaultState::RequestReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::RequestReloadWeapon)) => Kind::RequestReloadWeapon,
             SupportedDefaultState::ReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReloadWeapon)) => Kind::ReloadWeapon,
-            SupportedDefaultState::UsePower if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::UsePower(_))) => Kind::UsePower(std::sync::Arc::new(super::power_states::UsePowerDecl::read(fields)?)),
+            SupportedDefaultState::UsePower if !result.iter().any(|s: &StateDecl| matches!(&s.kind, Kind::UsePower(decl) if !decl.windblast)) => Kind::UsePower(std::sync::Arc::new(super::power_states::UsePowerDecl::read(fields)?)),
+            SupportedDefaultState::UseWindblast if !result.iter().any(|s: &StateDecl| matches!(&s.kind, Kind::UsePower(decl) if decl.windblast)) => {
+                let mut decl = super::power_states::UsePowerDecl::read(fields)?; decl.windblast = true; Kind::UsePower(std::sync::Arc::new(decl))
+            }
             SupportedDefaultState::Blinking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Blinking)) => Kind::Blinking,
             SupportedDefaultState::Running if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             SupportedDefaultState::Sneaking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,

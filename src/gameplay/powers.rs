@@ -24,6 +24,7 @@ pub struct Settings {
     pub out_midnight_slide: Option<String>,
     pub cancel_midnight: Option<String>,
     pub cancel_sound: Option<String>,
+    pub windblast: Option<windblast::Settings>,
 }
 impl Settings {
     pub fn read(id: i32, fields: &[(String, Value)]) -> Result<Self, String> {
@@ -38,7 +39,8 @@ impl Settings {
             mana_replenish: number("m_manaReplenish", default_mana)?, camera_speed_factor: number("m_cameraSpeedFactor", 1.0)?,
             in_midnight: path("m_inMidnight"), loop_midnight: path("m_loopMidnight"), out_midnight: path("m_outMidnight"),
             in_midnight_slide: path("m_inMidnightSlide"), loop_midnight_slide: path("m_loopMidnightSlide"), out_midnight_slide: path("m_outMidnightSlide"),
-            cancel_midnight: path("m_cancelMidnight"), cancel_sound: path("m_cancelSoundEvent") })
+            cancel_midnight: path("m_cancelMidnight"), cancel_sound: path("m_cancelSoundEvent"),
+            windblast: (id == 10).then(|| windblast::Settings::read(fields)).transpose()? })
     }
 }
 

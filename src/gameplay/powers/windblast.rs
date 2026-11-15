@@ -3,6 +3,7 @@
 //! A host without that entity component must return false from spawn.
 use crate::{assets::entities::Value, gameplay::options::decl::atom};
 
+#[derive(Clone, Debug)]
 pub struct Settings {
     variants: [Option<String>; 4],
     pub hold_minimal_duration_for_shockwave: f32,

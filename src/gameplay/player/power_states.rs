@@ -10,6 +10,7 @@ use crate::{assets::entities::Value, gameplay::options::decl::atom};
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsePowerDecl {
     pub action: ActionDecl,
+    pub windblast: bool,
     pub out_of_mana: Option<String>,
     pub out_of_mana_slide: Option<String>,
 }
@@ -20,7 +21,7 @@ impl UsePowerDecl {
         // 1408560c0 writes 1 at decl+0x70: ACTION_ONRELEASE, overriding
         // arkDeclPlayerStateAction's ONPRESS default when not authored.
         if atom(fields, "m_type").is_none() { action.kind = ActionType::Release; }
-        Ok(Self { action, out_of_mana: path("m_outOfManaMidnight"), out_of_mana_slide: path("m_outOfManaMidnightSlide") })
+        Ok(Self { action, windblast: false, out_of_mana: path("m_outOfManaMidnight"), out_of_mana_slide: path("m_outOfManaMidnightSlide") })
     }
 }
 
@@ -62,6 +63,7 @@ pub struct Runtime {
     cooldown_bypass: bool,
     lifecycle: Vec<PowerLifecycle>,
     attribute_messages: u32,
+    wind_released: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,14 +78,17 @@ struct PreparedScenes<'a, 'b> {
     md6: [&'b str; super::midnight::TARGETS],
     animations: super::midnight::Cast<'b>,
     sounds: &'a mut Vec<u32>,
+    wind_loop: Option<bool>,
 }
 impl SceneHost for PreparedScenes<'_, '_> {
     type Error = String;
     fn start(&mut self, path: &str) -> Result<u32, String> {
         let scene = self.scenes.get(path).or_else(|| self.fallback.get(path)).ok_or_else(|| format!("power scene was not prepared: {path}"))?;
         let parts = self.md6.iter().enumerate().filter(|(_, model)| !model.is_empty())
-            .fold(0u8, |mask, (index, _)| mask | (1 << index)) & 0xf;
-        self.midnight.start_with_parts(scene, self.md6, 1.0, self.animations, parts)
+            .fold(0u8, |mask, (index, _)| mask | (1 << index));
+        let booleans = [("ShoudLoop", self.wind_loop.unwrap_or(false))];
+        self.midnight.start_with_bools(scene, self.md6, 1.0, self.animations, parts, 0.0,
+            if self.wind_loop.is_some() { &booleans } else { &[] })
     }
     fn stop(&mut self, handle: u32) { self.midnight.stop(handle); }
     fn finished(&self, handle: u32) -> bool { self.midnight.finished(handle) }
@@ -95,13 +100,14 @@ impl SceneHost for PreparedScenes<'_, '_> {
 pub fn can_use(frame: &Frame<'_>, decl: &UsePowerDecl) -> bool {
     let runtime = &*frame.powers;
     runtime.selected.as_ref().is_some_and(|cast| runtime.owned && runtime.family_available
+        && decl.windblast == (cast.settings.id == 10)
         && cast.phase() == Phase::Idle && cast.cooldown_ready(runtime.now, !runtime.cooldown_bypass)
         && runtime.action_state.can_activate(runtime.now, &decl.action))
 }
 pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> bool {
     let runtime = &mut *frame.powers;
     let Some(cast) = runtime.selected.as_mut() else { return false };
-    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events };
+    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")) };
     let admission = cast.admission(runtime.now, frame.mana, frame.attributes, frame.mana_replenishes,
         &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
             check_recharge_target: false, cost_factor: runtime.cost_factor,
@@ -115,8 +121,14 @@ pub fn activate_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -
         Ok(true) => {
             runtime.camera_gamepad = !frame.keyboard;
             runtime.action_state.activate(&decl.action, false);
-            // Base state+0x24 is separate from UsePower's +0x50/+0x54.
-            runtime.action_state.after_scene(0, &decl.action);
+            // 8549c0 publishes the actual scene into base+24 as well as
+            // UsePower's in/loop output handle.
+            let mut handle = runtime.action.scene_handle();
+            if let Some(path) = &decl.action.midnight {
+                match scenes.start(path) { Ok(value) => handle = value, Err(error) => { scenes.midnight.last_start_error = Some(error); return false; } }
+            }
+            runtime.action_state.after_scene(handle, &decl.action);
+            runtime.wind_released = false;
             runtime.active = true; runtime.cancel = false; runtime.execution_requested = false;
             runtime.lifecycle.push(PowerLifecycle::Began(cast.settings.id)); true
         },
@@ -134,13 +146,29 @@ pub fn update_use(frame: &mut Frame<'_>, sliding: bool, decl: &UsePowerDecl) -> 
         &AdmissionContext { owned: runtime.owned, family_available: runtime.family_available,
             check_recharge_target: false, cost_factor: runtime.cost_factor,
             health_overcast: runtime.health_overcast, health: frame.health }) != Admission::Allowed { return false; }
-    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events };
+    let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: decl.windblast.then(|| attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")) };
     let step = runtime.action_state.update(frame.dt, &decl.action, frame.controller.down(runtime.action_button),
         scenes.finished(runtime.action_state.scene), false);
     match step { ActionStep::Execute if cast.phase() == Phase::Aiming => runtime.execution_requested = true,
         ActionStep::Quit => return false, _ => {} }
     match runtime.action.update(cast, sliding, &mut scenes) {
-        Ok(()) => true,
+        Ok(()) => {
+            let handle = runtime.action.scene_handle();
+            if handle != 0 { runtime.action_state.scene = handle; }
+            // 6924f0: actual released latch controls the authored loop.
+            if decl.windblast && !runtime.wind_released
+                && attribute_changed(frame.attributes, "ARK_ATTRIBUTE_WINDBLAST_SHOCKWAVE")
+                && frame.controller.released(runtime.action_button) {
+                if cast.settings.windblast.as_ref().is_some_and(|settings| runtime.action_state.elapsed() < settings.hold_minimal_duration_for_shockwave) {
+                    scenes.midnight.set_bool(runtime.action.entry_handle(), "ShoudLoop", false);
+                }
+                if let Err(error) = scenes.midnight.send_message(runtime.action_state.scene, "Loop", false, scenes.animations) {
+                    scenes.midnight.last_start_error = Some(error); return false;
+                }
+                runtime.wind_released = true;
+            }
+            true
+        },
         Err(error) => { scenes.midnight.last_start_error = Some(error); false },
     }
 }
@@ -148,7 +176,7 @@ pub fn deactivate_use(frame: &mut Frame<'_>, sliding: bool) {
     let runtime = &mut *frame.powers;
     if let Some(cast) = runtime.selected.as_mut() {
         if runtime.active { runtime.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
-        let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events };
+        let mut scenes = PreparedScenes { scenes: &runtime.scenes, fallback: frame.scenes, midnight: frame.midnight, md6: frame.md6, animations: frame.animations, sounds: &mut runtime.sound_events, wind_loop: None };
         if let Err(error) = runtime.action.finish(cast, sliding, &mut scenes) {
             scenes.midnight.last_start_error = Some(error);
             runtime.action.stop(&mut scenes); cast.finish();
@@ -219,7 +247,7 @@ impl Player {
         if let Some(selected) = &self.powers.selected { return selected.settings.id == id; }
         let Some((cast, scenes)) = self.powers.owned_casts.remove(&id) else { return false };
         self.powers.selected = Some(cast); self.powers.scenes = scenes;
-        self.powers.action_button = self.controller.mapping.iter().find(|mapping| mapping.state == StateId::USE_POWER).map_or(0, |mapping| mapping.action);
+        self.powers.action_button = self.controller.mapping.iter().find(|mapping| mapping.state == power_state(id)).map_or(0, |mapping| mapping.action);
         true
     }
     /// Actual equipment Deactivate/Stop callback (14061c1a0/14061c2a0),
@@ -229,13 +257,13 @@ impl Player {
             if self.powers.active { self.powers.lifecycle.push(PowerLifecycle::Finished { id: cast.settings.id, committed: cast.phase() == Phase::Cast }); }
             let mut scenes = PreparedScenes { scenes: &self.powers.scenes, fallback: &self.scenes,
                 midnight: &mut self.body.midnight, md6: super::body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment),
-                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events };
+                animations: super::body::cast(&self.body.animations, &self.body.arms, &self.body.equipment), sounds: &mut self.powers.sound_events, wind_loop: None };
             self.powers.action.stop(&mut scenes); cast.finish();
         }
         self.powers.active = false; self.powers.cancel = false;
         self.powers.execution_requested = false;
         self.powers.action_state.deactivate(self.powers.now);
-        self.machine.quit(StateId::USE_POWER);
+        self.machine.quit(StateId::USE_POWER); self.machine.quit(StateId::USE_WINDBLAST);
         self.update_power_camera_modifier();
         if let Some(cast) = self.powers.selected.take() {
             let scenes = std::mem::take(&mut self.powers.scenes);
@@ -282,20 +310,20 @@ impl Player {
     }
     pub fn request_power_use(&mut self) -> bool {
         if self.powers.selected.is_none() || self.powers.active { return false; }
-        self.machine.request(StateId::USE_POWER); true
+        self.machine.request(power_state(self.powers.selected.as_ref().unwrap().settings.id)); true
     }
     pub fn power_release_ready(&self) -> bool {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.phase() == Phase::Aiming)
     }
     pub fn take_power_execution_request(&mut self) -> bool { std::mem::take(&mut self.powers.execution_requested) && self.power_release_ready() }
     pub fn power_action_message(&mut self, handle: u32) {
-        if let Some(state) = self.machine.state(StateId::USE_POWER) {
+        if let Some(state) = self.machine.state(power_state(self.powers.selected.as_ref().map_or(-1, |cast| cast.settings.id))) {
             if let super::states::Kind::UsePower(decl) = &state.decl.kind {
                 self.powers.execution_requested |= self.powers.action_state.message(&decl.action, handle) == ActionStep::Execute;
             }
         }
     }
-    pub fn cancel_power_use(&mut self) { self.powers.cancel = true; self.machine.quit(StateId::USE_POWER); }
+    pub fn cancel_power_use(&mut self) { self.powers.cancel = true; self.machine.quit(StateId::USE_POWER); self.machine.quit(StateId::USE_WINDBLAST); }
     /// 14061bc20/14061be50. Run immediately after state transitions, before
     /// camera update: DAT141b9b5d0=-100 turns (1-factor) into a percentage.
     pub fn update_power_camera_modifier(&mut self) {
@@ -338,4 +366,10 @@ impl Player {
         if self.powers.blink_finished && !self.machine.is_active(StateId::BLINKING) { self.powers.blink_finished = false; self.powers.blink.take() }
         else { None }
     }
+}
+
+fn power_state(id: i32) -> StateId { if id == 10 { StateId::USE_WINDBLAST } else { StateId::USE_POWER } }
+/// The executable compares each upgrade attribute with its authored base.
+pub fn attribute_changed(attributes: &super::states::Attributes, tag: &str) -> bool {
+    attributes.0.get(tag).zip(attributes.1.get(tag)).is_some_and(|(value, declaration)| *value != declaration.base)
 }
