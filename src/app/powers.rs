@@ -45,6 +45,7 @@ impl Powers {
         self.selected = Some(index); true
     }
     pub fn selected(&self) -> Option<&Power> { self.selected.map(|index| &self.definitions.0[index]) }
+    pub fn clear_selected(&mut self) { self.selected = None; }
     /// Resolve a movie request against the same definitions it displayed.
     /// 140521580 dispatches to 140455850/140455ab0; inventory owns both
     /// admission and modifier notifications, then rune removal (140614750).

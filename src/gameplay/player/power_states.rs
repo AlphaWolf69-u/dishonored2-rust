@@ -57,6 +57,7 @@ pub struct Runtime {
     input_analog: bool,
     cooldown_bypass: bool,
     lifecycle: Vec<PowerLifecycle>,
+    attribute_messages: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +227,10 @@ impl Player {
         self.powers.active && self.powers.selected.as_ref().is_some_and(|cast| cast.settings.id == id && cast.phase() != Phase::Idle)
     }
     pub fn take_power_lifecycle_events(&mut self) -> Vec<PowerLifecycle> { std::mem::take(&mut self.powers.lifecycle) }
+    /// The existing attribute owner calls this once for each actual d6
+    /// notification; inventory retains its separate attached callback.
+    pub fn power_attribute_changed(&mut self) { self.powers.attribute_messages = self.powers.attribute_messages.wrapping_add(1); }
+    pub fn take_power_attribute_change_count(&mut self) -> u32 { std::mem::take(&mut self.powers.attribute_messages) }
     pub fn set_power_admission(&mut self, now: f64, owned: bool, family_available: bool, health_overcast: bool, cost_factor: f32) {
         self.powers.now = now; self.powers.owned = owned; self.powers.family_available = family_available;
         self.powers.health_overcast = health_overcast; self.powers.cost_factor = cost_factor;
