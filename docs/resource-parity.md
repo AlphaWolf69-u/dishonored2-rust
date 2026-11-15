@@ -9775,3 +9775,35 @@ has not been measured in this change.
 ### Shared player system acquisition and casting integration (2026-11-15)
 
 Prediction before implementation: damage declarations use the existing catalog marker registry, and player power/mark fields reuse the resolved player bundle before its generic source is released. Equipment casting adds the actual two equipped model targets from 1408542b0, sharing canonical sound spatialization and render retirement; no separate archive, material, or audio cache is introduced. These are behavior/lifetime additions, not measured optimization claims. Damage header registration/promotion/purge follows 1400607f0 and the existing 142280ee0 promotion table. Status: ported hooks; gameplay integration and compilation pending in this feature branch. No runtime equivalence or timing measurements claimed.
+
+Equipment acquisition followup (2026-11-15): `assets/equipment.rs` owns the
+level-scoped weak typed projection of only the inventory-demanded entity.
+It reuses inherited entity/component resolution and canonical rig, model and
+clip owners. Concrete cpntweaponmeleeplayer construction633c70 supplies (1,0);
+gun44dae0 and crossbow62b1b0 feed ranged6376c0's (2,1). Serialized slot and
+archetype overrides use1419fb190/1419fb470's exact enum registrations. The
+actual cpntAnimEvolved m_animTree, model, component fields, scene pointers,
+default animation alias and bind tags determine all preparation. Installed
+player sword/gun entities use the real common Midnight-only tree: seven
+pause leaves and one WRAP_REPEAT animleaf under Midnight and snapshot LERP.
+`equipment/tree.rs` validates those operations/connections without matching
+resource names. The equipment leaf directly repeats at Edge animation
+duration, avoiding animBasic's separate END_MARGIN loop semantics.
+
+`Descriptor::instantiate` and `Descriptor::bind` resolve actual Rig tags:
+61aed0 maps slot1 to the left arm (+370), slot0 to the right (+680), while
+61ac10/61b010 bind unequipped animated equipment to the body tag. The helper
+returns an actual tree and its clip/alias bank; it does not require the host
+to fabricate either. Generic source text handoffs drop after projection;
+weak source entries do not retain an unequipped arsenal. Cancellation checks
+surround source/rig/clip/model acquisition and reject withdrawn publication.
+Canonical rig/model/animation owners retain their established registry/purge
+scope; source read history retires at the existing catalog level boundary.
+
+Status: source-backed implementation, pending integrated compilation and
+host admission. The projection currently admits exact player melee, gun and
+crossbow component constructors and the validated default-leaf/Midnight tree;
+other constructors/tree graphs fail explicitly. Serialized canLower,
+autoEquip and forceAttachment remain in the weapon declaration reader;
+startup selection remains inventory arbitration. No tests, builds, visible
+launches, visual checks or measured performance claims in this followup.
