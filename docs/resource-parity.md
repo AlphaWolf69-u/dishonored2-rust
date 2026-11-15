@@ -10562,6 +10562,13 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   component or overwrite an ammunition child's independent own-visible bit.
   Show is unconditional, matching the entity callback rather than restoring
   an invented prior visibility snapshot.
+- Gun type5 upgrade metadata retains the actual `m_magFireAnimNames` and
+  `m_magReloadAnimNames` arrays (`1416feab0`, declaration offsets260/278).
+  Shared typed selectors preserve fire `14044df30` (AndStay), pending final
+  pose `14044e920` (StayOnLastFrame), and reload `14044e7b0`'s ordered alias
+  attempts with its <=3-round fallback. Alias admission and child readiness
+  remain with the canonical upgrade animation receiver; no replacement clip
+  or fabricated successful lookup is supplied.
 
 ### Player-wide hard and code body-part requests (2026-11-15)
 

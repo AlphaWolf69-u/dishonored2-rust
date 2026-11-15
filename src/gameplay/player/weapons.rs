@@ -130,6 +130,8 @@ pub struct Ranged {
     pub spread_area: Option<String>,
     pub spread_area_reduced: Option<String>,
     pub spread_area_upgraded: Option<String>,
+    pub magazine_fire_aliases: [Option<String>; 3],
+    pub magazine_reload_aliases: [Option<String>; 3],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RangedFamily { Gun, Crossbow }
@@ -161,7 +163,30 @@ impl Ranged {
             projectile_fire_tag: text(fields,"m_bulletFiredTag"), fired_animation: text(fields,"m_boltFiredAnimName"),
             muzzle_tag: text(fields,"m_muzzleAttachmentTag"), muzzle_attached_fx: text(fields,"m_muzzleAttachedFx"),
             spread_area: text(fields,"m_spreadArea"), spread_area_reduced: text(fields,"m_spreadAreaReduced"),
-            spread_area_upgraded: text(fields,"m_spreadAreaUpgraded") })
+            spread_area_upgraded: text(fields,"m_spreadAreaUpgraded"),
+            magazine_fire_aliases: std::array::from_fn(|index| text(child(fields,"m_magFireAnimNames"), &format!("m_magFireAnimNames[{index}]"))),
+            magazine_reload_aliases: std::array::from_fn(|index| text(child(fields,"m_magReloadAnimNames"), &format!("m_magReloadAnimNames[{index}]"))) })
+    }
+
+    /// Gun44df30: 202 animates the loaded magazine without spending a round.
+    pub fn magazine_fire_animation(&self, magazine: i32) -> Option<(&str, super::animation::PlayMode)> {
+        if magazine < 1 { return None; }
+        self.magazine_fire_aliases[(magazine - 1).min(2) as usize].as_deref().map(|alias| (alias, super::animation::PlayMode::AndStay))
+    }
+    /// Gun44e920's pending final pose after the actual type5 child starts.
+    pub fn magazine_final_animation(&self, magazine: i32) -> Option<(&str, super::animation::PlayMode)> {
+        let alias = if magazine > 1 { self.magazine_reload_aliases[(magazine - 2).min(2) as usize].as_deref() }
+            else { self.magazine_fire_aliases[0].as_deref() };
+        alias.map(|alias| (alias, super::animation::PlayMode::StayOnLastFrame))
+    }
+    /// Gun44e7b0 attempts the reload alias first; only a failed lookup for
+    /// counts <=3 falls back to the fire alias's last frame.
+    pub fn magazine_reload_animations(&self, capacity: i32, total: u32) -> [Option<(&str, super::animation::PlayMode)>; 2] {
+        use super::animation::PlayMode;
+        let count = i64::from(capacity).min(i64::from(total));
+        if count < 2 { return [self.magazine_fire_aliases[0].as_deref().map(|alias| (alias, PlayMode::StayOnLastFrame)), None]; }
+        [self.magazine_reload_aliases[(count - 2).min(2) as usize].as_deref().map(|alias| (alias, PlayMode::AndStay)),
+            (count <= 3).then(|| self.magazine_fire_aliases[(count - 1).min(2) as usize].as_deref().map(|alias| (alias, PlayMode::StayOnLastFrame))).flatten()]
     }
 }
 
