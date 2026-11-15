@@ -10853,3 +10853,12 @@ inventory queue. Future actual observer integration passes its live receiver
 to publish_notifications; the default publisher uses the known unbound host.
 Only source and PE inspection plus whitespace validation were used; no builds,
 tests, visible launches, runtime measurements or performance claims.
+
+Player feature integration validation (2026-11-15): the combined inventory,
+damage, equipment/weapon animation, Blink/Far Reach/Bend Time/Windblast and
+resource-owner batch passed `cargo check --features game --bin dishonored2-rust
+--jobs 1` at commit 70da806d. This establishes type/interface integration only.
+No tests, visible launches, screenshot comparisons or performance measurements
+were run. Runtime/visual parity is not promoted to verified. The final main
+sync also retains the concurrent particle-rendering changes; the normal main
+release build is a separate background operation.
