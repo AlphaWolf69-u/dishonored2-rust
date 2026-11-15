@@ -547,7 +547,7 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
 
 #[derive(Clone, Copy)]
 enum SupportedDefaultState {
-    Dead, ReadNote, UsePower, UseWindblast, Blinking, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
+    Dead, ReadNote, UsePower, UseWindblast, Blinking, Grapple, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
     FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Block,
     EquipChange, DrawEquipment, Undraw,
@@ -569,6 +569,7 @@ fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
         "playerstateusepower" => SupportedDefaultState::UsePower,
         "playerstateusewindblast" => SupportedDefaultState::UseWindblast,
         "playerstateblinking" => SupportedDefaultState::Blinking,
+        "playerstategrapple" => SupportedDefaultState::Grapple,
         "playerstaterunning" => SupportedDefaultState::Running,
         "playerstatesneaking" => SupportedDefaultState::Sneaking,
         "playerstatesprinting" => SupportedDefaultState::Sprinting,
@@ -633,6 +634,7 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
             SupportedDefaultState::UseWindblast if !result.iter().any(|s: &StateDecl| matches!(&s.kind, Kind::UsePower(decl) if decl.windblast)) => {
                 let mut decl = super::power_states::UsePowerDecl::read(fields)?; decl.windblast = true; Kind::UsePower(std::sync::Arc::new(decl))
             }
+            SupportedDefaultState::Grapple if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Grapple(_))) => Kind::Grapple(std::sync::Arc::new(super::grapple::Decl::read(fields)?)),
             SupportedDefaultState::Blinking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Blinking)) => Kind::Blinking,
             SupportedDefaultState::Running if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             SupportedDefaultState::Sneaking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,

@@ -448,6 +448,7 @@ pub enum Kind {
     ReloadWeapon,
     UsePower(Arc<super::power_states::UsePowerDecl>),
     Blinking,
+    Grapple(Arc<super::grapple::Decl>),
     Dead(DrowningDeathDecl),
 }
 
@@ -603,6 +604,13 @@ impl StateDecl {
                     exclusive_body_parts: 2, ..flags };
                 (if power.windblast { StateId::USE_WINDBLAST } else { StateId::USE_POWER }, 0.0)
             }
+            Kind::Grapple(_) => {
+                // 837390: base non-primary BODY owner, locked BODY,
+                // no exclusive parts; allowCameraOutOfShape bit6a0 set.
+                flags = StateFlags { primary: false, body_parts: BODY, locked_body_parts: BODY,
+                    exclusive_body_parts: 0, allow_camera_out_of_shape: true, ..flags };
+                (StateId::GRAPPLE, 0.0)
+            }
             Kind::Blinking => {
                 // 140857150: secondary BODY state; no navigation defaults.
                 flags = StateFlags { primary: false, body_parts: BODY, locked_body_parts: BODY,
@@ -735,6 +743,7 @@ pub struct Frame<'a> {
     /// Entity origin, axis (rows forward/left/up as columns) and velocity.
     pub origin: Vec3,
     pub axis: Mat3,
+    pub camera_axis: Mat3,
     pub velocity: Vec3,
     pub attributes: &'a Attributes,
     pub sprint_toggle: bool,
@@ -897,6 +906,7 @@ pub fn scene_paths(states: &[StateDecl]) -> Vec<String> {
                 .collect(),
             Kind::Mantle(d) => d.low_midnights.iter().chain(&d.mid_midnights).chain(&d.high_midnights).flatten().collect(),
             Kind::Vault(d) => d.small_midnights.iter().chain(&d.high_midnights).collect(),
+            Kind::Grapple(d) => d.translate_midnight.iter().chain(&d.wall_midnight).chain(&d.ceil_midnight).collect(),
             Kind::UsePower(d) => d.out_of_mana.iter().chain(&d.out_of_mana_slide).chain(&d.action.midnight).collect(),
             Kind::EquipChange(d) => d.power_switch.iter().chain(d.power_switch_slide.iter()).collect(),
             _ => Vec::new(),
@@ -1293,6 +1303,10 @@ impl StateMachine {
     /// 140803280's current-mode gate for the parameterized Blink request.
     /// Its target/shape payload supplies CanActivate; other queued requests
     /// still undergo the normal batch arbitration and rejection callback.
+    pub fn grapple_request_allowed(&self) -> bool {
+        self.state(StateId::GRAPPLE).is_some_and(|state| matches!(state.decl.kind, Kind::Grapple(_)))
+            && self.active.iter().all(|&active| self.rule(active, StateId::GRAPPLE).allow)
+    }
     pub fn blink_request_allowed(&self) -> bool {
         self.state(StateId::BLINKING).is_some_and(|state| matches!(state.decl.kind, Kind::Blinking))
             && self.active.iter().all(|&active| self.rule(active, StateId::BLINKING).allow)
@@ -1423,6 +1437,7 @@ impl StateMachine {
                     | super::combat::FirePhase::TargetAcquired | super::combat::FirePhase::Charging)),
             Kind::RequestReloadWeapon | Kind::ReloadWeapon => frame.weapon.as_ref().is_some_and(|weapon| weapon.can_reload()),
             Kind::UsePower(decl) => super::power_states::can_use(frame, decl),
+            Kind::Grapple(_) => frame.powers.grapple_pending && frame.powers.grapple.is_some(),
             Kind::Blinking => frame.powers.blink_pending && frame.powers.blink.is_some(),
             Kind::Swimming(_) => navigation,
             Kind::SwimMantle => !frame.underwater && frame.mantle_sensor.can_mantle(),
@@ -1890,6 +1905,7 @@ impl StateMachine {
         let mut quits = Vec::new();
         let mut read_note_requested = false;
         let mut blink_requested = false;
+        let mut grapple_requested = false;
         for command in queue {
             match command {
                 Command::RequestEquipment { side, flags, source } => {
@@ -1922,6 +1938,7 @@ impl StateMachine {
                 }
                 Command::Request(id) => {
                     blink_requested |= id == StateId::BLINKING;
+                    grapple_requested |= id == StateId::GRAPPLE;
                     self.accept(id, None, &snapshot, &mut accepted, frame);
                 },
                 Command::RequestSlide(speed) => self.accept(StateId::SLIDING, Some(speed), &snapshot, &mut accepted, frame),
@@ -1975,6 +1992,10 @@ impl StateMachine {
             self.activate(index, speed, frame);
         }
         if read_note_requested { self.read_note.reject(); }
+        if grapple_requested && !self.is_active(StateId::GRAPPLE) {
+            frame.powers.grapple_pending = false;
+            if let Some(run) = frame.powers.grapple.as_mut() { run.finished = true; run.aborted = true; }
+        }
         if blink_requested && !self.is_active(StateId::BLINKING) {
             // A rejected parameterized request returns its real payload to
             // the world owner; no timeout or synthetic state owns it.
@@ -2225,6 +2246,9 @@ impl StateMachine {
             if !super::power_states::activate_use(frame, sliding, power) { self.quit(decl.id); }
             return;
         }
+        if let Kind::Grapple(grapple) = &decl.kind {
+            super::grapple_state::activate(frame, grapple); return;
+        }
         if matches!(decl.kind, Kind::Blinking) {
             super::power_states::activate_blink(frame);
             return;
@@ -2399,7 +2423,7 @@ impl StateMachine {
                 self.states[index].swimming_dive = (direction, impulse);
             }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::UsePower(_) | Kind::Blinking | Kind::Dead(_)
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::UsePower(_) | Kind::Blinking | Kind::Grapple(_) | Kind::Dead(_)
                 | Kind::FireWeapon(_) | Kind::CancelFireWeapon | Kind::RequestReloadWeapon | Kind::ReloadWeapon
                 | Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_) | Kind::Slash(_) | Kind::Block(_) => {}
         }
@@ -2560,6 +2584,10 @@ impl StateMachine {
                 self.land_blink_fall_debt(frame);
                 super::power_states::deactivate_blink(frame);
                 return;
+            },
+            Kind::Grapple(grapple) => {
+                self.land_falling_if_contact(frame);
+                super::grapple_state::deactivate(frame, grapple); return;
             },
             Kind::SwimMantle => return,
             Kind::Mantle(_) => {
@@ -2852,6 +2880,12 @@ impl StateMachine {
             Kind::UsePower(decl) => {
                 let sliding = self.is_active(StateId::SLIDING);
                 if !super::power_states::update_use(frame, sliding, &decl) { self.quit(id); }
+            }
+            Kind::Grapple(decl) => {
+                if let Some(next) = super::grapple_state::update(frame, &decl) {
+                    self.quit(id);
+                    if next != StateId::NULL { self.request(next); }
+                }
             }
             Kind::Blinking => {
                 if let Some(next) = super::power_states::update_blink(frame) {

@@ -249,6 +249,14 @@ impl PlayerCamera {
 
     /// FUN_1407f43b0: queue a target mode (KEEP_PREVIOUS keeps it); a
     /// negative blend takes the decl's `m_modeBlendDuration`.
+    /// 1407f4240 / 1407f2930: temporary decl pitch bounds, in degrees.
+    pub fn set_pitch_limits(&mut self, up: f32, down: f32) {
+        self.min_pitch = -0.017453292 * up; self.max_pitch = 0.017453292 * down;
+    }
+    pub fn reset_pitch_limits(&mut self) {
+        self.set_pitch_limits(self.decl.max_pitch_up, self.decl.max_pitch_down);
+    }
+
     pub fn set_target_mode(&mut self, mode: i32, blend: f32) {
         if mode == MODE_KEEP_PREVIOUS {
             return;

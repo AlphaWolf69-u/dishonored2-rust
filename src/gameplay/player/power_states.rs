@@ -42,6 +42,9 @@ pub struct Runtime {
     pub active: bool,
     pub cancel: bool,
     pub blink: Option<BlinkMotion>,
+    pub grapple: Option<super::grapple_state::Runtime>,
+    pub grapple_pending: bool,
+    pub(super) grapple_scenes: std::sync::Arc<Scenes>,
     pub blink_pending: bool,
     contacts: Vec<BlinkContact>,
     previous_posture: usize,
@@ -343,7 +346,7 @@ impl Player {
         if !self.power_release_ready() { return false; }
         let random = &mut self.random;
         let factor = powers::attribute_random_cost_factor(&self.attributes, || {
-            *random = random.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f); *random
+            crate::random::lcg_step(random)
         });
         let Some(deficit) = self.powers.selected.as_mut().and_then(|cast| cast.commit(now, &mut self.mana, &self.attributes,
             cost_factor, factor, self.mana_replenishes)) else { return false };

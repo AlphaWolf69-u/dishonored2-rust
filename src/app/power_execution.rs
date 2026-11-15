@@ -217,6 +217,31 @@ fn service_blinks(world: &mut World, player: &mut crate::gameplay::player::Playe
     result
 }
 
+/// The accepted Grapple motion owns its sensor/scene projection through
+/// equipment changes. Service its real state completion independently of
+/// whichever power is currently selected.
+fn service_far_reach(world: &mut World, player: &mut crate::gameplay::player::Player, aim: bool) {
+    let Some(mut actions) = world.remove_resource::<super::player_actions::PlayerActions>() else { return };
+    if let Some(active) = actions.active_far_reach.as_mut() {
+        if !active.service(player) { actions.active_far_reach = None; }
+    }
+    if let Some(far) = actions.far_reach.as_mut() {
+        if far.has_activity() { far.service(player); }
+        if aim {
+            let aiming = player.power_cast_active(6) && player.selected_power().is_some_and(|cast| cast.phase() == Phase::Aiming);
+            if aiming && !far.has_activity() {
+                if let Some(collision) = world.get_resource::<super::NavigationWorld>() {
+                    let view = player.view();
+                    let snapping = crate::platform::console::shared().read().cvars
+                        .int("ark_shadow_grapple_snapping_enabled").unwrap_or(1) != 0;
+                    far.aim(player, &view, &super::player::GameCollision(&collision.0), snapping);
+                }
+            } else if !far.has_activity() && !player.power_cast_active(6) { far.cancel(player); }
+        }
+    }
+    world.insert_resource(actions);
+}
+
 /// Map retirement releases both selected and detached consumers before the
 /// canonical clock, request queue and player are destroyed.
 pub(super) fn retire_blinks(world: &mut World) -> Result<(), String> {
@@ -248,6 +273,7 @@ pub(super) fn before_frame(world: &mut World) {
     let player_id = super::player_lifetime::id(world);
     let Some(mut state) = world.remove_resource::<super::player::PlayerState>() else { return };
     if let Some(player) = state.player.as_mut() {
+        service_far_reach(world, player, false);
         if let Some(mut clock) = world.remove_resource::<ClockRuntime>() {
             let result = service_blinks(world, player, &mut clock, false);
             world.insert_resource(clock);
@@ -270,6 +296,8 @@ pub(super) fn before_frame(world: &mut World) {
                     && world.contains_resource::<super::NavigationWorld>()
                     && world.contains_resource::<LiveEntities>()
                     && world.contains_resource::<super::usable_effects::EffectRequests>(),
+                6 => world.get_resource::<super::player_actions::PlayerActions>()
+                    .is_some_and(|actions| actions.far_reach.is_some()) && world.contains_resource::<super::NavigationWorld>(),
                 10 => world.contains_resource::<super::windblast::Windblasts>() && player_id.is_some()
                     && world.contains_resource::<super::physics_scene::PhysicsScene>()
                     && world.contains_resource::<super::usable_effects::EffectRequests>(),
@@ -331,6 +359,7 @@ pub(super) fn after_frame(world: &mut World) {
                 player.controller.trigger_threshold, player.power_cast_active(1), committed,
                 || { player.commit_power_cast(now, factor); }, &mut clock, &mut events, position);
         }
+        service_far_reach(world, player, true);
         if let Err(error) = service_blinks(world, player, &mut clock, true) { power_error(world, &error); }
         if player.take_power_execution_request() {
             let factor = id.map_or(1.0, |id| cast_factor(player, id, false));
@@ -351,6 +380,13 @@ pub(super) fn after_frame(world: &mut World) {
                     if accepted { player.commit_power_cast(now, factor); }
                     accepted
                 }
+                Some(6) => {
+                    let view = player.view();
+                    let accepted = world.get_resource_mut::<super::player_actions::PlayerActions>()
+                        .and_then(|mut actions| actions.far_reach.as_mut().map(|far| far.execute(player, &view))).unwrap_or(false);
+                    if accepted { player.commit_power_cast(now, factor); }
+                    accepted
+                },
                 Some(10) => match service_wind(world, player_id.map(|id| (&mut *player, id)), &mut clock, &mut events, true) {
                     Ok(accepted) => { if accepted { player.commit_power_cast(now, factor); } accepted },
                     Err(error) => { power_error(world, &error); false },
