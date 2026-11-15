@@ -73,6 +73,13 @@ pub struct Runtime {
     callbacks: VecDeque<Callback>,
 }
 impl Runtime {
+    /// Actual retained entities whose tree is not currently borrowed by Body.
+    /// Audio/frame publication borrows this registry without building a list.
+    pub fn inactive_targets(&self) -> impl Iterator<Item = &Target> {
+        self.owned.values().chain(self.slots.iter().flat_map(|slot|
+            slot.current.iter().chain(slot.incoming.iter())))
+            .filter(|target| target.tree.is_some())
+    }
     pub fn transitioning(&self, side: usize) -> bool {
         self.slots.get(side).is_some_and(|slot| slot.requested || slot.phase != Phase::Idle)
     }
