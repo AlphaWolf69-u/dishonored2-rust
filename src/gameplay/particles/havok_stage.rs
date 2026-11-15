@@ -569,6 +569,39 @@ impl HavokStageSimulation {
                 }
             }
         }
+        // arkAccelerationsHavokEffect (1401ccb30), present when either
+        // acceleration is set: the acceleration over the body's cycle age,
+        // in the emitter's axes unless worldspace, plus the linear
+        // acceleration along its velocity.
+        let definition = &self.declaration.havok_stages[self.index];
+        if definition.acceleration_over_life.range.iter().flatten().any(|&value| value != 0.)
+            || definition.linear_acceleration_over_life.range.iter().any(|&value| value != 0.)
+        {
+            let basis = self.emitter.pose.sampled.basis;
+            for &body in &bodies {
+                let index = body as usize;
+                let cycles = divide(self.pipeline.linear[index][0][3], self.life[index]);
+                let age = subtract(cycles, cycles.floor());
+                // approximate_: the body's never-written +0x340 seed word.
+                let mut seed = 0;
+                let mut a = definition.acceleration_over_life.sample(age, &mut seed)?;
+                if !definition.acceleration_worldspace {
+                    a = std::array::from_fn(|i| {
+                        add(add(multiply(a[1], basis[1][i]), multiply(a[0], basis[0][i])), multiply(a[2], basis[2][i]))
+                    });
+                }
+                let v = self.pipeline.linear[index][1];
+                let squared = add(add(multiply(v[0], v[0]), multiply(v[1], v[1])), multiply(v[2], v[2]));
+                let floor = f32::from_bits(0x0080_0000);
+                let inverse = divide(1., if squared <= floor { floor } else { squared }.sqrt());
+                let linear = definition.linear_acceleration_over_life.sample(age, &mut seed)?;
+                let velocity = &mut self.pipeline.linear[index][1];
+                for i in 0..3 {
+                    let total = add(a[i], multiply(multiply(v[i], inverse), linear));
+                    velocity[i] = add(multiply(dt, total), velocity[i]);
+                }
+            }
+        }
         // Stage 0 per body: PhysicsCollide's CD pass, then the contact
         // solve, then Integrate.
         if let Some(collisions) = self.collisions.as_mut() {

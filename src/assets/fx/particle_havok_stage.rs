@@ -119,6 +119,9 @@ pub struct ParticleHavokStageAsset {
     pub wind_drag_over_life: ScalarParameter,
     /// m_accelerationOverLife (+0x1a88): zero vector with a unit curve.
     pub acceleration_over_life: VectorParameter,
+    /// acceleration_t +0x110 m_worldspace (false, 1401de940): otherwise the
+    /// acceleration is in the emitter's axes.
+    pub acceleration_worldspace: bool,
     /// m_linearAccelerationOverLife (+0x1ba0), 0.
     pub linear_acceleration_over_life: ScalarParameter,
     pub events: HavokEvents,
@@ -172,6 +175,7 @@ impl Default for ParticleHavokStageAsset {
             wind_drag_over_cycle: ScalarParameter::constant(1.),
             wind_drag_over_life: ScalarParameter::constant(1.),
             acceleration_over_life: VectorParameter::constant([0.; 3]),
+            acceleration_worldspace: false,
             linear_acceleration_over_life: ScalarParameter::constant(0.),
             events: HavokEvents::default(),
         }
@@ -361,6 +365,7 @@ pub fn havok_stage(fields: &Fields) -> Result<ParticleHavokStageAsset, String> {
                 for (name, value) in scope(value)? {
                     match name.as_str() {
                         "m_value" => particles::vector_parameter(&mut result.acceleration_over_life, scope(value)?)?,
+                        "m_worldspace" => result.acceleration_worldspace = boolean(value)?,
                         _ => return Err(format!("unknown Havok particle acceleration field {name}")),
                     }
                 }
