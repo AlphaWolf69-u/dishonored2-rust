@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use crate::{assets::{archive::Catalog, power_journal::Power, wwise::SoundEventDeclaration}, gameplay::{
     entity_events::{EntityEvents, Event, Payload}, entity_lifetime::EntityId,
     game_clock_runtime::{ClockRuntime, GamePaused},
-    powers::world_effects::{BendTime, BendTimeAttributes, BendTimeSettings, BendTimeWorld, TimeLease, TimeRequest, TimeRequests},
+    powers::world_effects::{BendTime, BendTimeAttributes, BendTimeSettings, BendTimeWorld, TimeLease, TimeRequest},
     sound::{Emitter, Request},
 }};
 
@@ -14,10 +14,10 @@ use crate::{assets::{archive::Catalog, power_journal::Power, wwise::SoundEventDe
 pub(super) struct PowerWorld {
     bend_time: Option<BendTime>,
     state: State,
+    retired: bool,
 }
 struct State {
     player: Option<EntityId>,
-    requests: TimeRequests,
     timer: Option<f32>,
     /// Actual NPC roots registered by their live component owner; map
     /// placements are never admitted as invented targets.
@@ -40,11 +40,13 @@ impl PowerWorld {
             }
         }
         Ok(Self { bend_time: settings.map(BendTime::new), state: State { player: None,
-            requests: TimeRequests::default(), timer: None, npcs: Vec::new(), sounds,
-            pending_sounds: Vec::new(), active: false } })
+            timer: None, npcs: Vec::new(), sounds,
+            pending_sounds: Vec::new(), active: false }, retired: false })
     }
     /// Bind only the registered player identity from the real entity owner.
-    pub fn bind_player(&mut self, entity: EntityId) { self.state.player = Some(entity); }
+    pub fn bind_player(&mut self, entity: EntityId) {
+        if !self.retired { self.state.player = Some(entity); }
+    }
     pub fn register_npc(&mut self, entity: EntityId, clock: &mut ClockRuntime) -> Result<(), String> {
         if self.state.npcs.contains(&entity) { return Ok(()); }
         clock.register_entity_time(entity, 0)?;
@@ -54,7 +56,7 @@ impl PowerWorld {
         self.state.npcs.retain(|id| *id != entity); clock.unregister_entity_time(entity);
     }
     pub fn bend_time_available(&self, clock: &ClockRuntime) -> bool {
-        self.bend_time.is_some() && self.state.player.is_some() && clock.clock().is_ok()
+        !self.retired && self.bend_time.is_some() && self.state.player.is_some() && clock.clock().is_ok()
     }
     pub fn bend_time_active(&self) -> bool { self.state.active }
     pub fn bend_time_cost(&self, normal: f32) -> f32 { self.bend_time.as_ref().map_or(normal, |power| power.mana_cost(normal)) }
@@ -105,26 +107,20 @@ impl PowerWorld {
             power.stop(&mut Host { state: &mut self.state, clock, events, position });
         }
         for entity in self.state.npcs.drain(..) { clock.unregister_entity_time(entity); }
-        self.state.timer = None; self.state.player = None;
+        self.state.timer = None; self.state.player = None; self.state.active = false;
     }
 }
 struct Host<'a> { state: &'a mut State, clock: &'a mut ClockRuntime, events: &'a mut EntityEvents, position: Vec3 }
 impl BendTimeWorld for Host<'_> {
     fn available(&self) -> bool { self.state.player.is_some() && self.clock.clock().is_ok() }
     fn acquire_time(&mut self, request: TimeRequest) -> TimeLease {
-        let (lease, target) = self.state.requests.acquire(request);
         // Both channel indices are native, and validated statically here.
         // Errors indicate loss of the actual clock owner; admission checked
         // that owner in this synchronous operation, never a fallback clock.
-        self.clock.set_rate_target(3, target.world, target.ease).expect("admitted clock owner");
-        self.clock.set_rate_target(4, target.unbent, target.ease).expect("admitted clock owner");
-        lease
+        self.clock.acquire_time_request(request).expect("admitted clock owner")
     }
     fn release_time(&mut self, lease: TimeLease, ease: f32) {
-        if let Some(target) = self.state.requests.release(lease, ease) {
-            self.clock.set_rate_target(3, target.world, target.ease).expect("admitted clock owner");
-            self.clock.set_rate_target(4, target.unbent, target.ease).expect("admitted clock owner");
-        }
+        self.clock.release_time_request(lease, ease).expect("admitted clock owner");
     }
     fn start_timer(&mut self, duration: f32) { self.state.timer = Some(duration); }
     fn cancel_timer(&mut self) { self.state.timer = None; }
@@ -164,9 +160,50 @@ pub(super) fn publish_sounds(mut owner: Option<ResMut<PowerWorld>>, mut sounds: 
 /// timer uses the same coherent clock publication that frame will consume.
 pub(super) fn update(mut owner: Option<ResMut<PowerWorld>>, mut clock: ResMut<ClockRuntime>,
     mut events: Option<ResMut<EntityEvents>>, player: Res<super::player::PlayerState>,
-    powers: Option<Res<super::powers::Powers>>, paused: Res<GamePaused>) {
+    live: Option<Res<crate::gameplay::entity_lifetime::LiveEntities>>, paused: Res<GamePaused>) {
     let (Some(owner), Some(events), Some(player)) = (owner.as_deref_mut(), events.as_deref_mut(), player.player.as_ref()) else { return };
-    let cast_active = powers.as_deref().and_then(|powers| powers.selected())
-        .is_some_and(|cast| cast.settings.id == 1 && cast.phase() != crate::gameplay::powers::Phase::Idle);
+    if owner.retired || !owner.state.player.is_some_and(|id| live.as_deref().is_some_and(|live| live.get(id).is_some())) { return; }
+    let cast_active = player.power_cast_active(1);
     owner.tick(&mut clock, events, player.feet(), cast_active, paused.0);
+}
+
+/// Call before player identity, physics and audio retirement. It keeps the
+/// same sound declaration leases resident until LevelLifetime's canonical
+/// audio acknowledgement removes all level resources. Errors restore every
+/// owner and cannot silently lose a running clock/timer request.
+pub(super) fn retire(world: &mut World) -> Result<(), String> {
+    let Some(mut owner) = world.remove_resource::<PowerWorld>() else {
+        if let Some(mut clock) = world.get_resource_mut::<ClockRuntime>() { clock.clear_power_time()?; }
+        return Ok(());
+    };
+    if owner.retired { world.insert_resource(owner); return Ok(()); }
+    let Some(mut clock) = world.remove_resource::<ClockRuntime>() else {
+        world.insert_resource(owner); return Err("power retirement has no clock owner".into());
+    };
+    let Some(mut events) = world.remove_resource::<EntityEvents>() else {
+        world.insert_resource(clock); world.insert_resource(owner);
+        return Err("power retirement has no entity event owner".into());
+    };
+    let result = (|| {
+        clock.clock().map_err(str::to_owned)?;
+        if let Some(id) = owner.state.player {
+            let live = world.get_resource::<crate::gameplay::entity_lifetime::LiveEntities>()
+                .ok_or("power retirement has no managed entity owner")?;
+            if live.get(id).is_none() { return Err("power retirement player generation is stale".into()); }
+        }
+        if !owner.state.pending_sounds.is_empty() || owner.state.active {
+            if !world.contains_resource::<Messages<super::audio::SoundEvent>>() {
+                return Err("power retirement has no canonical audio message owner".into());
+            }
+        }
+        let position = world.get_resource::<super::player::PlayerState>()
+            .and_then(|state| state.player.as_ref()).map_or(Vec3::ZERO, |player| player.feet());
+        owner.clear(&mut clock, &mut events, position);
+        clock.clear_power_time()?;
+        for request in owner.state.pending_sounds.drain(..) { world.write_message(super::audio::SoundEvent(request)); }
+        owner.retired = true;
+        Ok(())
+    })();
+    world.insert_resource(events); world.insert_resource(clock); world.insert_resource(owner);
+    result
 }

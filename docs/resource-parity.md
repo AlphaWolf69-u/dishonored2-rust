@@ -82,6 +82,27 @@ were implemented, nor do they reopen already accepted current-owner lifetimes.
 
 ## Classes
 
+### Bend Time world clocks and retained sound consumers (2026-11-15)
+
+`app/power_world.rs` consumes the existing clock and sound declaration owners;
+it creates no archive or resource cache. `game_clock_runtime::ClockRuntime`
+owns the shared time-request leases and native five-group clock publication.
+
+| Boundary | Original basis | Status |
+|---|---|---|
+| World/unbent request arbitration and removal | `14080eb40`, `14080ede0` | `ported`: independent minimum targets feed channels3/4 of the existing clock. |
+| Clock target easing | `140059890`, `140059990` | `ported`: uses existing `GameClock::set_rate_target`; no extra interpolation or wall-clock timer. |
+| Player and registered entity root unbent requests | `14080d8c0`, `14080f040`, `14087d050` | `host`: identity-keyed roots retain local clock offsets while selecting native timespaces. Actual NPC/hierarchy producers must register their roots; absent NPCs are not fabricated. |
+| Bend Time expiry and cancellation | `140778f40`, `140779010`, `140778a00`, `14061d350`, `14061cd60` | `ported` for this consumer's slot0/mode2: its real spawner delta drives expiry; pause/unsimulated frames do not advance it. |
+| Sound acquisition, use and retirement | `14061cd60`, `14061cbd0`; shared sound-event class lifecycle below | `host`: prepare retains the existing typed sound-event leases. Explicit power retirement publishes the stop event before canonical audio retirement; leases remain in the retired level resource until audio acknowledgement. |
+| Dark Vision effect and script callbacks | `14049e9d0`, `14049ed20`, `14049eff0`, `14049f250`; `1408848a0` | `blocked`: actual dark-vision trigger/proxy/outline/sound-pulse and script callback consumers remain absent. The power protocol does not substitute a screen tint or pretend those callbacks ran. |
+
+Prediction before these integrations: no per-frame archive reads or resource
+uploads; hold changes replace the existing clock lease and touch clock targets.
+The entity override update traverses only requested live roots, matching the
+native pending list. Performance and allocation measurements remain unverified;
+no build, tests, game launch or visual comparison was run for this change.
+
 ### Power-system projections and cast lifecycle (2026-11-15)
 
 Expected ownership result: resolving the power-system projection during

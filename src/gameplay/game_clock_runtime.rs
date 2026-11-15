@@ -16,6 +16,7 @@ use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use crate::platform::performance_counter as platform;
 use crate::gameplay::entity_lifetime::EntityId;
 use std::collections::HashMap;
+use crate::gameplay::powers::world_effects::{TimeLease, TimeRequest, TimeRequests};
 
 struct EntityClock { timespace: u32, offset: f64, remaining: Option<f32>, managed_override: bool }
 impl EntityClock {
@@ -86,6 +87,8 @@ struct LoadedClock {
     player_timespace: u32,
     player_clock_offset: f64,
     entity_clocks: HashMap<EntityId, EntityClock>,
+    entity_overrides: Vec<EntityId>,
+    power_requests: TimeRequests,
 }
 
 impl LoadedClock {
@@ -136,7 +139,12 @@ impl LoadedClock {
                 self.player_clock_offset = next - f64::from(elapsed);
                 self.player_timespace = timespace;
             }
-            for entity in self.entity_clocks.values_mut() { entity.advance(&self.clock, bent, step); }
+            let clocks = &mut self.entity_clocks;
+            self.entity_overrides.retain(|id| {
+                let Some(entity) = clocks.get_mut(id) else { return false };
+                entity.advance(&self.clock, bent, step);
+                entity.managed_override
+            });
         }
         Ok(())
     }
@@ -160,6 +168,31 @@ impl ClockRuntime {
     /// 140059890 publication, using the existing byte-exact easing owner.
     pub fn set_rate_target(&mut self, group: usize, value: f32, ease: f32) -> Result<(), String> {
         self.0.as_mut().map_err(|error| error.clone())?.clock.set_rate_target(group, value, ease)
+    }
+    pub fn acquire_time_request(&mut self, request: TimeRequest) -> Result<TimeLease, String> {
+        let state = self.0.as_mut().map_err(|error| error.clone())?;
+        let (lease, target) = state.power_requests.acquire(request);
+        state.clock.set_rate_target(3, target.world, target.ease)?;
+        state.clock.set_rate_target(4, target.unbent, target.ease)?;
+        Ok(lease)
+    }
+    pub fn release_time_request(&mut self, lease: TimeLease, ease: f32) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|error| error.clone())?;
+        if let Some(target) = state.power_requests.release(lease, ease) {
+            state.clock.set_rate_target(3, target.world, target.ease)?;
+            state.clock.set_rate_target(4, target.unbent, target.ease)?;
+        }
+        Ok(())
+    }
+    /// World retirement invalidates every source-owned request and entity
+    /// identity before another map can use this persistent clock session.
+    pub fn clear_power_time(&mut self) -> Result<(), String> {
+        let state = self.0.as_mut().map_err(|error| error.clone())?;
+        state.power_requests = TimeRequests::default();
+        state.entity_overrides.clear(); state.entity_clocks.clear();
+        state.player_override = None; state.player_timespace = 0; state.player_clock_offset = 0.0;
+        state.clock.set_rate_target(3, 1.0, 0.0)?;
+        state.clock.set_rate_target(4, 1.0, 0.0)
     }
     /// 14080d8c0: an indefinite request cannot be replaced by a shorter
     /// request until the last world-time lease has restored normal time.
@@ -189,13 +222,16 @@ impl ClockRuntime {
         Ok(())
     }
     pub fn unregister_entity_time(&mut self, entity: EntityId) {
-        if let Ok(state) = &mut self.0 { state.entity_clocks.remove(&entity); }
+        if let Ok(state) = &mut self.0 {
+            state.entity_clocks.remove(&entity); state.entity_overrides.retain(|id| *id != entity);
+        }
     }
     pub fn set_entity_time_override(&mut self, entity: EntityId, duration: f32) -> Result<(), String> {
         let state = self.0.as_mut().map_err(|e| e.clone())?;
         let record = state.entity_clocks.get_mut(&entity).ok_or("entity clock root is not registered")?;
         if record.remaining != Some(f32::from_bits(0x7149_f2ca)) { record.remaining = Some(duration); }
         record.managed_override = true;
+        if !state.entity_overrides.contains(&entity) { state.entity_overrides.push(entity); }
         Ok(())
     }
     pub fn entity_delta(&self, entity: EntityId) -> Result<f32, &str> {
@@ -235,6 +271,8 @@ impl FromWorld for ClockRuntime {
                 player_timespace: 0,
                 player_clock_offset: 0.0,
                 entity_clocks: HashMap::new(),
+                entity_overrides: Vec::new(),
+                power_requests: TimeRequests::default(),
             })
         })();
         if let Err(error) = &state {
