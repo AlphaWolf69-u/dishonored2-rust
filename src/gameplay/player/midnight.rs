@@ -303,6 +303,28 @@ pub struct PointEvent {
 }
 
 impl Midnight {
+    /// 8542b0 casts actual entity trees, not a reusable equipment slot's
+    /// skeleton. Host slot replacement retires the outgoing entity's target
+    /// before installing another rig; its snapshot and clip indices cannot
+    /// leak into the replacement entity.
+    pub fn retire_target(&mut self, target: usize) {
+        let Some(node) = self.nodes.get_mut(target) else { return };
+        *node = Node::default();
+        let part = 1u8 << target;
+        self.point_events.retain(|event| event.target != target);
+        for instance in &mut self.instances {
+            for (&(event, emitter), &stop) in &instance.playing_sounds {
+                if stop && emitter.player_part() & part != 0 { self.sound_requests.push(SoundRequest::Stop { event, emitter }); }
+            }
+            instance.playing_sounds.retain(|(_, emitter), _| emitter.player_part() & part == 0);
+            instance.sounds.retain(|sound| sound.sound.emitter.player_part() & part == 0);
+            instance.events.retain(|(_, owner)| *owner != target);
+            instance.clips[target].clear();
+            instance.parts &= !part;
+        }
+        self.instances.retain(|instance| instance.parts != 0);
+    }
+
     pub fn take_point_events(&mut self) -> Vec<PointEvent> { std::mem::take(&mut self.point_events) }
     pub fn drain_point_events(&mut self) -> std::vec::Drain<'_, PointEvent> { self.point_events.drain(..) }
 

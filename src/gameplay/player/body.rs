@@ -411,6 +411,12 @@ pub fn cast<'a>(body: &'a [EdgeAnimation], arms: &'a [Arm], equipment: &'a [Opti
 }
 
 impl Body {
+    pub fn replace_equipment_tree(&mut self, side: usize, tree: Option<super::equipment::EquipmentTree>) -> Option<super::equipment::EquipmentTree> {
+        assert!(side < self.equipment.len(), "equipment side must be left or right");
+        self.midnight.retire_target(side + 3);
+        std::mem::replace(&mut self.equipment[side], tree)
+    }
+
     pub fn take_sound_requests(&mut self) -> Vec<crate::gameplay::sound::Request> { std::mem::take(&mut self.sound_requests) }
     pub fn take_contact_requests(&mut self) -> Vec<crate::gameplay::sound::Contact> { std::mem::take(&mut self.contact_requests) }
 

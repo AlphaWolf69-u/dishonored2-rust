@@ -72,6 +72,22 @@ are not replayed, and the first update does not repeat an initialized point.
 Status: `ported` demanded chained-offset playback; no separate pose/clock or
 duplicated clip bank was introduced. Visual checks remain unperformed.
 
+The host's equipment cast slot is retired before replacing its entity rig:
+`Body::replace_equipment_tree` clears only that outgoing target's schedules,
+point keys, stopped-on-interruption sounds and snapshot. The original
+`8542b0` binds each equipment entity's own tree, so retaining the previous
+slot snapshot would incorrectly blend a different skeleton and reuse obsolete
+clip indices. Body/arm tracks remain owned by their existing entities. This
+is `host:` adaptation of actual-entity tree identity to the five-slot player
+cast interface, not an extra model/pose owner.
+
+Weapon-lowering remains a concrete dependency: `775b50` checks the actual
+focused actor, its AI attention flag, declared horizontal distance and each
+equipment's `m_canLower`, then writes each arm's target bind angles before
+`775760` interpolates the binding. A locomotion transition is not that test.
+The focused NPC/AI-attention producer must be connected before this path can
+be driven; no guessed proximity test or idle hand rotation stands in for it.
+
 What the rewrite loads of each resource class the original loads, and how
 far each class's lifecycle is ported. Rules: `AGENTS.md`, "Resource parity".
 Status words: `ported`, `verified` (against a capture or the original's
