@@ -33,11 +33,21 @@ struct PendingRetirement {
     render: Option<super::player_arms::RetiredModel>,
 }
 #[derive(Resource)]
-struct Identities {
+pub(in crate::app) struct Identities {
     types: Arc<ComponentTypes>,
     player: Option<EntityId>,
     entries: HashMap<EntityId, Entry>,
     pending: Vec<PendingRetirement>,
+}
+
+impl Identities {
+    pub(in crate::app) fn published_frame(
+        &self,
+        id: EntityId,
+    ) -> Option<(crate::gameplay::reference_frame::ReferenceFrame, f32)> {
+        let entry = self.entries.get(&id)?;
+        entry.linked.then_some((entry.frame?, entry.time_scale))
+    }
 }
 
 /// Setup publication calls this before LevelLifetime captures its resources.
@@ -81,13 +91,30 @@ pub(super) fn admit_equipment(
     {
         return Err("equipment player generation is stale".into());
     }
-    admit(world, identity, declaration, class, parent, false)
+    admit(
+        world,
+        identity,
+        declaration,
+        declaration,
+        class,
+        parent,
+        false,
+    )
 }
 
 /// The actual weapon generation is the parent; never bind a bolt to a stand-in
 /// player or use model readiness as a fabricated child identity.
 pub(super) fn admit_ammunition(
     world: &mut World,
+    descriptor: &crate::assets::equipment::attachment::Descriptor,
+    weapon: EntityId,
+) -> Result<EntityId, String> {
+    admit_attachment(world, &descriptor.entity, descriptor, weapon)
+}
+
+pub(super) fn admit_attachment(
+    world: &mut World,
+    identity: &str,
     descriptor: &crate::assets::equipment::attachment::Descriptor,
     weapon: EntityId,
 ) -> Result<EntityId, String> {
@@ -103,8 +130,9 @@ pub(super) fn admit_ammunition(
     }
     admit(
         world,
+        identity,
         &descriptor.entity,
-        &descriptor.entity,
+        &descriptor.name_source,
         &descriptor.class,
         weapon,
         true,
@@ -115,6 +143,7 @@ fn admit(
     world: &mut World,
     identity: &str,
     declaration: &str,
+    name_source: &str,
     class: &str,
     parent: EntityId,
     ammo: bool,
@@ -169,7 +198,7 @@ fn admit(
         return Err("equipment player spawn tag has no admitted spelling".into());
     }
     let runtime_flags = if ammo { 0 } else { 8 };
-    let id = live.allocate_managed_auto_name(declaration, class_id, runtime_flags, tag)?;
+    let id = live.allocate_managed_auto_name(name_source, class_id, runtime_flags, tag)?;
     let publication = live
         .initialized(id)
         .and_then(|()| live.spawned(id))

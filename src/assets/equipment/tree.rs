@@ -43,6 +43,105 @@ fn scope_end(tokens: &[&str], open: usize) -> Result<usize, String> {
     Err("unterminated animation tree scope".into())
 }
 
+/// cpntAnimBase's simple tree: the real input at index zero drives the
+/// existing four-slot AnimBasic executor. Validate connections, not a filename.
+pub(super) fn anim_basic_only(source: &str) -> Result<(), String> {
+    let tokens = declaration_lexemes(source)?;
+    let end = scope_end(&tokens, 0)?;
+    if end + 1 != tokens.len() {
+        return Err("trailing animation tree tokens".into());
+    }
+    let mut nodes = HashMap::new();
+    let mut inputs = None;
+    let mut outputs = None;
+    let mut root = None;
+    let mut cursor = 1;
+    while cursor < end {
+        let kind = tokens[cursor];
+        if kind == "rootnode" {
+            root = Some(*tokens.get(cursor + 1).ok_or("tree root name missing")?);
+            cursor += 2;
+            continue;
+        }
+        let named = tokens.get(cursor + 1) != Some(&"{");
+        let open = cursor + if named { 2 } else { 1 };
+        let close = scope_end(&tokens, open)?;
+        let fields = &tokens[open + 1..close];
+        if named {
+            if nodes
+                .insert(tokens[cursor + 1], Node { kind, fields })
+                .is_some()
+            {
+                return Err("duplicate animation node".into());
+            }
+        } else {
+            match kind {
+                "inputs" => inputs = Some(fields),
+                "outputs" => outputs = Some(fields),
+                _ => return Err(format!("unsupported animation tree section {kind}")),
+            }
+        }
+        cursor = close + 1;
+    }
+    let inputs = inputs.ok_or("simple tree input is absent")?;
+    if inputs.len() != 2 || inputs[0] != "animBasicInputData" {
+        return Err("simple tree does not expose one AnimBasic input at index zero".into());
+    }
+    let root = nodes
+        .get(root.ok_or("simple tree root is absent")?)
+        .filter(|node| node.kind == "animBasic")
+        .ok_or("simple tree root is not AnimBasic")?;
+    if value(root.fields, "animBasicInputData") != Some(format!("inputs.{}", inputs[1]).as_str()) {
+        return Err("simple tree AnimBasic input is not connected".into());
+    }
+    let open = root
+        .fields
+        .iter()
+        .position(|token| *token == "blendarray")
+        .ok_or("simple tree blendarray is absent")?
+        + 1;
+    let close = scope_end(root.fields, open)?;
+    let children = &root.fields[open + 1..close];
+    if children.len() != 8 {
+        return Err("simple tree does not have four AnimBasic slots".into());
+    }
+    for (index, pair) in children.chunks_exact(2).enumerate() {
+        if pair[0] != format!("input({index})") {
+            return Err("simple tree slots are not ordered".into());
+        }
+        let leaf = nodes
+            .get(pair[1])
+            .filter(|node| node.kind == "pauseleaf")
+            .ok_or("simple tree slot is not a pause leaf")?;
+        if !leaf.fields.is_empty() {
+            return Err("simple tree pause leaf has unsupported data".into());
+        }
+    }
+    if nodes
+        .values()
+        .any(|node| node.kind != "pauseleaf" && node.kind != "animBasic")
+    {
+        return Err("simple tree contains an unsupported node family".into());
+    }
+    let outputs = outputs.ok_or("simple tree output is absent")?;
+    if outputs.len() != 3 || outputs[0] != "bool" || !matches!(outputs[2], "true" | "false") {
+        return Err("simple tree output does not match AnimBasic playing state".into());
+    }
+    let open = root
+        .fields
+        .iter()
+        .position(|token| *token == "outputs")
+        .ok_or("simple tree playing output is absent")?
+        + 1;
+    let close = scope_end(root.fields, open)?;
+    if value(&root.fields[open + 1..close], "isPlaying")
+        != Some(format!("outputs.{}", outputs[1]).as_str())
+    {
+        return Err("simple tree playing output is not connected".into());
+    }
+    Ok(())
+}
+
 pub(super) fn midnight_default(source: &str, input: &str) -> Result<(), String> {
     let tokens = declaration_lexemes(source)?;
     let end = scope_end(&tokens, 0)?;

@@ -1,9 +1,13 @@
 //! Selected-ammo entity requests through the existing equipment Sources and
 //! material worker. Old draw/source leases retire through PlayerArms' fence.
 use crate::{
-    assets::equipment::{Descriptor as Weapon, attachment::Descriptor},
+    assets::equipment::{
+        Descriptor as Weapon,
+        attachment::{Animation, Descriptor, Upgrade},
+    },
     gameplay::{
         entity_lifetime::{EntityId, LiveEntities, Stage},
+        player::equipment_attachment::{Binding, Selection},
         reference_frame::ReferenceFrame,
     },
 };
@@ -23,20 +27,49 @@ struct Pending {
     cancelled: Arc<AtomicBool>,
     task: Mutex<Task<Result<Arc<Descriptor>, String>>>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Key {
+    weapon: EntityId,
+    slot: usize,
+}
+impl Key {
+    fn ammo(weapon: EntityId) -> Self {
+        Self { weapon, slot: 0 }
+    }
+}
+struct UpgradePending {
+    cancelled: Arc<AtomicBool>,
+    task: Mutex<Task<Result<Vec<Arc<Upgrade>>, String>>>,
+}
+struct Upgrades {
+    paths: Vec<String>,
+    pending: Option<UpgradePending>,
+    definitions: Option<Vec<Arc<Upgrade>>>,
+    failed: Option<String>,
+    installed: bool,
+}
 struct Entry {
     weapon: Arc<Weapon>,
     ammunition: String,
     path: String,
-    tag: String,
+    selection: Selection,
+    binding: Option<Binding>,
+    explicit_identity: bool,
+    animation: Animation,
     visible: bool,
     child: Option<EntityId>,
     descriptor: Option<Arc<Descriptor>>,
     pending: Option<Pending>,
     failed: Option<String>,
+    material_requested: bool,
 }
 #[derive(Resource, Default)]
 struct Attachments {
-    live: HashMap<EntityId, Entry>,
+    live: HashMap<Key, Entry>,
+    upgrades: HashMap<EntityId, Upgrades>,
+    upgrade_weapons: HashMap<EntityId, Arc<Weapon>>,
+    magazine_final: HashMap<EntityId, (Arc<crate::gameplay::player::weapons::Ranged>, i32)>,
+    cancelled_upgrades: Vec<UpgradePending>,
     cancelled: Vec<Pending>,
     closing: bool,
     // Shared handles to the one source owner, captured while the setup batch
@@ -81,7 +114,7 @@ pub(super) fn select(
             return Err("ammunition acquisition is closed".into());
         }
         let path = attachment.filter(|path| !path.is_empty() && !path.eq_ignore_ascii_case("NULL"));
-        if let Some(entry) = owner.live.get_mut(&weapon_id) {
+        if let Some(entry) = owner.live.get_mut(&Key::ammo(weapon_id)) {
             if entry.ammunition == ammunition && path == Some(entry.path.as_str()) {
                 entry.visible = visible;
                 if let Some(child) = entry.child {
@@ -96,9 +129,9 @@ pub(super) fn select(
                 return Ok(());
             }
         }
-        if let Some(mut old) = owner.live.remove(&weapon_id) {
+        if let Some(mut old) = owner.live.remove(&Key::ammo(weapon_id)) {
             if let Err(error) = withdraw(world, &mut old, &mut owner.cancelled) {
-                owner.live.insert(weapon_id, old);
+                owner.live.insert(Key::ammo(weapon_id), old);
                 return Err(error);
             }
         }
@@ -108,7 +141,7 @@ pub(super) fn select(
         let tag = tag.ok_or("selected ammunition has no authored weapon bind tag")?;
         // Validate while this immutable rig is borrowed, before any worker can
         // reserve/publish child draw entities. There is no fallback socket.
-        weapon.rig.tag(tag)?;
+        let selection = Selection::read(&weapon.rig, tag)?;
         let live = world
             .get_resource::<LiveEntities>()
             .ok_or("ammunition has no managed owner")?;
@@ -130,12 +163,15 @@ pub(super) fn select(
             sources.acquire_attachment(&catalog, &requested, Some(&stopped))
         });
         owner.live.insert(
-            weapon_id,
+            Key::ammo(weapon_id),
             Entry {
                 weapon,
                 ammunition: ammunition.to_owned(),
                 path: path.to_owned(),
-                tag: tag.to_owned(),
+                selection,
+                binding: None,
+                explicit_identity: false,
+                animation: Animation::Static,
                 visible,
                 child: None,
                 descriptor: None,
@@ -144,6 +180,7 @@ pub(super) fn select(
                     task: Mutex::new(task),
                 }),
                 failed: None,
+                material_requested: false,
             },
         );
         Ok(())
@@ -173,7 +210,9 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
                 index += 1;
             }
         }
-        for (&weapon, entry) in &mut owner.live {
+        advance_upgrades(world, &mut owner)?;
+        for (key, entry) in &mut owner.live {
+            let weapon = key.weapon;
             if let Some(error) = &entry.failed {
                 return Err(error.clone());
             }
@@ -192,11 +231,36 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
             let Some(descriptor) = entry.descriptor.as_ref() else {
                 continue;
             };
+            if entry.binding.is_none() {
+                let Some((parent, _)) = super::equipment_identity::frame(world, weapon) else {
+                    continue;
+                };
+                let joint = entry
+                    .selection
+                    .joint()
+                    .and_then(|joint| {
+                        world
+                            .get_resource::<super::player::PlayerState>()
+                            .and_then(|state| state.player.equipment_joint_world(weapon, joint))
+                    })
+                    .map(frame);
+                entry.binding =
+                    entry
+                        .selection
+                        .bind(entry.explicit_identity, parent, joint, parent);
+                if entry.binding.is_none() {
+                    continue;
+                }
+            }
             let child = match entry.child {
                 Some(child) => child,
                 None => {
-                    let child =
-                        super::equipment_identity::admit_ammunition(world, descriptor, weapon)?;
+                    let child = super::equipment_identity::admit_attachment(
+                        world,
+                        &format!("{}:{}", entry.ammunition, key.slot),
+                        descriptor,
+                        weapon,
+                    )?;
                     entry.child = Some(child);
                     child
                 }
@@ -206,12 +270,16 @@ pub(super) fn advance(world: &mut World) -> Result<(), String> {
             {
                 return Err(error);
             }
-            super::runtime_materials::equipment_admission::request_attachment(
-                world,
-                child,
-                descriptor.clone(),
-            )?;
+            if !entry.material_requested {
+                super::runtime_materials::equipment_admission::request_attachment(
+                    world,
+                    child,
+                    descriptor.clone(),
+                )?;
+                entry.material_requested = true;
+            }
         }
+        advance_magazine_final(world, &mut owner)?;
         super::equipment_identity::poll_retirements(world)?;
         Ok(())
     })();
@@ -229,7 +297,7 @@ pub(super) fn validate(
     let owner = world
         .get_resource::<Attachments>()
         .ok_or("ammunition owner was retired")?;
-    let (&weapon, entry) = owner
+    let (key, entry) = owner
         .live
         .iter()
         .find(|(_, entry)| entry.child == Some(child))
@@ -244,11 +312,13 @@ pub(super) fn validate(
     if !Arc::ptr_eq(descriptor, prepared.descriptor()) {
         return Err("prepared ammunition source generation changed".into());
     }
-    entry.weapon.rig.tag(&entry.tag)?;
+    if entry.binding.is_none() {
+        return Err("prepared child has no actual parent binding".into());
+    }
     let live = world
         .get_resource::<LiveEntities>()
         .ok_or("prepared ammunition managed owner is absent")?;
-    if live.stage(child) != Some(Stage::Spawned) || live.parent(child)? != Some(weapon) {
+    if live.stage(child) != Some(Stage::Spawned) || live.parent(child)? != Some(key.weapon) {
         return Err("prepared ammunition identity/binding is stale".into());
     }
     if world
@@ -269,18 +339,19 @@ pub(super) fn publish(
 ) -> Result<(), String> {
     validate(world, child, &prepared)?;
     let owner = world.resource::<Attachments>();
-    let entry = owner
+    let (key, entry) = owner
         .live
-        .values()
-        .find(|entry| entry.child == Some(child))
+        .iter()
+        .find(|(_, entry)| entry.child == Some(child))
         .ok_or("ammunition request disappeared")?;
     let weapon = entry.weapon.clone();
-    let tag = entry.tag.clone();
+    let binding = entry.binding.ok_or("prepared child binding disappeared")?;
+    let parent = key.weapon;
     let visible = entry.visible;
     world
         .resource_mut::<super::player_arms::PlayerArms>()
         .attachments
-        .publish(child, weapon, &tag, prepared, visible)?;
+        .publish(child, parent, weapon, binding, prepared, visible)?;
     super::equipment_identity::mark_rendered(world, child)
 }
 
@@ -292,7 +363,7 @@ pub(super) fn set_visible(
     let Some(mut owner) = world.get_resource_mut::<Attachments>() else {
         return Ok(());
     };
-    let Some(entry) = owner.live.get_mut(&weapon) else {
+    let Some(entry) = owner.live.get_mut(&Key::ammo(weapon)) else {
         return Ok(());
     };
     entry.visible = visible;
@@ -311,7 +382,7 @@ pub(super) fn set_visible(
 pub(super) fn visible(world: &World, weapon: EntityId) -> bool {
     let Some(child) = world
         .get_resource::<Attachments>()
-        .and_then(|owner| owner.live.get(&weapon))
+        .and_then(|owner| owner.live.get(&Key::ammo(weapon)))
         .and_then(|entry| entry.child)
     else {
         return false;
@@ -328,7 +399,12 @@ pub(super) fn startup_pending(world: &World) -> bool {
     let Some(owner) = world.get_resource::<Attachments>() else {
         return false;
     };
-    !owner.cancelled.is_empty()
+    !owner.cancelled_upgrades.is_empty()
+        || owner
+            .upgrades
+            .values()
+            .any(|upgrade| upgrade.pending.is_some() || !upgrade.installed)
+        || !owner.cancelled.is_empty()
         || owner.live.values().any(|entry| {
             entry.pending.is_some()
                 || entry.child.is_none()
@@ -342,13 +418,19 @@ pub(super) fn startup_pending(world: &World) -> bool {
 
 pub(super) fn startup_error(world: &World) -> Option<String> {
     let owner = world.get_resource::<Attachments>()?;
-    owner.live.values().find_map(|entry| {
-        entry.failed.clone().or_else(|| {
-            entry.child.and_then(|id| {
-                super::runtime_materials::equipment_admission::attachment_failure(world, id)
+    owner
+        .upgrades
+        .values()
+        .find_map(|upgrade| upgrade.failed.clone())
+        .or_else(|| {
+            owner.live.values().find_map(|entry| {
+                entry.failed.clone().or_else(|| {
+                    entry.child.and_then(|id| {
+                        super::runtime_materials::equipment_admission::attachment_failure(world, id)
+                    })
+                })
             })
         })
-    })
 }
 
 /// The caller passes the current player animation owner's actual tag frame.
@@ -362,11 +444,24 @@ pub(super) fn current_frame(
     if !visible(world, weapon) {
         return None;
     }
-    let (position, rotation) = tag_frame?;
-    Some(ReferenceFrame {
-        position: position.to_array(),
-        basis: rotation.to_cols_array_2d(),
-    })
+    if let Some(state) = world.get_resource::<super::player::PlayerState>() {
+        return current_frame_for_player(world, weapon, &state.player);
+    }
+    let entry = world
+        .get_resource::<Attachments>()?
+        .live
+        .get(&Key::ammo(weapon))?;
+    match entry.selection {
+        // The caller already resolved this authored model tag this frame.
+        Selection::Tag { .. } => tag_frame.map(frame),
+        Selection::Entity => {
+            let (parent, _) = super::equipment_identity::frame(world, weapon)?;
+            entry.binding?.world(parent, None)
+        }
+        // A scoped caller must supply its actual Player to the explicit API
+        // for bone-only bindings. Previous-frame render poses are not used.
+        Selection::Bone { .. } => None,
+    }
 }
 
 fn withdraw(
@@ -410,15 +505,33 @@ pub(super) fn remove(world: &mut World, weapon: EntityId) -> Result<(), String> 
     let Some(mut owner) = world.remove_resource::<Attachments>() else {
         return Ok(());
     };
-    let result = if let Some(mut entry) = owner.live.remove(&weapon) {
-        let result = withdraw(world, &mut entry, &mut owner.cancelled);
-        if result.is_err() {
-            owner.live.insert(weapon, entry);
+    let result = (|| {
+        owner.magazine_final.remove(&weapon);
+        owner.upgrade_weapons.remove(&weapon);
+        if let Some(mut upgrades) = owner.upgrades.remove(&weapon) {
+            if let Some(job) = upgrades.pending.take() {
+                job.cancelled.store(true, Ordering::Release);
+                owner.cancelled_upgrades.push(job);
+            }
         }
-        result
-    } else {
+        let keys = owner
+            .live
+            .keys()
+            .filter(|key| key.weapon == weapon)
+            .copied()
+            .collect::<Vec<_>>();
+        for key in keys {
+            let mut entry = owner
+                .live
+                .remove(&key)
+                .ok_or("child retirement entry disappeared")?;
+            if let Err(error) = withdraw(world, &mut entry, &mut owner.cancelled) {
+                owner.live.insert(key, entry);
+                return Err(error);
+            }
+        }
         Ok(())
-    };
+    })();
     world.insert_resource(owner);
     result
 }
@@ -429,6 +542,12 @@ pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
     };
     owner.closing = true;
     let result = (|| {
+        for (_, mut upgrade) in owner.upgrades.drain() {
+            if let Some(job) = upgrade.pending.take() {
+                job.cancelled.store(true, Ordering::Release);
+                owner.cancelled_upgrades.push(job);
+            }
+        }
         let weapons = owner.live.keys().copied().collect::<Vec<_>>();
         for weapon in weapons {
             let entry = owner
@@ -438,6 +557,8 @@ pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
             withdraw(world, entry, &mut owner.cancelled)?;
         }
         owner.live.clear();
+        owner.upgrade_weapons.clear();
+        owner.magazine_final.clear();
         let mut index = 0;
         while index < owner.cancelled.len() {
             if completed(&mut owner.cancelled[index])?.is_some() {
@@ -446,10 +567,386 @@ pub(super) fn shutdown(world: &mut World) -> Result<bool, String> {
                 index += 1;
             }
         }
-        Ok(owner.cancelled.is_empty() && super::equipment_identity::poll_retirements(world)?)
+        poll_cancelled_upgrades(&mut owner.cancelled_upgrades)?;
+        Ok(owner.cancelled.is_empty()
+            && owner.cancelled_upgrades.is_empty()
+            && super::equipment_identity::poll_retirements(world)?)
     })();
     if !matches!(result, Ok(true)) {
         world.insert_resource(owner);
     }
     result
+}
+
+fn frame((position, rotation): (Vec3, Mat3)) -> ReferenceFrame {
+    ReferenceFrame {
+        position: position.to_array(),
+        basis: rotation.to_cols_array_2d(),
+    }
+}
+fn poll_cancelled_upgrades(jobs: &mut Vec<UpgradePending>) -> Result<(), String> {
+    let mut index = 0;
+    while index < jobs.len() {
+        let done = {
+            let mut task = jobs[index]
+                .task
+                .lock()
+                .map_err(|_| "upgrade source task is poisoned")?;
+            block_on(poll_once(&mut *task)).is_some()
+        };
+        if done {
+            jobs.swap_remove(index);
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+/// 61a2b0 builds the authored default-upgrade vector once during the real
+/// owned actor Start. Both child channels survive holster and retire on depletion.
+pub(super) fn default_upgrades(
+    world: &mut World,
+    weapon: EntityId,
+    descriptor: Arc<Weapon>,
+    paths: &[String],
+) -> Result<(), String> {
+    let mut owner = world
+        .remove_resource::<Attachments>()
+        .ok_or("equipment child owner absent")?;
+    let result = (|| {
+        if owner.closing {
+            return Err("equipment child admission closed".into());
+        }
+        if let Some(previous) = owner.upgrades.get(&weapon) {
+            if previous.paths == paths {
+                return Ok(());
+            }
+            return Err("default upgrade list changed without native upgrade replacement".into());
+        }
+        if paths.is_empty() {
+            owner.upgrades.insert(
+                weapon,
+                Upgrades {
+                    paths: Vec::new(),
+                    pending: None,
+                    definitions: Some(Vec::new()),
+                    failed: None,
+                    installed: true,
+                },
+            );
+            return Ok(());
+        }
+        let (catalog, sources) = owner
+            .source
+            .clone()
+            .ok_or("upgrade canonical source owner absent")?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = cancelled.clone();
+        let requested = paths.to_vec();
+        let paths = requested.clone();
+        let task = IoTaskPool::get().spawn(async move {
+            let stopped = || cancellation.load(Ordering::Acquire);
+            let mut sources = sources
+                .lock()
+                .map_err(|_| "upgrade source owner poisoned")?;
+            requested
+                .iter()
+                .map(|path| sources.acquire_upgrade(&catalog, path, Some(&stopped)))
+                .collect()
+        });
+        owner.upgrades.insert(
+            weapon,
+            Upgrades {
+                paths,
+                pending: Some(UpgradePending {
+                    cancelled,
+                    task: Mutex::new(task),
+                }),
+                definitions: None,
+                failed: None,
+                installed: false,
+            },
+        );
+        // Keep the immutable actual weapon descriptor while the source job is
+        // pending; the child entries take the same lease at publication.
+        owner.upgrade_weapons.insert(weapon, descriptor);
+        Ok(())
+    })();
+    world.insert_resource(owner);
+    result
+}
+fn advance_upgrades(world: &mut World, owner: &mut Attachments) -> Result<(), String> {
+    poll_cancelled_upgrades(&mut owner.cancelled_upgrades)?;
+    for (&weapon, upgrades) in &mut owner.upgrades {
+        if let Some(error) = &upgrades.failed {
+            return Err(error.clone());
+        }
+        if let Some(pending) = upgrades.pending.as_mut() {
+            let result = {
+                let mut task = pending.task.lock().map_err(|_| "upgrade task poisoned")?;
+                block_on(poll_once(&mut *task))
+            };
+            if let Some(result) = result {
+                upgrades.pending = None;
+                match result {
+                    Ok(value) => upgrades.definitions = Some(value),
+                    Err(error) => {
+                        upgrades.failed = Some(error.clone());
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        if upgrades.installed {
+            continue;
+        }
+        let Some(definitions) = upgrades.definitions.as_ref() else {
+            continue;
+        };
+        let descriptor = owner
+            .upgrade_weapons
+            .get(&weapon)
+            .ok_or("upgrade lost actual parent descriptor")?;
+        // Validate every binding before publishing any child, preserving native
+        // vector and static/entity channel ordering.
+        let selections = definitions
+            .iter()
+            .map(|upgrade| Selection::read(&descriptor.rig, &upgrade.tag))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, upgrade) in definitions.iter().enumerate() {
+            for (channel, child) in upgrade.attachments.iter().enumerate() {
+                let Some(child) = child else { continue };
+                owner.live.insert(
+                    Key {
+                        weapon,
+                        slot: 1 + index * 2 + channel,
+                    },
+                    Entry {
+                        weapon: descriptor.clone(),
+                        ammunition: upgrade.declaration.clone(),
+                        path: child.entity.clone(),
+                        selection: selections[index],
+                        binding: None,
+                        explicit_identity: true,
+                        animation: upgrade.animation,
+                        visible: true,
+                        child: None,
+                        descriptor: Some(child.clone()),
+                        pending: None,
+                        failed: None,
+                        material_requested: false,
+                    },
+                );
+            }
+        }
+        upgrades.installed = true;
+    }
+    Ok(())
+}
+/// 61a650/61b4c0: only actual entitydef children with an animation component
+/// receive the requested mode. Static model children are never synthetic rigs.
+pub(super) fn animate_upgrade(
+    world: &mut World,
+    weapon: EntityId,
+    mode: u8,
+    play: bool,
+) -> Result<(), String> {
+    world.resource_scope(|world, mut arms: Mut<super::player_arms::PlayerArms>| {
+        let Some(owner) = world.get_resource::<Attachments>() else {
+            return Ok(());
+        };
+        for (key, entry) in &owner.live {
+            if key.weapon == weapon && key.slot != 0 && entry.animation as u8 == mode {
+                if let Some(id) = entry.child {
+                    arms.attachments.animate(id, play, mode == 1 || mode == 2)?;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+/// 639410(param,5) chooses the first authored upgrade, not the first ready
+/// child. Returning false retains44f240's pending magazine command.
+pub(super) fn animate_magazine(
+    world: &mut World,
+    weapon: EntityId,
+    alias: &str,
+    mode: crate::gameplay::player::animation::PlayMode,
+) -> Result<bool, String> {
+    let Some(owner) = world.get_resource::<Attachments>() else {
+        return Ok(false);
+    };
+    let Some(upgrades) = owner.upgrades.get(&weapon) else {
+        return Ok(false);
+    };
+    let Some(definitions) = upgrades.definitions.as_ref() else {
+        return Ok(false);
+    };
+    let Some(index) = definitions
+        .iter()
+        .position(|upgrade| upgrade.animation == Animation::Magazine)
+    else {
+        return Ok(true);
+    };
+    let child = owner
+        .live
+        .get(&Key {
+            weapon,
+            slot: 1 + index * 2 + 1,
+        })
+        .and_then(|entry| entry.child);
+    let Some(child) = child else { return Ok(false) };
+    let Some(mut arms) = world.get_resource_mut::<super::player_arms::PlayerArms>() else {
+        return Ok(false);
+    };
+    arms.attachments.animate_alias(child, alias, mode)
+}
+
+/// Same-frame native fire consumer while PlayerState may be borrowed out of
+/// World. Uses the actual managed equipment joint cache, never render history.
+pub(super) fn current_frame_for_player(
+    world: &World,
+    weapon: EntityId,
+    player: &crate::gameplay::player::Player,
+) -> Option<ReferenceFrame> {
+    if !visible(world, weapon) {
+        return None;
+    }
+    let entry = world
+        .get_resource::<Attachments>()?
+        .live
+        .get(&Key::ammo(weapon))?;
+    let binding = entry.binding?;
+    let (parent, _) = super::equipment_identity::frame(world, weapon)?;
+    let joint = binding
+        .joint
+        .and_then(|joint| player.equipment_joint_world(weapon, joint))
+        .map(frame);
+    binding.world(parent, joint)
+}
+
+/// Actual44e720 capacity recomputation leaves44f240 pending until the first
+/// type5 child's animation component is started. Do not call for every round.
+pub(super) fn queue_magazine_final(
+    world: &mut World,
+    weapon: EntityId,
+    ranged: Arc<crate::gameplay::player::weapons::Ranged>,
+    magazine: i32,
+) -> Result<(), String> {
+    let mut owner = world
+        .get_resource_mut::<Attachments>()
+        .ok_or("equipment child owner absent")?;
+    owner.magazine_final.insert(weapon, (ranged, magazine));
+    Ok(())
+}
+fn magazine_child(owner: &Attachments, weapon: EntityId) -> Option<Option<EntityId>> {
+    let upgrades = owner.upgrades.get(&weapon)?;
+    let definitions = upgrades.definitions.as_ref()?;
+    let Some(index) = definitions
+        .iter()
+        .position(|upgrade| upgrade.animation == Animation::Magazine)
+    else {
+        return Some(None);
+    };
+    let child = owner
+        .live
+        .get(&Key {
+            weapon,
+            slot: 1 + index * 2 + 1,
+        })?
+        .child?;
+    Some(Some(child))
+}
+fn advance_magazine_final(world: &mut World, owner: &mut Attachments) -> Result<(), String> {
+    let Some(mut arms) = world.get_resource_mut::<super::player_arms::PlayerArms>() else {
+        return Ok(());
+    };
+    // No temporary Vec in active Think. Deferred commands are authored events,
+    // not repeated requests allocated each frame.
+    let live = &owner.live;
+    let upgrades = &owner.upgrades;
+    owner.magazine_final.retain(|weapon, (ranged, magazine)| {
+        let Some(upgrades) = upgrades.get(weapon) else {
+            return true;
+        };
+        let Some(definitions) = upgrades.definitions.as_ref() else {
+            return true;
+        };
+        let Some(index) = definitions
+            .iter()
+            .position(|upgrade| upgrade.animation == Animation::Magazine)
+        else {
+            return false;
+        };
+        let Some(child) = live
+            .get(&Key {
+                weapon: *weapon,
+                slot: 1 + index * 2 + 1,
+            })
+            .and_then(|entry| entry.child)
+        else {
+            return true;
+        };
+        if !arms.attachments.animation_ready(child) {
+            return true;
+        }
+        if let Some((alias, mode)) = ranged.magazine_final_animation(*magazine) {
+            if arms.attachments.has_alias(child, alias) {
+                // Native44f240 ignores44e920's lookup result and clears the
+                // pending flag once the real animation component is ready.
+                let _ = arms.attachments.animate_alias(child, alias, mode);
+            }
+        }
+        false
+    });
+    Ok(())
+}
+/// 44f3d0: the Fire animation callback changes only the real magazine child's
+/// pose. Round consumption remains the weapon Runtime's independent callback.
+pub(super) fn magazine_fire(
+    world: &mut World,
+    weapon: EntityId,
+    ranged: &crate::gameplay::player::weapons::Ranged,
+    magazine: i32,
+) -> Result<(), String> {
+    let Some((alias, mode)) = ranged.magazine_fire_animation(magazine) else {
+        return Ok(());
+    };
+    match animate_magazine(world, weapon, alias, mode)? {
+        true => Ok(()),
+        false => Err("gun magazine Fire animation component is not started".into()),
+    }
+}
+/// 44e7b0/44f470: try the authored reload alias, then its permitted fire-alias
+/// fallback. Missing lookup is an original error, never a rest-pose substitute.
+pub(super) fn magazine_reload(
+    world: &mut World,
+    weapon: EntityId,
+    ranged: &crate::gameplay::player::weapons::Ranged,
+    capacity: i32,
+    total: u32,
+) -> Result<(), String> {
+    let Some(owner) = world.get_resource::<Attachments>() else {
+        return Ok(());
+    };
+    let Some(child) = magazine_child(owner, weapon) else {
+        return Err("gun magazine Reload animation component is not started".into());
+    };
+    let Some(child) = child else { return Ok(()) };
+    let mut arms = world.resource_mut::<super::player_arms::PlayerArms>();
+    if !arms.attachments.animation_ready(child) {
+        return Err("gun magazine Reload animation component is not started".into());
+    }
+    for (alias, mode) in ranged
+        .magazine_reload_animations(capacity, total)
+        .into_iter()
+        .flatten()
+    {
+        if arms.attachments.has_alias(child, alias) {
+            arms.attachments.animate_alias(child, alias, mode)?;
+            return Ok(());
+        }
+    }
+    Err("gun magazine Reload has no authored animation alias".into())
 }
