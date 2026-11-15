@@ -8,7 +8,7 @@ use crate::gameplay::{game_clock_runtime::ClockRuntime, powers::{world_effects::
 use super::usable_effects::{EffectRequests,EntityPlacement};
 use crate::{assets::entities::Value, gameplay::{
     collision_filter::QueryFilter,
-    entity_lifetime::{EntityId, LiveEntities, Stage},
+    entity_lifetime::{EntityId, LiveEntities},
     navigation::CollisionWorld,
     player::{Player, physics::PlayerPhysics, camera::View, sensors::{MantleDecl, MantleSensor},
         character_proxy::{PlayerWorld, WorldHit}},
@@ -76,12 +76,12 @@ impl Runtime {
     /// The returned target is consumed by the established FX owner; it does
     /// not allocate a target actor or mutate player position.
     pub fn aim(&mut self, player: &mut Player, view: &View, queries: &dyn PlayerWorld,
-        collision: &CollisionWorld, live: &LiveEntities, interactions: Option<&Interactions>, scene: Option<&PhysicsScene>) -> bool {
+        _collision: &CollisionWorld, _live: &LiveEntities, _interactions: Option<&Interactions>, _scene: Option<&PhysicsScene>) -> bool {
         if self.mantle.is_none() { self.mantle = player.take_blink_mantle(); }
         let Some(mantle) = self.mantle.as_mut() else { return false };
         let shapes = shape_info(&player.physics);
         let input = input(player, view, &shapes);
-        let mut world = World { queries, collision, live, interactions, scene, physics: &player.physics, mantle, hits: &mut self.hits };
+        let mut world = World { queries, physics: &player.physics, mantle, hits: &mut self.hits };
         self.blink.aim(&mut world, &input);
         true
     }
@@ -202,10 +202,6 @@ fn input<'a>(player: &Player, view: &View, shapes: &'a [ShapeInfo; 20]) -> Blink
 
 struct World<'a> {
     queries: &'a dyn PlayerWorld,
-    collision: &'a CollisionWorld,
-    live: &'a LiveEntities,
-    interactions: Option<&'a Interactions>,
-    scene: Option<&'a PhysicsScene>,
     physics: &'a PlayerPhysics,
     mantle: &'a mut MantleSensor,
     hits: &'a mut Vec<WorldHit>,
@@ -223,15 +219,12 @@ impl BlinkWorld for World<'_> {
             Mat3::IDENTITY, from, direction * length, 0.0, self.hits, None);
         out.extend(self.hits.iter().map(hit));
     }
-    fn blink_breakable(&self, hit: &Hit) -> Option<EntityId> {
-        if !self.collision.physics_material(hit.key).is_some_and(|material| material.can_blink_through()) { return None; }
-        let name = self.collision.owner_name(hit.body.checked_sub(1)?)?;
-        if !self.interactions?.is_breakable(name) { return None; }
-        // The actual admitted Health receiver is required until the native
-        // Breakable owner can accept its chunk/FX destruction path. A source
-        // name without a real receiver never becomes a fabricated target.
-        let id = self.scene?.named_damage_target(self.live, name).ok()??;
-        (self.live.stage(id) == Some(Stage::Spawned)).then_some(id)
+    fn blink_breakable(&self, _hit: &Hit) -> Option<EntityId> {
+        // 14061e1a0 requires material bit0x04 AND an actual started
+        // arkCpntBreakable from 140877720. PhysicsScene has no Breakable
+        // pool/lifecycle yet. Authored metadata and a Health receiver do
+        // not admit this component, so its geometry remains blocking.
+        None
     }
     fn mantle(&mut self, origin: Vec3, axis: Mat3) -> Option<MantleTarget> {
         self.mantle.update_at(self.queries, self.physics, origin, axis);
