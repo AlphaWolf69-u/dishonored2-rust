@@ -64,6 +64,14 @@ effects, not invented target lists. Status: `ported` magazine/event state;
 recoil and lock-on sensor consumers require their corresponding owners`.
 Their output must be connected before claiming firing/damage visual parity.
 
+Chained melee scene starts use the same Midnight owner at an authored offset
+(`86c6a0 -> 7d91c0 -> 7d2160`). Milliseconds are truncated from seconds; an
+offset beyond the first scene's length is rejected as the original does.
+Initial point/SFX selection uses that offset (`7dfbd0`), earlier point keys
+are not replayed, and the first update does not repeat an initialized point.
+Status: `ported` demanded chained-offset playback; no separate pose/clock or
+duplicated clip bank was introduced. Visual checks remain unperformed.
+
 What the rewrite loads of each resource class the original loads, and how
 far each class's lifecycle is ported. Rules: `AGENTS.md`, "Resource parity".
 Status words: `ported`, `verified` (against a capture or the original's

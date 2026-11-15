@@ -12,6 +12,7 @@ pub mod power_states;
 pub mod combat;
 pub mod consumables;
 pub mod slash_rules;
+pub mod equipment_states;
 pub mod body;
 pub mod camera;
 pub mod character_proxy;
@@ -134,6 +135,7 @@ pub struct Player {
     drowning_damage_enabled: bool,
     mana: mana::Mana,
     powers: power_states::Runtime,
+    equipment_changes: equipment_states::Runtime,
     pub weapon: Option<weapons::Runtime>,
     weapon_identity: Option<String>,
     holstered_weapons: std::collections::HashMap<String, weapons::Runtime>,
@@ -526,6 +528,7 @@ impl Player {
             drowning_damage_enabled: setup.drowning_damage_enabled,
             mana,
             powers: Default::default(),
+            equipment_changes: Default::default(),
             weapon: None,
             weapon_identity: None,
             holstered_weapons: Default::default(),
@@ -649,6 +652,7 @@ impl Player {
                     velocity,
                     attributes: &self.attributes,
                     powers: &mut self.powers,
+                    equipment_changes: &mut self.equipment_changes,
                     mana: &mut self.mana,
                     mana_replenishes: self.mana_replenishes,
                     weapon: &mut self.weapon,
@@ -739,6 +743,8 @@ impl Player {
         }
         if !self.health.is_dead() { self.controller.apply_mapping(&mut self.machine); }
         self.machine.think(&mut frame!());
+        self.apply_equipment_changes();
+        self.machine.advance_equipment_changes(&mut frame!());
         if let (Some(weapon), Some(inventory)) = (&mut self.weapon, inventory.as_deref_mut()) {
             weapon.flush_pending_fire(inventory);
         }

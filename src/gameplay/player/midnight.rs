@@ -319,7 +319,7 @@ impl Midnight {
     /// containing zero. Zero-duration SFX clips fire on the next time step.
     fn initial_events(inst: &Instance, out: &mut Vec<PointEvent>) {
         // 7dfbd0 selects forward point keys at the scene's initial time.
-        out.extend(inst.events.iter().filter(|(event, _)| event.time_ms == 0).map(|(event, target)|
+        out.extend(inst.events.iter().filter(|(event, _)| event.time_ms == inst.time).map(|(event, target)|
             PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
                 class: event.class.clone(), properties: event.properties.clone() }));
     }
@@ -328,8 +328,8 @@ impl Midnight {
         for sound in &mut inst.sounds {
             let s = &sound.sound;
             let selected = if s.key.is_clip {
-                s.key.time_ms <= 0 && s.key.time_ms.saturating_add(s.key.duration_ms).saturating_sub(1) >= 0
-            } else { s.key.time_ms == 0 };
+                s.key.time_ms <= inst.time && s.key.time_ms.saturating_add(s.key.duration_ms).saturating_sub(1) >= inst.time
+            } else { s.key.time_ms == inst.time };
             if selected {
                 out.push(SoundRequest::Post { event: s.event, emitter: s.emitter });
                 inst.playing_sounds.insert((s.event, s.emitter), s.key.stop_on_interruption);
@@ -455,7 +455,16 @@ impl Midnight {
 
     /// `parts` is the cast mask (1 body, 2 left arm, 4 right arm).
     pub fn start_with_parts(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8) -> Result<u32, String> {
+        self.start_with_parts_at_seconds(prepared, md6, rate, cast, parts, 0.0)
+    }
+
+    /// 86c6a0 -> 7d91c0 -> 7d2160: chained attacks start at the authored
+    /// scene offset. Keys before that time are not replayed; points exactly
+    /// at the offset and clips containing it initialize there (7dfbd0).
+    pub fn start_with_parts_at_seconds(&mut self, prepared: &Arc<PreparedScene>, md6: [&str; TARGETS], rate: f32, cast: Cast, parts: u8, seconds: f32) -> Result<u32, String> {
         let Some(index) = Self::resolve(prepared, prepared.decl.first, md6)? else { return Ok(0) };
+        let time = (seconds * 1000.0) as i32;
+        if time > prepared.decl.scenes[index].length_ms { return Err("Midnight StartTime is superior to first scene length".into()); }
         let (clips, events) = self.enter(prepared, index, cast, parts, md6)?;
         // A scene on a tree another instance plays interrupts it there.
         let handles: Vec<u32> = self.instances.iter().filter(|i| i.parts & parts != 0).map(|i| i.handle).collect();
@@ -465,7 +474,7 @@ impl Midnight {
         self.next_handle = self.next_handle.wrapping_add(1).max(1);
         let sounds = Self::schedule_sounds(prepared, index, parts);
         let mut inst = Instance {
-            handle: self.next_handle, scene: prepared.clone(), current: index, time: 0, abs: 0, carry: 0.0, rate,
+            handle: self.next_handle, scene: prepared.clone(), current: index, time, abs: 0, carry: 0.0, rate,
             clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.map(str::to_owned),
         };
         Self::initial_sounds(&mut inst, &mut self.sound_requests);
@@ -516,7 +525,7 @@ impl Midnight {
             for (event, target) in &inst.events {
                 let k = event.time_ms;
                 let entered = (from <= k && k < to) || (k == to && ended);
-                if entered && !(k == 0 && first_step) {
+                if entered && !(k == from && first_step) {
                     messages.push((event.event.clone(), inst.handle));
                     self.point_events.push(PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
                         class: event.class.clone(), properties: event.properties.clone() });
