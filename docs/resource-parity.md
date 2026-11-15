@@ -10235,3 +10235,49 @@ are re-decoded by this state owner. There is no measured optimization claim.
   quantities. Their actual producer must register the source entity first.
 - Validation: source inspection and Rust syntax parsing only; no compilation,
   tests, gameplay launches, visual comparisons or performance measurements.
+
+### Melee player-action animation and equipment lifetime (2026-11-15)
+
+- Owners: `gameplay/player/combat.rs`, existing state machine, and canonical
+  `assets/slash_rules.rs` / `gameplay/player/slash_rules.rs`. Prediction:
+  retained typed declarations and one rule instance; no action-time archive
+  reads, generic declaration-tree retention, per-frame string cloning or
+  duplicate animation/model caches. Scene payloads are demanded only when
+  actual melee equipment is selected. This is not a measured speedup claim.
+- `ported`: Slash39/Block44 constructor masks/defaults `14086a710` /
+  `140858d50`, actual right-hand melee admission `14086c3e0` / `140859870`,
+  ordinary no-NPC-target slash selection/playback `14086cbf0`, action-held
+  focus admission from real Midnight message154 `14086d3d0` / `14086d060`,
+  focus-in/release/finish `14086cf10` / `14086bec0` / `1408551c0`, and
+  authored scene start offsets through the existing Midnight owner.
+- `ported`: the installed rule-handler's original order and persistent
+  sequence cursors; selected outcomes retain their shared declaration lease
+  and indices, not deep copies of seven resource path strings per swing.
+  Optional speed attribute `ARK_ATTRIBUTE_SLASH_SPEED_FACTOR` keeps the
+  native missing-index default while preserving an actual stored zero.
+- `ported`: ranged-dispersion modifier acquisition/removal `14086c6a0` /
+  `14086cf10` / `14086bc60` via the existing player attribute owner. The
+  constructor's `+d0=1` is increase, not percent (`14060b580`).
+- `ported`: Block in/idle/out, sneak variants, release and left-hand
+  restriction/restore `140859d10` / `140859710` / `14085a160` /
+  `140859640`. Dynamic body-part code locks retain one counted request per
+  actual state/part (`140854050/090`, `1408029f0/2a10`); they do not replace
+  the authored mode rules or hide unrelated arms.
+- `ported`: actual equipped-sword CatFall variant selection `14085a910`,
+  equipment restrictions/fast restores `14085b490` / `14085b1e0`, and
+  non-low Mantle's used-hand equipment holds/restores `14085eaf0` /
+  `14085fd40`. Bare-hand sensor selection, movement, retargeting and collision
+  remain in their existing owners. Sword-only clip payloads remain deferred
+  until a sword is acquired; no extra payloads enter unarmed startup.
+- `blocked: NPC target-dependent melee`: fatality, throw-hit, blink-assault,
+  recoil/parry/hit reactions, target-facing and focus LOS/speed restrictions
+  need the real combat-target/throw-hit/LOS and NPC attack owners. The current
+  free-swing branch supplies no fabricated target or substitute damage ray.
+  Next step: connect those owners to the existing typed rule context/events.
+- `blocked: carried-object CatFall restore reasons`: medium/large carry and
+  grapple owners add restore reasons in `14085b490`; no such carried entity
+  is invented in the equipment-only path.
+- Validation: original decompilation/reflection/vtable and source review,
+  with a whitespace/diff check. No tests, builds, visible launches, gameplay
+  comparison or measured performance claims in this agent batch. Parent
+  owns the combined feature build and final validation.

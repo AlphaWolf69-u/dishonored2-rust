@@ -19,6 +19,11 @@ use std::collections::HashMap;
 
 type Fields = [(String, Value)];
 
+/// arkDeclCpntPlayerController +0x68; ctor 7f7a60, metadata 14173e090.
+pub fn trigger_threshold(fields: &Fields) -> Result<f32, String> {
+    number(fields, "m_triggerThreshold", 0.1)
+}
+
 fn get<'a>(fields: &'a Fields, key: &str) -> Option<&'a Value> {
     fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
@@ -236,6 +241,11 @@ pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Resul
 pub fn state_id(name: &str) -> Option<StateId> {
     let value = match name.strip_prefix("PLAYER_STATE_")? {
         "READ_NOTE" => 52,
+        "EQUIP_CHANGE_RIGHT_HAND" => 53,
+        "DRAW_RIGHT_HAND" => 54,
+        "EQUIP_CHANGE_LEFT_HAND" => 64,
+        "DRAW_LEFT_HAND" => 65,
+        "UNDRAW" => 81,
         "FIRE_WEAPON" => 56,
         "CANCEL_FIRE_WEAPON" => 57,
         "REQUEST_RELOAD_WEAPON" => 58,
@@ -260,6 +270,7 @@ pub fn state_id(name: &str) -> Option<StateId> {
         "PEEKING" => 24,
         "GRAPPLE" => 27,
         "SLASH" => 39,
+        "BLOCK" => 44,
         "NULL" => 91,
         "ANY" => 92,
         _ => return None,
@@ -538,14 +549,20 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
 enum SupportedDefaultState {
     Dead, ReadNote, UsePower, Blinking, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
-    FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon,
+    FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon, Slash, Block,
+    EquipChange, DrawEquipment, Undraw,
 }
 
 fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
     Some(match kind {
         "playerstatedead" => SupportedDefaultState::Dead,
         "playerstatereadnote" => SupportedDefaultState::ReadNote,
+        "playerstateequipchange" => SupportedDefaultState::EquipChange,
+        "playerstatedraw" => SupportedDefaultState::DrawEquipment,
+        "playerstateundraw" => SupportedDefaultState::Undraw,
         "playerstatefireweapon" => SupportedDefaultState::FireWeapon,
+        "playerstateslash" => SupportedDefaultState::Slash,
+        "playerstateblock" => SupportedDefaultState::Block,
         "playerstatecancelfireweapon" => SupportedDefaultState::CancelFireWeapon,
         "playerstaterequestreloadweapon" => SupportedDefaultState::RequestReloadWeapon,
         "playerstatereloadweapon" => SupportedDefaultState::ReloadWeapon,
@@ -580,8 +597,23 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
         let kind = match supported {
             SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
+            SupportedDefaultState::EquipChange => {
+                let definition = super::equipment_states::Declaration::read(fields)?;
+                if result.iter().any(|state: &StateDecl| state.id == definition.state()) { continue; }
+                Kind::EquipChange(std::sync::Arc::new(definition))
+            }
+            SupportedDefaultState::DrawEquipment => {
+                let id = atom(fields, "m_id").and_then(state_id).unwrap_or(StateId::DRAW_LEFT);
+                if result.iter().any(|state: &StateDecl| state.id == id) { continue; }
+                Kind::DrawEquipment(id == StateId::DRAW_LEFT)
+            }
+            SupportedDefaultState::Undraw => Kind::Undraw(number(fields, "m_holdDuration", 1.0)?),
             SupportedDefaultState::FireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::FireWeapon(_))) =>
                 Kind::FireWeapon(std::sync::Arc::new(super::combat::FireDecl::read(fields)?)),
+            SupportedDefaultState::Slash if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Slash(_))) =>
+                Kind::Slash(std::sync::Arc::new(super::combat::SlashDecl::read(fields)?)),
+            SupportedDefaultState::Block if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Block(_))) =>
+                Kind::Block(std::sync::Arc::new(super::combat::BlockDecl::read(fields)?)),
             SupportedDefaultState::CancelFireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CancelFireWeapon)) => Kind::CancelFireWeapon,
             SupportedDefaultState::RequestReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::RequestReloadWeapon)) => Kind::RequestReloadWeapon,
             SupportedDefaultState::ReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReloadWeapon)) => Kind::ReloadWeapon,
@@ -653,6 +685,8 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
                     high_damage_midnight: atom(fields, "m_highDamageMidnight").filter(|v| !v.is_empty()).map(str::to_owned),
                     low_damage_arm_midnights: ["m_lowDamageMidnightLeftArm", "m_lowDamageMidnightRightArm"]
                         .map(|k| atom(fields, k).filter(|v| !v.is_empty()).map(str::to_owned)),
+                    low_damage_sword_midnights: ["m_lowDamageMidnightRightArmWithSword", "m_lowDamageMidnightRightArmWithSwordSneaking"]
+                        .map(|key| atom(fields, key).filter(|value| !value.is_empty()).map(str::to_owned)),
                     high_damage_arm_midnights: ["m_highDamageMidnightLeftArm", "m_highDamageMidnightRightArm"]
                         .map(|k| atom(fields, k).filter(|v| !v.is_empty()).map(str::to_owned)),
                     damage_threshold: number(fields, "m_damageThreshold", d.damage_threshold)?,

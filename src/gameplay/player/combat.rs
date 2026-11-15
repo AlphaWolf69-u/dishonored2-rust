@@ -1,9 +1,30 @@
 //! Shared player-action and ranged-state decisions, from 140854dc0,
 //! 140855230/360/5a0 and 140866fe0/140867330. Animation completion comes
 //! from Midnight; these owners never synthesize an animation-duration timer.
-use crate::entities::{scene_motion::atom, Value};
+use crate::entities::{scene_motion::{atom, child}, Value};
 
 type Fields = [(String, Value)];
+
+/// Compact declaration paths for demand preparation when a melee item is
+/// selected. Source trees and animation payloads do not become residency in
+/// the unarmed startup path; the source bundle already owns these fields.
+pub fn equipment_scene_paths(declarations: &crate::entities::player::PlayerDeclarations) -> Vec<String> {
+    let mut paths = Vec::new();
+    for (kind, fields) in &declarations.states {
+        let names: &[&str] = match kind.as_str() {
+            "playerstateslash" => &["m_midnight"],
+            "playerstateblock" => &["m_midnightIn", "m_midnightSneakIn", "m_midnightIdle", "m_midnightOut", "m_midnightSneakOut"],
+            "playerstatecatfall" => &["m_lowDamageMidnightRightArmWithSword", "m_lowDamageMidnightRightArmWithSwordSneaking"],
+            _ => continue,
+        };
+        for name in names {
+            if let Some(path) = path(fields, name) {
+                if !paths.contains(&path) { paths.push(path); }
+            }
+        }
+    }
+    paths
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActionType {
@@ -47,22 +68,32 @@ fn boolean(fields: &Fields, key: &str, fallback: bool) -> Result<bool, String> {
 fn path(fields: &Fields, key: &str) -> Option<String> {
     atom(fields, key).filter(|value| !value.is_empty() && *value != "NULL").map(str::to_owned)
 }
+fn duration(fields: &Fields, key: &str, fallback: f32) -> Result<f32, String> {
+    match fields.iter().find(|(name, _)| name == key).map(|(_, value)| value) {
+        Some(Value::Scope(inner)) => number(inner, "m_seconds", fallback),
+        _ => number(fields, key, fallback),
+    }
+}
 impl ActionDecl {
     pub fn read(fields: &Fields) -> Result<Self, String> {
+        Self::read_with_defaults(fields, Self::default())
+    }
+    pub fn read_with_defaults(fields: &Fields, defaults: Self) -> Result<Self, String> {
         Ok(Self {
             kind: match atom(fields, "m_type") {
-                None | Some("ACTION_ONPRESS" | "0") => ActionType::Press,
+                None => defaults.kind,
+                Some("ACTION_ONPRESS" | "0") => ActionType::Press,
                 Some("ACTION_ONRELEASE" | "1") => ActionType::Release,
                 Some("ACTION_ONMSG" | "2") => ActionType::Message,
                 Some(value) => return Err(format!("unknown arkStateActionType_t {value}")),
             },
-            togglable: boolean(fields, "m_togglable", false)?,
-            cooldown: number(fields, "m_cooldown", 0.0)?,
-            max_hold_duration: number(fields, "m_maxHoldDuration", 0.0)?,
-            midnight: path(fields, "m_midnight"),
-            wait_for_midnight: boolean(fields, "m_waitForMidnight", true)?,
-            wait_before_execute: boolean(fields, "m_waitForMidnightBeforeExecute", false)?,
-            wait_wall_uncrouch: boolean(fields, "m_waitWallUncrouch", false)?,
+            togglable: boolean(fields, "m_togglable", defaults.togglable)?,
+            cooldown: number(fields, "m_cooldown", defaults.cooldown)?,
+            max_hold_duration: number(fields, "m_maxHoldDuration", defaults.max_hold_duration)?,
+            midnight: path(fields, "m_midnight").or(defaults.midnight),
+            wait_for_midnight: boolean(fields, "m_waitForMidnight", defaults.wait_for_midnight)?,
+            wait_before_execute: boolean(fields, "m_waitForMidnightBeforeExecute", defaults.wait_before_execute)?,
+            wait_wall_uncrouch: boolean(fields, "m_waitWallUncrouch", defaults.wait_wall_uncrouch)?,
         })
     }
 }
@@ -79,6 +110,7 @@ pub struct ActionRuntime {
     waiting_execute: bool,
     waiting_uncrouch: bool,
     execute_requested: bool,
+    executed: bool,
 }
 impl ActionRuntime {
     /// 140855300: cooldown uses the owning entity's unbent time.
@@ -92,6 +124,7 @@ impl ActionRuntime {
         self.scene = 0;
         self.waiting_scene = false;
         self.waiting_execute = false;
+        self.executed = false;
         self.waiting_uncrouch = decl.wait_wall_uncrouch && wall_uncrouch_busy;
         if self.waiting_uncrouch { ActionStep::None } else { ActionStep::Execute }
     }
@@ -100,6 +133,17 @@ impl ActionRuntime {
         self.scene = handle;
         self.waiting_scene = decl.wait_for_midnight && handle != 0;
         self.waiting_execute = decl.wait_before_execute && handle != 0;
+    }
+    pub fn elapsed(&self) -> f32 { self.elapsed }
+    pub fn executed(&self) -> bool { self.executed }
+    /// Slash's focus animation clears bit4 after starting its real scene.
+    pub fn set_wait_for_midnight(&mut self, wait: bool) { self.waiting_scene = wait; }
+    /// 1408551c0, called by derived actions after their execute-finished
+    /// callback. FireWeapon deliberately does not call this helper.
+    pub fn finish_execution(&mut self, decl: &ActionDecl) -> ActionStep {
+        self.executed = true;
+        if !self.waiting_scene && (!decl.togglable || self.execute_requested) { ActionStep::Quit }
+        else { ActionStep::None }
     }
     /// 140855570: a repeated accepted request toggles a togglable action.
     pub fn requested_again(&mut self, decl: &ActionDecl, active: bool) {
@@ -139,6 +183,7 @@ impl ActionRuntime {
         self.waiting_execute = false;
         self.waiting_uncrouch = false;
         self.execute_requested = false;
+        self.executed = false;
     }
 }
 
@@ -198,4 +243,93 @@ impl FireRuntime {
         self.target_delay -= dt;
         if self.target_delay <= 0.0 { self.phase = FirePhase::Targeting; true } else { false }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlashDecl {
+    pub action: ActionDecl,
+    pub rule_handler: String,
+    pub focus_hold_duration: f32,
+    pub focus_min_line_of_sight: f32,
+    pub focus_linear_speed_ratio: f32,
+    pub focus_angular_speed_ratio: f32,
+    pub dispersion: super::AttributeModifierRequest,
+}
+impl SlashDecl {
+    pub fn read(fields: &Fields) -> Result<Self, String> {
+        let modifier = child(fields, "m_rangedWeaponDispersionRatioModifier");
+        // 14086a710 sets action ONRELEASE and the focus constructor values.
+        Ok(Self {
+            action: ActionDecl::read_with_defaults(fields, ActionDecl { kind: ActionType::Release, ..Default::default() })?,
+            rule_handler: path(fields, "m_ruleHandler").ok_or("Slash has no authored m_ruleHandler (14086b900)")?,
+            focus_hold_duration: duration(fields, "m_focusHoldDuration", 0.5)?,
+            focus_min_line_of_sight: number(fields, "m_focusMinLineOfSight", 0.0)?,
+            focus_linear_speed_ratio: number(fields, "m_focusLinearSpeedRatio", 0.6)?,
+            focus_angular_speed_ratio: number(fields, "m_focusAngularSpeedRatio", 0.6)?,
+            // 14060b580 + 14086a710: +8 is increase (one), not percent.
+            dispersion: super::AttributeModifierRequest { owner: "playerState39".into(), index: 0,
+                tag: atom(modifier, "m_attribute").unwrap_or("ARK_ATTRIBUTE_RANGED_WEAPON_DISPERSION_RATIO").to_owned(),
+                increase: number(modifier, "m_increase", 1.0)?,
+                percentage: number(modifier, "m_percentage", 0.0)?,
+                duration: number(modifier, "m_duration", 0.0)?, added: true },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlashRuntime {
+    pub action: ActionRuntime,
+    pub last_type: i32,
+    pub last_time: f64,
+    pub chained_scene: u32,
+    pub focus_ready: bool,
+    pub focus_active: bool,
+    pub focused: bool,
+    pub can_focus: bool,
+    pub release_seen: bool,
+    pub press_again: bool,
+    pub selected: Option<super::slash_rules::Selection>,
+    pub dispersion_active: bool,
+}
+impl Default for SlashRuntime {
+    fn default() -> Self {
+        // 14086a810 initializes last slash to LEFT (2), timestamp to zero.
+        Self { action: Default::default(), last_type: 2, last_time: 0.0,
+            chained_scene: 0, focus_ready: false, focus_active: false,
+            focused: false, can_focus: false, release_seen: false,
+            press_again: false, selected: None, dispersion_active: false }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockDecl {
+    pub action: ActionDecl,
+    pub midnight_in: Option<String>,
+    pub midnight_sneak_in: Option<String>,
+    pub midnight_idle: Option<String>,
+    pub midnight_out: Option<String>,
+    pub midnight_sneak_out: Option<String>,
+    pub free_left_hand_duration: f32,
+}
+impl BlockDecl {
+    pub fn read(fields: &Fields) -> Result<Self, String> {
+        // 140858d50: action ONRELEASE, waitForMidnight false.
+        Ok(Self {
+            action: ActionDecl::read_with_defaults(fields, ActionDecl { kind: ActionType::Release,
+                wait_for_midnight: false, ..Default::default() })?,
+            midnight_in: path(fields, "m_midnightIn"), midnight_sneak_in: path(fields, "m_midnightSneakIn"),
+            midnight_idle: path(fields, "m_midnightIdle"), midnight_out: path(fields, "m_midnightOut"),
+            midnight_sneak_out: path(fields, "m_midnightSneakOut"),
+            free_left_hand_duration: duration(fields, "m_freeLeftHandDuration", f32::from_bits(0x3ea8f5c3))?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockRuntime {
+    pub action: ActionRuntime,
+    /// +50: 1 entry, 2 idle, 3 exit, 4 hit response.
+    pub phase: u8,
+    /// +54: 0 equipped, 1 lower requested, 2 hidden.
+    pub left_hand_phase: u8,
 }

@@ -162,6 +162,8 @@ pub struct Controller {
     /// +0x170.
     pub must_sprint: bool,
     pub slipping: SlippingThresholds,
+    /// m_triggerThreshold (+0x68), constructor 7f7a60.
+    pub trigger_threshold: f32,
     /// +0x188.
     pub is_slip_falling: bool,
 }
@@ -204,6 +206,7 @@ impl Controller {
             sprinting_button_down_before_stop: false,
             must_sprint: false,
             slipping: SlippingThresholds::default(),
+            trigger_threshold: 0.1,
             is_slip_falling: false,
         }
     }
