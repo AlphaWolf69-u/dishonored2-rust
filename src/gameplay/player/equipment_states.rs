@@ -73,6 +73,15 @@ pub struct Runtime {
     callbacks: VecDeque<Callback>,
 }
 impl Runtime {
+    /// 839a10 ->6145f0 applies the actual equipment entity's own Hide/Show
+    /// callback. It does not select, stop or reconstruct its component.
+    pub(super) fn set_owned_hidden(&mut self, hidden: bool) {
+        for target in self.owned.values_mut().chain(self.slots.iter_mut().flat_map(|slot|
+            slot.current.iter_mut().chain(slot.incoming.iter_mut()))) {
+            if let Some(tree) = &mut target.tree { tree.visible = !hidden; }
+        }
+    }
+
     /// Actual retained entities whose tree is not currently borrowed by Body.
     /// Audio/frame publication borrows this registry without building a list.
     pub fn inactive_targets(&self) -> impl Iterator<Item = &Target> {
@@ -225,6 +234,11 @@ fn start(path: &str, side: usize, frame: &mut Frame<'_>) -> Result<u32, String> 
 }
 
 impl Player {
+    pub fn set_owned_equipment_hidden(&mut self, hidden: bool) {
+        self.equipment_changes.set_owned_hidden(hidden);
+        for tree in self.body.equipment.iter_mut().flatten() { tree.visible = !hidden; }
+    }
+
     /// 7fb350 tests controller+2d0, the swimming controller(+258)+78,
     /// not possession/cinematic state. 88a8c0/88a7a0 use the same1..3 range
     /// for the active swimming mode represented by this player owner.

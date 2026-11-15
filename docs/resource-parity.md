@@ -10554,6 +10554,12 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
 - Bone-only equipment attachment queries (`140752900` after the tag-info
   lookup) read the actual entity's retained rendered world palette through
   `equipment_joint_world`; they do not pose or acquire a second rig.
+- FarReach's owned-equipment Hide/Show fanout (`140839a10` -> `1406145f0`,
+  weapon entity `1408784b0` / `14087c590`) changes each retained actual actor's
+  own visibility. It does not enqueue an equip transition, stop its weapon
+  component or overwrite an ammunition child's independent own-visible bit.
+  Show is unconditional, matching the entity callback rather than restoring
+  an invented prior visibility snapshot.
 
 ### Player-wide hard and code body-part requests (2026-11-15)
 
