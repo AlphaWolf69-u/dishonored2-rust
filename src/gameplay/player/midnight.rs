@@ -28,6 +28,8 @@ pub struct PreparedScene {
     pub clips: Vec<Vec<usize>>,
     /// The same for the PlayerLeftArm / PlayerRightArm groups: arm clips.
     pub arm_clips: [Vec<Vec<usize>>; 2],
+    /// The actual left/right equipment entity trees (8542b0 bits 8/16).
+    pub equipment_clips: [Vec<Vec<usize>>; 2],
     /// SFX keys resolved to installed event IDs and their cast audio owners.
     pub sounds: Vec<Vec<PreparedSound>>,
 }
@@ -121,12 +123,14 @@ pub fn cast_target(name: &str) -> Option<usize> {
         "PlayerBody" | "PlayerCamera" => Some(BODY),
         "PlayerLeftArm" => Some(1),
         "PlayerRightArm" => Some(2),
+        "PlayerLeftEquipment" => Some(3),
+        "PlayerRightEquipment" => Some(4),
         _ => None,
     }
 }
 
 pub const BODY: usize = 0;
-pub const TARGETS: usize = 3;
+pub const TARGETS: usize = 5;
 
 impl PreparedScene {
     /// The scene's player group (at most one per scene in the installed
@@ -153,7 +157,9 @@ impl PreparedScene {
     fn target_clips(&self, scene: usize, target: usize) -> &[usize] {
         match target {
             BODY => &self.clips[scene],
-            t => self.arm_clips[t - 1].get(scene).map_or(&[], Vec::as_slice),
+            1 | 2 => self.arm_clips[target - 1].get(scene).map_or(&[], Vec::as_slice),
+            3 | 4 => self.equipment_clips[target - 3].get(scene).map_or(&[], Vec::as_slice),
+            _ => &[],
         }
     }
 }
@@ -203,7 +209,7 @@ struct Instance {
     carry: f32,
     rate: f32,
     clips: [Vec<Clip>; TARGETS],
-    events: Vec<(i32, String)>,
+    events: Vec<(crate::entities::midnight::EventKey, usize)>,
     sounds: Vec<ScheduledSound>,
     playing_sounds: std::collections::HashMap<(u32, Emitter), bool>,
     parts: u8,
@@ -235,6 +241,7 @@ pub struct Midnight {
     instances: Vec<Instance>,
     next_handle: u32,
     sound_requests: Vec<SoundRequest>,
+    point_events: Vec<PointEvent>,
     nodes: [Node; TARGETS],
     /// m_midnightWeight: the largest full-body clip weight.
     pub weight: f32,
@@ -273,7 +280,20 @@ pub(crate) fn weight(curve: &Option<FloatCurve>, x: i32) -> f32 {
     v.clamp(0.0, 1.0)
 }
 
+/// A point event retains the real receiving cast entity; equipment events
+/// must reach the weapon component instead of the body state machine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointEvent {
+    pub name: String,
+    pub handle: u32,
+    pub target: usize,
+    pub class: String,
+    pub properties: Arc<[(String, crate::entities::Value)]>,
+}
+
 impl Midnight {
+    pub fn take_point_events(&mut self) -> Vec<PointEvent> { std::mem::take(&mut self.point_events) }
+
     pub fn take_sound_requests(&mut self) -> Vec<SoundRequest> {
         std::mem::take(&mut self.sound_requests)
     }
@@ -285,6 +305,13 @@ impl Midnight {
 
     /// Track initialization 1407dfbd0 selects point keys at zero and clips
     /// containing zero. Zero-duration SFX clips fire on the next time step.
+    fn initial_events(inst: &Instance, out: &mut Vec<PointEvent>) {
+        // 7dfbd0 selects forward point keys at the scene's initial time.
+        out.extend(inst.events.iter().filter(|(event, _)| event.time_ms == 0).map(|(event, target)|
+            PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
+                class: event.class.clone(), properties: event.properties.clone() }));
+    }
+
     fn initial_sounds(inst: &mut Instance, out: &mut Vec<SoundRequest>) {
         for sound in &mut inst.sounds {
             let s = &sound.sound;
@@ -367,7 +394,7 @@ impl Midnight {
     }
 
     /// The clip schedule of every cast tree and the body group's events.
-    fn enter(&self, prepared: &Arc<PreparedScene>, index: usize, cast: Cast, parts: u8) -> Result<([Vec<Clip>; TARGETS], Vec<(i32, String)>), String> {
+    fn enter(&self, prepared: &Arc<PreparedScene>, index: usize, cast: Cast, parts: u8) -> Result<([Vec<Clip>; TARGETS], Vec<(crate::entities::midnight::EventKey, usize)>), String> {
         let mut schedules: [Vec<Clip>; TARGETS] = Default::default();
         let mut events = Vec::new();
         for (target, clips) in schedules.iter_mut().enumerate() {
@@ -403,9 +430,7 @@ impl Midnight {
                     main: key.main_clip,
                 });
             }
-            if target == BODY {
-                events = group.events.iter().map(|e| (e.time_ms, e.event.clone())).collect();
-            }
+            events.extend(group.events.iter().map(|event| (event.clone(), target)));
         }
         Ok((schedules, events))
     }
@@ -432,6 +457,7 @@ impl Midnight {
             clips, events, sounds, playing_sounds: Default::default(), parts, md6: md6.map(str::to_owned),
         };
         Self::initial_sounds(&mut inst, &mut self.sound_requests);
+        Self::initial_events(&inst, &mut self.point_events);
         self.instances.push(inst);
         self.write(cast);
         Ok(self.next_handle)
@@ -440,6 +466,7 @@ impl Midnight {
     /// FUN_1407d9590 (flags 0x600): an interrupting stop snapshots the
     /// last pose over the scene's m_blendOutTime.
     pub fn stop(&mut self, handle: u32) {
+        self.point_events.retain(|event| event.handle != handle);
         if let Some(i) = self.instances.iter().position(|i| i.handle == handle) {
             let inst = self.instances.remove(i);
             Self::interrupt_sounds(&inst, &mut self.sound_requests);
@@ -474,10 +501,13 @@ impl Midnight {
             let first_step = inst.abs == 0;
             inst.abs += ms.unsigned_abs() as i64;
             inst.time = to;
-            for (k, event) in &inst.events {
-                let entered = (from <= *k && *k < to) || (*k == to && ended);
-                if entered && !(*k == 0 && first_step) {
-                    messages.push((event.clone(), inst.handle));
+            for (event, target) in &inst.events {
+                let k = event.time_ms;
+                let entered = (from <= k && k < to) || (k == to && ended);
+                if entered && !(k == 0 && first_step) {
+                    messages.push((event.event.clone(), inst.handle));
+                    self.point_events.push(PointEvent { name: event.event.clone(), handle: inst.handle, target: *target,
+                        class: event.class.clone(), properties: event.properties.clone() });
                 }
             }
             // The SFX track uses the same forward key crossing as 1407dfdd0.
@@ -510,8 +540,10 @@ impl Midnight {
                     let (clips, events) = self.enter(&prepared, index, cast, parts)?;
                     let inst = &mut self.instances[i];
                     (inst.current, inst.time, inst.clips, inst.events) = (index, 0, clips, events);
+                    inst.abs = 0;
                     inst.sounds = Self::schedule_sounds(&prepared, index, inst.parts);
                     Self::initial_sounds(inst, &mut self.sound_requests);
+                    Self::initial_events(inst, &mut self.point_events);
                 }
             }
         }

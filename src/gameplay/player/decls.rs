@@ -948,6 +948,44 @@ pub fn loco_arm_transitions(locomotion: &Fields, side: usize, equip: &str) -> Re
     Ok(result)
 }
 
+/// Equipment indices belong to this arm's authored declaration list.
+pub fn arm_equipment_names(locomotion: &Fields, side: usize) -> Vec<String> {
+    let key = if side == 0 { "m_leftArmEquipStateList" } else { "m_rightArmEquipStateList" };
+    let mut entries: Vec<_> = scope(locomotion, key).unwrap_or(&[]).iter().filter_map(|(key, value)| {
+        let index: usize = key.strip_prefix("item[")?.strip_suffix(']')?.parse().ok()?;
+        let Value::Atom(value) = value else { return None };
+        Some((index, value.trim_matches('"').to_owned()))
+    }).collect();
+    entries.sort_by_key(|(index, _)| *index);
+    entries.into_iter().map(|(_, name)| name).collect()
+}
+
+/// Equipment changes keep the current stance; 7021d0 builds one transition
+/// record for every authored stance (metadata 14166d520 / 14166d3d0).
+#[derive(Clone, Debug)]
+pub struct ArmEquipTransition {
+    pub from: String,
+    pub to: String,
+    pub stance: String,
+    pub alias: String,
+    pub blend_in: f32,
+    pub blend_out: f32,
+}
+
+pub fn arm_equip_transitions(locomotion: &Fields, side: usize) -> Result<Vec<ArmEquipTransition>, String> {
+    let key = if side == 0 { "m_leftArmEquipStatesTransitions" } else { "m_rightArmEquipStatesTransitions" };
+    let mut result = Vec::new();
+    for item in items(locomotion, key) {
+        let (Some(from), Some(to)) = (atom(item, "m_fromEquipState"), atom(item, "m_toEquipState")) else { continue };
+        for stance in items(item, "m_stances") {
+            let (Some(name), Some(alias)) = (atom(stance, "m_stance"), atom(stance, "m_anim").filter(|a| !a.is_empty())) else { continue };
+            result.push(ArmEquipTransition { from: from.to_owned(), to: to.to_owned(), stance: name.to_owned(), alias: alias.to_owned(),
+                blend_in: number(item, "m_blendIn", 0.25)?, blend_out: number(item, "m_blendOut", 0.25)? });
+        }
+    }
+    Ok(result)
+}
+
 /// The body decl's `m_leftArmAnims` / `m_rightArmAnims` jump additive
 /// aliases of an equip state, in FUN_1407730c0's kind order.
 pub fn arm_jump_aliases(body: &Fields, side: usize, equip: &str) -> [Option<String>; 6] {

@@ -54,6 +54,8 @@ pub struct SceneMarker {
 pub struct EventKey {
     pub time_ms: i32,
     pub event: String,
+    pub class: String,
+    pub properties: std::sync::Arc<[(String, super::Value)]>,
 }
 
 /// An EMTT_SFX key with arkMidnightKeyPropSfx (reflection 1415c4ff0).
@@ -242,6 +244,8 @@ pub fn parse(text: &str) -> Result<MidnightScene, String> {
                         Some("EMTT_EVENT") => group.events.push(EventKey {
                             time_ms: int(key, "m_startTime", 0)?,
                             event: atom(prop, "m_event").unwrap_or("").to_owned(),
+                            class: atom(child(key, "m_keyProp"), "m_class").unwrap_or("").to_owned(),
+                            properties: prop.to_vec().into(),
                         }),
                         Some("EMTT_SFX") => group.sounds.push(SoundKey {
                             time_ms: int(key, "m_startTime", 0)?,

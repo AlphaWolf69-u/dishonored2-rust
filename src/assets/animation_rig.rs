@@ -412,7 +412,7 @@ impl Clips<'_> {
         self.clip_cancellable(alias, None)
     }
 
-    fn clip_cancellable(&mut self, alias: &str, cancelled: Option<&dyn Fn() -> bool>) -> Result<usize, String> {
+    pub fn clip_cancellable(&mut self, alias: &str, cancelled: Option<&dyn Fn() -> bool>) -> Result<usize, String> {
         check_active(cancelled)?;
         if let Some(&index) = self.loaded.get(alias) {
             return Ok(index);

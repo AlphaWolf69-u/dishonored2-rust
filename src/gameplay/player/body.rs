@@ -381,6 +381,7 @@ pub struct Body {
     pub legs_visible: bool,
     /// The arm parts (left, right).
     pub arms: Vec<Arm>,
+    pub equipment: [Option<super::equipment::EquipmentTree>; 2],
     pub midnight: Midnight,
     pub follow_slope: FollowSlope,
     slope_rotation: Mat3,
@@ -396,15 +397,15 @@ pub struct Body {
 }
 
 /// The midnight cast's md6s (CONDMD6): the body's, then the arms'.
-pub fn cast_md6<'a>(body: &'a str, arms: &'a [Arm]) -> [&'a str; 3] {
+pub fn cast_md6<'a>(body: &'a str, arms: &'a [Arm], equipment: &'a [Option<super::equipment::EquipmentTree>; 2]) -> [&'a str; super::midnight::TARGETS] {
     let arm = |i: usize| arms.get(i).map_or("", |a| a.model.as_str());
-    [body, arm(0), arm(1)]
+    [body, arm(0), arm(1), equipment[0].as_ref().map_or("", |tree| tree.model.as_str()), equipment[1].as_ref().map_or("", |tree| tree.model.as_str())]
 }
 
 /// The midnight cast's trees: the body and the left and right arms.
-pub fn cast<'a>(body: &'a [EdgeAnimation], arms: &'a [Arm]) -> super::midnight::Cast<'a> {
+pub fn cast<'a>(body: &'a [EdgeAnimation], arms: &'a [Arm], equipment: &'a [Option<super::equipment::EquipmentTree>; 2]) -> super::midnight::Cast<'a> {
     let arm = |i: usize| arms.get(i).map_or(&[][..], |a| a.animations.as_slice());
-    [body, arm(0), arm(1)]
+    [body, arm(0), arm(1), equipment[0].as_ref().map_or(&[][..], |tree| tree.animations.as_slice()), equipment[1].as_ref().map_or(&[][..], |tree| tree.animations.as_slice())]
 }
 
 impl Body {
@@ -482,6 +483,7 @@ impl Body {
             desired_legs: 0,
             legs_visible: false,
             arms: Vec::new(),
+            equipment: [None, None],
             midnight: Midnight::default(),
             follow_slope: FollowSlope::default(),
             slope_rotation: Mat3::IDENTITY,
@@ -597,6 +599,12 @@ impl Body {
         }
         for side in 0..self.arms.len() {
             self.midnight.update_node(side + 1, dt);
+        }
+        for (side, equipment) in self.equipment.iter_mut().enumerate() {
+            if let Some(equipment) = equipment {
+                equipment.update(dt, None);
+                self.midnight.update_node(side + 3, dt);
+            }
         }
         // Clips are sampled once at load, so this cannot fail; a failure
         // would leave the frame without root motion.

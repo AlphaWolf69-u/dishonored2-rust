@@ -6,6 +6,8 @@
 pub mod animation;
 pub mod adrenaline;
 pub mod arms;
+pub mod equipment;
+pub mod weapons;
 pub mod body;
 pub mod camera;
 pub mod character_proxy;
@@ -61,6 +63,11 @@ pub struct ArmActionDiagnostic {
     pub in_front_frames: [u32; 2],
 }
 
+/// A point event emitted by the installed Midnight track. Consumers associate
+/// the scene handle with the action they requested; no guessed timer or alias
+/// determines when mana, ammunition or a hit becomes effective.
+pub type AnimationEvent = midnight::PointEvent;
+
 struct ActiveModifier {
     owner: String,
     index: usize,
@@ -88,7 +95,9 @@ pub struct Player {
     swimming_wave_pose: (f32, Vec3),
     breath: swimming::Breath,
     pub incoming_damage_factor: f32,
+    pub incoming_damage_back_factor: f32,
     pub health_regen_factor: f32,
+    pub health_heal_factor: f32,
     pub mana_replenishes: bool,
     pub camera: PlayerCamera,
     pub stances: LocoStances,
@@ -113,6 +122,8 @@ pub struct Player {
     scenes: Scenes,
     md6: String,
     health: health::Health,
+    damage_receiver: crate::gameplay::damage::Receiver,
+    fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     drowning_damage_enabled: bool,
     mana: mana::Mana,
     pub adrenaline: adrenaline::Adrenaline,
@@ -134,6 +145,7 @@ pub struct Player {
     arm_pose_errors: [Option<String>; 2],
     arm_action_history: [Option<ArmActionDiagnostic>; 2],
     arm_action_active: [bool; 2],
+    animation_events: Vec<AnimationEvent>,
 }
 
 /// Everything `Player::new` reads from the installed declarations.
@@ -156,6 +168,8 @@ pub struct PlayerSetup {
     pub md6: String,
     /// Health decl m_health before attributes.
     pub health: health::Settings,
+    pub damage_receiver: crate::gameplay::damage::Receiver,
+    pub fall_damage: Option<std::sync::Arc<crate::assets::damage::Declaration>>,
     pub mana: mana::Settings,
     pub adrenaline: adrenaline::Settings,
     pub swimming_settings: swimming::SwimmingSettings,
@@ -171,6 +185,58 @@ pub struct PlayerSetup {
 }
 
 impl Player {
+    /// Start an acquired scene on its declared player cast. Equipment/action
+    /// admission remains with the requesting component, as in 8542b0.
+    pub fn start_animation_scene(&mut self, scene: &std::sync::Arc<midnight::PreparedScene>, rate: f32, parts: u8) -> Result<u32, String> {
+        if self.health.is_dead() { return Err("dead player cannot start an equipment action".into()); }
+        if parts == 0 || parts & !0b1_1111 != 0 { return Err("invalid player animation cast mask".into()); }
+        let models = body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment);
+        let cast = body::cast(&self.body.animations, &self.body.arms, &self.body.equipment);
+        self.body.midnight.start_with_parts(scene, models, rate, cast, parts)
+    }
+
+    pub fn cancel_animation_scene(&mut self, handle: u32) {
+        self.body.midnight.stop(handle);
+        self.animation_events.retain(|event| event.handle != handle);
+    }
+
+    pub fn animation_scene_finished(&self, handle: u32) -> bool { self.body.midnight.finished(handle) }
+
+    pub fn take_animation_events(&mut self) -> Vec<AnimationEvent> { std::mem::take(&mut self.animation_events) }
+
+    /// Change only prepared hands. This does not alter visibility requests
+    /// belonging to swimming, mantle or a full-body scene.
+    pub fn request_arm_equipment(&mut self, equipment: [&str; 2]) -> bool {
+        if self.body.arms.len() != 2 || self.body.arms.iter().zip(equipment).any(|(arm, name)| !arm.has_equipment(name)) { return false; }
+        for (arm, name) in self.body.arms.iter_mut().zip(equipment) { arm.request_equipment(name); }
+        true
+    }
+
+    /// The receiving health component owns scaling and immunity. The player
+    /// consumes its mana split and publishes the existing incapacitation path.
+    pub fn receive_damage(&mut self, parameters: &crate::gameplay::damage::Parameters) -> crate::gameplay::damage::DamageResult {
+        use crate::gameplay::damage::Context;
+        if self.health.is_dead() { return Default::default(); }
+        let attribute = |name: &str| self.attributes.0.get(name).copied().unwrap_or(1.0);
+        let forward = self.physics.axis().x_axis;
+        let difficulty_factor = if forward.dot(parameters.hit_direction) <= 0.0 { self.incoming_damage_factor } else { self.incoming_damage_back_factor };
+        let context = Context { forward, difficulty_factor,
+            incoming_scale: attribute("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE"), explosion_factor: attribute("ARK_ATTRIBUTE_EXPLOSION_DAMAGE_FACTOR"),
+            health_to_mana: self.attributes.get("ARK_ATTRIBUTE_MALUS_HEALTH_TO_MANA_DAMAGES"), mana: self.mana.current(), evolved: true, ..Default::default() };
+        let result = self.health.receive_damage(&self.damage_receiver, parameters, context, &self.attributes);
+        if result.mana_damage > 0.0 { self.mana.consume(result.mana_damage, &self.attributes, self.mana_replenishes); }
+        if result.incapacitated {
+            self.entity_events.push(EntityEvent::Incapacitated { damage_type: parameters.damage_type.0 });
+            self.adrenaline.stop();
+            self.controller.input_move = Vec3::ZERO;
+            self.controller.input_look = Vec3::ZERO;
+            self.game_over_fallback = Some(self.entity_event_time + 7.0);
+            self.machine.request(StateId::DEAD);
+            self.swimming_machine.request(StateId::DEAD);
+        }
+        result
+    }
+
     pub fn read_note_state_allowed(&self) -> Option<bool> {
         if self.swimming_active { self.swimming_machine.read_note_state_allowed() } else { self.machine.read_note_state_allowed() }
     }
@@ -352,7 +418,9 @@ impl Player {
             swimming_wave_pose: (0.0, Vec3::Z),
             breath: setup.breath,
             incoming_damage_factor: 1.0,
+            incoming_damage_back_factor: 1.0,
             health_regen_factor: 1.0,
+            health_heal_factor: 1.0,
             mana_replenishes: true,
             camera: PlayerCamera::new(setup.camera, base_fov),
             stances,
@@ -375,6 +443,8 @@ impl Player {
             scenes: setup.scenes,
             md6: setup.md6,
             health,
+            damage_receiver: setup.damage_receiver,
+            fall_damage: setup.fall_damage,
             drowning_damage_enabled: setup.drowning_damage_enabled,
             mana,
             adrenaline,
@@ -389,6 +459,7 @@ impl Player {
             arm_pose_errors: [None, None],
             arm_action_history: [None, None],
             arm_action_active: [false; 2],
+            animation_events: Vec::new(),
             body_settings: body::BodySettings::default(),
             requests: MotionRequests::default(),
         })
@@ -410,15 +481,18 @@ impl Player {
         }
         // The midnight manager before the component stages, then its
         // message flush (BREAK_PLAYER_STATE quits a breakable state).
-        let cast = body::cast(&self.body.animations, &self.body.arms);
+        let cast = body::cast(&self.body.animations, &self.body.arms, &self.body.equipment);
         match self.body.midnight.advance(dt, cast) {
             Ok(messages) => {
                 for (event, handle) in messages {
                     self.machine.handle_message(&event, handle);
+                    self.swimming_machine.handle_message(&event, handle);
+
                 }
             }
             Err(error) => eprintln!("Midnight playback: {error}"),
         }
+        self.animation_events.extend(self.body.midnight.take_point_events());
         if !self.health.is_dead() { self.controller.process_input(events, settings); }
         // QUERY_PHYSICS, then the DEFAULT stage: sensor and physics results
         // before the controller (it depends on both), then the states.
@@ -477,12 +551,12 @@ impl Player {
                     jump_anim: &mut self.body.jump,
                     midnight: &mut self.body.midnight,
                     scenes: &self.scenes,
-                    md6: body::cast_md6(&self.md6, &self.body.arms),
-                    animations: body::cast(&self.body.animations, &self.body.arms),
+                    md6: body::cast_md6(&self.md6, &self.body.arms, &self.body.equipment),
+                    animations: body::cast(&self.body.animations, &self.body.arms, &self.body.equipment),
                     mantle_sensor: &mut self.mantle_sensor,
                     vault_sensor: &mut self.vault_sensor,
                     retargeting: &mut self.retargeting,
-                    health: self.health.current(),
+                    health: self.health.maximum(&self.attributes),
                     underwater,
                     swim_mantle_exit: &mut swim_mantle_exit,
                     game_over_requested: &mut self.game_over_requested,
@@ -572,7 +646,7 @@ impl Player {
         self.breath.update(dt);
         self.mana.update(dt, &self.attributes, self.mana_replenishes);
         self.adrenaline.update(dt, &self.attributes, self.adrenaline_in_combat);
-        self.health.update(dt, &self.attributes, self.health_regen_factor);
+        self.health.update_with_healing(dt, &self.attributes, self.health_regen_factor, self.health_heal_factor);
         // 1404c0cf0 spends the mana-first share before dispatching the
         // remaining authored water damage to health.
         if self.is_underwater() {
@@ -596,30 +670,19 @@ impl Player {
                 if mana_delta < 0.0 { self.mana.consume(-mana_delta, &self.attributes, self.mana_replenishes); }
                 if mana_delta > 0.0 { self.mana.gain(mana_delta, &self.attributes); }
                 if !self.health.accepts_water() { raw_damage = 0.0; }
-                let scale = self.attributes.0.get("ARK_ATTRIBUTE_INCOMING_DAMAGE_SCALE").copied().unwrap_or(1.0);
-                let mut damage = raw_damage * self.incoming_damage_factor * scale;
-                // 140718fe0 applies the player's health-to-mana damage
-                // attribute after the breath component's mana-first split.
-                let transfer = self.attributes.get("ARK_ATTRIBUTE_MALUS_HEALTH_TO_MANA_DAMAGES");
-                if transfer > 0.0 && damage > 0.0 {
-                    let absorbed = (damage * transfer).min(self.mana.current());
-                    self.mana.consume(absorbed, &self.attributes, self.mana_replenishes);
-                    damage -= absorbed;
+                if raw_damage > 0.0 {
+                    self.receive_damage(&crate::gameplay::damage::Parameters { amount: raw_damage,
+                        damage_type: crate::gameplay::damage::DamageType::WATER,
+                        hit_direction: Vec3::ZERO, hit_region: 1, attacker: None, inflictor: None, ignore_armor: false });
                 }
-                if damage > 0.0 && !self.health.is_dead() {
-                    self.health.damage(damage, &self.attributes);
-                    if self.health.is_dead() {
-                        // Entity incapacitation message 0xa5; water is bit 20.
-                        self.entity_events.push(EntityEvent::Incapacitated { damage_type: 0x10_0000 });
-                        self.adrenaline.stop();
-                        // 1407f8e70 requests DEAD then stops the player
-                        // controller, so input cannot replace that state.
-                        self.controller.input_move = Vec3::ZERO;
-                        self.controller.input_look = Vec3::ZERO;
-                        self.game_over_fallback = Some(self.entity_event_time + 7.0);
-                        self.machine.request(StateId::DEAD);
-                    }
-                }
+            }
+        }
+        if let Some(amount) = self.machine.take_fall_damage() {
+            if let Some(declaration) = &self.fall_damage {
+                let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
+                parameters.amount = amount;
+                parameters.ignore_armor = amount == f32::MAX;
+                self.receive_damage(&parameters);
             }
         }
         // Camera DEFAULT (FUN_1407f6140): modes, look integration, FOV.
@@ -791,7 +854,7 @@ impl Player {
     fn update_arms(&mut self, body_yaw: f32, body_controls: &[camera::JointControl]) {
         let shoulder_controls = self.camera.arm_controls(body_yaw);
         let (position, axis) = (self.physics.position(), self.physics.axis());
-        let mut render = Vec::with_capacity(self.body.arms.len());
+        let mut render = Vec::with_capacity(self.body.arms.len() + 2 + usize::from(self.body.legs_visible));
         let poses: Vec<_> = {
             let Body { arms, midnight, .. } = &mut self.body;
             arms.iter().enumerate().map(|(side, arm)| arm.pose(midnight, side + 1)).collect()
@@ -830,6 +893,37 @@ impl Player {
                 })
                 .collect();
             render.push(ArmRender { model: arm.model.clone(), joints: rows, visible: arm.visible && self.body.arms_shown[side.min(1)] });
+        }
+        // Equipment binds to the final controlled owner pose. In particular,
+        // arm shoulder controls have already carried the hand's attachment tag;
+        // applying those controls again would rotate a held weapon twice.
+        let equipment_poses: [_; 2] = {
+            let Body { equipment, midnight, .. } = &mut self.body;
+            std::array::from_fn(|side| equipment[side].as_ref().map(|tree| tree.pose(midnight, side + 3)))
+        };
+        for (side, pose) in equipment_poses.into_iter().enumerate() {
+            let Some(Ok(pose)) = pose else { continue };
+            let Some(tree) = &self.body.equipment[side] else { continue };
+            let frame = match tree.binding {
+                equipment::EquipmentBinding::Body => {
+                    if tree.bind_joint >= self.pose.positions.len() { continue; }
+                    let (p, r) = self.pose.joint_with_controls(tree.bind_joint, body_controls);
+                    Some((position + axis * p, axis * r))
+                }
+                equipment::EquipmentBinding::Arm(owner) => self.body.arms.get(owner).and_then(|arm|
+                    render.iter().find(|entry| entry.model == arm.model)).and_then(|entry| entry.joints.get(tree.bind_joint)).map(|rows| {
+                        (Vec3::new(rows[0][3], rows[1][3], rows[2][3]), Mat3::from_cols(
+                            Vec3::new(rows[0][0], rows[1][0], rows[2][0]), Vec3::new(rows[0][1], rows[1][1], rows[2][1]), Vec3::new(rows[0][2], rows[1][2], rows[2][2])))
+                    }),
+            };
+            let Some((p, r)) = frame else { continue };
+            let (p, r) = (p + r * tree.bind.0, r * tree.bind.1);
+            let joints = pose.into_iter().map(|(local_p, local_r)| {
+                let (p, r) = (p + r * local_p, r * local_r);
+                std::array::from_fn(|i| [r.x_axis[i], r.y_axis[i], r.z_axis[i], p[i]])
+            }).collect();
+            render.push(ArmRender { model: tree.model.clone(), joints,
+                visible: tree.visible && self.body.arms_shown[side] });
         }
         // The body entity's own model: hidden-legs materials (nothing drawn)
         // unless the legs are visible (FUN_140776e60).

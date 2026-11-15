@@ -1,5 +1,46 @@
 # Resource parity ledger
 
+## Equipment animation integration (2026-11-15)
+
+The player arm owner now accepts demanded equipment locomotion definitions.
+`arms::EquipmentDefinition` copies only the selected hand's authored aliases,
+speeds, idle leaves and transitions while setup declarations are borrowed.
+`prepare_equipment` resolves these through the existing `animation_rig::Clips`
+and `Rig` owners. Its immutable alias/index snapshot lets the live arm continue
+playing while a worker loads only missing clips. New clips are appended by the
+host after checking the captured bank generation; cancellation discards the
+worker additions. Existing scene indices remain stable. Arm and equipment
+resources retire with their canonical player/level owner; this does not add an
+archive, skeleton, model or GPU resource cache.
+
+Original basis: `7021d0` builds arm stance/equipment records and per-stance
+equipment changes; `701690` initializes equipment transition blend defaults to
+0.25 seconds; `14166d520`/`14166d3d0` register their fields. `6f9b90` supplies the
+idle leaf and `6fcf90`/`6fd5b0`/`6fd760`/`6fd400` the existing transition manager.
+Status: `ported` declaration extraction and demanded clip resolution; `host:`
+the backend keys original stance/equipment index pairs with immutable strings
+inside the existing locomotion node. This is not a full port of its separate
+move-state arbitration, layered idle variation or equipment-lowering rotation.
+
+`Midnight` now carries the five player cast targets from `8542b0`: body, both
+arms and both equipment entities. Equipment poses use that same owner and
+attach to the final controlled body/arm joints. `PreparedScene` records each
+equipment tree's own clip indices. `7dfbd0` initializes point events at zero;
+`7dfdd0` advances them. Events retain receiving target, scene handle, exact
+event/class names and shared authored property fields. Installed gun fire
+places FIRE/CONSUME_AMMO_FROM_MAGAZINE events on PlayerLeftEquipment, so
+body-only event collection discarded the actual weapon callbacks. No fixed
+timer substitutes for these keys. Status: `ported` cast/event routing; equipment
+tree acquisition and renderer admission are owned by their corresponding
+resource modules. Weapon family execution, player combat-state admission,
+projectile/hit owners, recoil and family-specific event handlers must be
+connected before this is described as complete weapon gameplay.
+
+Prediction: worker equipment preparation will decode zero already-resident
+clips, add no per-frame archive reads, and keep one posed model per cast tree.
+No performance number or visual parity is claimed: compilation, tests, visible
+diagnostics and visual checks were not run under the current user constraints.
+
 What the rewrite loads of each resource class the original loads, and how
 far each class's lifecycle is ported. Rules: `AGENTS.md`, "Resource parity".
 Status words: `ported`, `verified` (against a capture or the original's

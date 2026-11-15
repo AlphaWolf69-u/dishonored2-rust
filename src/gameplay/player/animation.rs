@@ -147,6 +147,8 @@ pub struct LocoData {
     pub transitions: HashMap<(String, String), Transition>,
     /// The selected arm's authored Swimming idle leaf.
     pub swimming_idle: Option<usize>,
+    /// Authored idle leaves, keyed by the same stance/equipment key as stances.
+    pub idle_clips: HashMap<String, usize>,
     pub idle_blend: [f32; 2],
 }
 
@@ -330,7 +332,8 @@ impl LocoNode {
         // idle leaf immediately; validated scalar arms currently bind state 0.
         let idle_stance = if self.manager.state == 5 { self.manager.to.as_deref() }
             else { self.manager.from.as_deref() };
-        let selected_idle = if idle_stance == Some("Swimming") { self.data.swimming_idle } else { None };
+        let selected_idle = idle_stance.and_then(|stance| self.data.idle_clips.get(stance).copied()
+            .or_else(|| (stance == "Swimming").then_some(self.data.swimming_idle).flatten()));
         if self.source_arm_move_state.is_some_and(|state| state != 0) { self.idle = LocoIdle::default(); }
         let stopped = speed <= f32::from_bits(0x3a83_126f);
         if let Some(clip) = self.idle.clip {

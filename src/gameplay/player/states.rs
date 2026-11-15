@@ -646,7 +646,7 @@ pub struct Frame<'a> {
     pub midnight: &'a mut Midnight,
     pub scenes: &'a Scenes,
     /// The player body md6 (CONDMD6 choices).
-    pub md6: [&'a str; 3],
+    pub md6: [&'a str; super::midnight::TARGETS],
     /// The body's and both arms' animations (the midnight cast).
     pub animations: super::midnight::Cast<'a>,
     pub mantle_sensor: &'a mut MantleSensor,

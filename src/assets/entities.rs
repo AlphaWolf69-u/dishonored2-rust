@@ -126,7 +126,7 @@ enum Token<'a> {
     Semicolon,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Atom(String),
     Scope(Vec<(String, Value)>),
