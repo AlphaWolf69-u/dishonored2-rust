@@ -22,6 +22,8 @@ pub struct UpgradeInfo {
 }
 #[derive(Clone, Debug)]
 pub struct Power {
+    /// Resolved equipment component, shared by casting and the Journal.
+    pub component: Vec<(String, Value)>,
     pub item: String,
     pub name: String,
     pub description: String,
@@ -160,6 +162,15 @@ pub fn definitions<'a>(catalog: &Catalog, character: &str, items: impl IntoItera
     let body = format!("models/characters/player/{character}/body.def");
     let system = entities::player::entity_component(&body, "cpntplayerpowersystem", read)?
         .ok_or("player has no power-system component")?;
+    definitions_from_system(catalog, &system, items)
+}
+
+/// Use the level's already resolved player component rather than acquiring
+/// the complete player entity again for a UI or casting consumer.
+pub fn definitions_from_system<'a>(catalog: &Catalog, system: &[(String, Value)], items: impl IntoIterator<Item = &'a str>) -> Result<(Vec<Power>, String), String> {
+    let read = |path: &str| -> Result<Option<String>, String> {
+        Ok(catalog.read(path).map_err(|e| e.to_string())?.map(entities::owned_declaration_text))
+    };
     let mut mapping = HashMap::new();
     if let Some(entries) = scope(&system, "m_powerUpgradeItemList") {
         for (key, value) in entries {
@@ -182,6 +193,7 @@ pub fn definitions<'a>(catalog: &Catalog, character: &str, items: impl IntoItera
             Value::Scope(entry) if atom(entry, "m_id") == Some(power_id) => Some(entry.as_slice()), _ => None,
         }) else { continue };
         result.push(Power {
+            component: component.clone(),
             item: item.to_owned(), name: value_text(&fields, "m_name"), description: value_text(&fields, "m_description"),
             tips: value_text(&fields, "m_strategicTips"), image: image(&fields, "m_journalImage"),
             header_image: image(&fields, "m_journalHeaderImage"),

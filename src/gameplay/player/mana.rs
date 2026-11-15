@@ -41,17 +41,26 @@ impl Mana {
         self.target = (self.target + amount).min(self.maximum(attributes));
     }
     pub fn consume(&mut self, amount: f32, attributes: &Attributes, replenish: bool) {
-        if self.lock_flags & 1 != 0 { return; }
+        self.consume_with_replenish(amount, attributes, if replenish { Some(self.settings.regen_amount) } else { None });
+    }
+    /// 140746cf0 receives the selected power's numeric m_manaReplenish,
+    /// rather than the mana component's default recharge amount. Damage and
+    /// breath retain consume() and its existing component-default policy.
+    /// Returns the unfunded share for the health-overcast owner.
+    pub fn consume_with_replenish(&mut self, amount: f32, attributes: &Attributes, replenish: Option<f32>) -> f32 {
+        if self.lock_flags & 1 != 0 { return 0.0; }
+        let deficit = (amount - self.current).max(0.0);
         let previous = self.current;
         self.current = (self.current - amount).max(0.0);
         self.target = (self.target - (previous - self.current)).max(0.0);
-        if replenish {
+        if let Some(replenish) = replenish {
             let factor = attributes.0.get("ARK_ATTRIBUTE_MANA_REGEN_AMOUNT_FACTOR").copied().unwrap_or(1.0);
-            let amount = (self.settings.regen_amount + attributes.get("ARK_ATTRIBUTE_MANA_REGEN_AMOUNT")) * factor;
+            let amount = (replenish + attributes.get("ARK_ATTRIBUTE_MANA_REGEN_AMOUNT")) * factor;
             let maximum = self.settings.maximum + attributes.get("ARK_ATTRIBUTE_MANA_MAX");
             self.target = self.target.max(self.current + amount).min(maximum);
         }
         self.countdown = self.settings.regen_delay + attributes.get("ARK_ATTRIBUTE_MANA_REGEN_DELAY");
+        deficit
     }
     pub fn update(&mut self, dt: f32, attributes: &Attributes, replenish: bool) {
         if self.lock_flags & 2 != 0 { return; }

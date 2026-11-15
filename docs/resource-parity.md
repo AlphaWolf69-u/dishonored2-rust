@@ -41,6 +41,27 @@ were implemented, nor do they reopen already accepted current-owner lifetimes.
 
 ## Classes
 
+### Power-system projections and cast lifecycle (2026-11-15)
+
+Prediction before this change: resolving the power-system projection during
+level acquisition should leave **zero archive reads on power selection,
+casting, and Journal purchase callbacks**. This is an ownership expectation,
+not a measured startup, memory, or frame-time improvement. Builds, tests,
+captures and visible launches were intentionally not run for this batch.
+
+| Boundary | Owner / original functions | Status and limits |
+|---|---|---|
+| Power/upgrade topology and equipment component projection | `assets::power_journal`, shared `app::powers::Powers`; `140455000`, `1404563a0`, `140456590`, component constructors `14061d660` / `14043d2d0` | **ported projection**: consume the setup's borrowed power-system fields; one `Arc` definition set shared with Journal; no per-open reacquisition. Actual inventory declaration leases and modifiers remain with the Catalog/item owner and session inventory. Projection drops with the level resource/worker snapshot. |
+| Mark/owned-power admission and purchase | Same `Powers` + session inventory; `1404c1f20`, `140455850`, `140455ab0`, `140521580` | **ported** starting-item mark predicate, character/ownership eligibility, upgrade ancestry and rune affordability checks, item admission then rune removal, successful movie cost/rune refresh. New-game-plus is explicit state, pending saved-game manager restoration; never inferred from map. |
+| Base power action and mana payment | `gameplay::powers::{Cast,action::Action}`, player mana; `14061bce0`, `14061bc20`, `14061be50`, `14061bea0`, `14061c060`, `14061c0e0`, `14061c350`, `140746cf0`, `140856160`, `1408564e0`, `1408566f0`, `140856c50` | **ported shared protocol**, host callback integration required: numeric authored replenish amount, locks/suppression, cooldown/free-window deadlines, conditional half/free native random-roll order; real in/loop/out/slide/cancel scene handles. Family callbacks (frequently release) must accept actual effects before committing payment. No input-triggered fake effect or timer-driven cast. Health-overcast deficit is returned to health owner. |
+| Windblast power dispatch | `gameplay::powers::windblast`; `140448780`, `140448590`, vtable `141b53488 + 0x120` | **ported selection/spawn protocol**, **blocked: real cpntWindblast entity runtime**. Four authored basic/greater/shockwave/combined entity defs, camera transform and player owner must reach the world spawner before payment. Blast lifecycle/target dispatch `1404d6b50`, `1404d6f90`, `1404d7480`, `1404d7f50`, `1404d8380`, `1404d8610`, `1404d89a0` depend on real rigid bodies, living actor/AI and damage receivers; a spawned particle effect cannot substitute. |
+
+The shared protocol is not a claim that possession, swarm, doppelganger,
+mesmerize, shadow-walk or domino effects exist. Those families require their
+actual actor/mode/link/roster components, entity spawning, targeting and
+retirement. Missing owners remain failed admission; no synthetic targets or
+unrelated temporary attribute modifiers stand in for them.
+
 ### GPU heap occupancy attribution (2026-11-09)
 
 Prediction before extending the existing opt-in allocator snapshot: prior

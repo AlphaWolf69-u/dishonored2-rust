@@ -12,6 +12,7 @@ pub mod navigation;
 pub mod interaction_sensor;
 pub mod usable;
 pub mod player;
+pub mod powers;
 pub mod shape_cast;
 pub mod message_box;
 pub mod options;
