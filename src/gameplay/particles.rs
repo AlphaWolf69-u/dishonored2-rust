@@ -15,6 +15,7 @@ pub mod parameters;
 pub mod periodic;
 pub mod ribbon;
 pub mod pose;
+pub mod shape_spawn;
 pub mod simulation;
 pub mod space;
 pub mod spawn;

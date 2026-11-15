@@ -55,6 +55,9 @@ pub struct StageSimulation {
     attractors: Vec<super::attractor::AttractorState>,
     fields: [Vec<super::field::FieldState>; 3],
     field_velocity: Vec<[f32; 3]>,
+    /// The owner's physics shapes (system +0x1d78) for m_physicsShapesSpawn;
+    /// None spawns as usual.
+    pub owner_shapes: Option<Arc<super::shape_spawn::OwnerShapes>>,
 }
 
 /// The linked parent stage (stage +0x110): its live particles and its own
@@ -80,6 +83,7 @@ struct Bindings<'a> {
     mesh_cursor: &'a mut usize,
     periodic_orientation: &'a mut super::periodic::PeriodicOrientationState,
     inherited_velocity: &'a super::spawn::SpawnVelocity,
+    owner_shapes: Option<&'a super::shape_spawn::OwnerShapes>,
 }
 
 impl EmitterBindings for Bindings<'_> {
@@ -207,6 +211,22 @@ impl EmitterBindings for Bindings<'_> {
         }
         if !parented {
             position = std::array::from_fn(|i| add(context.pose.position[i], position[i]));
+        }
+        // 1401f4e00: on the owner's physics shapes, relative to the
+        // emitter origin and in the stage's axes unless it is worldspace.
+        if definition.physics_shapes_spawn.enabled {
+            if let Some(owner) = self.owner_shapes {
+                let (point, normal_velocity) =
+                    super::shape_spawn::spawn(&definition.physics_shapes_spawn, owner, context.cycle_fraction, seed)?;
+                let mut offset: [f32; 3] = std::array::from_fn(|i| crate::float::subtract(point[i], context.pose.position[i]));
+                let mut extra = normal_velocity;
+                if !definition.worldspace {
+                    offset = space.transform(offset, true);
+                    extra = space.transform(extra, true);
+                }
+                position = std::array::from_fn(|i| add(offset[i], position[i]));
+                velocity = std::array::from_fn(|i| add(extra[i], velocity[i]));
+            }
         }
         let mut particle_seed = crate::random::lcg_step(seed);
         let mut motion_seed = particle_seed;
@@ -381,6 +401,7 @@ impl StageSimulation {
             mesh_cursor: &mut self.mesh_cursor,
             periodic_orientation: &mut self.periodic_orientation,
             inherited_velocity: &self.inherited_velocity,
+            owner_shapes: self.owner_shapes.as_deref(),
         };
         self.emitter.advance_clock(delta, &mut bindings)?;
         self.commit_pose(pose);
@@ -460,6 +481,7 @@ impl StageSimulation {
             mesh_cursor: &mut mesh_cursor,
             periodic_orientation: &mut periodic_orientation,
             inherited_velocity: &inherited_velocity,
+            owner_shapes: None,
         };
         let emitter = ParticleEmitter::new(
             Arc::new(definition.emitter.clone()),
@@ -489,6 +511,7 @@ impl StageSimulation {
             attractors,
             fields,
             field_velocity,
+            owner_shapes: None,
         })
     }
 
@@ -829,6 +852,7 @@ impl StageSimulation {
             mesh_cursor: &mut self.mesh_cursor,
             periodic_orientation: &mut self.periodic_orientation,
             inherited_velocity: &self.inherited_velocity,
+            owner_shapes: self.owner_shapes.as_deref(),
         };
         let free = bindings.particles.capacity() - bindings.particles.len();
         // 1ffff0 calls ordinary emission after integration. Each spawned

@@ -366,13 +366,6 @@ impl ParticleDefinition {
         // 140201760 creates an arkHavokParticleStage (simulator 1401dfc20) for
         // each enabled Havok stage; its Havok FX pipeline is not ported yet.
         for declaration in declarations.iter().flatten() {
-            // 1401f4e00 samples the owner's physics shapes (1401dce70) only
-            // with m_enabled and an owner shapes object; disabled blocks do
-            // nothing.
-            let stages = declaration.stages.iter().chain(declaration.havok_stages.iter().map(|stage| &stage.stage));
-            if stages.filter(|stage| stage.enabled).any(|stage| stage.physics_shapes_spawn.enabled) {
-                return Err("particle spawning on the owner's physics shapes (m_physicsShapesSpawn) is not ported".into());
-            }
             for stage in declaration.havok_stages.iter().filter(|stage| stage.stage.enabled) {
                 havok_stage_admission(declaration, stage)?;
             }

@@ -215,6 +215,8 @@ pub struct HavokStageSimulation {
     fields: [Vec<super::field::FieldState>; 3],
     /// The level collision for the spawn queries (+0x400, 1401db580).
     pub spawn_world: Option<(Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
+    /// The owner's physics shapes (system +0x1d78) for m_physicsShapesSpawn.
+    pub owner_shapes: Option<Arc<super::shape_spawn::OwnerShapes>>,
     /// The dynamic world bodies PhysicsCollide's moving-body part collides
     /// with; none is an empty world.
     pub moving: Option<Arc<MovingWorld>>,
@@ -375,6 +377,7 @@ impl HavokStageSimulation {
             fields: [Vec::new(), Vec::new(), Vec::new()],
             spawn_world: None,
             moving: None,
+            owner_shapes: None,
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
                 solver: match shape {
@@ -520,6 +523,7 @@ impl HavokStageSimulation {
                 gravity: self.integrate.gravity,
                 inherited_velocity: &self.inherited_velocity,
                 mesh_cursor: &mut self.mesh_cursor,
+                owner_shapes: self.owner_shapes.as_deref(),
                 emitted: &mut self.pending,
             };
             if burst {
@@ -1156,6 +1160,7 @@ struct Spawner<'a> {
     /// +0x608: the spawn mesh's sequential cursor (1401f9540).
     mesh_cursor: &'a mut usize,
     emitted: &'a mut Vec<PendingSpawn>,
+    owner_shapes: Option<&'a super::shape_spawn::OwnerShapes>,
 }
 
 /// bevy_backend: the level collision map stands in for the hknp world the
@@ -1242,7 +1247,15 @@ impl EmitterBindings for Spawner<'_> {
             velocity = std::array::from_fn(|i| add(mesh_velocity[i], velocity[i]));
             colour = sample.colour;
         }
-        position = std::array::from_fn(|i| add(position[i], context.pose.position[i]));
+        // 1401deef0: the owner's physics shapes replace the origin.
+        match self.owner_shapes.filter(|_| asset.physics_shapes_spawn.enabled) {
+            Some(owner) => {
+                let (point, extra) = super::shape_spawn::spawn(&asset.physics_shapes_spawn, owner, fraction, seed)?;
+                position = std::array::from_fn(|i| add(point[i], position[i]));
+                velocity = std::array::from_fn(|i| add(extra[i], velocity[i]));
+            }
+            None => position = std::array::from_fn(|i| add(position[i], context.pose.position[i])),
+        }
         if let Some(mesh_velocity) = asset.velocity_mesh.sample(context.cycle_seed, seed, fraction)? {
             let mesh_velocity = space.transform(mesh_velocity, asset.velocity_mesh.worldspace);
             velocity = std::array::from_fn(|i| add(mesh_velocity[i], velocity[i]));

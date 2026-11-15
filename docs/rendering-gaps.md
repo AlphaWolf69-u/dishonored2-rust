@@ -796,10 +796,22 @@ loses w. Remaining, in order:
   collision queries (1401db2c0 sphere, 1401db350 ray) against the level
   map. The per-body seed these effects read (+0x340) is never written by
   the stage (approximate_: 0). FX census 765 -> 135.
-- Remaining refusals: enabled m_physicsShapesSpawn (58: 1401dce70 picks a
-  random owner physics shape, 14067a050 samples a polytope face point and
-  normal; needs the owning entity's shape list, FX group
-  m_usePhysicsShapes), opaque pixel-lit particles (46, see particle/blood),
+- m_physicsShapesSpawn connected (`gameplay::particles::shape_spawn`):
+  only arkCpntFX (1404b1d80 -> 14067a340) builds an owner shape list, for
+  FX whose systems use the spawn (FX +0x68, 1401c5c10), from the owner
+  entity's physics component bodies with convex polytope shapes; 140227b90
+  copies it into the system (+0x1d78). With a list, Havok stages spawn at
+  the sampled shape point instead of the origin (1401deef0) and ordinary
+  stages add its offset from the origin in stage axes (1401f4e00); the
+  normal times m_normalToVelocity joins the velocity. 14067a050 matches
+  the installed function on 2000/2000 synthetic polytopes
+  (tests/fixtures/polytope_face_points.txt). Without a list both spawn as
+  usual. The installed world starts of these FX (smoke_chimney and
+  smoke_brasero from Kiscule FX nodes, wind_turbine from func/fx
+  entities) never get a list in the original either; the other users are
+  character and power FX the rewrite does not start, so no host fills
+  `owner_shapes` yet.
+- Remaining refusals: opaque pixel-lit particles (46, see particle/blood),
   SolveSelfContacts (29, compute effect 140fd33d0: resurrect, realize
   140fd5250, prune, create from the SpatialPartition's closest
   neighbours, radix sort, prepare, solve 140fd4f90/140fd4cc0/140fd5320/
