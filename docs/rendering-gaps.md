@@ -122,8 +122,14 @@ versus 4.2/16.0/13.9/2.0 without (DH2_DEBUG_PARTICLE_SHADOWS).
 Moving systems therefore keep a stale shadow in cached local faces, as in
 the original (see original-defects.md). With local faces cached, particle
 shadow draws at the fly cluster fell to 4.0/2.7/0.4 per frame. The
-vegetation particle shadow path (Dust District leaves) is wired but not yet
-exercised at runtime.
+vegetation particle shadow path runs on eotw's Havok leaf system
+(`strt_leaves_01.lwo` with `leaves_floor_01_vfx`): it publishes, is admitted
+and casts through the vegetation program, up to about 25 particle shadow
+draws per frame on the benchmark walk. Two defects kept it from drawing:
+Havok stages were left out of the system's lighting-need scan (1401e4930
+publishes them through the same root record), and Tome refused the empty
+1e30/-1e30 owner box of a system with no live particles as invalid where
+FUN_140a71b90's query-bounds overlap test simply rejects it.
 
 ## Not gaps
 
