@@ -176,6 +176,8 @@ pub struct HavokStageSimulation {
     /// attractors; arkVectorFieldsHavokEffect (1402165f0) applies the last
     /// two.
     fields: [Vec<super::field::FieldState>; 3],
+    /// The level collision for the spawn queries (+0x400, 1401db580).
+    pub spawn_world: Option<(Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
     /// Events for the system's ordinary stages and FX event instances,
     /// delivered by the owning system after each frame and step.
     pub deliveries: Vec<super::events::Delivery>,
@@ -331,6 +333,7 @@ impl HavokStageSimulation {
             fx_pending: Vec::new(),
             attractors: Vec::new(),
             fields: [Vec::new(), Vec::new(), Vec::new()],
+            spawn_world: None,
             collisions: definition.enable_collisions.then(|| Collisions {
                 world: WorldCollide::new(capacity),
                 solver: match shape {
@@ -466,6 +469,8 @@ impl HavokStageSimulation {
             let multiplier = frame.rate;
             let burst = definition.stage.burst;
             let mut bindings = Spawner {
+                origin_height: frame.pose.position[2],
+                spawn_world: self.spawn_world.as_ref(),
                 declaration: &self.declaration,
                 index: self.index,
                 angular: self.pipeline.angular.is_some(),
@@ -1035,6 +1040,9 @@ impl EmitterBindings for NoBindings {
 }
 
 struct Spawner<'a> {
+    /// The system origin's height and the level collision for m_spawnCollisions.
+    origin_height: f32,
+    spawn_world: Option<&'a (Arc<crate::gameplay::navigation::CollisionMap>, Arc<[bool]>)>,
     declaration: &'a ParticleDeclaration,
     index: usize,
     angular: bool,
@@ -1043,6 +1051,59 @@ struct Spawner<'a> {
     /// +0x608: the spawn mesh's sequential cursor (1401f9540).
     mesh_cursor: &'a mut usize,
     emitted: &'a mut Vec<PendingSpawn>,
+}
+
+/// bevy_backend: the level collision map stands in for the hknp world the
+/// spawn queries (140c89cb0 sphere, 140c89b00 ray) run against, filtered by
+/// the stage layer (14081a5d0).
+impl Spawner<'_> {
+    fn world(&self) -> Result<(&crate::gameplay::navigation::CollisionMap, &[bool], u32), String> {
+        let (map, owners) = self.spawn_world.ok_or("Havok particle spawn queries need the level collision map")?;
+        let layer = self.declaration.havok_stages[self.index].collisions.layer;
+        Ok((map, owners, crate::gameplay::collision_filter::filter_info(layer)))
+    }
+
+    fn sphere_hit(&self, p: [f32; 3], radius: f32) -> Result<bool, String> {
+        let (map, owners, filter) = self.world()?;
+        let centre = bevy::math::Vec3::new(p[0], p[2], -p[1]);
+        let reach = bevy::math::Vec3::splat(radius);
+        let (mut found, mut triangles) = (Vec::new(), Vec::new());
+        map.triangles_in(centre - reach, centre + reach, crate::gameplay::collision_filter::QueryFilter::World(filter), owners, &mut found, &mut triangles);
+        Ok(triangles.iter().any(|(_, vertices, _)| {
+            let (point, _) = crate::gameplay::shape_cast::closest_on_triangle(*vertices, centre);
+            (point - centre).length() <= radius
+        }))
+    }
+
+    fn ray_hit(&self, start: [f32; 3], ray: [f32; 3]) -> Result<bool, String> {
+        let (map, owners, filter) = self.world()?;
+        let origin = bevy::math::Vec3::new(start[0], start[2], -start[1]);
+        let direction = bevy::math::Vec3::new(ray[0], ray[2], -ray[1]);
+        let end = origin + direction;
+        let (mut found, mut triangles) = (Vec::new(), Vec::new());
+        map.triangles_in(origin.min(end), origin.max(end), crate::gameplay::collision_filter::QueryFilter::World(filter), owners, &mut found, &mut triangles);
+        Ok(triangles.iter().any(|(_, [a, b, c], _)| {
+            // Moller-Trumbore over the segment's parameter range [0, 1].
+            let (e1, e2) = (*b - *a, *c - *a);
+            let p = direction.cross(e2);
+            let det = e1.dot(p);
+            if det.abs() < f32::EPSILON {
+                return false;
+            }
+            let inverse = 1. / det;
+            let s = origin - *a;
+            let u = s.dot(p) * inverse;
+            if !(0. ..=1.).contains(&u) {
+                return false;
+            }
+            let q = s.cross(e1);
+            let v = direction.dot(q) * inverse;
+            if v < 0. || u + v > 1. {
+                return false;
+            }
+            (0. ..=1.).contains(&(e2.dot(q) * inverse))
+        }))
+    }
 }
 
 impl EmitterBindings for Spawner<'_> {
@@ -1084,9 +1145,41 @@ impl EmitterBindings for Spawner<'_> {
         let cone = multiply(asset.velocity_spray.sample(fraction, seed)?, 0.5);
         velocity = super::spawn::spray(velocity, cone, seed);
         let inverse_life = divide(1., life);
+        // 1401db2c0: a spawn inside the level geometry is dropped.
+        let queries = &definition.spawn_collisions;
+        if queries.position_sphere_query && self.sphere_hit(position, f32::from_bits(0x3dcc_cccd))? {
+            return Ok(0);
+        }
         let particle_seed = crate::random::lcg_step(seed);
         let inherited = self.inherited_velocity.at_point(position);
         velocity = std::array::from_fn(|i| add(velocity[i], inherited[i]));
+        // 1401db350: a ray along the velocity (from the system's height when
+        // falling, unless the flag is cleared) that hits the level drops it.
+        if queries.velocity_ray_cast {
+            let squared = add(add(multiply(velocity[0], velocity[0]), multiply(velocity[1], velocity[1])), multiply(velocity[2], velocity[2]));
+            let floor = f32::from_bits(0x0080_0000);
+            let inverse = divide(1., if squared <= floor { floor } else { squared }.sqrt());
+            let mut distance = queries.velocity_ray_cast_distance;
+            let down = multiply(velocity[2], inverse);
+            let mut start = position;
+            if queries.from_origin_height && EPSILON < -down {
+                let t = add(divide(subtract(position[2], self.origin_height), -down), queries.offset);
+                distance = subtract(distance, t);
+                start = [
+                    add(position[0], multiply(multiply(velocity[0], inverse), t)),
+                    add(position[1], multiply(multiply(velocity[1], inverse), t)),
+                    add(position[2], multiply(t, down)),
+                ];
+            }
+            let ray = [
+                multiply(multiply(velocity[0], inverse), distance),
+                multiply(multiply(velocity[1], inverse), distance),
+                multiply(down, distance),
+            ];
+            if self.ray_hit(start, ray)? {
+                return Ok(0);
+            }
+        }
         // 1401df5c0: the rest of the emission slice under gravity alone.
         let delta = context.remaining_delta;
         let age = add(multiply(delta, inverse_life), 0.);

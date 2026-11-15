@@ -87,6 +87,10 @@ pub struct HavokSpawnCollisions {
     pub position_sphere_query: bool,
     pub velocity_ray_cast: bool,
     pub velocity_ray_cast_distance: f32,
+    /// +1 (true): a falling ray starts at the system origin's height; +4
+    /// the offset added to that start (0). Not reflected.
+    pub from_origin_height: bool,
+    pub offset: f32,
 }
 
 /// events_t (+0x1c68).
@@ -171,6 +175,8 @@ impl Default for ParticleHavokStageAsset {
                 position_sphere_query: false,
                 velocity_ray_cast: false,
                 velocity_ray_cast_distance: -50.,
+                from_origin_height: true,
+                offset: 0.,
             },
             wind_drag_over_cycle: ScalarParameter::constant(1.),
             wind_drag_over_life: ScalarParameter::constant(1.),

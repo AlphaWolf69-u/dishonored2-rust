@@ -471,9 +471,6 @@ fn havok_stage_admission(
     if asset.burst && !asset.burst_event.is_empty() {
         return Err("Havok particle event bursts are not connected".into());
     }
-    if stage.spawn_collisions.position_sphere_query || stage.spawn_collisions.velocity_ray_cast {
-        return Err("Havok particle spawn collision queries are not connected".into());
-    }
     if stage.collisions.kill_on_ocean_collision {
         return Err("Havok particle ocean collisions are not connected".into());
     }

@@ -120,10 +120,17 @@ impl ParticleSystems {
         let slots = &mut self.slots;
         let seed = &mut self.seed;
         let collision = self.collision.as_ref().map(|(map, owners)| (&**map, &**owners));
+        let spawn_world = &self.collision;
         self.links.update_chain(head, |index| {
             let slot = &mut slots[usize::from(index)];
             let system = slot.as_mut().ok_or("particle pool slot absent")?;
             if system.effect.active {
+                for stage in &mut system.havok_stages {
+                    let queries = &stage.definition().spawn_collisions;
+                    if queries.position_sphere_query || queries.velocity_ray_cast {
+                        stage.spawn_world = spawn_world.clone();
+                    }
+                }
                 system.source_motion = motion.copied();
                 system.source_velocity = motion.map_or([0.; 3], |motion| motion.linear);
                 system.update(now, frame, underwater, collision, seed)?;
