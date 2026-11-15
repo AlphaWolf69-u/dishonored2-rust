@@ -62,6 +62,7 @@ pub struct Runtime {
     feedback: Arc<Feedback>,
     grappling_posture: usize,
     travel_target: Target,
+    beam_target: Option<Vec3>,
 }
 impl Runtime {
     fn new(request: Request, scenes: Arc<Scenes>, feedback: Arc<Feedback>) -> Self {
@@ -71,8 +72,9 @@ impl Runtime {
             sticking: false, push_time: 0.0, gravity_disabled: false,
             extra_legs: false, stick_lock: false, finished: false, aborted: false,
             source: Vec3::ZERO, start_yaw: 0.0, start_pitch: 0.0,
-            target_yaw: 0.0, target_pitch: 0.0, target_yaw_offset: 0.0, hits: Vec::new(), sensor, target_offset: Vec3::ZERO, safe_distance: 0.0, feedback, grappling_posture: 8, travel_target }
+            target_yaw: 0.0, target_pitch: 0.0, target_yaw_offset: 0.0, hits: Vec::new(), sensor, target_offset: Vec3::ZERO, safe_distance: 0.0, feedback, grappling_posture: 8, travel_target, beam_target: None }
     }
+    pub fn beam_destination(&self) -> Option<Vec3> { self.beam_target }
     pub fn sticking(&self) -> bool { self.sticking }
     pub fn target_position(&self) -> Vec3 { self.request.target_position + self.target_offset }
     fn play(&mut self, path: Option<&str>, parts: u8, frame: &mut Frame<'_>) {
@@ -184,6 +186,9 @@ fn update_target(run: &mut Runtime, frame: &mut Frame<'_>, decl: &Decl) {
         run.request.safe_position = safe.position; run.safe_distance = safe.distance;
         if safe.shape_changed { run.grappling_posture = safe.posture; frame.physics.set_posture(safe.posture, 0.0); }
     } else { run.request.safe_position = query_target; }
+    run.beam_target = Some(query_target + if run.request.target != Target::Ground {
+        Vec3::Z * frame.physics.current_settings().height
+    } else { Vec3::ZERO });
     camera_target(run, frame, decl);
     if let Some(motion) = run.motion.as_mut() {
         motion.safe_position = run.request.safe_position;
@@ -192,7 +197,7 @@ fn update_target(run: &mut Runtime, frame: &mut Frame<'_>, decl: &Decl) {
 }
 
 fn stick(run: &mut Runtime, frame: &mut Frame<'_>, decl: &Decl) {
-    run.sticking = true;
+    run.sticking = true; run.beam_target = None;
     frame.powers.grapple_equipment_events.push(EquipmentEvent::Stick);
     if let Some(sound) = &run.feedback.stick { frame.powers.sound_events.push(sound.id); }
     frame.body_parts.soft_lock(2); run.stick_lock = true;
@@ -240,6 +245,7 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
     // 83a2c0 invokes61c320 even on its first-update skip.
     frame.powers.refresh_owned_cooldown(6);
     let mut run = frame.powers.grapple.take()?;
+    run.beam_target = None;
     let result = if run.aborted { Some(StateId::FALLING) }
     else if run.first_update { run.first_update = false; None }
     else if run.sticking {
@@ -347,6 +353,7 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
 }
 pub fn deactivate(frame: &mut Frame<'_>, decl: &Decl) {
     let Some(run) = frame.powers.grapple.as_mut() else { return };
+    run.beam_target = None;
     if run.sticking { frame.powers.grapple_equipment_events.push(EquipmentEvent::Unstick); }
     if run.stick_lock { frame.body_parts.soft_unlock(2); run.stick_lock = false; }
     if run.gravity_disabled { frame.physics.disable_gravity(false); run.gravity_disabled = false; }
