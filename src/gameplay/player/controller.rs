@@ -210,6 +210,9 @@ impl Controller {
     pub fn down(&self, action: i32) -> bool {
         self.held & self.allowed & bit(action) != 0
     }
+    /// 140866370 consumes the held fire button when a charged/targeted
+    /// ranged action is explicitly cancelled.
+    pub fn clear_down(&mut self, action: i32) { self.held &= !bit(action); }
     pub fn pressed(&self, action: i32) -> bool {
         self.pressed & self.allowed & bit(action) != 0
     }

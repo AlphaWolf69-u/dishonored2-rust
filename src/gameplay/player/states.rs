@@ -47,6 +47,10 @@ impl StateId {
     pub const LEANING: Self = Self(18);
     pub const GRAPPLE: Self = Self(27);
     pub const READ_NOTE: Self = Self(52);
+    pub const FIRE_WEAPON: Self = Self(56);
+    pub const CANCEL_FIRE_WEAPON: Self = Self(57);
+    pub const REQUEST_RELOAD_WEAPON: Self = Self(58);
+    pub const RELOAD_WEAPON: Self = Self(59);
     pub const NULL: Self = Self(91);
     pub const ANY: Self = Self(92);
 }
@@ -421,6 +425,10 @@ pub enum Kind {
     Swimming(super::swimming::SwimmingStateDecl),
     SwimMantle,
     ReadNote,
+    FireWeapon(Arc<super::combat::FireDecl>),
+    CancelFireWeapon,
+    RequestReloadWeapon,
+    ReloadWeapon,
     Dead(DrowningDeathDecl),
 }
 
@@ -521,6 +529,28 @@ impl StateDecl {
                 flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0, exclusive_body_parts: 0, ..flags };
                 (StateId::READ_NOTE, 0.0)
             }
+            Kind::FireWeapon(ref fire) => {
+                // 140866440: secondary, left arm exclusive, breakable.
+                flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
+                    exclusive_body_parts: 2, allow_self: fire.action.togglable, breakable: true, ..flags };
+                (StateId::FIRE_WEAPON, 0.0)
+            }
+            Kind::CancelFireWeapon => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, ..flags };
+                (StateId::CANCEL_FIRE_WEAPON, 0.0)
+            }
+            Kind::RequestReloadWeapon => {
+                flags = StateFlags { primary: false, body_parts: 0, locked_body_parts: 0,
+                    exclusive_body_parts: 0, ..flags };
+                (StateId::REQUEST_RELOAD_WEAPON, 0.0)
+            }
+            Kind::ReloadWeapon => {
+                // 140845660 has the same left-arm masks as FireWeapon.
+                flags = StateFlags { primary: false, body_parts: 2, locked_body_parts: 0,
+                    exclusive_body_parts: 2, breakable: true, ..flags };
+                (StateId::RELOAD_WEAPON, 0.0)
+            }
             Kind::Dead(_) => {
                 flags = StateFlags { primary: true, body_parts: 0x1f, locked_body_parts: 0x1f, exclusive_body_parts: 0x1f, allow_camera_out_of_shape: true, ..flags };
                 (StateId::DEAD, 0.0)
@@ -620,6 +650,11 @@ impl LocoStances {
 
 /// Values other components give the states each frame.
 pub struct Frame<'a> {
+    /// The real selected ranged component; no inventory or projectile copy.
+    pub weapon: &'a mut Option<super::weapons::Runtime>,
+    /// Equipment action component handles, rather than locomotion blends.
+    pub equipment_transitioning: [bool; 2],
+    pub action_time: f64,
     pub dt: f32,
     pub world: &'a dyn PlayerWorld,
     pub controller: &'a mut Controller,
@@ -931,6 +966,7 @@ pub struct State {
     death_timer: f32,
     death_transition_pending: bool,
     death_fx_pending: bool,
+    fire: super::combat::FireRuntime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1023,6 +1059,7 @@ impl StateMachine {
                 death_timer: 0.0,
                 death_transition_pending: false,
                 death_fx_pending: false,
+                fire: Default::default(),
             })
 
             .collect();
@@ -1209,6 +1246,19 @@ impl StateMachine {
             }
             Kind::Falling(_) => true,
             Kind::ReadNote => state.decl.flags.body_parts == 0 && self.read_note.admission,
+            Kind::FireWeapon(decl) => {
+                let action = frame.controller.mapping.iter().find(|mapping| mapping.state == state.decl.id)
+                    .map_or(0, |mapping| mapping.action);
+                let transitioning = state.decl.flags.body_parts & 2 != 0 && frame.equipment_transitioning[0]
+                    || state.decl.flags.body_parts & 4 != 0 && frame.equipment_transitioning[1];
+                !transitioning && state.fire.action.can_activate(frame.action_time, &decl.action)
+                    && frame.weapon.as_ref().is_some_and(|weapon| weapon.can_fire()
+                        || frame.controller.pressed(action) && (state.midnight == 0 || frame.midnight.finished(state.midnight)))
+            }
+            Kind::CancelFireWeapon => self.state(StateId::FIRE_WEAPON).is_some_and(|fire| fire.active
+                && matches!(fire.fire.phase, super::combat::FirePhase::TargetDelay | super::combat::FirePhase::Targeting
+                    | super::combat::FirePhase::TargetAcquired | super::combat::FirePhase::Charging)),
+            Kind::RequestReloadWeapon | Kind::ReloadWeapon => frame.weapon.as_ref().is_some_and(|weapon| weapon.can_reload()),
             Kind::Swimming(_) => navigation,
             Kind::SwimMantle => !frame.underwater && frame.mantle_sensor.can_mantle(),
             Kind::Dead(_) => true,
@@ -1260,6 +1310,84 @@ impl StateMachine {
                 frame.midnight.last_start_error = Some(format!("{path}: {error}"));
                 0
             }
+        }
+    }
+
+    /// 140866fe0 chooses the actual selected ranged component's mode.
+    fn activate_fire(&mut self, index: usize, decl: &super::combat::FireDecl, frame: &mut Frame) {
+        let Some(weapon) = frame.weapon.as_ref() else {
+            self.quit(StateId::FIRE_WEAPON);
+            return;
+        };
+        self.states[index].fire.begin(decl, weapon.can_fire(), weapon.target_flags & 2 != 0, weapon.target_flags & 4 != 0);
+        match self.states[index].fire.phase {
+            super::combat::FirePhase::Firing => self.play_weapon_action(index, super::weapons::Action::Fire, decl, frame),
+            super::combat::FirePhase::OutOfAmmo => self.play_weapon_action(index, super::weapons::Action::OutOfAmmo, decl, frame),
+            _ => {}
+        }
+    }
+
+    /// 140866dc0/d30/140867100: absence of an authored fire scene posts
+    /// WEAPON_FIRE. Failure to prepare an existing scene is not that case.
+    fn play_weapon_action(&mut self, index: usize, action: super::weapons::Action,
+        decl: &super::combat::FireDecl, frame: &mut Frame) {
+        let sliding = self.is_active(StateId::SLIDING);
+        let path = frame.weapon.as_ref().and_then(|weapon| weapon.scene(action, sliding)).map(str::to_owned);
+        let rate = frame.weapon.as_ref().map_or(1.0, |weapon| weapon.scene_playrate(action, frame.attributes));
+        let handle = if path.is_some() { Self::play(path.as_ref(), rate, 0xf, frame) } else { 0 };
+        self.states[index].midnight = handle;
+        self.states[index].fire.action.after_scene(handle, &decl.action);
+        if let Some(weapon) = frame.weapon.as_mut() {
+            weapon.set_scene(handle);
+            if action == super::weapons::Action::Fire {
+                weapon.charged_shot = decl.charged_shot_hold_duration <= self.states[index].fire.charge_time;
+            }
+            if action == super::weapons::Action::Fire && path.is_none() { weapon.emit_fire(); }
+        }
+    }
+
+    fn update_fire(&mut self, index: usize, decl: &super::combat::FireDecl, frame: &mut Frame) {
+        use super::combat::{ActionStep, FirePhase};
+        if frame.weapon.is_none() { self.quit(StateId::FIRE_WEAPON); return; }
+        let action = frame.controller.mapping.iter().find(|mapping| mapping.state == StateId::FIRE_WEAPON)
+            .map_or(0, |mapping| mapping.action);
+        let button_down = frame.controller.down(action);
+        match self.states[index].fire.phase {
+            FirePhase::Charging => {
+                // 140867330 does not count charge or release before the
+                // real charge scene has started; a reload can defer it.
+                if self.states[index].midnight == 0 {
+                    if !self.is_active(StateId::RELOAD_WEAPON) {
+                        self.play_weapon_action(index, super::weapons::Action::Charge, decl, frame);
+                    }
+                    return;
+                }
+                self.states[index].fire.charge_time += frame.dt;
+                if self.states[index].fire.released(button_down) {
+                    self.play_weapon_action(index, super::weapons::Action::Fire, decl, frame);
+                }
+            }
+            FirePhase::TargetDelay | FirePhase::Targeting | FirePhase::TargetAcquired => {
+                if self.states[index].fire.released(button_down) {
+                    self.play_weapon_action(index, super::weapons::Action::Fire, decl, frame);
+                } else if self.states[index].fire.advance_target_delay(frame.dt) {
+                    // 140867330 disables the competing target state and
+                    // activates the actual sensor16 request. World target
+                    // discovery consumes this typed effect; no target is made up.
+                    self.quit(StateId(0x4c));
+                    if let Some(weapon) = frame.weapon.as_mut() { weapon.begin_targeting(); }
+                }
+            }
+            FirePhase::Firing | FirePhase::OutOfAmmo => {
+                if self.states[index].fire.phase == FirePhase::OutOfAmmo && button_down { return; }
+                let finished = frame.midnight.finished(self.states[index].midnight);
+                if self.states[index].fire.action.update(frame.dt, &decl.action, button_down, finished, false) == ActionStep::Quit {
+                    self.quit(StateId::FIRE_WEAPON);
+                }
+                // The native FireWeapon's action execute-finished vtable
+                // slot+b8 is a no-op; the fire key owns the actual shot.
+            }
+            FirePhase::Inactive => self.quit(StateId::FIRE_WEAPON),
         }
     }
 
@@ -1379,6 +1507,14 @@ impl StateMachine {
     /// FUN_1408063f0: commands, the primary default, then the active
     /// states' updates.
     pub fn think(&mut self, frame: &mut Frame) {
+        // 14063bfc0: keep an explicit/empty-magazine reload pending until
+        // the state machine can admit its actual reload state.
+        if !self.is_active(StateId::RELOAD_WEAPON)
+            && frame.weapon.as_mut().is_some_and(|weapon| weapon.take_reload_request())
+            && self.allowed(StateId::RELOAD_WEAPON, frame)
+        {
+            self.request(StateId::RELOAD_WEAPON);
+        }
         // Commands queued while activating are processed in the same frame.
         self.process_commands(frame);
         for _ in 0..16 {
@@ -1500,6 +1636,12 @@ impl StateMachine {
     /// Slot 8 OnRequestAccepted (InAir FUN_14083eb00, Jumping FUN_1408681a0,
     /// Falling FUN_140865b90, Slipping FUN_140870030).
     fn on_request_accepted(&mut self, index: usize) {
+        if let Kind::FireWeapon(decl) = &self.states[index].decl.kind {
+            let decl = decl.action.clone();
+            let active = self.states[index].active;
+            self.states[index].fire.action.requested_again(&decl, active);
+            return;
+        }
         if matches!(self.states[index].decl.kind, Kind::Slipping(_)) {
             self.states[index].slipping_sneaking = self.is_active(StateId::SNEAKING);
             return;
@@ -1542,6 +1684,42 @@ impl StateMachine {
         // (FUN_140774900 +1).
         if decl.flags.body_parts & LEGS != 0 {
             *frame.desired_legs += 1;
+        }
+        match &decl.kind {
+            Kind::FireWeapon(fire) => {
+                self.states[index].fire.action.activate(&fire.action, false);
+                self.activate_fire(index, fire, frame);
+                return;
+            }
+            Kind::CancelFireWeapon => {
+                self.quit(StateId::FIRE_WEAPON);
+                // 140866370 clears native ACTION_FIRE_LEFT (20).
+                frame.controller.clear_down(20);
+                self.quit(decl.id);
+                return;
+            }
+            Kind::RequestReloadWeapon => {
+                if let Some(weapon) = frame.weapon.as_mut() { weapon.request_reload(); }
+                self.quit(decl.id);
+                return;
+            }
+            Kind::ReloadWeapon => {
+                let sliding = self.is_active(StateId::SLIDING);
+                let path = frame.weapon.as_ref().and_then(|weapon| weapon.scene(super::weapons::Action::Reload, sliding))
+                    .map(str::to_owned);
+                if path.is_some() {
+                    // 1408454f0 casts left arm + left equipment (mask 0xa).
+                    let rate = frame.weapon.as_ref().map_or(1.0, |weapon|
+                        weapon.scene_playrate(super::weapons::Action::Reload, frame.attributes));
+                    let handle = Self::play(path.as_ref(), rate, 0xa, frame);
+                    self.states[index].midnight = handle;
+                    if let Some(weapon) = frame.weapon.as_mut() { weapon.set_scene(handle); weapon.reload_requested = false; }
+                } else {
+                    if let Some(weapon) = frame.weapon.as_mut() { weapon.emit_reload(); weapon.reload_requested = false; }
+                }
+                return;
+            }
+            _ => {}
         }
         if let Kind::CatFall(catfall) = &decl.kind {
             frame.midnight.last_start_error = None;
@@ -1762,7 +1940,8 @@ impl StateMachine {
                 self.states[index].swimming_dive = (direction, impulse);
             }
             // Activated above, without the navigation base.
-            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::Dead(_) => {}
+            Kind::Leaning(_) | Kind::CatFall(_) | Kind::Mantle(_) | Kind::Vault(_) | Kind::SwimMantle | Kind::ReadNote | Kind::Dead(_)
+                | Kind::FireWeapon(_) | Kind::CancelFireWeapon | Kind::RequestReloadWeapon | Kind::ReloadWeapon => {}
         }
     }
 
@@ -1834,6 +2013,26 @@ impl StateMachine {
             *frame.desired_legs -= 1;
         }
         match self.states[index].decl.kind.clone() {
+            Kind::FireWeapon(_) => {
+                // 140866a20 stops only an interrupted charging scene.
+                if self.states[index].fire.phase == super::combat::FirePhase::Charging {
+                    frame.midnight.stop(self.states[index].midnight);
+                }
+                if let Some(weapon) = frame.weapon.as_mut() {
+                    weapon.finish_scene(self.states[index].midnight);
+                    if weapon.targeting_requested { weapon.end_targeting(); }
+                }
+                self.states[index].fire.phase = super::combat::FirePhase::Inactive;
+                self.states[index].fire.action.deactivate(frame.action_time);
+                self.states[index].midnight = 0;
+                return;
+            }
+            Kind::CancelFireWeapon | Kind::RequestReloadWeapon => return,
+            Kind::ReloadWeapon => {
+                if let Some(weapon) = frame.weapon.as_mut() { weapon.finish_scene(self.states[index].midnight); }
+                self.states[index].midnight = 0;
+                return;
+            }
             Kind::CatFall(_) => {
                 // FUN_14085b1e0 (the scene keeps playing): show the hidden
                 // arms again.
@@ -1946,6 +2145,11 @@ impl StateMachine {
         let kind = self.states[index].decl.kind.clone();
         let id = self.states[index].decl.id;
         match kind {
+            Kind::FireWeapon(decl) => self.update_fire(index, &decl, frame),
+            Kind::CancelFireWeapon | Kind::RequestReloadWeapon => {},
+            Kind::ReloadWeapon => {
+                if frame.midnight.finished(self.states[index].midnight) { self.quit(id); }
+            }
             Kind::Running => {
                 self.states[index].navigation.speed_multiplier = frame.attributes.get("ARK_ATTRIBUTE_SPEED_MULTIPLIER");
                 self.navigation_update(index, frame);

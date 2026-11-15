@@ -236,6 +236,10 @@ pub fn constraint_params(fields: &Fields, key: &str, default: [f32; 4]) -> Resul
 pub fn state_id(name: &str) -> Option<StateId> {
     let value = match name.strip_prefix("PLAYER_STATE_")? {
         "READ_NOTE" => 52,
+        "FIRE_WEAPON" => 56,
+        "CANCEL_FIRE_WEAPON" => 57,
+        "REQUEST_RELOAD_WEAPON" => 58,
+        "RELOAD_WEAPON" => 59,
         "RUNNING" => 0,
         "SPRINTING" => 1,
         "JUMPING" => 2,
@@ -534,12 +538,17 @@ pub fn accepts_water_damage(health: &Fields, damage: &Fields) -> Result<bool, St
 enum SupportedDefaultState {
     Dead, ReadNote, Running, Sneaking, Sprinting, Jumping, Falling, Sliding,
     Slipping, AutoCrouch, CatFall, Mantle, Vault, Leaning,
+    FireWeapon, CancelFireWeapon, RequestReloadWeapon, ReloadWeapon,
 }
 
 fn supported_default_state(kind: &str) -> Option<SupportedDefaultState> {
     Some(match kind {
         "playerstatedead" => SupportedDefaultState::Dead,
         "playerstatereadnote" => SupportedDefaultState::ReadNote,
+        "playerstatefireweapon" => SupportedDefaultState::FireWeapon,
+        "playerstatecancelfireweapon" => SupportedDefaultState::CancelFireWeapon,
+        "playerstaterequestreloadweapon" => SupportedDefaultState::RequestReloadWeapon,
+        "playerstatereloadweapon" => SupportedDefaultState::ReloadWeapon,
         "playerstaterunning" => SupportedDefaultState::Running,
         "playerstatesneaking" => SupportedDefaultState::Sneaking,
         "playerstatesprinting" => SupportedDefaultState::Sprinting,
@@ -569,6 +578,11 @@ pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, Strin
         let kind = match supported {
             SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),
             SupportedDefaultState::ReadNote if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReadNote)) => Kind::ReadNote,
+            SupportedDefaultState::FireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::FireWeapon(_))) =>
+                Kind::FireWeapon(std::sync::Arc::new(super::combat::FireDecl::read(fields)?)),
+            SupportedDefaultState::CancelFireWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::CancelFireWeapon)) => Kind::CancelFireWeapon,
+            SupportedDefaultState::RequestReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::RequestReloadWeapon)) => Kind::RequestReloadWeapon,
+            SupportedDefaultState::ReloadWeapon if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::ReloadWeapon)) => Kind::ReloadWeapon,
             SupportedDefaultState::Running if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Running)) => Kind::Running,
             SupportedDefaultState::Sneaking if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sneaking)) => Kind::Sneaking,
             SupportedDefaultState::Sprinting if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Sprinting(_))) => {
