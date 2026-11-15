@@ -58,12 +58,13 @@ pub(super) struct ScenePreparation {
     decals: AssetBatch<DecalMaterial>,
     skies: AssetBatch<SkyMaterial>,
     buffers: AssetBatch<ShaderBuffer>,
-    allocator: bevy::ecs::entity::RemoteAllocator,
+    reservations: crate::rendering::bevy_backend::entity_preparation::Reservations,
     device: RenderDevice,
     audio: super::audio::AudioPreparation,
 }
 impl ScenePreparation {
     pub fn new(world: &mut World) -> Self {
+        crate::rendering::bevy_backend::entity_preparation::initialize(world);
         let resident_images = world.resource::<super::resident_images::ResidentImages>().clone();
         let shared_images = world.resource::<super::texture_streaming::SharedImages>().clone();
         Self {
@@ -75,7 +76,7 @@ impl ScenePreparation {
             decals: AssetBatch::new(world.resource::<Assets<DecalMaterial>>()),
             skies: AssetBatch::new(world.resource::<Assets<SkyMaterial>>()),
             buffers: AssetBatch::new(world.resource::<Assets<ShaderBuffer>>()),
-            allocator: world.entity_allocator().build_remote_allocator(),
+            reservations: crate::rendering::bevy_backend::entity_preparation::Reservations::new(world),
             device: world.resource::<RenderDevice>().clone(),
             audio: super::audio::AudioPreparation::take(world),
         }
@@ -113,10 +114,7 @@ impl ScenePreparation {
             .take_resource::<crate::rendering::bevy_backend::world_effects::WorldEffectDefinitions>(
             );
         let mut matrices = super::world_instances::WorldMatrices::default();
-        let mut commands = super::setup_commands::SetupCommands::Prepared {
-            allocator: self.allocator,
-            queue: Default::default(),
-        };
+        let mut commands = super::setup_commands::SetupCommands::reserved(self.reservations);
         let physics_texts = prepared.take_resource::<super::level_prepare::PreparedPhysicsTexts>()
             .map_or_else(Default::default, |texts| texts.0);
         let (contact_catalog, contact_map) = prepared.get_resource::<super::level_prepare::LevelSourceReads>()

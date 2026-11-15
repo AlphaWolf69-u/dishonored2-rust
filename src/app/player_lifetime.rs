@@ -23,9 +23,10 @@ struct PlayerLifetime {
     retired: bool,
 }
 
-/// Return a generation only while its actual Player and managed entry exist.
+/// The admitted owner is authoritative even while a system temporarily
+/// borrows PlayerState out of the World. Admission required a real Player;
+/// only the explicit lifecycle retirement releases that generation.
 pub(super) fn id(world: &World) -> Option<EntityId> {
-    world.get_resource::<super::player::PlayerState>()?.player.as_ref()?;
     let owner = world.get_resource::<PlayerLifetime>()?;
     let entity = owner.entity?;
     let live = world.get_resource::<LiveEntities>()?;

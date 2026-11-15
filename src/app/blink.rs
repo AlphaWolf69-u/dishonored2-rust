@@ -31,6 +31,11 @@ pub(super) struct PlayerSettings {
     mantle: MantleDecl,
 }
 impl Prepared {
+    /// Actual authored helper/screen dependencies; reserve their sources
+    /// without starting the aiming actor or a particle instance.
+    pub fn effect_paths(&self) -> impl Iterator<Item = &str> {
+        self.helpers.iter().flatten().map(String::as_str).chain(self.screen.as_deref())
+    }
     /// Compact typed projection retained by the existing player-action
     /// acquisition owner; no generic declaration tree or rig is duplicated.
     pub fn player(blinking: &[(String, Value)], mantle: &[(String, Value)]) -> Result<PlayerSettings, String> {

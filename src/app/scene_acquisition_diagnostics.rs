@@ -863,6 +863,7 @@ fn scene_host(first_host: bool) -> App {
         MemoryHints::default()
     };
     let mut app = App::new();
+    crate::rendering::bevy_backend::entity_preparation::install(&mut app);
     let mut plugins = DefaultPlugins
             .set(bevy::window::WindowPlugin {
                 primary_window: None,

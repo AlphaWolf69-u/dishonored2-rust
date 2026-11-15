@@ -40,6 +40,10 @@ fn to_game(v: Vec3) -> Vec3 {
 pub(super) struct GameCollision<'a>(pub &'a CollisionWorld);
 
 impl PlayerWorld for GameCollision<'_> {
+    fn physics_material(&self, hit: &WorldHit)
+        -> Option<&crate::assets::entities::physics_material::PhysicsMaterial> {
+        self.0.physics_material(hit.key)
+    }
     fn material(&self, hit: &WorldHit) -> Option<&str> {
         self.0.physics_material(hit.key).map(|material| material.name.as_str())
     }
@@ -144,6 +148,9 @@ fn load_arm(
         data.swimming_idle = Some(clips.clip(&alias)?);
     }
     for (stance, speeds) in decls::loco_stances(locomotion, [EQUIP; 2])? {
+        if let Some(alias) = decls::loco_arm_idle(locomotion, &stance, side, EQUIP) {
+            data.idle_clips.insert(stance.clone(), clips.clip(&alias)?);
+        }
         let mut sets: [Option<SpeedSet>; 4] = Default::default();
         for entry in speeds {
             if entry.speed >= 4 {
@@ -171,8 +178,10 @@ fn load_arm(
         root: rig.root.clone(),
         shoulder: rig.joint(&camera.arm_joints[side])?,
     };
+    let animation_aliases = clips.loaded;
     let animations = clips.animations;
     let mut arm = Arm::new(model, *visible, bind_joint, (bind_t, bind_r), skeleton, animations, LocoNode::new(data), additives, jump_items);
+    arm.animation_aliases = animation_aliases;
     arm.sound_settings = crate::entities::player::entity_component(def, "cpntaudio", read)?
         .map(|fields| crate::gameplay::sound::component::Settings::read(&fields)).transpose()?;
     Ok((arm, rig))
@@ -271,7 +280,7 @@ fn load_body(
     let mut arm_clips: Vec<Clips> = arms
         .iter_mut()
         .zip(&arm_rigs)
-        .map(|(arm, rig)| Clips { catalog, rig, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: HashMap::new() })
+        .map(|(arm, rig)| Clips { catalog, rig, rest: &rig.skeleton.rest, animations: std::mem::take(&mut arm.animations), loaded: std::mem::take(&mut arm.animation_aliases) })
         .collect();
     for path in scene_paths {
         let resource = format!("generated/decls/midnightscene/{path}.decl");
@@ -279,17 +288,18 @@ fn load_body(
             .map_err(|error| format!("{resource}: {error}"))?;
         let sounds = prepare_sounds_owned(catalog, &decl, &casting)?;
         let count = decl.scenes.len();
-        let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
+        let mut prepared = PreparedScene { clips: vec![Vec::new(); count], arm_clips: [vec![Vec::new(); count], vec![Vec::new(); count]],
+            equipment_clips: [vec![Vec::new(); count], vec![Vec::new(); count]], decl, sounds };
         let mut next = Some(prepared.decl.first);
         for _ in 0..16 {
             let Some(element) = next.take() else { break };
-            let Some(index) = Midnight::resolve(&prepared, element, [body_model, &arm_models[0], &arm_models[1]]).map_err(|e| format!("{resource}: {e}"))? else { break };
-            if let Some(g) = prepared.player_group(index).map_err(|e| format!("{resource}: {e}"))? {
+            let Some(index) = Midnight::resolve(&prepared, element, [body_model, &arm_models[0], &arm_models[1], "", ""]).map_err(|e| format!("{resource}: {e}"))? else { break };
+            if let Some(g) = prepared.group_for_model(index, 0, body_model).map_err(|e| format!("{resource}: {e}"))? {
                 let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                 prepared.clips[index] = keys.iter().map(|k| clip(&k.anim)).collect::<Result<_, _>>()?;
             }
             for (side, clips) in arm_clips.iter_mut().enumerate() {
-                if let Some(g) = prepared.group(index, side + 1).map_err(|e| format!("{resource}: {e}"))? {
+                if let Some(g) = prepared.group_for_model(index, side + 1, &arm_models[side]).map_err(|e| format!("{resource}: {e}"))? {
                     let keys = &prepared.decl.scenes[index].groups[g].anim_keys;
                     prepared.arm_clips[side][index] = keys.iter().map(|k| clips.clip(&k.anim)).collect::<Result<_, _>>()?;
                 }
@@ -300,11 +310,14 @@ fn load_body(
     }
     for (arm, clips) in arms.iter_mut().zip(arm_clips) {
         arm.animations = clips.animations;
+        arm.animation_aliases = clips.loaded;
     }
+    let animation_aliases = clips.loaded;
     let animations = clips.animations;
     let body_node = crate::gameplay::player::animation::LocoNode::new(body_data);
     let bob_node = crate::gameplay::player::animation::LocoNode::new(bob_data);
     let mut body = Body::new(body_skeleton, animations, Default::default(), body_node, bob_node);
+    body.animation_aliases = animation_aliases;
     for name in rig.tag_names() {
         if !body.tags.contains_key(name) {
             body.tags.insert(name.to_owned(), rig.tag(name)?);
@@ -335,6 +348,10 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
     let declarations = source.full(catalog, character_name(character))?;
     let camera = decls::camera(&declarations.camera)?;
     let states = decls::states(&declarations)?;
+    let slash_rules = states.iter().find_map(|state| match &state.kind {
+        crate::gameplay::player::states::Kind::Slash(declaration) => Some(declaration.rule_handler.as_str()),
+        _ => None,
+    }).map(|name| crate::assets::slash_rules::Definition::acquire(catalog, name)).transpose()?;
     let scene_paths = scene_paths(&states);
     let listener = if catalog.has_overlays() || std::env::var_os("DH2_PLAYER_DECL_READ_BASELINE").is_some() {
         let trace = std::env::var_os("DH2_PLAYER_DECL_READ_TRACE").is_some();
@@ -365,6 +382,7 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         physics: decls::physics(&declarations.physics)?,
         camera,
         mapping: decls::states_mapping(&declarations.controller)?,
+        trigger_threshold: decls::trigger_threshold(&declarations.controller)?,
         states,
         rules: decls::rules(&declarations.mode)?,
         default_state: decls::default_state(&declarations.mode),
@@ -377,10 +395,16 @@ pub(super) fn load_player_setup_with_source_cancellable(catalog: &Catalog, chara
         scenes,
         md6: declarations.body_model.clone(),
         health,
+        damage_receiver: crate::gameplay::damage::Receiver::read(&declarations.health)?,
+        fall_damage: decls::fall_damage_decl(&declarations)
+            .map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
+        drowning_damage: drowning_damage.map(|path| crate::assets::damage::Declaration::acquire(catalog, path)).transpose()?,
+        slash_rules,
         mana: decls::mana(&declarations.mana)?,
         adrenaline: decls::adrenaline(&declarations.adrenaline)?,
         swimming_settings: crate::gameplay::player::swimming::SwimmingSettings::read(&declarations.controller)?,
         swimming_states: decls::swimming_states(&declarations)?,
+        swimming_equipment: decls::swimming_equipment_states(&declarations)?,
         swimming_rules: decls::rules(&declarations.swimming_mode)?,
         swimming_default_state: decls::default_state(&declarations.swimming_mode),
         swimming_has_mantle: declarations.swimming_states.iter().any(|(kind, _)| kind == "playerstateswimmantle"),
@@ -645,19 +669,27 @@ pub(super) fn update_player(
     water: Res<crate::rendering::bevy_backend::water_scene::WaterSceneFrame>,
     swimming_surface: Res<crate::rendering::bevy_backend::water_scene::SwimmingSurfaceMailbox>,
     water_scene: Option<Res<super::water_scene::WaterScene>>,
+    inventory: Option<ResMut<super::interaction_focus::DiscoveredDocuments>>,
+    actions: Option<ResMut<super::player_actions::PlayerActions>>,
+    logic: Option<Res<crate::gameplay::game_logic::GameLogic>>,
 ) {
     let walking = benchmark.is_some() && debug_benchmark_walk_enabled();
     if (benchmark.is_some() && !walking) || state.debug_free_fly {
         input.events.clear();
         return;
     }
-    let PlayerState { player, difficulty, .. } = &mut *state;
-    let (Some(player), Some(collision)) = (player.as_mut(), collision) else { return };
+    let PlayerState {
+        player, difficulty, ..
+    } = &mut *state;
+    let (Some(player), Some(collision)) = (player.as_mut(), collision) else {
+        return;
+    };
     if paused.0 {
         // In a non-game logic state the input components are cleared.
         input.events.clear();
         if !input.cleared {
             player.controller.clear();
+            player.clear_power_inputs();
             input.held.clear();
             input.cleared = true;
         }
@@ -668,7 +700,9 @@ pub(super) fn update_player(
     player.swimming_contact = water.0.as_ref().and_then(|water| {
         let plane = water.head_water_surface?;
         let current = water_scene.as_ref()?.swimming_current()?;
-        let surface = swimming_surface.latest().filter(|surface| surface.plane == Some(plane));
+        let surface = swimming_surface
+            .latest()
+            .filter(|surface| surface.plane == Some(plane));
         Some(crate::gameplay::player::swimming::SwimmingContact {
             plane,
             head: surface.and_then(|surface| surface.head).unwrap_or(plane),
@@ -681,26 +715,84 @@ pub(super) fn update_player(
     let base = base_fov();
     if let Ok(game_clock) = clock.clock() {
         if clock.advanced() {
-            let dt = game_clock.delta(3).unwrap_or(0.0);
+            let dt = clock.player_delta().unwrap_or(0.0);
             let frame_delta = game_clock.delta(0).unwrap_or(0.0);
             player.set_entity_event_time(game_clock.time(2).expect("five clock groups"));
             let mut events = std::mem::take(&mut input.events);
-            if walking { events.extend(walk.steer(player, dt)); }
+            if walking {
+                events.extend(walk.steer(player, dt));
+            }
             let (body_settings, current) = body_settings(difficulty.as_ref());
             player.body_settings = body_settings;
-            if (player.is_underwater() && player.breath() <= 0.0) || player.health() < player.max_health() || player.mana() < player.max_mana() {
-                player.incoming_damage_factor = difficulty.as_ref().map_or(1.0, |manager| manager.incoming_damage_factor(current));
-                player.health_regen_factor = difficulty.as_ref().map_or(1.0, |manager| manager.health_regen_factor(current));
-                player.mana_replenishes = difficulty.as_ref().is_none_or(|manager| manager.mana_replenishes(current));
+            // Incoming hits must use the current preset even at full health;
+            // conditioning these factors on existing injury misses the first
+            // hit after a difficulty change.
+            player.incoming_damage_factor = difficulty
+                .as_ref()
+                .map_or(1.0, |manager| manager.incoming_damage_factor(current));
+            player.incoming_damage_back_factor = difficulty.as_ref().map_or(1.0, |manager| {
+                manager.incoming_damage_factor_for_hit(current, 1.0)
+            });
+            player.health_regen_factor = difficulty
+                .as_ref()
+                .map_or(1.0, |manager| manager.health_regen_factor(current));
+            player.health_heal_factor = difficulty
+                .as_ref()
+                .map_or(1.0, |manager| manager.health_heal_factor(current));
+            player.mana_replenishes = difficulty
+                .as_ref()
+                .is_none_or(|manager| manager.mana_replenishes(current));
+            let now = clock.player_time().unwrap_or(0.0);
+            if let Some(mut inventory) = inventory {
+                if let Some(mut actions) = actions {
+                    super::player_actions::dispatch_shortcuts(
+                        player,
+                        &events,
+                        &mut inventory,
+                        &mut actions,
+                    );
+                    super::player_actions::dispatch_potions(
+                        player,
+                        &events,
+                        &mut inventory,
+                        &mut actions,
+                        difficulty.as_ref(),
+                        current,
+                        logic.as_deref(),
+                        &mut sound_events,
+                    );
+                }
+                super::player_actions::player_frame(
+                    player,
+                    &world,
+                    &events,
+                    &look_settings(),
+                    dt,
+                    frame_delta,
+                    now,
+                    base,
+                    &mut inventory,
+                );
+            } else {
+                player.frame(
+                    &world,
+                    &events,
+                    &look_settings(),
+                    dt,
+                    frame_delta,
+                    now,
+                    base,
+                );
             }
-
-            player.frame(&world, &events, &look_settings(), dt, frame_delta, game_clock.time(3).unwrap_or(0.0), base);
         }
     }
     for event in player.machine.take_sound_events() {
-        sound_events.write(super::audio::SoundEvent(crate::gameplay::sound::Request::Post {
-            event, emitter: crate::gameplay::sound::Emitter::PlayerBody,
-        }));
+        sound_events.write(super::audio::SoundEvent(
+            crate::gameplay::sound::Request::Post {
+                event,
+                emitter: crate::gameplay::sound::Emitter::PlayerBody,
+            },
+        ));
     }
     for request in player.body.midnight.take_sound_requests() {
         sound_events.write(super::audio::SoundEvent(request));
@@ -712,9 +804,12 @@ pub(super) fn update_player(
         contact_sounds.write(super::audio::ContactSound(contact));
     }
     let view = player.view();
-    let Ok((mut transform, mut projection)) = cameras.single_mut() else { return };
+    let Ok((mut transform, mut projection)) = cameras.single_mut() else {
+        return;
+    };
     let origin = to_view(view.origin);
-    *transform = Transform::from_translation(origin).looking_to(to_view(view.axis.x_axis), to_view(view.axis.z_axis));
+    *transform = Transform::from_translation(origin)
+        .looking_to(to_view(view.axis.x_axis), to_view(view.axis.z_axis));
     if let Projection::Custom(custom) = &*projection {
         if let Some(game) = custom.get::<GameProjection>() {
             if (game.reference_horizontal_degrees - player.camera.fov).abs() > 1e-4 {

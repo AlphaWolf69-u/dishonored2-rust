@@ -56,6 +56,10 @@ pub trait PlayerWorld {
     /// Resolved arkPhysicsMaterial declaration name for a shape hit. Worlds
     /// without material metadata leave the native material pointer unresolved.
     fn material(&self, _hit: &WorldHit) -> Option<&str> { None }
+    /// Borrow the world's resolved material for sensors requiring its full
+    /// collision/query flags; metadata is never reacquired by a player cast.
+    fn physics_material(&self, _hit: &WorldHit)
+        -> Option<&crate::assets::entities::physics_material::PhysicsMaterial> { None }
 }
 
 /// arkPhysicsMaterial flag byte +0x80 bits the player sensors read.

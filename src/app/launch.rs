@@ -340,6 +340,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         render.init_resource::<bevy::render::storage::ShaderBufferUploadBatch>();
     }
     super::player_arms::install_equipment_retirement(&mut app);
+    crate::rendering::bevy_backend::entity_preparation::install(&mut app);
     app.init_resource::<super::interaction_focus::DiscoveredDocuments>();
     app.insert_resource(super::player_statistics::PlayerStatistics::prepare());
     app.init_resource::<super::readable_movie::ReadableRequests>();

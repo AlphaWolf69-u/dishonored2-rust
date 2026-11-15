@@ -205,7 +205,7 @@ pub(super) struct MaterialWork {
     pub decal_requests: Vec<(String, bool)>,
     pub mesh_requests: HashSet<(String, String)>,
     pub equipment: Vec<Arc<crate::assets::equipment::Descriptor>>,
-    pub equipment_allocator: Option<bevy::ecs::entity::RemoteAllocator>,
+    pub equipment_reservations: Option<crate::rendering::bevy_backend::entity_preparation::Reservations>,
     pub player_depth_hack: f32,
     pub snapshot: MaterialSnapshot,
     pub assets: MaterialAssets,
@@ -272,12 +272,8 @@ impl MaterialWork {
             probe_samples: 0, probe_sample_misses: 0, lit: bindings.lit,
         };
         let mut equipment = Vec::new();
-        let mut equipment_commands = self.equipment_allocator.take().map(|allocator| {
-            super::setup_commands::SetupCommands::Prepared {
-                allocator,
-                queue: Default::default(),
-            }
-        });
+        let mut equipment_commands = self.equipment_reservations.take()
+            .map(super::setup_commands::SetupCommands::reserved);
         let mut equipment_dependencies = HashMap::new();
         for descriptor in &self.equipment {
             check_active()?;
@@ -845,8 +841,8 @@ fn coordinate_inner(world: &mut World, state: &mut RuntimeMaterialCoordinator) -
         let work = MaterialWork { bindings: world.resource::<RuntimeMaterialOwner>().bindings.clone(), catalog, environment,
             probes, programs, particles, sources, decal_requests: decals, mesh_requests: meshes, snapshot, assets,
             cancelled, superseded: superseded.clone(),
-            equipment_allocator: (!equipment.is_empty())
-                .then(|| world.entity_allocator().build_remote_allocator()),
+            equipment_reservations: (!equipment.is_empty())
+                .then(|| crate::rendering::bevy_backend::entity_preparation::Reservations::new(world)),
             player_depth_hack: if equipment.is_empty() { 0.0 } else {
                 world.get_resource::<super::player_arms::PlayerArms>()
                     .ok_or("equipment render owner is absent")?.player_depth_hack

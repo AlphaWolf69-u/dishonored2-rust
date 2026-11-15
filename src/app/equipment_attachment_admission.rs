@@ -336,10 +336,7 @@ fn withdraw(
         let mut arms = world
             .remove_resource::<super::player_arms::PlayerArms>()
             .ok_or("ammunition retirement lost its renderer")?;
-        let mut commands = super::setup_commands::SetupCommands::Prepared {
-            allocator: world.entity_allocator().build_remote_allocator(),
-            queue: Default::default(),
-        };
+        let mut commands = super::setup_commands::SetupCommands::prepared(world);
         let receipt = arms.attachments.remove(child, &mut commands);
         if let Some(receipt) = &receipt {
             arms.retiring_equipment.push(receipt.clone());

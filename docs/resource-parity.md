@@ -10417,3 +10417,44 @@ the real player timespace during Bend Time rather than assuming world group3.
 Prediction: no extra source/model/voice owner, no per-frame pose evaluation or
 allocation for publishing the already-computed equipment frames. No performance
 measurement or output-equivalence claim; final combined compilation pending.
+
+### Power-owned FX dependency reservations (2026-11-15)
+
+`host`: the canonical `app::usable_effects` owner now admits reserve-only dependency requests alongside playing owners. Owned power construction retains its authored helper/effect dependencies before input (Blink constructor `14061d390`, authored declaration `14061d660`); actual helper Start/placement/Stop remain `14061dc90`/`1406205e0`/`14061e980`. Reservations reuse the existing weak source registry, cancellable IO acquisition, shared particle definitions and image/world-model/decal/audio preparation. They never publish a DynamicEffect, create an FX actor or synthesize a particle instance. Readiness reports actual dependency acknowledgements; failed source or material publication returns an explicit error instead of indefinite loading.
+
+The equipment owner reserves once per owned power and releases its reservation at actual quantity zero. Unequipping does not retire owned definitions. Already-started effects independently retain their source leases through real particle/sound tails after a reservation releases; canceled acquisitions use the existing retirement worker. Blink exposes the exact three authored helper FX and screen FX paths through its prepared typed projection. Prediction: casts of an already-owned, prepared power find the canonical retained dependency sources instead of reopening archives. No latency, memory or performance measurement is claimed; no compilation, tests or launches were run for this change.
+
+### Prepared host entity reservation lifetime (2026-11-15)
+
+Prediction before implementation: only canceled, unpublished Bevy entity IDs
+return to their actual world's allocator. Normal publication, rendered output,
+live gameplay entity generations and installed resource lifetimes are unchanged.
+No CPU, resident-memory or load-time improvement is claimed without measurement.
+
+- Owner: rendering/bevy_backend/entity_preparation.rs; shared commands in
+  app/setup_commands.rs. Status host: Bevy ECS IDs are host rendering/application
+  identities, separate from original managed entity registration657ae0/8aecc0.
+- Host evidence: Bevy0.19.1 entity/remote_allocator.rs RemoteAllocator::alloc
+  reserves an ID and has no return-on-drop path; entity/mod.rs
+  EntityAllocator::free returns a never-published reservation. WorldId and
+  EntityAllocator::has_remote_allocator establish the actual owner/epoch.
+  Entities::contains includes unspawned IDs and cannot prove publication.
+- Implemented host ownership: scene, equipment, attachment, and runtime material
+  preparation reserve through one per-world return service. A FIFO publication
+  receipt acknowledges each actual successful spawn. Canceled queue destruction
+  returns only the unacknowledged suffix; an already spawned and subsequently
+  despawned prefix cannot be returned twice. Workers enqueue ID returns without
+  borrowing World. Normal publication transfers ownership through World::spawn_at.
+- Host return: actual World drains pending batches during Last and after source
+  workers finish before world purge. Batches from a reset allocator cannot enter
+  its replacement. Occupied indices or advanced generations after an exceptional
+  bundle-hook unwind are never freed as unpublished reservations. The return
+  queue contains no Catalog/game-source lease and has no global world-independent
+  storage. Windowless production acquisition hosts initialize the same owner.
+- Cost review: the empty drain only reads one atomic flag; cancellation takes a
+  single batch mutex and moves its ID vector. Publication uses one shared cursor
+  per batch, not a mutex or separately allocated receipt object per entity.
+  Existing Direct Commands continue using Bevy's own command ownership.
+- Validation: inspected the actual Bevy allocation, spawn, command-queue unwind
+  and drop paths, plus all production prepared-command constructors. Rust syntax
+  parsing passed. No tests, compilation, gameplay launches or measurements run.

@@ -1,18 +1,25 @@
 //! Host command preparation with identities reserved by the live world's
 //! allocator. Only publication touches the world or its component storage.
 use bevy::{
-    ecs::{entity::RemoteAllocator, system::Command, world::CommandQueue},
+    ecs::{system::Command, world::CommandQueue},
     prelude::*,
 };
 
 pub(super) enum SetupCommands<'w, 's> {
     Direct(Commands<'w, 's>),
     Prepared {
-        allocator: RemoteAllocator,
         queue: CommandQueue,
+        reservations: crate::rendering::bevy_backend::entity_preparation::Reservations,
     },
 }
 impl<'w, 's> SetupCommands<'w, 's> {
+    pub fn prepared(world: &mut World) -> Self {
+        crate::rendering::bevy_backend::entity_preparation::initialize(world);
+        Self::reserved(crate::rendering::bevy_backend::entity_preparation::Reservations::new(world))
+    }
+    pub fn reserved(reservations: crate::rendering::bevy_backend::entity_preparation::Reservations) -> Self {
+        Self::Prepared { queue: Default::default(), reservations }
+    }
     pub fn queue<C: Command<Out = ()>>(&mut self, command: C) {
         match self {
             Self::Direct(commands) => commands.queue(command),
@@ -27,10 +34,11 @@ impl<'w, 's> SetupCommands<'w, 's> {
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> SetupEntity<'_, 'w, 's> {
         let id = match self {
             Self::Direct(commands) => commands.spawn(bundle).id(),
-            Self::Prepared { allocator, queue } => {
-                let id = allocator.alloc();
+            Self::Prepared { reservations, queue } => {
+                let (id, receipt) = reservations.reserve();
                 queue.push(move |world: &mut World| {
                     world.spawn_at(id, bundle).expect("reserved scene entity");
+                    receipt.published();
                 });
                 id
             }
@@ -38,7 +46,8 @@ impl<'w, 's> SetupCommands<'w, 's> {
         SetupEntity { commands: self, id }
     }
     pub fn publish(self, world: &mut World) {
-        if let Self::Prepared { mut queue, .. } = self {
+        if let Self::Prepared { mut queue, reservations } = self {
+            reservations.validate(world);
             queue.apply(world);
         }
     }

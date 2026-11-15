@@ -66,10 +66,7 @@ pub(in crate::app) fn withdraw(world: &mut World, descriptor: &Descriptor) {
     let Some(mut arms) = world.remove_resource::<super::super::player_arms::PlayerArms>() else {
         return;
     };
-    let mut commands = super::super::setup_commands::SetupCommands::Prepared {
-        allocator: world.entity_allocator().build_remote_allocator(),
-        queue: Default::default(),
-    };
+    let mut commands = super::super::setup_commands::SetupCommands::prepared(world);
     arms.remove_equipment_model(&descriptor.model, &mut commands);
     commands.publish(world);
     world.insert_resource(arms);

@@ -81,6 +81,7 @@ pub(super) enum EffectOwner {
     Usable(usize),
     Player(String),
     Entity(Arc<str>),
+    Reservation(Arc<str>, String),
 }
 
 #[derive(Clone)]
@@ -99,6 +100,8 @@ pub(super) enum EffectRequest {
     StartEntity { owner: Arc<str>, path: String, placement: EntityPlacement, retirement: Arc<()> },
     UpdateEntity { owner: Arc<str>, placement: EntityPlacement },
     StopEntity { owner: Arc<str> },
+    Reserve { owner: Arc<str>, paths: Vec<String> },
+    ReleaseReservation { owner: Arc<str> },
 }
 
 /// Level-owned requests from gameplay. An owner identifies one active effect;
@@ -107,6 +110,14 @@ pub(super) enum EffectRequest {
 pub(super) struct EffectRequests(pub(super) std::collections::VecDeque<EffectRequest>);
 
 impl EffectRequests {
+    /// Acquire immutable dependencies only. This never creates an FX actor
+    /// or submits a Start to the renderer.
+    pub(super) fn reserve(&mut self, owner: Arc<str>, paths: Vec<String>) {
+        self.0.push_back(EffectRequest::Reserve { owner, paths });
+    }
+    pub(super) fn release_reservation(&mut self, owner: Arc<str>) {
+        self.0.push_back(EffectRequest::ReleaseReservation { owner });
+    }
     pub(super) fn start_entity(&mut self, owner: Arc<str>, path: &str, placement: EntityPlacement) -> EffectTicket {
         let retirement = Arc::new(());
         let ticket = EffectTicket { lifetime: Arc::downgrade(&retirement), path: Arc::from(path) };
@@ -133,12 +144,25 @@ pub(super) fn entity_retired(world: &bevy::prelude::World, ticket: &EffectTicket
     world.get_resource::<UsableEffects>().is_none_or(|owner| !owner.loading.contains_key(ticket.path.as_ref()) && owner.retiring.is_empty())
 }
 
+/// Readiness includes actual source acquisition and the existing material,
+/// image and audio acknowledgements, without requiring an active actor.
+pub(super) fn reservation_ready(world: &bevy::prelude::World, key: &str) -> Result<bool, String> {
+    let Some(owner) = world.get_resource::<UsableEffects>() else { return Ok(false) };
+    let Some(paths) = owner.reservations.get(key) else { return Ok(false) };
+    if paths.iter().any(|path| !owner.wanted.keys().any(|wanted| matches!(wanted, EffectOwner::Reservation(group, dependency) if group.as_ref() == key && dependency == path))) {
+        return Err(format!("FX dependency reservation {key} failed acquisition or material publication"));
+    }
+    Ok(owner.reservations_ready.contains(key))
+}
+
 /// Desired effect and its prepared immutable dependencies belong to the
 /// usable component, not to its animation node or the global program cache.
 #[derive(Resource, Default)]
 pub(super) struct UsableEffects {
     cancelled: Arc<AtomicBool>,
     wanted: HashMap<EffectOwner, Wanted>,
+    reservations: HashMap<Arc<str>, Vec<String>>,
+    reservations_ready: std::collections::HashSet<Arc<str>>,
     pub(super) placements: HashMap<EffectOwner, super::interactions::EffectSpawn>,
     entity_placements: HashMap<EffectOwner, EntityPlacement>,
     transform_revision: u64,
@@ -166,6 +190,18 @@ impl Drop for UsableEffects {
 }
 
 impl UsableEffects {
+    fn release_reservation(&mut self, owner: &Arc<str>) {
+        if let Some(paths) = self.reservations.remove(owner) {
+            for path in paths {
+                let key = EffectOwner::Reservation(owner.clone(), path);
+                self.wanted.remove(&key);
+                if self.ready.remove(&key).is_some() { self.retirement = self.retirement.wrapping_add(1); }
+            }
+            self.reservations_ready.remove(owner);
+            self.revision = self.revision.wrapping_add(1);
+            self.cleanup_dirty = true;
+        }
+    }
     /// Stop desired publication; already-running particle/sound tails retain
     /// their own immutable source leases until the shared FX owner finishes.
     pub(super) fn stop_usable(&mut self, index: usize) {
@@ -405,6 +441,19 @@ pub(super) fn prepare_requests(
                     if owner.ready.remove(&key).is_some() { owner.retirement = owner.retirement.wrapping_add(1); }
                     owner.revision = owner.revision.wrapping_add(1); owner.cleanup_dirty = true;
                 }
+                EffectRequest::Reserve { owner: key, mut paths } => {
+                    paths.retain(|path| !path.is_empty() && !path.eq_ignore_ascii_case("NULL"));
+                    paths.sort_unstable(); paths.dedup();
+                    if owner.reservations.get(&key) == Some(&paths) { continue; }
+                    owner.release_reservation(&key);
+                    for path in &paths {
+                        owner.request(EffectOwner::Reservation(key.clone(), path.clone()), path.clone(),
+                            catalog.clone(), &programs, &resources, &world.0);
+                    }
+                    owner.reservations.insert(key, paths);
+                    owner.revision = owner.revision.wrapping_add(1);
+                }
+                EffectRequest::ReleaseReservation { owner: key } => owner.release_reservation(&key),
             }
         }
     }
@@ -541,6 +590,7 @@ pub(super) fn publish(
         EffectOwner::Usable(index) => format!("usable:{index}"),
         EffectOwner::Player(name) => format!("player:{name}"),
         EffectOwner::Entity(name) => format!("entity:{name}"),
+        EffectOwner::Reservation(name, path) => format!("reservation:{name}:{path}"),
     };
     if prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
         || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
@@ -600,24 +650,40 @@ pub(super) fn publish(
     if owner.published_active_revision == Some(owner.revision)
         && owner.published_transform_revision == owner.transform_revision { return; }
     let mut entries: Vec<DynamicEffect> = active.0.iter().filter(|entry| {
-        owner.wanted.iter().any(|(id, wanted)| key(id) == entry.owner && wanted.revision == entry.revision)
+        owner.wanted.iter().any(|(id, wanted)| !matches!(id, EffectOwner::Reservation(_, _))
+            && wanted.revision == entry.revision && key(id) == entry.owner)
     }).cloned().collect();
     let prewarmed = (prewarm.generation == 0 || prewarm.completed.load(Ordering::Acquire) == prewarm.generation)
         && (world_materials.generation == 0 || world_materials.completed.load(Ordering::Acquire) == world_materials.generation)
         && (decal_materials.generation == 0 || decal_materials.completed.load(Ordering::Acquire) == decal_materials.generation);
     if prewarmed {
         let audio = sounds.lock();
+        let source_prepared = |sources: &Arc<Sources>| {
+            if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
+                .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { return false; }
+            let mut events = sources.effects.values().filter_map(|effect| effect.as_ref().ok())
+                .flat_map(|effect| &effect.groups).flat_map(|group| &group.sounds)
+                .flat_map(|sound| [&sound.start, &sound.stop]).flatten().peekable();
+            let has_sound = events.peek().is_some();
+            (!has_sound || audio.ready) && events.all(|event| audio.events.contains_key(&event.name))
+        };
+        // Reservations participate in the same source/material/audio pipeline
+        // but never enter DynamicEffects or create a playing instance.
+        {
+            let UsableEffects { reservations, reservations_ready, ready, .. } = &mut *owner;
+            for (group, paths) in reservations {
+                let dependencies = || ready.iter().filter(|(key, _)| matches!(key, EffectOwner::Reservation(owner, _) if owner == group));
+                if dependencies().count() == paths.len() && dependencies().all(|(_, source)| source_prepared(source)) {
+                    reservations_ready.insert(group.clone());
+                } else { reservations_ready.remove(group); }
+            }
+        }
         for (id, wanted) in &owner.wanted {
+            if matches!(id, EffectOwner::Reservation(_, _)) { continue; }
             let name = key(id);
             if entries.iter().any(|entry| entry.owner == name && entry.revision == wanted.revision) { continue; }
             let Some(sources) = owner.ready.get(id) else { continue };
-            if !Arc::ptr_eq(sources, &base) && !sources.particle_materials().flat_map(|material| material.images.values())
-                .filter(|image| image.scene_owned).all(|image| images.handles.contains_key(&image.path)) { continue; }
-            let mut sound_events = sources.effects.values().filter_map(|effect| effect.as_ref().ok())
-                .flat_map(|effect| &effect.groups).flat_map(|group| &group.sounds)
-                .flat_map(|sound| [&sound.start, &sound.stop]).flatten().peekable();
-            let has_sound = sound_events.peek().is_some();
-            if (has_sound && !audio.ready) || !sound_events.all(|event| audio.events.contains_key(&event.name)) { continue; }
+            if !source_prepared(sources) { continue; }
             let (target, tag, local, attached) = match id {
                 EffectOwner::Player(_) => (EntityReference::Player, String::new(), ReferenceFrame::default(), true),
                 EffectOwner::Entity(_) => {
@@ -629,6 +695,7 @@ pub(super) fn publish(
                     let Some(placement) = owner.placements.get(id) else { continue };
                     (EntityReference::Named(actor.entity.clone()), String::new(), ReferenceFrame { position: placement.origin, basis: placement.axis }, placement.attached)
                 }
+                EffectOwner::Reservation(_, _) => continue,
             };
             entries.push(DynamicEffect { owner: name, revision: wanted.revision, effect: wanted.path.clone(),
                 target, tag, local, attached, sources: sources.clone(), retirement: wanted.retirement.clone() });
@@ -644,7 +711,8 @@ pub(super) fn publish(
         active.0 = Arc::new(entries);
     }
     owner.published_transform_revision = owner.transform_revision;
-    if active.0.len() == owner.wanted.len()
+    let playing_wanted = owner.wanted.keys().filter(|key| !matches!(key, EffectOwner::Reservation(_, _))).count();
+    if (active.0.len() == playing_wanted && owner.reservations_ready.len() == owner.reservations.len())
         || (prewarm.generation != 0 && (prewarm.failed.load(Ordering::Acquire) == prewarm.generation
             || world_materials.failed.load(Ordering::Acquire) == prewarm.generation
             || decal_materials.failed.load(Ordering::Acquire) == prewarm.generation)) {

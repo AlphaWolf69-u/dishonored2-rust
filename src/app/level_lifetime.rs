@@ -139,6 +139,7 @@ impl LevelLifetime {
         drop(shape_history);
         drop(blueprint_history);
         drop(level_reads);
+        crate::rendering::bevy_backend::entity_preparation::drain(world);
         if let Some(catalog) = self.catalog.take() {
             catalog.release_level_resources();
         }
@@ -208,7 +209,9 @@ pub(super) fn retire_level_acquisitions(world: &mut World) -> bool {
         .is_none_or(|mut animations| animations.retire_acquisitions());
     let textures = world.get_resource_mut::<super::texture_streaming::TextureReadWorker>()
         .is_none_or(|mut textures| textures.retire_acquisitions());
-    sources && materials && readable && usable_animations && textures && equipment
+    let retired = sources && materials && readable && usable_animations && textures && equipment;
+    if retired { crate::rendering::bevy_backend::entity_preparation::drain(world); }
+    retired
 }
 
 /// Plugin registration creates these empty owners before the first map.
