@@ -10751,7 +10751,7 @@ owner, and the existing MaterialWork/AssetBatch/material/image admission path
 prepares both rigid LWO and authored BasicRig/MD6 children. The single root
 renderer supplies its existing commands, inverse-bind assets, joint query and
 probe/material owners to the child updater. Component animation receives the
-clock owner's advanced common delta and the published inherited entity rate;
+clock owner's advanced common delta and the published actual entity rate;
 loading pause supplies no animation time.
 
 New target admission marks its pose dirty. During loading pause, only that
@@ -10806,3 +10806,24 @@ they are not reported delivered or silently cleared by the equipment, shortcuts
 or normal entity-message observers. Lifetime closure of this script boundary
 requires that owner; it is not claimed complete by normal message publication.
 No builds/tests/launches or performance measurements were run.
+
+
+### Integrated damage publication and normal entity-message host (2026-11-15)
+
+Static integration review: the actual player-frame producer runs before `power_execution::after_frame`, which flushes damage notifications after returning its live PlayerState/Clock/EntityEvents resources. `app::entity_messages` then pumps the same canonical normal registry (`1408101f0`/`140810000`) before subsequent publication. Unsubscribed messages are consumed by the original registry algorithm; no recipient, graph, HUD, achievement or statistics subscription is fabricated. Inventory1AD/9B/9C messages retain typed item declaration leases rather than pointer-shaped byte payloads. The same component dispatcher now serves physics retirement event drains, replacing the obsolete blanket callback rejection. Registered handlers validate the actual world owner, component generation, live entity and event target before mutation.
+
+`ported`: rigid registered thunk80bc00(AD)/80bc30(AC) calls851a70 with spaces0->1/1->0. The host checks the actual body's dynamic flag and current derived profile bit, uses canonical MotionTimespaces reverse/forward mapping092c30, changes the same MotionStorage profile (`c870c0`), and follows18d2b0 requested/scaled velocity, frozen-zero flag and wake semantics through the existing mutation/activation/bounds/transform callback scope. No body-property-changed subscriber has been admitted here; the host does not fabricate one for c961c0. Actual motion-profile-added subscribers remain an explicit error unless their dispatch host exists. RegisteredFA80bbf0->809c90 reaches the existing central/point impulse publication. Registered14880bbe0->807bc0 publishes zero velocity through that same actual body owner. Registered14980bc50->727100 retains/coalesces the existing source pending-motion request; its deferred80b680/18d020 command publication and optional853220 notification still require the actual rigid update/command host and are not claimed as executed by the numeric-message bridge. Optional D4 wind callbacks remain an explicit error on absent wind-vector owners; the ordinary positive-wind rigid classes are already rejected by preparation. Other registered listener families without their actual live callback owner also fail explicitly instead of acknowledging a no-op.
+
+Damage delivery corrections: fall8658c0 now supplies its original UP hit direction at params+0x3c, while drowning4c0cf0 supplies its original DOWN direction, actual position and attacker/inflictor. Fatal-height FALL retains the authored declaration and INSTANT_KILL sentinel. Base Health Start7181c0 preserves zero health on an already dead owner; Stop718240 clears entity+d7 bit2 before base Stop rather than waiting for Deinitialize. Native base Health Initialize717e70/Start7181c0 do not install numeric EntityEvents subscriptions: their actual ingress remains the typed Health/damage collision/entity dispatch, and876660/8767a0/8769f0 produce A2/A3/A5 notifications through the shared registry. Door/NPC/evolved-world derived component lifecycles, breakable chunk/destruction owners and physical projectile admission remain explicit boundaries; no collider is promoted into a receiver.
+
+Prediction: the normal pump releases delivered/unsubscribed notification payload leases each frame rather than retaining an unbounded queue. It creates no second registry, timer, body, geometry/cache or per-frame archive reader. Existing canonical queue buffers retain capacity. No measured CPU/memory/performance improvement is claimed. This batch received static source/API/whitespace review only; no tests, compilation or visible launches were run by the damage agent.
+
+Equipment generation admission registers the selector copied from the spawning
+player in the existing ClockRuntime entity table (619380). Publication reads
+that actual generation's retained/overridden selector through entity_rates;
+it does not follow whichever player timespace is current later. Managed
+retirement unregisters that clock generation only after graph, renderer and
+audio acknowledgements. No independent clock state or wall-time fallback is
+introduced.
+
+Clock retirement integration: releasing Bend Time requests restores their managed entity overrides through the existing clock transition, but retains actual entity clock registrations until their managed-generation retirement acknowledgement. Equipment/child render and audio drains still consume those clocks. No new timer or clock owner is introduced; this fixes premature removal, with no measured performance claim.
