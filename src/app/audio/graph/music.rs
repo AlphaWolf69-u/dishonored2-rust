@@ -370,10 +370,22 @@ impl Playback {
             }
         }
     }
-    pub(super) fn stop(&mut self, target: Option<u32>, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio) {
+    pub(super) fn finished(&self) -> bool { self.stopped && self.segments.is_empty() }
+    pub(super) fn stop(&mut self, target: Option<u32>, milliseconds: i32, curve: u8, now: u64, audio: &ScheduledAudio, paused: bool) {
         let prepared = audio.definition.music.as_ref().unwrap();
         let all = target.is_none_or(|target| audio.definition.matches_actor(audio.definition.root, target));
         if all { self.stopped = true; self.pending.clear(); }
+        // 1411068e0: a paused PBI retires immediately. Its frozen sample
+        // clock cannot execute a zero-target ramp or a scheduled stop later.
+        if paused {
+            self.segments.retain_mut(|segment| {
+                if all || target.is_some_and(|target| prepared.graph.actors[&segment.actor].properties.nodes.iter().any(|node| node.id == target)) { return false; }
+                segment.clips.retain(|voice| !target.is_some_and(|target| audio.definition.matches_actor(voice.node, target)));
+                true
+            });
+            self.pending.retain(|(_, serial)| serial.is_none_or(|serial| self.segments.iter().any(|voice| voice.serial == serial)));
+            return;
+        }
         for segment in &mut self.segments {
             if all || target.is_some_and(|target| prepared.graph.actors[&segment.actor].properties.nodes.iter().any(|node| node.id == target)) {
                 segment.stop = Some((now as i64 + i64::from(milliseconds).max(0) * 48,

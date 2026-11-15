@@ -8,13 +8,16 @@ use bevy::{app::MainScheduleOrder, window::{CursorGrabMode, CursorOptions, Windo
 struct ExitDrain;
 
 #[derive(Resource, Default)]
-pub(super) struct ExitState {
+pub(in crate::app) struct ExitState {
     request: Option<AppExit>,
     started: bool,
     emitted: bool,
     render_owner: bool,
     phase: &'static str,
     window_close: bevy::ecs::message::MessageCursor<WindowCloseRequested>,
+}
+impl ExitState {
+    pub(in crate::app) fn requested(&self) -> bool { self.request.is_some() }
 }
 
 pub(super) fn install(app: &mut App) {

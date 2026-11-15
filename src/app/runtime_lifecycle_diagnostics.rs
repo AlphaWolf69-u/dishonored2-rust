@@ -78,6 +78,8 @@ pub fn inspect_runtime_lifecycles(
             | "fx"
             | "audio"
             | "music"
+            | "paused-exit"
+            | "loading-audio"
             | "ui-exit"
             | "ui-transition"
             | "read-exit"
@@ -262,6 +264,24 @@ pub fn inspect_runtime_lifecycles(
                             runtime.app.world_mut(),
                             audio.as_mut().unwrap(),
                         )?;
+                    }
+                    "loading-audio" => {
+                        use bevy::ecs::system::RunSystemOnce;
+                        if runtime.app.world_mut().run_system_once(super::loading_screen::waiting_for_input).map_err(|error| error.to_string())? {
+                            let snapshot = super::audio::observation::snapshot(runtime.app.world_mut());
+                            eprintln!("LOADING_AUDIO_WAITING output={:?} nonzero_samples={} admissions={:?}", snapshot.output, snapshot.nonzero_samples, snapshot.admissions);
+                            complete = true;
+                        }
+                    }
+                    "paused-exit" if playing => {
+                        let elapsed = playing_since.map_or(0.0, |time| time.elapsed().as_secs_f64());
+                        if elapsed >= 3.0 {
+                            let mut menu = runtime.app.world_mut().get_non_send_resource_mut::<super::pause_menu::PauseMenu>().ok_or("pause movie owner absent")?;
+                            menu.open_pause((1920, 1080));
+                        }
+                        complete = elapsed >= 5.0 && runtime.app.world().get_non_send_resource::<super::pause_menu::PauseMenu>().is_some_and(|menu| menu.pause_ready())
+                            && runtime.app.world().resource::<crate::gameplay::game_clock_runtime::GamePaused>().0;
+                        if complete { eprintln!("PAUSED_AUDIO_EXIT actual_menu_ready=true"); }
                     }
                     "music" if playing => {
                         // Observe the actual level manager and output clock;

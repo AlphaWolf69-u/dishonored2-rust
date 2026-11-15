@@ -436,7 +436,8 @@ impl Shared {
         });
         for voice in &mut self.voices {
             voice.audio.pause_controllers(voice.control.paused.load(Ordering::Relaxed));
-            voice.audio.flush_stops();
+            voice.audio.flush_stops(voice.control.paused.load(Ordering::Relaxed));
+            if voice.audio.cancelled() { voice.control.finished.store(true, Ordering::Relaxed); }
         }
     }
 
@@ -543,7 +544,10 @@ impl Shared {
         self.buses.begin();
         for voice in &mut self.voices {
             if voice.control.stopped.load(Ordering::Relaxed) { voice.control.finished.store(true, Ordering::Relaxed); }
-            else { voice.audio.begin(voice.control.paused.load(Ordering::Relaxed)); }
+            else {
+                voice.audio.begin(voice.control.paused.load(Ordering::Relaxed));
+                if voice.audio.cancelled() { voice.control.finished.store(true, Ordering::Relaxed); }
+            }
         }
         self.retain_voices(|voice| !voice.control.finished.load(Ordering::Relaxed));
         self.ducking.synchronize(&self.activity, self.tick);

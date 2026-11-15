@@ -624,7 +624,7 @@ impl Plugin for SoundPlugin {
         initialize_resources(app);
         app.add_systems(Startup, (contacts::initialize, index_banks, preload_level_events).chain())
             .add_systems(Update, contacts::update.after(super::player::update_player))
-            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update, effects::update, update_playing_volume, play_events, reap_retiring_objects)
+            .add_systems(PostUpdate, (bevy_backend::retire, spatial::update, prepare_level_sounds, level::update, music::update.run_if(super::loading_screen::is_playing), effects::update, update_playing_volume, play_events, reap_retiring_objects)
                 .chain().after(super::model_motion::publish_model_poses));
     }
 }
@@ -985,6 +985,7 @@ fn play_events(
     mut decodes: ResMut<SoundDecodeQueue>,
     mut retiring: ResMut<RetiringSounds>,
     observer: Option<Res<observation::Observation>>,
+    (loading, exit): (Option<Res<super::loading_screen::Acquisition>>, Option<Res<super::loading_screen::ExitState>>),
 ) {
     completions.pump();
     for event in std::mem::take(&mut completions.retired_sources) { registry.sources.remove(&event); }
@@ -1090,6 +1091,14 @@ fn play_events(
                 continue;
             }
         };
+        // Loading is not the pause menu's snapshot of existing playing IDs.
+        // Keep world posts ordered and owned until the real input handoff;
+        // stop/retire requests above continue to drain, and UI stays audible.
+        if emitter != Emitter::Menu && !exit.as_ref().is_some_and(|exit| exit.requested())
+            && loading.as_ref().is_some_and(|state| super::loading_screen::is_loading(state)) {
+            pending.0.push(queued);
+            continue;
+        }
         if queued.watched.is_some() && completions.waiting.get(&(event, emitter)).copied() != queued.watched { continue; }
         if queued.ticket.is_none() {
             let playing_id = engine.playing_id();

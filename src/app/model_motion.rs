@@ -122,6 +122,19 @@ pub(super) struct ModelProbeLighting {
 type ProbeRecord = [u8; 9 * 16];
 
 impl ModelProbeLighting {
+    /// F8-only view of the latest CPU publication, not a GPU readback.
+    pub(super) fn diagnostic_record(&self, buffers: &Assets<super::ShaderBuffer>, index: u32) -> Option<[[f32; 4]; 9]> {
+        let index = index as usize;
+        let bytes: &[u8] = if let Some(records) = &self.records {
+            records.get(index.checked_sub(self.first)?)?
+        } else {
+            buffers.get(&self.handle)?.data.as_deref()?.get(index * 144..index * 144 + 144)?
+        };
+        Some(std::array::from_fn(|row| std::array::from_fn(|column| {
+            let at = row * 16 + column * 4;
+            f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+        })))
+    }
     pub(super) fn asset_id(&self) -> AssetId<super::ShaderBuffer> { self.handle.id() }
 
     pub(super) fn new(handle: Handle<super::ShaderBuffer>, first: usize, buffer: &mut super::ShaderBuffer) -> Self {

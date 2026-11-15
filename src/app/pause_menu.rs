@@ -385,6 +385,14 @@ impl Default for PauseMenu {
 }
 
 impl PauseMenu {
+    pub(super) fn open_pause(&mut self, size: (u32, u32)) {
+        if self.open { return; }
+        let _ = self.commands.send(Command::Open { screen: pause_state::screen_size(size, size) });
+        self.open = true;
+        self.ready = false;
+        self.prepared_for = None;
+    }
+    pub(super) fn pause_ready(&self) -> bool { self.open && self.ready }
     /// The actual synchronous resolver wait, for the opt-in lifecycle observer.
     /// Never used to hold, postpone or manufacture a movie request.
     pub(super) fn texture_reply_pending(&self) -> bool {
@@ -1023,10 +1031,7 @@ pub fn update_pause_menu(
     if debug_open && !menu.open {
         menu.debug_opened = true;
         let size = windows.iter().next().map_or((1920, 1080), |w| (w.physical_width(), w.physical_height()));
-        let _ = menu.commands.send(Command::Open { screen: pause_state::screen_size(size, size) });
-        menu.open = true;
-        menu.ready = false;
-        menu.prepared_for = None;
+        menu.open_pause(size);
     }
     // Diagnostic: DH2_DEBUG_PAUSE_INPUT="click:X,Y@SECONDS;move:X,Y@SECONDS"
     // moves to movie pixel (X, Y) and clicks, or only moves, that long after

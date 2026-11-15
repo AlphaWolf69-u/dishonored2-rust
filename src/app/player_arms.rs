@@ -101,11 +101,24 @@ pub(super) struct PlayerArms {
 
 impl PlayerArms {
     /// F8-only snapshot of the render owner's published arm state.
-    pub(super) fn diagnostic(&self) -> String {
+    pub(super) fn diagnostic(&self, probes: Option<&crate::probe_lighting::ProbeLightingSet>,
+        published: Option<&model_motion::ModelProbeLighting>, buffers: &Assets<ShaderBuffer>) -> String {
         let mut report: String = self.arms.iter().map(|arm| format!(
             "  render model={} shown={} surfaces={} joints={} bounds={:?}\n",
             arm.model, arm.shown, arm.surfaces.len(), arm.joints.len(), arm.world_bounds
         )).collect();
+        // F8 only: replay the published model-bounds query, without changing
+        // its cache or adding work to skinning/lighting on ordinary frames.
+        for arm in &self.arms {
+            let sample = arm.world_bounds.map(|bounds| std::array::from_fn(|i| (bounds[0][i] + bounds[1][i]) * 0.5));
+            let mut query = arm.lighting;
+            let lighting = probes.zip(sample).and_then(|(probes, sample)| probes.interpolate_query_sh(sample, &mut query));
+            report.push_str(&format!("  lighting model={} depth_hack={} query={:?} sample={sample:?} resolved={lighting:?}\n", arm.model, arm.depth_hack, arm.lighting));
+            for part in &arm.surfaces {
+                let record = published.and_then(|published| published.diagnostic_record(buffers, part.probe_index));
+                report.push_str(&format!("    surface={} probe_index={} source_material={} published_cpu_record={record:?}\n", part.source_index, part.probe_index, arm.info.surfaces[part.source_index].material_path));
+            }
+        }
         report.push_str(&format!("  renderer action history [mantle, catfall, swimming]={:?}\n", self.action_history));
         if self.capture_geometry {
             for (action, capture) in ["mantle", "catfall", "swimming"].into_iter().zip(&self.action_capture) {

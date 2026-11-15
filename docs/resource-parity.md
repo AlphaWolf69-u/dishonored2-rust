@@ -9363,3 +9363,37 @@ ramp (14114d880/14114daf0 ->1410efda0 ->141130c50; 14114d650/14114e0e0
 ->14113ef50). Music playlist selection preserves its explicit use-weights bit
 (14115c270), including the two 15-bit draws for equal weighted entries;
 ordinary sound-container inference and selection remain unchanged.
+
+
+### Loading audio admission and paused music retirement (2026-11-15)
+
+Correction to the preceding live observation: exiting directly from running
+play did not cover exiting the real pause menu. Music must use 1411068e0's
+paused-PBI immediate retirement, as the existing ordinary continuation owner
+already does. Paused Stop now drops matching active/pending music contexts
+and publishes completion without waiting for its frozen output clock.
+The normal world/object/bank retirement fences remain authoritative.
+
+Loading's world-audio admission is separate from 788940 ->c7d30/c4300's
+snapshot pause (later menu/UI posts stay audible). Component and world-FX
+posts remain in their existing ordered queues and retain their existing
+leases until the loading input handoff; the level music owner starts at that
+handoff. Preparation/readiness still runs during loading. Stop/object retire
+and whole-session exit continue to consume/cancel the same queues, including
+exit while the loading movie awaits input. This host admission boundary
+implements the user's observed original-game silence before pressing a key,
+without a second mixer, discarded first posts or a blanket UI mute.
+
+Verified with the windowless production client (standard dev build): both
+`loading-audio` and `paused-exit` completed with exit code 0 and validated
+shutdown. At the actual loading input prompt: zero voices, zero pending
+plays/actions, zero nonzero output samples, and no world event admissions.
+The paused-exit observation opened the actual pause movie before requesting
+exit; all audio voices, pending actions and object retirements drained.
+Evidence: local `artifacts/loading-audio-fixed/{build-result.json,observations.json,
+loading-audio.log,paused-exit.log}`. These are behavior observations, not
+performance measurements; no CPU or memory improvement is claimed.
+Player F8 reporting now includes on-demand arm/body probe queries, SH and
+reflection inputs, material names, depth hacks and bounds. It does not
+change shading or add per-frame storage/work. Excess brightness is under
+investigation; no arbitrary first-person brightness multiplier was added.

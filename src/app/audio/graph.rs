@@ -1460,14 +1460,16 @@ impl Playback {
         self.root = Some(root);
     }
 
-    fn flush_stops(&mut self) {
+    fn flush_stops(&mut self, paused: bool) {
         for (target, milliseconds, curve) in self.audio.control.stops.lock().unwrap_or_else(|error| error.into_inner()).drain(..) {
             if let Some(music) = &mut self.music {
-                music.stop(target, milliseconds, curve, self.frame, &self.audio);
+                music.stop(target, milliseconds, curve, self.frame, &self.audio, paused);
+                if music.finished() { self.stopped = true; }
             } else if let Some(flow) = &mut self.flow {
                 if self.prepared {
-                    if let Some(target) = target { flow.stop(target, milliseconds, curve, self.frame, &self.audio, false); }
-                    else { flow.stop_all(milliseconds, curve, self.frame, &self.audio, false); }
+                    if let Some(target) = target { flow.stop(target, milliseconds, curve, self.frame, &self.audio, paused); }
+                    else { flow.stop_all(milliseconds, curve, self.frame, &self.audio, paused); }
+                    if flow.finished(&self.audio) { self.stopped = true; }
                 }
                 else if target.is_none_or(|target| self.audio.definition.matches_actor(self.audio.definition.root, target)) { self.stopped = true; }
             }
@@ -1479,7 +1481,7 @@ impl Playback {
     }
 
     fn begin(&mut self, paused: bool) {
-        self.flush_stops();
+        self.flush_stops(paused);
         if paused { return; }
         self.prepare();
         if let Some(music) = &mut self.music { music.begin(self.frame, u64::from(self.audio.delay_frames), &self.audio); }
@@ -1549,7 +1551,7 @@ impl Routed {
 
     pub fn emitter(&self) -> Emitter { self.playback.audio.emitter }
     pub fn owns(&self, context: &SwitchContext) -> bool { Arc::ptr_eq(&self.playback.audio.control, &context.owner) }
-    pub fn flush_stops(&mut self) { self.playback.flush_stops(); }
+    pub fn flush_stops(&mut self, paused: bool) { self.playback.flush_stops(paused); }
     pub fn pause_controllers(&mut self, paused: bool) {
         let audio = &self.playback.audio;
         if let Some(binding) = &audio.switches {
@@ -1568,7 +1570,8 @@ impl Routed {
         if !playback.prepared {
             if playback.audio.definition.matches_actor(playback.audio.definition.root, target) { playback.stopped = true; }
         } else if let Some(music) = &mut playback.music {
-            music.stop(Some(target), milliseconds, curve, playback.frame, &playback.audio);
+            music.stop(Some(target), milliseconds, curve, playback.frame, &playback.audio, paused);
+            if music.finished() { playback.stopped = true; }
         } else if let Some(flow) = &mut playback.flow {
             flow.stop(target, milliseconds, curve, playback.frame, &playback.audio, paused);
             if flow.finished(&playback.audio) { playback.stopped = true; }
@@ -1580,7 +1583,8 @@ impl Routed {
         let playback = &mut self.playback;
         if !playback.prepared { playback.stopped = true; }
         else if let Some(music) = &mut playback.music {
-            music.stop(None, milliseconds, curve, playback.frame, &playback.audio);
+            music.stop(None, milliseconds, curve, playback.frame, &playback.audio, paused);
+            if music.finished() { playback.stopped = true; }
         } else if let Some(flow) = &mut playback.flow {
             flow.stop_all(milliseconds, curve, playback.frame, &playback.audio, paused);
             if flow.finished(&playback.audio) { playback.stopped = true; }

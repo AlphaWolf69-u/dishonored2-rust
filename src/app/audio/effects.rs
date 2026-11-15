@@ -42,6 +42,7 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
     engine: Res<super::bevy_backend::Engine>, mut commands: Commands,
     playing: Query<(Entity, &super::AudioTarget, &super::graph::Playing)>,
     paused: Option<Res<crate::gameplay::game_clock_runtime::GamePaused>>,
+    (loading_screen, exit): (Option<Res<super::super::loading_screen::Acquisition>>, Option<Res<super::super::loading_screen::ExitState>>),
     mut decodes: ResMut<super::SoundDecodeQueue>, mut retiring: ResMut<super::RetiringSounds>,
     mut sound_events: MessageWriter<super::SoundEvent>)
 {
@@ -243,6 +244,13 @@ pub(super) fn update(mut state: ResMut<EffectAudio>, sources: Option<Res<WorldEf
             }
         }
         for ticket in std::mem::take(&mut bridge.queued) {
+            // Preserve accepted world-FX tickets and their existing leases
+            // while the loading movie awaits input. UI uses a separate owner.
+            if !exit.as_ref().is_some_and(|exit| exit.requested())
+                && loading_screen.as_ref().is_some_and(|state| super::super::loading_screen::is_loading(state)) {
+                loading_tickets.push(ticket);
+                continue;
+            }
             let previous_media = state.pending_media.remove(&ticket.id());
             let event = ticket.event();
             let prepared = state.events.get(event.declaration as usize).and_then(Option::as_ref)

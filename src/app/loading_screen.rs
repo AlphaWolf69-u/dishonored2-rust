@@ -16,7 +16,7 @@ use std::{
 };
 
 mod session_exit;
-pub(super) use session_exit::ExitProgress;
+pub(super) use session_exit::{ExitProgress, ExitState};
 
 pub(super) fn observe_exit_progress(world: &World) -> Option<ExitProgress> {
     session_exit::progress(world)
@@ -871,6 +871,9 @@ fn finish_loading(
 
 pub(super) fn is_loading(state: &Acquisition) -> bool {
     !state.finished
+}
+pub(super) fn waiting_for_input(state: Res<Acquisition>) -> bool {
+    state.completion_visible && !state.finished
 }
 
 const GPU_GATE: &str = "scene upload and pipelines";

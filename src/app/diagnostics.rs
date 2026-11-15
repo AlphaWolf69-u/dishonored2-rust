@@ -299,7 +299,7 @@ pub(super) fn collision_report(
     fog_capture: Option<Res<crate::rendering::bevy_backend::fog_capture::FogCaptureRequest>>,
     display: Option<Res<crate::rendering::bevy_backend::display_scene::DisplaySceneFrame>>,
     (images, reader): (Res<Assets<Image>>, Option<Res<super::texture_streaming::TextureReadWorker>>),
-    (display_capture, rendered_arms): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>),
+    (display_capture, rendered_arms, arm_lighting, shader_buffers): (Option<Res<crate::rendering::bevy_backend::display_capture::DisplayCaptureRequest>>, Option<Res<super::player_arms::PlayerArms>>, Option<Res<super::model_motion::ModelProbeLighting>>, Res<Assets<super::ShaderBuffer>>),
 ) {
     if !keys.just_pressed(KeyCode::F8) {
         return;
@@ -465,13 +465,14 @@ pub(super) fn collision_report(
             }
             report.push_str(&format!("  model={} visible={} joints={} in_front={} camera_bounds={:?}..{:?}\n", arm.model, arm.visible, arm.joints.len(), in_front, min, max));
             report.push_str(&format!("    published_pose_crc={:08x} first_joint={:?}\n", pose_crc.sum(), arm.joints.first()));
+            report.push_str(&format!("    published_joint_matrices={:?}\n", arm.joints));
         }
         report.push_str(&format!("  pose errors={:?} midnight_handle={:?} midnight_drives=[{}, {}, {}]\n",
             player.arm_pose_errors(), player.body.midnight.playing(), player.body.midnight.drives(0),
             player.body.midnight.drives(1), player.body.midnight.drives(2)));
         report.push_str(&format!("  action history [mantle, catfall]={:?}\n", player.arm_action_history()));
         report.push_str(&format!("  latest midnight start error={:?}\n", player.body.midnight.last_start_error));
-        if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic()); }
+        if let Some(arms) = rendered_arms.as_ref() { report.push_str(&arms.diagnostic(scene.environment_probes.as_deref(), arm_lighting.as_deref(), &shader_buffers)); }
     }
     // Persist the actual CPU publications alongside the captured camera. This
     // runs only on F8, so matrix formatting adds no per-frame rendering cost.
