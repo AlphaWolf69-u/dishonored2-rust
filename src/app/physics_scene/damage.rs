@@ -1,7 +1,7 @@
 //! Base world health on actual admitted entity/component identities.
 //! 717e70/7181c0 startup, 717800 calculation, 717950/717fe0/878d20 death.
 use super::*;
-use crate::gameplay::{component_state::ComponentInstance, damage::{Context, DamageResult, Parameters, Receiver}, entity_lifetime::{EntityId, LiveEntities, Stage}};
+use crate::gameplay::{component_state::ComponentInstance, damage::{Context, DamageResult, Parameters, Receiver}, entity_lifetime::{EntityId, LiveEntities, Stage}, entity_events::{EntityEvents, Event, Payload}};
 
 pub(super) struct HealthComponent {
     pub owner: ComponentOwner,
@@ -15,6 +15,13 @@ impl ComponentInstance for HealthComponent {
     fn owner_mut(&mut self) -> &mut ComponentOwner { &mut self.owner }
 }
 impl PhysicsScene {
+    /// A source may name only a real spawned entity with an admitted health
+    /// component. Authored breakable tags and render placements do not create
+    /// an entity/component identity or fabricate a damage receiver.
+    pub(in crate::app) fn named_damage_target(&self, live: &LiveEntities, name: &str) -> Result<Option<EntityId>, String> {
+        let Some(id) = live.find(name) else { return Ok(None) };
+        Ok(self.health_component(live, id)?.map(|_| id))
+    }
     pub(super) fn admit_health_components(&mut self, catalog: &archive::Catalog,
         document: &entities::Document, registry: &mut ComponentRegistry) -> Result<(), String> {
         let bindings = entities::damage::health_bindings(document, |path| crate::assets::declaration_texts::read_common_or_catalog(catalog, path))?;
@@ -50,13 +57,16 @@ impl PhysicsScene {
     }
     /// 717950 consumes a source's authored parameters and changes the same
     /// live entity flags/context used by normal component lifecycle updates.
-    /// Reflected damageTaken/incapacitated script callbacks require their
-    /// script receiver; numeric EntityEvents IDs are a different namespace.
-    pub(in crate::app) fn damage_entity(&mut self, live: &mut LiveEntities, id: EntityId,
+    /// 876660/8767a0/8769f0 bridge the reflected events into the actual
+    /// numeric entity message queue, retaining their source payloads.
+    pub(in crate::app) fn damage_entity(&mut self, live: &mut LiveEntities, events: &mut EntityEvents, id: EntityId,
         params: &Parameters) -> Result<Option<DamageResult>, String> {
         let Some(handle) = self.health_component(live, id)? else { return Ok(None) };
         let index = self.owner(handle)?.entity.ok_or("health target is unlinked")?;
-        if self.entities[index].entity_flags & 0x800 != 0 { return Ok(Some(DamageResult::default())); }
+        if self.entities[index].entity_flags & 0x800 != 0 {
+            events.post(Event { id: 0x1a6, target: Some(id), payload: Payload::DamageParameters(*params) });
+            return Ok(Some(DamageResult::default()));
+        }
         let context = Context { forward: bevy_math::Vec3::from_array(self.entities[index].frame.pose.basis[0]),
             started: self.owner(handle)?.flags & 0xc >= 8, ..Default::default() };
         let health = self.health.get_mut(handle.slot).ok_or("health payload absent")?;
@@ -67,19 +77,34 @@ impl PhysicsScene {
                 // +d1 bit3 is stored in entity_flags bit11 here. 878d20
                 // requests DEAD(2), using the live context queue (87ce50).
                 health.current = 0.0;
-                health.attacker = params.attacker.or(params.inflictor);
+                health.attacker = params.attacker;
                 self.entities[index].entity_flags = (self.entities[index].entity_flags & !0x2000) | 0x800;
                 live.set_requested_entity_context(id, 2)?;
+                events.post(Event { id: 0xa5, target: Some(id), payload: Payload::DamageParameters(*params) });
             }
+        }
+        // 717950 checks the type filter again before the base sleep
+        // callback718110. A rejected direction alone does not suppress it.
+        if !result.incapacitated && health.receiver.accepts(params.damage_type)
+            && params.damage_type.intersects(crate::gameplay::damage::DamageType::SLEEP)
+            && self.entities[index].entity_flags & 0x2800 == 0 {
+            live.set_requested_entity_context(id, 1)?;
+            self.entities[index].entity_flags |= 0x2000;
+            health.attacker = params.attacker;
+            events.post(Event { id: 0xa5, target: Some(id), payload: Payload::DamageParameters(*params) });
+        }
+        events.post(Event { id: 0xa2, target: Some(id), payload: Payload::Damage { params: *params, result } });
+        if let Some(attacker) = params.attacker.filter(|attacker| live.get(*attacker).is_some()) {
+            events.post(Event { id: 0xa3, target: Some(attacker), payload: Payload::Damaging { target: id, params: *params, result } });
         }
         Ok(Some(result))
     }
     /// Reuse collision user data's canonical component/entity resolution.
-    pub(in crate::app) fn damage_collision_target(&mut self, live: &mut LiveEntities, user_data: u64,
+    pub(in crate::app) fn damage_collision_target(&mut self, live: &mut LiveEntities, events: &mut EntityEvents, user_data: u64,
         params: &Parameters) -> Result<Option<DamageResult>, String> {
         if user_data == 0 { return Ok(None); }
         let index = crate::gameplay::collision_user_data::CollisionUserData::decode(user_data)?.entity(|handle| self.owner(handle).ok())?;
         let id = self.entities.get(index).ok_or("damage collider entity absent")?.shared;
-        self.damage_entity(live, id, params)
+        self.damage_entity(live, events, id, params)
     }
 }

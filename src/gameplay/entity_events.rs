@@ -68,6 +68,13 @@ pub enum Payload {
     Entity(EntityId),
     /// Inline request-owner notification (1406645e0), event 16's two words.
     MusicRequest { handle: i32, operation: i32 },
+    /// 876660 ->874ad0: ARK_MSG_DAMAGED (A2), including the exact
+    /// source parameters followed by its health calculation result.
+    Damage { params: super::damage::Parameters, result: super::damage::DamageResult },
+    /// 8767a0 ->874b90: ARK_MSG_DAMAGING (A3), delivered to attacker.
+    Damaging { target: EntityId, params: super::damage::Parameters, result: super::damage::DamageResult },
+    /// 8769f0/717950: A5 incapacitation or 1A6 damage after death.
+    DamageParameters(super::damage::Parameters),
 }
 
 #[derive(Clone, Copy)]

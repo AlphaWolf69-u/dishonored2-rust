@@ -118,6 +118,54 @@ impl Receiver {
         let incapacitated = !self.infinite_health && current - health_damage < 0.5;
         DamageResult { health_damage, mana_damage, incapacitated, sleep: !incapacitated && params.damage_type.intersects(DamageType::SLEEP), accepted: true }
     }
+    /// HealthDoor virtual+d0 (39edc0) first calls base717800, then applies
+    /// door-only overrides, even when the base type/direction filter rejected
+    /// the hit. Maximum and current health are intentionally different here.
+    /// Context flags come from actual managed attacker/inflictor owners.
+    pub fn evaluate_door(&self, current: f32, maximum: f32, params: &Parameters,
+        context: Context, door: DoorContext) -> DamageResult {
+        let mut result = self.evaluate(current, params, Context { evolved: false, ..context });
+        let mut override_damage = None;
+        // WINDBLAST | FOCUS_BLINK_ATTACK (39edc0).
+        if params.damage_type.0 & 0x40000080000 != 0 { override_damage = Some(maximum); }
+        if params.damage_type.0 & 0x80 != 0 && door.attacker_exists {
+            override_damage = Some(if door.attacker_is_player &&
+                (door.greater_strength_modified || door.declaration_focus_blink_attack) { maximum } else { 0.0 });
+        }
+        if params.damage_type.0 & 0x10 != 0 {
+            override_damage = Some(if door.inflictor_npc_breaking_reaction { maximum } else { 0.0 });
+        }
+        if let Some(amount) = override_damage {
+            result.health_damage = if self.infinite_health { 0.0 } else { amount };
+            result.accepted = true;
+            result.incapacitated = !self.infinite_health && current - result.health_damage < 0.5;
+            result.sleep = !result.incapacitated && params.damage_type.intersects(DamageType::SLEEP);
+        }
+        result
+    }
+}
+
+/// 39ef50 resolves STRENGTH_GREATER_STRENGTH on the actual player's
+/// attributes; 39eed0 compares its live value with that attribute's base.
+/// Physics override39edc0 requires an actual NPC AIPhysicsReaction+150 bit2.
+/// Absence and unsupported actor owners must stay distinct at the adapter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DoorContext {
+    pub attacker_exists: bool,
+    pub attacker_is_player: bool,
+    pub greater_strength_modified: bool,
+    pub declaration_focus_blink_attack: bool,
+    pub inflictor_npc_breaking_reaction: bool,
+}
+impl DoorContext {
+    pub fn player(attributes: &crate::gameplay::player::states::Attributes,
+        declaration: &crate::assets::damage::Declaration) -> Self {
+        let tag = "ARK_ATTRIBUTE_STRENGTH_GREATER_STRENGTH";
+        Self { attacker_exists: true, attacker_is_player: true,
+            greater_strength_modified: attributes.1.get(tag).is_some_and(|value| attributes.get(tag) != value.base),
+            declaration_focus_blink_attack: declaration.damage_type.0 & 0x40000000000 != 0,
+            inflictor_npc_breaking_reaction: false }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,6 +173,13 @@ pub struct Parameters {
     pub amount: f32,
     pub damage_type: DamageType,
     pub hit_direction: Vec3,
+    /// Actual collision/source location and normal. None means the source
+    /// did not supply a value; chunk/impact owners must require the actual
+    /// hit data instead of substituting the receiver's center or a plane.
+    pub hit_location: Option<Vec3>,
+    pub hit_normal: Option<Vec3>,
+    pub hit_distance: f32,
+    pub affected_regions: u32,
     pub hit_region: u32,
     pub attacker: Option<crate::gameplay::entity_lifetime::EntityId>,
     pub inflictor: Option<crate::gameplay::entity_lifetime::EntityId>,
@@ -133,7 +188,9 @@ pub struct Parameters {
 impl Parameters {
     /// 780260 initializes the damage amount from +5c (m_maxDamage).
     pub fn from_declaration(declaration: &crate::assets::damage::Declaration) -> Self {
-        Self { amount: declaration.maximum, damage_type: declaration.damage_type, hit_direction: Vec3::ZERO, hit_region: 1, attacker: None, inflictor: None, ignore_armor: false }
+        Self { amount: declaration.maximum, damage_type: declaration.damage_type, hit_direction: Vec3::ZERO,
+            hit_location: None, hit_normal: None, hit_distance: 0.0, affected_regions: 0,
+            hit_region: 1, attacker: None, inflictor: None, ignore_armor: false }
     }
     /// 780a80 accepts arbitrary caller damage when max<=0; otherwise the
     /// source's clamp flag limits the override to its authored [min,max].
