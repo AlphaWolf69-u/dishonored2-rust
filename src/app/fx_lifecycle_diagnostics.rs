@@ -85,6 +85,7 @@ impl Observation {
     /// One observation after an actual App.update. true requests canonical map
     /// shutdown; persistent decal records remain owned until that actual shutdown.
     pub(super) fn poll(&mut self, world: &mut World) -> Result<bool, String> {
+        super::usable_effects::publish_proxy_observation(world);
         let Some(scenario) = self.scenarios.get_mut(self.next) else { return Ok(true); };
         let first_admission = super::usable_effects::observe_admission(world, &scenario.first, &scenario.path)?;
         if scenario.last_first_admission.as_ref() != Some(&first_admission) {

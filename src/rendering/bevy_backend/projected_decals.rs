@@ -129,8 +129,42 @@ pub(crate) struct ProxyReadinessBatch {
 }
 #[derive(Resource, Clone, Default, bevy::render::extract_resource::ExtractResource)]
 pub(crate) struct DynamicProxyReadiness {
+    /// Opt-in observer metadata: IDs only, never asset handles or readiness writes.
+    pub diagnostics: Arc<Vec<ProxyMainObservation>>,
     pub decals: ProxyReadinessBatch,
     pub world_meshes: ProxyReadinessBatch,
+}
+
+
+/// A snapshot of the real main-world proxy, transported by its existing
+/// readiness resource. No strong resource lease is retained by diagnostics.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProxyMainObservation {
+    pub entity: Entity,
+    pub render_entity: Option<Entity>,
+    pub main: String,
+    pub images: Vec<(String, AssetId<Image>, bool)>,
+    pub buffers: Vec<(&'static str, AssetId<bevy::render::storage::ShaderBuffer>, bool)>,
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct ProxyAdmissionInputs<'w, 's> {
+    meshes: Res<'w, bevy::pbr::RenderMeshInstances>,
+    gpu_meshes: Res<'w, bevy::render::render_asset::RenderAssets<bevy::render::mesh::RenderMesh>>,
+    materials: Res<'w, bevy::pbr::RenderMaterialInstances>,
+    prepared: Res<'w, bevy::render::erased_render_asset::ErasedRenderAssets<bevy::pbr::PreparedMaterial>>,
+    images: Res<'w, bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
+    buffers: Res<'w, bevy::render::render_asset::RenderAssets<bevy::render::storage::GpuShaderBuffer>>,
+    keys: Res<'w, bevy::pbr::ViewKeyCache>,
+    dirty: Res<'w, bevy::render::camera::DirtySpecializations>,
+    pending: Res<'w, bevy::pbr::PendingMeshMaterialQueues>,
+    opaque: Res<'w, bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>>,
+    masked: Res<'w, bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::AlphaMask3d>>,
+    transmissive: Res<'w, bevy::render::render_phase::ViewSortedRenderPhases<bevy::pbr::Transmissive3d>>,
+    transparent: Res<'w, bevy::render::render_phase::ViewSortedRenderPhases<bevy::core_pipeline::core_3d::Transparent3d>>,
+    draws: Res<'w, bevy::pbr::DirectInstanceDraws>,
+    mapping: Query<'w, 's, (Entity, &'static bevy::render::sync_world::MainEntity,
+        Has<super::particle_meshes::ParticleMeshProxy>, Has<ProjectedDecalProxy>)>,
 }
 
 fn acknowledge_dynamic_proxies(
@@ -138,11 +172,12 @@ fn acknowledge_dynamic_proxies(
     specialized: Res<bevy::pbr::SpecializedMaterialPipelineCache>,
     pipelines: Res<PipelineCache>,
     water: Res<super::water_scene::WaterSceneFrame>,
-    view: bevy::render::renderer::ViewQuery<(&bevy::render::sync_world::MainEntity, &bevy::render::view::ExtractedView)>,
+    view: bevy::render::renderer::ViewQuery<(&bevy::render::sync_world::MainEntity, &bevy::render::view::ExtractedView, Option<&bevy::render::view::RenderVisibleEntities>, Option<&bevy::camera::visibility::RenderLayers>)>,
+    observation: ProxyAdmissionInputs,
     mut last_observation: Local<Option<String>>,
 ) {
     use std::sync::atomic::Ordering;
-    let (camera, view) = view.into_inner();
+    let (camera, view, visible, camera_layers) = view.into_inner();
     if super::world_effects::trace_lifecycle() {
         // Observe the actual render-world cache, without changing its gates,
         // specializing another pipeline, or manufacturing a proxy/binding.
@@ -150,6 +185,14 @@ fn acknowledge_dynamic_proxies(
         let mut snapshot = format!("water_camera={:?} view_camera={:?} camera_match={} view_cache={}",
             water.0.as_ref().map(|water| water.camera), camera.id(),
             water.0.as_ref().is_some_and(|water| water.camera == camera.id()), cached.is_some());
+        let retained = view.retained_view_entity;
+        let visible_meshes = visible.and_then(|visible| visible.get::<Mesh3d>());
+        let pending = observation.pending.get(&retained);
+        snapshot.push_str(&format!(" retained={retained:?} camera_layers={camera_layers:?} view_key={:?} phases=({},{},{},{}) visibility_component={} mesh_class={} dirty_view={}",
+            observation.keys.get(&retained), observation.opaque.contains_key(&retained),
+            observation.masked.contains_key(&retained), observation.transmissive.contains_key(&retained),
+            observation.transparent.contains_key(&retained), visible.is_some(), visible_meshes.is_some(),
+            observation.dirty.views.contains(&retained)));
         for (kind, batch) in [("decal", &request.decals), ("world", &request.world_meshes)] {
             snapshot.push_str(&format!(" {kind}=(generation={},proxies={},completed={},failed={})",
                 batch.generation, batch.proxies.len(), batch.completed.load(Ordering::Acquire), batch.failed.load(Ordering::Acquire)));
@@ -161,6 +204,45 @@ fn acknowledge_dynamic_proxies(
                     state => format!("pending:{:?}", std::mem::discriminant(state)),
                 });
                 snapshot.push_str(&format!(" proxy={entity:?}:pipeline={pipeline:?}:state={state:?}"));
+                let main = bevy::render::sync_world::MainEntity::from(*entity);
+                let cpu = request.diagnostics.iter().find(|cpu| cpu.entity == *entity);
+                let mapped = observation.mapping.iter().filter(|(_, mapped, _, _)| **mapped == main)
+                    .map(|(entity, _, particle, decal)| (entity, particle, decal)).collect::<Vec<_>>();
+                let mesh = observation.meshes.render_mesh_queue_data(main);
+                let material = observation.materials.instances.get(&main);
+                let prepared = material.and_then(|material| observation.prepared.get(material.asset_id));
+                let cpu_visible = visible_meshes.map(|visible| visible.entities_cpu_culling.iter()
+                    .filter(|(_, candidate)| *candidate == main).copied().collect::<Vec<_>>());
+                let gpu_visible = visible_meshes.and_then(|visible| visible.entities_gpu_culling.get(&main));
+                let added = visible_meshes.is_some_and(|visible| visible.added_entities.iter().any(|(_, candidate)| *candidate == main));
+                let removed = visible_meshes.is_some_and(|visible| visible.removed_entities.iter().any(|(_, candidate)| *candidate == main));
+                let prev = pending.map(|pending| pending.prev_frame.iter().filter(|(_, candidate)| *candidate == main).copied().collect::<Vec<_>>());
+                let current = pending.map(|pending| pending.current_frame.iter().filter(|(_, candidate)| *candidate == main).copied().collect::<Vec<_>>());
+                let draw = observation.draws.entities.get(&main).map(|draw| match draw {
+                    bevy::pbr::DirectInstanceDraw::Instances { first, count } => format!("instances:first={first},count={count}"),
+                    bevy::pbr::DirectInstanceDraw::Meshes(meshes) => format!("meshes:{}", meshes.len()),
+                });
+                snapshot.push_str(&format!(" main_observation={:?} render_mapping={mapped:?} mesh_instance={} mesh_id={:?} gpu_mesh={} mesh_layers={:?} material_instance={:?} prepared_material={} base_specialize={} cpu_visible={cpu_visible:?} gpu_visible={gpu_visible:?} added={added} removed={removed} dirty_changed={} dirty_removed={} pending_prev={prev:?} pending_current={current:?} direct_draw={draw:?}",
+                    cpu.map(|cpu| &cpu.main), mesh.is_some(), mesh.as_ref().map(|mesh| mesh.mesh_asset_id()),
+                    mesh.as_ref().is_some_and(|mesh| observation.gpu_meshes.get(mesh.mesh_asset_id()).is_some()),
+                    mesh.as_ref().map(|mesh| &mesh.render_layers), material.map(|material| material.asset_id),
+                    prepared.is_some(), prepared.is_some_and(|material| material.properties.base_specialize.is_some()),
+                    observation.dirty.changed_renderables.contains(&main), observation.dirty.removed_renderables.contains(&main)));
+                if let Some(prepared) = prepared {
+                    snapshot.push_str(&format!(" prepared=(alpha={:?},phase={:?},render_method={:?},transmission={},bindless={},prepass={},shadows={})",
+                        prepared.properties.alpha_mode, std::mem::discriminant(&prepared.properties.render_phase_type),
+                        prepared.properties.render_method, prepared.properties.reads_view_transmission_texture,
+                        prepared.properties.bindless, prepared.properties.prepass_specialize.is_some(), prepared.properties.shadows_enabled));
+                }
+                if let Some(cpu) = cpu {
+                    snapshot.push_str(&format!(" main_render_entity={:?}", cpu.render_entity));
+                    for (name, id, present) in &cpu.images {
+                        snapshot.push_str(&format!(" image=({name},{id:?},cpu={present},gpu={})", observation.images.get(*id).is_some()));
+                    }
+                    for (name, id, present) in &cpu.buffers {
+                        snapshot.push_str(&format!(" buffer=({name},{id:?},cpu={present},gpu={})", observation.buffers.get(*id).is_some()));
+                    }
+                }
             }
         }
         if last_observation.as_ref() != Some(&snapshot) {

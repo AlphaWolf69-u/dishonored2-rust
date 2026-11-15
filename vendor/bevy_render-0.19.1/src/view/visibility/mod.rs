@@ -269,12 +269,9 @@ impl RenderVisibleEntitiesClass {
     /// This checks both the CPU culling visible entries table and the
     /// no-CPU-culling visible entries table.
     pub fn entity_pair_is_visible(&self, entity: Entity, main_entity: MainEntity) -> bool {
-        // Host: this table is sorted by MainEntity during visibility
-        // preparation. Pending material/mesh work must search that same key
-        // and still reject a stale render-world mapping.
         self.entities_cpu_culling
-            .binary_search_by_key(&main_entity, |(_, main_entity)| *main_entity)
-            .is_ok_and(|index| self.entities_cpu_culling[index].0 == entity)
+            .binary_search(&(entity, main_entity))
+            .is_ok()
             || self
                 .entities_gpu_culling
                 .get(&main_entity)

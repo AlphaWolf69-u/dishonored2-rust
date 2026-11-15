@@ -673,3 +673,100 @@ pub(super) fn observe_admission(world: &bevy::prelude::World, name: &str, path: 
         image_memberships, missing_images, sounds_ready: bridge.ready, sound_memberships, missing_sounds, prepared_errors,
     })
 }
+
+
+/// Opt-in lifecycle observer only. Inspect the existing requested proxies and
+/// borrow the real asset owners; do not acquire assets or alter visibility.
+pub(super) fn publish_proxy_observation(world: &mut bevy::prelude::World) {
+    use bevy::{asset::VisitAssetDependencies, prelude::*, render::sync_world::RenderEntity};
+    use crate::rendering::bevy_backend::projected_decals::{DynamicProxyReadiness, ProxyMainObservation};
+    let Some(request) = world.get_resource::<DynamicProxyReadiness>() else { return };
+    let mut ids = request.decals.proxies.iter().chain(request.world_meshes.proxies.iter()).copied().collect::<Vec<_>>();
+    ids.sort_unstable(); ids.dedup();
+    let observations = ids.into_iter().map(|entity| {
+        let mesh = world.get::<Mesh3d>(entity).map(|mesh| mesh.0.id());
+        let material = world.get::<MeshMaterial3d<super::ProbeMaterial>>(entity).map(|material| material.0.id());
+        let mesh_asset = mesh.and_then(|mesh| world.get_resource::<Assets<Mesh>>().and_then(|assets| assets.get(mesh)));
+        let material_asset = material.and_then(|material| world.get_resource::<Assets<super::ProbeMaterial>>().and_then(|assets| assets.get(material)));
+        let mut images = Vec::new();
+        let mut buffers = Vec::new();
+        let mut base_other_dependencies = Vec::new();
+        if let Some(material) = material_asset {
+            material.base.visit_dependencies(&mut |id| {
+                match id.try_typed::<Image>() {
+                    Ok(id) => images.push((format!("base:{}", images.len()), id,
+                        world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(id).is_some()))),
+                    Err(_) => base_other_dependencies.push(id),
+                }
+            });
+            let extension = &material.extension;
+            if let Some(handle) = &extension.fog_world { images.push(("fog_world".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fog_canvas { images.push(("fog_canvas".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fog_curve { images.push(("fog_curve".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fog_depth { images.push(("fog_depth".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.reflection_brdf_lookup { images.push(("reflection_brdf_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.reflections { images.push(("reflections".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.local_shadow_map { images.push(("local_shadow_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.shadow_map { images.push(("shadow_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.screen_map { images.push(("screen_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_map { images.push(("cloud_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse0 { images.push(("diffuse0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse1 { images.push(("diffuse1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse2 { images.push(("diffuse2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.bump0 { images.push(("bump0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.bump1 { images.push(("bump1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.bump2 { images.push(("bump2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.gloss0 { images.push(("gloss0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.gloss1 { images.push(("gloss1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.gloss2 { images.push(("gloss2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.metallic0 { images.push(("metallic0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.metallic1 { images.push(("metallic1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.metallic2 { images.push(("metallic2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.mask0 { images.push(("mask0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.mask1 { images.push(("mask1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.mask2 { images.push(("mask2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.specular0 { images.push(("specular0".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.specular1 { images.push(("specular1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.specular2 { images.push(("specular2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.detail_bump { images.push(("detail_bump".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.emissive_map { images.push(("emissive_map".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.emissive_mask { images.push(("emissive_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.anisotropic_sampler_image { images.push(("anisotropic_sampler_image".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.lightmap { images.push(("lightmap".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_diffuse { images.push(("filling_diffuse".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_distortion1 { images.push(("filling_distortion1".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_distortion2 { images.push(("filling_distortion2".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_lookup { images.push(("filling_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_normal { images.push(("filling_normal".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.filling_fresnel { images.push(("filling_fresnel".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.linear_clamp_image { images.push(("linear_clamp_image".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_opacity { images.push(("cloud_opacity".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_density { images.push(("cloud_density".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.cloud_back_density { images.push(("cloud_back_density".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.skin_fresnel_lookup { images.push(("skin_fresnel_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.diffuse_lookup { images.push(("diffuse_lookup".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.sss_mask { images.push(("sss_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.fuzz_mask { images.push(("fuzz_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            if let Some(handle) = &extension.translucency_mask { images.push(("translucency_mask".to_owned(), handle.id(), world.get_resource::<Assets<Image>>().is_some_and(|assets| assets.get(handle.id()).is_some()))); }
+            buffers.push(("fog_objects", extension.fog_objects.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.fog_objects.id()).is_some())));
+            buffers.push(("fog_parameters", extension.fog_parameters.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.fog_parameters.id()).is_some())));
+            buffers.push(("reflection_planes", extension.reflection_planes.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.reflection_planes.id()).is_some())));
+            buffers.push(("material_exposure", extension.material_exposure.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.material_exposure.id()).is_some())));
+            buffers.push(("sh", extension.sh.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.sh.id()).is_some())));
+            buffers.push(("vertex_probes", extension.vertex_probes.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.vertex_probes.id()).is_some())));
+            buffers.push(("shadow", extension.shadow.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.shadow.id()).is_some())));
+            buffers.push(("local_shadow", extension.local_shadow.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.local_shadow.id()).is_some())));
+            buffers.push(("vegetation_slots", extension.vegetation_slots.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.vegetation_slots.id()).is_some())));
+            buffers.push(("vegetation_instances", extension.vegetation_instances.id(), world.get_resource::<Assets<bevy::render::storage::ShaderBuffer>>().is_some_and(|assets| assets.get(extension.vegetation_instances.id()).is_some())));
+        }
+        let main = format!("entity_exists={} mesh={mesh:?} mesh_cpu={} mesh_usage={:?} material={material:?} material_cpu={} visibility={:?} inherited={:?} view_visible={:?} class={:?} layers={:?} no_frustum={} no_cpu_culling={} parent={:?} other_base_dependencies={base_other_dependencies:?}",
+            world.get_entity(entity).is_ok(), mesh_asset.is_some(), mesh_asset.map(|mesh| mesh.asset_usage), material_asset.is_some(),
+            world.get::<Visibility>(entity), world.get::<InheritedVisibility>(entity), world.get::<ViewVisibility>(entity),
+            world.get::<bevy::camera::visibility::VisibilityClass>(entity).map(|class| &class.0),
+            world.get::<bevy::camera::visibility::RenderLayers>(entity), world.get::<bevy::camera::visibility::NoFrustumCulling>(entity).is_some(),
+            world.get::<bevy::camera::visibility::NoCpuCulling>(entity).is_some(), world.get::<ChildOf>(entity).map(|parent| parent.parent()));
+        ProxyMainObservation { entity, render_entity: world.get::<RenderEntity>(entity).map(RenderEntity::id), main, images, buffers }
+    }).collect::<Vec<_>>();
+    let mut request = world.resource_mut::<DynamicProxyReadiness>();
+    if request.diagnostics.as_ref() != &observations { request.diagnostics = Arc::new(observations); }
+}

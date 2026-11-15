@@ -9130,3 +9130,16 @@ material prerequisite is ready; existing pipeline/prewarm acknowledgment and
 actual Start/overlap/Stop/restart/tail paths then progress. Membership remains
 logarithmic, with no new storage or GPU work. Actual focused confirmation is
 pending; the failed prior observations are preserved unchanged.
+
+
+Thea693 coherent build also passed, but the focused actual FX run still had
+proxy1100v0 pipeline=None. It did not verify a runtime repair. Further source
+qualification matters: current3D CPU-visible pairs retain Entity::PLACEHOLDER
+in the render-entity slot, so their tuple order is already effectively the
+MainEntity order. The proposed generic keyed lookup has no measured gain on
+this producer and is reverted rather than presented as the stall fix.
+Evidence: active-resource-build-20261115T020354Z-4bbffc2a/result.json and
+active-resource-runtime-20261115T022717Z-06ec72a5/result.json. The one remaining
+FX admission investigation now joins every actual main/render visibility,
+mesh/material asset, dependency and pending-specialization gate in one bounded
+observation; it does not manufacture a pipeline, clock or acknowledgment.
