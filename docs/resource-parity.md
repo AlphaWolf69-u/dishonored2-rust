@@ -9143,3 +9143,30 @@ active-resource-runtime-20261115T022717Z-06ec72a5/result.json. The one remaining
 FX admission investigation now joins every actual main/render visibility,
 mesh/material asset, dependency and pending-specialization gate in one bounded
 observation; it does not manufacture a pipeline, clock or acknowledgment.
+
+
+2026-11-15 actual FX owner handoff defect:
+
+The comprehensive dcd153dc observation resolves the stall without guessing:
+main proxy1100 is visible/mapped and its ordinary image plus eight shared
+buffers are CPU/GPU ready. vegetation_slots and vegetation_instances both
+instead reference the default UUID97128bb1-2588-480b-bdc6-87b4adbec477, absent
+from both owners. Material preparation cannot finish. Bevy mesh preparation
+(render/mesh.rs1426-1440) consequently defers its instance because the material
+binding is absent; missing mesh readiness was a consequence, not the cause.
+Evidence: active-resource-build-20261115T024448Z-fc193d78/result.json and
+active-resource-runtime-20261115T030808Z-ec19e877/result.json.
+
+setup took resolver.vegetation and shadow_materials before preparing world
+particle surfaces and projected decals. MaterialResolver copied the replaced
+Default storage-buffer handles into every new late probe material. Move both
+existing owner transfers after their final consumer, immediately before the
+runtime material/cache handoff. VegetationMaterials::new already supplies the
+canonical buffers; no dummy source, second allocation, lookup cache or fake
+acknowledgment is required. Native1fbad0/31ad30 full surface preparation and
+0607f0/05feb0 shared identity remain the behavior; the transfer is host-only.
+Prediction: the exact two dependency IDs reference the existing live buffers,
+GPU material and mesh preparation then complete, and actual FX Start/overlap/
+view-gap/Stop/restart/tail retirement progress through their existing owners.
+No additional resource, per-frame work or GPU pass is introduced. Actual
+confirmation of this coherent handoff batch remains pending.

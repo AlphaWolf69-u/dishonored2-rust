@@ -2033,8 +2033,6 @@ pub(super) fn prepare(
     commands.insert_resource(PlacedModelQueries(placed_model_queries));
     commands.insert_resource(ShadowModelBoundsSources(shadow_model_bounds));
     commands.insert_resource(shadow_updates::ModelShadowSources(model_shadow_sources));
-    commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
-    commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     let mut ocean_image_slots = Vec::new();
     let mut ocean_inline_slots = std::collections::HashSet::new();
     let mut particle_resources = crate::rendering::particles::definition::ParticleResources::default();
@@ -2210,6 +2208,11 @@ pub(super) fn prepare(
     resolver.cache.retire_staged_source();
     resolver.cache.report_source_handoff();
     resolver.cache.report_runtime_retention();
+    // Host handoff follows every material consumer, including particle and
+    // decal preparation (1fbad0/31ad30). Taking these owners earlier replaces
+    // their shared bindings with defaults while the resolver still uses them.
+    commands.insert_resource(std::mem::take(&mut resolver.shadow_materials));
+    commands.insert_resource(std::mem::take(&mut resolver.vegetation));
     commands.insert_resource(super::runtime_materials::RuntimeMaterialOwner {
         bindings: runtime_material_bindings,
         cache: std::mem::take(&mut resolver.cache),
