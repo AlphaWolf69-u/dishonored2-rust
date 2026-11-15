@@ -869,19 +869,27 @@ fn render_opaque_particle_depth(
         if particles.as_ref().is_none_or(|p| !p.prepared) {
             return Err("opaque particle surfaces await the particle material gate".into());
         }
-        let (instances, draw_capacity) = frame.capacity;
+        // Sized by the opaque draws themselves, grown to the next power of
+        // two; the alpha pass owns the pool-sized storage.
+        let instances = draws.iter().map(|draw| draw.instances.len()).sum::<usize>().max(1).next_power_of_two();
+        let draw_capacity = draws.len().next_power_of_two();
         let colour_format = target.main_texture_format();
         let depth_format = depth.texture.format();
-        if opaque_particles.as_ref().is_none_or(|p| p.instances < instances || p.draws < draw_capacity
-            || p.colour_format != colour_format || p.depth_format != depth_format) {
+        if opaque_particles.as_ref().is_none_or(|p| p.colour_format != colour_format || p.depth_format != depth_format) {
             let cached = particle_programs.remove(&(colour_format, depth_format));
+            let grids = particles.as_ref().map(|particles| particles.pass.shared_grids());
             *opaque_particles = Some(OpaqueParticleGpu {
-                pass: super::particle_pass::ParticlePass::new_with_programs(&device, &queue, instances.max(1),
-                    draw_capacity.max(1), colour_format, depth_format, cached)?,
+                pass: super::particle_pass::ParticlePass::new_with_shared(&device, &queue, instances,
+                    draw_capacity, colour_format, depth_format, cached, grids)?,
                 instances, draws: draw_capacity, colour_format, depth_format, depth_frame: None, prepared: None,
             });
         }
         let opaque = opaque_particles.as_mut().unwrap();
+        if opaque.instances < instances || opaque.draws < draw_capacity {
+            opaque.pass.grow(&device, instances, draw_capacity);
+            opaque.instances = opaque.instances.max(instances);
+            opaque.draws = opaque.draws.max(draw_capacity);
+        }
         let surface_sampler = sampler.as_ref().and_then(|sampler| images.get(&sampler.0)).map(|image| &image.sampler);
         {
             let console = crate::platform::console::shared().read();
