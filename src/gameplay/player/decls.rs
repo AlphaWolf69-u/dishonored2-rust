@@ -591,8 +591,19 @@ pub(crate) fn retains_default_state(kind: &str) -> bool {
 
 /// The mode's locomotion state decls; other state kinds are not ported.
 pub fn states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
+    states_in(&declarations.states)
+}
+
+/// Equipment states retain the same authored class/slot rules in each mode.
+/// Never synthesize default-mode states that are absent from the swim mode.
+pub fn swimming_equipment_states(declarations: &PlayerDeclarations) -> Result<Vec<StateDecl>, String> {
+    Ok(states_in(&declarations.swimming_states)?.into_iter().filter(|state|
+        matches!(state.kind, Kind::EquipChange(_) | Kind::DrawEquipment(_) | Kind::Undraw(_))).collect())
+}
+
+fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl>, String> {
     let mut result = Vec::new();
-    for (kind, fields) in &declarations.states {
+    for (kind, fields) in entries {
         let Some(supported) = supported_default_state(kind) else { continue };
         let kind = match supported {
             SupportedDefaultState::Dead if !result.iter().any(|s: &StateDecl| matches!(s.kind, Kind::Dead(_))) => Kind::Dead(drowning_death(fields)?),

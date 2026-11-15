@@ -10235,6 +10235,9 @@ are re-decoded by this state owner. There is no measured optimization claim.
   quantities. Their actual producer must register the source entity first.
 - Validation: source inspection and Rust syntax parsing only; no compilation,
   tests, gameplay launches, visual comparisons or performance measurements.
+- Equipment projections use the same borrowed state-declaration reader in
+  every authored player mode. The swimming setup admits only actual retained
+  EquipChange/Draw/Undraw declarations; no default-mode copies are created.
 
 ### Melee player-action animation and equipment lifetime (2026-11-15)
 
