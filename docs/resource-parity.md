@@ -10428,6 +10428,8 @@ The equipment owner reserves once per owned power and releases its reservation a
 
 `host`: explicit-world starts (`EffectRequests::start_world`/`start_world_once`, native `14087cb90`) retain the caller's actual world frame through asynchronous acquisition and GPU/audio preparation. Their dynamic FX entity starts from that supplied frame without later resolving a player, worldspawn or target-parent pose. They use the same FX factory, source registry, instance completion and tail acknowledgements as entity-bound starts. This prevents delayed Far Reach surface impacts or Windblast spawner-origin effects from following a moved/retired parent. Blink helper producer keys can be bound once to the actual owned power admission generation; reselecting that same component preserves its identity and a depleted/re-added generation does not replace old active handles.
 
+`host`: `usable_effects::begin_retirement` explicitly closes the whole-level desired owner after gameplay producers retire and before actual FX simulation shutdown (`140199df0`/`1407c0f30` ordering). It discards queued starts, desired/reserved generations and their placement headers, cancels acquisitions through the existing retirement FIFO, and publishes an empty DynamicEffects snapshot even when ScenePublished already gates the ordinary schedule. No effect starts during close. Render entities/instances, old render snapshots and audio objects retain their real lifetime/source acknowledgements until their own shutdown completes; only then may Windblast release its actual temporary identity. The existing level-acquisition drain remains authoritative for cancelled worker completion.
+
 ### Prepared host entity reservation lifetime (2026-11-15)
 
 Prediction before implementation: only canceled, unpublished Bevy entity IDs
@@ -10721,3 +10723,25 @@ Default cast mode0 requests active Ground travel while preserving the initial su
 The actual accepted power callback starts the canonical body's beam774d90. Component441150/441220/442710 defer state27 until the real beam7766b0 reports distance <= authored m_startPullDistance (default3m), and UsePower63 has finished. This is actual geometry/animation state, with no replacement arrival timer. Mana remains a shared dispatcher commit after the family accepts the real beam start. Source worldImpactFX queues only at that boundary; its path and actual placement pass to the canonical effect owner. State termination stops the same body beam775210. Callback errors propagate; a rejected state gate returns its actual Request so the retained MantleSensor can recover.
 
 Geometry admission is explicitly limited to actual level-static WorldHit.body0 with resolved physics material metadata. HOST unresolved navigation/placed material metadata is blocked, never described as an original null material pointer. Placed/dynamic/NPC/object targets wait for actual body/attachment/component classification. No performance result, executable parity, compilation, tests, launch or visual verification is claimed.
+
+
+Equipment default-upgrade host completion (2026-11-15): the actual owned
+actor Start now queues its authored defaultUpgrades in source order alongside
+its selected ammunition child. Sources delegates to the same attachment source
+owner, and the existing MaterialWork/AssetBatch/material/image admission path
+prepares both rigid LWO and authored BasicRig/MD6 children. The single root
+renderer supplies its existing commands, inverse-bind assets, joint query and
+probe/material owners to the child updater. Component animation receives the
+clock owner's advanced common delta and the published inherited entity rate;
+loading pause supplies no animation time.
+
+New target admission marks its pose dirty. During loading pause, only that
+change triggers the existing Player.view pose publisher; gameplay Frame,
+physics and source animation time do not advance. Actual controlled equipment
+entity frames (before model root offsets), including silent and hidden actors,
+then reach the managed identity owner before child binding admission. The
+normal post-player hook republishes current frames for animation, audio and
+projectile socket consumers. Withdrawn generations in a previous view cache are
+excluded through the canonical live hierarchy. This closes resource loading
+without waiting for a queued native draw animation. Syntax/format and diff
+review only; no compilation, tests, launches or visual verification performed.

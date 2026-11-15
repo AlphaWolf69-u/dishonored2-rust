@@ -7,6 +7,7 @@ pub mod animation;
 pub mod adrenaline;
 pub mod arms;
 pub mod equipment;
+pub mod equipment_attachment;
 pub mod weapons;
 pub mod power_states;
 pub mod grapple;
@@ -886,6 +887,8 @@ impl Player {
                 let mut parameters = crate::gameplay::damage::Parameters::from_declaration(declaration);
                 parameters.set_amount(declaration, amount, true);
                 parameters.attacker = self.managed_entity;
+                // 8658c0 writes the authored source UP direction at +3c.
+                parameters.hit_direction = Vec3::Z;
                 if amount == f32::MAX {
                     // 8658c0 calls 780ae0: preserve authored FALL and add
                     // INSTANTKILL for the fatal-height sentinel.
