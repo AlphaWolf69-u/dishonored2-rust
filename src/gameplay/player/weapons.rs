@@ -195,6 +195,9 @@ pub enum WeaponEffect {
     AnimateMagazineForFire,
     ShowLoadedAttachment,
     Targeting { enabled: bool },
+    /// Actual active component Think ->61a650/61b4c0. The source identity
+    /// survives a same-frame selection change without a new path allocation.
+    UpgradeAnimation { identity: std::sync::Arc<str>, mode: u8, play: bool },
 }
 
 /// The selected ranged component's persistent state (637580, 639360, 63a2b0).
@@ -222,6 +225,9 @@ pub struct Runtime {
     equipment_target: usize,
     effects: Vec<WeaponEffect>,
     pending_fire: Vec<FireParameters>,
+    pub(super) identity: Option<std::sync::Arc<str>>,
+    active: bool,
+    charge_upgrade_playing: bool,
 }
 
 impl Runtime {
@@ -233,7 +239,8 @@ impl Runtime {
         if capacity < 0 { return Err("negative ranged magazine capacity".into()); }
         let projectile_attachment_ready = settings.family == RangedFamily::Gun;
         let mut value = Self { settings, magazine: 0, capacity, total_ammo, target_flags: 0, selected_ammunition: 0,
-            active_scene: 0, equipment_target, effects: Vec::new(), pending_fire: Vec::new(), targeting_requested: false, reload_requested: false, charged_shot: false, projectile_attachment_ready, projectile_frame: None, bevy_backend_projectile_ready: false };
+            active_scene: 0, equipment_target, effects: Vec::new(), pending_fire: Vec::new(), targeting_requested: false, reload_requested: false, charged_shot: false, projectile_attachment_ready, projectile_frame: None, bevy_backend_projectile_ready: false,
+            identity: None, active: false, charge_upgrade_playing: false };
         value.reload_magazine();
         Ok(value)
     }
@@ -255,11 +262,44 @@ impl Runtime {
     }
     pub fn set_scene(&mut self, handle: u32) { self.active_scene = handle; }
     pub fn finish_scene(&mut self, handle: u32) { if self.active_scene == handle { self.active_scene = 0; } }
+    /// 61aed0 ->7e7670 starts the selected component's update ownership;
+    /// registered-but-holstered Start61ac10 only initializes it (7e7400).
+    pub fn activate(&mut self) { self.active = true; }
     pub fn deactivate(&mut self) {
+        // Crossbow62bd20 stops charge upgrades before 63a1e0/61b010
+        // removes this component's Think ownership through 7e7750.
+        if self.charge_upgrade_playing {
+            self.upgrade_animation(2, false);
+            self.charge_upgrade_playing = false;
+        }
+        self.active = false;
         if self.targeting_requested { self.end_targeting(); }
         self.pending_fire.clear();
         self.active_scene = 0;
         self.reload_requested = false;
+    }
+    fn upgrade_animation(&mut self, mode: u8, play: bool) {
+        if let Some(identity) = &self.identity {
+            self.effects.push(WeaponEffect::UpgradeAnimation { identity: identity.clone(), mode, play });
+        }
+    }
+    /// 44f240/62bf40 dispatch once for each actual selected-component Think.
+    /// The child animation owner performs 53e770's already-playing check;
+    /// repeated loop requests must not restart an animation or be discarded.
+    pub fn think(&mut self, fire_state_charging: bool) {
+        if !self.active { return; }
+        match self.settings.family {
+            RangedFamily::Gun => self.upgrade_animation(1, true),
+            RangedFamily::Crossbow => {
+                if self.target_flags & 4 != 0 && fire_state_charging {
+                    self.upgrade_animation(2, true);
+                    self.charge_upgrade_playing = true;
+                } else if self.charge_upgrade_playing {
+                    self.upgrade_animation(2, false);
+                    self.charge_upgrade_playing = false;
+                }
+            }
+        }
     }
     pub fn can_fire(&self) -> bool { self.bevy_backend_projectile_ready && self.magazine > 0 && (self.settings.family == RangedFamily::Gun || self.projectile_attachment_ready) }
     pub fn can_reload(&self) -> bool { self.magazine < self.capacity && i64::from(self.magazine) < i64::from(self.total_ammo) }

@@ -252,6 +252,7 @@ impl Player {
         // magazine; subclass virtual108 owns the resulting attachment update.
         if runtime.magazine == 0 { runtime.reload_magazine(); }
         self.unequip_ranged();
+        runtime.activate();
         self.weapon = Some(runtime);
         self.weapon_identity = Some(identity.to_owned());
         Ok(())
@@ -262,7 +263,9 @@ impl Player {
         if self.registered_ranged(identity).is_some() { return Ok(()); }
         let total = inventory.quantity(&settings.ammunition.first().ok_or("ranged equipment has no ammunition")?.item);
         let capacity = settings.capacity(0, &self.attributes);
-        self.holstered_weapons.insert(identity.to_owned(), weapons::Runtime::new(settings, capacity, total, 3)?);
+        let mut runtime = weapons::Runtime::new(settings, capacity, total, 3)?;
+        runtime.identity = Some(std::sync::Arc::from(identity));
+        self.holstered_weapons.insert(identity.to_owned(), runtime);
         Ok(())
     }
     pub fn registered_ranged(&self, identity: &str) -> Option<&weapons::Runtime> {
@@ -810,6 +813,9 @@ impl Player {
         if self.swimming_active && self.is_underwater() {
             let cost = self.attributes.get("ARK_ATTRIBUTE_SWIMMING_BREATH_COST_PER_SECOND");
             if cost != 0.0 { self.breath.consume(dt * cost); }
+        }
+        if let Some(weapon) = &mut self.weapon {
+            weapon.think(self.machine.ranged_is_charging());
         }
         self.breath.update(dt);
         self.mana.update(dt, &self.attributes, self.mana_replenishes);

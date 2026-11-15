@@ -10485,3 +10485,27 @@ Implemented source projection: `gameplay::player::grapple` retains state27 typed
 `app::far_reach` retains only typed selected acquisition and a sensor Arc shared with the actual player state. Queries borrow `PlayerWorld` and its resolved physics material; no second collision world, material parser/cache, fake actor or collision body is allocated. Target acceptance requests actual state27 before the shared dispatcher can commit mana. Active traversal can survive selection changes and retires through the state owner. Midnight scene paths and sound/FX declaration paths remain requests to their canonical owners. The general `PlayerWorld::physics_material` bridge is supplied by the integrated parent change. Runtime source formatting was checked; compilation, tests, launches and visual comparison were not run at user instruction.
 
 Remaining source dependencies: actor/NPC/object catch requires its real component/lifecycle owner; GrappleToMantle requires its separate authored sensor and live mantle handoff. The world-target snapshot/hold snapping protocol and native arm grapple-beam animation/FX publication still need their source owner integration. Ordinary direct geometry and cardinal snap queries have implementation source coverage but remain unverified against executable output; do not describe these dependencies or visual parity as verified. No performance gain is claimed.
+### Selected weapon Think and upgrade animation dispatch (2026-11-15)
+
+- Owners: existing player weapon component runtime and canonical upgrade
+  child animation owner. `ported`: initial owned-component Start
+  `14061ac10` -> `1407e7400` initializes without starting Think. Actual equip
+  activation `14061aed0` -> `1407e7670` admits updates; unequip
+  `14061b010` -> `1407e7750` removes them. The host player adapter invokes
+  Think only for that active selected component, never the holstered map;
+  it does not create synthetic component-registry handles.
+- `ported`: gun `14044f240` forwards mode1 to `14061a650` each active Think.
+  Crossbow `14062bf40` forwards mode2 only with the real charge upgrade flag
+  and actual active FireWeapon phase4. Leaving that phase or deactivating
+  (`14062bd20`) sends one matching `14061b4c0` stop. The child owner retains
+  the original already-playing check (`14053e770`) rather than restarting
+  or blindly coalescing these repeated requests.
+- Typed effects retain the actual inventory identity in one shared path
+  lease. Prediction: no new path allocation on repeated Think; the existing
+  effect vector reuses capacity. No measured performance claim.
+- Dependency: the gun's separate pending final-magazine pose (`14044e720`,
+  `14044f240` -> `14044e920`) belongs to the admitted type5 child callback
+  and must wait for its actual animation component to start. Mode1 dispatch
+  does not claim to replace that readiness/pose operation.
+- Validation: decompilation, existing scheduler-owner review and whitespace
+  checks only. No builds, tests, visible launches or measurements.

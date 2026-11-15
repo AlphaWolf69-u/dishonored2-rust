@@ -1246,6 +1246,11 @@ impl StateMachine {
         self.active.iter().any(|&id| self.state(id).is_some_and(|s| s.decl.flags.allow_camera_out_of_shape))
     }
 
+    /// 62bf40 reads the actual active FireWeapon state and source phase4.
+    pub fn ranged_is_charging(&self) -> bool {
+        self.state(StateId::FIRE_WEAPON).is_some_and(|state| state.active && state.fire.phase == super::combat::FirePhase::Charging)
+    }
+
     pub fn state(&self, id: StateId) -> Option<&State> {
         self.states.iter().find(|s| s.decl.id == id)
     }
