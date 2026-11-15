@@ -20,6 +20,13 @@ pub struct Request {
     pub snapped_ground: bool,
     pub sensor: Arc<PreparedSensor>,
 }
+#[derive(Default)]
+pub struct Feedback {
+    pub stick: Option<Arc<crate::assets::wwise::SoundEventDeclaration>>,
+    pub unstick: Option<Arc<crate::assets::wwise::SoundEventDeclaration>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum EquipmentEvent { Stick, Unstick }
 pub struct Runtime {
     pub request: Request,
     motion: Option<Motion>,
@@ -40,15 +47,22 @@ pub struct Runtime {
     target_pitch: f32,
     target_yaw_offset: f32,
     hits: Vec<super::character_proxy::WorldHit>,
+    sensor: grapple::Sensor,
+    target_offset: Vec3,
+    safe_distance: f32,
+    feedback: Arc<Feedback>,
 }
 impl Runtime {
-    fn new(request: Request, scenes: Arc<Scenes>) -> Self {
+    fn new(request: Request, scenes: Arc<Scenes>, feedback: Arc<Feedback>) -> Self {
+        let sensor = grapple::Sensor::from_prepared(request.sensor.clone());
         Self { request, motion: None, scenes, scene: 0, first_update: true,
             sticking: false, push_time: 0.0, gravity_disabled: false,
             extra_legs: false, stick_lock: false, finished: false, aborted: false,
             source: Vec3::ZERO, start_yaw: 0.0, start_pitch: 0.0,
-            target_yaw: 0.0, target_pitch: 0.0, target_yaw_offset: 0.0, hits: Vec::new() }
+            target_yaw: 0.0, target_pitch: 0.0, target_yaw_offset: 0.0, hits: Vec::new(), sensor, target_offset: Vec3::ZERO, safe_distance: 0.0, feedback }
     }
+    pub fn sticking(&self) -> bool { self.sticking }
+    pub fn target_position(&self) -> Vec3 { self.request.target_position + self.target_offset }
     fn play(&mut self, path: Option<&str>, parts: u8, frame: &mut Frame<'_>) {
         let Some(path) = path else { return };
         let Some(scene) = self.scenes.get(path).or_else(|| frame.scenes.get(path)) else {
@@ -116,6 +130,57 @@ pub fn activate(frame: &mut Frame<'_>, decl: &Decl) {
     frame.powers.grapple = Some(run);
 }
 
+fn update_target(run: &mut Runtime, frame: &mut Frame<'_>, decl: &Decl) {
+    // 83a330: only ceiling/ground traversal steers the endpoint. Each
+    // candidate passes the real sensor's material-aware clearance first.
+    if run.request.target != Target::Wall {
+        let offset = run.target_offset + frame.dt * (
+            frame.axis.x_axis * frame.controller.input_move.x * decl.max_forward_speed
+            + frame.axis.y_axis * frame.controller.input_move.y * decl.max_strafe_speed);
+        let candidate = run.request.target_position + offset;
+        if run.request.sensor.clear(frame.world, frame.physics, frame.camera.eye, candidate, &mut run.hits) {
+            run.target_offset = offset;
+            if run.request.to_mantle && offset.truncate().length_squared() > f32::from_bits(0x3c23_d70b) {
+                run.request.to_mantle = false;
+            }
+        }
+    }
+    let raw_target = run.request.target_position + run.target_offset;
+    let mut query_target = raw_target;
+    match run.request.target {
+        Target::Wall => query_target += run.request.target_normal * decl.distance_to_wall,
+        Target::Ceil => query_target.z -= 0.05,
+        Target::Ground => {},
+    }
+    if !run.request.to_mantle {
+        let safe = run.sensor.state_safe_position(frame.world, frame.physics, run.source,
+            query_target, run.request.target_normal, frame.physics.posture,
+            run.request.safe_position, run.safe_distance);
+        run.request.safe_position = safe.position; run.safe_distance = safe.distance;
+        if safe.shape_changed { frame.physics.set_posture(safe.posture, 0.0); }
+    } else { run.request.safe_position = query_target; }
+    if let Some(motion) = run.motion.as_mut() {
+        motion.safe_position = run.request.safe_position;
+        motion.set_reference_distance(run.source.distance(raw_target));
+    }
+}
+
+fn stick(run: &mut Runtime, frame: &mut Frame<'_>, decl: &Decl) {
+    run.sticking = true;
+    frame.powers.grapple_equipment_events.push(EquipmentEvent::Stick);
+    if let Some(sound) = &run.feedback.stick { frame.powers.sound_events.push(sound.id); }
+    frame.body_parts.soft_lock(2); run.stick_lock = true;
+    frame.jump_anim.end(run.request.exit_state == StateId::SNEAKING, true);
+    if run.request.target == Target::Wall {
+        frame.camera.set_target_mode(8, decl.camera_blend_duration);
+        frame.camera.constraints = super::camera::constraints(decl.camera_constraints_wall);
+        run.play(decl.wall_midnight.as_deref(), 7, frame);
+    } else {
+        frame.camera.set_pitch_limits(decl.camera_ceil_max_pitch_up, decl.camera_ceil_max_pitch_down);
+        run.play(decl.ceil_midnight.as_deref(), 7, frame);
+    }
+}
+
 fn turn(frame: &mut Frame<'_>, joystick: f32, mouse: f32, lock_yaw: bool) {
     // 7f04a0 uses the canonical attribute owner and writes radians.
     let scale = frame.attributes.get("ARK_ATTRIBUTE_SPYGLASS_TURNSPEED")
@@ -160,8 +225,18 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
         frame.requests.push_linear(0, Vec3::ZERO);
         frame.physics.proxy.position = run.request.safe_position;
         if run.request.target == Target::Wall { frame.physics.yaw = run.request.target_normal.y.atan2(run.request.target_normal.x); }
-        if jump || moving && run.push_time >= decl.push_delay { Some(next(&run, frame, jump)) } else { None }
+        if jump || moving && run.push_time >= decl.push_delay {
+            if let Some(sound) = &run.feedback.unstick { frame.powers.sound_events.push(sound.id); }
+            Some(next(&run, frame, jump))
+        } else { None }
     } else {
+        if run.request.jump_to_target && !frame.physics.vertical_active() && !run.gravity_disabled {
+            let posture = match run.request.exit_state { StateId::SNEAKING => 1, StateId::AUTOCROUCH => 2, _ => 0 };
+            if frame.physics.posture == run.request.start_posture { frame.physics.set_posture(posture, 0.0); }
+            if frame.physics.ground_distance < 0.0 { frame.physics.proxy.position.z -= frame.physics.ground_distance; }
+            frame.physics.disable_gravity(true); run.gravity_disabled = true;
+        }
+        update_target(&mut run, frame, decl);
         let motion = run.motion.as_mut()?;
         let actual = frame.physics.velocity - run.request.target_velocity;
         let mut actual_delta = actual; let mut wanted_delta = motion.velocity;
@@ -180,7 +255,12 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
         let clear = run.request.sensor.clear(frame.world, frame.physics, frame.camera.eye,
             frame.camera.eye + velocity * frame.dt, &mut run.hits);
         if !clear || blocked {
-            Some(next(&run, frame, false))
+            if run.request.target != Target::Ground && (frame.physics.position() - run.source).length_squared() < f32::from_bits(0x3c23_d70b) {
+                stick(&mut run, frame, decl); None
+            } else {
+                run.request.target = Target::Ground;
+                Some(next(&run, frame, false))
+            }
         } else {
             frame.physics.set_motion_limits(UNSET, UNSET,
                 if frame.keyboard { decl.max_angular_acceleration_mouse } else { decl.max_angular_acceleration_joystick },
@@ -203,16 +283,7 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
                 else {
                     // 838d90 snaps only at the authored arrival branch.
                     frame.physics.proxy.position = run.request.safe_position;
-                    run.sticking = true;
-                    frame.body_parts.soft_lock(2); run.stick_lock = true;
-                    if run.request.target == Target::Wall {
-                        frame.camera.set_target_mode(8, decl.camera_blend_duration);
-                        frame.camera.constraints = super::camera::constraints(decl.camera_constraints_wall);
-                        run.play(decl.wall_midnight.as_deref(), 7, frame);
-                    } else {
-                        frame.camera.set_pitch_limits(decl.camera_ceil_max_pitch_up, decl.camera_ceil_max_pitch_down);
-                        run.play(decl.ceil_midnight.as_deref(), 7, frame);
-                    }
+                    stick(&mut run, frame, decl);
                     None
                 }
             } else { None }
@@ -228,6 +299,7 @@ pub fn update(frame: &mut Frame<'_>, decl: &Decl) -> Option<StateId> {
 }
 pub fn deactivate(frame: &mut Frame<'_>, decl: &Decl) {
     let Some(run) = frame.powers.grapple.as_mut() else { return };
+    if run.sticking { frame.powers.grapple_equipment_events.push(EquipmentEvent::Unstick); }
     if run.stick_lock { frame.body_parts.soft_unlock(2); run.stick_lock = false; }
     if run.gravity_disabled { frame.physics.disable_gravity(false); run.gravity_disabled = false; }
     if frame.physics.vertical_active() { frame.physics.stop_vertical(); }
@@ -237,6 +309,7 @@ pub fn deactivate(frame: &mut Frame<'_>, decl: &Decl) {
     frame.jump_anim.end(run.request.exit_state == StateId::SNEAKING, false);
     if run.extra_legs { *frame.desired_legs -= 1; run.extra_legs = false; }
     frame.camera.set_target_mode(0, decl.camera_blend_duration); frame.camera.reset_pitch_limits();
+    if frame.physics.ground_distance < 0.0 { frame.physics.proxy.position.z -= frame.physics.ground_distance; }
     if run.scene != 0 { frame.midnight.stop(run.scene); run.scene = 0; }
     run.finished = true; frame.powers.grapple_pending = false;
 }
@@ -246,9 +319,12 @@ impl Player {
         if self.powers.grapple_pending || self.machine.is_active(StateId::GRAPPLE)
             || !self.machine.grapple_request_allowed() { return false; }
         let scenes = self.powers.grapple_scenes.clone();
-        self.powers.grapple = Some(Runtime::new(request, scenes));
+        self.powers.grapple = Some(Runtime::new(request, scenes, self.powers.grapple_feedback.clone()));
         self.powers.grapple_pending = true; self.machine.request(StateId::GRAPPLE); true
     }
+    pub fn grapple_state(&self) -> Option<&Runtime> { self.powers.grapple.as_ref() }
+    pub fn register_grapple_feedback(&mut self, feedback: Feedback) { self.powers.grapple_feedback = Arc::new(feedback); }
+    pub fn take_grapple_equipment_events(&mut self) -> Vec<EquipmentEvent> { std::mem::take(&mut self.powers.grapple_equipment_events) }
     pub fn register_grapple_scenes(&mut self, scenes: Scenes) { self.powers.grapple_scenes = Arc::new(scenes); }
     pub fn set_grapple_target(&mut self, safe_position: Vec3, target_velocity: Vec3) {
         if let Some(run) = self.powers.grapple.as_mut() {

@@ -44,6 +44,8 @@ pub struct Runtime {
     pub blink: Option<BlinkMotion>,
     pub grapple: Option<super::grapple_state::Runtime>,
     pub grapple_pending: bool,
+    pub(super) grapple_feedback: std::sync::Arc<super::grapple_state::Feedback>,
+    pub grapple_equipment_events: Vec<super::grapple_state::EquipmentEvent>,
     pub(super) grapple_scenes: std::sync::Arc<Scenes>,
     pub blink_pending: bool,
     contacts: Vec<BlinkContact>,
