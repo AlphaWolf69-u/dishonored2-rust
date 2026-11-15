@@ -88,8 +88,65 @@ struct Instance {
     dispatch: Vec<Dispatch>,
     stopping: bool,
 }
+
+/// A source worker's payload. It owns acquired descriptors and dependency
+/// leases, with no live cast, physics scratch, or managed entity identity.
+pub(super) struct PreparedSources {
+    catalog: u64,
+    types: Arc<ComponentTypes>,
+    prepared: Vec<Arc<Prepared>>,
+}
+impl PreparedSources {
+    /// The acquisition caller must have admitted this actual owned item.
+    /// The resolved Power component supplies all four authored variants.
+    pub fn acquire_power(
+        catalog: &Catalog,
+        power: &crate::assets::power_journal::Power,
+    ) -> Result<Self, String> {
+        if crate::assets::power_journal::power_id(&power.power_id) != Some(10) {
+            return Err("Windblast acquisition requires actual power id10".into());
+        }
+        let settings = crate::gameplay::powers::windblast::Settings::read(&power.component)?;
+        let runtime = Windblasts::prepare(
+            catalog,
+            [(false, false), (true, false), (false, true), (true, true)]
+                .into_iter()
+                .filter_map(|(greater, shockwave)| settings.entity(greater, shockwave)),
+        )?;
+        Ok(Self {
+            catalog: runtime.catalog,
+            types: runtime.types,
+            prepared: runtime.prepared,
+        })
+    }
+    /// Filter inventory before acquiring class metadata, entity descriptors,
+    /// damage declarations, or FX dependencies. An unowned power yields none.
+    pub fn acquire_owned<'a>(
+        catalog: &Catalog,
+        powers: impl IntoIterator<Item = &'a crate::assets::power_journal::Power>,
+        mut owns_item: impl FnMut(&str) -> bool,
+    ) -> Result<Option<Self>, String> {
+        let Some(power) = powers.into_iter().find(|power| {
+            crate::assets::power_journal::power_id(&power.power_id) == Some(10)
+                && owns_item(&power.item)
+        }) else {
+            return Ok(None);
+        };
+        Self::acquire_power(catalog, power).map(Some)
+    }
+    pub fn effect_paths(&self) -> impl Iterator<Item = &str> {
+        self.prepared.iter().flat_map(|source| {
+            source
+                .fx
+                .iter()
+                .map(|fx| fx.path.as_str())
+                .chain(source.definition.physics.impact_fx.as_deref())
+        })
+    }
+}
 #[derive(Resource)]
 pub(super) struct Windblasts {
+    catalog: u64,
     types: Arc<ComponentTypes>,
     prepared: Vec<Arc<Prepared>>,
     active: Vec<Instance>,
@@ -98,6 +155,60 @@ pub(super) struct Windblasts {
     targets: Vec<Target>,
 }
 impl Windblasts {
+    pub fn has_active(&self) -> bool {
+        !self.active.is_empty()
+    }
+    pub fn prepare_power(
+        catalog: &Catalog,
+        power: &crate::assets::power_journal::Power,
+    ) -> Result<Self, String> {
+        Ok(Self::from_prepared(PreparedSources::acquire_power(
+            catalog, power,
+        )?))
+    }
+    pub fn from_prepared(sources: PreparedSources) -> Self {
+        Self {
+            catalog: sources.catalog,
+            types: sources.types,
+            prepared: sources.prepared,
+            active: Vec::new(),
+            capsule: TargetsQuery::default(),
+            ray: WorldRayQuery::default(),
+            targets: Vec::new(),
+        }
+    }
+    /// Merge a completed worker into the existing runtime. Live casts keep
+    /// their same source Arc, managed generation, timers, and query packets.
+    pub fn absorb(&mut self, sources: PreparedSources) -> Result<(), String> {
+        if self.catalog != sources.catalog {
+            return Err("Windblast sources belong to a retired catalog".into());
+        }
+        for incoming in &sources.prepared {
+            let existing = self.types.classes();
+            let prepared = sources.types.classes();
+            let class_name = prepared
+                .metadata(incoming.class)
+                .and_then(|class| prepared.name_text(class.name));
+            if class_name.is_none()
+                || existing
+                    .metadata(incoming.class)
+                    .and_then(|class| existing.name_text(class.name))
+                    != class_name
+            {
+                return Err("Windblast source class differs from its live metadata owner".into());
+            }
+        }
+        for incoming in sources.prepared {
+            if !self
+                .prepared
+                .iter()
+                .any(|source| source.path == incoming.path)
+            {
+                self.prepared.push(incoming);
+            }
+        }
+        Ok(())
+    }
     /// The actual temporary entity remains owned here until its FX tails
     /// acknowledge retirement. Publish these same frames to the shared FX
     /// resolver rather than making render-only substitute entities.
@@ -201,6 +312,7 @@ impl Windblasts {
             }));
         }
         Ok(Self {
+            catalog: catalog.identity(),
             types,
             prepared,
             active: Vec::new(),
