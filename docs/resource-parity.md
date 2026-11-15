@@ -10549,3 +10549,38 @@ Remaining source dependencies: actor/NPC/object catch requires its real componen
   one owning Player shared across main/swimming state machines. These hooks
   add no per-frame allocation, clip acquisition or second pose evaluation;
   validation remains source/whitespace review, without builds or tests.
+
+### Player-wide hard and code body-part requests (2026-11-15)
+
+- Owner: `gameplay/player/body_parts.rs`, stored once in `Player` and borrowed
+  through `Frame` by both main and swimming state machines. Prediction before
+  implementation: fixed ten counter bytes, at most five part checks per state
+  admission, no archive reads, heap allocations, locks, atomics or GPU work.
+  This is an ownership/correctness change, not a measured performance claim.
+- `ported`: constructor initialization `1407fc6e0`; hard request acquire /
+  release `1408029e0` / `140802a00`; code request acquire / release
+  `1408029f0` / `140802a10`. Byte wrapping and independently counted callers
+  follow the executable. These counters are not reconstructed from a mode's
+  m_lockedBodyParts or reset when switching modes.
+- `ported`: admission `1408035c0`, `140803600`, `140854890`: any matching
+  hard request rejects activation; matching code-only requests may be
+  overridden only by the reflected m_unlocksCodeLockedBodyParts byte at+68
+  (`14178d5a0`). m_allowSelf is a separate property and no longer incorrectly
+  overrides code occupancy. Authored mode rules still own state-to-state
+  declaration conflicts.
+- `ported`: state-owned code request idempotence `140854050` / `140854090`
+  retains one held bit per state/part and updates the sole player's counts;
+  Block releases its left-arm request on deactivation and mode retirement.
+  Far Reach's sticking runtime can own the right-arm request through the same
+  owner and its real enter/exit callbacks, without disabling unrelated inputs.
+- Source audit confirms normal Navigation, CatFall and Mantle constructors
+  leave +68 false; typed declaration overrides are applied. Dead's actual
+  vtable slot6 is also 140854890 (table141c82478), so its base admission is
+  preserved rather than adding a special bypass.
+- Hard-request callers belonging to other actor families remain with those
+  actors (`14043f7c0`, `14061dc90/dfc0`, `140622810/2c10`, `14088b000`).
+  This owner exposes their exact counted operations; it does not synthesize
+  unimplemented actors or confuse their requests with declaration masks.
+- Validation: executable decompilation, reflection, constructor/vtable review
+  and source diff check only; no tests, builds, launches or measured timings.
+  Parent owns the combined integration build.

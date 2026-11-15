@@ -785,6 +785,7 @@ fn states_in(entries: &[(String, Vec<(String, Value)>)]) -> Result<Vec<StateDecl
         decl.flags.body_parts = body_parts(fields, "m_bodyParts", decl.flags.body_parts)?;
         decl.flags.locked_body_parts = body_parts(fields, "m_lockedBodyParts", decl.flags.locked_body_parts)?;
         decl.flags.exclusive_body_parts = body_parts(fields, "m_exclusiveBodyParts", decl.flags.exclusive_body_parts)?;
+        decl.flags.unlocks_code_locked_body_parts = boolean(fields, "m_unlocksCodeLockedBodyParts", decl.flags.unlocks_code_locked_body_parts)?;
         decl.flags.allow_camera_out_of_shape = boolean(fields, "m_allowCameraOutOfShape", decl.flags.allow_camera_out_of_shape)?;
         decl.navigation = navigation(fields, decl.navigation.clone())?;
         decl.air_friction = number(fields, "m_airFriction", decl.air_friction)?;
@@ -1119,5 +1120,6 @@ pub fn swimming_read_note(declarations: &PlayerDeclarations) -> Result<Option<St
     decl.flags.body_parts = body_parts(fields, "m_bodyParts", decl.flags.body_parts)?;
     decl.flags.locked_body_parts = body_parts(fields, "m_lockedBodyParts", decl.flags.locked_body_parts)?;
     decl.flags.exclusive_body_parts = body_parts(fields, "m_exclusiveBodyParts", decl.flags.exclusive_body_parts)?;
+    decl.flags.unlocks_code_locked_body_parts = boolean(fields, "m_unlocksCodeLockedBodyParts", decl.flags.unlocks_code_locked_body_parts)?;
     Ok(Some(decl))
 }

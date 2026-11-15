@@ -75,6 +75,8 @@ pub struct StateFlags {
     pub body_parts: u8,
     pub locked_body_parts: u8,
     pub exclusive_body_parts: u8,
+    /// +68, m_unlocksCodeLockedBodyParts; independent of m_allowSelf.
+    pub unlocks_code_locked_body_parts: bool,
     pub allow_self: bool,
     pub quit_self: bool,
     pub cancelable: bool,
@@ -481,6 +483,7 @@ impl StateDecl {
             body_parts: BODY,
             locked_body_parts: 0,
             exclusive_body_parts: BODY,
+            unlocks_code_locked_body_parts: false,
             allow_self: false,
             quit_self: false,
             cancelable: false,
@@ -716,6 +719,8 @@ impl LocoStances {
 
 /// Values other components give the states each frame.
 pub struct Frame<'a> {
+    /// The owning player's counts survive main/swimming mode transitions.
+    pub body_parts: &'a mut super::body_parts::BodyParts,
     pub attribute_requests: &'a mut Vec<super::AttributeModifierRequest>,
     pub equipment_changes: &'a mut super::equipment_states::Runtime,
     /// The real selected ranged component; no inventory or projectile copy.
@@ -1081,7 +1086,6 @@ pub struct StateMachine {
     pending_fall_damage: Option<f32>,
     read_note: super::read_note::Runtime,
     slash_rules: Option<super::slash_rules::Runtime>,
-    code_locks: [i8; 5],
 }
 
 fn cos_snap(degrees: f32) -> f32 {
@@ -1111,7 +1115,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 impl StateMachine {
     pub fn empty() -> Self {
-        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None, code_locks: [0; 5] }
+        Self { states: Vec::new(), active: Vec::new(), queue: Vec::new(), rules: HashMap::new(), default_state: StateId::RUNNING, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None }
     }
 
     /// The mode: its state decls, `m_rules` and default state.
@@ -1185,7 +1189,7 @@ impl StateMachine {
                 }
             }
         }
-        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None, code_locks: [0; 5] }
+        Self { states, active: Vec::new(), queue: Vec::new(), rules, default_state, pending_sounds: Vec::new(), pending_fall_damage: None, read_note: Default::default(), slash_rules: None }
     }
 
     pub fn install_slash_rules(&mut self, definition: Arc<crate::assets::slash_rules::Definition>) {
@@ -1194,15 +1198,15 @@ impl StateMachine {
 
     /// 140854050/090 and 1408029f0/2a10: one counted code lock per
     /// requesting state and body part. These do not rewrite mode rules.
-    fn code_lock(&mut self, index: usize, part: usize, enabled: bool) {
+    fn code_lock(&mut self, index: usize, part: usize, enabled: bool, frame: &mut Frame) {
         let bit = 1 << part;
         let held = self.states[index].code_locks & bit != 0;
         if enabled && !held {
             self.states[index].code_locks |= bit;
-            self.code_locks[part] = self.code_locks[part].wrapping_add(1);
+            frame.body_parts.soft_lock(part);
         } else if !enabled && held {
             self.states[index].code_locks &= !bit;
-            self.code_locks[part] = self.code_locks[part].wrapping_sub(1);
+            frame.body_parts.soft_unlock(part);
         }
     }
 
@@ -1378,11 +1382,10 @@ impl StateMachine {
     /// Slot 6 CanActivate.
     fn can_activate(&self, index: usize, frame: &Frame) -> bool {
         let state = &self.states[index];
-        // 140854890/1408035c0/600: mode rules cover declaration locks;
-        // an ordinary state also rejects its dynamically locked parts.
-        if !state.decl.flags.allow_self && self.code_locks.iter().enumerate()
-            .any(|(part, count)| *count != 0 && state.decl.flags.body_parts & (1 << part) != 0)
-        { return false; }
+        // 140854890/1408035c0/600: component requests are player-wide;
+        // authored mode rules separately govern state-to-state conflicts.
+        if !frame.body_parts.can_activate(state.decl.flags.body_parts,
+            state.decl.flags.unlocks_code_locked_body_parts) { return false; }
         let physics = &*frame.physics;
         let navigation = physics.can_use_posture(state.decl.navigation.posture);
         match &state.decl.kind {
@@ -1724,7 +1727,7 @@ impl StateMachine {
             0 => {
                 if !frame.equipment_changes.equipped(0) {
                     frame.arms_shown[0] = false;
-                    self.code_lock(index, 1, true);
+                    self.code_lock(index, 1, true, frame);
                     self.states[index].block.left_hand_phase = 2;
                 } else if self.states[index].block.action.elapsed() >= decl.free_left_hand_duration {
                     self.request_equipment_left(0x81, StateId::BLOCK);
@@ -1732,7 +1735,7 @@ impl StateMachine {
                 }
             }
             1 => {
-                self.code_lock(index, 1, true);
+                self.code_lock(index, 1, true, frame);
                 if !frame.equipment_changes.equipped(0) {
                     frame.arms_shown[0] = false;
                     self.states[index].block.left_hand_phase = 2;
@@ -2533,7 +2536,7 @@ impl StateMachine {
             }
             Kind::Block(_) => {
                 if self.states[index].block.left_hand_phase == 2 { frame.arms_shown[0] = true; }
-                self.code_lock(index, 1, false);
+                self.code_lock(index, 1, false, frame);
                 if self.states[index].block.left_hand_phase > 0 {
                     self.request_equipment_left(6, StateId::BLOCK);
                 }
