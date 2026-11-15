@@ -40,6 +40,24 @@ pub struct Runtime {
     sequences: Vec<usize>,
     exhausted: Vec<bool>,
 }
+
+/// An admitted outcome leases its immutable declaration, including cancel,
+/// recoil and hit scenes needed after the next selection has been evaluated.
+/// No scene-path strings or rule definitions are copied into runtime state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selection {
+    definition: Arc<Definition>,
+    rule: usize,
+    outcome: usize,
+}
+impl Selection {
+    pub fn outcome(&self) -> &Outcome { &self.definition.rules[self.rule].outcomes[self.outcome] }
+}
+impl std::ops::Deref for Selection {
+    type Target = Outcome;
+    fn deref(&self) -> &Outcome { self.outcome() }
+}
+
 impl Runtime {
     pub fn new(definition: Arc<Definition>) -> Self {
         let count = definition.rules.len();
@@ -49,15 +67,23 @@ impl Runtime {
     /// Original sequence cursors advance on evaluation, before animation
     /// admission; a later scene failure does not roll the selector back.
     pub fn select(&mut self, context: &Context) -> Option<&Outcome> {
+        let (rule, outcome) = self.select_indices(context)?;
+        Some(&self.definition.rules[rule].outcomes[outcome])
+    }
+    pub fn select_shared(&mut self, context: &Context) -> Option<Selection> {
+        let (rule, outcome) = self.select_indices(context)?;
+        Some(Selection { definition: self.definition.clone(), rule, outcome })
+    }
+    fn select_indices(&mut self, context: &Context) -> Option<(usize, usize)> {
         for (index, rule) in self.definition.rules.iter().enumerate() {
             if self.exhausted[index] || !rule.conditions.iter().all(|condition| context.matches(condition)) { continue; }
             let sequence = self.sequences[index];
-            let outcome = &rule.outcomes[sequence % rule.outcomes.len()];
+            let outcome = sequence % rule.outcomes.len();
             if rule.outcomes.len() > 1 {
                 self.sequences[index] = sequence.wrapping_add(1);
                 if rule.once && self.sequences[index] >= rule.outcomes.len() { self.exhausted[index] = true; }
             } else if rule.once { self.exhausted[index] = true; }
-            return Some(outcome);
+            return Some((index, outcome));
         }
         None
     }

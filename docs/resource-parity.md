@@ -10025,3 +10025,6 @@ string lookup. No measured memory or CPU improvement is claimed.
   archive tool and compared all rule/provider/action families with the
   decompiled runtime and read-only Ghidra metadata/vtables. No tests, builds,
   visible launches, visual inspection, or measured performance claim.
+- Selected Slash outcomes retain an `Arc` declaration lease plus two indices;
+  cancellation/recoil/hit scenes borrow the same immutable outcome. There is
+  no second owned copy of its path strings in each active action.
