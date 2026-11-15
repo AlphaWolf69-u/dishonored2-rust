@@ -19,7 +19,7 @@ pub struct ShapeInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct Hit { pub fraction: f32, pub position: Vec3, pub normal: Vec3, pub body: u32, pub key: u32 }
 #[derive(Clone, Copy, Debug)]
-pub struct Breakable { pub entity: u32, pub hit_position: Vec3 }
+pub struct Breakable { pub entity: crate::gameplay::entity_lifetime::EntityId, pub hit_position: Vec3 }
 #[derive(Clone, Copy, Debug)]
 pub struct MantleTarget { pub position: Vec3, pub axis: Mat3 }
 
@@ -30,7 +30,7 @@ pub trait BlinkWorld {
     fn sweep_all(&self, slot: usize, mask: u32, from: Vec3, direction: Vec3, length: f32, hits: &mut Vec<Hit>);
     /// 14061e1a0 permits a body only when material flag 0x04 is set AND
     /// that body's entity has the breakable component. Return that identity.
-    fn blink_breakable(&self, hit: &Hit) -> Option<u32>;
+    fn blink_breakable(&self, hit: &Hit) -> Option<crate::gameplay::entity_lifetime::EntityId>;
     /// 1406205e0 writes cpntPlayerSensorMantle's origin/axis overrides then
     /// invokes 1403bd2e0. Return its actual destination and axis.
     fn mantle(&mut self, origin: Vec3, axis: Mat3) -> Option<MantleTarget>;
@@ -99,6 +99,9 @@ pub struct BlinkTarget {
 }
 #[derive(Clone, Debug)]
 pub struct BlinkRequest {
+    /// Final navigation origin (+0x54 in state12), distinct from the
+    /// posture-adjusted movement destination (+0x60).
+    pub final_position: Vec3,
     pub position: Vec3,
     pub final_position: Vec3,
     pub camera_source: Vec3,
@@ -129,6 +132,7 @@ impl Blink {
     pub fn cast_request(&self, input: &BlinkInput<'_>) -> Option<BlinkRequest> {
         let target = self.target.as_ref()?;
         Some(BlinkRequest {
+            final_position: target.position,
             position: target.position + Vec3::Z * (input.shapes[target.shape].height
                 - input.shapes[target.shape].margin - input.shapes[4].height),
             final_position: target.position,
@@ -256,6 +260,7 @@ impl Blink {
 }
 
 /// PlayerStateBlinking's declaration (140857150, reflection14177c170).
+#[derive(Clone)]
 pub struct BlinkMotionSettings {
     pub speed: f32,
     pub world_time_scale: f32,
@@ -306,7 +311,7 @@ pub struct BlinkMotion {
 }
 impl BlinkMotion {
     /// The host's 140857300 entry must first save the posture/velocity,
-    /// remove ordinary movement/gravity requests, select physics behavior4,
+    /// remove ordinary movement/gravity requests, select posture shape4,
     /// zero velocity, set controller lock0x4000, disable ordinary mantle and
     /// enable Blink-to-mantle plus Blink sensors. It also acquires the world
     /// time lease described by settings; that lease ends on every exit.
