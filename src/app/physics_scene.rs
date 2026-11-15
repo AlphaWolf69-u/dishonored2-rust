@@ -37,6 +37,7 @@ use std::{
 mod publication;
 mod startup;
 mod interaction_components;
+mod blink_queries;
 mod document_rigid;
 pub(super) mod document_hierarchy;
 pub(super) mod preparation;

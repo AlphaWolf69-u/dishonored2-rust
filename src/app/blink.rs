@@ -2,6 +2,10 @@
 //! with the selection acquisition; casts reuse the player collision shapes,
 //! shared PlayerWorld queries and native sensor2 mantle instance.
 use bevy_math::{Mat3, Vec3};
+use std::sync::Arc;
+use crate::gameplay::{game_clock_runtime::ClockRuntime, powers::{world_effects::{TimeLease,TimeRequest}, traversal::BlinkContact},
+    reference_frame::{self, ReferenceFrame}, player::states::StateId, event_graph::EntityReference};
+use super::usable_effects::{EffectRequests,EntityPlacement};
 use crate::{assets::entities::Value, gameplay::{
     collision_filter::QueryFilter,
     entity_lifetime::{EntityId, LiveEntities, Stage},
@@ -18,6 +22,8 @@ pub(super) struct Prepared {
     settings: BlinkSettings,
     motion: BlinkMotionSettings,
     mantle: MantleDecl,
+    helpers: [Option<String>;3],
+    screen: Option<String>,
 }
 #[derive(Clone)]
 pub(super) struct PlayerSettings {
@@ -33,7 +39,9 @@ impl Prepared {
     }
     pub fn with_power(power: &[(String, Value)], player: &PlayerSettings) -> Result<Self, String> {
         let mask = crate::gameplay::player::decls::layer_mask(power, "m_collisionMask", 0x20b)?;
-        Ok(Self { settings: BlinkSettings::read(power, mask)?, motion: player.motion.clone(), mantle: player.mantle })
+        let path = |key| crate::gameplay::options::decl::atom(power,key).filter(|path| !path.is_empty() && !path.eq_ignore_ascii_case("NULL")).map(str::to_owned);
+        Ok(Self { settings: BlinkSettings::read(power, mask)?, motion: player.motion.clone(), mantle: player.mantle,
+            helpers: [path("m_blinkTopTargetFx"),path("m_blinkBottomTargetFx"),path("m_blinkMantleFx")], screen: path("m_blinkScreenFx") })
     }
     /// Called by the selected equipment acquisition worker. Sensor2's
     /// 1403a52a0 ctor derives the ordinary MantleDecl and sets sensorID2.
@@ -47,11 +55,22 @@ pub(super) struct Runtime {
     motion: BlinkMotionSettings,
     mantle: Option<MantleSensor>,
     hits: Vec<WorldHit>,
+    contacts: Vec<BlinkContact>,
+    helpers: [Option<String>;3],
+    helper_keys: [Arc<str>;3],
+    helper_started: [bool;3],
+    screen: Option<String>,
+    screen_started: bool,
+    pending: bool,
+    was_active: bool,
+    time: Option<TimeLease>,
 }
 impl Runtime {
     pub fn new(prepared: Prepared, physics: &PlayerPhysics) -> Self {
         Self { blink: Blink::new(prepared.settings), motion: prepared.motion,
-            mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: Vec::new() }
+            mantle: Some(MantleSensor::new(prepared.mantle, physics)), hits: Vec::new(), contacts: Vec::new(),
+            helpers: prepared.helpers, helper_keys: [Arc::from("blink:top"),Arc::from("blink:bottom"),Arc::from("blink:mantle")],
+            helper_started:[false;3], screen:prepared.screen,screen_started:false,pending:false,was_active:false,time:None }
     }
     /// Run after the real player view exists, while UsePower is aiming.
     /// The returned target is consumed by the established FX owner; it does
@@ -75,12 +94,92 @@ impl Runtime {
         let Some(request) = request else { return false };
         let motion = BlinkMotion::new(self.motion.clone(), request, player.physics.velocity);
         if !player.begin_blink(motion) { return false; }
+        self.pending = true;
         if let Some(mantle) = self.mantle.take() { player.set_blink_mantle(mantle); }
         true
     }
     pub fn cancel(&mut self, player: &mut Player) {
-        self.blink.cancel();
+        if !self.has_activity() { self.blink.cancel(); }
         if self.mantle.is_none() { self.mantle = player.take_blink_mantle(); }
+    }
+    pub fn has_activity(&self) -> bool { self.pending || self.was_active || self.time.is_some() }
+    pub fn breakable_damage_path(&self) -> Option<&str> { self.motion.breakable_damage.as_deref() }
+    /// The real state owns its previous proxy contacts. Body0 is the
+    /// canonical GameCollision level-static body; placed bodies resolve their
+    /// actual admitted rigid generation, so dynamic bodies retain their flags.
+    pub fn service(&mut self, player: &mut Player, clock: &mut ClockRuntime, effects: &mut EffectRequests,
+        collision: &CollisionWorld, scene: Option<&PhysicsScene>, live: &LiveEntities) -> Result<bool,String> {
+        let active = player.machine.is_active(StateId::BLINKING);
+        if active {
+            self.pending=false; self.was_active=true;
+            if self.time.is_none() {
+                let world = if player.attributes.get("ARK_ATTRIBUTE_STOP_TIME_DURING_BLINK") > 0.0 {0.0} else {self.motion.world_time_scale};
+                self.time=Some(clock.acquire_time_request(TimeRequest {world,unbent:self.motion.unbent_time_scale,ease:self.motion.ease_in_duration})?);
+                clock.set_player_time_override(f32::from_bits(0x7149_f2ca))?;
+            }
+            self.stop_helpers(effects);
+            self.contacts.clear();
+            let has_placed_contacts = player.physics.proxy.contact_hits().any(|contact| contact.body != 0);
+            let shared = if has_placed_contacts { scene.map(PhysicsScene::point_queries).transpose()? } else { None };
+            let storage = shared.as_ref().map(|world| world.read().map_err(|_| "Blink contact world is poisoned".to_owned())).transpose()?;
+            for contact in player.physics.proxy.contact_hits() {
+                let flags = if contact.body==0 {1} else {
+                    let owner=collision.owner_name(contact.body-1).ok_or("Blink contact has no collision owner")?;
+                    let scene=scene.ok_or("Blink contact has no actual physics component owner")?;
+                    let body=scene.blink_collision_body(live,owner)?.ok_or_else(||format!("Blink contact {owner} has no admitted collision body"))?;
+                    storage.as_ref().and_then(|world|world.storage.bodies.get(body)).ok_or("Blink contact body generation is stale")?.flags as u8
+                };
+                self.contacts.push(BlinkContact {body_flags:flags,normal:contact.normal});
+            }
+            player.set_blink_contacts(&self.contacts);
+        }
+        if player.take_finished_blink().is_some() || (self.was_active && !active) {
+            self.retire(player,clock,effects)?;
+        }
+        Ok(self.has_activity())
+    }
+    /// Safe before map clock/FX owners retire. Repeated calls release no
+    /// other component's lease and never clear another power's time request.
+    pub fn retire(&mut self, player:&mut Player, clock:&mut ClockRuntime, effects:&mut EffectRequests)->Result<(),String>{
+        if let Some(lease)=self.time.take(){clock.release_time_request(lease,self.motion.ease_out_duration)?;}
+        // Native80f040 restores the player's group when no retained world
+        // bending applies. Do not erase an override held by another power.
+        self.pending=false;self.was_active=false;
+        self.stop_helpers(effects);self.cancel(player);Ok(())
+    }
+    pub fn stop_helpers(&mut self,effects:&mut EffectRequests){
+        for index in 0..3 {if self.helper_started[index]{effects.stop_entity(self.helper_keys[index].clone());self.helper_started[index]=false;}}
+        if self.screen_started{effects.stop_player("blink:screen");self.screen_started=false;}
+    }
+    /// Explicit87dc10 placement updates on the same canonical FX instances.
+    /// The parent is the real player frame; local transforms resolve to the
+    /// native world-space helper poses without a fabricated target entity.
+    pub fn publish_helpers(&mut self,effects:&mut EffectRequests,player:&Player){
+        let Some(target)=self.blink.target.as_ref() else {self.stop_helpers(effects);return};
+        let positions=[target.top_fx.map(|position|(position,Mat3::IDENTITY)),target.bottom_fx.map(|position|(position,Mat3::IDENTITY)),
+            target.mantle.map(|mantle|(mantle.position,mantle.axis))];
+        let root=ReferenceFrame{position:player.physics.position().to_array(),basis:player.physics.axis().to_cols_array_2d()};
+        let mut inverse=root.basis;if !reference_frame::invert_basis(&mut inverse){return;}
+        for index in 0..3{
+            let Some((position,axis))=positions[index] else{if self.helper_started[index]{effects.stop_entity(self.helper_keys[index].clone());self.helper_started[index]=false;}continue};
+            let Some(path)=self.helpers[index].as_deref() else{continue};
+            let world=ReferenceFrame{position:position.to_array(),basis:axis.to_cols_array_2d()};
+            let local=ReferenceFrame{position:reference_frame::relative_binding(root,world).0,basis:reference_frame::basis_product(world.basis,inverse)};
+            let placement=EntityPlacement{target:EntityReference::Player,tag:String::new(),local,attached:false};
+            if self.helper_started[index]{effects.update_entity(self.helper_keys[index].clone(),placement);}
+            else{effects.start_entity(self.helper_keys[index].clone(),path,placement);self.helper_started[index]=true;}
+        }
+        if !self.screen_started{if let Some(path)=&self.screen{effects.start_player("blink:screen",path);self.screen_started=true;}}
+    }
+    pub fn visit_breakable_hits(&self,player:&Player,dt:f32,mut visit:impl FnMut(EntityId,Vec3,&str)){
+        if !self.was_active{return;}
+        let Some(path)=self.motion.breakable_damage.as_deref() else{return;};
+        let reach=(self.motion.speed*dt).max(self.motion.breakable_anticipation_distance);
+        for hit in &self.blink.breakables{
+            let projection=player.physics.axis().x_axis.dot(hit.hit_position-player.physics.position());
+            let projected=player.physics.axis().x_axis.truncate()*projection;
+            if projected.length_squared()<reach*reach*reach*reach{visit(hit.entity,hit.hit_position,path);}
+        }
     }
 }
 

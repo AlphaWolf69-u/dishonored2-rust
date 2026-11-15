@@ -31,6 +31,7 @@ struct FxEntity {
     pose: ReferenceFrame,
     local: Option<ReferenceFrame>,
     dynamic_sources: Option<Arc<WorldFxSources>>,
+    dynamic_retirement: Option<Arc<()>>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
 }
 enum FxEntityOwner {
@@ -55,6 +56,7 @@ struct Instance {
     pose: ReferenceFrame,
     local: Option<ReferenceFrame>,
     dynamic_sources: Option<Arc<WorldFxSources>>,
+    dynamic_retirement: Option<Arc<()>>,
     motion: crate::gameplay::particles::spawn::SpawnVelocity,
     age: f32,
     head: u16,
@@ -699,6 +701,7 @@ impl WorldParticleState {
                     pose,
                     local: None,
                     dynamic_sources: None,
+                    dynamic_retirement: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -963,9 +966,25 @@ impl WorldParticleState {
             }
         }
         for entry in snapshot.0.iter() {
-            if self.dynamic.contains_key(&entry.owner) { continue; }
-            let parent = frames.resolve(&entry.target, "")?.ok_or("dynamic FX target pose is unavailable")?;
+            let parent = frames.resolve(&entry.target, &entry.tag)?.ok_or("dynamic FX target pose is unavailable")?;
             let pose = crate::gameplay::reference_frame::compose(parent, entry.local);
+            if let Some(&(id, _)) = self.dynamic.get(&entry.owner) {
+                // 87dc10 changes an existing effect's placement without a
+                // new Start. Keep its age, source lease and active handle.
+                if let Some(entity) = self.entities.get_mut(&id) {
+                    entity.pose = pose; entity.local = Some(entry.local);
+                    entity.parameters.location = Some(entry.target.clone());
+                    entity.parameters.tag.clone_from(&entry.tag);
+                    entity.parameters.update_position = entry.attached;
+                }
+                for instance in self.slots.iter_mut().flatten().filter(|instance| instance.entity == id) {
+                    instance.pose = pose; instance.local = Some(entry.local);
+                    instance.parameters.location = Some(entry.target.clone());
+                    instance.parameters.tag.clone_from(&entry.tag);
+                    instance.parameters.update_position = entry.attached;
+                }
+                continue;
+            }
             let id = self.next_entity;
             self.next_entity = id.wrapping_add(1);
             self.entities.insert(id, FxEntity {
@@ -973,12 +992,14 @@ impl WorldParticleState {
                 parameters: FxRuntimeParameters {
                     effect: Some(entry.effect.clone()),
                     location: Some(entry.target.clone()),
+                    tag: entry.tag.clone(),
                     update_position: entry.attached,
                     stop_on_parent_removal: false,
                     ..Default::default()
                 },
                 component: Default::default(), suspended: false, pose, local: Some(entry.local),
                 dynamic_sources: Some(entry.sources.clone()),
+                dynamic_retirement: Some(entry.retirement.clone()),
                 motion: crate::gameplay::particles::spawn::SpawnVelocity { center: pose.position, ..Default::default() },
             });
             self.entity_order.push(id);
@@ -1028,6 +1049,7 @@ impl WorldParticleState {
                 pose,
                 local: None,
                 dynamic_sources: None,
+                dynamic_retirement: None,
                 motion,
             },
         );
@@ -1041,6 +1063,7 @@ impl WorldParticleState {
             pose,
             local: None,
             dynamic_sources: None,
+            dynamic_retirement: None,
             motion,
             age: 0.,
             head: u16::MAX,
@@ -1162,6 +1185,7 @@ impl WorldParticleState {
                     pose,
                     local: None,
                     dynamic_sources: None,
+                    dynamic_retirement: None,
                     motion: crate::gameplay::particles::spawn::SpawnVelocity {
                         center: pose.position,
                         ..Default::default()
@@ -1650,6 +1674,7 @@ impl FxGraphWorld for GraphHost<'_> {
                 pose,
                 local: None,
                 dynamic_sources: None,
+                dynamic_retirement: None,
                 motion: crate::gameplay::particles::spawn::SpawnVelocity {
                     center: pose.position,
                     ..Default::default()
@@ -1768,6 +1793,7 @@ impl WorldFxComponentHost for InstanceHost<'_> {
             pose,
             local: self.entity.local,
             dynamic_sources: self.entity.dynamic_sources.clone(),
+            dynamic_retirement: self.entity.dynamic_retirement.clone(),
             motion: self.entity.motion,
             age: 0.,
             head: u16::MAX,

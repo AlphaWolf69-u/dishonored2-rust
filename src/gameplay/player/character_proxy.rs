@@ -183,6 +183,12 @@ impl CharacterProxy {
     pub fn contact_count(&self) -> usize {
         self.manifold.len()
     }
+    /// Borrow actual proxy contacts for native component consumers. Body and
+    /// shape identities remain those produced by the shared query owner.
+    pub fn contact_hits(&self) -> impl Iterator<Item = WorldHit> + '_ {
+        self.manifold.iter().map(|point| WorldHit { position: point.position, normal: point.normal,
+            value: point.distance, body: point.body, key: point.key })
+    }
 
     /// Diagnostic: (position, normal, distance, triangle key) per contact.
     pub fn contacts(&self) -> Vec<(Vec3, Vec3, f32, u32)> {

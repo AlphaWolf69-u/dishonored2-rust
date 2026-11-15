@@ -33,10 +33,14 @@ pub struct DynamicEffect {
     pub revision: u64,
     pub effect: String,
     pub target: crate::gameplay::event_graph::EntityReference,
+    pub tag: String,
     pub local: ReferenceFrame,
     pub attached: bool,
     /// Keeps sub-effect dependencies alive through stopped particle tails.
     pub sources: Arc<WorldFxSources>,
+    /// The component's acknowledgement remains live through real render,
+    /// particle and sound tails; source caches never retain this lease.
+    pub retirement: Arc<()>,
 }
 
 /// Request-scoped GPU material preparation. A completion acknowledges only
