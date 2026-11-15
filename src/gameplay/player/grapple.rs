@@ -21,6 +21,17 @@ fn number(fields: &[(String, Value)], name: &str, default: f32) -> Result<f32, S
             .ok_or_else(|| format!("{name}: invalid number {value:?}")),
     }
 }
+pub fn seconds(fields: &[(String, Value)], name: &str, default: f32) -> Result<f32, String> {
+    if let Some(Value::Scope(duration)) = fields
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value)
+    {
+        number(duration, "m_seconds", default)
+    } else {
+        number(fields, name, default)
+    }
+}
 
 /// Reflected arkDeclPlayerStateGrapple fields (141782d70); constructor
 /// defaults are 140837390. Scene paths remain with the Midnight owner.
@@ -99,7 +110,7 @@ impl Decl {
             end_speed_to_mantle: number(fields, "m_endSpeedToMantle", 10.0)?,
             start_speed_to_mantle_no_jump: number(fields, "m_startSpeedToMantleNoJump", 40.0)?,
             end_speed_to_mantle_no_jump: number(fields, "m_endSpeedToMantleNoJump", 10.0)?,
-            max_inertia_blend_duration: number(fields, "m_maxInertiaBlendDuration", 0.25)?,
+            max_inertia_blend_duration: seconds(fields, "m_maxInertiaBlendDuration", 0.25)?,
             start_inertia: number(fields, "m_startInertia", 1.0)?,
             end_inertia: number(fields, "m_endInertia", 200.0)?,
             camera_start_turn_position: number(fields, "m_cameraStartTurnPosition", 0.7)?,
@@ -133,7 +144,7 @@ impl Decl {
             camera_recenter_angle: number(fields, "m_cameraRecenterAngle", 20.0)?,
             camera_ceil_max_pitch_up: number(fields, "m_cameraCeilMaxPitchUp", 0.0)?,
             camera_ceil_max_pitch_down: number(fields, "m_cameraCeilMaxPitchDown", 80.0)?,
-            camera_blend_duration: number(fields, "m_cameraBlendDuration", 0.25)?,
+            camera_blend_duration: seconds(fields, "m_cameraBlendDuration", 0.25)?,
             min_speed_to_jump_on_ground: number(fields, "m_minSpeedToJumpOnGround", 2.5)?,
             jump_height: number(fields, "m_jumpHeight", 1.5)?,
             min_jump_height_snapped_to_ground: number(
@@ -150,7 +161,7 @@ impl Decl {
             ground_jump_velocity: number(fields, "m_groundJumpVelocity", 10.0)?,
             max_forward_speed: number(fields, "m_maxForwardSpeed", 6.0)?,
             max_strafe_speed: number(fields, "m_maxStrafeSpeed", 6.0)?,
-            push_delay: number(fields, "m_pushDelay", 0.25)?,
+            push_delay: seconds(fields, "m_pushDelay", 0.25)?,
             extra_jump_velocity: number(fields, "m_extraJumpVelocity", 50.0)?,
             camera_constraints_wall: super::decls::constraint_params(
                 fields,
@@ -174,7 +185,7 @@ impl Decl {
                     .unwrap_or(&[]);
                 Impulse {
                     strength: number(nested, "m_strength", 6.0)?,
-                    duration: number(nested, "m_duration", 0.75)?,
+                    duration: seconds(nested, "m_duration", 0.75)?,
                 }
             },
             translate_midnight: path("m_translateMidnight"),
@@ -314,6 +325,7 @@ pub struct TargetHit {
     pub hit: WorldHit,
     pub position: Vec3,
     pub distance: f32,
+    pub through_surface: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -325,6 +337,11 @@ pub struct GeometryTarget {
     pub snapped_ground: bool,
     pub can_jump: bool,
     pub hit: WorldHit,
+    pub sensor_position: Vec3,
+    pub sensor_normal: Vec3,
+    pub ceiling_distance: f32,
+    pub forward_ground_distance: f32,
+    pub through_surface: bool,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SafePosition {
@@ -399,6 +416,11 @@ impl PreparedSensor {
                 })
             },
         );
+        // Host-unresolved material metadata is not evidence of a native
+        // null material pointer. Preserve it as a blocking dependency.
+        if hits.iter().any(|hit| world.physics_material(hit).is_none()) {
+            return false;
+        }
         result.is_none_or(|hit| hit.position.distance_squared(predicted) <= 0.01)
     }
 }
@@ -802,6 +824,11 @@ impl Sensor {
             )?
         };
         let mut position = target.position;
+        // body0 is the canonical level-static worldspawn. Placed/runtime
+        // bodies need their real motion/attachment owner, not zero velocity.
+        if target.hit.body != 0 || world.physics_material(&target.hit).is_none() {
+            return None;
+        }
         let mut normal = target.hit.normal;
         let (mut down, mut up) =
             self.vertical_distances(world, physics, position, normal, vertical_range);
@@ -880,6 +907,23 @@ impl Sensor {
                 }
             }
         }
+        let sensor_position = position;
+        let sensor_normal = normal;
+        let forward_ground_distance = if Target::from_normal(normal) == Target::Wall {
+            let outside = position
+                + Vec3::new(normal.x, normal.y, 0.0).normalize_or_zero()
+                    * physics.current_settings().radius;
+            world
+                .cast_ray(
+                    QueryFilter::layers(self.prepared.decl.collision_layers, 0x40),
+                    outside,
+                    -Vec3::Z,
+                    self.prepared.decl.extra_ground_snap_distance + vertical_range,
+                )
+                .map_or(-1.0, |hit| hit.distance)
+        } else {
+            -1.0
+        };
         // 1403b2370: the body origin is below a ceiling/wall hit; a floor
         // hit is already an origin. Preserve the source .7071 split.
         let shape = physics.current_settings();
@@ -944,7 +988,10 @@ impl Sensor {
         } else {
             [0, 1, 2]
         };
-        let posture = order.into_iter().find(|slot| free[*slot])? + 8;
+        // 3b3c30 keeps GRAPPLE when none of the optional lower postures
+        // clears. A valid raw sensor target must still reach sensor3;
+        // its ledge destination can clear when the direct wall cannot.
+        let posture = order.into_iter().find(|slot| free[*slot]).unwrap_or(0) + 8;
         let safe = self.state_safe_position(
             world,
             physics,
@@ -957,9 +1004,6 @@ impl Sensor {
         );
         let posture = safe.posture;
         let safe_position = safe.position;
-        if safe_position == physics.position() {
-            return None;
-        }
         let can_jump = {
             let prepared = self.prepared.clone();
             self.travel_clear(
@@ -980,6 +1024,11 @@ impl Sensor {
             snapped_ground,
             can_jump,
             hit: target.hit,
+            sensor_position,
+            sensor_normal,
+            ceiling_distance: up.unwrap_or(f32::MAX),
+            forward_ground_distance,
+            through_surface: target.through_surface,
         })
     }
     /// 1403b2000 checks the actual player posture shape at the candidate
@@ -1101,16 +1150,18 @@ fn cast_target(
     let mut nearest = None;
     let mut distance = length + 0.001;
     let mut targetable = false;
+    let mut through_surface = false;
     for hit in hits {
         let info = material(hit);
         if info.is_some_and(|value| value.through) {
+            through_surface = true;
             continue;
         }
         let candidate = hit.value * length;
         if candidate < distance {
             distance = candidate;
             nearest = Some(*hit);
-            targetable = info.is_none_or(|value| value.blocks_vision);
+            targetable = info.is_some_and(|value| value.blocks_vision);
         }
     }
     if !targetable {
@@ -1121,6 +1172,7 @@ fn cast_target(
         hit,
         position: hit.position + hit.normal * decl.shape_radius,
         distance,
+        through_surface,
     })
 }
 
