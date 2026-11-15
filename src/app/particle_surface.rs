@@ -41,6 +41,40 @@ pub(super) struct PreparedSurface {
     pub mesh: Handle<Mesh>,
     pub handle: Handle<super::ProbeMaterial>,
     pub images: Vec<(usize, ImageRole)>,
+    /// The resolved material owning its shadow programs, when the material
+    /// admits shadow casting (caster admission bit 0).
+    pub shadow: Option<super::MaterialHandle>,
+    /// Game-local bounds of the surface geometry.
+    pub bounds: [[f32; 3]; 2],
+}
+
+/// The shadow-casting identity of a particle surface proxy: its resolved
+/// material (None for a material that casts no shadow) and local bounds.
+#[derive(Component, Clone)]
+pub(super) struct ParticleSurfaceShadow {
+    pub material: Option<super::MaterialHandle>,
+    pub bounds: [[f32; 3]; 2],
+}
+
+/// Game-local positions of a sprite grid (Some(level)) or a PMODEL surface,
+/// in the order the prepared mesh stores its vertices.
+pub(super) fn local_positions(grid: Option<u32>, model: &ParticleModel) -> Vec<[f32; 3]> {
+    match grid {
+        Some(level) => crate::rendering::particles::geometry::SpriteGrid::new(level).vertices.iter().map(|v| v.position).collect(),
+        None => model.vertices.iter().map(|v| v.position).collect(),
+    }
+}
+
+/// The game-local box of `positions`.
+pub(super) fn local_bounds(positions: &[[f32; 3]]) -> [[f32; 3]; 2] {
+    let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
+    for p in positions {
+        for axis in 0..3 {
+            bounds[0][axis] = bounds[0][axis].min(p[axis]);
+            bounds[1][axis] = bounds[1][axis].max(p[axis]);
+        }
+    }
+    bounds
 }
 
 impl PreparedSurface {
@@ -57,6 +91,7 @@ impl PreparedSurface {
                 source: self.source,
                 material: self.material,
             },
+            ParticleSurfaceShadow { material: self.shadow, bounds: self.bounds },
         )
     }
 

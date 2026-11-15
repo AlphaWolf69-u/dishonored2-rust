@@ -387,6 +387,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .init_resource::<local_shadow_updates::LocalShadowDraws>()
         .init_resource::<shadow_updates::ParallelWorldDraws>()
         .init_resource::<shadow_updates::ModelCasterFrame>()
+        .init_resource::<shadow_updates::ParticleShadowCasters>()
         .init_resource::<shadow_updates::ParallelModelDraws>()
         .add_plugins(super::decal_pass::DecalPassPlugin)
         .add_plugins(super::projected_decals::ProjectedDecalPlugin)
@@ -539,7 +540,13 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
         .add_systems(
             PostUpdate,
             shadow_updates::prepare_parallel_model_draws
-                .after(shadow_updates::prepare_parallel_shadow_cpu),
+                .after(shadow_updates::prepare_parallel_shadow_cpu)
+                .after(shadow_updates::collect_particle_casters),
+        )
+        .add_systems(
+            PostUpdate,
+            shadow_updates::collect_particle_casters
+                .after(crate::rendering::bevy_backend::camera_scene::simulate_effects),
         )
         .add_systems(
             PostUpdate,
@@ -565,6 +572,7 @@ pub(super) fn build(base: PathBuf, requested: String, mode: HostMode)
             PostUpdate,
             local_shadow_updates::publish_local_shadow_draws
                 .after(local_shadow_updates::prepare_local_shadow_cpu)
+                .after(shadow_updates::collect_particle_casters)
                 .before(bevy::asset::AssetEventSystems),
         )
         .add_systems(

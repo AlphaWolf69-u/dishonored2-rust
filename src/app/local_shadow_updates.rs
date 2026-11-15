@@ -222,7 +222,7 @@ pub(super) fn publish_local_shadow_draws(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut draws: ResMut<LocalShadowDraws>,
     mut output: ResMut<shadow_pass::LocalShadowSceneFrame>,
-    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind)): (
+    (completion, profile, mut commands, mut matrix_bank, (vegetation_wind, world_wind), particle_casters): (
         Res<shadow_pass::LocalShadowCompletion>,
         Option<Res<frame_profile::CpuFrameProfile>>,
         Commands,
@@ -231,6 +231,7 @@ pub(super) fn publish_local_shadow_draws(
             Option<Res<super::vegetation_wind::VegetationWind>>,
             Option<Res<super::fog_scene::WorldWind>>,
         ),
+        Res<shadow_updates::ParticleShadowCasters>,
     ),
 ) {
     let _span = profile.as_deref().map(|p| p.measure(25));
@@ -430,6 +431,15 @@ pub(super) fn publish_local_shadow_draws(
                     &vegetation,
                     &mut shadow_textures,
                 )?);
+                // Particle surfaces are dynamic model casters (capture events
+                // 20259-27780 draw the eotw stink bug into the local atlas).
+                if light.refresh_dynamic {
+                    if let Some((_, casters)) = particle_casters.current.as_ref() {
+                        instances.extend(shadow_updates::prepare_particle_shadow_instances(
+                            casters, clip, bias, 0.0, dimensions, &materials, &images, &mut shadow_textures,
+                        )?);
+                    }
+                }
                 layers.push(shadow_pass::ShadowLayer {
                     ops: shadow_pass::ShadowLayerOps {
                         depth: shadow_pass::ShadowLoad::Load,
