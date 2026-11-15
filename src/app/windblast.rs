@@ -9,6 +9,7 @@ use super::physics_scene::{
 use crate::{
     archive::Catalog,
     assets::{
+        damage::Declaration as DamageDeclaration,
         declaration_texts::read_common_or_catalog,
         entities::{Value, player},
     },
@@ -56,6 +57,7 @@ struct WindFx {
 struct Prepared {
     path: String,
     definition: Definition,
+    damage: Option<Arc<DamageDeclaration>>,
     // Keep actual acquired entity descriptors/component projection with all
     // active instances and pending query/FX callbacks, rather than rereading.
     _entity_chain: Vec<Vec<(String, Value)>>,
@@ -182,9 +184,16 @@ impl Windblasts {
                     }
                 }
             }
+            let damage = definition
+                .physics
+                .damage_decl
+                .as_deref()
+                .map(|path| DamageDeclaration::acquire(catalog, path))
+                .transpose()?;
             prepared.push(Arc::new(Prepared {
                 path: path.to_owned(),
                 definition,
+                damage,
                 _entity_chain: chain,
                 _component: fields,
                 class,
@@ -302,11 +311,11 @@ impl Windblasts {
         effects: &mut impl Effects,
         mut damage: impl FnMut(
             &mut PhysicsScene,
-            &LiveEntities,
+            &mut LiveEntities,
             EntityId,
             EntityId,
             EntityId,
-            &str,
+            &DamageDeclaration,
             f32,
             [f32; 3],
         ) -> Result<bool, String>,
@@ -376,7 +385,7 @@ impl Windblasts {
                         {
                             scene.windblast_impulse(live, target.entity, impulse, target.center)?;
                         }
-                    } else if let Some(path) = &definition.physics.damage_decl {
+                    } else if let Some(declaration) = &instance.prepared.damage {
                         //4d8380 only damages the non-movable physics branch;
                         //movable receivers receive the impulse above instead.
                         let amount = definition.physics.damage_near
@@ -392,7 +401,7 @@ impl Windblasts {
                             instance.spawner,
                             instance.entity,
                             target.entity,
-                            path,
+                            declaration,
                             amount,
                             direction,
                         )?;
