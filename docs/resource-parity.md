@@ -9574,3 +9574,21 @@ not another declaration read:51e950 publishes label/image/status,40e970
 constructs the initial status at-1, and66f340 changes it when a target result
 is queued. Target images are acquired by the existing per-open Journal bitmap
 owner and retire with that movie; only changed status IDs remain level-owned.
+
+Connected gameplay observation (windowless dev,2026-11-15): the actual EotW
+loading callback activates Mission_EotW to native state2; its three objective
+decorators enter state1. Twelve demanded componentless marker targets and two
+physical audiograph devices join their real owners. The ordinary shutdown
+finishes with RUNTIME_RESOURCE_LIFETIME complete=true, no live UI bindings,
+lists or bitmap maps, and no remaining audio preparation jobs. Acquisition
+observations still resolve all35 recordings/138 line events and all20 tree
+files. Both game-feature and feature-free library compilation succeeded.
+
+Original activation dependency, not a substituted progress rule:
+script_kiscule_eotw_ui connects Obj_EotW_A activation to the global authored
+custom event Midnights.Meagan.DrivingSkiff.OnEnded (node5725). That world
+cinematic/custom-event producer is not implemented, so these initial
+objectives remain inactive. blocked: story-scene/global-custom-event producer;
+next step is port that producer and its real completion, never activate an
+objective merely because loading finished. This does not prevent native
+m_autoActivate objectives or requests from already connected producers.
